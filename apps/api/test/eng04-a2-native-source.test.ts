@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { createWorkflowNativeCaptureChannel, capturedWorkflowNativeTime } from '../src/modules/interactions/workflowNativeCapture.js'
 import { createReviewNativeCaptureChannel } from '../src/modules/interactions/reviewNativeCapture.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
-import { OPENCODE_RECONCILIATION_EVENT, openCodeReconciliationPayload } from '../src/modules/harnesses/opencodeReconciliation.js'
 import { runStartSemantics } from '../src/modules/runs/repeatStartDispatch.js'
 import type { WorkflowNativeCaptureInput } from '../src/modules/interactions/workflowNativeCapture.js'
 import type { ReviewNativeCaptureInput } from '../src/modules/interactions/reviewNativeCapture.js'
@@ -134,29 +133,3 @@ it('A2 Codex cold history can prove only its actual pinned completed turn', () =
   } } } as never]
   assertOriginalWorkflowTerminal(f.execution as never, f.session as never, f.history as NativeHistory)
 })
-function openCode() {
-  const f = fixture(), session = { harness: 'opencode' as const, providerVersion: '1.18.31', nativeSessionId: 'opencode-a2' }
-  const raw = { ...f.event, type: 'message.updated', connectionId: 'history-assistant-a2', sequence: 0,
-    payload: { nativeEventId: 'message:assistant-a2:complete', info: { id: 'assistant-a2', sessionID: session.nativeSessionId,
-      parentID: f.lease.providerId, role: 'assistant', time: { completed: 1000 }, finish: 'stop' } } }
-  const reconciliation = openCodeReconciliationPayload(session, f.execution.agentId, f.history.correlationId, f.lease.providerId, raw, 'succeeded')
-  assert.ok(reconciliation)
-  const marker = { ...f.event, type: OPENCODE_RECONCILIATION_EVENT, connectionId: 'original-live-a2', sequence: 4, payload: reconciliation }
-  const history = { ...f.history, events: [raw, marker] } as NativeHistory
-  return { f, session, history }
-}
-it('A2 OpenCode terminal binds the real rooted marker to the original raw assistant', () => {
-  const { f, session, history } = openCode(); assertOriginalWorkflowTerminal(f.execution as never, session, history)
-})
-for (const invalid of ['enum-only', 'marker-only', 'wrong-source', 'wrong-agent', 'cancel-ack', 'wrong-session'] as const) {
-  it(`A2 OpenCode rejects ${invalid} as positive terminal evidence`, () => {
-    const { f, session, history } = openCode()
-    if (invalid === 'enum-only') history.events = []
-    if (invalid === 'marker-only') history.events = history.events.slice(1)
-    if (invalid === 'wrong-source') history.events[0]!.connectionId = 'unrelated-history'
-    if (invalid === 'wrong-agent') f.execution.agentId = 'unrelated-agent'
-    if (invalid === 'cancel-ack') { history.events = []; history.terminalTurn!.result = { outcome: 'canceled' } }
-    if (invalid === 'wrong-session') session.nativeSessionId = 'unrelated-session'
-    assert.throws(() => assertOriginalWorkflowTerminal(f.execution as never, session, history), { code: 'NATIVE_TERMINAL_SOURCE_REQUIRED' })
-  })
-}

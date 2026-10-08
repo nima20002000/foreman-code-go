@@ -58,7 +58,7 @@ function fixture() {
   const abandon = vi.fn<(scope: NativeProcessRecovery) => Promise<void>>().mockResolvedValue(undefined)
   const closeRecovery = vi.fn<(scope: NativeProcessRecovery) => Promise<void>>().mockResolvedValue(undefined)
   const writer = { root: '/recorded-registry', owner: 'execution:writer' }
-  const factories = new NativeHarnessFactories({ codexBinary: '/recorded-codex', openCodeBinary: 'unused',
+  const factories = new NativeHarnessFactories({ codexBinary: '/recorded-codex',
     auxiliaryRecovery: () => ({ root: writer.root, owner: `diagnostics:${sequence + 1}` }),
     admitRecovery: admit, abandonRecovery: abandon, closeRecovery }, { mode: 'native', codex: dependencies })
   const allocation = factories.allocate({ harness: 'codex', role: 'workflow', workingDirectory: source.request.workingDirectory,

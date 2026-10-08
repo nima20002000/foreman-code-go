@@ -6,15 +6,14 @@ import type pg from 'pg'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnections.js'
-import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
 import { HarnessMcpSettingsService } from '../../src/modules/harnesses/mcpSettings.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { ownedTestDatabaseUrl, ownedTestPath } from './testResources.js'
 
 /** Install the normal managed connection in private profiles; native preflight still verifies it. */
 export async function configureNativeAcceptanceMcp(pool: pg.Pool, directory: string,
-  binaries: { codex: string; opencode: string }, endpoint: string,
-  harnesses: readonly ('codex' | 'opencode')[]): Promise<void> {
+  binaries: { codex: string }, endpoint: string,
+  harnesses: readonly 'codex'[]): Promise<void> {
   ownedTestDatabaseUrl()
   const file = ownedTestPath(join(process.env.CODEX_HOME!, 'config.toml'))
   // Codex requires a user configuration layer before its native settings writer can edit it.
@@ -22,14 +21,12 @@ export async function configureNativeAcceptanceMcp(pool: pg.Pool, directory: str
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
   const registry = new NativeProcessRegistry(join(directory, 'native-process-registry'))
   const selected = [...new Set(harnesses)]
-  const owners = { codex: `acceptance-mcp:codex:${randomUUID()}`, opencode: `acceptance-mcp:opencode:${randomUUID()}` }
+  const owners = { codex: `acceptance-mcp:codex:${randomUUID()}` }
   const scopes = {
     codex: selected.includes('codex') ? registry.reserveLaunch(owners.codex) : registry.scope(owners.codex),
-    opencode: selected.includes('opencode') ? registry.reserveLaunch(owners.opencode) : registry.scope(owners.opencode),
   }
   const service = new HarnessMcpSettingsService(pool, new PostgresCommandCoordinator(pool), {
     codex: new CodexMcpConnections(binaries.codex, directory, scopes.codex),
-    opencode: new OpenCodeMcpConnections(binaries.opencode, directory, scopes.opencode),
   }, () => undefined, async () => {
     const closed = await Promise.all(selected.map(async harness => {
       await registry.abandonReservedLaunch(scopes[harness])

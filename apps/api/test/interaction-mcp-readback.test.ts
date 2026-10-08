@@ -11,7 +11,7 @@ import {
 } from '../src/modules/interactions/mcpReadback.js'
 import { toolResult } from '../src/mcp/shared/results.js'
 
-const source = NATIVE_INTERACTION_FIXTURES.opencode
+const source = NATIVE_INTERACTION_FIXTURES.codex
 const principal: ManagementPrincipal = {
   id: 'reader', name: 'Reader', audience: 'worker', agentId: 'reader-agent',
   expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,

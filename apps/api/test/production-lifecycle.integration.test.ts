@@ -1,10 +1,10 @@
 import { isWorkflowStart } from '../src/modules/harnesses/sessionStart.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { mkdir, rename } from 'node:fs/promises'
 
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
+import { CODEX_APPROVAL_OPTIONS_FIXTURE, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -18,7 +18,6 @@ import { seedAgent3 } from './helpers/wave25Agent3.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import type { NativeHistory, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
@@ -26,7 +25,7 @@ import { ReviewerDispatcher } from '../src/modules/interactions/reviewer.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import { FixtureServer } from './opencode-fixtures.js'
+import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 import { buildProductionApp } from '../src/production.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
@@ -51,8 +50,6 @@ function event(manager: object, type: string, payload: Record<string, unknown>) 
   local.events.push(value)
   return value
 }
-const providerId = (manager: { harness: 'codex' | 'opencode' }, correlation: string) => manager.harness === 'opencode'
-  ? `msg_${createHash('sha256').update(correlation).digest('hex').slice(0, 24)}` : correlation
 function ask(reference: NativeSessionReference, suffix: number): PendingNativeInteraction {
   const saved = sessions.get(reference.nativeSessionId)!
   const turnId = [...saved.turns.keys()][0]!
@@ -99,7 +96,7 @@ beforeEach(async () => {
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async function (this: CodexAppServerSessionManager, input) {
     if (!isWorkflowStart(input)) throw new Error('Unexpected Operator launch')
-    const reference = { harness: this.harness, providerVersion: this.harness === 'codex' ? '0.154.0' : '1.18.31', nativeSessionId: `session-${input.request.executionId}` }
+    const reference = { harness: this.harness, providerVersion: '0.154.0', nativeSessionId: `session-${input.request.executionId}` }
     sessions.set(reference.nativeSessionId, { input, pending: [], turns: new Map(), asks: 0 })
     connections.set(this, { id: randomUUID(), events: [], token: input.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, sessionId: reference.nativeSessionId })
     return reference
@@ -113,7 +110,7 @@ beforeEach(async () => {
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'startTurn').mockImplementation(async function* (this: CodexAppServerSessionManager, reference, input) {
     native.starts.push(input.clientCorrelationId)
-    const turnId = providerId(this, input.clientCorrelationId)
+    const turnId = input.clientCorrelationId
     const saved = sessions.get(reference.nativeSessionId)!
     saved.turns.set(input.clientCorrelationId, undefined)
     await input.onSubmitted?.(turnId)
@@ -134,15 +131,15 @@ beforeEach(async () => {
     }
     yield event(this, 'turn.completed', { threadId: reference.nativeSessionId, turnId })
   })
-  const history = function (manager: CodexAppServerSessionManager | OpenCodeNativeSessionManager, reference: NativeSessionReference, correlationId?: string): NativeHistory {
+  const history = function (manager: CodexAppServerSessionManager, reference: NativeSessionReference, correlationId?: string): NativeHistory {
     const saved = sessions.get(reference.nativeSessionId)!
     const result = correlationId ? saved.turns.get(correlationId) : undefined
     if (correlationId) event(manager, 'thread.reconciled', { thread: { id: reference.nativeSessionId,
-      status: saved.pending.length ? 'active' : 'idle', turns: [...saved.turns].map(([id, value]) => ({ id: providerId(manager, id), clientUserMessageId: id, status: value ? 'completed' : 'inProgress' })) } })
-    if (manager.harness === 'opencode' && !saved.pending.length) event(manager, 'session.idle', { sessionID: reference.nativeSessionId })
+      status: saved.pending.length ? 'active' : 'idle', turns: [...saved.turns].map(([id, value]) => ({ id: id, clientUserMessageId: id, status: value ? 'completed' : 'inProgress' })) } })
+
     return { events: [...connections.get(manager)!.events], pendingInteractions: [...saved.pending],
-      ...(result && correlationId ? { correlationId, nativeTurnId: providerId(manager, correlationId),
-        terminalResult: result, terminalTurn: { correlationId, providerId: providerId(manager, correlationId), result } } : {}) }
+      ...(result && correlationId ? { correlationId, nativeTurnId: correlationId,
+        terminalResult: result, terminalTurn: { correlationId, providerId: correlationId, result } } : {}) }
   }
   vi.spyOn(CodexAppServerSessionManager.prototype, 'history').mockImplementation(async function (this: CodexAppServerSessionManager, reference) { return history(this, reference) })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcileResponse').mockImplementation(async function (this: CodexAppServerSessionManager, reference) {
@@ -172,68 +169,6 @@ beforeEach(async () => {
   })
   vi.spyOn(CodexAppServerSessionManager.prototype, 'cancel').mockResolvedValue(true)
   vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockImplementation(async () => { native.closes++ })
-  const openCodeServers = new Map<string, FixtureServer>()
-  const originalCreate = OpenCodeNativeSessionManager.prototype.createSession
-  const originalAttach = OpenCodeNativeSessionManager.prototype.attachSession
-  const originalStart = OpenCodeNativeSessionManager.prototype.startTurn
-  function serverFor(manager: OpenCodeNativeSessionManager, input: WorkflowNativeSessionStart) {
-    let server = openCodeServers.get(input.request.executionId)
-    if (!server) {
-      server = new FixtureServer()
-      server.providers = { all: [{ id: 'opencode-go', models: { 'gpt-5.6-luna': { variants: { high: {} } } } }] }
-      server.config = { mcp: { 'foreman-code': { type: 'remote', url: 'http://127.0.0.1:4100/mcp', enabled: true } } }
-      server.mcpCredentialReferences['foreman-code'] = 'FOREMAN_CODE_MCP_TOKEN'
-      server.mcp = { 'foreman-code': { status: 'connected' } }
-      server.nextSessionIds.push(`ses_${input.request.executionId}`)
-      const external = server
-      server.onPrompt = (sessionId, body) => {
-        const correlation = `execution:${input.request.executionId}`
-        if (body.messageID === providerId(manager, correlation)) external.complete(correlation, 'workflow result', sessionId)
-      }
-      openCodeServers.set(input.request.executionId, server)
-    }
-    Reflect.get(manager, 'options').server = server
-    return server
-  }
-  // Replace only the external HTTP/SSE server. The real OpenCode adapter emits
-  // its original history and submission evidence into production capture ports.
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'createSession').mockImplementation(async function (this: OpenCodeNativeSessionManager, input, signal) {
-    if (!isWorkflowStart(input)) throw new Error('Unexpected Operator launch')
-    serverFor(this, input)
-    return originalCreate.call(this, input, signal)
-  })
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'attachSession').mockImplementation(async function (this: OpenCodeNativeSessionManager, reference, input, signal) {
-    if (!isWorkflowStart(input)) throw new Error('Unexpected Operator launch')
-    native.attaches++
-    serverFor(this, input)
-    return originalAttach.call(this, reference, input, signal)
-  })
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'inspectNativeMcp').mockImplementation(async (cwd) => {
-    native.inspections++
-    return { cwd, providerVersion: '1.18.31', serverName: 'foreman-code', nativeStatus: 'connected', transport: 'streamable-http',
-      endpoint: 'http://127.0.0.1:4100/mcp', credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN',
-      endpointMatches: true, baseConfigurationFilters: [], policyScope: 'base_configuration_only' }
-  })
-  vi.spyOn(OpenCodeNativeSessionManager.prototype, 'startTurn').mockImplementation(async function* (this: OpenCodeNativeSessionManager, reference, input, signal) {
-    native.starts.push(input.clientCorrelationId)
-    let reviewed = false
-    for await (const value of originalStart.call(this, reference, input, signal)) {
-      yield value
-      if (!reviewed && input.clientCorrelationId.startsWith('review-')) {
-        reviewed = true
-        const server = Reflect.get(this, 'options').server as FixtureServer
-        const interactionId = /interaction (\S+)\./.exec(input.prompt)![1]!
-        const interaction = (await interactions.get(interactionId))!
-        if (!reviewNoDecision) {
-          const response = await mcp(server.environment!.variables.FOREMAN_CODE_MCP_TOKEN!, {
-            interactionId, optionId: interaction.responseOptions[0]!.optionId, expectedRevision: interaction.revision,
-          })
-          expect(response.isError, JSON.stringify(response)).not.toBe(true)
-        }
-        server.complete(input.clientCorrelationId, 'review result', reference.nativeSessionId)
-      }
-    }
-  })
   vi.spyOn(ReviewerDispatcher.prototype, 'reconcile').mockResolvedValue() // manually drive the real dispatcher between crash boundaries
   production = buildProductionApp(config, database, checkpoints, false)
   runs = Reflect.get(production.engine, 'runs') as PostgresRunRepository
@@ -265,14 +200,9 @@ async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {
   fixture.configurations = nodes.map((node, index) => ({ ...fixture.configurations[index === 0 ? 0 : 1]!,
     id: `cfg-${node.agentId}`, workspaceId, agentId: node.agentId,
     productRole: index === 0 ? 'orchestrator' as const : 'coder' as const,
-    harness: index === 0 && handler === 'orchestrator' ? {
-      harness: 'opencode' as const, model: 'opencode-go/gpt-5.6-luna', variant: 'high', nativeAgent: 'build', thinking: false,
-      autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionRules: [
-        { permission: '*', pattern: '*', effect: 'deny' as const },
-        { permission: 'foreman-code_interaction_get', pattern: '*', effect: 'allow' as const },
-        { permission: 'foreman-code_interaction_respond', pattern: '*', effect: 'allow' as const },
-      ] },
-    } : fixture.configurations[1]!.harness,
+    harness: index === 0 && handler === 'orchestrator'
+      ? structuredClone(approvalFixture().configurations[0]!.harness)
+      : fixture.configurations[1]!.harness,
   }))
   const approval = { handler, ...(handler === 'orchestrator' ? { designatedOrchestratorAgentId: 'agent-researcher' } : {}) }
   fixture.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...fixture.version, workspaceId, approval, entryNodeId: 'orchestrator',
@@ -385,7 +315,6 @@ it('makes production Stop and native delivery progress with a one-slot pool', as
   expect(native.responses).toBe(1)
   expect((await runs.get(run.id))?.executionState).toBe('completed')
 })
-
 
 it('revalidates the accepting authority again between attachment and the native response', async () => {
   const { issuer, pending } = await start('user')

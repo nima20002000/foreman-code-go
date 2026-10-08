@@ -12,7 +12,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { agent3Database, candidateFor, postgresEnabled } from './helpers/wave25Agent3.js'
 import { currentRepositoryFixture } from './helpers/wave25CurrentRepository.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 
@@ -63,10 +63,10 @@ describe.skipIf(!postgresEnabled)('PR8 current PostgreSQL atomicity, recovery an
       }
       await expect(f.repository.updateDelivery(interaction!.id, interaction!.revision, 'delivered')).rejects.toThrow()
       expect(await f.repository.get(interaction!.id)).toMatchObject({ status: 'pending', deliveryState: 'not_started' })
-      const result = await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction!))
+      const result = await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction!))
       expect(result.interaction.deliveryState).toBe('delivered')
       expect(f.provider.counts.responses).toBe(1)
-      expect((await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction!))).replayed).toBe(true)
+      expect((await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction!))).replayed).toBe(true)
       expect(f.provider.counts.responses).toBe(1)
     } finally { await f.close() }
   }, 60000)

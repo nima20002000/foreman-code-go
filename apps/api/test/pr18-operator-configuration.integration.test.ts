@@ -22,10 +22,11 @@ it('pins the full cross-harness Operator configuration and preserves it on exact
     const repository = new PostgresOperatorConversationRepository(pool)
     const initial = await operators.ensure()
     const conversation = await repository.create(initial.operator.id, initial.configuration, principal.id)
-    const intended = { ...DEFAULT_HARNESS_DEFAULTS.opencode, nativeAgent: 'review-only',
-      advanced: { ...DEFAULT_HARNESS_DEFAULTS.opencode.advanced!,
-        permissionRules: [{ permission: 'bash', pattern: '*', effect: 'deny' as const }],
-        mcp: { serverEnabled: { unrelated: false } } } }
+    const intended = { harness: 'claude' as const, model: 'review-model', effort: 'high' as const,
+      authMode: 'subscription' as const, configDirectory: '/fixture/profile',
+      permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
+      tools: ['Read', 'Bash'], permissionRules: [{ effect: 'deny' as const, tool: 'Bash' }],
+      instructions: 'Inspect without writes', mcpServers: {} }
     const defaults = new PostgresFoundationSettingsRepository(pool)
     const saved = await defaults.getAgentDefaults()
     const updated = await defaults.updateAgentDefaults({ ...saved.value, operator: { ...saved.value.operator, harness: intended } }, saved.revision)

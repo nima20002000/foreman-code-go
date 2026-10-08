@@ -105,7 +105,7 @@ it('uses the same lock as real MCP decisions while a plugin writer is paused', a
   const input = await f.review('install')
   const changing = f.service.change(f.owner, input)
   const unused = { read: vi.fn(), apply: vi.fn() } as unknown as NativeMcpAdapter
-  const mcp = new HarnessMcpSettingsService(f.pool, new PostgresCommandCoordinator(f.pool), { codex: unused, opencode: unused }, () => {})
+  const mcp = new HarnessMcpSettingsService(f.pool, new PostgresCommandCoordinator(f.pool), { codex: unused }, () => {})
   try {
     await started
     // A nonexistent plan is intentional: the shared lock must reject before plan lookup or native reads.

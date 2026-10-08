@@ -21,7 +21,7 @@ describe('native MCP settings reads', () => {
     expect(JSON.stringify(list)).not.toContain('password')
     expect(JSON.stringify(list)).not.toContain('secret')
   })
-  it.each(['codex', 'opencode'] as const)('limits %s one-click Foreman Code writes to the managed automatic launcher and credential reference', (harness) => {
+  it.each(['codex'] as const)('limits %s one-click Foreman Code writes to the managed automatic launcher and credential reference', (harness) => {
     const endpoint = 'http://127.0.0.1:3000/mcp'
     const snapshot: NativeMcpSnapshot = { harness, revision: 'revision', effective: {}, user: {}, userConfig: {}, file: '/tmp/native', version: 'v' }
     const add = managedChange('graphql', true, endpoint)
@@ -63,14 +63,14 @@ describe('native MCP settings reads', () => {
       user: { linear: harness === 'codex' ? { url: 'https://mcp.linear.app/mcp' }
         : { type: 'remote', url: 'https://mcp.linear.app/mcp' } } }, 'linear', endpoint)).toBe('mismatch')
   })
-  it.each(['codex', 'opencode'] as const)('shares simultaneous %s reads instead of starting competing native processes', async (harness) => {
+  it.each(['codex'] as const)('shares simultaneous %s reads instead of starting competing native processes', async (harness) => {
     const snapshot: NativeMcpSnapshot = { harness, revision: 'revision', effective: {}, user: {},
       userConfig: {}, file: '/tmp/native-user-config', version: 'version' }
     let finish!: (value: NativeMcpSnapshot) => void
     const read = vi.fn(() => new Promise<NativeMcpSnapshot>((resolve) => { finish = resolve }))
     const adapter = { read, apply: vi.fn() }
     const service = new HarnessMcpSettingsService({} as never, {} as never,
-      { codex: adapter, opencode: adapter }, () => undefined)
+      { codex: adapter }, () => undefined)
 
     const first = service.list(principal, harness)
     const second = service.list(principal, harness)
@@ -89,7 +89,7 @@ describe('native MCP settings reads', () => {
     const read = vi.fn().mockRejectedValueOnce(new Error('temporary failure')).mockResolvedValue(snapshot)
     const adapter = { read, apply: vi.fn() }
     const service = new HarnessMcpSettingsService({} as never, {} as never,
-      { codex: adapter, opencode: adapter }, () => undefined)
+      { codex: adapter }, () => undefined)
     await expect(service.list(principal, 'codex')).rejects.toThrow('The native check could not complete')
     await expect(service.list(principal, 'codex')).resolves.toMatchObject({ harness: 'codex', servers: [] })
     expect(read).toHaveBeenCalledTimes(2)

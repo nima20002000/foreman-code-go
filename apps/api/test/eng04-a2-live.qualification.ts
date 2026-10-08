@@ -24,7 +24,7 @@ import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/con
 import type { WorkflowNativeProofRecord } from '../src/modules/runs/workflowNativeProof.js'
 
 type Case = { id: string; mode: 'complete' | 'stop-native' | 'stop-approval'; start: unknown;
-  expectedProvider: 'codex' | 'opencode'; expectedRepeat: boolean;
+  expectedProvider: 'codex'; expectedRepeat: boolean;
   expectedExit?: 'early_exit' | 'limit_exit'; existingRunId?: string; minimumGenerations?: number; stopCommandId?: string }
 function required(name: string): string { const value = process.env[name]; assert.ok(value, `${name} is required`); return value }
 assert.equal(process.env.RUN_ENG04_A2_REAL_PROVIDERS, '1', 'This program requires explicit real-provider opt-in')

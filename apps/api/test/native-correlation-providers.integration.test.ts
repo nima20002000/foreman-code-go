@@ -3,7 +3,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { nativeCorrelationProvidersMigration } from '../src/infrastructure/nativeCorrelationProvidersMigration.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 
-it('upgrades existing native correlations for Claude while preserving supported providers and rejecting unknown ones', async () => {
+it('upgrades existing native correlations for Claude while preserving historical providers and rejecting unknown ones', async () => {
   const f = await checkpointRuntimeFixture()
   try {
     await f.engine.start(f.f.run.id)
@@ -20,7 +20,7 @@ it('upgrades existing native correlations for Claude while preserving supported 
       'update run_native_correlations set provider=$2 where run_id=$1', [f.f.run.id, provider])
     await expect(update('claude')).rejects.toMatchObject({ code: '23514' })
     await applyApplicationMigrations(f.db.pool)
-    for (const provider of ['claude', 'opencode', 'codex']) {
+    for (const provider of ['claude', 'codex', 'opencode']) {
       await update(provider)
       const rows = (await f.db.pool.query<{ execution_id: string; native_session_id: string; provider: string }>(
         'select execution_id,native_session_id,provider from run_native_correlations where run_id=$1 order by execution_id',
@@ -31,7 +31,7 @@ it('upgrades existing native correlations for Claude while preserving supported 
     await applyApplicationMigrations(f.db.pool)
     expect((await f.db.pool.query<{ provider: string }>(
       'select provider from run_native_correlations where run_id=$1', [f.f.run.id])).rows)
-      .toEqual(before.map(() => ({ provider: 'codex' })))
+      .toEqual(before.map(() => ({ provider: 'opencode' })))
   } finally {
     await f.close()
   }

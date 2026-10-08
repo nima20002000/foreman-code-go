@@ -14,7 +14,7 @@ it('constructs the activity replay through production without installed inventor
   const infrastructure = replay.infrastructure()
   if (infrastructure.mode !== 'replay') throw new Error('Expected recorded replay infrastructure.')
   const config = loadConfig({ DATABASE_URL: 'postgresql://unused:unused@127.0.0.1:1/replay',
-    CODEX_BINARY: '/recorded-no-native-codex', OPENCODE_BINARY: '/recorded-no-native-opencode' })
+    CODEX_BINARY: '/recorded-no-native-codex',  })
   const database = createDatabase(config.database)
   const checkpoints = createCheckpointStore(config.database.connectionString, 'replay', config.database)
   try {
@@ -25,13 +25,13 @@ it('constructs the activity replay through production without installed inventor
         requested: config.harnesses.codexBinary, environment, status: 'installed', resolvedLauncher: config.harnesses.codexBinary,
         diagnostics: ['Synthetic activity protocol replay inventory; no installed provider was inspected or qualified.'],
       })
-      for (const requested of [config.harnesses.openCodeBinary, '/unrecorded-provider']) {
+      for (const requested of ['/unrecorded-provider']) {
         expect(await infrastructure.inventoryDiscovery!.launcher(requested, environment)).toMatchObject({
           requested, environment, status: 'missing', resolvedLauncher: null, fingerprint: null,
         })
       }
       await expect(infrastructure.inventoryDiscovery!.payloads('codex', config.harnesses.codexBinary)).resolves.toEqual({ complete: true, paths: [] })
-      await expect(infrastructure.inventoryDiscovery!.payloads('opencode', config.harnesses.openCodeBinary)).rejects.toThrow('Unrecorded auxiliary replay operation.')
+      await expect(infrastructure.inventoryDiscovery!.payloads('codex', '/unrecorded-provider')).rejects.toThrow('Unrecorded auxiliary replay operation.')
       await expect(infrastructure.codex.qualify('/unrecorded-provider', '/recorded', {}, true)).rejects.toThrow('Unrecorded replay qualification binary.')
       expect(replay.starts).toEqual([])
       expect(replay.calls).toEqual([])
@@ -47,7 +47,7 @@ for (const sandbox of ['read-only', 'workspace-write'] as const) it(`qualifies r
   const replay = new ActivityProductionReplay(), infrastructure = replay.infrastructure()
   if (infrastructure.mode !== 'replay') throw new Error('Expected recorded replay infrastructure.')
   const config = loadConfig({ DATABASE_URL: 'postgresql://unused:unused@127.0.0.1:1/replay',
-    CODEX_BINARY: '/recorded-no-native-codex', OPENCODE_BINARY: '/recorded-no-native-opencode' })
+    CODEX_BINARY: '/recorded-no-native-codex',  })
   const database = createDatabase(config.database)
   const registry = new ProductionHarnessRegistry(database.pool, config.harnesses,
     async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }),

@@ -98,11 +98,11 @@ class ScriptedManager implements NativeHarnessSessionManager {
 }
 
 it('rejects unsupported Claude configuration before allocating the approval fixture', () => {
-  assert.throws(() => fixture('claude'), /supports only Codex and OpenCode/)
+  assert.throws(() => fixture('claude'), /supports only Codex/)
 })
 
 function fixture(harness: AgentHarness = 'codex') {
-  if (harness === 'claude') throw new Error('Approval execution fixture supports only Codex and OpenCode')
+  if (harness === 'claude') throw new Error('Approval execution fixture supports only Codex')
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
     prompt: {}, assignedSkills: [], contentHash: 'sha256:fixture', createdAt: now,
@@ -436,24 +436,6 @@ it('persists redacted context from the exact native file-change item with the pe
   assert.equal(JSON.stringify(observed.interaction).includes('test-scoped-token'), false)
 })
 
-it('persists all simultaneous OpenCode approvals and tolerates out-of-order delivery', async () => {
-  const f = fixture('opencode')
-  f.snapshot('request-a', 'request-b', 'request-c')
-  const first = await f.coordinator.observeExact(f.input)
-  assert.equal(first.state, 'waiting')
-  if (first.state !== 'waiting') throw new Error('expected approval')
-  assert.deepEqual(first.interactions.map((item) => item.nativeRequestId), ['request-a', 'request-b', 'request-c'])
-  const ids = [...f.records.keys()]
-  f.delivered('request-b')
-  // The native snapshot may still include a delivered request while applying it.
-  const second = await f.coordinator.observeExact(f.input)
-  assert.equal(second.state, 'waiting')
-  if (second.state !== 'waiting') throw new Error('expected approval')
-  assert.deepEqual(second.interactions.map((item) => item.nativeRequestId), ['request-a', 'request-c'])
-  assert.deepEqual([...f.records.keys()], ids)
-  assert.equal(f.manager.turns.length, 1)
-})
-
 it('ignores an already-delivered native ask until its same turn becomes terminal', async () => {
   const f = fixture()
   f.snapshot('request-a')
@@ -649,7 +631,7 @@ it('consumes only delivered resume identities belonging to this exact durable ex
   await assert.rejects(f.coordinator.assertResume({ ...waiting.execution, id: 'other-execution' }, { interactionId: a.id }))
   await assert.rejects(f.coordinator.assertResume({ ...waiting.execution, nativeSessionId: 'other-session' }, { interactionId: a.id }))
   await assert.rejects(f.coordinator.assertResume(waiting.execution, undefined))
-  f.records.set(a.id, { ...a, harness: 'opencode' })
+  f.records.set(a.id, { ...a, harness: 'claude' })
   await assert.rejects(f.coordinator.assertResume(waiting.execution, { interactionId: a.id }))
   assert.equal(f.manager.responses, 0)
 })
@@ -701,7 +683,6 @@ it('stops post-approval observation when the active-time budget expires', async 
   assert.equal(f.manager.turns.length, 1)
 })
 
-
 it('does not accept a terminal success when cancellation arrives during the history read', async () => {
   const f = fixture()
   f.snapshot('request-a')
@@ -727,7 +708,6 @@ it('still cancels the resident native session when stopping its budget fails', a
   assert.equal(f.cancelPendingCalls(), 1)
 })
 
-
 it('does not stop the shared budget or revoke replacement credentials after ownership is lost', async () => {
   const f = fixture()
   f.snapshot('request-a')
@@ -743,7 +723,6 @@ it('does not stop the shared budget or revoke replacement credentials after owne
   assert.equal(f.manager.canceled.length, 0)
   assert.equal(f.manager.closed.length, 0)
 })
-
 
 it('aborts a stalled native iterator at its own remaining execution budget', async () => {
   const f = fixture()
@@ -769,9 +748,8 @@ it('refuses a generic terminal result that belongs to a different native turn', 
   assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
 })
 
-
 it('does not replay sibling asks after exact provider completion', async () => {
-  const f = fixture('opencode')
+  const f = fixture('codex')
   f.snapshot('first', 'sibling')
   await f.coordinator.observeExact(f.input)
   f.delivered('first')

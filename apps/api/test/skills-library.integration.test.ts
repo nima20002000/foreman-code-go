@@ -26,7 +26,7 @@ import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 
 const qualify = { qualifyConfiguration: async (value: HarnessConfiguration) => {
-  if (value.harness === 'claude') throw new Error('Skills library fixture supports only Codex and OpenCode qualification')
+  if (value.harness === 'claude') throw new Error('Skills library fixture supports only Codex qualification')
   return { harness: value.harness, version: 'fixture', authenticated: true,
   ready: true, structuredEvents: true, supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true,
   supportsStartupPrompt: true, supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [] }

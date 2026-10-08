@@ -17,7 +17,7 @@ it('distinguishes unavailable and stale remote snapshots from a current empty in
   let binding: DeviceSessionBinding = { mainId: randomUUID(), deviceId: randomUUID(),
     workerInstallationId: randomUUID(), bootId: randomUUID(), connectionEpoch: randomUUID(),
     keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
-  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
+  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex',  },
     async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }),
     new HostHarnessProfileEvidenceRepository(pool), () => binding)
   const profile: HostHarnessOverride = { instanceId: randomUUID(), instanceRevision: '1', revision: 1,
@@ -56,11 +56,8 @@ it('pins actual main installation payloads and invalidates selections after pass
       interpreter: null, diagnostics: [], environment, checkedAt: '2026-10-01T00:00:00.000Z' }
   }
   const payloads: typeof passiveDriverPayloads = async () => ({ complete: true, paths: ['/recorded/provider-payload'] })
-  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
-    async () => ({ revision: 8, defaults: {
-      codex: { harness: 'codex', model: 'recorded-model', reasoningEffort: 'medium', serviceTier: 'standard', sandbox: 'read-only' },
-      opencode: { harness: 'opencode', model: 'recorded/model', variant: '', nativeAgent: 'build', thinking: false, autoApprove: false },
-    } }), new HostHarnessProfileEvidenceRepository(pool), () => null, { PATH: '/recorded' }, { launcher, payloads })
+  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex',  },
+    async () => ({ revision: 8, defaults: { codex: { harness: 'codex', model: 'recorded-model', reasoningEffort: 'medium', serviceTier: 'standard', sandbox: 'read-only' } } }), new HostHarnessProfileEvidenceRepository(pool), () => null, { PATH: '/recorded' }, { launcher, payloads })
   try {
     await registry.initialize('d46e2a2b-130f-46de-a93b-78a2352b9c9d')
     const selection = registry.pinDefault('codex')
@@ -82,8 +79,7 @@ it('pins actual main installation payloads and invalidates selections after pass
   } finally { await pool.end() }
 })
 
-
-it('consumes the explicit passive Claude SDK declaration without default profiles or OpenCode launcher fallback', async () => {
+it('consumes the explicit passive Claude SDK declaration without inventing default profiles', async () => {
   const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
   const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
   const launcher: typeof discoverLauncher = vi.fn<typeof discoverLauncher>(async (requested, environment) => ({ requested,
@@ -96,7 +92,7 @@ it('consumes the explicit passive Claude SDK declaration without default profile
       payloadPaths: ['/recorded/sdk.mjs'], driverId: 'claude', driverRevision: '1', protocolRevision: 'claude-sdk-0.3.284' },
   }))
   const profiles = new HostHarnessProfileEvidenceRepository(pool)
-  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
+  const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex',  },
     async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }), profiles, () => null,
     { PATH: '/recorded' }, { launcher, payloads: async () => ({ complete: true, paths: [] }), claude })
   try {
@@ -106,7 +102,7 @@ it('consumes the explicit passive Claude SDK declaration without default profile
       observedVersion: null, authenticated: null, compatible: null, qualified: null, protocolRevision: 'claude-sdk-0.3.284',
     })
     expect(claude).toHaveBeenCalledOnce()
-    expect(vi.mocked(launcher).mock.calls.map(([requested]) => requested)).toEqual(['codex', 'codex', 'opencode', 'opencode'])
+    expect(vi.mocked(launcher).mock.calls.map(([requested]) => requested)).toEqual(['codex', 'codex'])
     expect(registry.instances.list().some(value => value.driverId === 'claude')).toBe(false)
     const installed = registry.installations.list().find(value => value.driverId === 'claude')!
     const configuration = withAdvancedDefaults({ harness: 'claude', model: 'recorded-model', authMode: 'subscription',

@@ -21,7 +21,7 @@ function service(evidence: NativeMcpInspectionEvidence | Error) {
   return new McpDetectionService(inspector, 'http://127.0.0.1:3000/mcp')
 }
 
-async function state(entry: NativeMcpInspectionEvidence['entry'], harness: 'codex' | 'opencode' = 'codex') {
+async function state(entry: NativeMcpInspectionEvidence['entry'], harness: 'codex' = 'codex') {
   return (await service({ ...base, harness, providerVersion: harness === 'codex' ? '0.154.0' : '1.18.31', ...(entry ? { entry } : {}) }).inspect({
     harness, runnerId: 'runner-a', workingDirectory: '/workspace',
   })).detection.state
@@ -33,7 +33,7 @@ describe('App MCP detection normalization', () => {
     endpoint: 'http://127.0.0.1:3000/mcp',
     credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN',
   }
-  it.each(['codex', 'opencode'] as const)('accepts old and canonical %s names and token references without changing tool filters', async (harness) => {
+  it.each(['codex'] as const)('accepts old and canonical %s names and token references without changing tool filters', async (harness) => {
     for (const name of ['graphql', 'foreman-code']) {
       for (const credentialEnvironmentVariable of ['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN']) {
         const evidence = { ...base, harness, entry: { ...matching, name, credentialEnvironmentVariable,
@@ -48,7 +48,7 @@ describe('App MCP detection normalization', () => {
   it('accepts only proven app launchers with the shared credential and preserves disabled state', async () => {
     const launcher = { name: 'graphql', transport: 'stdio' as const, automaticEndpoint: true,
       credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN' }
-    for (const harness of ['codex', 'opencode'] as const) {
+    for (const harness of ['codex'] as const) {
       expect(await state(launcher, harness)).toBe('status_unavailable')
       expect(await state({ ...launcher, enabled: false }, harness)).toBe('disabled')
       expect(await state({ ...launcher, automaticEndpoint: false }, harness)).toBe('misconfigured')
@@ -58,7 +58,7 @@ describe('App MCP detection normalization', () => {
   })
 
   it('covers every honest normalized state without treating inspection failure as absence', async () => {
-    for (const harness of ['codex', 'opencode'] as const) {
+    for (const harness of ['codex'] as const) {
       expect(await state(undefined, harness)).toBe('not_detected')
       expect(await state({ ...matching, endpoint: 'http://127.0.0.1:9999/mcp' }, harness)).toBe('misconfigured')
       expect(await state(matching, harness)).toBe('status_unavailable')

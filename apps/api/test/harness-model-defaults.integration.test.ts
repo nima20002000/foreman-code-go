@@ -13,8 +13,8 @@ it('initializes an available harness while leaving an unranked native default un
   let rankedCodex = false
   const options = async (harness: HarnessOptions['harness']): Promise<HarnessOptions> => ({
     harness, providerVersion: 'native-fixture', authenticated: harness !== 'claude',
-    models: [{ id: harness === 'opencode' ? 'connected/preferred' : 'unranked-model',
-      ...(harness === 'opencode' || rankedCodex ? { defaultPriority: 0 } : {}),
+    models: [{ id: 'unranked-model',
+      ...(harness === 'codex' && rankedCodex ? { defaultPriority: 0 } : {}),
       reasoningEfforts: ['low', 'medium'], variants: ['', 'medium'], serviceTiers: ['standard'] }],
     nativeAgents: ['build'], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
   })
@@ -24,7 +24,6 @@ it('initializes an available harness while leaving an unranked native default un
     const first = await repository.getManagedHarnessDefaults()
     expect(first.unavailable).toEqual(['codex'])
     expect(first.defaults.codex).toEqual(DEFAULT_HARNESS_DEFAULTS.codex)
-    expect(first.defaults.opencode.model).toBe('connected/preferred')
     await initializeNativeDefaults({ pool: fixture.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
     expect(await repository.getManagedHarnessDefaults()).toEqual(first)
     rankedCodex = true
@@ -32,20 +31,18 @@ it('initializes an available harness while leaving an unranked native default un
     const recovered = await repository.getManagedHarnessDefaults()
     expect(recovered.unavailable ?? []).toEqual([])
     expect(recovered.defaults.codex.model).toBe('unranked-model')
-    expect(recovered.defaults.opencode).toEqual(first.defaults.opencode)
   } finally { await fixture.close() }
 }, 30_000)
 
 it('persists detected defaults once, preserves explicit pins and exposes the exact medium Claude effort through authenticated MCP', async () => {
   const f = await reviewAuthMcpDatabase()
   const options = async (harness: HarnessOptions['harness']): Promise<HarnessOptions> => ({ harness, providerVersion: 'observed-native',
-    authenticated: true, models: [{ id: harness === 'opencode' ? 'connected/latest' : `${harness}-latest`, defaultPriority: 0,
+    authenticated: true, models: [{ id: `${harness}-latest`, defaultPriority: 0,
       reasoningEfforts: ['low', 'medium', 'high'], variants: ['', 'medium'], serviceTiers: ['standard'] }], nativeAgents: ['build'], settings: [], restrictions: [], checkedAt: new Date().toISOString() })
   try {
     await initializeNativeDefaults({ pool: f.pool, options, appMcpEndpoint: 'http://127.0.0.1:3050/mcp' })
     const harnesses = await new PostgresSettingsRepository(f.pool).getManagedHarnessDefaults()
     expect(harnesses.defaults.codex).toMatchObject({ model: 'codex-latest', reasoningEffort: 'medium', sandbox: 'read-only' })
-    expect(harnesses.defaults.opencode).toMatchObject({ model: 'connected/latest', variant: 'medium' })
     expect(harnesses.defaults.claude).toMatchObject({ model: 'claude-latest', effort: 'medium', authMode: 'subscription', sandbox: 'read-only' })
     expect(harnesses.unavailable).toEqual(['claude'])
     const initialized = await f.repository.getAgentDefaults()

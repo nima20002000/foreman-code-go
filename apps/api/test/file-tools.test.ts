@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { FileToolArtifacts } from '../src/modules/files/tools/artifacts.js'
 import { AgentFileToolService } from '../src/modules/files/tools/service.js'
-import { mountOpenCodeFileMcp, registerFileToolsMcp, FILE_TOOLS_MCP_PATH } from '../src/modules/files/tools/mcp.js'
+import { registerFileToolsMcp, FILE_TOOLS_MCP_PATH } from '../src/modules/files/tools/mcp.js'
 import { FILE_TOOL_NAMES } from '../src/modules/files/tools/types.js'
 import type { FileByteStorage } from '../src/modules/files/storage.js'
 import { fileToolFixture } from './support/fileTools.js'
@@ -46,28 +46,7 @@ async function endpoint(f: Fixture, service = f.service) {
 }
 
 describe('FIL-05 authenticated file tools over FIL-03', () => {
-  it('keeps OpenCode-bound tokens on an exact mounted endpoint', async () => {
-    const f = await fileToolFixture()
-    const token = await f.sessions.issueForAcceptedSession(f.context,
-      new Date(f.clock().getTime() + 60_000), 'opencode')
-    const { app, rpc, address } = await endpoint(f)
-    const mountId = randomUUID(), headers = { authorization: `Bearer ${token}`,
-      accept: 'application/json, text/event-stream', 'content-type': 'application/json' }
-    const call = async (id: string) => {
-      const response = await fetch(new URL(`${FILE_TOOLS_MCP_PATH}/opencode/${id}`, address), { method: 'POST',
-        headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })
-      await response.text()
-      return response
-    }
-    try {
-      expect((await rpc('tools/list', {}, token)).status).toBe(401)
-      expect((await call(mountId)).status).toBe(401)
-      const unmount = mountOpenCodeFileMcp(app, mountId, f.service)
-      expect((await call(mountId)).status).toBe(200)
-      unmount()
-      expect((await call(mountId)).status).toBe(401)
-    } finally { await app.close() }
-  })
+
   it('routes permitted reference list/read through the read-only resolver', async () => {
     const f = await fileToolFixture(), ref = await f.upload('reference bytes')
     const stored = f.repository.values.get(ref.fileId)!

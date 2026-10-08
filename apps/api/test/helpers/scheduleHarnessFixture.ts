@@ -9,7 +9,7 @@ import { authorizeDeviceHost } from '../../src/modules/devices/hostAuthorization
 import { ProductionHarnessRegistry } from '../../src/modules/harnesses/productionRegistry.js'
 import { PostgresSettingsRepository } from '../../src/modules/settings/postgres.js'
 import { codexQualificationSuite } from '../../src/modules/harnesses/qualification/suites/codex.js'
-import { opencodeQualificationSuite } from '../../src/modules/harnesses/qualification/suites/opencode.js'
+
 import { qualificationRevisionWithIdentity } from '../../src/modules/harnesses/qualification/identity.js'
 import { qualifyScheduleHarness } from './qualifyScheduleHarness.js'
 import type { Sch11Fixture } from './sch11Fixture.js'
@@ -20,7 +20,7 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
   const profiles = new HostHarnessProfileEvidenceRepository(pool)
   const defaults = new PostgresSettingsRepository(pool)
   const binary = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js')
-  const binaries = { codexBinary: binary, openCodeBinary: 'opencode' }
+  const binaries = { codexBinary: binary,  }
   const createRegistry = () => new ProductionHarnessRegistry(pool,
     binaries, client => defaults.getManagedHarnessDefaults(client),
     profiles, () => null)
@@ -49,10 +49,7 @@ export async function scheduleHarnessFixture(f: Sch11Fixture, mainId: string, pr
         harnessInstallationId: installation.harnessInstallationId,
         installationFingerprint: installation.installationFingerprint } })).value)
   }
-  const suites = {
-    codex: qualificationRevisionWithIdentity(codexQualificationSuite.revision),
-    opencode: qualificationRevisionWithIdentity(opencodeQualificationSuite.revision),
-  }
+  const suites = { codex: qualificationRevisionWithIdentity(codexQualificationSuite.revision) }
   return {
     settings, service, suites,
     get registry() { return registry },

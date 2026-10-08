@@ -13,7 +13,7 @@ import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { currentRepositoryFixture } from './helpers/wave25CurrentRepository.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { graphHarness } from './helpers/eng04A1GraphHarness.js'
 
 let database: Awaited<ReturnType<typeof agent3Database>>
@@ -45,7 +45,7 @@ describe.skipIf(!postgresEnabled)('current execution regressions', () => {
       await f.engine.reconcile((error) => errors.push(error))
       await expect.poll(async () => (await f.runs.get(f.f.run.id))?.executionState, { timeout: 45000 }).toBe('waiting')
       const [interaction] = await f.pending()
-      await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction!))
+      await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction!))
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
       expect(f.provider.counts).toMatchObject({ starts: 2, sessions: 2, responses: 1 })
       expect(errors).toEqual([])

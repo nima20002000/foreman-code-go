@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 
-import { PendingNativeInteractionSchema, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction, type ReviewCleanup, type ReviewJob } from '@foreman-code/contracts'
+import { PendingNativeInteractionSchema, type NativeHarnessEvent, type NativeSessionReference, type ReviewCleanup, type ReviewJob } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 
 import type { NativeHistory } from '../src/modules/harnesses/port.js'
 import { reviewOwnsPermission, settleReviewCleanup, type ReviewCleanupAttempt } from '../src/modules/interactions/reviewerCleanup.js'
-import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 
 const time = '2026-09-17T00:00:00.000Z'
 const session: NativeSessionReference = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'review-session' }
@@ -125,72 +123,6 @@ describe('PR17 #2: durable failure cleanup', () => {
     await assert.rejects(h.run, /lease lost/)
     assert.deepEqual(h.calls, [])
     assert.deepEqual(h.persisted, [])
-  })
-})
-
-describe('PR17 #5: OpenCode permission lineage', () => {
-  const open: NativeSessionReference = { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'open-review' }
-  const root = `msg_${createHash('sha256').update('correlation').digest('hex').slice(0, 24)}`
-  function permission(parent = root, messageId = 'assistant-tool-message') {
-    const request: PendingNativeInteraction = { session: open, turn: { nativeTurnId: messageId, nativeRequestId: 'permission' },
-      nativeRequestType: 'permission.asked', request: { id: 'permission', sessionID: open.nativeSessionId,
-        tool: { messageID: messageId, callID: 'call' } }, responseOptions: [{ optionId: 'reject', semantic: 'reject',
-        label: 'Reject', persistence: 'request', affectsOtherPendingRequests: true, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }] }
-    const native: NativeHistory = { events: [event('message.updated', { info: {
-      id: messageId, sessionID: open.nativeSessionId, role: 'assistant', parentID: parent, time: { created: 1 },
-    } })], pendingInteractions: [request], nativeTurnId: root, correlationId: 'correlation' }
-    return { request, native }
-  }
-
-  it('proves assistant/tool message -> root user lineage without equating the IDs', () => {
-    const { request, native } = permission()
-    assert.notEqual(request.turn.nativeTurnId, root)
-    assert.equal(reviewOwnsPermission(open, root, request, native), true)
-  })
-
-  it('rejects unrelated, conflicting, missing, or foreign-session lineage', () => {
-    const unrelated = permission('another-root')
-    assert.equal(reviewOwnsPermission(open, root, unrelated.request, unrelated.native), false)
-    const { request, native } = permission()
-    assert.equal(reviewOwnsPermission(open, root, request, { ...native, events: [] }), false)
-    const foreign = structuredClone(native)
-    foreign.events[0]!.payload.info = { id: 'assistant-tool-message', role: 'assistant', parentID: root, sessionID: 'other-session' }
-    assert.equal(reviewOwnsPermission(open, root, request, foreign), false)
-    const conflicting = { ...native, events: [...native.events, ...unrelated.native.events] }
-    assert.equal(reviewOwnsPermission(open, root, request, conflicting), false)
-  })
-
-  it('cancels only proven permissions and keeps an OpenCode cancellation ACK nonterminal', async () => {
-    const h = harness({ ...job(), provider: 'opencode', nativeSessionId: open.nativeSessionId, providerTurnOrMessageId: root })
-    const { native } = permission()
-    h.input.session = open
-    h.input.observe = async () => native
-    await h.run()
-    assert.deepEqual(h.calls, [`cancel:${root}`, 'revoke:original-principal'])
-    h.input.observe = async () => ({ ...native, pendingInteractions: [], events: [],
-      terminalTurn: { correlationId: 'correlation', providerId: root, result: { outcome: 'canceled' } } })
-    assert.equal((await h.run()).cleanup?.nativeState, 'pending')
-  })
-
-  it('does not cancel when any pending permission belongs to another turn', async () => {
-    const h = harness({ ...job(), provider: 'opencode', nativeSessionId: open.nativeSessionId, providerTurnOrMessageId: root })
-    const owned = permission(), unrelated = permission('other-root', 'other-message')
-    h.input.session = open
-    h.input.observe = async () => ({ ...owned.native, events: [...owned.native.events, ...unrelated.native.events],
-      pendingInteractions: [owned.request, unrelated.request] })
-    await h.run()
-    assert.deepEqual(h.calls, ['revoke:original-principal'])
-  })
-
-  it('uses nativeTurnId as the root even when nativeMessageId identifies the final assistant', () => {
-    const native: NativeHistory = { nativeTurnId: root, nativeMessageId: 'final-assistant', correlationId: 'correlation',
-      pendingInteractions: [], events: [event('message.updated', { info: { id: 'final-assistant', parentID: root,
-        sessionID: open.nativeSessionId, role: 'assistant', finish: 'stop', time: { completed: 2 } } })],
-      terminalTurn: { correlationId: 'correlation', providerId: root, result: { outcome: 'succeeded' } } }
-    const evidence = reviewTurnEvidence(open, native, 'correlation', root)
-    assert.equal(evidence.providerId, root)
-    assert.equal(evidence.identityConflict, undefined)
-    assert.equal(evidence.terminal, true)
   })
 })
 

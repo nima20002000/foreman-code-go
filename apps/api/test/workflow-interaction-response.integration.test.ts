@@ -11,11 +11,12 @@ import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCh
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
-import { br1002OpenCodeRuntime, br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 it.skipIf(!postgresEnabled)('authorizes workflow Operator responses, persists readback, and recovers without another native response', async () => {
-  const f = await br1002OpenCodeRuntime('user')
+  const f = await codexApprovalRuntime('user')
   const workflows = new PostgresWorkflowRepository(f.db.pool)
   const app = buildApp({
     product: { workspaces: new PostgresWorkspaceRepository(f.db.pool, workflows, f.runs), workflows,
@@ -51,7 +52,7 @@ it.skipIf(!postgresEnabled)('authorizes workflow Operator responses, persists re
     const client = await connect(writer.token)
     const readonly = await connect(reader.token)
     const wrongScope = await connect(other.token)
-    const input = br1002Response(interaction)
+    const input = approvalResponse(interaction)
     const url = `/api/management/interactions/${interaction.id}/respond`
     expect((await readonly.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(false)
     expect((await readonly.callTool({ name: 'interaction_respond', arguments: input })).isError).toBe(true)

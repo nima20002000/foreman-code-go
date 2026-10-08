@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { reduceRepeatGraphPageV3, makeCurrentWorkflowFixture, ExecutableWorkflowV3Schema } from '@foreman-code/contracts/wave25'
 import { readRepeatGraphPage, readRepeatGraphSnapshot } from '../src/modules/run-graph/repeatReader.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { graphHead, postgresEnabled } from './helpers/wave25Agent3.js'
 import { ApprovalTransportFaults } from './helpers/eng06ApprovalFaults.js'
@@ -65,7 +65,7 @@ describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durabi
       expect((await t.db.pool.query('select 1 from harness_executions where run_id=$1 and workflow_node_id=$2', [t.f.run.id, 'join'])).rowCount).toBe(0)
       const fast = (await t.db.pool.query<{ accepted: boolean }>('select accepted from harness_executions where run_id=$1 and workflow_node_id=$2', [t.f.run.id, 'fast'])).rows[0]
       expect(fast?.accepted).toBe(true)
-      await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response(pending[0]!))
+      await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse(pending[0]!))
       expect((await t.runs.get(t.f.run.id))?.outcome).toBe('succeeded')
       const joinRows = await t.db.pool.query<{ record: { id: string; input: { predecessors: Array<{ relationshipId: string; execution: { executionId: string }; acceptedResult: unknown }> } } }>(
         'select record from harness_executions where run_id=$1 and workflow_node_id=$2', [t.f.run.id, 'join'])
@@ -143,7 +143,7 @@ describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durabi
       expect((await t.db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='result.accept'", [t.f.run.id])).rowCount).toBe(1)
       hook.mockRestore()
       await t.engine.resume(t.f.run.id)
-      await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response((await t.pending())[0]!))
+      await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse((await t.pending())[0]!))
       expect(t.provider.counts).toMatchObject({ sessions: 2, starts: 2, responses: 1 })
       expect((await t.runs.get(t.f.run.id))?.outcome).toBe('succeeded')
       expect((await t.db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='result.accept'", [t.f.run.id])).rowCount).toBe(2)

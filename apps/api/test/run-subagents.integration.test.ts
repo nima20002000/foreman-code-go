@@ -44,7 +44,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     await applyApplicationMigrations(pool)
   }, 60000)
   afterAll(async () => { await pool?.end(); if (schema) await dropFixtureSchema(admin, schema); await admin?.end() })
-  async function fixture(provider: 'codex' | 'opencode' | 'claude' = 'codex') {
+  async function fixture(provider: 'codex' | 'claude' = 'codex') {
     const suffix = randomUUID(), workspaceId = `w-${suffix}`, workflowId = `wf-${suffix}`, version = `v-${suffix}`, runId = `r-${suffix}`, executionId = `e-${suffix}`, agentId = `a-${suffix}`, configurationId = `cfg-${suffix}`
     await pool.query("insert into workspaces(id,record) values($1,'{}')", [workspaceId])
     await pool.query("insert into agents(id,workspace_id,record) values($1,$2,'{}')", [agentId, workspaceId])
@@ -56,7 +56,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     await pool.query("insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record) values($1,$2,$3,$4,'running',$5::jsonb)", [runId, workspaceId, workflowId, version, JSON.stringify(runRecord)])
     const executionRecord = { id: executionId, runId, workflowNodeId: 'node', agentId, attempt: 1, agentConfigurationVersionId: configurationId, nativeSessionId: 'root', state: 'running', input: {} }
     await pool.query("insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,'node',$3,1,$4::jsonb)", [executionId, runId, agentId, JSON.stringify(executionRecord)])
-    await pool.query('insert into execution_native_sessions(execution_id,reference) values($1,$2::jsonb)', [executionId, JSON.stringify({ harness: provider, providerVersion: provider === 'codex' ? '0.154.0' : provider === 'opencode' ? '1.18.33' : '2.1.284', nativeSessionId: 'root' })])
+    await pool.query('insert into execution_native_sessions(execution_id,reference) values($1,$2::jsonb)', [executionId, JSON.stringify({ harness: provider, providerVersion: provider === 'codex' ? '0.154.0' : '2.1.284', nativeSessionId: 'root' })])
     const access = new PostgresAccessService(pool)
     const issue = (actions: ManagementAction[]) => access.issue({ name: 'Child integration fixture', audience: 'operator', grants: [{ actions, scope: { workspaceIds: [workspaceId], runIds: [runId] } }], expiresAt: new Date(Date.now() + 600000) })
     const writer = await issue(['runs:read', 'runs:subagents:input', 'runs:stop', 'interactions:respond'])
@@ -237,17 +237,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     await f.event('native.unlinked_notification', { method: 'turn/started', params: { threadId: 'child', turn: { id: 'fresh', status: 'inProgress', items: [] } } }, '2026-10-02T20:02:00.000Z')
     expect((await f.service.list(f.reader.principal, f.input)).items.find(item => item.subagent.native.childSessionId === 'child')!.subagent).toMatchObject({ status: 'running', evidence: 'confirmed' })
   })
-  it('persists OpenCode roles arriving after parts and does not fabricate tools from text', async () => {
-    const f = await fixture('opencode')
-    await f.event('message.part.updated', { part: { id: 'p', messageID: 'm', sessionID: 'oc', type: 'text', text: '<tool>Read</tool>', time: { end: 10 } } })
-    await f.event('session.created', { info: { id: 'oc', parentID: 'root', title: 'Worker' } })
-    await f.event('message.updated', { info: { id: 'm', sessionID: 'oc', role: 'user' } })
-    const child = (await f.service.list(f.reader.principal, f.input)).items[0]!.subagent
-    expect((await f.service.messages(f.reader.principal, { ...f.input, subagentId: child.id })).items).toMatchObject([{ role: 'user', text: '<tool>Read</tool>' }])
-    expect((await f.service.tools(f.reader.principal, { ...f.input, subagentId: child.id })).items).toEqual([])
-    expect(child.capabilities.sendInput).toMatchObject({ support: 'supported', qualification: 'unverified' })
-    expect((await f.service.get(f.writer.principal, { ...f.input, subagentId: child.id })).availableActions.sendInput).toBe(false)
-  })
+
   it('quarantines Claude hook-only identity, verifies nesting and enriches native aliases before linking child messages/tools', async () => {
     const f = await fixture('claude')
     await f.event('claude.subagent', { nativeSessionId: 'root', agentId: 'outer', status: 'running' })
@@ -283,8 +273,8 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     expect(all.find(item => item.subagent.id !== first.id)!.subagent.parentAttemptKey).toBe(`${executionId}:2`)
   })
   async function qualifiedFixture() {
-    const f = await fixture('opencode')
-    await f.event('session.created', { info: { id: 'oc', parentID: 'root' } })
+    const f = await fixture('codex')
+    await f.discover()
     const child = (await f.service.list(f.writer.principal, f.input)).items[0]!.subagent
     // Synthetic native qualification fixture tests the command protocol; it is never app/provider qualification evidence.
     child.status = 'waiting'; child.capabilities.sendInput = { support: 'supported', qualification: 'passed' }

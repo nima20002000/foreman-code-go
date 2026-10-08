@@ -50,7 +50,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery rec
     const suffix = randomUUID(), execution = recoveryExecution()
     execution.id += suffix; execution.runId += suffix
     if (options.bound === false) { delete execution.nativeSessionId; execution.state = 'starting' }
-    const reference = execution.nativeSessionId ? { harness: 'opencode', providerVersion: '1.0.0', nativeSessionId: execution.nativeSessionId } : null
+    const reference = execution.nativeSessionId ? { harness: 'codex', providerVersion: '1.0.0', nativeSessionId: execution.nativeSessionId } : null
     await pool.query('insert into runs(id,execution_state,record) values($1,$2,$3::jsonb)',
       [execution.runId, 'running', JSON.stringify({ id: execution.runId, executionState: 'running', executionSemanticsVersion: 3 })])
     await pool.query('insert into harness_executions values($1,$2,$3::jsonb)', [execution.id, execution.runId, JSON.stringify(execution)])

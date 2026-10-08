@@ -1,21 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, NATIVE_INTERACTION_FIXTURES,
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, NATIVE_INTERACTION_FIXTURES,
   type HarnessConfiguration } from '@foreman-code/contracts'
 import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { validateReviewerBootstrap } from '../src/modules/workflows/reviewerBootstrap.js'
 import { assertOrchestratorInteractionAuthority } from '../src/modules/interactions/authorization.js'
 
-function openCodeReviewer(): HarnessConfiguration {
-  return { harness: 'opencode', model: 'test-model', variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false,
-    advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'graphql_routed', permissionRules: [
-      { permission: '*', pattern: '*', effect: 'deny' },
-      { permission: 'graphql_interaction_get', pattern: '*', effect: 'allow' },
-      { permission: 'graphql_interaction_respond', pattern: '*', effect: 'allow' },
-    ] } }
+function reviewer(): HarnessConfiguration {
+  return { harness: 'codex', model: 'test-model', reasoningEffort: 'medium',
+    sandbox: 'read-only', serviceTier: 'standard', advanced: {
+      ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+      approvalPolicy: 'on-request', approvalsReviewer: 'auto_review',
+    } }
 }
 function fixture() {
   const f = makeCurrentWorkflowFixture('approval-authority', 'approval')
-  f.configurations[0]!.harness = openCodeReviewer()
+  f.configurations[0]!.harness = reviewer()
   return f
 }
 // These are the shared executable validator and bootstrap used by current Save,
@@ -26,21 +25,6 @@ function validate(f: ReturnType<typeof fixture>) {
 }
 
 describe('current workflow approval authority', () => {
-  it.each(['graphql', 'foreman-code'])('accepts the %s reviewer prefix with the same deny-default policy', prefix => {
-    const f = fixture()
-    const harness = openCodeReviewer()
-    if (harness.harness !== 'opencode' || !harness.advanced) throw new Error('OpenCode fixture required')
-    harness.advanced.permissionRules = [
-      { permission: '*', pattern: '*', effect: 'deny' },
-      { permission: `${prefix}_interaction_get`, pattern: '*', effect: 'allow' },
-      { permission: `${prefix}_interaction_respond`, pattern: '*', effect: 'allow' },
-    ]
-    f.configurations[0]!.harness = harness
-    expect(() => validate(f)).not.toThrow()
-    harness.advanced.permissionRules[2]!.permission = 'unrelated_interaction_respond'
-    expect(() => validate(f)).toThrow('explicit allow rules')
-  })
-
   it('requires explicit reviewer relationships, not execution edges or transitive membership', () => {
     const f = fixture(), [entry, worker] = f.version.definition.nodes
     const bridge = { ...worker!, id: 'bridge', agentId: 'agent-bridge', name: 'Bridge' }
@@ -122,7 +106,7 @@ describe('current workflow approval authority', () => {
     }
   })
 
-  it('uses the authored entry, not array order, and rejects downstream or interactive bootstrap', () => {
+  it('uses the authored entry and rejects downstream bootstrap', () => {
     const f = fixture(), reviewer = f.configurations[0]!.harness
     f.version.definition.nodes.reverse()
     expect(() => validate(f)).not.toThrow()
@@ -131,14 +115,9 @@ describe('current workflow approval authority', () => {
       .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_ORDER' }))
     expect(() => validateReviewerBootstrap(f.version.definition, f.version.approval, reviewer, 'another-entry'))
       .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_ORDER' }))
-    const interactive: HarnessConfiguration = { harness: 'opencode', model: 'test-model', variant: 'high', nativeAgent: 'build', thinking: false,
-      autoApprove: false, advanced: { ...DEFAULT_OPENCODE_ADVANCED_CONFIGURATION, permissionHandling: 'graphql_routed',
-        permissionRules: [{ permission: '*', pattern: '*', effect: 'ask' }] } }
-    expect(() => validateReviewerBootstrap(f.version.definition, f.version.approval, interactive, f.version.entryNodeId))
-      .toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE' }))
   })
 
-  it('requires Codex automatic review or final OpenCode App MCP grants without changing native permissions', () => {
+  it('requires Codex automatic review without changing native permissions', () => {
     const f = fixture()
     const bootstrap = (configuration: HarnessConfiguration) => validateReviewerBootstrap(
       f.version.definition, f.version.approval, configuration, f.version.entryNodeId)
@@ -147,17 +126,6 @@ describe('current workflow approval authority', () => {
     expect(() => bootstrap(codex)).toThrowError(expect.objectContaining({ code: 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED' }))
     expect(() => bootstrap({ ...codex, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
       approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' } })).not.toThrow()
-    for (const extra of [[], [{ permission: 'graphql_*', pattern: '*', effect: 'deny' as const }]]) {
-      const reviewer = openCodeReviewer()
-      if (reviewer.harness !== 'opencode') throw new Error('OpenCode reviewer fixture required')
-      const configuration: HarnessConfiguration = { ...reviewer, advanced: { ...reviewer.advanced!,
-        permissionRules: extra.length ? [...(reviewer.advanced?.permissionRules ?? []), ...extra]
-          : [{ permission: '*', pattern: '*', effect: 'deny' }] } }
-      const before = structuredClone(configuration)
-      expect(() => bootstrap(configuration)).toThrowError(expect.objectContaining({ code: 'APPROVAL_REVIEWER_APP_MCP_REQUIRED' }))
-      expect(configuration).toEqual(before)
-    }
-    expect(() => bootstrap(openCodeReviewer())).not.toThrow()
   })
 
   it('denies cross-workflow and self approval from worker identity', () => {

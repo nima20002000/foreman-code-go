@@ -8,7 +8,7 @@ import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresLocalHumanAccess } from '../../src/modules/access/localHuman.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnections.js'
-import { OpenCodeMcpConnections } from '../../src/modules/harnesses/openCodeMcpConnections.js'
+
 import { HarnessMcpSettingsService } from '../../src/modules/harnesses/mcpSettings.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import type { NativeMcpAdapter } from '../../src/modules/harnesses/nativeMcpCommon.js'
@@ -17,8 +17,8 @@ import { randomUUID } from 'node:crypto'
 
 const Input = z.object({ databaseUrl: z.string().url(), endpoint: z.string().url(),
   directory: z.string().startsWith('/'), recoveryRoot: z.string().startsWith('/'),
-  codexBinary: z.string().min(1), openCodeBinary: z.string().min(1),
-  harnesses: z.array(z.enum(['codex', 'opencode'])).min(1).max(2) }).strict()
+  codexBinary: z.string().min(1),
+  harnesses: z.array(z.enum(['codex'])).min(1).max(2) }).strict()
 
 function diagnosticAdapter(harness: string, adapter: NativeMcpAdapter): NativeMcpAdapter {
   const recordFailure = (operation: string, error: unknown) => {
@@ -61,15 +61,12 @@ export async function installFixtureMcp(file: string) {
       throw new Error('The native MCP installer processes remain unconfirmed.')
     }
   }
-  const settings = new HarnessMcpSettingsService(pool, new PostgresCommandCoordinator(pool), {
-    codex: diagnosticAdapter('codex', new CodexMcpConnections(input.codexBinary, input.directory, registry.scope(owner))),
-    opencode: diagnosticAdapter('opencode', new OpenCodeMcpConnections(input.openCodeBinary, input.directory, registry.scope(owner))),
-  }, () => {}, closeProcesses, input.endpoint)
+  const settings = new HarnessMcpSettingsService(pool, new PostgresCommandCoordinator(pool), { codex: diagnosticAdapter('codex', new CodexMcpConnections(input.codexBinary, input.directory, registry.scope(owner))) }, () => {}, closeProcesses, input.endpoint)
   try {
     const principal = await new PostgresLocalHumanAccess(pool, new PostgresAccessService(pool)).current()
     assert.equal(new Set(input.harnesses).size, input.harnesses.length)
     for (const harness of input.harnesses) {
-      assert.ok(isAbsolute(harness === 'codex' ? input.codexBinary : input.openCodeBinary))
+      assert.ok(isAbsolute(input.codexBinary))
       const before = await settings.list(principal, harness)
       const installed = await settings.applyManaged(principal, { harness, preset: 'graphql', installed: true,
         expectedRevision: before.revision, commandId: randomUUID() })

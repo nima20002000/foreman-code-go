@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { applyMcpEdits, managedChange, managedStatus, mcpEdits, nativeConnection, replacement, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 import { appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 
-describe.each(['codex', 'opencode'] as const)('%s graphql preset', (harness) => {
+describe.each(['codex'] as const)('%s graphql preset', (harness) => {
   const endpoint = 'http://127.0.0.1:3002/mcp'
   const snapshot = (user: Record<string, unknown>): NativeMcpSnapshot => ({ harness, revision: 'revision', file: '/tmp/config', version: '1',
     userConfig: {}, user, effective: user, credentialReferences: { graphql: 'GRAPHQL_MCP_TOKEN', 'foreman-code': 'FOREMAN_CODE_MCP_TOKEN' } })

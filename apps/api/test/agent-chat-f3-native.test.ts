@@ -4,11 +4,9 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { APP_MCP_SERVER_NAME, appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
-import { OpenCodeNativeDeliveryError, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
-import { FixtureServer, json, request } from './opencode-fixtures.js'
 
 // Native qualification and command output below are test doubles, NOT provider qualification evidence.
 vi.mock('../src/modules/harnesses/codexProtocol.js', () => ({
@@ -47,15 +45,7 @@ function codex(chat = true) {
   cleanups.push(() => manager.dispose())
   return { manager, transport }
 }
-function openCode() {
-  const server = new FixtureServer()
-  server.config = { mcp: { [APP_MCP_SERVER_NAME]: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
-  const manager = new OpenCodeNativeSessionManager({ server, ownerAgentId: 'agent-1', appMcpAccess: 'none' })
-  cleanups.push(() => manager.dispose())
-  return { manager, server }
-}
 const codexSource: NativeSessionReference = { harness: 'codex', providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'origin-thread' }
-const openCodeSource: NativeSessionReference = { harness: 'opencode', providerVersion: '1.18.31', nativeSessionId: 'missing-source' }
 
 describe('F3 safe native boundaries (mock command output and HTTP only)', () => {
   for (const operation of ['create', 'attach', 'fork'] as const) {
@@ -74,16 +64,6 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
         assert(!call[4] || !('GRAPHQL_MCP_TOKEN' in call[4]))
       }
     })
-    it(`A-R01: OpenCode ${operation} refuses an enabled App entry without session mutation`, async () => {
-      const { manager, server } = openCode()
-      server.config = { mcp: { [APP_MCP_SERVER_NAME]: { type: 'local', enabled: true, command: ['fixture-launcher'] } } }
-      const input: WorkflowNativeSessionStart = { request: request() }
-      const result = operation === 'create' ? manager.createSession(input)
-        : operation === 'attach' ? manager.attachSession(openCodeSource, input) : manager.forkSession(openCodeSource, input)
-      await assert.rejects(result, code('OPENCODE_APP_MCP_UNAVAILABLE'))
-      assert.equal(server.calls.filter((call) => call.method !== 'GET').length, 0)
-      assert.equal(server.restartEnvironments.length, 0); assert.equal(input.environment, undefined)
-    })
   }
   it('A-R01: disabled Codex entry is credential-free while non-chat scoped validation remains mandatory', async () => {
     vi.mocked(runCommand).mockImplementation(async (_binary, args) => scopedCodexCommand(args, scopedCodexEntry(false)))
@@ -99,41 +79,5 @@ describe('F3 safe native boundaries (mock command output and HTTP only)', () => 
       variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } } }), code('CODEX_APP_MCP_UNAVAILABLE'))
     await assert.rejects(manager['prepareInput']({ ...input, environment: { agentId: 'different-agent', variables: {} } }), code('CODEX_SESSION_OWNER_MISMATCH'))
   })
-  it('A-R01: OpenCode disabled App entry remains disabled and refuses injected credentials', async () => {
-    const { manager, server } = openCode()
-    server.config = { mcp: { [APP_MCP_SERVER_NAME]: { type: 'local', enabled: false, command: ['fixture-launcher'] } } }
-    const input: WorkflowNativeSessionStart = { request: request() }
-    const session = await manager.createSession(input)
-    assert.equal(session.harness, 'opencode')
-    assert.equal(server.calls.filter((call) => /\/mcp\/.+\/connect/.test(call.path)).length, 0)
-    await assert.rejects(manager['bindEnvironment']({ agentId: 'agent-1', variables: { GRAPHQL_MCP_TOKEN: 'must-not-be-injected' } }, new AbortController().signal),
-      code('OPENCODE_APP_MCP_UNAVAILABLE'))
-  })
-  for (const operation of ['attach', 'fork'] as const) {
-    for (const status of [404, 503]) {
-      it(`A-R13: OpenCode ${operation} HTTP ${status} preserves missing-vs-transient evidence`, async () => {
-        const { manager, server } = openCode()
-        server.beforeRequest = (path) => path.startsWith('/session/missing-source') ? json({ message: 'fixture error' }, status) : undefined
-        const input: WorkflowNativeSessionStart = { request: request() }
-        const result = operation === 'attach' ? manager.attachSession(openCodeSource, input) : manager.forkSession(openCodeSource, input)
-        await assert.rejects(result, (error: unknown) => {
-          let cause = error
-          if (operation === 'fork') {
-            assert(error instanceof NativeDeliveryError)
-            assert.equal(error.operation, 'session_creation')
-            assert.equal(error.delivery, status === 404 ? 'not_sent' : 'unknown')
-            assert.equal(error.cleanup, 'confirmed')
-            cause = error.cause
-          }
-          assert(cause instanceof OpenCodeNativeDeliveryError)
-          assert.equal(cause.certainty, status === 404 ? 'definite' : 'uncertain')
-          assert.equal(cause.code, status === 404 ? 'OPENCODE_SESSION_NOT_FOUND'
-            : operation === 'attach' ? 'OPENCODE_SERVER_REQUEST_FAILED' : 'OPENCODE_NATIVE_DELIVERY_REJECTED')
-          return true
-        })
-        assert.equal(server.calls.filter((call) => call.method === 'POST' && new URL(call.path, 'http://fixture.invalid').pathname === '/session').length, 0)
-        assert.equal(server.calls.filter((call) => call.method === 'PATCH').length, 0)
-      })
-    }
-  }
+
 })

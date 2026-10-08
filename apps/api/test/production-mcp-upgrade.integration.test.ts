@@ -41,7 +41,7 @@ afterEach(async () => {
 })
 
 const changes = ['older-writer', 'concurrent-writers', 'retained-recovery', 'unused-directory'] as const
-const cases = (['codex', 'opencode'] as const).flatMap(harness => changes.map(change => ({ harness, change })))
+const cases = (['codex'] as const).flatMap(harness => changes.map(change => ({ harness, change })))
 
 it.each(cases)(
   '$harness launcher survives $change through authenticated MCP and two API restarts', async ({ harness, change }) => {

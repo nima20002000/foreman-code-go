@@ -110,7 +110,7 @@ it('BE-001 restart: missing receipts and mismatched execution/session/provider e
   const empty = fixture(); empty.terminal()
   await assert.rejects(empty.finalize(empty.cold()), pendingClosure)
   for (const corrupt of [
-    (row: RestartClosureRow) => { row.closed_reference = { harness: 'opencode', providerVersion: 'other', nativeSessionId: 'other' } },
+    (row: RestartClosureRow) => { row.closed_reference = { harness: 'claude', providerVersion: 'other', nativeSessionId: 'other' } },
     (row: RestartClosureRow) => { row.expected_reference = { harness: 'codex', providerVersion: 'other', nativeSessionId: 'other' } },
     (row: RestartClosureRow) => { row.execution_identity = { ...(row.execution_identity as object), agentConfigurationVersionId: 'other' } },
     (row: RestartClosureRow) => { row.execution_identity = { ...(row.execution_identity as object), runtimeDirectory: '/other' } },

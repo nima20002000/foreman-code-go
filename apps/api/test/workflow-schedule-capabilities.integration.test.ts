@@ -44,7 +44,7 @@ describe.skipIf(!postgresEnabled)('SCH-03 authenticated schedule capability comp
         checkpoints: { schema: database.schema },
         harnesses: { workspaceRoot: f.runtimeRoot, timeoutMs: 1_000,
           codexBinary: join(database.directory, 'unavailable-codex'),
-          openCodeBinary: join(database.directory, 'unavailable-opencode') },
+           },
       }
       checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
       // agent3Database already ran the registered migrations on its guarded,

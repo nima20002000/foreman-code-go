@@ -27,7 +27,6 @@ import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
 import { InstalledWorkflowConfigurationSchema } from '../../src/modules/runs/remote/installedWorkflowConfiguration.js'
 import { codexQualificationSuite } from '../../src/modules/harnesses/qualification/suites/codex.js'
-import { opencodeQualificationSuite } from '../../src/modules/harnesses/qualification/suites/opencode.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { installFixtureMcp } from './installFixtureMcp.js'
@@ -108,15 +107,12 @@ async function copyProfileFile(source: string, destination: string) {
 
 async function workerEnvironment(home: string) {
   const original = process.env.HOME ?? homedir()
-  const data = process.env.XDG_DATA_HOME ?? join(original, '.local/share')
   const codexProfile = join(home, '.codex')
   const claudeProfile = join(home, '.claude')
-  const workerData = join(home, '.local/share')
   const environment: NodeJS.ProcessEnv = { ...process.env, HOME: home, CODEX_HOME: codexProfile,
     CLAUDE_CONFIG_DIR: claudeProfile, XDG_CONFIG_HOME: join(home, '.config'),
     XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'),
-    XDG_STATE_HOME: join(home, '.local/state'), OPENCODE_CONFIG_DIR: join(home, '.config/opencode'),
-    OPENCODE_DB: join(home, '.local/share/opencode/opencode.db'),
+    XDG_STATE_HOME: join(home, '.local/state'),
     FOREMAN_CODE_APP_MCP_DIRECTORY: join(home, '.local/share/graphql/mcp') }
   for (const name of ['DATABASE_URL', 'TEST_DATABASE_URL', 'ENG03_A_TEST_DATABASE_URL', ...APP_MCP_TOKEN_NAMES]) {
     delete environment[name]
@@ -127,7 +123,6 @@ async function workerEnvironment(home: string) {
   }
   await copyProfileFile(join(process.env.CLAUDE_CONFIG_DIR ?? join(original, '.claude'), '.credentials.json'),
     join(claudeProfile, '.credentials.json'))
-  await copyProfileFile(join(data, 'opencode/auth.json'), join(workerData, 'opencode/auth.json'))
   return { environment, claudeProfile }
 }
 
@@ -204,8 +199,8 @@ async function installerCommand(file: string, args: string[], environment: NodeJ
 
 /** Real production composition and an installed Worker; no execution domains or SDK outputs are substituted. */
 export async function pairedWorkerApplication(options: { harnesses?: readonly AgentHarness[] } = {}) {
-  const harnesses = AgentHarnessSchema.array().min(1).max(3)
-    .parse(options.harnesses ?? ['codex', 'opencode', 'claude'])
+  const harnesses = AgentHarnessSchema.array().min(1).max(2)
+    .parse(options.harnesses ?? ['codex', 'claude'])
   assert.equal(new Set(harnesses).size, harnesses.length)
   const databaseUrl = process.env.ENG03_A_TEST_DATABASE_URL
   assert.ok(databaseUrl, 'Run through the disposable native acceptance database driver.')
@@ -225,9 +220,6 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
   const previousClaudeProfile = process.env.CLAUDE_CONFIG_DIR
   const previousCodexProfile = process.env.CODEX_HOME
   const previousMcpDirectory = process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
-  const openCodeEnvironmentNames = ['OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR', 'OPENCODE_DB',
-    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'] as const
-  const previousOpenCodeEnvironment = Object.fromEntries(openCodeEnvironmentNames.map(name => [name, process.env[name]]))
   const mainClaudeProfile = join(root, 'main-claude-profile')
   const mainCodexProfile = join(root, 'main-codex-profile')
   let removed = false
@@ -263,11 +255,6 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
       else process.env.CODEX_HOME = previousCodexProfile
       if (previousMcpDirectory === undefined) delete process.env.FOREMAN_CODE_APP_MCP_DIRECTORY
       else process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = previousMcpDirectory
-      for (const name of openCodeEnvironmentNames) {
-        const value = previousOpenCodeEnvironment[name]
-        if (value === undefined) delete process.env[name]
-        else process.env[name] = value
-      }
       await rm(root, { recursive: true, force: true })
       removed = true
     }
@@ -295,21 +282,9 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     for (const name of ['auth.json', 'models_cache.json']) {
       await copyProfileFile(join(previousCodexProfile ?? join(homedir(), '.codex'), name), join(mainCodexProfile, name))
     }
-    const mainOpenCode = join(root, 'main-opencode-profile')
-    await copyProfileFile(join(previousOpenCodeEnvironment.XDG_DATA_HOME ?? join(homedir(), '.local/share'), 'opencode/auth.json'),
-      join(mainOpenCode, 'data/opencode/auth.json'))
-    await copyProfileFile(join(previousOpenCodeEnvironment.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'opencode/models.json'),
-      join(mainOpenCode, 'cache/opencode/models.json'))
     process.env.CLAUDE_CONFIG_DIR = mainClaudeProfile
     process.env.CODEX_HOME = mainCodexProfile
     process.env.FOREMAN_CODE_APP_MCP_DIRECTORY = join(root, 'main-app-mcp')
-    delete process.env.OPENCODE_CONFIG
-    process.env.XDG_CONFIG_HOME = join(mainOpenCode, 'config')
-    process.env.XDG_DATA_HOME = join(mainOpenCode, 'data')
-    process.env.XDG_CACHE_HOME = join(mainOpenCode, 'cache')
-    process.env.XDG_STATE_HOME = join(mainOpenCode, 'state')
-    process.env.OPENCODE_CONFIG_DIR = join(mainOpenCode, 'config/opencode')
-    process.env.OPENCODE_DB = join(mainOpenCode, 'data/opencode/opencode.db')
     for (const path of [config.workspaceStorageRoot!, config.fileStorageRoot!, config.harnesses.workspaceRoot]) {
       await mkdir(path, { mode: 0o700 })
     }
@@ -318,7 +293,7 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     const tls = await certificates(root)
     const startMain = async () => {
       const main = buildProductionApp(config, database!, checkpoints!, fixtureLogger, undefined, undefined,
-        { codex: codexQualificationSuite, opencode: opencodeQualificationSuite },
+        { codex: codexQualificationSuite },
         { mode: 'native', deviceListener: { host: '127.0.0.1', port: devicePort, advertisedEndpoint: endpoint, ...tls } })
       production = main
       main.registerFileStorage()
@@ -410,11 +385,10 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
       assert.ok(value?.launcher.resolvedLauncher, `The selected ${driver} installation is unavailable.`)
       return value.launcher.resolvedLauncher
     }
-    const mcpHarnesses = harnesses.filter(harness => harness === 'codex' || harness === 'opencode')
+    const mcpHarnesses = harnesses.filter(harness => harness === 'codex')
     if (mcpHarnesses.length) {
       const mcpInput = { databaseUrl, endpoint: `${baseUrl}/mcp`, directory: project, harnesses: mcpHarnesses,
-        codexBinary: harnesses.includes('codex') ? installedHarness('codex') : config.harnesses.codexBinary,
-        openCodeBinary: harnesses.includes('opencode') ? installedHarness('opencode') : config.harnesses.openCodeBinary }
+        codexBinary: harnesses.includes('codex') ? installedHarness('codex') : config.harnesses.codexBinary }
       const mainMcpInput = join(root, 'main-mcp-install.json')
       await writeFile(mainMcpInput, JSON.stringify({ ...mcpInput, directory: config.harnesses.workspaceRoot,
         recoveryRoot: join(root, 'main-mcp-processes') }), { mode: 0o600, flag: 'wx' })
@@ -428,7 +402,6 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     const selection = InstalledWorkflowConfigurationSchema.parse({ schemaVersion: 1,
       codexBinary: installedHarness('codex'), expectedVersion: '0.154.0', payloadPaths: [],
       appMcpLauncher: join(home, '.local/share/graphql/mcp/launcher.mjs'),
-      ...(harnesses.includes('opencode') ? { opencode: { binary: installedHarness('opencode'), expectedVersion: '1.18.31', payloadPaths: [] } } : {}),
       ...(harnesses.includes('claude') ? { claude: { binary: installedHarness('claude'),
         sdkEntrypoint: createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'),
         installedLockPath: fileURLToPath(new URL('../../../../pnpm-lock.yaml', import.meta.url)) } } : {}) })

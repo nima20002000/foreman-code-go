@@ -33,8 +33,8 @@ function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationS
   const settings = vi.fn(async () => ({ revision: 0, defaults: DEFAULT_HARNESS_DEFAULTS }))
   const service = new HarnessQualificationService({ find: async () => undefined, save } as never,
     { inspectBinary, trusted: async () => true } as never,
-    { codex: { harness: 'codex', revision: 'test', run }, opencode: { harness: 'opencode', revision: 'test', run } },
-    { codex: binary, opencode: binary }, { recordAudit: audit } as never,
+    { codex: { harness: 'codex', revision: 'test', run } },
+    { codex: binary }, { recordAudit: audit } as never,
     { getManagedHarnessDefaults: settings }, staticCheck)
   return { service, binary, inspectBinary, save, run, audit, settings }
 }
@@ -188,8 +188,8 @@ describe('qualification stop/cancel/join', () => {
     // Explicit undefined selects the production static probe rather than a fixture check.
     const service = new HarnessQualificationService({ find: async () => undefined, save: f.save } as never,
       { inspectBinary: f.inspectBinary } as never,
-      { codex: { harness: 'codex', revision: 'test', run: f.run }, opencode: { harness: 'opencode', revision: 'test', run: f.run } },
-      { codex: f.binary, opencode: f.binary }, {} as never, { getManagedHarnessDefaults: f.settings })
+      { codex: { harness: 'codex', revision: 'test', run: f.run } },
+      { codex: f.binary }, {} as never, { getManagedHarnessDefaults: f.settings })
     await service.begin('codex')
     await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1))
     await expect(service.shutdown()).rejects.toThrow('cleanup was incomplete')

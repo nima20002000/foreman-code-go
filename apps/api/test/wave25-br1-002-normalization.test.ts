@@ -93,14 +93,6 @@ describe('BR1-002 deterministic source normalization (not producer qualification
     expect(normalizeNativeProducerEvent(event({ sparse })).rejected).toBe(true)
   })
 
-  it('leaves late OpenCode metadata independent and does not invent missing session/parent identity', () => {
-    const part = event({ part: { id: 'part-a', messageID: 'message-a', type: 'tool', tool: 'read', state: { status: 'running' } } }, 'message.part.updated')
-    const metadata = { ...event({ info: { id: 'message-a', parentID: 'request-a', sessionID: 'session-a', role: 'assistant' } }, 'message.updated'), sequence: 13 }
-    expect(normalizeNativeProducerEvent(part)).toEqual({ event: part, rejected: false })
-    expect(normalizeNativeProducerEvent(metadata)).toEqual({ event: metadata, rejected: false })
-    expect(normalizeNativeProducerEvent(part)).toEqual({ event: part, rejected: false })
-  })
-
   it('never renumbers duplicate, reordered or cross-connection frames', () => {
     for (const [connectionId, sequence] of [['connection-new', 10], ['connection-old', 2], ['connection-new', 9], ['connection-old', 2]] as const) {
       const input = { ...event({ text: 'raw' }), connectionId, sequence }

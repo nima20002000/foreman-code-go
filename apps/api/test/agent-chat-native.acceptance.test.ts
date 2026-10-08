@@ -5,7 +5,6 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { AgentConfigurationVersionSchema, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
-
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
@@ -15,20 +14,18 @@ import { readNativeSource } from './helpers/agentChatNativeSource.js'
 import { describeNativeFailure, nativeFailureSummary } from './helpers/nativeFailureEvidence.js'
 
 /**
- * Real installed Codex/OpenCode Agent chat through the production runtime factory.
+ * Real installed Codex Agent chat through the production runtime factory.
  * Forking a finished session keeps its context and preserves the source session's history.
  * Opt in with RUN_REAL_HARNESS_TESTS=1.
  */
 const enabled = process.env.RUN_REAL_HARNESS_TESTS === '1'
 const binaries = harnessBinaries(process.env)
 
-function configuration(harness: 'codex' | 'opencode'): AgentConfigurationVersion {
+function configuration(): AgentConfigurationVersion {
   return AgentConfigurationVersionSchema.parse({
     id: `cfg-${randomUUID()}`, workspaceId: 'ws-native-chat', agentId: 'agent-native-chat', version: 1, productRole: 'coder',
-    harness: harness === 'codex'
-      ? { harness: 'codex', model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
-        reasoningEffort: process.env.CODEX_TEST_REASONING_EFFORT ?? 'medium', sandbox: 'read-only', serviceTier: 'standard' }
-      : { harness: 'opencode', model: process.env.OPENCODE_TEST_MODEL ?? 'opencode-go/gpt-5.6-luna', variant: 'low', nativeAgent: 'build', thinking: false, autoApprove: false },
+    harness: { harness: 'codex', model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
+        reasoningEffort: process.env.CODEX_TEST_REASONING_EFFORT ?? 'medium', sandbox: 'read-only', serviceTier: 'standard' },
     prompt: { system: 'Answer in at most five words.' }, assignedSkills: [], contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString(),
   })
 }
@@ -47,10 +44,10 @@ async function turn(manager: NativeHarnessSessionManager, session: NativeSession
 }
 
 describe.skipIf(!enabled)('real native Agent chat fork', () => {
-  for (const harness of ['codex', 'opencode'] as const) {
+  for (const harness of ['codex'] as const) {
     it(`${harness}: fork keeps context in a new session and leaves the source unchanged`, async () => {
       const directory = await realpath(await mkdtemp(join(tmpdir(), `agent-chat-${harness}-`)))
-      const config = configuration(harness)
+      const config = configuration()
       const registry = new NativeProcessRegistry(join(directory, 'native-processes'))
       const factories = new NativeHarnessFactories({ ...binaries,
         auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
@@ -69,7 +66,7 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
       const source = make()
       const forker = make()
       try {
-        if (harness === 'opencode') await factories.qualifyConfiguration(config.harness, directory)
+
         const sourceSession = await source.createSession(start(config, directory, 'source', false))
         const sourceTurn = await turn(source, sourceSession, 'source', 'Remember the codeword KIWI. Reply OK.')
         expect(sourceTurn.text).toMatch(/ok/i)

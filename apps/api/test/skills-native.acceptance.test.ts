@@ -13,7 +13,6 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type HarnessConfiguration, type NativeHarnessEvent, type NativeSessionReference, type ResolvedSkill } from '@foreman-code/contracts'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { ManagedOpenCodeServer, OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
 import type { NativeHarnessSessionManager, WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import { buildHarnessPrompt } from '../src/modules/harnesses/prompt.js'
 
@@ -53,16 +52,12 @@ const binaries = harnessBinaries(process.env)
 const harnesses: [string, HarnessConfiguration, Factory][] = [
   ['codex', { ...DEFAULT_HARNESS_DEFAULTS.codex, model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna',
     reasoningEffort: 'medium' }, () => new CodexAppServerSessionManager(binaries.codexBinary, undefined, undefined, undefined, 'none')],
-  ['opencode', DEFAULT_HARNESS_DEFAULTS.opencode, (directory) => new OpenCodeNativeSessionManager({ ownerAgentId: 'agent-q',
-    server: new ManagedOpenCodeServer({ binary: binaries.openCodeBinary, workingDirectory: directory, ownerAgentId: 'agent-q',
-      ...(DEFAULT_HARNESS_DEFAULTS.opencode.harness === 'opencode' && DEFAULT_HARNESS_DEFAULTS.opencode.advanced ? { advancedConfiguration: DEFAULT_HARNESS_DEFAULTS.opencode.advanced } : {}) }) })],
 ]
 
 describe.skipIf(!enabled)('Skills native delivery qualification', () => {
   for (const [name, harness, factory] of harnesses) {
     it(`${name}: skills change behavior on the first and later turns, independently per session, and survive backend restart`, async () => {
       const directory = await mkdtemp(join(tmpdir(), `skills-q-${name}-`))
-      // Correlations are unique per run, as production's execution IDs are: OpenCode message IDs derive from them and are global.
       const run = `q-${randomUUID()}`
       const controlDirectory = await mkdtemp(join(tmpdir(), `skills-q-${name}-control-`))
       const managers: NativeHarnessSessionManager[] = []

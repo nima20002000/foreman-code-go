@@ -2,8 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, describe, it, vi } from 'vitest'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { CodexStdioTransport, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
-import { normalizedHistory } from '../src/modules/harnesses/opencodeProtocol.js'
-import { bounded, openCodeFixture, session as openCodeSession, start } from './fixtures/pr17-native-runtime.js'
+import { bounded } from './fixtures/pr17-native-runtime.js'
 import { agentMessage, calls, collect, emit, fixtureProtocol, input, state, until } from './fixtures/codex-test-helpers.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'
 import * as nativeProcesses from '../src/modules/harnesses/process.js'
@@ -158,72 +157,4 @@ describe('native session runtime regressions', () => {
     assert.equal((await fixture.wire('thread/start')).length, 1)
   })
 
-  it('F10: returns the exact session ID when abort fires after the successful native POST response', async () => {
-    const { manager, controller, seam, posts } = openCodeFixture()
-    const abort = new AbortController()
-    const request = controller.request
-    controller.request = async (...args) => {
-      const response = await request(...args)
-      // Native creation succeeded; no unread/incomplete response is simulated.
-      abort.abort(new Error('late abort'))
-      return response
-    }
-    const session = await manager.createSession(start, abort.signal)
-    assert.deepEqual(session, openCodeSession)
-    assert.ok(seam.sessions.has(session.nativeSessionId))
-    assert.equal(posts(), 1)
-    await manager.close(session)
-    assert.equal(posts(), 1)
-  })
-
-  it('F1: attaches with a fresh local counter/identity while authoritative history stays stable', async () => {
-    const first = openCodeFixture()
-    const session = await first.manager.createSession(start)
-    const oldState = first.seam.sessions.get(session.nativeSessionId)!
-    const a = first.seam.recordSynthetic(oldState, 'native.output', { text: 'before' })
-    const b = first.seam.recordSynthetic(oldState, 'interaction.pending', { nativeRequestId: 'permission' })
-    const second = openCodeFixture()
-    await second.manager.attachSession(session, start)
-    const newState = second.seam.sessions.get(session.nativeSessionId)!
-    const c = second.seam.recordSynthetic(newState, 'native.output', { text: 'after' })
-    assert.equal(a.sequence, 0)
-    assert.equal(b.sequence, 1)
-    assert.equal(c.sequence, 0)
-    assert.ok(a.connectionId)
-    assert.equal(a.connectionId, b.connectionId)
-    assert.notEqual(a.connectionId, c.connectionId)
-    const messages = [{ info: { id: 'message', sessionID: session.nativeSessionId, role: 'user', time: { created: 1 } }, parts: [] }]
-    assert.deepEqual(normalizedHistory(messages, false), normalizedHistory(structuredClone(messages), false))
-    const authoritative = normalizedHistory(messages, false)
-    Object.assign(second.manager, {
-      message: async () => messages[0],
-      reconcileReady: async () => ({ events: authoritative, pendingInteractions: [], terminalResult: { outcome: 'succeeded' } }),
-    })
-    const iterator = second.manager.observeTurn(session, 'durable-correlation')[Symbol.asyncIterator]()
-    try { assert.deepEqual((await iterator.next()).value, authoritative[0]) }
-    finally { await iterator.return?.() }
-  })
-
-  it('F14: retains OpenCode session and credential ownership across failed close/dispose attempts', async () => {
-    const { manager, controller, seam } = openCodeFixture()
-    const session = await manager.createSession(start)
-    seam.knownSecrets.add('fixture-secret')
-    seam.boundEnvironmentFingerprint = 'owned-context'
-    let calls = 0
-    controller.dispose = async () => { if (++calls < 3) throw new Error('cleanup unconfirmed') }
-    await assert.rejects(manager.close(session), /cleanup unconfirmed/)
-    assert.ok(seam.sessions.has(session.nativeSessionId))
-    assert.equal(seam.boundEnvironmentFingerprint, 'owned-context')
-    const first = manager.dispose()
-    assert.equal(manager.dispose(), first)
-    await assert.rejects(first, /cleanup unconfirmed/)
-    assert.ok(seam.sessions.has(session.nativeSessionId))
-    assert.ok(seam.knownSecrets.has('fixture-secret'))
-    await manager.dispose()
-    assert.equal(calls, 3)
-    assert.equal(seam.sessions.size, 0)
-    assert.equal(seam.knownSecrets.size, 0)
-    await manager.dispose()
-    assert.equal(calls, 3)
-  })
 })

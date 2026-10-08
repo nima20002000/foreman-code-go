@@ -19,7 +19,7 @@ class MemoryCache implements CompatibilityCache {
 function fixture(codexVersion = '99.0.0') {
   const installation = (harness: CompatibilityHarness): HarnessInstallation => ({
     executable: `/fake/${harness}`, identity: `${harness}-identity`,
-    version: harness === 'codex' ? codexVersion : QUALIFIED_RELEASES.opencode.version,
+    version: codexVersion,
   })
   const probe: CompatibilityProbe = {
     inspect: vi.fn(async (harness) => installation(harness)),
@@ -76,7 +76,7 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     await create(options).checkAll()
     vi.mocked(options.probe.inspect).mockImplementation(async (harness) => ({
       executable: `/fake/${harness}`, identity: 'replacement',
-      version: harness === 'codex' ? '99.0.0' : QUALIFIED_RELEASES.opencode.version,
+      version: '99.0.0',
     }))
     await create(options).checkAll()
     await create({ ...options, checkerRevision: 'next-review' }).checkAll()

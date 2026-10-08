@@ -4,13 +4,13 @@ import { serializeError } from '../../src/modules/diagnostics/logger.ts'
 import { createDatabase } from '../../src/infrastructure/database.ts'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.ts'
 import { buildProductionApp } from '../../src/production.ts'
-import { codexQualificationSuite, opencodeQualificationSuite } from '../../src/modules/harnesses/qualification/cliEntry.ts'
+import { codexQualificationSuite } from '../../src/modules/harnesses/qualification/cliEntry.ts'
 
 const { config, infrastructure } = JSON.parse(await readFile(process.argv[2], 'utf8'))
 const database = createDatabase(config.database)
 const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
 const production = buildProductionApp(config, database, checkpoints, false,
-  undefined, undefined, { codex: codexQualificationSuite, opencode: opencodeQualificationSuite }, infrastructure)
+  undefined, undefined, { codex: codexQualificationSuite }, infrastructure)
 production.registerFileStorage()
 await checkpoints.setup()
 await production.initialize()

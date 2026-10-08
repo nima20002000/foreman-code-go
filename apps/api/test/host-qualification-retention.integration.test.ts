@@ -60,7 +60,7 @@ it('keeps a Main measurement when a Worker qualifies the same native binary', as
       protocolRevision: 'protocol', runtimeContractVersion: 1, credentialScopeRefs: [],
     } }
     const read = () => readPlacementHarnessFacts(db.pool, placement, installations,
-      { codex: record.suiteRevision, opencode: 'unused' })
+      { codex: record.suiteRevision })
     await repository.save(record, { qualificationIdentity: identity })
     expect((await read()).qualification).toEqual(record)
     const workerRecord = { ...record, checkedAt: '2026-10-05T00:00:02.000Z' }

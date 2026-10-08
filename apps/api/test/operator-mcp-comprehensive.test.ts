@@ -13,7 +13,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
 import { firstScheduleAt, dueSchedule } from '../src/modules/workflows/triggerTiming.js'
-import { codexModelOptions, openCodeOptions, harnessSettingSupport } from '../src/modules/harnesses/operatorOptions.js'
+import { codexModelOptions } from '../src/modules/harnesses/operatorOptions.js'
 import { operatorToolAvailable } from '../src/mcp/operator/availability.js'
 import { OPERATOR_TOOL_ACTIONS } from '../src/mcp/operator/catalog.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
@@ -268,16 +268,11 @@ describe('current device and Operator control MCP parity', () => {
 })
 
 describe('native discovery and interval scheduling', () => {
-  it('filters provider secrets and disconnected models', () => {
-    const result=openCodeOptions({connected:['p'],all:[{id:'p',apiKey:'secret',models:{m:{variants:{fast:{}}}}},{id:'offline',models:{x:{}}}]},[{name:'build'}])
-    expect(result.models.map(m=>m.id)).toEqual(['p/m'])
-    expect(result.models[0]?.variants).toEqual(['','fast'])
-    expect(JSON.stringify(result)).not.toContain('secret')
-  })
+
   it('reports model-specific Codex effort and tier support', () => {
     expect(codexModelOptions({models:[{slug:'m',supported_reasoning_levels:[{effort:'low'}],additional_speed_tiers:['fast']}]}))
       .toEqual([{id:'m',reasoningEfforts:['low'],variants:[],serviceTiers:['standard','priority']}])
-    expect(harnessSettingSupport('opencode').find(v=>v.field==='thinking')?.support).toBe('metadata_only')
+
   })
   it('does not burst missed schedule intervals', () => {
     const trigger={kind:'schedule',startsAt:'2026-09-17T00:00:00Z',intervalSeconds:60,missed:'skip',input:{}} as const

@@ -3,7 +3,7 @@ import { appLauncherConnection, appMcpServerName, isAppLauncher } from '../src/m
 import { applyMcpEdits, assertChange, managedChange, managedEnableChange, managedStatus, mcpEdits,
   nativeConnection, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 
-describe.each(['codex', 'opencode'] as const)('%s managed MCP naming', (harness) => {
+describe.each(['codex'] as const)('%s managed MCP naming', (harness) => {
   const endpoint = 'http://127.0.0.1:3000/mcp'
   const connection = (token: string) => nativeConnection(harness, {
     ...appLauncherConnection(), environmentVariables: [token],
@@ -71,12 +71,4 @@ describe.each(['codex', 'opencode'] as const)('%s managed MCP naming', (harness)
       .toThrow('inherited')
   })
 
-  if (harness === 'opencode') it('requires native review before renaming name-bound global tool policies', () => {
-    const before = snapshot({ graphql: connection('GRAPHQL_MCP_TOKEN') })
-    expect(() => mcpEdits({ ...before, userConfig: { permission: { graphql_context_get: 'deny' } } }, add, managed))
-      .toThrow('native permissions')
-    expect(() => mcpEdits({ ...before, effectivePermissions: { 'graphql_*': 'ask' } }, add, managed))
-      .toThrow('native permissions')
-    expect(managedStatus(before, 'graphql')).toBe('installed')
-  })
 })

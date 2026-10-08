@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 
 import { it } from 'vitest'
@@ -61,7 +61,7 @@ it('F2: mismatched correlation, provider identity, missing exact metadata and pe
 
 it('F2/F11: generic idle/latest output and unrelated native-session events never prove review completion', () => {
   const evidence = reviewTurnEvidence(session, {
-    events: [event('session.idle'), event('turn.started', { threadId: 'other-session', turnId: providerId, clientCorrelationId: correlationId }),
+    events: [event('thread.reconciled', { thread: { id: session.nativeSessionId, status: 'idle', turns: [] } }), event('turn.started', { threadId: 'other-session', turnId: providerId, clientCorrelationId: correlationId }),
       event('turn.completed', { threadId: 'other-session', turnId: providerId })],
     pendingInteractions: [], terminalResult: { outcome: 'succeeded' },
   }, correlationId)
@@ -92,20 +92,6 @@ it('F2: exact terminal metadata overrides its stale start event, but not another
   other.observeEvent(event('turn.started', { turnId: 'new-active-turn', clientCorrelationId: 'new-review' }))
   other.observeHistory(terminal())
   assert.equal(other.snapshot().terminal, false)
-})
-
-it('F2/F11: OpenCode assistant tool completion plus idle is not a terminal answer', () => {
-  const opencode = { ...session, harness: 'opencode' as const, providerVersion: '1.18.31' }
-  const messageId = `msg_${createHash('sha256').update(correlationId).digest('hex').slice(0, 24)}`
-  const tracker = new ReviewEvidenceTracker(opencode, correlationId)
-  tracker.observeEvent(event('message.updated', { info: { sessionID: session.nativeSessionId, role: 'assistant',
-    parentID: messageId, finish: 'tool-calls', time: { completed: 42 } } }))
-  tracker.observeEvent(event('session.idle'))
-  assert.equal(tracker.snapshot().acknowledged, true)
-  assert.equal(tracker.snapshot().terminal, false)
-  tracker.observeEvent(event('message.updated', { info: { sessionID: session.nativeSessionId, role: 'assistant',
-    parentID: messageId, finish: 'stop', time: { completed: 43 } } }))
-  assert.equal(tracker.snapshot().terminal, true)
 })
 
 it('F11: 100,000 deltas are read once with zero retained event objects and exact final evidence', () => {
@@ -216,7 +202,6 @@ it('F11: an idle lane retaining the last provider ID can accept a new correlatio
   assert.equal(starts, 2)
   assert.equal(reviewTurnEvidence(session, { events: history.events, pendingInteractions: [] }, 'third-review').terminal, false)
 })
-
 
 it('Claude evidence requires an exact observed native message receipt and terminal identity', () => {
   const claude = { ...session, harness: 'claude' as const, providerVersion: '2.1.284' }

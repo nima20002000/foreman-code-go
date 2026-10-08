@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 
 /** Actual current engine, PostgreSQL approvals and LangGraph checkpoints with a
  * deterministic external provider. No caller JSON creates native evidence. */
@@ -13,7 +13,7 @@ describe.skipIf(!postgresEnabled)('current approval node checkpoint re-entry', (
       const [pending] = await f.pending()
       expect(pending?.graphInterruptId).toBeTruthy()
       expect((await f.runs.get(f.f.run.id))?.executionState).toBe('waiting')
-      const delivered = await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(pending!))
+      const delivered = await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(pending!))
       expect(delivered.interaction.deliveryState).toBe('delivered')
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
       const counts = { ...f.provider.counts }, receipts = await f.receipts()
@@ -31,12 +31,12 @@ describe.skipIf(!postgresEnabled)('current approval node checkpoint re-entry', (
       const [first, second] = await f.pending()
       expect(first?.graphInterruptId).toBeTruthy()
       expect(second?.graphInterruptId).toBe(first?.graphInterruptId)
-      const response = await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(second!))
+      const response = await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(second!))
       expect(response.interaction.deliveryState).toBe('delivered')
       expect((await f.runs.get(f.f.run.id))?.executionState).toBe('waiting')
       const current = await f.repository.get(first!.id)
       expect(current?.status).toBe('pending')
-      await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(current!))
+      await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(current!))
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
       expect(f.provider.counts).toMatchObject({ sessions: 2, starts: 2, responses: 2 })
     } finally { await f.close() }

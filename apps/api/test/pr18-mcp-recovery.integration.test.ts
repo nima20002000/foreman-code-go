@@ -13,7 +13,7 @@ import { applyMcpEdits, fingerprint, mcpEdits, type NativeMcpAdapter, type Nativ
 
 let admin: pg.Pool, pool: pg.Pool, schema: string, owner: ManagementPrincipal
 let commands: PostgresCommandCoordinator, service: HarnessMcpSettingsService
-let snapshots: Record<'codex' | 'opencode', NativeMcpSnapshot>
+let snapshots: Record<'codex', NativeMcpSnapshot>
 let reads = 0, writes = 0, loseAcknowledgement = false, preWriteFailure = false
 const cleanup = vi.fn(async () => {})
 const endpoint = 'http://127.0.0.1:3000/mcp'
@@ -26,10 +26,10 @@ beforeEach(async () => {
   owner = (await new PostgresAccessService(pool).issue({ name: 'PR18 owner', audience: 'operator',
     grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })).principal
   reads = 0; writes = 0; loseAcknowledgement = false; preWriteFailure = false; cleanup.mockClear()
-  snapshots = Object.fromEntries((['codex', 'opencode'] as const).map((harness) => [harness, {
+  snapshots = Object.fromEntries((['codex'] as const).map((harness) => [harness, {
     harness, revision: fingerprint({}), effective: {}, user: {}, userConfig: {}, file: `/tmp/pr18-${harness}`, version: '1',
   }])) as typeof snapshots
-  const adapter = (harness: 'codex' | 'opencode'): NativeMcpAdapter => ({
+  const adapter = (harness: 'codex'): NativeMcpAdapter => ({
     read: async () => { reads++; return structuredClone(snapshots[harness]) },
     apply: async (snapshot, change, _signal, managed) => {
       if (preWriteFailure) throw new NativeMcpNotSubmittedError(new Error('aborted before native entry'))
@@ -41,13 +41,13 @@ beforeEach(async () => {
     },
   })
   commands = new PostgresCommandCoordinator(pool)
-  service = new HarnessMcpSettingsService(pool, commands, { codex: adapter('codex'), opencode: adapter('opencode') }, () => {}, cleanup, endpoint)
+  service = new HarnessMcpSettingsService(pool, commands, { codex: adapter('codex') }, () => {}, cleanup, endpoint)
 }, 30_000)
 afterEach(async () => {
   await service?.shutdown(); await pool?.end()
   await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve()); await admin?.end()
 })
-function managed(harness: 'codex' | 'opencode' = 'codex') {
+function managed(harness: 'codex' = 'codex') {
   return { harness, commandId: randomUUID(), preset: 'graphql' as const, installed: true, expectedRevision: snapshots[harness].revision }
 }
 it('replays a pre-PR generic receipt without native inspection, but conflicts on changed input', async () => {
@@ -75,13 +75,13 @@ it('retains one accepted plan and command after a busy decision', async () => {
   expect((await pool.query("select command_id from management_command_receipts where operation='harness.mcp.managed.plan'")).rows).toEqual([{ command_id: input.commandId }])
   expect(writes).toBe(1)
 })
-it('reconciles a lost acknowledgement without a second write and unblocks both harnesses', async () => {
+it('reconciles a lost acknowledgement without a second write and unblocks a different managed preset', async () => {
   const firstInput = managed()
   loseAcknowledgement = true
   const first = await service.applyManaged(owner, firstInput)
   expect(first.status).toBe('uncertain'); expect(writes).toBe(1)
   loseAcknowledgement = false
-  const secondInput = managed('opencode')
+  const secondInput = { ...managed(), preset: 'linear' as const }
   expect((await service.applyManaged(owner, secondInput)).status).toBe('pending')
   expect(writes).toBe(1)
   const reconcile = { planId: first.id, commandId: randomUUID(), expectedRevision: snapshots.codex.revision, acceptObservedState: false }
@@ -101,8 +101,8 @@ it('never calls the native adapter after a definite pre-write abort and does not
   expect((await service.applyManaged(owner, input)).status).toBe('pending')
   expect(writes).toBe(0)
   preWriteFailure = false
-  expect((await service.applyManaged(owner, managed('opencode'))).status).toBe('applied')
   expect((await service.applyManaged(owner, input)).status).toBe('applied')
+  expect((await service.applyManaged(owner, { ...managed(), preset: 'linear' })).status).toBe('applied')
   expect(writes).toBe(2)
 })
 it('requires explicit acceptance for a divergent inspected state and never calls it a confirmed write', async () => {

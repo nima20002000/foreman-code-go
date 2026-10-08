@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MAX_FILE_BYTES, type MessageAttachmentRef } from '@foreman-code/contracts/files'
+import type { MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { CodexFileCallResult } from '../src/modules/harnesses/codexFiles/port.js'
-import { OpenCodeFileTurn } from '../src/modules/harnesses/opencodeFiles/turn.js'
-import { adoptOpenCodePublications, resolveOpenCodeFileAdmission } from '../src/modules/harnesses/opencodeFiles/postgres.js'
 import { afPublicationFixture } from './helpers/afPublicationFixture.js'
 import { withAfMcp } from './helpers/afMcp.js'
 import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
@@ -12,7 +10,6 @@ import { bindingIdentity } from '../src/modules/files/tools/context.js'
 import { PostgresFileToolRepository } from '../src/modules/files/tools/postgres.js'
 import type { FileToolContext } from '../src/modules/files/tools/types.js'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
-import { createChatFileBackend } from './support/opencodeChatFileFixture.js'
 
 const signal = () => AbortSignal.timeout(30_000)
 function toolValue(result: CodexFileCallResult): { value: { artifactId: string; file: { fileId: string }; revision: { revisionId: string } } } {
@@ -60,95 +57,8 @@ async function codex(f: Awaited<ReturnType<typeof afPublicationFixture>>, count:
   return { active, bridge, admission, attachments, publish }
 }
 
-async function openCode(f: Awaited<ReturnType<typeof afPublicationFixture>>, attachments: MessageAttachmentRef[],
-  failure?: { adopt: boolean; lostPublishAck: boolean }) {
-  const active = await f.pause(attachments)
-  const configuration = f.fixture.configurations.find((item) => item.agentId === f.context.agentId)!.harness
-  if (configuration.harness !== 'opencode') throw new Error('Expected OpenCode fixture')
-  const identity = { ownerAgentId: f.context.agentId, nativeSessionId: active.session.nativeSessionId,
-    nativeTurnId: active.turn.nativeTurnId!, clientCorrelationId: active.correlation, directory: f.project, configuration }
-  const admission = await resolveOpenCodeFileAdmission(f.database.pool, f.conversationId, identity)
-  expect(admission?.attachments).toEqual(attachments)
-  // Reuse ONLY the fake execution host. All service methods/receipts below are real.
-  const host = createChatFileBackend()
-  const statuses: Record<string, unknown> = { 'foreman-code': { status: 'disabled' } }
-  const server = { expectedVersion: '1.18.31', generation: 1, async ensure() {}, async dispose() {},
-    async request(path: string, init?: RequestInit) {
-      const route = new URL(path, 'http://native.invalid').pathname
-      let response: unknown = statuses
-      if (route === '/config') response = { mcp: { 'foreman-code': { enabled: false } } }
-      else if (route === '/mcp' && init?.method === 'POST') {
-        const body = JSON.parse(String(init.body)) as { name: string }; statuses[body.name] = { status: 'connected' }
-      } else if (route.endsWith('/disconnect')) response = true
-      return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } })
-    },
-  }
-  const service = f.service
-  let token = ''
-  const turn = new OpenCodeFileTurn({ host: host.host, server, endpoint: 'http://127.0.0.1:9876/mcp/files',
-    appMcpServerName: 'foreman-code', maxFileBytes: MAX_FILE_BYTES, maxAttachments: 10,
-    rememberCredential: (value) => { token = value },
-    service: { sessions: {
-      issueForAcceptedSession: (context, expiry) => service.sessions.issueForAcceptedSession(context, expiry, 'opencode'),
-      authenticate: service.sessions.authenticate.bind(service.sessions),
-      authorizeAccepted: service.sessions.authorizeAccepted.bind(service.sessions),
-      revoke: service.sessions.revoke.bind(service.sessions),
-    }, artifacts: service.artifacts, list: service.list.bind(service), read: service.read.bind(service),
-    createWorkingCopy: service.createWorkingCopy.bind(service),
-    publish: async (...args: Parameters<typeof service.publish>) => {
-      const result = await service.publish(...args)
-      if (failure?.lostPublishAck) { failure.lostPublishAck = false; throw new Error('Injected lost publish acknowledgement') }
-      return result
-    },
-    publishedForTurn: service.publishedForTurn.bind(service), writeWorkingCopy: service.writeWorkingCopy.bind(service),
-    applyFormatEdit: service.applyFormatEdit.bind(service) },
-    adoptPublished: async (context) => {
-      if (failure?.adopt) throw new Error('Injected unavailable publication adoption')
-      await adoptOpenCodePublications(f.database.pool, context)
-    },
-  })
-  await turn.prepareInputs({ ...admission!, mode: 'write', executionHostId: host.host.executionHostId,
-    directory: f.project, expiresAt: new Date(Date.now() + 60_000) },
-  (input) => service.readAccepted(admission!.context, input), signal())
-  await turn.connectTools(signal())
-  turn.submissionAttempted()
-  await turn.acknowledge(signal())
-  expect(token).toMatch(/^gql_file_/)
-  f.native.onFinish = () => turn.finish('terminal', signal())
-  const copy = await turn.createWorkingCopy(token, { commandId: randomUUID(), source: attachments[0]!,
-    destination: admission!.context.scope }, signal())
-  const publish = () => turn.publish(token, { commandId: randomUUID(), artifactId: copy.value.artifactId,
-    scope: admission!.context.scope, filename: 'result.md', mediaType: 'text/markdown' }, signal())
-  return { active, turn, admission: admission!, identity, host, token, publish }
-}
-
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', { timeout: 90_000 }, () => {
-  for (const closure of ['terminal', 'process'] as const) {
-    it(`OC-02: ${closure} cleanup retries exact ledger adoption after lost publication ACK`, async () => {
-      const f = await afPublicationFixture('opencode')
-      const attachments = [await f.upload()]
-      const failure = { adopt: false, lostPublishAck: true }
-      const t = await openCode(f, attachments, failure)
-      await expect(t.publish()).rejects.toThrow('lost publish acknowledgement')
-      const original = await f.publications(t.active.turn.messageId)
-      expect(original).toHaveLength(1)
-      expect((await f.stored(t.active.turn.messageId)).publicationRefs).toBeUndefined()
-      failure.adopt = true
-      await expect(closure === 'terminal' ? t.turn.finish('terminal', signal())
-        : t.turn.nativeProcessClosed(signal())).rejects.toThrow('retry')
-      expect(t.host.hostFiles.size).toBe(0)
-      await expect(f.service.sessions.authenticate(t.token)).rejects.toThrow()
-      failure.adopt = false
-      await t.turn.retryCleanup(signal()); await t.turn.retryCleanup(signal())
-      expect((await f.stored(t.active.turn.messageId)).publicationRefs).toEqual(original)
-      expect(await f.readPins(t.active.turn.messageId)).toEqual([...attachments, ...original])
-      expect(await f.publications(t.active.turn.messageId)).toEqual(original)
-      expect((await f.database.pool.query(`select 1 from file_tool_sessions where revoked_at is null
-        and record->'context'->>'messageId'=$1`, [t.active.turn.messageId])).rowCount).toBe(0)
-      f.native.finish(); await f.settle()
-    })
-  }
   for (const failure of ['adopt_once', 'revoke_after_finalize'] as const) {
     it(`AF-03: Codex terminal close repairs ${failure} without another publication`, async () => {
       const f = await afPublicationFixture()
@@ -196,7 +106,7 @@ describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', 
 
   for (const selectedRun of [false, true]) {
     it(`AF-03: upload-free ${selectedRun ? 'selected-Run' : 'Agent'} inherited-reference cold recovery without adoption or close`, async () => {
-      const f = await afPublicationFixture('codex', selectedRun), t = await codex(f, 0, 'lose_close')
+      const f = await afPublicationFixture({ selectedRun }), t = await codex(f, 0, 'lose_close')
       expect(t.admission.accepted.attachments).toEqual([])
       if (selectedRun) expect(t.admission.accepted.scope.chat).toMatchObject({
         runId: f.fixture.run.id, executionId: f.runExecution.id,
@@ -254,7 +164,7 @@ describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', 
     })
 
     it(`AF-03: cold ${selectedRun ? 'selected-Run' : 'Agent'} readback excludes every foreign immutable publication binding`, async () => {
-      const f = await afPublicationFixture('codex', selectedRun)
+      const f = await afPublicationFixture({ selectedRun })
       const foreignContexts: Array<(bound: FileToolContext) => FileToolContext> = [
         bound => ({ ...bound, ownerPrincipalId: 'foreign-owner' }),
         bound => ({ ...bound, nativeSessionId: 'foreign-thread' }),
@@ -328,28 +238,5 @@ describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', 
       await f.nextTurn()
     })
 
-    it(`AF-04: OpenCode ${count} inputs plus twelve publications survive terminal retries and the next turn`, async () => {
-      const f = await afPublicationFixture('opencode'), attachments: MessageAttachmentRef[] = []
-      for (let index = 0; index < count; index++) attachments.push(await f.upload())
-      const t = await openCode(f, attachments), published: MessageAttachmentRef[] = []
-      for (let index = 0; index < 12; index++) {
-        const result = await t.publish()
-        published.push({ fileId: result.value.file.fileId, revisionId: result.value.revision.revisionId })
-        expect(await f.readPins(t.active.turn.messageId)).toEqual([...attachments, ...published])
-      }
-      // Re-resolution while the turn is active still delivers only original inputs.
-      expect((await resolveOpenCodeFileAdmission(f.database.pool, f.conversationId, t.identity))!.attachments).toEqual(attachments)
-      f.native.finish(); await f.settle(); await t.turn.finish('terminal', signal())
-      await adoptOpenCodePublications(f.database.pool, t.admission.context)
-      expect((await f.stored(t.active.turn.messageId)).attachmentRefs).toEqual(attachments)
-      expect(await f.readPins(t.active.turn.messageId)).toEqual([...attachments, ...published])
-      expect(await f.publications(t.active.turn.messageId)).toHaveLength(12)
-      expect(t.host.hostFiles.size).toBe(0)
-      await expect(f.service.sessions.authenticate(t.token)).rejects.toThrow()
-      const next = await openCode(f, [await f.upload()])
-      expect(next.token).not.toBe(t.token)
-      f.native.finish(); await f.settle()
-      expect(next.host.hostFiles.size).toBe(0)
-    })
   }
 })

@@ -16,7 +16,6 @@ vi.mock('node:fs/promises', async original => ({
 }))
 // Native qualification belongs to buildProductionApp, which this lifecycle fixture replaces.
 vi.mock('../src/modules/harnesses/qualification/suites/codex.js', () => ({ codexQualificationSuite: {} }))
-vi.mock('../src/modules/harnesses/qualification/suites/opencode.js', () => ({ opencodeQualificationSuite: {} }))
 vi.mock('../src/infrastructure/logger.js', async original => ({
   ...(await original<typeof import('../src/infrastructure/logger.js')>()),
   enableFileLogging: async () => undefined,

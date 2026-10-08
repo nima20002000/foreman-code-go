@@ -1,14 +1,4 @@
-import {
-  DEFAULT_AGENT_DEFAULTS,
-  DEFAULT_HARNESS_DEFAULTS,
-  DurableInteractionSchema,
-  // Execution request coverage is provided by native coordinator tests.
-  HarnessWorkflowCompatibilitySchema,
-  NATIVE_INTERACTION_FIXTURES,
-  OperatorConfigurationVersionSchema,
-  projectHarnessEffort,
-  type AgentHarness,
-} from '@foreman-code/contracts'
+import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, DurableInteractionSchema, NATIVE_INTERACTION_FIXTURES, OperatorConfigurationVersionSchema, type AgentHarness } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -18,7 +8,7 @@ import { PostgresInteractionCoordinationRepository } from '../src/modules/intera
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { ExecutableWorkflowV3Schema, SavedRunVersionSnapshotSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
-import { configurationInput } from '../src/modules/workspaces/agentConfiguration.js'
+
 import { DeterministicNativeSessionManager } from '../src/testing/deterministicNativeSession.js'
 
 const now = '2026-09-16T00:00:00.000Z'
@@ -55,26 +45,10 @@ describe('PR8 current executable approval acceptance', () => {
     }
   })
 
-  it.each([false, true])('rejects legacy automatic OpenCode approval; Advanced present=%s', (advanced) => {
-    const harness = structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)
-    harness.autoApprove = true
-    if (advanced) harness.advanced!.permissionHandling = 'native_auto'
-    else delete harness.advanced
-    for (const handler of ['user', 'orchestrator']) {
-      expect(HarnessWorkflowCompatibilitySchema.safeParse({ configuration: harness, workflowApprovalHandler: handler }).success).toBe(false)
-    }
-    expect(HarnessWorkflowCompatibilitySchema.safeParse({ configuration: harness }).success).toBe(true)
-  })
 })
 
 describe('PR8 native settings and exact variants', () => {
 
-  it('never replaces a native variant with a stale legacy effort projection', () => {
-    const harness = { ...DEFAULT_HARNESS_DEFAULTS.opencode, variant: 'provider-custom-effort' }
-    expect(projectHarnessEffort(harness)).toBeUndefined()
-    expect(configurationInput('workspace', { id: 'agent', name: 'Agent', harness: 'opencode', effort: 'max', harnessConfiguration: harness }).harness)
-      .toMatchObject({ variant: 'provider-custom-effort' })
-  })
 })
 
 describe('PR8 durable schema and transaction boundaries', () => {
@@ -142,7 +116,7 @@ function operatorStart(harness: AgentHarness) {
 }
 async function drain(source: AsyncIterable<unknown>) { for await (const event of source) void event }
 
-describe.each(['codex', 'opencode'] as const)('PR8 %s native fixture isolation', (harness) => {
+describe.each(['codex'] as const)('PR8 %s native fixture isolation', (harness) => {
   it('keeps identities, pending work, responses, cancellation and history scoped', async () => {
     const manager = new DeterministicNativeSessionManager(harness)
     const a = await manager.createSession(operatorStart(harness))

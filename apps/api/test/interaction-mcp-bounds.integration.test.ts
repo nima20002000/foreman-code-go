@@ -11,7 +11,7 @@ afterEach(async () => { while (closes.length) await closes.pop()!() })
 
 describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback through selected Main', () => {
   it('retrieves an oversized persisted list and individual request, and denies out-of-scope chunks', async () => {
-    const f = await approvalDatabase({ permissionPatterns: ['😀"\\\n'.repeat(150_000)] })
+    const f = await approvalDatabase({ command: '😀"\\\n'.repeat(150_000) })
     closes.push(f.close)
     const interaction = f.interaction
     expect(Buffer.byteLength(JSON.stringify(interaction), 'utf8')).toBeGreaterThan(1_000_000)

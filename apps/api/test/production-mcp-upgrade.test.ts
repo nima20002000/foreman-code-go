@@ -32,7 +32,7 @@ async function fixture() {
   return { home, previous, shared }
 }
 
-it.each(['codex', 'opencode'] as const)(
+it.each(['codex'] as const)(
   '%s retains its reviewed shared connection when the old production folder is unused', async harness => {
     const { home, previous, shared } = await fixture()
     await rm(dirname(previous), { recursive: true })
@@ -50,9 +50,7 @@ it.each(['codex', 'opencode'] as const)(
 
 it.each([
   ['codex', 'graphql', 'GRAPHQL_MCP_TOKEN'],
-  ['opencode', 'graphql', 'GRAPHQL_MCP_TOKEN'],
   ['codex', 'foreman-code', APP_MCP_TOKEN],
-  ['opencode', 'foreman-code', APP_MCP_TOKEN],
 ] as const)(
   '%s keeps existing %s credentials, disabled flags and policies through the upgrade and managed edits',
   async (harness, serverName, token) => {
@@ -118,7 +116,7 @@ it('resumes an upgrade interrupted after moving the original directory', async (
   expect(isAppLauncher('codex', { command: runtime, args: [previous], env_vars: [APP_MCP_TOKEN] })).toBe(true)
 })
 
-it.each(['codex', 'opencode'] as const)(
+it.each(['codex'] as const)(
   '%s native management recovers a lost transition registration from the retained installation', async harness => {
     const { home, previous, shared } = await fixture()
     await upgradeProductionMcpLauncher(home)

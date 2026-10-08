@@ -36,7 +36,7 @@ describe('selected harness metadata invalidation', () => {
       bootId: '44444444-4444-4444-8444-444444444444', connectionEpoch: '55555555-5555-4555-8555-555555555555',
       keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
     let mainPayload = 'payload-A'
-    const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex', openCodeBinary: 'opencode' },
+    const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex',  },
       async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }), new HostHarnessProfileEvidenceRepository(pool),
       () => binding, { PATH: '/recorded' }, {
         launcher: async (requested, environment) => ({ requested, resolvedLauncher: `/recorded/${requested}`,

@@ -35,7 +35,7 @@ function fixture(liveCallbacks?: ClaudeLiveCallbackReader, role: 'workflow' | 'o
   const client: ClaudeSdkClient = { sdkVersion: '0.3.284', query, getSessionInfo: async (sessionId) => ({ sessionId }),
     getSessionMessages: history, forkSession: fork }
   const runner = createClaudeSdkRunner({ loadClient: async () => client })
-  const factories = new NativeHarnessFactories({ codexBinary: '/forbidden-codex', openCodeBinary: '/forbidden-opencode' })
+  const factories = new NativeHarnessFactories({ codexBinary: '/forbidden-codex',  })
   const allocated = factories.allocate({ harness: 'claude', role, workingDirectory: scope.cwd,
     ownerAgentId: 'operator', appMcpAccess: 'none', runner, scope, sdkOptions: { includePartialMessages: true },
     qualification: { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: true, history: true, interactions: true },
@@ -138,7 +138,6 @@ describe('Claude actual initial factory replay: ten admitted-boundary cases', ()
     expect(f.fork).toHaveBeenCalledOnce(); await f.manager.dispose?.()
   })
 })
-
 
 it('common writer persists observed SID before message receipt and exposes the owned message lease', async () => {
   const f = fixture()

@@ -26,12 +26,9 @@ import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService as WorkerCredentialService } from '../../src/modules/interactions/wave25/credentials.js'
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
-import { OpenCodeNativeSessionManager } from '../../src/modules/harnesses/opencodeServer.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { McpDetectionService, WorkerLaunchCredentialService, type ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
 import { codexMcpInspectorAdapter } from '../../src/modules/harnesses/codexMcpInspectorAdapter.js'
-import { openCodeMcpInspectorAdapter } from '../../src/modules/harnesses/opencodeMcpInspectorAdapter.js'
-import { object } from '../../src/modules/harnesses/opencodeProtocol.js'
 import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
 import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
@@ -56,7 +53,6 @@ import { continuationValidator } from '../../src/modules/runs/continuation.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { nativePersistenceRedactor } from '../../src/modules/interactions/nativePersistence.js'
 import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
-
 import type { AuthorizeWorkflowStop } from '../../src/modules/runs/repeatLifecycle.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
@@ -70,15 +66,17 @@ import { runCommand as runNativeCommand } from '../../src/modules/harnesses/proc
 import { completeTestResourceCleanup, registerTestResourceCleanup } from '../../../../scripts/test-resources.mjs'
 
 const runCommand = promisify(execFile)
-type Harness = 'codex' | 'opencode'
+type Harness = 'codex'
 type Scenario = 'E03-P01' | 'E03-P02' | 'E03-P03' | 'E03-L01' | 'E03-L02' | 'E03-L03' | 'E03-L04' | 'E03-A01'
 export function nativeAcceptanceBinaries(environment: NodeJS.ProcessEnv = process.env) {
   if (environment.FOREMAN_CODE_VERIFICATION_ROOT
-    && (!environment.ENG03_A_CODEX_BINARY || !environment.ENG03_A_OPENCODE_BINARY)) {
-    throw new Error('Acceptance Jobs require both explicitly qualified in-image native binaries.')
+    && !environment.ENG03_A_CODEX_BINARY) {
+    throw new Error('Acceptance Jobs require an explicitly qualified in-image Codex binary.')
   }
-  return harnessBinaries({ CODEX_BINARY: environment.ENG03_A_CODEX_BINARY ?? environment.CODEX_BINARY,
-    OPENCODE_BINARY: environment.ENG03_A_OPENCODE_BINARY ?? environment.OPENCODE_BINARY })
+  const { codexBinary } = harnessBinaries({
+    CODEX_BINARY: environment.ENG03_A_CODEX_BINARY ?? environment.CODEX_BINARY,
+  })
+  return { codexBinary }
 }
 
 export interface Eng03NativeRuntime {
@@ -133,18 +131,13 @@ interface NativeInterval {
   finish: { type: string; occurredAt: string; sequence: number }
 }
 
-function nativeInterval(execution: HarnessExecution, harness: Harness, providerVersion: string,
+function nativeInterval(execution: HarnessExecution, providerVersion: string,
   events: HarnessNativeEvent[]): NativeInterval | undefined {
   const session = execution.nativeSessionId
   if (!session) return undefined
   const own = events.filter((event) => event.executionId === execution.id)
-  const started = own.find((event) => harness === 'codex'
-    ? event.type === 'turn.started' && event.payload.threadId === session
-    : event.type === 'message.updated' && (event.payload.info as { role?: string } | undefined)?.role === 'assistant'
-      && event.connectionId?.startsWith('history-') !== true)
-  const finished = [...own].reverse().find((event) => harness === 'codex'
-    ? event.type === 'turn.completed' && event.payload.threadId === session
-    : event.type === 'session.idle' && event.payload.sessionID === session)
+  const started = own.find(event => event.type === 'turn.started' && event.payload.threadId === session)
+  const finished = [...own].reverse().find(event => event.type === 'turn.completed' && event.payload.threadId === session)
   if (!started || !finished || Date.parse(started.occurredAt) >= Date.parse(finished.occurredAt)) return undefined
   return { executionId: execution.id, nativeSessionId: session, providerVersion,
     start: { type: started.type, occurredAt: started.occurredAt, sequence: started.sequence },
@@ -186,7 +179,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   const publicationChanges = publicationSignal()
   const scenarioBegan = performance.now()
   const timing = { startedAt: new Date().toISOString(), setupMs: 0, engineMs: 0, totalMs: 0 }
-  const { codexBinary, openCodeBinary } = nativeAcceptanceBinaries()
+  const { codexBinary } = nativeAcceptanceBinaries()
   const baseUrl = ownedTestDatabaseUrl('ENG03_A_TEST_DATABASE_URL')
   if (!baseUrl) throw new Error('ENG03_A_TEST_DATABASE_URL must name a task-owned loopback test database.')
   const parsed = new URL(baseUrl)
@@ -232,15 +225,12 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
   }
   const evidence: Record<string, unknown> = { scenario, timing, runtimeTimeline, mode: 'current V3 native internal acceptance', artifactPath,
     resources: { invocation, cleanupId, root, schema, registryDirectory },
-    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-6-luna',
-      opencode: process.env.ENG03_OPENCODE_MODEL ?? 'opencode-go/gpt-5.6-luna' },
+    models: { codex: process.env.ENG03_CODEX_MODEL ?? 'gpt-6-luna' },
     expected: { overlap: true, joinedInputs: 2, outcome: 'succeeded' } }
   runtimeTimingChannel.subscribe(captureTiming)
   try {
     evidence.sourceSha = (await runCommand('git', ['rev-parse', 'HEAD'])).stdout.trim()
-    evidence.binaries = { codex: { path: codexBinary, version: await version(codexBinary, projectDirectory, registry) },
-      ...(first === 'opencode' || second === 'opencode'
-        ? { opencode: { path: openCodeBinary, version: await version(openCodeBinary, projectDirectory, registry) } } : {}) }
+    evidence.binaries = { codex: { path: codexBinary, version: await version(codexBinary, projectDirectory, registry) } }
     await createFixtureSchema(admin, schema)
     const url = new URL(baseUrl)
     url.searchParams.set('options', `-c search_path=${schema}`)
@@ -263,11 +253,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     ]
     const configuredPrompts = prompts.map((prompt, index) => options.prompts?.[nodeNames[index]!] ?? prompt)
     const configurations: AgentConfigurationVersion[] = nodeNames.map((name, index) => {
-      const fallback = harnesses[index] === 'codex'
-        ? { harness: 'codex', model: evidence.models && (evidence.models as { codex: string }).codex,
-          reasoningEffort: process.env.ENG03_CODEX_REASONING_EFFORT ?? 'medium', sandbox: 'read-only', serviceTier: 'standard' }
-        : { harness: 'opencode', model: (evidence.models as { opencode: string }).opencode,
-          variant: 'high', nativeAgent: 'build', thinking: false, autoApprove: false }
+      const fallback = { harness: 'codex', model: (evidence.models as { codex: string }).codex,
+        reasoningEffort: process.env.ENG03_CODEX_REASONING_EFFORT ?? 'medium', sandbox: 'read-only', serviceTier: 'standard' }
       const override = name === 'A' || name === 'B' ? options.harnessOverrides?.[name] : undefined
       if (override && override.harness !== harnesses[index]) throw new Error(`Harness override for ${name} changes its provider.`)
       return AgentConfigurationVersionSchema.parse({
@@ -277,13 +264,11 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         contentHash: `sha256:${'0'.repeat(64)}`, createdAt: new Date().toISOString(),
       })
     })
-    evidence.effectiveHarnesses = configurations.map((item) => {
-      if (item.harness.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
-      return { agentId: item.agentId, harness: item.harness.harness,
-      model: item.harness.model, ...(item.harness.harness === 'codex' ? { reasoningEffort: item.harness.reasoningEffort,
-        sandbox: item.harness.sandbox,
-        approvalPolicy: item.harness.advanced?.approvalPolicy,
-        approvalsReviewer: item.harness.advanced?.approvalsReviewer } : { autoApprove: item.harness.autoApprove }) }
+    evidence.effectiveHarnesses = configurations.map(({ agentId, harness }) => {
+      if (harness.harness !== 'codex') throw new Error('The native fixture requires Codex configurations.')
+      return { agentId, harness: harness.harness, model: harness.model, reasoningEffort: harness.reasoningEffort,
+        sandbox: harness.sandbox, approvalPolicy: harness.advanced?.approvalPolicy,
+        approvalsReviewer: harness.advanced?.approvalsReviewer }
     })
     const nodes = nodeNames.map((name, index) => ({ id: `node-${suffix}-${index}`, name,
       agentId: configurations[index]!.agentId, ...(index === 0 ? {} : { join: { mode: 'all' as const } }) }))
@@ -335,12 +320,11 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const endpoint = `${await mcpApp.listen({ host: '127.0.0.1', port: 0 })}/mcp`
     restoreNativeMcp = await configureNativeWorkflowMcp({
       projectDirectory, runtimeDirectory, codexBinary,
-      ...(first === 'opencode' || second === 'opencode' ? { openCodeBinary } : {}),
     })
     mcpRoutes = new AppMcpRoutes(livePool, endpoint)
     evidence.mcpEndpoint = endpoint
     await configureNativeAcceptanceMcp(livePool, runtimeDirectory,
-      { codex: codexBinary, opencode: openCodeBinary }, endpoint, harnesses)
+      { codex: codexBinary }, endpoint, harnesses)
     const makeRuntime = (saver: BaseCheckpointSaver): RuntimeInstance => {
       const commands = new PostgresCommandCoordinator(livePool)
       const locations = new WorkspaceLocationService(livePool, commands, runtimeDirectory)
@@ -408,7 +392,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       }
       const interactions = new Wave25InteractionRepository(livePool, new ReviewNativeProofServices(reviewCapture.verify))
       const factories = new NativeHarnessFactories({
-        codexBinary, openCodeBinary, appMcpEndpoint: endpoint,
+        codexBinary, appMcpEndpoint: endpoint,
         auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
         admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
         abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
@@ -419,14 +403,13 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const managers = new ExecutionScopedNativeSessionManagerResolver(context => {
         const config = context.configuration.harness
         if (config.harness !== context.harness) throw new Error('Pinned harness mismatch')
-        if (config.harness === 'claude') throw new Error('ENG-03 native acceptance only qualifies Codex and OpenCode')
+        if (config.harness !== 'codex') throw new Error('The native fixture requires a Codex configuration.')
         return factories.allocate({
           harness: config.harness, role: 'workflow', appMcpAccess: 'scoped',
           ownerAgentId: context.agentId, workingDirectory: context.workingDirectory,
           processRecovery: registry.scope(`execution:${context.executionId}`),
           configured: { instanceId: context.configuration.id, instanceRevision: context.configuration.contentHash,
             driverId: config.harness, enabled: true, configuration: config },
-          ...(config.harness === 'opencode' && config.advanced ? { advancedConfiguration: config.advanced } : {}),
         }).manager
       })
       const validateContinuation = continuationValidator(livePool, locations)
@@ -441,8 +424,8 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           const { manager } = managers.resolve({ executionId: execution.id, agentId: execution.agentId,
             runId: execution.runId, attempt: execution.attempt, ...(input.purpose ? { purpose: input.purpose } : {}),
             harness: input.harness, workingDirectory: input.workingDirectory, configuration })
-          const inspector = manager instanceof CodexAppServerSessionManager ? codexMcpInspectorAdapter(manager)
-            : openCodeMcpInspectorAdapter(manager as OpenCodeNativeSessionManager)
+          if (!(manager instanceof CodexAppServerSessionManager)) throw new Error('The native fixture requires a Codex manager.')
+          const inspector = codexMcpInspectorAdapter(manager)
           const diagnosticInspector: typeof inspector = { async inspect(request) {
             const began = performance.now()
             try {
@@ -608,7 +591,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const nativeSessions = new Map(sessionRows.rows.map((row) => [row.execution_id, row.reference]))
     const intervals = [1, 2].map((index) => {
       const execution = byNode(index)
-      return execution && nativeInterval(execution, harnesses[index]!,
+      return execution && nativeInterval(execution,
         nativeSessions.get(execution.id)?.providerVersion ?? '', nativeEvents)
     })
     const overlap = intervals.every(Boolean) && Math.max(...intervals.map((item) => Date.parse(item!.start.occurredAt)))
@@ -697,20 +680,9 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
                 nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
               lane: lane && { observedStatus: lane.observedStatus, hasWriterLease: Boolean(lane.leaseToken),
                 currentTurnOrMessageId: lane.currentTurnOrMessageId },
-              lastEvents: history?.events.slice(-20).map(({ type, sequence, payload }) => {
-                const part = object(payload.part)
-                const state = object(part.state)
-                const info = object(payload.info)
-                const providerError = object(info.error)
-                return { type, sequence,
-                  partType: typeof part.type === 'string' ? part.type : undefined,
-                  tool: typeof part.tool === 'string' ? part.tool : undefined,
-                  toolStatus: typeof state.status === 'string' ? state.status : undefined,
-                  messageRole: typeof info.role === 'string' ? info.role : undefined,
-                  messageFinish: typeof info.finish === 'string' ? info.finish : undefined,
-                  providerErrorName: typeof providerError.name === 'string' ? providerError.name : undefined,
-                }
-              }) }
+              lastEvents: history?.events.slice(-20).map(({ type, sequence, payload }) => ({
+                type, sequence, payload: nativePersistenceRedactor(nativeSecrets).value(payload),
+              })) }
           }))
         }
         const requests = await pool.query<{ record: unknown }>(

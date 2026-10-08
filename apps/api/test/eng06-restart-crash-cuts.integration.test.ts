@@ -14,7 +14,7 @@ import { repeatDigest } from '../src/modules/runs/repeatResolution.js'
 import { canonicalRepeatEffect } from '../src/modules/run-graph/repeatPublication.js'
 import { readWorkflowCheckpoint } from '../src/modules/runs/repeatGraph.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { reserveFromExitedParent } from './helpers/eng06LaunchReservation.testSupport.js'
 import { holdCrashCut, observeCrashTask } from './helpers/eng06CrashCut.testSupport.js'
@@ -268,7 +268,7 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
           if (kind === 'approval') {
             const interaction = (await t.pending())[0]!
             expect(interaction).toBeDefined()
-            await t.service.respond({ kind: 'user', principal: t.principal }, br1002Response(interaction))
+            await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse(interaction))
           }
           expect(cut).toBeDefined()
           const original = cut!

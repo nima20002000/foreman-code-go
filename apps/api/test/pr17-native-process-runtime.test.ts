@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { EventEmitter } from 'node:events'
+
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PassThrough } from 'node:stream'
+
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, it } from 'vitest'
-import { ManagedOpenCodeServer } from '../src/modules/harnesses/opencodeTransport.js'
+
 import { runJsonlProcess, spawnOwnedStdioProcess, stopProcess } from '../src/modules/harnesses/process.js'
 import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { bootIdentity, identityAlive, processIdentity, sessionAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
@@ -127,7 +127,6 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 
-
   it('F11/F14: coalesces cleanup and recovers the exact receipt after GC; unrelated missing IDs stay unconfirmed', async () => {
     const f = fixture()
     try {
@@ -226,7 +225,6 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     }
   }, 10_000)
 
-
   it('F14: an inspection-process cleanup can retry after rejection and release its retained Stop handle', async () => {
     let child: import('node:child_process').ChildProcess | undefined
     const original = process.kill
@@ -252,38 +250,4 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     }
   }, 10_000)
 
-  it('F14: OpenCode retries failed cleanup without losing the child, credential or admission fence', async () => {
-    const server = new ManagedOpenCodeServer({ binary: 'must-not-start', workingDirectory: tmpdir(), ownerAgentId: owner,
-      environment: { agentId: owner, variables: { GRAPHQL_MCP_TOKEN: 'fixture-secret' } } })
-    const child = Object.assign(new EventEmitter(), {
-      pid: 2_000_000_000, exitCode: 0, signalCode: null,
-      stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),
-    }) as unknown as ChildProcessWithoutNullStreams
-    const seam = server as unknown as { child: typeof child | undefined; password: string | undefined; baseUrl: string | undefined }
-    seam.child = child; seam.password = 'fixture-password'; seam.baseUrl = 'http://127.0.0.1:1'
-    const original = process.kill
-    let failed = true; let calls = 0
-    process.kill = ((target: number, signal?: NodeJS.Signals | number) => {
-      if (target !== -child.pid!) return original(target, signal)
-      calls += 1
-      if (failed) throw Object.assign(new Error('fixture kill failure'), { code: 'EPERM' })
-      return true
-    }) as typeof process.kill
-    try {
-      const first = server.dispose()
-      assert.equal(server.dispose(), first)
-      await assert.rejects(first, /fixture kill failure/)
-      assert.equal(seam.child, child)
-      assert.equal(seam.password, 'fixture-password')
-      assert.ok(server.credentialEnvironmentFingerprint)
-      await assert.rejects(server.ensure(), /shutdown is unconfirmed/)
-      failed = false
-      await server.dispose()
-      assert.equal(calls, 4)
-      assert.equal(seam.child, undefined)
-      assert.equal(server.credentialEnvironmentFingerprint, undefined)
-      await server.dispose()
-      assert.equal(calls, 4)
-    } finally { process.kill = original }
-  })
 })

@@ -77,7 +77,7 @@ describe('NIM-2691 native work result boundary', () => {
     expect(nativeCalls).toBe(0)
   })
 
-  it.each(['codex', 'opencode'] as const)('delivers the received return correlation unchanged to %s', async (harness) => {
+  it.each(['codex'] as const)('delivers the received return correlation unchanged to %s', async (harness) => {
     const fixture = makeCurrentWorkflowFixture('work-return-prompt')
     const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
       ...fixture.version.definition, handoffs: { contractVersion: 1 },
@@ -85,10 +85,7 @@ describe('NIM-2691 native work result boundary', () => {
     const node = version.definition.nodes[1]!
     if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
     const configuration = AgentConfigurationVersionSchema.parse({ ...fixture.configurations[1],
-      harness: harness === 'codex' ? fixture.configurations[1]!.harness : {
-        harness: 'opencode', model: 'opencode-go/fixture', variant: 'high', nativeAgent: 'build',
-        thinking: false, autoApprove: false,
-      },
+      harness: fixture.configurations[1]!.harness,
     })
     const directory = await privateFixtureDirectory('return-prompt-')
     try {

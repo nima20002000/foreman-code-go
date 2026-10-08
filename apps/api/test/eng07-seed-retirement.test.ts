@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, AgentSchema } from '@foreman-code/contracts'
+import { DEFAULT_HARNESS_DEFAULTS, AgentConfigurationVersionSchema, AgentSchema } from '@foreman-code/contracts'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, ExecutableWorkflowV3Schema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { readImmutableWorkflowVersion } from '../src/modules/workflows/immutableRead.js'
@@ -42,8 +42,8 @@ describe('ENG07 R01 clean-start seed uses real current V3 read contracts', () =>
     expect(workflow.entryNodeId).toBe('node-researcher')
     expect(configurations.map((configuration) => configuration.productRole)).toEqual(['coder', 'coder', 'coder'])
     expect(agents.map((agent) => agent.productRole)).toEqual(['coder', 'coder', 'coder'])
-    expect(configurations.map((configuration) => configuration.harness.harness)).toEqual(['codex', 'opencode', 'codex'])
-    expect(configurations[1]!.harness.model).toBe('opencode-go/deepseek-v4.1-flash')
+    expect(configurations.map((configuration) => configuration.harness.harness)).toEqual(['codex', 'codex', 'codex'])
+    expect(configurations[1]!.harness.model).toBe(DEFAULT_HARNESS_DEFAULTS.codex.model)
     expect(ExecutableWorkflowV3Schema.parse({ version, configurations })).toEqual({ version, configurations })
     expect(statement.text).toMatch(/execution_semantics_version\) values \(\$1, \$2, \$3, \$4, \$5, \$6::jsonb, 3\)/)
     expect(version.contentHash).toBe(`sha256:${createHash('sha256').update(canonicalGraphJson({

@@ -65,25 +65,6 @@ describe.skipIf(!databaseUrl)('FIL-05 PostgreSQL durability and compare-and-set'
     expect(await first.artifact('b'.repeat(64), artifact.artifactId)).toBeUndefined()
   })
 
-  it('recovers only the original OpenCode file context and revokes every prior credential for that context', async () => {
-    const original = { ...context, nativeSessionId: randomUUID(), allowMutation: false,
-      allowedTools: ['files.read' as const] }
-    const hashes = Array.from({ length: 4 }, () => createHash('sha256').update(randomUUID()).digest('hex'))
-    await first.putSession(hashes[0]!, { context: original, expiresAt: '2026-01-01T01:00:00.000Z', transport: 'opencode' })
-    await first.putSession(hashes[1]!, { context: original, expiresAt: '2026-01-01T01:00:00.000Z', transport: 'opencode' })
-    await first.putSession(hashes[2]!, { context: original, expiresAt: '2026-01-01T01:00:00.000Z' })
-    const foreign = { ...original, turnId: randomUUID() }
-    await first.putSession(hashes[3]!, { context: foreign, expiresAt: '2026-01-01T01:00:00.000Z', transport: 'opencode' })
-    expect(await second.revokeAcceptedSessions({ ...original, allowMutation: true })).toBe(false)
-    expect(await first.session(hashes[0]!, now)).toBeDefined()
-    expect(await second.revokeAcceptedSessions(original)).toBe(true)
-    expect(await first.session(hashes[0]!, now)).toBeUndefined()
-    expect(await first.session(hashes[1]!, now)).toBeUndefined()
-    expect(await first.session(hashes[2]!, now)).toBeDefined()
-    expect(await first.session(hashes[3]!, now)).toBeDefined()
-    expect(await new PostgresFileToolRepository(pool!).revokeAcceptedSessions(original)).toBe(true)
-  })
-
   it('deduplicates immutable copy receipts and rejects conflicting reuse', async () => {
     const receipt: CopyReceipt = { ownerPrincipalId: 'owner', commandId: randomUUID(), inputHash: 'b'.repeat(64),
       result: { value: { artifactId: randomUUID(), source: { fileId: 'file', revisionId: 'revision' },

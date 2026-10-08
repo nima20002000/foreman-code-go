@@ -25,7 +25,7 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
   const access = new PostgresAccessService(pool)
   const clients: Client[] = []
   const modelOptions = async () => HarnessOptionsResultSchema.parse({
-    harness: 'opencode', providerVersion: '1.18.31', authenticated: true,
+    harness: 'codex', providerVersion: '0.154.0', authenticated: true,
     models: (JSON.parse(await readFile(cache, 'utf8')) as string[]).map((id) => ({
       id, name: id, reasoningEfforts: [], variants: [''], serviceTiers: [],
     })), nativeAgents: [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
@@ -33,7 +33,8 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
   const native = {
     options: vi.fn(modelOptions),
     refreshOptions: vi.fn(async (_harness: string, refresh: string) => {
-      if (refresh === 'upstream') await writeFile(cache, JSON.stringify(['provider/new-model']))
+      if (refresh === 'upstream') throw new Error('Upstream refresh is unsupported')
+      await writeFile(cache, JSON.stringify(['provider/new-model']))
       return modelOptions()
     }),
   }
@@ -65,39 +66,27 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
     expect(readerTools.map((tool) => tool.name)).toContain('harness_options_refresh')
     expect(readerTools.map((tool) => tool.name)).not.toContain('opencode_models_cache_update')
     expect(readerTools.find((tool) => tool.name === 'harness_options_refresh')?.annotations?.readOnlyHint).toBe(true)
-    expect((await updater.listTools()).tools.find((tool) => tool.name === 'opencode_models_cache_update')?.annotations?.readOnlyHint).toBe(false)
+    expect((await updater.listTools()).tools.map(tool => tool.name)).not.toContain('opencode_models_cache_update')
     expect((await restricted.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_options_refresh')
-    const deniedCall = await restricted.callTool({ name: 'harness_options_refresh', arguments: { harness: 'opencode' } })
+    const deniedCall = await restricted.callTool({ name: 'harness_options_refresh', arguments: { harness: 'codex' } })
       .then((result) => result.isError === true, () => true)
     expect(deniedCall).toBe(true)
-    const deniedUpdate = await reader.callTool({ name: 'opencode_models_cache_update', arguments: { harness: 'opencode' } })
+    const deniedUpdate = await reader.callTool({ name: 'opencode_models_cache_update', arguments: { harness: 'codex' } })
       .then((result) => result.isError === true, () => true)
     expect(deniedUpdate).toBe(true)
     expect(native.refreshOptions).not.toHaveBeenCalled()
-    const before = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'opencode' } })).structuredContent)
+    const before = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'codex' } })).structuredContent)
     expect(before.models.map((model) => model.id)).toEqual(['provider/old-model'])
-    const local = await app.inject({ method: 'POST', url: '/api/management/harnesses/opencode/refresh',
+    const local = await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/refresh',
       headers: { authorization: `Bearer ${readerGrant.token}`, host: 'localhost' }, payload: {} })
     expect(local.statusCode).toBe(200)
-    expect(HarnessOptionsResultSchema.parse(local.json()).models[0]?.id).toBe('provider/old-model')
-    expect(native.refreshOptions).toHaveBeenLastCalledWith('opencode', 'catalog')
+    expect(HarnessOptionsResultSchema.parse(local.json()).models[0]?.id).toBe('provider/new-model')
+    expect(native.refreshOptions).toHaveBeenLastCalledWith('codex', 'catalog')
     const localMcp = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_refresh',
-      arguments: { harness: 'opencode' } })).structuredContent)
-    expect(localMcp.models.map((model) => model.id)).toEqual(['provider/old-model'])
-    const deniedHttp = await app.inject({ method: 'POST', url: '/api/management/harnesses/opencode/refresh',
-      headers: { authorization: `Bearer ${readerGrant.token}`, host: 'localhost' }, payload: { refresh: 'upstream' } })
-    expect(deniedHttp.statusCode).toBe(403)
-    expect(native.refreshOptions).toHaveBeenCalledTimes(2)
-    expect(JSON.parse(await readFile(cache, 'utf8'))).toEqual(['provider/old-model'])
-    const refreshed = HarnessOptionsResultSchema.parse((await updater.callTool({ name: 'opencode_models_cache_update',
-      arguments: { harness: 'opencode' } })).structuredContent)
-    expect(refreshed.models.map((model) => model.id)).toEqual(['provider/new-model'])
-    const updateHttp = await app.inject({ method: 'POST', url: '/api/management/harnesses/opencode/refresh',
-      headers: { authorization: `Bearer ${updaterGrant.token}`, host: 'localhost' }, payload: { refresh: 'upstream' } })
-    expect(updateHttp.statusCode).toBe(200)
-    expect(native.refreshOptions).toHaveBeenLastCalledWith('opencode', 'upstream')
-    expect(invalidateChecks).toHaveBeenCalledTimes(4)
-    const readback = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'opencode' } })).structuredContent)
+      arguments: { harness: 'codex' } })).structuredContent)
+    expect(localMcp.models.map((model) => model.id)).toEqual(['provider/new-model'])
+    expect(invalidateChecks).toHaveBeenCalledTimes(2)
+    const readback = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'codex' } })).structuredContent)
     expect(readback.models.map((model) => model.id)).toEqual(['provider/new-model'])
     expect(JSON.parse(await readFile(cache, 'utf8'))).toEqual(['provider/new-model'])
   } finally {

@@ -20,11 +20,11 @@ const providerShapes = [
     nativeRequestId: 'codex-request-eng04-d-0001',
   },
   {
-    harness: 'opencode',
-    providerVersion: 'opencode-provider-shaped-current',
-    nativeSessionId: 'opencode-session-eng04-d-0001',
-    nativeTurnId: 'opencode-turn-eng04-d-0001',
-    nativeRequestId: 'opencode-request-eng04-d-0001',
+    harness: 'claude',
+    providerVersion: 'claude-provider-shaped-current',
+    nativeSessionId: 'claude-session-eng04-d-0001',
+    nativeTurnId: 'claude-turn-eng04-d-0001',
+    nativeRequestId: 'claude-request-eng04-d-0001',
   },
 ] as const
 

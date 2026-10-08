@@ -163,7 +163,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
   }
 }
 class NativeFixture implements NativeHarnessSessionManager {
-  readonly harness: 'codex' | 'opencode'
+  readonly harness: 'codex'
   starts: NativeTurnInput[] = []
   attachments: NativeSessionStart[] = []
   cancellations: Array<{ session: string; turn: string | undefined }> = []
@@ -179,7 +179,7 @@ class NativeFixture implements NativeHarnessSessionManager {
   steerReadFailure = false
   cancelFailures = 0
   complete = new Set<string>()
-  constructor(harness: 'codex' | 'opencode' = 'codex') { this.harness = harness }
+  constructor(harness: 'codex' = 'codex') { this.harness = harness }
   async capabilities() {
     return { provider: this.harness, providerVersion: 'fixture', persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: false, mcpDetection: false, supportedInteractionKinds: [] }
@@ -323,7 +323,7 @@ describe('G1 cancellation and reconciliation', () => {
     assert.deepEqual(f.native.starts, [])
   })
 
-  for (const harness of ['codex', 'opencode'] as const) for (const held of ['create', 'bind'] as const) {
+  for (const harness of ['codex'] as const) for (const held of ['create', 'bind'] as const) {
     it(`A2-PF-02 Stop during live ${harness} ${held} does not poison successful creation`, async () => {
       const f = await fixture(new MemoryRepository(), new NativeFixture(harness))
       f.repository.row.native_session_id = null; f.repository.row.provider_version = null

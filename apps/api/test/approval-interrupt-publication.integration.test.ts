@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { streamingOperator } from './helpers/streamingRunOperator.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { deferred, postgresEnabled, readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
 
@@ -72,11 +72,11 @@ describe.skipIf(!postgresEnabled)('approval interrupt publication', () => {
         expiresAt: new Date(Date.now() + 600_000),
         grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: { runIds: [run.id] } }] })
       await expect(f.service.respond({ kind: 'user', principal: operator.reader.principal },
-        br1002Response(interaction))).rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
+        approvalResponse(interaction))).rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
       expect((await f.repository.get(interaction.id))?.status).toBe('pending')
       let responded = false
       let responseError: unknown
-      responseTask = f.service.respond({ kind: 'user', principal: user.principal }, br1002Response(interaction))
+      responseTask = f.service.respond({ kind: 'user', principal: user.principal }, approvalResponse(interaction))
         .catch((error: unknown) => { responseError = error }).finally(() => { responded = true })
       await expect.poll(() => responded, { timeout: 5_000 }).toBe(true)
       expect(responseError).toBeUndefined()
@@ -98,7 +98,7 @@ describe.skipIf(!postgresEnabled)('approval interrupt publication', () => {
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 1, attaches: 0 })
       expect(await f.runs.hasPendingCleanup(run.id)).toBe(false)
       await (await graphParity(f.db.pool, { ...f.f.scope, runId: run.id })).compare()
-      await f.service.respond({ kind: 'user', principal: user.principal }, br1002Response(interaction))
+      await f.service.respond({ kind: 'user', principal: user.principal }, approvalResponse(interaction))
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 1, attaches: 0 })
       expect(operator.dispatchErrors).toEqual([])
     } finally {
@@ -115,7 +115,7 @@ describe.skipIf(!postgresEnabled)('approval interrupt publication', () => {
           expiresAt: new Date(Date.now() + 600_000),
           grants: [{ actions: ['interactions:respond'], scope: { runIds: [run.id] } }] })
         const response = await f.service.respond({ kind: 'user', principal: user.principal },
-          br1002Response(interaction))
+          approvalResponse(interaction))
         expect(response.interaction.deliveryState).toBe('delivered')
       }
       const stopped = await graphRpc(operator.app, operator.writer.token, 'tools/call', {

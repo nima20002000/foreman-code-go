@@ -169,7 +169,7 @@ it('revokes a superseded token when a new process credential is prepared', async
   await pool.query('update harness_executions set record=$2::jsonb where id=$1', [execution.id, JSON.stringify(starting)])
   const issued = await credentials.issueForExecution(execution.id)
   const launch = new WorkerLaunchCredentialService({ preflight: async () => ({}) } as never, credentials, 'runner-1', 30_000)
-  const fresh = await launch.prepare({ executionId: execution.id, harness: 'opencode', workingDirectory: '/project' })
+  const fresh = await launch.prepare({ executionId: execution.id, harness: 'codex', workingDirectory: '/project' })
   expect(fresh.credential.principalId).not.toBe(issued.principalId)
   expect(fresh.credential.environment.agentId).toBe(issued.environment.agentId)
   await expect(access.authenticate(issued.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })

@@ -5,7 +5,7 @@ type LauncherOperation =
   | { kind: 'install'; launcher: string }
   | { kind: 'older-install'; launcher: string; snapshot?: LauncherInstallation }
   | { kind: 'register'; launcher: string; installation: LauncherInstallation }
-  | { kind: 'recognize'; launcher: string; harness: 'codex' | 'opencode'; entry: Record<string, unknown> }
+  | { kind: 'recognize'; launcher: string; harness: 'codex'; entry: Record<string, unknown> }
   | { kind: 'upgrade'; home: string }
 
 const launcherModule = new URL('../../src/modules/harnesses/appMcpLauncher.ts', import.meta.url).href

@@ -9,7 +9,7 @@ import { PostgresAppInteractionService } from '../src/modules/interactions/app.j
 import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -68,7 +68,7 @@ describe.skipIf(!postgresEnabled)('reviewer assignment and authenticated decisio
         clients.push(client)
         await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), { authProvider: { token: async () => token } }))
         expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain('interaction_respond')
-        const denied = await client.callTool({ name: 'interaction_respond', arguments: br1002Response(f.interaction) })
+        const denied = await client.callTool({ name: 'interaction_respond', arguments: approvalResponse(f.interaction) })
         expect(denied.isError).toBe(true)
         expect(JSON.stringify(denied.content)).toContain(code)
       }

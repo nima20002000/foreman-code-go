@@ -32,7 +32,6 @@ import { registerProductionFileTools } from '../../src/modules/files/tools/produ
 import { postgresCodexChatFiles } from '../../src/modules/harnesses/codexFiles/chatAdmission.js'
 import { productionCodexChatFiles, type CodexChatFileAdmission } from '../../src/modules/harnesses/codexFiles/production.js'
 import type { CodexFileHostLease } from '../../src/modules/harnesses/codexFiles/port.js'
-import { nativeMessageId } from '../../src/modules/harnesses/opencodeProtocol.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { registerAgentChatRoutes } from '../../src/routes/agentChat.js'
@@ -50,27 +49,27 @@ export async function waitFor(check: () => Promise<boolean>): Promise<void> {
 /** Only native I/O/host materialization are synthetic. The production bridge,
  * services, grants, files, byte storage, publication ledger and chat rows are real. */
 class PausedNative implements NativeHarnessSessionManager {
+  readonly harness = 'codex' as const
   holdNext = false
   steerCalls = 0
   starts = 0
   onFinish: (() => Promise<void>) | undefined
   private gate: ReturnType<typeof deferred<void>> | undefined
   private histories = new Map<string, NativeHistory>()
-  constructor(readonly harness: 'codex' | 'opencode') {}
   async capabilities() {
-    return { provider: this.harness, providerVersion: 'fixture-1', persistentSessions: true, reconnect: true,
+    return { provider: 'codex' as const, providerVersion: 'fixture-1', persistentSessions: true, reconnect: true,
       sameRequestResponses: true, cancellation: true, history: true, configurationInspection: false,
       mcpDetection: false, supportedInteractionKinds: [] }
   }
   inspectMcp(): ReturnType<NativeHarnessSessionManager['inspectMcp']> { throw new Error('unused') }
   async createSession(): Promise<NativeSessionReference> {
-    return { harness: this.harness, providerVersion: 'fixture-1', nativeSessionId: randomUUID() }
+    return { harness: 'codex', providerVersion: 'fixture-1', nativeSessionId: randomUUID() }
   }
   async attachSession(session: NativeSessionReference) { return session }
   async forkSession() { return this.createSession() }
   async *startTurn(_session: NativeSessionReference, input: NativeTurnInput) {
     this.starts++
-    const id = this.harness === 'opencode' ? nativeMessageId(input.clientCorrelationId) : randomUUID()
+    const id = randomUUID()
     const history: NativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: id, events: [], pendingInteractions: [] }
     this.histories.set(input.clientCorrelationId, history)
     const gate = this.holdNext ? deferred() : undefined
@@ -96,7 +95,7 @@ class PausedNative implements NativeHarnessSessionManager {
   async close() { this.finish() }
 }
 
-export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'codex', selectedRun = false) {
+export async function afPublicationFixture({ selectedRun = false }: { selectedRun?: boolean } = {}) {
   const database = await agent3Database()
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!, 'af-publications-'))
   const project = join(root, 'project'), hostRoot = join(root, 'host')
@@ -109,9 +108,7 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
     finally { await database.close(); await removeFixtureDirectory(root) }
   })
   const seed = makeCurrentWorkflowFixture(randomUUID().slice(0, 8), 'sequential')
-  for (const configuration of seed.configurations) configuration.harness = harness === 'codex'
-    ? { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' }
-    : { ...DEFAULT_HARNESS_DEFAULTS.opencode }
+  for (const configuration of seed.configurations) configuration.harness = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' }
   const fixture = await seedAgent3(database.pool, project, seed, { run: selectedRun })
   const access = new PostgresAccessService(database.pool)
   const owner = await access.issue({ name: 'AF publication owner', audience: 'operator',
@@ -135,7 +132,7 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
     },
     (id) => {
       let native = natives.get(id)
-      if (!native) { native = new PausedNative(harness); natives.set(id, native) }
+      if (!native) { native = new PausedNative(); natives.set(id, native) }
       return native
     }, join(root, 'runtime'))
   const chat = agent
@@ -193,7 +190,7 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
     await waitFor(async () => !!(await repository.turn(conversationId, input.requestId))?.nativeTurnId)
     const turn = (await repository.turn(conversationId, input.requestId))!
     const row = (await repository.get(conversationId))!
-    const session: NativeSessionReference = { harness, providerVersion: row.provider_version!, nativeSessionId: row.native_session_id! }
+    const session: NativeSessionReference = { harness: 'codex', providerVersion: row.provider_version!, nativeSessionId: row.native_session_id! }
     return { input, turn, session, correlation: agentChatCorrelation(conversationId, input.requestId) }
   }
   const stored = async (messageId: string) => (await database.pool.query<{
@@ -240,7 +237,8 @@ export async function afPublicationFixture(harness: 'codex' | 'opencode' = 'code
   }
   async function nextTurn() {
     const next = await pause([await upload()])
-    if (harness === 'codex') { const { bridge } = await prepareCodex(next); await bridge.close() }
+    const { bridge } = await prepareCodex(next)
+    await bridge.close()
     native.finish(); await settle()
     return next
   }

@@ -13,7 +13,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { AgentChatService, type AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { OperatorChatService, type OperatorChatAuthority, type NativeManagerResolver } from '../src/modules/conversations/operatorChat.js'
-import { nativeCorrelation, PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
+import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { createAdmittedNativeManager } from '../src/modules/harnesses/admittedManager.js'
@@ -27,9 +27,6 @@ import { filePorts, fileScope, sourceRef } from './fixtures/codex-file-runtime-h
 import { nativeNonSubmission } from '../src/modules/conversations/nativeNonSubmission.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
-import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
-import { OpenCodeNativeSessionManager } from '../src/modules/harnesses/opencodeServer.js'
-import { FixtureServer, configuration as openCodeConfiguration, advanced as openCodeAdvanced } from './opencode-fixtures.js'
 
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -53,7 +50,6 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   let resolver: NativeManagerResolver
   let authority: OperatorChatAuthority
   let services: OperatorServices
-  let openCodeServer: FixtureServer | undefined
   const clients: Client[] = []
   const settings = { ...operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex), harness: 'codex' as const,
     model: 'test-model', reasoningEffort: 'low' as const, serviceTier: 'standard' as const }
@@ -63,7 +59,6 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     native = await deliveryFixture()
     operatorFiles = undefined
     agentFiles = undefined
-    openCodeServer = undefined
     const fixture = makeCurrentWorkflowFixture(`delivery-${randomUUID()}`, 'single')
     fixture.configurations = fixture.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
       ...configuration, harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'test-model',
@@ -106,13 +101,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     resolver = (configuration, id) => {
       let owner = operatorOwners.get(id)
       if (!owner) {
-        if (configuration.harness.harness === 'opencode') {
-          assert(openCodeServer)
-          const server = openCodeServer
-          owner = createAdmittedNativeManager('opencode', async () => ({
-            manager: new OpenCodeNativeSessionManager({ server, ownerAgentId: configuration.operatorId, appMcpAccess: 'scoped' }),
-          })).manager
-        } else owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(operatorFiles) })).manager
+        owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(operatorFiles) })).manager
         operatorOwners.set(id, owner)
       }
       return owner
@@ -339,48 +328,6 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       assert.equal((await native.wire('turn/start')).length, 2)
     })
   }
-
-  it('Operator retires actual OpenCode MCP preflight failure and retries after confirmed cleanup', async () => {
-    openCodeServer = new FixtureServer()
-    const harness = openCodeConfiguration()
-    harness.advanced = { ...openCodeAdvanced(), mcp: { ...openCodeAdvanced().mcp, serverEnabled: { missing: true } } }
-    const defaults = new PostgresFoundationSettingsRepository(database.pool)
-    const before = await defaults.getAgentDefaults()
-    await defaults.updateAgentDefaults({ ...before.value,
-      operator: { ...before.value.operator, harness } }, before.revision)
-    const id = await createOperator()
-    const refused = await writer.callTool({ name: 'operator_chat_send', arguments: {
-      conversationId: id, request: { requestId: 'opencode-preflight', content: 'A user message',
-        settings: operatorChatSettings(harness) },
-    } })
-    assert.notEqual(refused.isError, true, JSON.stringify(refused))
-    await until(async () => (await readOperator(id)).turnState === 'error' || undefined)
-    const row = (await messages.active(id))!
-    assert.equal(row.active_request_id, null)
-    assert.equal(row.native_session_id, null)
-    assert.equal(openCodeServer.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 0)
-    assert(openCodeServer.disposals > 0)
-    const receipt = (await database.pool.query(`select result,retryable from operator_conversation_turns
-      where conversation_id=$1 and request_id=$2`, [id, 'opencode-preflight'])).rows[0]
-    assert.equal(receipt.result.error.code, 'OPENCODE_MCP_SERVER_NOT_CONFIGURED')
-    assert.equal(receipt.retryable, true)
-    openCodeServer.config = { mcp: { missing: { type: 'remote', url: 'http://fixture.invalid/mcp', enabled: false } } }
-    openCodeServer.onPrompt = (sessionId) => {
-      openCodeServer!.complete(nativeCorrelation(id, 'opencode-retry'), 'Retry completed', sessionId)
-    }
-    const retry = await writer.callTool({ name: 'operator_chat_send', arguments: {
-      conversationId: id, request: { requestId: 'opencode-retry', content: 'Retry',
-        settings: operatorChatSettings(openCodeConfiguration()) },
-    } })
-    assert.notEqual(retry.isError, true, JSON.stringify(retry))
-    await until(async () => (await readOperator(id)).turnState === 'idle' || undefined)
-    assert.equal(openCodeServer.calls.filter((call) => call.method === 'POST' && call.path.startsWith('/session?')).length, 1)
-    assert.equal(openCodeServer.calls.filter((call) => call.path.includes('/prompt_async')).length, 1)
-    assert.equal(openCodeServer.calls.filter((call) => call.method === 'POST' && call.path.includes('/mcp/missing/connect')).length, 1)
-    assert.deepEqual(openCodeServer.mcp.missing, { status: 'connected' })
-    assert.equal((await readOperator(id)).messages.filter((message) => message.role === 'assistant').at(-1)?.content,
-      'Retry completed')
-  })
 
   for (const kind of ['agent', 'operator'] as const) {
     it(`${kind} recovers every completed assistant item after startup persistence fails without resending`, async () => {
@@ -681,7 +628,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     for (const [requestId, configurationId, harness] of [
       ['another-request', row.agent_configuration_version_id, 'codex'],
       ['late', 'another-configuration', 'codex'],
-      ['late', row.agent_configuration_version_id, 'opencode'],
+      ['late', row.agent_configuration_version_id, 'claude'],
     ] as const) {
       await assert.rejects(repository.bindCreatedSession(id, requestId, configurationId, { ...session, harness },
         { outcome: 'failed', error: { code: 'FIXTURE_NATIVE_REJECTION', message: 'Native creation was rejected.', retryable: true } }),

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 
 import type { NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
@@ -104,34 +103,4 @@ describe('PR17 #2: dispatcher failure recovery', () => {
     await dispatcher.shutdown()
     await f.dispatcher.shutdown()
   })
-})
-
-
-it('PR17 #2/#5: OpenCode cleanup reads history without invoking side-effecting reconciliation', async () => {
-  const original = reviewJob()
-  const root = `msg_${createHash('sha256').update(original.correlationId).digest('hex').slice(0, 24)}`
-  const coordination = reviewCoordination({ ...original, provider: 'opencode', nativeSessionId: 'open-review',
-    providerTurnOrMessageId: root, state: 'failed', error: { code: 'FAILURE', message: 'Original failure' },
-    cleanup: { nativeState: 'pending', credentialState: 'not_required', interruptState: 'acknowledged' } })
-  let historyReads = 0
-  const manager = { harness: 'opencode',
-    reconcile: async () => { throw new Error('cleanup must not invoke mutating reconciliation') },
-    cancel: async () => { throw new Error('the prior interrupt must not be replayed') },
-    history: async (): Promise<NativeHistory> => {
-      historyReads++
-      return { pendingInteractions: [], events: [{ type: 'message.updated', sequence: 0, occurredAt: new Date().toISOString(),
-        payload: { info: { id: 'assistant-final', sessionID: 'open-review', parentID: root, role: 'assistant',
-          finish: 'stop', time: { completed: Date.now() } } } }] }
-    },
-  } as unknown as NativeHarnessSessionManager
-  const runtime = { captureReviewNative: coordination.captureReviewNative,
-    recoverReviewCleanup: async () => ({ manager, resident: true, closed: false }) } as unknown as ReviewerNativeRuntime
-  const dispatcher = new ReviewerDispatcher(coordination.repository, runtime)
-  const settled = await dispatcher.dispatchNext('reviewer', 'worker')
-  assert.equal(historyReads, 1)
-  assert.equal(settled?.state, 'failed')
-  assert.equal(settled?.cleanup?.nativeState, 'terminal')
-  assert.ok(settled?.cleanup?.completedAt)
-  assert.equal(coordination.lane.observedStatus, 'idle')
-  await dispatcher.shutdown()
 })

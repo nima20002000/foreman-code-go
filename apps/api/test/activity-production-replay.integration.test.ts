@@ -76,7 +76,7 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   closes.push(() => removeFixtureDirectory(directory))
   const workspace = await createActivityReplayWorkspace(directory)
   const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: workspace.harnessWorkspaceRoot,
-    PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex', OPENCODE_BINARY: '/recorded-no-native-opencode' })
+    PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex',  })
   config.workspaceStorageRoot = workspace.workspaceStorageRoot
   config.fileStorageRoot = await createActivityReplayFileStorage()
   closes.push(() => removeFixtureDirectory(config.fileStorageRoot!))

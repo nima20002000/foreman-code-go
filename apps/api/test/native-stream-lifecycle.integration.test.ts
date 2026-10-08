@@ -4,7 +4,7 @@ import { DomainError } from '../src/modules/errors.js'
 import { streamingOperator } from './helpers/streamingRunOperator.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { br1002Response } from './helpers/wave25Br1002OpenCodeRuntime.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
 import { deferred, postgresEnabled, readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
 
@@ -313,7 +313,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 0 })
       release.resolve()
       await expect.poll(() => f.provider.closedSessions.has(siblingSessionId!), { timeout: 5_000 }).toBe(true)
-      await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction!))
+      await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction!))
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 1, attaches: 0 })
       expect(await f.receipts()).toHaveLength(1)
@@ -355,7 +355,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       `select count(*)::int as count from harness_native_events n join harness_executions e on e.id=n.execution_id
        where e.run_id=$1 and n.record->>'type'='native.notification'`, [f.f.run.id])
     expect(raw.rows[0]?.count).toBe(512)
-    await f.service.respond({ kind: 'user', principal: f.principal }, br1002Response(interaction!))
+    await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction!))
     expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
     expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 1 })
     expect(await f.receipts()).toHaveLength(1)

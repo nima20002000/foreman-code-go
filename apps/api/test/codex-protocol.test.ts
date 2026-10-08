@@ -147,7 +147,7 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
   })
 
   it('keeps diagnostic identity across hardlinks and rejects changed executable content', async () => {
-    const probe = nativeCompatibilityProbe({ codex: f.binary, opencode: f.binary }, f.directory, process.env)
+    const probe = nativeCompatibilityProbe({ codex: f.binary }, f.directory, process.env)
     const signal = AbortSignal.timeout(5000)
     try {
       const installed = await probe.inspect('codex', signal)

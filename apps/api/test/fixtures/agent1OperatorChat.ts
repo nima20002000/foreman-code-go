@@ -26,7 +26,6 @@ export function operator(id = 'human-owner'): ManagementPrincipal {
     grants: [{ scope: {}, actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond', 'settings:update', 'agents:read'] }] }
 }
 export function memoryConversation(configuration: OperatorConfigurationVersion, ownerId = 'human-owner', id = 'chat-one') {
-  if (configuration.harness.harness === 'claude') throw new Error('Memory Operator fixture supports only Codex and OpenCode')
   const now = new Date()
   const conversation: Conversation = { id, agentId: configuration.operatorId, scope: 'application',
     operatorConfigurationVersionId: configuration.id, status: 'open', title: 'Test conversation', createdAt: now.toISOString(), updatedAt: now.toISOString() }

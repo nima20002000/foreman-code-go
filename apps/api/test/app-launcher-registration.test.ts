@@ -31,7 +31,7 @@ async function fixture() {
   return { directory, launcher, runtimes }
 }
 
-it.each(['codex', 'opencode'] as const)(
+it.each(['codex'] as const)(
   '%s registrations survive a stale metadata writer and recognition in a new process', async harness => {
     const { directory, launcher, runtimes } = await fixture()
     const alias = join(directory, 'saved-mcp')

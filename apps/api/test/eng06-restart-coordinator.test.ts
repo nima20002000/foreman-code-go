@@ -18,7 +18,7 @@ function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
     getExecutionConfiguration: async () => AgentConfigurationVersionSchema.parse({
       id: db.state.execution.agentConfigurationVersionId, agentId: db.state.execution.agentId,
       workspaceId: 'workspace', version: 1, productRole: 'orchestrator',
-      harness: DEFAULT_HARNESS_DEFAULTS.opencode, prompt: {}, assignedSkills: [],
+      harness: DEFAULT_HARNESS_DEFAULTS.codex, prompt: {}, assignedSkills: [],
       contentHash: 'sha256:recovery-fixture', createdAt: db.state.execution.createdAt,
     }),
     getRepeatSnapshot: async () => structuredClone(snapshot),
@@ -140,7 +140,7 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
   it('blocks the delivery reconciler from allocating a cold requester before the Run recovery scan', async () => {
     const f = fixture(); f.state.execution.state = 'waiting'
     await assert.rejects(f.coordinator.attachOwnedSession({ executionId: f.state.execution.id,
-      agentId: f.state.execution.agentId, harness: 'opencode', workingDirectory: f.state.execution.workingDirectory! },
+      agentId: f.state.execution.agentId, harness: 'codex', workingDirectory: f.state.execution.workingDirectory! },
     f.state.session!), { code: 'NATIVE_SESSION_RECOVERY_REQUIRED' })
     assert.deepEqual(f.calls, [])
     assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)

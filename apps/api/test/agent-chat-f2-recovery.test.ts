@@ -81,7 +81,7 @@ class MemoryRepository extends PostgresAgentChatRepository {
   }
 }
 class NativeFixture implements NativeHarnessSessionManager {
-  readonly harness: 'codex' | 'opencode'
+  readonly harness = 'codex' as const
   histories = new Map<string, NativeHistory>()
   attached: NativeSessionStart[] = []
   prompts: NativeTurnInput[] = []
@@ -91,7 +91,6 @@ class NativeFixture implements NativeHarnessSessionManager {
   loseTurnAcknowledgement = false
   holdStream = false
   releaseStream?: () => void
-  constructor(harness: 'codex' | 'opencode' = 'codex') { this.harness = harness }
   async capabilities() {
     return { provider: this.harness, providerVersion: 'fixture', persistentSessions: true, reconnect: true, sameRequestResponses: true,
       cancellation: true, history: true, configurationInspection: false, mcpDetection: false, supportedInteractionKinds: [] }
@@ -237,8 +236,9 @@ describe('F2 Agent chat native recovery', () => {
 
   for (const delivery of ['submitting', 'accepted'] as const) {
     it(`A-R10 repairs startup delivery after the ${delivery} acknowledgement boundary`, async () => {
-      const repository = new MemoryRepository(); repository.row.harness = 'opencode'; repository.storedReceipts[0]!.delivery = delivery
-      const f = await makeService(repository, new NativeFixture('opencode'))
+      const repository = new MemoryRepository()
+      repository.storedReceipts[0]!.delivery = delivery
+      const f = await makeService(repository, new NativeFixture())
       f.native.histories.set(agentChatCorrelation('conversation', 'first'), terminal())
       await f.service.recover()
       await eventually(() => repository.storedReceipts[1]!.delivery === 'completed')
@@ -283,7 +283,6 @@ function sqlFixture() {
   const row = conversation()
   const queries: Array<{ sql: string; values: unknown[] }> = []
   const messages: Array<{ record: Record<string, unknown>; sequence: string }> = []
-  let existingPart = false
   let orphan = false
   let failurePattern: string | undefined
   const query = async (sql: string, values: unknown[] = []) => {
@@ -298,7 +297,7 @@ function sqlFixture() {
       assert.deepEqual(values, [row.id, row.active_request_id])
       return { rows: [{ started_at: null, latest_request_id: 'first' }], rowCount: 1 }
     }
-    if (sql.startsWith('select 1 from operator_conversation_messages')) return { rows: [], rowCount: existingPart || messages.length ? 1 : 0 }
+    if (sql.startsWith('select 1 from operator_conversation_messages')) return { rows: [], rowCount: messages.length ? 1 : 0 }
     if (sql.startsWith('select coalesce(max(sequence)')) return { rows: [{ sequence: '0' }], rowCount: 1 }
     if (sql.startsWith('insert into operator_conversation_messages')) messages.push({ record: JSON.parse(String(values[4])), sequence: '1' })
     if (sql.includes('set active_request_id=null')) { row.active_request_id = null; row.active_native_turn_id = null }
@@ -309,7 +308,7 @@ function sqlFixture() {
   }
   const client = { query, release() {} }
   const pool = { query, connect: async () => client } as unknown as pg.Pool
-  return { repository: new PostgresAgentChatRepository(pool), row, queries, messages, part: () => { existingPart = true },
+  return { repository: new PostgresAgentChatRepository(pool), row, queries, messages,
     orphan: () => { orphan = true }, fail: (pattern: string) => { failurePattern = pattern } }
 }
 
@@ -369,13 +368,6 @@ describe('F2 durable SQL boundaries', () => {
     assert.equal(state.activeStartedAt, null); assert.equal(state.latestRequestId, 'first')
     assert.deepEqual(state.messages.map((message) => message.content), ['exact\nrecovered answer'])
     assert.deepEqual((await f.repository.history('conversation', undefined, 100)).messages.map((message) => message.content), ['exact\nrecovered answer'])
-  })
-
-  it('A-R09 deduplicates an already persisted OpenCode native part against its terminal parent', async () => {
-    const f = sqlFixture(); f.part()
-    await f.repository.finish('conversation', 'first', { outcome: 'succeeded', output: 'answer' }, 'parent')
-    assert.equal(f.messages.length, 0)
-    assert.ok(f.queries.some(({ sql }) => sql.includes("record->>'nativeParentMessageId'=$2") && sql.includes("record->>'requestId'=$3")))
   })
 
   it('A-R10 commits startup receipt and turn acceptance in the same transaction', async () => {

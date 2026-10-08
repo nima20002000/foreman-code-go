@@ -26,17 +26,17 @@ describe('exact installed shebang interpreter revalidation', () => {
     const original = await discoverLauncher(launcher, environment, [first])
     expect(original.status).toBe('installed'); expect(original.interpreter).toBe(first)
     const instances = new HarnessInstanceRegistry(localHarnessDrivers)
-    instances.reload([{ instanceId: 'original-opencode', instanceRevision: '1', driverId: 'opencode', enabled: true,
-      configuration: DEFAULT_HARNESS_DEFAULTS.opencode }])
+    instances.reload([{ instanceId: 'original-codex', instanceRevision: '1', driverId: 'codex', enabled: true,
+      configuration: DEFAULT_HARNESS_DEFAULTS.codex }])
     const installations = new HarnessInstallationRegistry(instances)
     const installation: HarnessInstallationRecord = { hostRef: { kind: 'main', mainId: randomUUID() }, harnessInstallationId: randomUUID(),
-      installationFingerprint: original.fingerprint!, driverId: 'opencode', driverRevision: '1', protocolRevision: 'original-protocol',
+      installationFingerprint: original.fingerprint!, driverId: 'codex', driverRevision: '1', protocolRevision: 'original-protocol',
       environmentGeneration: environment.generation, connectionGeneration: 'original-connection', launcher: original, installed: true,
       observedVersion: null, authenticated: null, compatible: null, qualified: null }
     installations.refresh([installation])
-    const binding = installations.pin({ instanceId: 'original-opencode', hostRef: installation.hostRef, harnessInstallationId: installation.harnessInstallationId,
+    const binding = installations.pin({ instanceId: 'original-codex', hostRef: installation.hostRef, harnessInstallationId: installation.harnessInstallationId,
       connectionGeneration: installation.connectionGeneration, environmentGeneration: installation.environmentGeneration })
-    const factory = new NativeHarnessFactories({ codexBinary: '/unused', openCodeBinary: '/unused', instances, installations })
+    const factory = new NativeHarnessFactories({ codexBinary: '/unused', instances, installations })
     await expect(factory.assertInstallationUnchanged(binding)).resolves.toBeUndefined()
     await symlink(second, `${interpreter}.next`); await rename(`${interpreter}.next`, interpreter)
     const current = await discoverLauncher(launcher, environment, [first])
