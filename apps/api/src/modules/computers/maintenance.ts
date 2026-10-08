@@ -30,6 +30,8 @@ const APT = ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt
   '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold']
 
 function tail(text: string, limit = 8000) { return text.length > limit ? text.slice(-limit) : text }
+type Step = (binary: string, args: string[], label: string, options?: { timeoutMs?: number; allowFailure?: boolean })
+  => Promise<{ code: number | null; stdout: string; stderr: string }>
 function versionOf(output: string): string | null {
   return output.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/u)?.[0] ?? null
 }
@@ -82,10 +84,10 @@ export class ComputerMaintenance {
 
   private async perform(request: MaintenanceTaskStart, task: MaintenanceTask): Promise<string> {
     const signal = AbortSignal.timeout(LONG_MS)
-    const step = async (binary: string, args: string[], label: string) => {
-      const result = await this.ports.run(binary, args, { signal, timeoutMs: LONG_MS })
+    const step: Step = async (binary, args, label, options = {}) => {
+      const result = await this.ports.run(binary, args, { signal, timeoutMs: options.timeoutMs ?? LONG_MS })
       task.outputTail = tail(`${task.outputTail}\n$ ${label}\n${result.stdout}${result.stderr}`)
-      if (result.code !== 0) throw new Error(`${label} failed${result.code === null ? '' : ` (exit ${result.code})`}.`)
+      if (result.code !== 0 && !options.allowFailure) throw new Error(`${label} failed${result.code === null ? '' : ` (exit ${result.code})`}.`)
       return result
     }
     switch (request.kind) {
@@ -125,7 +127,7 @@ export class ComputerMaintenance {
     }
   }
 
-  private async installLatest(harness: MaintainedHarness, step: (binary: string, args: string[], label: string) => Promise<unknown>) {
+  private async installLatest(harness: MaintainedHarness, step: Step) {
     const home = this.ports.environment.HOME ?? homedir()
     if (harness === 'claude') {
       const claude = await this.ports.find('claude')
@@ -139,8 +141,7 @@ export class ComputerMaintenance {
     await step(npm, ['install', '--global', '--prefix', join(home, '.local'), `${PACKAGES.codex}@latest`], 'npm install @openai/codex@latest')
   }
 
-  private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[],
-    step: (binary: string, args: string[], label: string) => Promise<{ stdout: string }>, signal: AbortSignal): Promise<string> {
+  private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[], step: Step, signal: AbortSignal): Promise<string> {
     const binary = await this.ports.find(harness)
     if (!binary) return 'not installed, skipped'
     const existing = new Set(await this.mcpNames(harness, binary, signal))
@@ -148,9 +149,17 @@ export class ComputerMaintenance {
     for (const server of servers) {
       if (existing.has(server.name)) continue
       if (harness === 'codex') {
-        await step(binary, server.transport === 'http'
+        const label = `codex mcp add ${server.name}`
+        // Codex saves the server, then waits for a browser sign-in on OAuth servers. That sign-in
+        // belongs to the person at that computer, so a saved server counts as added.
+        const result = await step(binary, server.transport === 'http'
           ? ['mcp', 'add', server.name, '--url', server.url, ...(server.bearerTokenEnvVar ? ['--bearer-token-env-var', server.bearerTokenEnvVar] : [])]
-          : ['mcp', 'add', server.name, '--', server.command, ...server.args], `codex mcp add ${server.name}`)
+          : ['mcp', 'add', server.name, '--', server.command, ...server.args], label, { timeoutMs: 30_000, allowFailure: true })
+        if (result.code !== 0) {
+          if (!(await this.mcpNames(harness, binary, signal)).includes(server.name)) throw new Error(`${label} failed.`)
+          added.push(`${server.name} (sign in on this computer)`)
+          continue
+        }
       } else {
         const definition = server.transport === 'http' ? { type: 'http', url: server.url } : { type: 'stdio', command: server.command, args: server.args }
         await step(binary, ['mcp', 'add-json', '--scope', 'user', server.name, JSON.stringify(definition)], `claude mcp add-json ${server.name}`)
@@ -169,8 +178,7 @@ export class ComputerMaintenance {
     return Object.keys(await claudeUserMcpServers(this.ports))
   }
 
-  private async syncPlugins(plugins: readonly string[], step: (binary: string, args: string[], label: string) => Promise<unknown>,
-    signal: AbortSignal): Promise<string> {
+  private async syncPlugins(plugins: readonly string[], step: Step, signal: AbortSignal): Promise<string> {
     const codex = await this.ports.find('codex')
     if (!codex) throw new Error('Codex is not installed on this computer.')
     const installed = new Set(await installedPlugins(this.ports, codex, signal))

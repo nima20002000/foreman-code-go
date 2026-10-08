@@ -4,7 +4,8 @@ import { syncableServers } from '../src/modules/computers/fleet.js'
 
 type Run = { binary: string; args: string[] }
 function ports(overrides: { versions?: Record<string, string | null>; sudo?: boolean; apt?: string; files?: Record<string, string>;
-  codexMcp?: string[]; plugins?: string[]; fail?: (run: Run) => boolean } = {}) {
+  codexMcp?: string[]; oauthMcp?: string[]; plugins?: string[]; fail?: (run: Run) => boolean } = {}) {
+  const codexMcp = [...overrides.codexMcp ?? []]
   const runs: Run[] = []
   const later: Array<() => void> = []
   const versions: Record<string, string | null> = { codex: 'codex-cli 0.160.0', claude: '2.1.19 (Claude Code)', ...overrides.versions }
@@ -22,7 +23,12 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
       if (name === 'apt-get') return { code: 0, stdout: overrides.apt ?? 'Inst libc6 [1]\nInst curl [2]\n', stderr: '' }
       if (binary === 'sudo' && args[1] === 'true') return { code: overrides.sudo === false ? 1 : 0, stdout: '', stderr: '' }
       if (binary === 'sudo' && args.includes('upgrade')) return { code: 0, stdout: '2 upgraded, 0 newly installed', stderr: '' }
-      if (name === 'codex' && args[0] === 'mcp' && args[1] === 'list') return { code: 0, stdout: JSON.stringify((overrides.codexMcp ?? []).map(name => ({ name }))), stderr: '' }
+      if (name === 'codex' && args[0] === 'mcp' && args[1] === 'list') return { code: 0, stdout: JSON.stringify(codexMcp.map(name => ({ name }))), stderr: '' }
+      if (name === 'codex' && args[0] === 'mcp' && args[1] === 'add') {
+        codexMcp.push(args[2]!)
+        // Codex saves an OAuth server, then fails when nobody completes the browser sign-in.
+        if (overrides.oauthMcp?.includes(args[2]!)) return { code: 1, stdout: 'Added global MCP server.\nDetected OAuth support.', stderr: 'timed out waiting for OAuth callback' }
+      }
       if (name === 'codex' && args[0] === 'plugin' && args[1] === 'list') return { code: 0, stdout: JSON.stringify({ installed: (overrides.plugins ?? []).map(pluginId => ({ pluginId, installed: true })) }), stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
     },
@@ -98,6 +104,24 @@ describe('computer maintenance', () => {
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['mcp', 'add', 'search', '--', 'npx', 'search-mcp'] })
     maintenance.start({ kind: 'sync-plugins', plugins: ['pdf@openai', 'documents@openai'] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Installed documents@openai' })
+  })
+})
+
+describe('fleet MCP sync with OAuth servers', () => {
+  it('keeps an OAuth server that Codex saved, continues with the rest, and asks for sign-in on that computer', async () => {
+    const fake = ports({ versions: { claude: null }, oauthMcp: ['linear'] })
+    const maintenance = new ComputerMaintenance(fake.value)
+    maintenance.start({ kind: 'sync-mcp', servers: {
+      codex: [{ transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: null },
+        { transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }], claude: [] } })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Added linear (sign in on this computer), docs' })
+  })
+
+  it('fails when Codex could not save the server', async () => {
+    const fake = ports({ fail: run => run.args[1] === 'add' })
+    const maintenance = new ComputerMaintenance(fake.value)
+    maintenance.start({ kind: 'sync-mcp', servers: { codex: [{ transport: 'stdio', name: 'search', command: 'npx', args: ['search-mcp'], envVars: [] }], claude: [] } })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed', summary: 'codex mcp add search failed.' })
   })
 })
 

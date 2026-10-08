@@ -105,4 +105,23 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(audits.rows.length).toBeGreaterThanOrEqual(3)
     expect(new Set(audits.rows.map(row => row.source))).toEqual(new Set(['mcp']))
   })
+  it('shows a running task\'s progress within seconds instead of the settled-status cache', async () => {
+    const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const owner = await new PostgresAccessService(database.pool).issue({ name: 'Progress reader', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
+      grants: [{ actions: ['settings:read'], scope: {} }] })
+    const principal = await new PostgresAccessService(database.pool).authenticate(owner.token)
+    const running = { ...task({ kind: 'sync-mcp', servers: { codex: [], claude: [] } }) }
+    let clock = 0
+    const local = { status: async () => ({ ...status('0.161.0'), tasks: [structuredClone(running)] }) } as unknown as ComputerMaintenance
+    const fleet = new FleetMaintenanceService(database.pool, mainId, () => undefined, new PostgresCommandCoordinator(database.pool), local,
+      { codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}), codexPlugins: async () => [] }, () => clock)
+    const main = async () => (await fleet.list(principal)).computers.find(computer => computer.target.hostRef.kind === 'main')!.status!.tasks[0]!
+    expect(await main()).toMatchObject({ state: 'running' })
+    Object.assign(running, { state: 'succeeded', summary: 'Codex: Added linear', finishedAt: new Date().toISOString() })
+    clock = 4_000
+    expect(await main()).toMatchObject({ state: 'succeeded', summary: 'Codex: Added linear' })
+    Object.assign(running, { summary: 'changed after settling' })
+    clock = 8_000
+    expect(await main()).toMatchObject({ summary: 'Codex: Added linear' })
+  })
 })

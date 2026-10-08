@@ -27,6 +27,7 @@ export interface FleetSources {
 }
 
 const CACHE_MS = 20_000
+const RUNNING_CACHE_MS = 3_000
 const RETIRED_APP_SERVERS = ['graphql-app', 'graphql-operator', 'graphql-worker']
 
 /** Server definitions safe to copy: no inline secret values. Servers needing a login are set up per computer later. */
@@ -52,7 +53,7 @@ export function syncableServers(entries: Record<string, unknown>): SyncedMcpServ
 
 /** Main's view of every computer's maintenance, and the one place that starts maintenance across them. */
 export class FleetMaintenanceService {
-  private readonly cache = new Map<string, { at: number; value: Promise<MaintenanceStatus | null> }>()
+  private readonly cache = new Map<string, { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> }>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
@@ -138,13 +139,16 @@ export class FleetMaintenanceService {
   private status(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceStatus | null> {
     const key = this.key(target)
     const cached = this.cache.get(key)
-    if (!refresh && cached && this.now() - cached.at < CACHE_MS) return cached.value
+    // A running task's progress is read again within seconds; settled status is reused longer.
+    if (!refresh && cached && this.now() - cached.at < (cached.running ? RUNNING_CACHE_MS : CACHE_MS)) return cached.value
     const value = (async () => {
       if (target.hostRef.kind === 'main') return this.local.status(AbortSignal.timeout(90_000))
       const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId, { operation: 'status' })).payload)
       return reply.operation === 'status' ? reply.status : null
     })().catch((): null => null)
-    this.cache.set(key, { at: this.now(), value })
+    const entry: { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> } = { at: this.now(), value }
+    this.cache.set(key, entry)
+    void value.then(status => { entry.running = status?.tasks.some(task => task.state === 'running') ?? false })
     return value
   }
 
