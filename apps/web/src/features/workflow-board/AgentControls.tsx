@@ -75,7 +75,7 @@ function BoardAgentSettingsVisit({ draftKey, edit, nodeId, close, remove, placem
   return <>
     {!choiceScope ? <p role="status">Save this node and Agent before choosing its computer.</p> : choices.isError ? <Alert tone="warning" title="Computer choices are unavailable." /> : null}
     <AgentSettingsForm key={`${edit.instanceId}:${node.id}:${JSON.stringify(agent)}:${node.initialPrompt ?? ''}:${JSON.stringify(node.graphqlTools ?? null)}:${JSON.stringify(node.placement ?? null)}`} embedded agent={agent} initialPrompt={node.initialPrompt}
-    nodeGraphqlTools={node.graphqlTools} nodePlacement={node.placement} placementHidden={choices.denied} placementOptions={choices.denied ? [] : placementOptions ?? choices.options}
+    nodeGraphqlTools={node.graphqlTools} nodePlacement={node.placement} placementHidden={!choices.current} placementOptions={placementOptions ?? choices.options}
     placementStage={sameWorkflowValue(node.placement, savedNode?.placement) ? 'saved' : 'draft'}
     placementOptionsState={placementOptions ? 'ready' : !choiceScope || choices.isError || choices.isPaused ? 'unavailable' : choices.isPending ? 'loading' : 'ready'}
     retainedForm={edit.agentForms?.[node.id]}

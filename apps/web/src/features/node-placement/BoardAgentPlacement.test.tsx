@@ -115,3 +115,38 @@ it('keeps unrelated Agent edits when placement choices are denied for a saved pl
   expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Renamed!')
   view.unmount(); query.clear(); read.mockRestore(); useGraphDraftStore.getState().dropNextDraft(key)
 })
+
+it.each([403, 404, 503])('retains and clears a saved placement after choices discovery returns %s', async (status) => {
+  const context = fixture()
+  const key = `placement-discovery-failure-${status}`
+  context.draft.graph.nodes = context.draft.graph.nodes.map(node => ({ ...node, placement }))
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const read = vi.spyOn(client, 'readPlacementChoices').mockRejectedValue(
+    new ApiError({ code: 'CHOICES_UNAVAILABLE', message: 'Choices unavailable' }, status),
+  )
+  function Board() {
+    const edit = useGraphDraftStore(state => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  try {
+    await screen.findByText('Computer choices are unavailable.')
+    const computer = screen.getByRole('combobox', { name: 'Computer' })
+    expect(computer).toHaveValue('retained')
+    expect(screen.getByText(placement.projectRoot)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save agent settings' })).toBeDisabled()
+    await userEvent.selectOptions(computer, 'inherited')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).placement).toEqual(placement)
+    await userEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    const applied = useGraphDraftStore.getState().nextDrafts[key]!
+    expect(applied.graph.nodes[0]).not.toHaveProperty('placement')
+    expect(nativeNode(applied.graph.nodes[1]).placement).toEqual(placement)
+    expect(nativeNode(applied.context.draft.graph.nodes[0]).placement).toEqual(placement)
+  } finally {
+    view.unmount()
+    query.clear()
+    read.mockRestore()
+    useGraphDraftStore.getState().dropNextDraft(key)
+  }
+})
