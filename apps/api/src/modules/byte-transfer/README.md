@@ -68,7 +68,7 @@ corepack pnpm --filter @foreman-code/api typecheck
 Fault hook supports `data-sync`, `journal-sync`, `directory-sync`; rejecting a hook
 simulates EIO/ENOSPC/fsync failure before the corresponding durability boundary.
 No new runtime dependency was selected. Existing pinned Node filesystem/crypto and
-Zod are used. No claim is made about optional rsync/rclone advisories or two-host
+Zod are used. No claim is made about optional rsync advisories or two-host
 qualification: they are not used here.
 
 Outstanding orchestrator acceptance: actual W07 binary carrier negotiation and
