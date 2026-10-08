@@ -32,6 +32,8 @@
 .computer-allowance .n-icon-button { min-height: 1.75rem; width: 1.5rem; height: 1.75rem; padding: .2rem; }
 .computer-allowance output { min-width: 2.5rem; text-align: center; font-variant-numeric: tabular-nums; font-size: .75rem; }
 .computer-setup-note { color: var(--n-warning); font-size: .7rem; }
+.computer-build-diagnostics { max-width: 18rem; font-size: .75rem; overflow-wrap: anywhere; }
+.computer-build-diagnostics summary { cursor: pointer; }
 .computer-utilization { display: grid; gap: .35rem; min-width: 6.5rem; }
 .computer-metric { display: flex; align-items: center; gap: .3rem; color: var(--n-muted); font-size: .7rem; }
 .computer-metric > span:first-child { display: flex; }
