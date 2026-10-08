@@ -19,6 +19,7 @@ import { type BuildComputerSettings, buildComputerKey, buildComputerTarget } fro
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
+import { matchesRuntimePolicy } from './runtimeSelection.js'
 import { SOURCE_AGGREGATE_LIMITS, verificationSourceStorageBytes } from '../sources/reservations.js'
 import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 
@@ -69,7 +70,7 @@ export function compatibleJobComputer(candidate: JobComputerCandidate, request: 
     ...('verification' in spec ? { verification: spec.verification } : {}) })
   if (canonical(common(candidate.spec)) !== canonical(common(request))) return false
   if (!isAutoJobSpecRecord(request)) return canonical(candidate.spec) === canonical(request)
-  return canonical(jobPolicyRequirementsRecord(candidate.spec.policy)) === canonical(request.policy)
+  return matchesRuntimePolicy(request, candidate.profile)
     && canonical(jobRuntimeProfileLimits(candidate.profile)) === canonical(request.limits)
 }
 /** Local first: a preferred computer (an Agent's own) leads; the rest keep primary/backup and priority order. */

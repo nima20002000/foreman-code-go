@@ -60,6 +60,7 @@ export const JobVerificationRequestSchema = z.object({
 export const JobOrdinaryVerificationSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build'])
 export const JobVerificationTemplateSchema = z.object({
   profileId: IdSchema,
+  hostRef: JobTargetSchema.shape.hostRef.optional(),
   profileRevision: DeviceSafeIntegerSchema.positive(),
   suite: JobOrdinaryVerificationSuiteSchema,
   ready: z.boolean(),
@@ -115,6 +116,8 @@ const AutoVerificationSpec = z.object({
   outputs: JobVerificationOutputsSchema,
   policy: JobVerificationPolicyRequirementsSchema,
   verification: JobVerificationRequestSchema,
+  /** Resolve the image from a reviewed profile at admission; the other policy and resource limits stay saved. */
+  runtimeSelection: z.literal('qualified-profile').optional(),
 }).strict().superRefine(validateJobDefinitionPaths)
 function validateVerificationPolicy(
   value: z.infer<typeof ResolvedVerificationSpec> | z.infer<typeof AutoVerificationSpec>,

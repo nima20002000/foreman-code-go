@@ -12,6 +12,10 @@ export const CI_RUN_ACTIONS: ManagementAction[] = [
   'job_definitions:read', 'job_definitions:write', 'jobs:start',
 ]
 export const CI_GET_ACTIONS: ManagementAction[] = ['jobs:read', 'job_logs:read', 'job_artifacts:read']
+export const CI_PREPARATION_ACTIONS: ManagementAction[] = [
+  'job_definitions:read', 'job_definitions:write', 'sources:approve', 'sources:read',
+  'source_roots:bind', 'source_roots:read', 'workspace_locations:read', 'jobs:start', 'job_artifacts:read',
+]
 export interface CiAuthority {
   resolve(caller: ManagementPrincipal, workspaceId: string | undefined, actions: ManagementAction[]):
     Promise<{ principal: ManagementPrincipal; workspaceId: string; executionId?: string | undefined }>
@@ -50,8 +54,11 @@ export class RunCiAuthority implements CiAuthority {
       const accepted = (await currentOperatorAuthority(sql, principalId)).principal
       const grants = caller.audience === 'operator' ? intersectGrants(caller.grants, accepted.grants) : accepted.grants
       const principal = { ...accepted, grants: intersectGrants(grants, [{
-        actions, scope: { workspaceIds: [workspaceId] },
-      }]) }
+        actions: actions.includes('jobs:start') ? [...new Set([...actions, ...CI_PREPARATION_ACTIONS])] : actions,
+        scope: { workspaceIds: [workspaceId] },
+      }]), expiresAt: caller.audience === 'operator'
+        ? new Date(Math.min(Date.parse(caller.expiresAt), Date.parse(accepted.expiresAt))).toISOString()
+        : accepted.expiresAt }
       for (const action of actions) requireAuthorization(principal, action, { workspaceId })
       await sql.query('commit')
       return { principal, workspaceId, executionId }

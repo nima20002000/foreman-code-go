@@ -5,6 +5,7 @@ import { JobDefinitionRecordSchema, JobDefinitionSpecRecordSchema, JobExecutionR
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { JobWorkflowAdmissionReferenceSchema } from './jobWorkflow.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
+import { ManagementPrincipalSchema } from './management/principals.js'
 
 const PositiveInteger = DeviceSafeIntegerSchema.positive()
 export const JobPlacementIntentSchema = z.discriminatedUnion('kind', [
@@ -93,6 +94,7 @@ export const JobQueueTicketSchema = z.object({
   commandDigest: DeviceDigestSchema,
   principalId: IdSchema,
   definition: JobDefinitionRecordSchema,
+  runtimePreparation: ManagementPrincipalSchema.optional(),
   executionId: IdSchema,
   attemptId: IdSchema,
   operationId: IdSchema,
@@ -121,6 +123,10 @@ export const JobQueueTicketSchema = z.object({
   }).strict().nullable().optional(),
 }).strict().superRefine((value, context) => {
   const spec = value.definition.spec
+  if (value.runtimePreparation && (value.runtimePreparation.id !== value.principalId
+    || value.runtimePreparation.audience !== 'operator')) {
+    context.addIssue({ code: 'custom', path: ['runtimePreparation'], message: 'Preparation retains the ticket’s author.' })
+  }
   validateRequestedResources(spec, value.resources, context)
   if (value.workspaceId !== value.definition.workspaceId
     || Date.parse(value.deadlineAt) - Date.parse(value.enqueuedAt) !== spec.policy.queueTimeoutMs) {

@@ -33,21 +33,25 @@ export async function assertBuildComputerTarget(sql: JobSql, target: DeviceProvi
   }
 }
 
+export async function readBuildComputerPreference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
+  const row = (await sql.query<{ target: DeviceProvisioningTarget; revision: string; build_enabled: boolean; build_priority: number;
+    build_role: 'primary' | 'backup'; build_allowance_percent: number }>(
+    'select target,revision::text,build_enabled,build_priority,build_role,build_allowance_percent from build_computer_preferences where host_key=$1 for share',
+    [buildComputerKey(target)])).rows[0]
+  const matches = row && sameDeviceProvisioningTarget(DeviceProvisioningTargetSchema.parse(row.target), target)
+  return BuildComputerPreferenceSchema.parse({ target, revision: Number(row?.revision ?? 0),
+    buildEnabled: matches ? row.build_enabled : false, buildPriority: matches ? row.build_priority : 50,
+    buildRole: matches ? row.build_role : 'primary', buildAllowancePercent: matches ? row.build_allowance_percent : 100 })
+}
+
 export class BuildComputerSettings {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly readiness: (sql: JobSql, target: DeviceProvisioningTarget) => Promise<
       Pick<BuildComputerStatus, 'state' | 'reasons' | 'remoteExecutionEnabled'>>,
     private readonly changed?: () => void) {}
 
-  async preference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
-    const row = (await sql.query<{ target: DeviceProvisioningTarget; revision: string; build_enabled: boolean; build_priority: number;
-      build_role: 'primary' | 'backup'; build_allowance_percent: number }>(
-      'select target,revision::text,build_enabled,build_priority,build_role,build_allowance_percent from build_computer_preferences where host_key=$1 for share',
-      [buildComputerKey(target)])).rows[0]
-    const matches = row && sameDeviceProvisioningTarget(DeviceProvisioningTargetSchema.parse(row.target), target)
-    return BuildComputerPreferenceSchema.parse({ target, revision: Number(row?.revision ?? 0),
-      buildEnabled: matches ? row.build_enabled : false, buildPriority: matches ? row.build_priority : 50,
-      buildRole: matches ? row.build_role : 'primary', buildAllowancePercent: matches ? row.build_allowance_percent : 100 })
+  preference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
+    return readBuildComputerPreference(sql, target)
   }
   async requireEnabled(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
     await assertBuildComputerTarget(sql, target)
