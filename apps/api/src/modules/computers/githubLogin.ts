@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { GitHubLoginStateSchema, type GitHubLoginRequest, type GitHubLoginState } from '@foreman-code/contracts/computer-accounts'
 import { DomainError } from '../errors.js'
-import { probeComputerAccounts, systemPorts, type AccountProbePorts } from './accountProbe.js'
+import { probeGitHubAccount, systemPorts, type AccountProbePorts } from './accountProbe.js'
 
 /** GitHub device codes expire after 15 minutes; the CLI keeps polling until then. */
 const LOGIN_LIFETIME_MS = 15 * 60_000
@@ -23,12 +23,30 @@ interface Session {
 /** One GitHub CLI sign-in at a time on this computer: start returns the device code, status follows the CLI to completion. */
 export class GitHubLoginRunner {
   private session: Session | undefined
+  private pendingLogout: Promise<GitHubLoginState> | undefined
   constructor(private readonly ports: GitHubLoginPorts = systemGitHubPorts()) {}
 
   async handle(request: GitHubLoginRequest): Promise<GitHubLoginState> {
-    if (request.operation === 'login-start') return this.start()
-    if (request.operation === 'logout') return this.logout()
+    if (request.operation === 'login-start') {
+      // The logout caller receives any failure; a later sign-in still replaces that account.
+      if (this.pendingLogout) await Promise.allSettled([this.pendingLogout])
+      return this.start()
+    }
+    if (request.operation === 'logout') return this.orderedLogout()
+    if (request.operation === 'setup-git') return this.setupGit(request.loginId)
     return this.status(request.loginId)
+  }
+
+  private async orderedLogout(): Promise<GitHubLoginState> {
+    const previous = this.pendingLogout
+    const pending = (async () => {
+      if (previous) await Promise.allSettled([previous])
+      return this.logout()
+    })()
+    this.pendingLogout = pending
+    try { return await pending } finally {
+      if (this.pendingLogout === pending) this.pendingLogout = undefined
+    }
   }
 
   private async start(): Promise<GitHubLoginState> {
@@ -69,7 +87,11 @@ export class GitHubLoginRunner {
     })
     // The CLI waits for Enter before polling; there is no browser to open here.
     child.stdin?.end('\n')
-    try { await shown } catch (error) { child.kill('SIGTERM'); this.session = undefined; throw error }
+    try { await shown } catch (error) {
+      child.kill('SIGTERM')
+      if (this.session === session) this.session = undefined
+      throw error
+    }
     return GitHubLoginStateSchema.parse(session.state)
   }
 
@@ -79,12 +101,36 @@ export class GitHubLoginRunner {
       session.state = { ...session.state, state: 'failed', message: 'GitHub sign-in did not complete.' }
       return
     }
-    const gh = await this.ports.probe.find('gh')
-    // Let git on this computer use the signed-in account for clone/fetch/push.
-    if (gh) await this.ports.probe.run(gh, ['auth', 'setup-git', '--hostname', 'github.com'], AbortSignal.timeout(15_000))
-    const account = (await probeComputerAccounts(this.ports.probe)).accounts.find(value => value.tool === 'github')
-    session.state = { ...session.state, state: account?.signedIn ? 'signed-in' : 'failed', account: account?.account ?? null,
-      code: null, verificationUrl: null, message: account?.signedIn ? null : 'GitHub sign-in did not complete.' }
+    try {
+      const account = await probeGitHubAccount(this.ports.probe)
+      session.state = { ...session.state, state: account.signedIn ? 'waiting' : 'failed', account: account.account,
+        code: null, verificationUrl: null, message: account.signedIn ? null : 'GitHub sign-in could not be verified.' }
+      if (account.signedIn) await this.configureGit(session)
+    } catch {
+      session.state = { ...session.state, state: 'failed', code: null, message: 'GitHub sign-in could not be verified.' }
+    }
+  }
+
+  private async setupGit(loginId: string): Promise<GitHubLoginState> {
+    this.status(loginId)
+    const session = this.session!
+    if (!['signed-in', 'git-setup-failed'].includes(session.state.state)) {
+      throw new DomainError('GITHUB_SETUP_NOT_READY', 'Finish GitHub sign-in before setting up Git.', 409)
+    }
+    await this.configureGit(session)
+    return GitHubLoginStateSchema.parse(session.state)
+  }
+
+  private async configureGit(session: Session) {
+    try {
+      const gh = await this.ports.probe.find('gh')
+      if (!gh) throw new Error('GitHub CLI unavailable')
+      const result = await this.ports.probe.run(gh, ['auth', 'setup-git', '--hostname', 'github.com'], AbortSignal.timeout(15_000))
+      if (result.code !== 0) throw new Error('Git credential setup failed')
+      session.state = { ...session.state, state: 'signed-in', message: null }
+    } catch {
+      session.state = { ...session.state, state: 'git-setup-failed', message: 'Signed in, but Git setup failed. Retry Git setup.' }
+    }
   }
 
   private status(loginId: string): GitHubLoginState {
@@ -97,11 +143,25 @@ export class GitHubLoginRunner {
     if (!gh) throw new DomainError('GITHUB_CLI_MISSING', 'The GitHub CLI (gh) is not installed on this computer.', 409)
     this.session?.child.kill('SIGTERM')
     this.session = undefined
-    const account = (await probeComputerAccounts(this.ports.probe)).accounts.find(value => value.tool === 'github')
-    if (account?.account) {
+    const account = await probeGitHubAccount(this.ports.probe)
+    if (account.signedIn === null && !account.account) {
+      throw new DomainError('GITHUB_STATUS_UNKNOWN', 'GitHub account state could not be checked. Try again before signing out.', 502)
+    }
+    if (account.account) {
       const result = await this.ports.probe.run(gh, ['auth', 'logout', '--hostname', 'github.com', '--user', account.account],
         AbortSignal.timeout(15_000))
       if (result.code !== 0) throw new DomainError('GITHUB_LOGOUT_FAILED', 'The GitHub CLI could not sign out.', 502)
+    }
+    const checked = await probeGitHubAccount(this.ports.probe)
+    if (checked.signedIn === null) {
+      throw new DomainError('GITHUB_STATUS_UNKNOWN', 'Sign-out could not be verified. Check GitHub account state and try again.', 502)
+    }
+    if (checked.signedIn) {
+      if (checked.account === account.account) {
+        throw new DomainError('GITHUB_LOGOUT_FAILED', 'The GitHub credentials are still present on this computer.', 502)
+      }
+      return GitHubLoginStateSchema.parse({ loginId: null, state: 'signed-in', code: null, verificationUrl: null,
+        expiresAt: null, account: checked.account, message: 'The previous account was removed; another GitHub account is active.' })
     }
     return GitHubLoginStateSchema.parse({ loginId: null, state: 'signed-out', code: null, verificationUrl: null,
       expiresAt: null, account: null, message: null })

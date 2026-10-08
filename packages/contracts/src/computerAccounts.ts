@@ -25,6 +25,12 @@ export const ComputerAccountsEntrySchema = z.object({
 }).strict()
 export const ComputerAccountsListSchema = z.object({
   computers: z.array(ComputerAccountsEntrySchema).max(101),
+  /** Continue after this paired device; Main appears only on the first page. */
+  nextCursor: z.uuid().nullable().optional(),
+}).strict()
+export const ComputerAccountsListInputSchema = z.object({
+  refresh: z.boolean().optional(),
+  cursor: z.uuid().optional(),
 }).strict()
 export type ComputerAccountTool = z.infer<typeof ComputerAccountToolSchema>
 export type ComputerAccount = z.infer<typeof ComputerAccountSchema>
@@ -37,10 +43,11 @@ export const GitHubLoginRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('login-start') }).strict(),
   z.object({ operation: z.literal('login-status'), loginId: z.uuid() }).strict(),
   z.object({ operation: z.literal('logout') }).strict(),
+  z.object({ operation: z.literal('setup-git'), loginId: z.uuid() }).strict(),
 ])
 export const GitHubLoginStateSchema = z.object({
   loginId: z.uuid().nullable(),
-  state: z.enum(['waiting', 'signed-in', 'signed-out', 'failed', 'expired']),
+  state: z.enum(['waiting', 'signed-in', 'signed-out', 'git-setup-failed', 'failed', 'expired']),
   code: z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/).nullable(),
   verificationUrl: z.url().nullable(),
   expiresAt: z.string().datetime().nullable(),

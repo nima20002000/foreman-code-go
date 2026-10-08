@@ -13,7 +13,8 @@ import type { WorkerConversationJournal } from './workerJournal.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
-import type { CompactionState } from '@foreman-code/contracts'
+import { compactionBlocksSend, type CompactionState } from '@foreman-code/contracts'
+import { isDefiniteCompactionRejection } from '../harnesses/errors.js'
 import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'
 import { unavailableNativeResponse } from '../harnesses/responseAvailability.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
@@ -410,23 +411,27 @@ export class WorkerConversationHost {
     if (!reserved.dispatch) return { compaction: reserved.state }
     const task = (async () => {
       let offered = false
+      let progress = reserved.state
       try {
         const state = await manager.compactSession!(request.session, {
           requestId: request.requestId, clientCorrelationId: request.correlationId,
           onDispatch: async () => {
             await this.authorize(request, connection, this.lifetime.signal)
-            await this.ports.journal.compactProgress(request.binding, { ...reserved.state, dispatchPhase: 'dispatched' })
+            progress = await this.ports.journal.compactProgress(request.binding,
+              { ...progress, dispatchPhase: 'dispatched' })
             offered = true
           },
-          onProgress: async state => { await this.ports.journal.compactProgress(request.binding, state) },
+          onProgress: async state => { progress = await this.ports.journal.compactProgress(request.binding, state) },
         }, this.lifetime.signal)
         await this.ports.journal.compactProgress(request.binding, state)
       } catch (error) {
         const record = await this.ports.journal.read(request.binding)
         const latest = record?.compactions.find(value => value.state.requestId === request.requestId)?.state ?? reserved.state
         if (['accepted', 'running', 'uncertain'].includes(latest.status)) {
+          const definite = !offered || isDefiniteCompactionRejection(error)
           await this.ports.journal.compactProgress(request.binding, { ...latest,
-            status: offered ? 'uncertain' : 'failed', message: 'Native compaction needs recovery.',
+            status: definite ? 'failed' : 'uncertain',
+            message: definite ? 'The native provider rejected compaction.' : 'Native compaction needs recovery.',
             observedAt: new Date().toISOString() })
         }
         this.log.error({ err: error, conversationId: request.binding.owner.conversationId }, 'Worker compaction needs recovery')
@@ -444,6 +449,10 @@ export class WorkerConversationHost {
     if (!record || !original || !isDeepStrictEqual(record.session, request.session)
       || request.state.nativeSessionId !== request.session.nativeSessionId) unavailable('The persisted compaction owner changed.')
     let state = original.state
+    if (!compactionBlocksSend(state)) {
+      await this.authorize(request, connection, signal)
+      return { compaction: state, receipt: record }
+    }
     if (this.ports.readCompaction) state = await this.ports.readCompaction({ ...request, state }, record, connection, signal)
     else if (request.configuration.harness.harness === 'claude') {
       const profile = request.configuration.harness.configDirectory
@@ -618,6 +627,7 @@ export class WorkerConversationHost {
       case 'conversation.compact-reconcile': {
         const original = record.compactions.find(value => value.state.requestId === request.state.requestId)
         if (!original || request.state.nativeSessionId !== request.session.nativeSessionId) unavailable('The compaction owner changed.')
+        if (!compactionBlocksSend(original.state)) return { compaction: original.state }
         const state = await manager.reconcileCompaction?.(request.session, original.state, signal) ?? original.state
         return { compaction: await this.ports.journal.compactProgress(request.binding, state) }
       }
