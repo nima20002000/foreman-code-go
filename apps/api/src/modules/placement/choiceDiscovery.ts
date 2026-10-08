@@ -57,10 +57,16 @@ export class ProductionPlacementChoiceDiscovery implements PlacementChoiceDiscov
           const roots = await this.sourceRoots(sql, input, policy)
           const profiles = await services.profiles.list(policy.hostRef, policy.applicationInstallationId, sql)
           for (const root of roots) {
-            await services.sources.resolveRootBinding(sql, principal, {
-              workspaceId: input.workspaceId, rootId: root.binding.rootId,
-              bindingRevision: root.binding.bindingRevision, source: root.source,
-            })
+            try {
+              await services.sources.resolveRootBinding(sql, principal, {
+                workspaceId: input.workspaceId, rootId: root.binding.rootId,
+                bindingRevision: root.binding.bindingRevision, source: root.source,
+              })
+            } catch (error) {
+              // An unavailable source must not hide valid bindings on the same computer.
+              if (!(error instanceof DomainError) || ![403, 404, 409, 410].includes(error.status)) throw error
+              continue
+            }
             for (const profile of profiles.filter(value => matchesConfiguration(value, configuration))) {
               choices.push(await this.choice(sql, services, policy, root, profile))
             }

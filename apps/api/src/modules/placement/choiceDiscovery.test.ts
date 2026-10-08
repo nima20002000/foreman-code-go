@@ -42,9 +42,10 @@ function fixture() {
       harnessInstallationId: 'installed-codex', installationFingerprint: digest },
     presetId: 'codex-default', enabled: true, driverId: 'codex', configuration: configuration.harness,
     configurationFingerprint: digest, qualification: 'qualified' })
+  const sourceRoots = vi.fn(async () => [root])
   const query = vi.fn(async (sql: string) => {
     if (sql.includes('from agent_configuration_versions')) return { rows: [{ record: configuration }] }
-    if (sql.includes('from source_root_catalog')) return { rows: [{ record: root }] }
+    if (sql.includes('from source_root_catalog')) return { rows: (await sourceRoots()).map(record => ({ record })) }
     return { rows: [] }
   })
   const pool = { connect: async () => ({ query, release: vi.fn() }) } as unknown as pg.Pool
@@ -65,7 +66,7 @@ function fixture() {
   const input = { workspaceId: configuration.workspaceId, workflowId: workflow.scope.workflowId,
     nodeId: workflow.version.definition.nodes[0]!.id, agentConfigurationVersionId: configuration.id }
   return { service: new ProductionPlacementChoiceDiscovery(pool, () => services), input, principal,
-    policy, root, profile, configuration, resolve, resolveSource, profiles, evidence, installations }
+    policy, root, profile, configuration, resolve, resolveSource, sourceRoots, profiles, evidence, installations }
 }
 
 it('discovers an authorized matching profile with the persisted root, source and revision pins', async () => {
@@ -108,4 +109,23 @@ it('propagates unexpected discovery failures', async () => {
   const f = fixture()
   f.resolve.mockRejectedValue(new Error('database unavailable'))
   await expect(f.service.list(f.principal, f.input)).rejects.toThrow('database unavailable')
+})
+
+it.each([403, 404, 409, 410])('keeps valid sibling sources when one binding returns %s', async status => {
+  const f = fixture()
+  const unavailable = structuredClone(f.root)
+  unavailable.binding.rootId = randomUUID()
+  unavailable.source.snapshotId = randomUUID()
+  unavailable.binding.snapshotId = unavailable.source.snapshotId
+  f.sourceRoots.mockResolvedValue([unavailable, f.root])
+  f.resolveSource.mockRejectedValueOnce(new DomainError('SOURCE_UNAVAILABLE', 'Source is unavailable.', status))
+
+  const choices = await f.service.list(f.principal, f.input)
+
+  expect(choices).toHaveLength(1)
+  expect(choices[0]).toMatchObject({ availability: 'ready', placement: {
+    source: f.root.source,
+    rootBinding: { rootId: f.root.binding.rootId, bindingRevision: f.root.binding.bindingRevision },
+  } })
+  expect(f.resolveSource).toHaveBeenCalledTimes(2)
 })
