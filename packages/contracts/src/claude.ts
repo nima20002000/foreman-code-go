@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { APP_MCP_SERVER_NAMES } from './product.js';
 
 const AbsolutePath = z.string().min(1).max(4096).refine((value) => value.startsWith('/') && !value.includes('\0'), 'An absolute local path is required');
 const ToolName = z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,199}$/);
@@ -34,8 +35,18 @@ export const ClaudeHarnessConfigurationSchema = z.object({
   });
 });
 export type ClaudeHarnessConfiguration = z.infer<typeof ClaudeHarnessConfigurationSchema>;
+export const CLAUDE_EXTERNAL_MCP_UNSUPPORTED = 'External MCP servers are not supported by Claude. Only the Foreman Code app MCP connection has an accepted tool manifest.';
+export const ClaudeSupportedMcpServersSchema = z.record(ClaudeMcpServerNameSchema, ClaudeMcpServerSchema)
+  .superRefine((servers, context) => {
+    for (const name of Object.keys(servers)) {
+      if (!APP_MCP_SERVER_NAMES.some((supported) => supported === name)) {
+        context.addIssue({ code: 'custom', path: [name], message: CLAUDE_EXTERNAL_MCP_UNSUPPORTED });
+      }
+    }
+  }).describe('Only the foreman-code or graphql app HTTP MCP connection is supported; external server manifests are unavailable.');
 export const CLAUDE_FULL_ACCESS_REQUIRED = 'Claude requires Full access. Read only and Workspace write are not supported.';
 export const ClaudeFullAccessConfigurationSchema = ClaudeHarnessConfigurationSchema.safeExtend({
+  mcpServers: ClaudeSupportedMcpServersSchema,
   sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access'], { error: CLAUDE_FULL_ACCESS_REQUIRED })
     .refine((value): boolean => value === 'danger-full-access', CLAUDE_FULL_ACCESS_REQUIRED),
 });

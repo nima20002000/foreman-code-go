@@ -23,6 +23,9 @@ import { sourceOperationSelectionHash } from './operationDigests.js'
 import { assertSourceNativeSession, sourceNativeSessionContinues, verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import type { SourceNativeSessionCapture, SourceInstalledNativeOwnerReader } from './executionHosts.js'
 import { VerifiedSourcePackageReader } from './operationPackage.js'
+import { SourceReservationReclamationRequestSchema, SourceReservationReclamationSchema,
+  SourceReservationReclamationResponseSchema, type SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
+import { reclaimSourceReservation } from './reclaimSourceReservation.js'
 
 export interface SourceOperationWorkerContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; bytes?: Uint8Array }
 export interface VerifiedSourceTransfers {
@@ -30,6 +33,9 @@ export interface VerifiedSourceTransfers {
   openVerified(receipt: VerifiedTransferReceipt, context: TransferContext): Promise<Readable>
 }
 export interface SourceOperationWorkerOptions {
+  currentReclamation?(reservationId: string, reclamationId: string,
+    context: SourceOperationWorkerContext): Promise<SourceReservationReclamation>
+  reclamationNativeClosed?(owner: SourceOperationOwner | null, operationId: string): Promise<boolean>
   /** Existing actual paired-main/current boot/key/auth root authentication. */
   authenticate(context: SourceOperationWorkerContext): Promise<void>
   approvedRoots(): Promise<ApprovedRootAllowlist>
@@ -94,6 +100,61 @@ export class SourceOperationWorkerService {
   private active = 0
   private readonly preparing = new Set<string>()
   constructor(private readonly options: SourceOperationWorkerOptions) {}
+  private async reclaimReservation(request: ReturnType<typeof SourceReservationReclamationRequestSchema.parse>,
+    context: SourceOperationWorkerContext) {
+    await this.options.authenticate(context)
+    if (context.bytes?.byteLength || !this.options.currentReclamation || !this.options.reclamationNativeClosed) {
+      throw new SourceError('source-reconciliation-unconfirmed', 'Source reservation cleanup authority is unavailable.')
+    }
+    const grant = SourceReservationReclamationSchema.parse(await this.options.currentReclamation(
+      request.reservationId, request.reclamationId, context))
+    if (grant.reservationId !== request.reservationId || grant.reclamationId !== request.reclamationId
+      || Date.parse(grant.expiresAt) <= Date.now()) {
+      throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Source cleanup belongs to another reservation.')
+    }
+    if (this.preparing.has(grant.operationId)) {
+      throw new SourceError('source-reconciliation-unconfirmed', 'Original source preparation is still active.')
+    }
+    this.preparing.add(grant.operationId)
+    try {
+      const allowlist = ApprovedRootAllowlistSchema.parse(await this.options.approvedRoots())
+      const binding = context.binding
+      if (allowlist.hostRef.kind !== 'device' || allowlist.hostRef.mainId !== binding.mainId
+        || allowlist.hostRef.deviceId !== binding.deviceId || allowlist.applicationInstallationId !== binding.workerInstallationId) {
+        throw new SourceError('SOURCE_ROOT_CONFLICT', 'Source cleanup requires the approved Worker installation.')
+      }
+      for (const root of grant.roots) {
+        if (root.binding.mainId !== binding.mainId || root.binding.deviceId !== binding.deviceId
+          || root.binding.workerInstallationId !== binding.workerInstallationId
+          || root.registration?.keyRevision !== binding.keyRevision
+          || root.registration.authorizationRevision !== binding.authorizationRevision
+          || root.binding.canonicalPath !== join(allowlist.managedRuntimeRoot, 'source-materializations', z.uuid().parse(root.selection.rootPolicyId))) {
+          throw new SourceError('SOURCE_ROOT_CONFLICT', 'Source cleanup cannot change the original approved namespace.')
+        }
+      }
+      await verifyApprovedRootAllowlist(allowlist)
+      const closures = await reclaimSourceReservation(grant, {
+        authorize: async () => {
+          context.signal.throwIfAborted()
+          await this.options.authenticate(context)
+          if (!isDeepStrictEqual(grant, await this.options.currentReclamation!(request.reservationId,
+            request.reclamationId, context))) {
+            throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Source cleanup authority changed.')
+          }
+        },
+        operationClosed: operationId => this.options.reclamationNativeClosed!(null, operationId),
+        nativeClosed: owner => this.options.reclamationNativeClosed!(owner, grant.operationId),
+        quotaPoolFor: owner => this.options.quotaPoolFor?.(owner.root.binding) ?? Promise.resolve(undefined),
+        closed: async closure => {
+          await this.options.preparationTransfersClosed?.(closure, context.signal)
+          await this.options.preparationReconciled?.(closure)
+        },
+      }, context.signal)
+      return SourceReservationReclamationResponseSchema.parse({ version: 1, operation: 'sources.reclaim-reservation',
+        reservationId: grant.reservationId, reclamationId: grant.reclamationId,
+        operationId: grant.operationId, reclaimed: true, closures })
+    } finally { this.preparing.delete(grant.operationId) }
+  }
   private async authority(request: SourceFilesystemOperation, context: SourceOperationWorkerContext) {
     context.signal.throwIfAborted(); await this.options.authenticate(context)
     if ((context.bytes?.byteLength ?? 0) !== 0) throw new SourceError('SOURCE_OPERATION_INVALID', 'Source control operations contain no inline binary bytes.')
@@ -101,6 +162,13 @@ export class SourceOperationWorkerService {
     context.signal.throwIfAborted(); return owner
   }
   async handle(raw: unknown, context: SourceOperationWorkerContext): Promise<SourceOperationResponse> {
+    if (raw && typeof raw === 'object' && 'operation' in raw && raw.operation === 'sources.reclaim-reservation') {
+      if (this.active >= SOURCE_OPERATION_EXTENSION.maxPending) throw new SourceError('SOURCE_CAPACITY', 'Source operation capacity is exhausted.')
+      this.active++
+      try {
+        return await this.reclaimReservation(SourceReservationReclamationRequestSchema.parse(raw), context)
+      } finally { this.active-- }
+    }
     const request = SourceFilesystemOperationSchema.parse(raw)
     if (Buffer.byteLength(JSON.stringify(request)) > SOURCE_OPERATION_EXTENSION.maxJsonBytes) throw new SourceError('SOURCE_CAPACITY', 'Source operation metadata exceeds its carrier budget.')
     if (this.active >= SOURCE_OPERATION_EXTENSION.maxPending) throw new SourceError('SOURCE_CAPACITY', 'Source operation capacity is exhausted.')

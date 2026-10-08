@@ -12,6 +12,7 @@ import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { DomainError } from '../../errors.js'
 import { NativeConversationControlCommands } from '../nativeControlCommands.js'
 import { componentLogger } from '../../diagnostics/logger.js'
+import { isDefiniteCompactionRejection } from '../../harnesses/errors.js'
 
 export interface SessionControlBinding {
   conversationId: string
@@ -259,11 +260,7 @@ export class SessionControlStore {
         markDispatch()
       } }, signal))
     } catch (error) {
-      const definite = !dispatchAttempted || !!error && typeof error === 'object' && (
-        'certainty' in error && error.certainty === 'definite'
-        || 'deliveryState' in error && error.deliveryState === 'not-delivered'
-        || 'method' in error && error.method === 'thread/compact/start' && 'uncertain' in error && error.uncertain === false
-      )
+      const definite = !dispatchAttempted || isDefiniteCompactionRejection(error)
       let message = 'Compaction is unconfirmed. Recover by reading this conversation.'
       if (definite) message = 'The native provider rejected compaction.'
       if (!dispatchAttempted) message = 'Compaction stopped before native dispatch. You can try again.'
