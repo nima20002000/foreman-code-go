@@ -93,6 +93,7 @@ async function fixture() {
     return principal
   })
   const app = buildApp({ logger: false,
+    readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services: { buildComputers: settings, commands } as unknown as OperatorServices } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const clients: Client[] = []
