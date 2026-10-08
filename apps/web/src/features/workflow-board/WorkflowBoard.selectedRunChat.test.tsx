@@ -20,6 +20,9 @@ import { activitiesRoute, activityPage, admitted, clients, context, envelope, ex
 import { boardDraftContextKey } from './keys'
 import { WorkflowBoard } from './WorkflowBoard'
 import { useWorkflowBoard } from './context'
+import boardStyles from './workflowBoard.css?inline'
+import chatStyles from '../conversations/agentChat/agentChat.css?inline'
+import historyStyles from '../conversations/conversationHistory.css?inline'
 
 function CurrentNavigation() { return useWorkflowBoard()?.navigationControls }
 
@@ -151,6 +154,47 @@ function renderedNodeBounds(node: HTMLElement) {
   const top = Number(transform[2]) + bounds.y * zoom
   return { left, top, right: left + bounds.width * zoom, bottom: top + bounds.height * zoom }
 }
+
+it.each([{ width: 1431, height: 1061 }, { width: 320, height: 480 }])(
+  'reserves readable transcript space beside long Activities at $width × $height', async ({ width, height }) => {
+    installSelectedHandlers()
+    installFlowLayout(width, height)
+    const history = activityPage('run-a')
+    history.items = Array.from({ length: 40 }, (_, index) => ({
+      ...history.items[0]!, id: `activity-${index}`, sequence: String(index + 1), summary: `Run event ${index + 1}`,
+    }))
+    history.highWater = '40'
+    server.use(http.get(activitiesRoute, () => HttpResponse.json(RunActivitiesPageSchema.parse(history))))
+    render(<style>{boardStyles}{chatStyles}{historyStyles}</style>)
+    await mountBoard()
+
+    const panel = screen.getByRole('complementary', { name: 'Agent chat' })
+    const activities = within(panel).getByRole('region', { name: 'Run-wide Activities' })
+    await within(activities).findByText('Run event 40')
+    await within(panel).findByText('Question execution-run-a')
+    const transcript = within(panel).getByRole('region', { name: 'Agent conversation transcript' })
+    expect(within(transcript).getByText('Reply execution-run-a')).toBeVisible()
+    const viewportStyle = getComputedStyle(transcript.parentElement!)
+    // jsdom resolves the rendered CSS but does not measure browser geometry.
+    const minimumHeight = Number.parseFloat(viewportStyle.minHeight)
+      * (viewportStyle.minHeight.endsWith('rem') ? 16 : 1)
+    expect(minimumHeight).toBeGreaterThanOrEqual(192)
+    expect(viewportStyle.flexShrink).toBe('0')
+    expect(getComputedStyle(transcript).overflowY).toBe('auto')
+    expect(getComputedStyle(activities.parentElement!).overflow).toBe('auto')
+    expect(getComputedStyle(within(panel).getByRole('button', { name: 'Close Selected Run panel' }).parentElement!)
+      .flexShrink).toBe('0')
+    expect(within(panel).getByRole('textbox', { name: 'Message' })).toBeVisible()
+
+    await userEvent.click(within(panel).getByRole('button', { name: 'Close Selected Run panel' }))
+    expect(screen.queryByRole('complementary', { name: 'Agent chat' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Open Selected Run panel' }))
+    const reopened = await screen.findByRole('complementary', { name: 'Agent chat' })
+    await within(reopened).findByText('Reply execution-run-a')
+    const restored = within(reopened).getByRole('region', { name: 'Agent conversation transcript' })
+    expect(getComputedStyle(restored.parentElement!).minHeight).toBe(viewportStyle.minHeight)
+  },
+)
 
 it('keeps the saved Agent and Inspect reachable after desktop resize and Selected Run panel close', async () => {
   installSelectedHandlers()
