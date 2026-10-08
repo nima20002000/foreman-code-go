@@ -25,6 +25,12 @@ export const ComputerAccountsEntrySchema = z.object({
 }).strict()
 export const ComputerAccountsListSchema = z.object({
   computers: z.array(ComputerAccountsEntrySchema).max(101),
+  /** Continue after this paired device; Main appears only on the first page. */
+  nextCursor: z.uuid().nullable().optional(),
+}).strict()
+export const ComputerAccountsListInputSchema = z.object({
+  refresh: z.boolean().optional(),
+  cursor: z.uuid().optional(),
 }).strict()
 export type ComputerAccountTool = z.infer<typeof ComputerAccountToolSchema>
 export type ComputerAccount = z.infer<typeof ComputerAccountSchema>
