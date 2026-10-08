@@ -10,6 +10,7 @@ import { ClaudeBoundedQueue } from './queue.js'
 import { createClaudeSdkRunner } from './runner.js'
 import { claudePromptUuid, createClaudeNativeSessionManager, type ClaudeMessageTurnInput } from './sessionManager.js'
 import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './port.js'
+import { saveClaudeCompactionResult } from './compactionResults.js'
 
 const scope = { deviceId: 'device-a', profilePath: '/profile-a', configRevision: 'revision-a', cwd: '/work' }
 const qualification = { sdkVersion: '0.3.284', cliVersion: '2.1.284', basicTurns: true, resume: true, fork: true, history: true }
@@ -1050,7 +1051,7 @@ it('rejects an oversized fresh budget before the first model input', async () =>
   await f.manager.dispose!()
 })
 
-for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result} compaction result while resident and after restart`, async () => {
+for (const result of ['completed', 'no-op', 'failed'] as const) it(`recovers a lost ${result} compaction result while resident and after restart`, async () => {
   const profilePath = await mkdtemp(join(tmpdir(), 'claude-controls-'))
   const localScope = { ...scope, profilePath }
   const f = fixture(undefined, { scope: localScope })
@@ -1073,6 +1074,13 @@ for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result}
   const compact = f.manager.compactSession!(session, { requestId: 'compact-request', clientCorrelationId: 'compact-correlation',
     onProgress: async value => { state = value } }, abort.signal)
   const message = await f.nextMessage()
+  if (result !== 'no-op') {
+    await f.frames.offer({ type: 'system', subtype: 'compact_boundary', session_id: session.nativeSessionId,
+      uuid: 'manual-boundary', compact_metadata: { trigger: 'manual', pre_tokens: 12000 } })
+    await vi.waitFor(() => expect(state?.nativeOperationId).toBe('manual-boundary'))
+    expect((await f.manager.reconcileCompaction!(session, state!)).status).toBe('running')
+    expect(() => f.manager.startTurn(session, { prompt: 'too early', clientCorrelationId: 'early' })).toThrow()
+  }
   await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
     is_error: result === 'failed', subtype: result === 'failed' ? 'error_during_execution' : 'success', result: 'Nothing to compact' })
   await vi.waitFor(async () => expect(await f.runner.compactionOutcome!({ ...localScope, nativeSessionId: session.nativeSessionId },
@@ -1088,6 +1096,47 @@ for (const result of ['no-op', 'failed'] as const) it(`recovers a lost ${result}
   await restarted.manager.dispose!()
   await rm(profilePath, { recursive: true, force: true })
 })
+
+it.each(['completed', 'failed'] as const)(
+  'waits for the terminal %s result after a manual boundary before unlocking input', async status => {
+    const profilePath = await mkdtemp(join(tmpdir(), 'claude-boundary-result-'))
+    const f = fixture(undefined, { scope: { ...scope, profilePath } })
+    f.runner.compactionHistory = async () => ({
+      cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [],
+    })
+    try {
+      const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+        nativeSessionId: 'native-session' }, start)
+      await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId,
+        cwd: '/work', claude_code_version: '2.1.284', slash_commands: ['compact'] })
+      await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
+      let state: import('@foreman-code/contracts').CompactionState | undefined
+      const compact = f.manager.compactSession!(session, { requestId: 'manual-request', clientCorrelationId: 'manual',
+        onProgress: async value => { state = value } })
+      const message = await f.nextMessage()
+      await f.frames.offer({ type: 'system', subtype: 'compact_boundary', session_id: session.nativeSessionId,
+        uuid: 'manual-boundary', compact_metadata: { trigger: 'manual', pre_tokens: 12000 } })
+      await vi.waitFor(() => expect(state?.nativeOperationId).toBe('manual-boundary'))
+      expect(state?.status).toBe('running')
+      expect((await f.manager.reconcileCompaction!(session, state!)).status).toBe('running')
+      expect(() => f.manager.startTurn(session, { prompt: 'early', clientCorrelationId: 'early' })).toThrow()
+      await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, user_message_uuid: message.uuid,
+        is_error: status === 'failed', subtype: status === 'failed' ? 'error_during_execution' : 'success' })
+      expect(await compact).toMatchObject({ status, nativeOperationId: 'manual-boundary', beforeTokens: 12000 })
+      expect(await f.runner.compactionOutcome!({ ...scope, profilePath, nativeSessionId: session.nativeSessionId },
+        { ...scope, profilePath }, message.uuid)).toMatchObject({ status })
+      const followup = drain(f.manager.startTurn(session, { prompt: 'next task', clientCorrelationId: 'followup' }))
+      const next = await f.nextMessage()
+      await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: next.uuid })
+      await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'followup-result', user_message_uuid: next.uuid,
+        subtype: 'success', is_error: false, result: 'done' })
+      await followup
+    } finally {
+      await f.manager.dispose!()
+      await rm(profilePath, { recursive: true, force: true })
+    }
+  },
+)
 
 it('releases its runtime fence after a failed pre-dispatch save without offering compact', async () => {
   const f = fixture()
@@ -1108,3 +1157,83 @@ it('releases its runtime fence after a failed pre-dispatch save without offering
   await output
   await f.manager.dispose!()
 })
+
+it('releases Claude input after a definite compaction non-delivery following dispatch bookkeeping', async () => {
+  const f = fixture()
+  f.runner.compactionHistory = async () => ({ cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] })
+  const open = f.runner.open
+  f.runner.open = async input => {
+    const sdk = await open(input)
+    const offer = sdk.offer
+    sdk.offer = async (message, signal) => {
+      if (message.content === '/compact') throw Object.assign(new Error('Not delivered'), { deliveryState: 'not-delivered' })
+      return offer(message, signal)
+    }
+    return sdk
+  }
+  try {
+    const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+      nativeSessionId: 'native-session' }, start)
+    await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId,
+      cwd: '/work', claude_code_version: '2.1.284', slash_commands: ['compact'] })
+    await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
+    const dispatch = vi.fn(async () => {})
+    await expect(f.manager.compactSession!(session, { requestId: 'rejected-control', clientCorrelationId: 'rejected-control',
+      onProgress: async () => {}, onDispatch: dispatch })).rejects.toMatchObject({ deliveryState: 'not-delivered' })
+    expect(dispatch).toHaveBeenCalledOnce()
+    expect(f.offers).not.toHaveBeenCalled()
+    const output = drain(f.manager.startTurn(session, { prompt: 'follow-up', clientCorrelationId: 'followup' }))
+    const message = await f.nextMessage()
+    await f.frames.offer({ type: 'assistant', session_id: session.nativeSessionId, uuid: 'reply', user_message_uuid: message.uuid })
+    await f.frames.offer({ type: 'result', session_id: session.nativeSessionId, uuid: 'followup-result', user_message_uuid: message.uuid,
+      subtype: 'success', is_error: false, result: 'done' })
+    await output
+  } finally { await f.manager.dispose!() }
+})
+
+it.each(['timeout', 'disconnect'] as const)(
+  'keeps a Claude boundary pending after %s and restart until the terminal result is available', async outcome => {
+    const profilePath = await mkdtemp(join(tmpdir(), 'claude-pending-control-'))
+    const localScope = { ...scope, profilePath }
+    const f = fixture(undefined, { scope: localScope })
+    const history = { cursor: { scope: 'scope', identity: 'identity', offset: 0 }, boundaries: [] as Record<string, unknown>[] }
+    f.runner.compactionHistory = async () => history
+    const restarted = fixture(undefined, { scope: localScope })
+    restarted.runner.compactionHistory = async () => history
+    try {
+      const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+        nativeSessionId: 'native-session' }, start)
+      await f.frames.offer({ type: 'system', subtype: 'init', session_id: session.nativeSessionId,
+        cwd: '/work', claude_code_version: '2.1.284', slash_commands: ['compact'] })
+      await vi.waitFor(async () => expect((await f.manager.sessionControlCapabilities!(session)).compact.supported).toBe(true))
+      const abort = new AbortController()
+      let state: import('@foreman-code/contracts').CompactionState | undefined
+      const compact = f.manager.compactSession!(session, { requestId: 'pending-request', clientCorrelationId: 'pending',
+        onProgress: async value => { state = value } }, abort.signal)
+      const rejected = expect(compact).rejects.toThrow()
+      const message = await f.nextMessage()
+      await f.frames.offer({ type: 'system', subtype: 'compact_boundary', session_id: session.nativeSessionId,
+        uuid: 'manual-boundary', compact_metadata: { trigger: 'manual', pre_tokens: 12000 } })
+      await vi.waitFor(() => expect(state?.nativeOperationId).toBe('manual-boundary'))
+      history.boundaries.push({ type: 'system', subtype: 'compact_boundary', sessionId: session.nativeSessionId,
+        uuid: 'manual-boundary', compactMetadata: { trigger: 'manual', preTokens: 12000 } })
+      if (outcome === 'timeout') abort.abort(new DOMException('Response timed out', 'TimeoutError'))
+      else f.frames.close()
+      await rejected
+      const pending = { ...state!, status: 'uncertain' as const }
+      expect((await f.manager.reconcileCompaction!(session, pending)).status).toBe('uncertain')
+      await f.manager.dispose!()
+      const rebound = await restarted.manager.attachSession(session, start)
+      expect((await restarted.manager.reconcileCompaction!(rebound, pending)).status).toBe('uncertain')
+      expect(() => restarted.manager.startTurn(rebound, { prompt: 'early', clientCorrelationId: 'early' })).toThrow()
+      await saveClaudeCompactionResult({ ...localScope, nativeSessionId: session.nativeSessionId }, message.uuid, 'completed')
+      expect((await restarted.manager.reconcileCompaction!(rebound, pending)).status).toBe('completed')
+      expect(f.offers).toHaveBeenCalledOnce()
+      expect(restarted.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose!()
+      await restarted.manager.dispose!()
+      await rm(profilePath, { recursive: true, force: true })
+    }
+  },
+)

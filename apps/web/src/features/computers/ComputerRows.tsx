@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Monitor, Minus, Plus } from 'lucide-react'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -31,7 +32,8 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
   const accounts = useComputerAccounts()
   const openGitHub = useComputerUi(state => state.openGitHub)
   const openDrive = useComputerUi(state => state.openDrive)
-  const save = useComputerEdits()
+  const save = useComputerEdits(mainId)
+  const dragSnapshot = useRef<BuildComputerStatus[]>([])
   const drag = useComputerUi(state => state.drag)
   const draggedKey = useComputerUi(state => state.draggedKey)
   const rows = targets.map((target, index) => ({ target, read: reads[index]! }))
@@ -39,11 +41,20 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
     .sort((a, b) => Number(a.read.data?.preference.buildRole === 'backup') - Number(b.read.data?.preference.buildRole === 'backup')
       || (b.read.data?.preference.buildPriority ?? 50) - (a.read.data?.preference.buildPriority ?? 50)
       || computerKey(a.target).localeCompare(computerKey(b.target)))
-  const canReorder = rows.every(row => row.read.isSuccess && !row.read.isFetching) && !save.isPending
+  const canReorder = rows.every(row => row.read.isSuccess) && !save.locked
     && rows.length <= 101
-  const move = (key: string, destination: number) => {
+  const move = (key: string, destination: string) => {
+    const sourceExists = rows.some(row => computerKey(row.target) === key)
+    const destinationExists = rows.some(row => computerKey(row.target) === destination)
+    if (!sourceExists || !destinationExists) {
+      drag()
+      dragSnapshot.current = []
+      return
+    }
     if (!canReorder) return
-    const edits = reorderEdits(rows.map(row => row.read.data!), rows.findIndex(row => computerKey(row.target) === key), destination)
+    const statuses = draggedKey && dragSnapshot.current.length ? dragSnapshot.current : rows.map(row => row.read.data!)
+    const edits = reorderEdits(statuses, statuses.findIndex(row => computerKey(row.preference.target) === key),
+      statuses.findIndex(row => computerKey(row.preference.target) === destination))
     if (edits.length) save.mutate(edits)
     drag()
   }
@@ -51,7 +62,12 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
     <p className="computer-list-caption">Auto placement · Preferred computer first · Fallback: Primary before Backup, then top priority</p>
     {rows.length > 101 && <p className="computer-list-caption">With more than 101 computers, set priorities directly (0–100).
       Equal priorities use computer identity; drag ordering is unavailable.</p>}
-    {save.isError && <Alert tone="danger" title={computerEditError(save.error)} />}
+    {save.uncertain ? <Alert tone="warning" title="The save is unconfirmed. Retry the original save before making more changes.">
+      <Button size="sm" onClick={save.retry}>Retry original save</Button>
+    </Alert> : save.isError && <Alert tone="danger" title={computerEditError(save.error)} />}
+    {save.storageError && <Alert tone="danger" title={save.storageError}>
+      <Button size="sm" onClick={save.retryStorage}>Retry save recovery</Button>
+    </Alert>}
     {activity.isError && <div className="computer-list-feedback"><span>Activity unavailable</span>
       <Button size="sm" variant="ghost" onClick={() => void activity.refetch()}>Retry activity</Button></div>}
     <ul className="computer-priority-list" aria-label="Computers in build priority order" aria-busy={save.isPending}>
@@ -64,34 +80,51 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
           onDragOver={event => { if (canReorder && draggedKey) event.preventDefault() }}
           onDrop={event => {
             event.preventDefault()
-            if (draggedKey) move(draggedKey, index)
+            if (draggedKey) move(draggedKey, key)
           }}>
-          <div className="computer-reorder">
-            <span draggable={canReorder} className="computer-drag-handle" title="Drag to reorder" aria-hidden="true"
-              onDragStart={event => { drag(key); event.dataTransfer.setData('text/plain', key); event.dataTransfer.effectAllowed = 'move' }}
-              onDragEnd={() => drag()}><GripVertical size={16} /></span>
-            <div><IconButton label={`Move ${computerName(target)} up`} variant="ghost" size="sm"
-              disabled={!canReorder || index === 0} onClick={() => move(key, index - 1)}><ArrowUp size={12} /></IconButton>
-              <IconButton label={`Move ${computerName(target)} down`} variant="ghost" size="sm"
-                disabled={!canReorder || index === rows.length - 1} onClick={() => move(key, index + 1)}><ArrowDown size={12} /></IconButton></div>
+          <div className="computer-row-summary">
+            <div className="computer-reorder">
+              <span draggable={canReorder} className="computer-drag-handle" title="Drag to reorder" aria-hidden="true"
+                onDragStart={event => {
+                  if (!canReorder) {
+                    event.preventDefault()
+                    return
+                  }
+                  dragSnapshot.current = rows.map(row => row.read.data!)
+                  drag(key)
+                  event.dataTransfer.setData('text/plain', key)
+                  event.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragEnd={() => {
+                  drag()
+                  dragSnapshot.current = []
+                }}><GripVertical size={16} /></span>
+              <div><IconButton label={`Move ${computerName(target)} up`} variant="ghost" size="sm"
+                disabled={!canReorder || index === 0} onClick={() => move(key, computerKey(rows[index - 1]!.target))}><ArrowUp size={12} /></IconButton>
+                <IconButton label={`Move ${computerName(target)} down`} variant="ghost" size="sm"
+                  disabled={!canReorder || index === rows.length - 1} onClick={() => move(key, computerKey(rows[index + 1]!.target))}><ArrowDown size={12} /></IconButton></div>
+            </div>
+            <ComputerRowIdentity target={target} computer={observed} complete={activity.data?.activityComplete ?? false} />
+            {read.isPending && <LoadingState label="Loading build settings…" />}
+            {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
+            {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
+              disabled={save.locked} directPriority={rows.length > 101}
+              onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
+            <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts}
+              onGitHub={() => openGitHub(key)} onDrive={() => openDrive(key)} />
+            <GitHubSignInDialog target={target} name={computerName(target)} account={accounts.data?.computers
+              .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'github')} />
+            <DriveConnectDialog target={target} name={computerName(target)} account={accounts.data?.computers
+              .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'drive')} />
+            <ComputerUtilization target={target} online={observed?.online ?? false} />
+            {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
+              variant="ghost" size="sm" onClick={() => {
+                if (target.hostRef.kind === 'device') onSelectComputer(target.hostRef.deviceId)
+              }}><ChevronRight size={16} /></IconButton>}
           </div>
-          <ComputerRowIdentity target={target} computer={observed} complete={activity.data?.activityComplete ?? false} />
-          {read.isPending && <LoadingState label="Loading build settings…" />}
-          {read.isError && <Button size="sm" onClick={() => void read.refetch()}>Retry build settings</Button>}
-          {read.data && !read.isError && <ComputerControls status={read.data} name={computerName(target)}
-            disabled={save.isPending} directPriority={rows.length > 101}
-            onEdit={patch => save.mutate([preferenceEdit(read.data!, patch)])} />}
-          <ComputerAccountChips accounts={accounts.data?.computers.find(computer => computerKey(computer.target) === key)?.accounts}
-            onGitHub={() => openGitHub(key)} onDrive={() => openDrive(key)} />
-          <GitHubSignInDialog target={target} name={computerName(target)} account={accounts.data?.computers
-            .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'github')} />
-          <DriveConnectDialog target={target} name={computerName(target)} account={accounts.data?.computers
-            .find(computer => computerKey(computer.target) === key)?.accounts?.accounts.find(value => value.tool === 'drive')} />
-          <ComputerUtilization target={target} online={observed?.online ?? false} />
-          {target.hostRef.kind === 'device' && onSelectComputer && <IconButton label={`Open ${computerName(target)}`}
-            variant="ghost" size="sm" onClick={() => {
-              if (target.hostRef.kind === 'device') onSelectComputer(target.hostRef.deviceId)
-            }}><ChevronRight size={16} /></IconButton>}
+          {read.data && !read.isError && <details className="computer-build-diagnostics"><summary>Build status</summary>
+            <BuildComputerDiagnostics status={read.data} />
+          </details>}
         </li>
       })}
       {devices.filter(device => device.status !== 'paired').map(device => <li key={device.deviceId}
@@ -152,8 +185,5 @@ function ComputerControls({ status, name, disabled, directPriority, onEdit }: {
         onClick={() => onEdit({ buildAllowancePercent: Math.min(100, preference.buildAllowancePercent + 10) })}><Plus size={12} /></IconButton>
     </div>
     {status.state === 'setup-required' && <span className="computer-setup-note" title={status.reasons.join(' ')}>Setup needed</span>}
-    <details className="computer-build-diagnostics"><summary>Build status</summary>
-      <BuildComputerDiagnostics status={status} />
-    </details>
   </div>
 }

@@ -3,7 +3,8 @@ import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-act
 import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerDriveInputSchema, ComputerDriveStatusInputSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
   DriveLoginStateSchema, GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
+import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema,
+  BuildComputerBatchUpdateSchema, BuildComputerBatchResultSchema } from '@foreman-code/contracts/build-computers'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
@@ -36,19 +37,28 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   if (github && operatorToolAvailable(context, 'computer_github_login_start')) server.registerTool('computer_github_login_start', {
     description: 'Start GitHub CLI sign-in (github.com) on Main or a paired computer. Returns a one-time device code and '
       + 'https://github.com/login/device; the owner enters the code in a browser. Requires global settings:update. The token stays '
-      + 'on that computer and git is set to use it. Follow with computer_github_login_status until signed-in.',
+      + 'on that computer. A pending sign-out finishes before this sign-in starts. '
+      + 'Follow with computer_github_login_status; git-setup-failed means sign-in succeeded but Git setup needs retry.',
     inputSchema: ComputerGitHubInputSchema, outputSchema: GitHubLoginStateSchema, annotations: writeAnnotations,
   }, input => invokeOperatorTool(context, 'computer_github_login_start',
     () => github.handle(context.principal, 'mcp', input.target, { operation: 'login-start' })))
   if (github && operatorToolAvailable(context, 'computer_github_login_status')) server.registerTool('computer_github_login_status', {
-    description: 'Read an active GitHub sign-in on that computer: waiting (with its code), signed-in (with the username), failed or expired. '
-      + 'Requires global settings:update.',
+    description: 'Read an active GitHub sign-in on that computer: waiting (with its code), signed-in (with the username), '
+      + 'git-setup-failed, failed or expired. Requires global settings:update.',
     inputSchema: ComputerGitHubStatusInputSchema, outputSchema: GitHubLoginStateSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
   }, input => invokeOperatorTool(context, 'computer_github_login_status',
     () => github.handle(context.principal, 'mcp', input.target, { operation: 'login-status', loginId: input.loginId })))
+  if (github && operatorToolAvailable(context, 'computer_github_setup_git')) server.registerTool('computer_github_setup_git', {
+    description: 'Retry Git credential setup after GitHub sign-in without restarting login. Requires global settings:update. '
+      + 'Use the loginId from computer_github_login_status when its state is git-setup-failed.',
+    inputSchema: ComputerGitHubStatusInputSchema, outputSchema: GitHubLoginStateSchema, annotations: writeAnnotations,
+  }, input => invokeOperatorTool(context, 'computer_github_setup_git',
+    () => github.handle(context.principal, 'mcp', input.target, { operation: 'setup-git', loginId: input.loginId })))
   if (github && operatorToolAvailable(context, 'computer_github_logout')) server.registerTool('computer_github_logout', {
-    description: 'Sign the GitHub CLI out of github.com on that computer. Requires global settings:update.',
+    description: 'Remove the active GitHub account on that computer and verify the resulting status. '
+      + 'If another saved account becomes active, returns signed-in; unknown status or failed removal returns an error. '
+      + 'Requires global settings:update.',
     inputSchema: ComputerGitHubInputSchema, outputSchema: GitHubLoginStateSchema,
     annotations: { ...writeAnnotations, destructiveHint: true },
   }, input => invokeOperatorTool(context, 'computer_github_logout',
@@ -90,4 +100,12 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     inputSchema: BuildComputerUpdateSchema, outputSchema: BuildComputerStatusSchema,
     annotations: { ...annotations, readOnlyHint: false },
   }, input => invokeOperatorTool(context, 'build_computer_update', () => service.update(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'build_computers_update')) server.registerTool('build_computers_update', {
+    description: 'Atomically update build participation, priority, role and allowance for one or more computers on Main. '
+      + 'Checks every expectedRevision before changing any computer. Requires global settings:update. '
+      + 'Reuse the same commandId and updates to resolve an uncertain save; replay returns the original result. '
+      + 'Read build_computer_get afterwards for current settings. Changes affect future placement; running Jobs keep their computer.',
+    inputSchema: BuildComputerBatchUpdateSchema, outputSchema: BuildComputerBatchResultSchema,
+    annotations: { ...annotations, readOnlyHint: false },
+  }, input => invokeOperatorTool(context, 'build_computers_update', () => service.updateBatch(context.principal, 'mcp', input)))
 }

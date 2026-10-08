@@ -1708,7 +1708,9 @@ export function buildProductionApp(
         () => deviceRuntime.endpointForDomains(), commands)
       registerComputerAccountsRoutes(app, runtimeServices.computerAccounts)
       runtimeServices.computerGitHub = new ComputerGitHubService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands)
+        () => deviceRuntime.endpointForDomains(), commands, {
+          accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
+        })
       registerComputerGitHubRoutes(app, runtimeServices.computerGitHub)
       runtimeServices.computerDrive = new ComputerDriveService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
