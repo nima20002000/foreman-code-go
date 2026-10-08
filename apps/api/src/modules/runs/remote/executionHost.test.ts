@@ -146,6 +146,42 @@ describe('actual worker native-port adapter', () => {
     expect(f.manager.reconcile).toHaveBeenCalledTimes(2)
   })
 
+  it('refreshes Main context usage from paginated Worker history without a controls read', async () => {
+    const f = await setup()
+    const events = Array.from({ length: 70 }, (_, sequence) => ({ sequence, type: 'native.notification',
+      occurredAt: '2026-10-01T00:00:00.000Z', payload: { text: 'x'.repeat(20_000) } }))
+    let usedTokens = 120
+    f.manager.reconcile = async () => ({ events, pendingInteractions: [], firstRetainedSequence: 0,
+      nextSequence: events.length })
+    f.manager.contextSnapshot = () => ({ nativeSessionId: f.session.nativeSessionId,
+      model: f.request.configuration.harness.model, generation: 'worker', sequence: usedTokens,
+      observedAt: new Date().toISOString(), source: 'codex', accuracy: 'native',
+      usedTokens, capacityTokens: 1000, lifetimeTokens: usedTokens, cost: null, stale: false })
+    const replies: unknown[] = []
+    const methods: string[] = []
+    const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement, harness: 'codex',
+      configuration: f.request.configuration, transport: { request: async (method, frame) => {
+        methods.push(method)
+        const response = await f.host.handle(frame)
+        if (method === 'history') replies.push(response)
+        return response
+      } }, observeReceipt: async () => {}, controlFor: async () => { throw new Error('No control requested') } })
+    const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
+    const firstPage = await f.host.handle({ method: 'history', intent: f.intent,
+      placement: f.placement, afterSequence: -1 })
+    expect(firstPage).toMatchObject({ context: { usedTokens: 120 }, page: { hasMore: true } })
+    expect((await proxy.history(session)).events.length).toBeLessThan(events.length)
+    expect(replies[0]).toMatchObject({ context: { usedTokens: 120 } })
+    expect(proxy.contextSnapshot(session)?.usedTokens).toBe(120)
+    usedTokens = 450
+    await proxy.history(session)
+    expect(proxy.contextSnapshot(session)?.usedTokens).toBe(450)
+    expect(methods).toEqual(['prepare', 'history', 'history'])
+    f.state.allowed = false
+    await expect(proxy.history(session)).rejects.toThrow('revoked')
+    expect(proxy.contextSnapshot(session)?.usedTokens).toBe(450)
+  })
+
   it('production detaches the running remote resident before closing channels or releasing ownership', async () => {
     const f = await setup()
     let channelsClosed = false
