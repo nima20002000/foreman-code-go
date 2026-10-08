@@ -6,7 +6,7 @@ import { createMainJobExecutionHost } from './mainExecution.js'
 import { createQualificationReportPublisher } from './qualificationReports.js'
 import { createVerificationSystemInput } from './verificationSystemInput.js'
 import { openMainJobJournal } from './mainJobJournal.js'
-import { jobLifecycleSignal } from './lifecycle.js'
+import { jobCleanupOptions } from './lifecycle.js'
 import { JobExecutionRecordSchema } from '@foreman-code/contracts/job-verification'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { constants } from 'node:fs'
@@ -287,8 +287,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       const job = (await input.pool.query<{ record: unknown }>(
         'select record from job_executions where id=$1', [executionId])).rows[0]
       const execution = JobExecutionRecordSchema.parse(job?.record)
-      const options = execution.schemaVersion === 2 ? { signal: jobLifecycleSignal(execution, 'cleanup'),
-        deadlineAt: execution.acceptedSpec.lifecycle.cleanupDeadlineAt } : undefined
+      const options = execution.schemaVersion === 2 ? jobCleanupOptions(execution) : undefined
       await source.sources.confirmClosed(SourceMaterializationRecordSchema.parse(row.record), options)
       await releaseClosedJobComputers(input.pool)
     },
