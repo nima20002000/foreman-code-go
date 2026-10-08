@@ -16,7 +16,17 @@ import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productio
 export class NativeConfigurationService {
   private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>(300_000, 128, Date.now, true)
   private readonly configurationChecks = new QualificationCache<Awaited<ReturnType<NativeConfigurationService['inspectConfiguration']>>>()
-  invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear() }
+  invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear(); this.identities.clear() }
+  // Resolving the installed binary's identity costs over a second; settings reads reuse it briefly.
+  private readonly identities = new Map<string, { at: number; value: Promise<string> }>()
+  private identity(harness: 'codex' | 'opencode'): Promise<string> {
+    const known = this.identities.get(harness)
+    if (known && Date.now() - known.at < 60_000) return known.value
+    const value = this.factories.cacheIdentity(harness, this.directory)
+    this.identities.set(harness, { at: Date.now(), value })
+    void value.catch(() => { if (this.identities.get(harness)?.value === value) this.identities.delete(harness) })
+    return value
+  }
   async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }
   private readonly factories: NativeHarnessFactories
   constructor(private readonly codexBinary: string, private readonly openCodeBinary: string, private readonly directory: string, factories?: NativeHarnessFactories, private readonly claude?: ClaudeNativeConfigurationPort, private readonly command: typeof runCommand = runCommand) {
@@ -53,7 +63,7 @@ export class NativeConfigurationService {
   async options(harness: AgentHarness) {
     try {
       if (harness === 'claude') return await this.discoverOptions(harness)
-      const identity = await this.factories.cacheIdentity(harness, this.directory)
+      const identity = await this.identity(harness)
       return await this.catalogCache.get(JSON.stringify([harness, identity]), () => this.discoverOptions(harness))
     }
     catch (error) { throw qualificationError(error) }

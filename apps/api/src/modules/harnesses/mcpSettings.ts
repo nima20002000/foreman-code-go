@@ -88,13 +88,17 @@ export class HarnessMcpSettingsService {
   }
   private async cachedList(harness: Harness): Promise<McpList> {
     const known = this.lists.get(harness)
-    if (known && Date.now() - known.readAt < 300_000 && await fileStamp(known.file) === known.stamp) return structuredClone(known.list)
+    const unchanged = known ? await fileStamp(known.file) === known.stamp : false
+    if (known && unchanged && Date.now() - known.readAt < 300_000) return structuredClone(known.list)
     const active = this.reads.get(harness)
-    if (active) return active
-    const reading = this.readList(harness)
-    this.reads.set(harness, reading)
-    const clear = () => { if (this.reads.get(harness) === reading) this.reads.delete(harness) }
-    void reading.then(clear, clear)
+    const reading = active ?? this.readList(harness)
+    if (!active) {
+      this.reads.set(harness, reading)
+      const clear = () => { if (this.reads.get(harness) === reading) this.reads.delete(harness) }
+      void reading.then(clear, clear)
+    }
+    // An older read of an unchanged file is shown while the refresh runs; layers outside the user file still refresh.
+    if (known && unchanged) { void reading.catch(() => undefined); return structuredClone(known.list) }
     return reading
   }
   private readList(harness: Harness) {
