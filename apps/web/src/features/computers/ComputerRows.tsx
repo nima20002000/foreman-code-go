@@ -6,6 +6,7 @@ import { computerDisplayName, type ComputerActivity } from '@foreman-code/contra
 import { useBuildComputers } from '../../shared/api/buildComputers'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
+import { MainRuntimeSetup } from '../runtime-qualification/MainRuntimeSetup'
 import { ComputerAccountControls } from './ComputerAccounts'
 import { useComputerActivityFreshness } from './useComputerActivityFreshness'
 import { Alert, Button, IconButton, LoadingState, Switch, Select } from '../../shared/ui/nocturne'
@@ -93,6 +94,7 @@ export function ComputerRows({ mainId, devices, onSelectComputer }: {
         {onSelectComputer && <Button size="sm" variant="ghost" onClick={() => onSelectComputer(device.deviceId)}>Open</Button>}
       </li>)}
     </ul>
+    <MainRuntimeSetup />
     {!devices.some(device => device.status === 'paired') && <p className="computer-list-caption">Add a computer to share builds and agents.</p>}
   </>
 }

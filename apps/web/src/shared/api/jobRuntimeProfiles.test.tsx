@@ -2,13 +2,13 @@ import { profile, approval, verificationProfile } from '../../test/jobRuntimeFix
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { server } from '../../mocks/server'
 import { useComputerPreparation, useJobRuntimeProfiles } from './jobRuntimeProfiles'
 const clients:QueryClient[]=[]
 function wrapper(){const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});clients.push(client);return function Wrapper({children}:{children:ReactNode}){return <QueryClientProvider client={client}>{children}</QueryClientProvider>}}
-afterEach(()=>{cleanup();for(const client of clients.splice(0))client.clear()})
+afterEach(()=>{cleanup();for(const client of clients.splice(0))client.clear();vi.useRealTimers()})
 const base=`/api/management/workspaces/${profile.workspaceId}/jobs`
 describe('runtime profile browser client',()=>{
   it('reads persisted verification resources and runtime setup status without starting qualification', async () => {
@@ -60,3 +60,28 @@ it('keeps preparation progress when an older idle GET finishes after POST and co
   await waitFor(() => expect(reads).toBeGreaterThan(1), { timeout: 7000 })
   expect(read.result.current.status.data?.state).toBe('preparing')
 }, 10_000)
+
+
+it.each(['idle', 'qualified', 'failed'] as const)(
+  'discovers preparation started elsewhere after a %s read and follows its completion', async initialState => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    let state: string = initialState
+    let writes = 0
+    const url = `${base}/runtime-profiles/${verificationProfile.id}/computer-preparation`
+    const status = { profileId: verificationProfile.id, deviceId: null, commit: null,
+      stage: null, message: null, profiles: [], startedAt: null, updatedAt: null }
+    server.use(
+      http.get(url, () => HttpResponse.json({ ...status, state })),
+      http.post(url, () => { writes++; return HttpResponse.json({ ...status, state }) }),
+    )
+    const read = renderHook(() => useComputerPreparation(profile.workspaceId, verificationProfile.id), { wrapper: wrapper() })
+    await vi.waitFor(() => expect(read.result.current.status.data?.state).toBe(initialState))
+    state = 'preparing'
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    await vi.waitFor(() => expect(read.result.current.status.data?.state).toBe('preparing'))
+    state = 'qualified'
+    await act(() => vi.advanceTimersByTimeAsync(5_000))
+    await vi.waitFor(() => expect(read.result.current.status.data?.state).toBe('qualified'))
+    expect(writes).toBe(0)
+  },
+)

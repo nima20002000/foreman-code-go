@@ -26,7 +26,10 @@ export function useComputerPreparation(workspaceId: string, profileId: string) {
   const key = [...keys.root, 'preparation', sessionGeneration(), workspaceId, profileId] as const
   const url = `${path(workspaceId)}/runtime-profiles/${encodeURIComponent(profileId)}/computer-preparation`
   const status = useQuery<BuildComputerPrepareStatus>({ queryKey: key, enabled: Boolean(workspaceId) && !sessionIsSwitching(), retry: false,
-    refetchInterval: query => ['idle', 'qualified', 'failed'].includes(query.state.data?.state ?? 'idle') ? false : 5_000,
+    refetchInterval: query => {
+      const settled = ['idle', 'qualified', 'failed'].includes(query.state.data?.state ?? 'idle')
+      return settled || query.state.status === 'error' ? 30_000 : 5_000
+    },
     queryFn: ({ signal }) => apiClient.request(url, BuildComputerPrepareStatusSchema, { signal }) })
   const start = useMutation({ retry: false,
     mutationFn: () => apiClient.request(url, BuildComputerPrepareStatusSchema, { method: 'POST', body: { commandId: crypto.randomUUID() } }),

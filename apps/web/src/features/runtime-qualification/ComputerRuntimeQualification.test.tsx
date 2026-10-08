@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it } from 'vitest'
 import { JobRuntimeApprovalSchema, JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
-import { JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { server } from '../../mocks/server'
 import { profile, approval, verificationProfile } from '../../test/jobRuntimeFixture'
@@ -180,25 +180,29 @@ it('shows failed profiles without candidates and gives setup guidance for an emp
 })
 
 
-it('keeps automatic preparation available for an already-qualified reviewed verification profile', async () => {
-  const f = preparationFixture()
+function qualifiedProfile(pending: JobVerificationProfile) {
   const original = verificationMeasurementFixture()
   const sourceCommit = 'c'.repeat(40)
   const checkedAt = new Date().toISOString()
   const expiresAt = new Date(Date.now() + 3_600_000).toISOString()
-  const fingerprint = { ...original.fingerprint, profileId: f.pending.id, profileRevision: f.pending.revision,
-    specDigest: f.pending.specDigest, root, hostRef: host, registration: pins,
-    sourceCommit, imageDigest: f.pending.spec.policy.imageDigest,
-    imageConfigDigest: f.pending.spec.policy.imageDigest, imageManifestDigest: f.pending.spec.policy.imageDigest,
-    toolchainDigest: f.pending.spec.policy.toolchainDigest, approvalConfig: f.pending.approvalConfig }
+  const fingerprint = { ...original.fingerprint, profileId: pending.id, profileRevision: pending.revision,
+    specDigest: pending.specDigest, root, hostRef: host, registration: pins,
+    sourceCommit, imageDigest: pending.spec.policy.imageDigest,
+    imageConfigDigest: pending.spec.policy.imageDigest, imageManifestDigest: pending.spec.policy.imageDigest,
+    toolchainDigest: pending.spec.policy.toolchainDigest, approvalConfig: pending.approvalConfig }
   const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...original, fingerprint,
     approvedAt: checkedAt, checkedAt, expiresAt,
-    identity: { ...original.identity, profileId: f.pending.id, profileRevision: f.pending.revision,
+    identity: { ...original.identity, profileId: pending.id, profileRevision: pending.revision,
       rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
       imageDigest: fingerprint.imageDigest, toolchainDigest: fingerprint.toolchainDigest,
       approvalExpiresAt: expiresAt, qualificationExpiresAt: expiresAt } })
-  const qualified = JobVerificationProfileSchema.parse({ ...f.pending, sourceCommit, status: 'qualified', measurement,
-    spec: { ...f.pending.spec, suites: ['unit'] } })
+  return JobVerificationProfileSchema.parse({ ...pending, sourceCommit, status: 'qualified', measurement,
+    spec: { ...pending.spec, suites: ['unit'] } })
+}
+
+it('keeps automatic preparation available for an already-qualified reviewed verification profile', async () => {
+  const f = preparationFixture()
+  const qualified = qualifiedProfile(f.pending)
   let writes = 0
   server.use(http.get(`${f.base}/runtime-profiles`, () => HttpResponse.json({ profiles: [{
     profile: qualified, ready: true, reasons: [], sideEffects: false,
@@ -252,4 +256,38 @@ it.each([
     expect(screen.getByText(/Ask Operator to capture this installed runtime profile/)).toBeVisible()
   }
   expect(screen.getByRole('button', { name: 'Refresh runtime qualification' })).toBeEnabled()
+})
+
+
+it('states the legacy build-profile limitation and local setup alternative', async () => {
+  handlers()
+  renderPanel()
+  expect(await screen.findByText(/Automatic preparation is unavailable for legacy build profiles/)).toBeVisible()
+  expect(screen.getByText(/Runtime installation and repair must be performed locally/)).toBeVisible()
+  expect(screen.getByText(/Ask Operator to capture this installed runtime profile/)).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Prepare automatically' })).not.toBeInTheDocument()
+})
+
+
+it('keeps the preparation success result visible when the saved profile becomes ready', async () => {
+  const f = preparationFixture()
+  const qualified = qualifiedProfile(f.pending)
+  let ready = false
+  const completed = { ...f.status, state: 'qualified', commit: qualified.sourceCommit,
+    profiles: [{ profileId: qualified.id, revision: qualified.revision, status: qualified.status }] }
+  server.use(
+    http.get(`${f.base}/runtime-profiles`, () => HttpResponse.json({ profiles: [{
+      profile: ready ? qualified : f.pending, ready, reasons: [], sideEffects: false,
+    }], approvals: [] })),
+    http.get(f.url, () => HttpResponse.json(completed)),
+  )
+  const panel = renderPanel()
+  const success = `Qualified at ${qualified.sourceCommit!.slice(0, 12)}`
+  expect(await screen.findByText(success)).toBeVisible()
+  expect(screen.getByRole('heading', { name: f.pending.name })).toBeVisible()
+  ready = true
+  await act(() => panel.client.refetchQueries({ queryKey: ['workbench', 'job-runtime-profiles'] }))
+  expect(await screen.findByText('Qualified — ready')).toBeVisible()
+  expect(screen.getByText(success)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Prepare automatically' })).toBeEnabled()
 })

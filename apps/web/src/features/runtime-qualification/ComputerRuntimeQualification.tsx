@@ -98,7 +98,11 @@ function ProfileSetup({ profile, ready, reasons, candidates }: {
       </dl>
       {profile.approvalConfig.review ? <Preparation workspaceId={profile.workspaceId} profileId={profile.id} />
         : <p>Ask Operator to save a reviewed verification profile before preparing this computer automatically.</p>}
-    </> : <p>{legacyNextStep(profile)} Automatic preparation is available for reviewed verification profiles.</p>}
+    </> : <>
+      <p>Automatic preparation is unavailable for legacy build profiles.
+        Runtime installation and repair must be performed locally by a person on this computer.</p>
+      <p>{legacyNextStep(profile)}</p>
+    </>}
     {profile.schemaVersion === 2 && profile.status === 'recovery-required' && <p>Ask Operator to reconcile the original qualification before starting again.</p>}
     {candidates.map(candidate => <Candidate key={candidate.id} candidate={candidate} />)}
   </article>

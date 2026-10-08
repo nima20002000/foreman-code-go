@@ -103,3 +103,58 @@ it('opens harness account details by keyboard and touch without relying on hover
   fireEvent.click(openCode)
   expect(screen.getByText('OpenCode: OpenCode Go')).toBeVisible()
 })
+
+it('rejects a delayed account and activity response after Worker replacement and accepts the new binding', async () => {
+  let release!: () => void
+  let entered!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let enteredCount = 0
+  const replacement = { ...registration, workerInstallationId: '44444444-4444-4444-8444-444444444444' }
+  const replacementTarget = { ...deviceTarget, applicationInstallationId: replacement.workerInstallationId }
+  let replaced = false
+  const waitForOldRead = async () => {
+    enteredCount++
+    if (enteredCount === 2) entered()
+    await held
+  }
+  const accountList = (target: typeof deviceTarget, owner: string) => ({ computers: [{ target,
+    accounts: { observedAt: new Date().toISOString(), accounts: [
+      { tool: 'github', installed: true, signedIn: true, account: owner, details: [] },
+    ] },
+  }] })
+  const activityList = (target: typeof deviceTarget) => ({ mainId, activityComplete: true, truncated: false,
+    computers: [{ target, name: deviceName, online: true, jobs: [], agents: [] }],
+  })
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />, [
+    http.get('*/api/management/computers/accounts', async () => {
+      if (replaced) return HttpResponse.json(accountList(replacementTarget, 'replacement-owner'))
+      await waitForOldRead()
+      return HttpResponse.json(accountList(deviceTarget, 'old-owner'))
+    }),
+    http.get('*/api/management/computers/activity', async () => {
+      if (replaced) return HttpResponse.json(activityList(replacementTarget))
+      await waitForOldRead()
+      return HttpResponse.json(activityList(deviceTarget))
+    }),
+  ])
+  await started
+  f.rendered.rerender(<QueryClientProvider client={f.client}>
+    <ComputerRows mainId={mainId} devices={[replacement]} />
+  </QueryClientProvider>)
+  replaced = true
+  release()
+  await waitFor(() => expect(f.client.isFetching({ queryKey: ['computer-accounts'] })).toBe(0))
+  await waitFor(() => expect(f.client.isFetching({ queryKey: ['computer-activity'] })).toBe(0))
+  const row = within(screen.getByRole('listitem', { name: deviceName }))
+  expect(row.getByText('Unavailable')).toBeVisible()
+  expect(row.queryByRole('button', { name: /old-owner/ })).not.toBeInTheDocument()
+  await act(async () => {
+    await Promise.all([
+      f.client.refetchQueries({ queryKey: ['computer-accounts'] }),
+      f.client.refetchQueries({ queryKey: ['computer-activity'] }),
+    ])
+  })
+  expect(await row.findByRole('button', { name: 'GitHub: replacement-owner. Manage GitHub' })).toBeVisible()
+  expect(row.getByText('Idle')).toBeVisible()
+})

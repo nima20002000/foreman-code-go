@@ -199,3 +199,13 @@ it('connects Google Drive on a computer through a Google sign-in link and shows 
   await waitFor(() => expect(within(dialog).getByText('owner@gmail.com')).toBeInTheDocument(), { timeout: 8000 })
   expect(within(dialog).getByText('/home/owner/Foreman Code Drive')).toBeInTheDocument()
 }, 15_000)
+
+
+it('explains Main runtime setup limits and the supported local installation and Operator path', async () => {
+  computersFixture(<ComputerRows mainId={mainId} devices={[]} />)
+  const setup = screen.getByRole('region', { name: 'Main runtime setup' })
+  expect(within(setup).getByText(/Automatic runtime preparation is unavailable on Main/)).toBeVisible()
+  expect(within(setup).getByText(/A person must install or repair the protected CI runtime locally/)).toBeVisible()
+  expect(within(setup).getByText(/ask Operator to capture the installed runtime/)).toBeVisible()
+  expect(within(setup).queryByRole('button', { name: 'Prepare automatically' })).not.toBeInTheDocument()
+})
