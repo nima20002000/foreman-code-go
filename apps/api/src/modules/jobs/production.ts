@@ -248,6 +248,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const workerExecution = input.workerExecution ?? new WorkerExecutionPolicy()
   const buildComputers = new BuildComputerSettings(input.pool, input.commands, buildComputerReadiness({
     endpoint: input.endpoint, profiles, workerExecution, localExecutor: Boolean(localExecution),
+    availableMemory: input.availableMemory,
   }), requestQueueWake)
   const preparationPort: JobPreparationPort = {
     choices: (...args) => preparation.choices(...args), validate: (...args) => preparation.validate(...args),
