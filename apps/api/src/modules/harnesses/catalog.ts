@@ -20,11 +20,11 @@ export class HarnessCatalogService {
   private readonly checks = new QualificationCache<{
     qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string
   }>(0)
-  // Catalog and readiness reads are polled; they reuse a settled check (failures for 15s)
-  // instead of starting native processes per request. Writers and explicit checks stay fresh above.
+  // Catalog, readiness and draft-check reads are polled; they reuse a settled check (failures for 15s)
+  // and serve an expired success while it refreshes. Writers stay fresh through `checks`.
   private readonly statuses = new QualificationCache<{
     qualification: ReturnType<typeof HarnessQualificationSchema.parse>; checkedAt: string
-  }>()
+  }>(300_000, 128, Date.now, true)
   invalidateChecks(): void { this.checks.clear(); this.statuses.clear() }
   async shutdownChecks(): Promise<void> { await Promise.all([this.checks.close(), this.statuses.close()]) }
 
@@ -89,7 +89,7 @@ export class HarnessCatalogService {
 
   async checkConfiguration(principal: ManagementPrincipal, configuration: HarnessConfiguration) {
     requireAuthorization(principal, 'harnesses:read')
-    return { configuration, ...await this.inspectConfiguration(configuration) }
+    return { configuration, ...await this.currentStatus(configuration) }
   }
 
   private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number,

@@ -9,6 +9,7 @@ import { DomainError } from '../errors.js'
 import { assertChange, assertManagedChange, expectedMcpUserFingerprint, managedChange, managedEnableChange, managedStatus, mcpUserFingerprint,
   publicMcpList, type NativeMcpAdapter } from './nativeMcpCommon.js'
 import { NativeMcpNotSubmittedError } from './nativeMcpDelivery.js'
+import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
 
@@ -40,7 +41,10 @@ function acceptedPlanMessage(error: unknown): string {
 export class HarnessMcpSettingsService {
   private readonly stopping = new AbortController()
   private readonly pending = new Set<Promise<unknown>>()
-  private readonly reads = new Map<Harness, Promise<ReturnType<typeof publicMcpList>>>()
+  // Opening Connections reads native config; reuse it briefly and refresh in the background.
+  // This service's own writes clear it, so a saved change is visible immediately.
+  private readonly lists = new QualificationCache<Awaited<ReturnType<HarnessMcpSettingsService['readList']>>>(30_000, 8, Date.now, true)
+  private notifyChanged(): void { this.lists.clear(); this.changed() }
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly adapters: Record<Harness, NativeMcpAdapter>, private readonly changed: () => void,
     private readonly closeProcesses: () => Promise<unknown> = async () => undefined,
@@ -66,9 +70,18 @@ export class HarnessMcpSettingsService {
   }
   async list(principal: ManagementPrincipal, harness: Harness) {
     requireAuthorization(principal, 'harnesses:read')
-    const active = this.reads.get(harness)
-    if (active) return active
-    const reading = this.work(async (signal) => {
+    return this.cachedList(harness)
+  }
+  /** Fill Connections before Settings opens. */
+  async warmup(harnesses: readonly Harness[]): Promise<void> {
+    await Promise.allSettled(harnesses.map((harness) => this.cachedList(harness)))
+  }
+  private cachedList(harness: Harness) {
+    // A failed read is retried by the next request, not cached.
+    return this.lists.get(harness, () => this.readList(harness)).catch((error: unknown) => { this.lists.forget(harness); throw error })
+  }
+  private readList(harness: Harness) {
+    return this.work(async (signal) => {
       try {
         const snapshot = await this.adapters[harness].read(signal)
         const list = publicMcpList(snapshot)
@@ -79,10 +92,6 @@ export class HarnessMcpSettingsService {
       }
       catch (error) { throw qualificationError(error) }
     })
-    this.reads.set(harness, reading)
-    const clear = () => { if (this.reads.get(harness) === reading) this.reads.delete(harness) }
-    void reading.then(clear, clear)
-    return reading
   }
   async plans(principal: ManagementPrincipal, harness: Harness) {
     requireAuthorization(principal, 'harnesses:read')
@@ -214,7 +223,7 @@ export class HarnessMcpSettingsService {
             values($1,'http','harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id })])
           await client.query('commit')
         } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
-        this.changed()
+        this.notifyChanged()
         return this.get(principal, id)
       } catch (error) {
         if (marked && selected) {
@@ -231,7 +240,7 @@ export class HarnessMcpSettingsService {
               [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' })])
             await client.query('commit')
           } catch (persistenceError) { await client.query('rollback').catch(() => undefined); throw persistenceError }
-          this.changed()
+          this.notifyChanged()
           return this.get(principal, id)
         }
         throw qualificationError(error)
@@ -290,7 +299,7 @@ export class HarnessMcpSettingsService {
         return projection(updated.rows[0])
       }),
     })
-    this.changed()
+    this.notifyChanged()
     return result
   }
 }

@@ -30,12 +30,14 @@ describe('harness catalog status reads', () => {
     expect(qualify).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps explicit checks fresh and re-reads after invalidation', async () => {
+  it('keeps writer qualification fresh and re-reads after invalidation', async () => {
     let ready = true
     const { catalog, qualify } = fixture(() => ready)
     await catalog.list(principal)
+    expect((await catalog.checkConfiguration(principal, DEFAULT_HARNESS_DEFAULTS.codex)).qualification.ready).toBe(true)
+    expect(qualify).toHaveBeenCalledTimes(2)
     ready = false
-    await expect(catalog.checkConfiguration(principal, DEFAULT_HARNESS_DEFAULTS.codex)).rejects.toMatchObject({ code: 'HARNESS_DEFAULTS_UNQUALIFIED' })
+    await expect(catalog.qualifyConfiguration(DEFAULT_HARNESS_DEFAULTS.codex)).rejects.toMatchObject({ code: 'HARNESS_DEFAULTS_UNQUALIFIED' })
     expect(qualify).toHaveBeenCalledTimes(3)
     expect((await catalog.get(principal, 'codex')).discoveryError).toBeNull()
     catalog.invalidateChecks()

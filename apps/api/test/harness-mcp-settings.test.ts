@@ -83,6 +83,19 @@ describe('native MCP settings reads', () => {
     await service.shutdown()
   })
 
+  it('reuses a recent native read when Connections opens again', async () => {
+    const snapshot: NativeMcpSnapshot = { harness: 'codex', revision: 'revision', effective: {}, user: {},
+      userConfig: {}, file: '/tmp/native-user-config', version: 'version' }
+    const read = vi.fn().mockResolvedValue(snapshot)
+    const adapter = { read, apply: vi.fn() }
+    const service = new HarnessMcpSettingsService({} as never, {} as never,
+      { codex: adapter, opencode: adapter }, () => undefined)
+    const first = await service.list(principal, 'codex')
+    expect(await service.list(principal, 'codex')).toEqual(first)
+    expect(read).toHaveBeenCalledTimes(1)
+    await service.shutdown()
+  })
+
   it('allows a fresh read after a failed check', async () => {
     const snapshot: NativeMcpSnapshot = { harness: 'codex', revision: 'revision', effective: {}, user: {},
       userConfig: {}, file: '/tmp/native-user-config', version: 'version' }
