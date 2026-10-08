@@ -1003,7 +1003,9 @@ describe('Claude native instruction delivery', () => {
 
 it('applies preferences by idle exact-session resume and retains the admitted security configuration', async () => {
   const security = { model: 'sonnet', permissionMode: 'default', tools: ['Read'],
-    sandbox: { enabled: true, allowUnsandboxedCommands: false }, settingSources: [], strictMcpConfig: true }
+    sandbox: { enabled: true, allowUnsandboxedCommands: false }, settingSources: [], strictMcpConfig: true,
+    systemPrompt: 'Harness instructions.', env: { HARNESS_SETTING: 'accepted' },
+    mcpServers: { accepted: { type: 'http', url: 'http://127.0.0.1:9876/mcp' } } }
   const f = fixture(undefined, { sdkOptions: security })
   let frames = f.frames
   f.client.query = input => {
@@ -1019,20 +1021,39 @@ it('applies preferences by idle exact-session resume and retains the admitted se
       interrupt: f.interrupt, close: () => frames.close(), setPermissionMode: async () => {},
     }
   }
+  const skillBody = 'Pinned skill body with all accepted instructions.'
+  const configured = { ...start,
+    environment: { agentId: 'operator', variables: { WORKSPACE_SETTING: 'accepted' } },
+    configuration: { instructionDelivery: 'native-v1', prompt: { system: 'Agent instructions.' },
+      assignedSkills: [{ skillId: 'skill', version: '1' }],
+      resolvedSkills: [{ skillId: 'skill', version: '1', name: 'Pinned skill', instructions: skillBody,
+        contentHash: `sha256:${createHash('sha256').update(skillBody).digest('hex')}` }] },
+  } as unknown as NativeSessionStart
   const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
-    nativeSessionId: 'native-session' }, start)
+    nativeSessionId: 'native-session' }, configured)
+  const systemPrompt = 'Harness instructions.\n\nAgent instructions.\n\n# Skill: Pinned skill (skill@1)\n\n' + skillBody
+  expect(f.queries.mock.calls[0]![0].options.systemPrompt).toBe(systemPrompt)
   const desired = SessionPreferencesSchema.parse({ autoCompact: 'off', autoCompactTokens: 150000 })
   await f.manager.applySessionPreferences!(session, desired)
   expect(f.manager.appliedSessionPreferences!(session)).toEqual(desired)
   const resumed = f.queries.mock.calls.at(-1)![0]
-  expect(resumed.options).toMatchObject({ ...security, resume: 'native-session',
+  expect(resumed.options).toMatchObject({ ...security, systemPrompt, resume: 'native-session',
     env: { DISABLE_AUTO_COMPACT: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '150000' } })
   await f.manager.applySessionPreferences!(session, SessionPreferencesSchema.parse({
     autoCompact: 'on', contextProfile: 'sonnet[1m]', autoCompactTokens: 500000,
   }))
   expect(f.manager.appliedSessionPreferences!(session)?.contextProfile).toBe('sonnet[1m]')
   expect((await f.manager.sessionControlCapabilities!(session)).modelCapacity).toBe(1000000)
-  expect(f.queries.mock.calls.at(-1)![0].options).toMatchObject({ ...security, model: 'sonnet[1m]', resume: 'native-session' })
+  expect(f.queries.mock.calls.at(-1)![0].options).toMatchObject({
+    ...security, systemPrompt, model: 'sonnet[1m]', resume: 'native-session',
+  })
+  await f.manager.applySessionPreferences!(session, SessionPreferencesSchema.parse({}))
+  for (const [query] of f.queries.mock.calls) {
+    expect(query.options.systemPrompt).toBe(systemPrompt)
+    expect(query.options.env).toMatchObject({ HARNESS_SETTING: 'accepted', WORKSPACE_SETTING: 'accepted' })
+    expect(query.options.mcpServers).toEqual(security.mcpServers)
+  }
+  expect(f.queries.mock.calls.at(-1)![0].options.env).not.toHaveProperty('DISABLE_AUTO_COMPACT')
   await f.manager.dispose!()
 })
 
