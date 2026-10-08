@@ -195,6 +195,11 @@ export function currentRestartUnit(reviewer = false) {
   const captures = createWorkflowNativeCaptureChannel()
   const runs = { requestCleanup: async () => { assertOwned(); state.cleanup = true }, get: async () => f.run, getExecution: async () => execution,
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations, stopRequested: state.stopped, cleanupPending: state.cleanup }),
+    getRepeatVersion: async (runId: string, versionId: string) => {
+      assert.equal(runId, f.run.id)
+      assert.equal(versionId, f.run.workflowVersionId)
+      return f.version
+    },
     repeat: async () => repository, async *executionPages() { yield [execution] },
     getExecutionConfiguration: async () => configuration, updateExecution: async (next: HarnessExecution, actualOwner: RunOwnership,
       evidence: Parameters<typeof captures.verify.read>[0]) => {
