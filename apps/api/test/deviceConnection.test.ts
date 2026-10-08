@@ -216,11 +216,13 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       endpoint.close(); client.terminate(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve()))
     }
   })
-  it('negotiates signed actual duplex handlers and binds both request directions to the authenticated epoch', async () => {
+  it.each([1, 17, 32])('negotiates %i signed duplex handlers and binds both request directions to the authenticated epoch', async (extensionCount) => {
     const mainHandler = vi.fn(async (payload: unknown) => ({ payload: { mainReceipt: payload } }))
     const mainExtension: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 2048, maxBinaryBytes: 0, handle: mainHandler }
     let synchronizedReply: unknown
-    const { endpoint, presence } = makeEndpoint([mainExtension], 2000, async (_binding, signal) => {
+    const mainExtensions = Array.from({ length: extensionCount }, (_, index) => ({ ...mainExtension,
+      namespace: index === 0 ? mainExtension.namespace : `additional-${index}-v1` }))
+    const { endpoint, presence } = makeEndpoint(mainExtensions, 2000, async (_binding, signal) => {
       expect(endpoint.currentBinding(identity.deviceId)).toMatchObject(identity)
       expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toBeUndefined(); expect(endpoint.captureRequest(identity.deviceId, 'execution-v1')).toBeUndefined()
       synchronizedReply = (await endpoint.request(identity.deviceId, 'execution-v1', { grant: 'exact-operation' }, { signal })).payload
@@ -234,11 +236,11 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       return { payload: { receipt: 'actual-handler', epoch: context.binding.connectionEpoch } }
     })
     const connect = deviceConnector({ url: 'wss://main/device/connect', credential: 'device', create: (_url, options) => new WebSocket(`ws://127.0.0.1:${address.port}/device/connect`, options) })
-    const worker = new DeviceConnectionSupervisor({ identity, appVersion: 'build', mainPublicKeyFingerprint: fingerprint, connect, reconcile: async () => {}, heartbeatMs: 20, extensions: [{ ...mainExtension, handle: workerHandler }] })
+    const worker = new DeviceConnectionSupervisor({ identity, appVersion: 'build', mainPublicKeyFingerprint: fingerprint, connect, reconcile: async () => {}, heartbeatMs: 20, extensions: mainExtensions.map(extension => ({ ...extension, handle: workerHandler })) })
     try {
       worker.start(); await vi.waitFor(() => expect(worker.status().phase).toBe('ready'), { timeout: 2000, interval: 10 })
       await vi.waitFor(() => expect(endpoint.currentBinding(identity.deviceId, 'execution-v1')).toBeDefined())
-      expect(endpoint.capabilities(identity.deviceId)).toHaveLength(1)
+      expect(endpoint.capabilities(identity.deviceId)).toHaveLength(extensionCount)
       expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'ready', dispatch: true, transfer: false }); expect(synchronizedReply).toMatchObject({ receipt: 'actual-handler' })
       await expect(endpoint.request(identity.deviceId, 'execution-v1', { grant: 'heartbeat-only' })).rejects.toThrow('forbidden')
       const captured = endpoint.captureRequest(identity.deviceId, 'execution-v1')!

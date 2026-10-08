@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 /** Application namespaces share the authenticated W07 socket, never workflow authority. */
+export const DEVICE_APPLICATION_MAX_EXTENSIONS = 32
 export const DEVICE_APPLICATION_JSON_BYTES = 1_048_576
 export const DEVICE_APPLICATION_BINARY_BYTES = 1_048_576
 export const DEVICE_APPLICATION_CHUNK_BYTES = 8_192
@@ -72,7 +73,7 @@ export type DeviceHistoryPage = z.infer<typeof DeviceHistoryPageSchema>
 
 export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescriptor[] {
   // Main and its workers update together; 32 leaves room as namespaces are added.
-  if (!Array.isArray(value) || value.length > 32) throw new Error('Invalid device extensions')
+  if (!Array.isArray(value) || value.length > DEVICE_APPLICATION_MAX_EXTENSIONS) throw new Error('Invalid device extensions')
   const seen = new Set<string>()
   return value.map((item: unknown) => {
     if (!item || typeof item !== 'object') throw new Error('Invalid device extension')

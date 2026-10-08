@@ -1,4 +1,4 @@
-import { negotiateDeviceExtensions, parseExtensionDescriptors } from '@foreman-code/contracts/device-application'
+import { DEVICE_APPLICATION_MAX_EXTENSIONS, negotiateDeviceExtensions, parseExtensionDescriptors } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, DeviceApplicationError, deviceNegotiationHash, extensionDescriptors, type DeviceApplicationRequestOptions, type DeviceExtensionRegistration } from './deviceApplicationChannel.js'
 import { verifyMainIdentityProof } from '@foreman-code/contracts/device-identity-node'
 import type { MainIdentityProofRequest } from '@foreman-code/contracts/device-identity'
@@ -80,7 +80,7 @@ export class DeviceConnectionSupervisor {
         if (frame.type !== 'welcome' || typeof frame.connectionEpoch !== 'string' || !frame.connectionEpoch || !capabilities || capabilities.heartbeat !== true || typeof capabilities.dispatch !== 'boolean' || typeof capabilities.transfer !== 'boolean') throw new DeviceConnectionError('malformed-frame')
         if (frame.connectionGeneration !== hello.connectionGeneration) throw new DeviceConnectionError('wrong-main')
         const advertised = capabilities.extensions ?? []
-        if (!Array.isArray(advertised) || advertised.length > 16) throw new DeviceConnectionError('malformed-frame')
+        if (!Array.isArray(advertised) || advertised.length > DEVICE_APPLICATION_MAX_EXTENSIONS) throw new DeviceConnectionError('malformed-frame')
         const extensions = advertised as import('@foreman-code/contracts/device-application').DeviceNegotiatedExtension[]
         let recomputed: typeof extensions
         try { recomputed = negotiateDeviceExtensions(parseExtensionDescriptors(extensions.map((item) => ({ namespace: item.namespace, version: item.version, role: item.mainCanRequest && item.workerCanRequest ? 'duplex' : item.mainCanRequest ? 'client' : 'server', maxJsonBytes: item.maxJsonBytes, maxBinaryBytes: item.maxBinaryBytes }))), extensionDescriptors(this.options.extensions ?? [])) } catch { throw new DeviceConnectionError('malformed-frame') }
