@@ -1,0 +1,133 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
+import { agentChatFixtures, type AgentChatState, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import * as sessionHooks from '../sessionControls/useSessionControls'
+import { mountChat } from './testSupport'
+import { useConversationDraftStore } from '../conversationDraftStore'
+import { AgentChatTranscript } from './AgentChatTranscript'
+import type { useAgentChat } from './useAgentChat'
+
+const settings = SessionControlStateSchema.parse({ conversationId: 'chat', revision: 1, profileKey: 'profile',
+  desiredMode: 'regular', appliedMode: 'regular', defaults: {}, desired: {}, applied: {}, applicability: 'applied',
+  context: null, nativeSessionId: 'native', nativeProviderVersion: 'test', compaction: null, compactions: [],
+  busyReason: null, capabilities: unavailableSessionControls('profile') })
+let controls: sessionHooks.ComposerSessionControls
+beforeEach(() => {
+  controls = { state: settings, query: { isError: false, refetch: vi.fn() },
+    mutation: { isPending: false, isError: false }, change: vi.fn(), command: vi.fn(async () => true) } as unknown as sessionHooks.ComposerSessionControls
+  vi.spyOn(sessionHooks, 'useSessionControls').mockImplementation(() => controls)
+})
+afterEach(() => { cleanup(); vi.restoreAllMocks(); useConversationDraftStore.getState().clearAllDrafts() })
+
+for (const action of ['Steer', 'Interrupt and send']) {
+  it.each(['/plan', '/plan off', '/compact'])(`${action} routes %s only to native controls`, async content => {
+    const mounted = mountChat(structuredClone(agentChatFixtures.active))
+    await mounted.ready()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: content } })
+    fireEvent.click(screen.getByRole('button', { name: action }))
+    await waitFor(() => expect(controls.command).toHaveBeenCalledOnce())
+    expect(vi.mocked(controls.command).mock.calls[0]![0]).toBe(content)
+    expect(mounted.mock.calls.filter(call => call.path.endsWith('/messages') && call.method === 'POST')).toHaveLength(0)
+  })
+}
+
+it.each(['plan task', 'plan mode'])('disables steering a %s with an explicit reason instead of queuing', async kind => {
+  if (kind === 'plan mode') controls.state = { ...settings, desiredMode: 'plan' }
+  const mounted = mountChat(structuredClone(agentChatFixtures.active))
+  await mounted.ready()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: kind === 'plan task' ? '/plan Inspect the repository' : 'Inspect the repository' },
+  })
+  const steer = screen.getByRole('button', { name: 'Steer' })
+  expect(steer).toBeDisabled()
+  expect(steer).toHaveAttribute('title', 'Plan messages need a new turn. Use Queue message or Interrupt and send.')
+  fireEvent.click(steer)
+  expect(mounted.mock.calls.filter(call => call.path.endsWith('/messages') && call.method === 'POST')).toHaveLength(0)
+})
+
+it('sends a Plan task from Interrupt and send with its explicit intent and mode', async () => {
+  const mounted = mountChat(structuredClone(agentChatFixtures.active))
+  await mounted.ready()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: '/plan Inspect files' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Interrupt and send' }))
+  await waitFor(() => expect(mounted.mock.calls.find(call => call.path.endsWith('/messages') && call.method === 'POST')?.body)
+    .toMatchObject({ content: '/plan Inspect files', intent: 'interrupt_and_send', sessionMode: 'plan' }))
+})
+
+it.each(['accepted', 'running', 'uncertain'] as const)('blocks normal sending while compaction is %s', async status => {
+  controls.state = { ...settings, compaction: { requestId: 'compact-request', nativeSessionId: 'native',
+    nativeOperationId: 'compact-turn', status, beforeTokens: 100, message: 'Compaction is still in progress.',
+    observedAt: new Date().toISOString() } }
+  const mounted = mountChat(structuredClone(agentChatFixtures.idleAfterCompletion))
+  await mounted.ready()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Continue' } })
+  expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  expect(screen.getAllByText('Compaction is still in progress.').length).toBeGreaterThan(0)
+})
+
+it.each(['regular', 'plan'] as const)('requires an explicit %s resend mode when the original mode is unknown', async mode => {
+  const state: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
+  const turn = state.turns[0]!
+  state.turns = [{ ...turn, delivery: 'unknown' }]
+  state.messages[0]!.originalInput = { requestId: turn.requestId, content: 'Inspect the repository', attachments: [] }
+  const mounted = mountChat(state)
+  await mounted.ready()
+  fireEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+  const dialog = within(screen.getByRole('alertdialog'))
+  expect(dialog.getByRole('button', { name: 'Send as new message' })).toBeDisabled()
+  fireEvent.change(dialog.getByRole('combobox', { name: 'Mode for new message' }), { target: { value: mode } })
+  fireEvent.click(dialog.getByRole('button', { name: 'Send as new message' }))
+  await waitFor(() => expect(mounted.mock.calls.find(call => call.path.endsWith('/messages') && call.method === 'POST')?.body)
+    .toMatchObject({ content: 'Inspect the repository', intent: 'next_turn', sessionMode: mode }))
+})
+
+it('resends a slash Plan task with Plan mode even when current settings are Regular', async () => {
+  const state: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
+  const turn = state.turns[0]!
+  state.turns = [{ ...turn, delivery: 'unknown' }]
+  state.messages[0]!.originalInput = { requestId: turn.requestId, content: '/plan Inspect files', attachments: [] }
+  const mounted = mountChat(state)
+  await mounted.ready()
+  fireEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+  fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Send as new message' }))
+  await waitFor(() => {
+    const request = mounted.mock.calls.find(call => call.path.endsWith('/messages') && call.method === 'POST')?.body as SendAgentChatMessageRequest
+    expect(request).toMatchObject({ content: '/plan Inspect files', sessionMode: 'plan' })
+  })
+})
+
+it.each(['regular', 'plan'] as const)('preserves the original local %s mode in resend controls', mode => {
+  const state: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
+  const turn = state.turns[0]!
+  state.turns = [{ ...turn, delivery: 'unknown' }]
+  state.messages[0]!.originalInput = { requestId: turn.requestId, content: 'Inspect files', attachments: [] }
+  const onSendAgain = vi.fn()
+  render(<AgentChatTranscript state={state} name="Agent" commands={[{ status: 'success', submittedAt: 1,
+    result: undefined, error: undefined, command: { kind: 'send', clearDraft: true,
+      input: { requestId: turn.requestId, expectedConversationId: state.conversation!.id,
+        context: state.context, content: 'Inspect files', sessionMode: mode, intent: 'next_turn' } } }]}
+    history={{ data: undefined, hasNextPage: false } as ReturnType<typeof useAgentChat>['history']}
+    onCancel={vi.fn()} onRespond={vi.fn()} onSendAgain={onSendAgain} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+  expect(onSendAgain).toHaveBeenCalledExactlyOnceWith('Inspect files', [], mode)
+})
+
+it.each(['/plan', '/plan off', '/compact'])('routes an explicitly resent %s to controls instead of message admission', async content => {
+  const state: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
+  const turn = state.turns[0]!
+  state.turns = [{ ...turn, delivery: 'unknown' }]
+  state.messages[0]!.originalInput = { requestId: turn.requestId, content, attachments: [] }
+  const mounted = mountChat(state)
+  await mounted.ready()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Independent draft' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+  const dialog = within(screen.getByRole('alertdialog'))
+  const choice = dialog.queryByRole('combobox', { name: 'Mode for new message' })
+  if (choice) fireEvent.change(choice, { target: { value: 'regular' } })
+  fireEvent.click(dialog.getByRole('button', { name: 'Apply session command' }))
+  await waitFor(() => expect(controls.command).toHaveBeenCalledOnce())
+  expect(vi.mocked(controls.command).mock.calls[0]![0]).toBe(content)
+  expect(mounted.mock.calls.filter(call => call.path.endsWith('/messages') && call.method === 'POST')).toHaveLength(0)
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Independent draft')
+})
