@@ -10,6 +10,8 @@ import { WorkflowManagementService } from '../../src/modules/workflows/managemen
 import { RunManagementService } from '../../src/modules/runs/management.js'
 import { createCurrentNativeProductionFactory } from '../../src/modules/runs/workflowProduction.js'
 import { WorkspaceManagementService } from '../../src/modules/workspaces/management.js'
+import { OperatorAgentMutationService } from '../../src/modules/workspaces/operatorAgents.js'
+import { VersionHistoryService } from '../../src/modules/workflows/historyManagement.js'
 import { AgentManagementService } from '../../src/modules/workspaces/agents.js'
 import { HarnessCatalogService } from '../../src/modules/harnesses/catalog.js'
 import { PostgresSettingsRepository } from '../../src/modules/settings/postgres.js'
@@ -20,7 +22,7 @@ import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
 
 /** Real authenticated transport and qualified production binding over the shared
  * provider-boundary fixture. No fake engine Start/Stop receipt or native proof. */
-export async function currentOperatorIntegration(options: Parameters<typeof checkpointRuntimeFixture>[2] = {}) {
+export async function currentOperatorIntegration(options: Parameters<typeof checkpointRuntimeFixture>[2] & { agentManagement?: boolean } = {}) {
   const f = await checkpointRuntimeFixture(1, 1, options)
   const clients: Client[] = []
   const commands = new PostgresCommandCoordinator(f.db.pool), access = new PostgresAccessService(f.db.pool)
@@ -40,6 +42,10 @@ export async function currentOperatorIntegration(options: Parameters<typeof chec
     runs: new RunManagementService(f.db.pool, commands, f.runs, f.engine, f.locations, binding),
     workspaces: new WorkspaceManagementService(f.db.pool, commands, f.locations), agents: new AgentManagementService(f.db.pool), harnesses,
     settings: new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(f.db.pool), commands, harnesses, new PostgresOperatorRepository(f.db.pool)) }
+  if (options.agentManagement) Object.assign(services, { extensions: {
+    agents: new OperatorAgentMutationService(f.db.pool, commands, harnesses),
+    history: new VersionHistoryService(f.db.pool),
+  } })
   const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
   try {
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
