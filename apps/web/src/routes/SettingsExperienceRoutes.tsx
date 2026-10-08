@@ -1,10 +1,9 @@
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { useEffect, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { AgentDefaultsSettings } from '../features/settings/AgentDefaultsSettings'
 import { ComputerSettings } from '../features/settings/ComputerSettings'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { Alert } from '../shared/ui/nocturne'
-import { HarnessComputerScope } from '../features/settings/HarnessComputerScope'
 import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSettings'
 import { WorkspaceDefaultsSettings } from '../features/settings/WorkspaceDefaultsSettings'
 import { GeneralSettings } from '../features/settings/GeneralSettings'
@@ -21,24 +20,13 @@ function SettingsShell({ children }: { children: ReactNode }) {
   }} />
 }
 export function AgentSettingsRouteEntry() {
-  const search = useSearch({ from: '/settings/agents' })
-  const navigate = useNavigate({ from: '/settings/agents' })
-  return <SettingsShell><AgentDefaultsSettings selectedRole={search.role} section={search.section ?? 'model'}
-    onSelectRole={(role) => void navigate({ search: role ? { role, section: 'model' } : {} })}
-    onSectionChange={(section) => {
-      if (section === 'connections' || section === 'workspace' || section === 'plugins') return
-      void navigate({ search: { ...search, section } })
-    }} /></SettingsShell>
+  return <SettingsShell><AgentDefaultsSettings /></SettingsShell>
 }
 export function HarnessSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/harnesses' })
   const navigate = useNavigate({ from: '/settings/harnesses' })
-  useEffect(() => {
-    if (search.harness === 'opencode' && search.section === 'plugins') void navigate({ search: { ...search, harness: 'opencode', section: 'model' }, replace: true })
-  }, [search, navigate])
-  return <SettingsShell><HarnessComputerScope selectedComputer={search.computer} onSelectComputer={(computer) => void navigate({ search: { ...search, computer } })}><HarnessDefaultsSettings selectedHarness={search.harness} section={search.harness === 'opencode' && search.section === 'plugins' ? 'model' : search.section ?? 'model'}
-    onSelectHarness={(harness) => void navigate({ search: harness ? { ...search, harness, section: 'model' } : { computer: search.computer } })}
-    onSectionChange={(section) => void navigate({ search: { ...search, section } })} /></HarnessComputerScope></SettingsShell>
+  return <SettingsShell><HarnessDefaultsSettings selectedHarness={search.harness} section={search.section}
+    onOpen={(next) => void navigate({ search: next ?? {} })} /></SettingsShell>
 }
 export function SkillsSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/skills' })

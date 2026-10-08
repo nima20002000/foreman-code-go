@@ -84,16 +84,16 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   if (!service) return
   const annotations = { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false }
   if (operatorToolAvailable(context, 'build_computer_get')) server.registerTool('build_computer_get', {
-    description: 'Read persisted build participation, priority, role, build allowance, revision and derived readiness for this Main/computer installation. Readiness uses Job admission capacity, saved build allowance and fresh remote available memory; reasons distinguish reserved capacity, unavailable memory, insufficient memory and an allowance too small for the runtime. Requires global settings:read. Pairing, workspace/root approval, qualified runtime and the Main startup execution gate remain separate.',
+    description: 'Read persisted build participation, priority, build allowance, revision and derived readiness for this Main/computer installation. Readiness uses Job admission capacity, saved build allowance and fresh remote available memory; reasons distinguish reserved capacity, unavailable memory, insufficient memory and an allowance too small for the runtime. Requires global settings:read. Pairing, workspace/root approval, qualified runtime and the Main startup execution gate remain separate.',
     inputSchema: BuildComputerReadSchema, outputSchema: BuildComputerStatusSchema, annotations,
   }, input => invokeOperatorTool(context, 'build_computer_get', () => service.read(context.principal, input, 'mcp')))
   if (operatorToolAvailable(context, 'build_computer_update')) server.registerTool('build_computer_update', {
-    description: 'Revision-check build participation, priority (0–100, higher preferred), role (after the preferred computer, primaries are tried before backups) and build allowance (10–100 percent of the computer CPU and memory that builds may use; omitted role/allowance keep their saved values). Requires global settings:update. Edits affect future launches; running Jobs retain cancellation/recovery and artifacts. Reuse commandId for an uncertain save. Does not install, pair, approve a runtime or enable the Main startup execution gate.',
+    description: 'Revision-check build participation, priority (0–100; after a preferred computer, builds try computers from the highest priority down) and build allowance (10–100 percent of the computer CPU and memory that builds may use; an omitted allowance keeps its saved value). Requires global settings:update. Edits affect future launches; running Jobs retain cancellation/recovery and artifacts. Reuse commandId for an uncertain save. Does not install, pair, approve a runtime or enable the Main startup execution gate.',
     inputSchema: BuildComputerUpdateSchema, outputSchema: BuildComputerStatusSchema,
     annotations: { ...annotations, readOnlyHint: false },
   }, input => invokeOperatorTool(context, 'build_computer_update', () => service.update(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'build_computers_update')) server.registerTool('build_computers_update', {
-    description: 'Atomically update build participation, priority, role and allowance for one or more computers on Main. '
+    description: 'Atomically update build participation, priority and allowance for one or more computers on Main. '
       + 'Checks every expectedRevision before changing any computer. Requires global settings:update. '
       + 'Reuse the same commandId and updates to resolve an uncertain save; replay returns the original result. '
       + 'Read build_computer_get afterwards for current settings. Changes affect future placement; running Jobs keep their computer.',

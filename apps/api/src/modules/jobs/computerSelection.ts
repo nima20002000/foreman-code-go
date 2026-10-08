@@ -77,7 +77,7 @@ export function compatibleJobComputer(candidate: JobComputerCandidate, request: 
   return matchesRuntimePolicy(request, candidate.profile, candidate.spec.policy)
     && canonical(jobRuntimeProfileLimits(candidate.profile)) === canonical(request.limits)
 }
-/** Local first: a preferred computer (an Agent's own) leads; the rest keep primary/backup and priority order. */
+/** Local first: a preferred computer (an Agent's own) leads; the rest keep build priority order. */
 export function orderForPlacement(candidates: EnrolledCandidate[], placement?: JobPlacementIntent | null): EnrolledCandidate[] {
   const ordered = orderBuildComputers(candidates)
   if (placement?.kind !== 'prefer') return ordered
@@ -87,9 +87,6 @@ export function orderForPlacement(candidates: EnrolledCandidate[], placement?: J
 }
 export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCandidate[] {
   return candidates.filter(candidate => candidate.ready && candidate.preference.buildEnabled).sort((left, right) => {
-    // Every primary is tried before any backup; within a role the higher priority goes first.
-    const role = Number(left.preference.buildRole === 'backup') - Number(right.preference.buildRole === 'backup')
-    if (role) return role
     const priority = right.preference.buildPriority - left.preference.buildPriority
     if (priority) return priority
     const leftKey = `${buildComputerKey(left.preference.target)}:${left.profile.root.binding.rootId}:${left.profile.id}`

@@ -10,7 +10,7 @@ import { RootShell } from './RootShell'
 import { AgentSettingsSearchSchema, SkillSettingsSearchSchema } from '@foreman-code/contracts/management'
 import { GeneralSettingsRouteEntry, NewSkillRouteEntry, SkillDetailRouteEntry, SkillsSettingsRouteEntry, WorkspaceDefaultsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
-import { HarnessComputerSearchSchema } from '../features/settings/harnessComputerSearch'
+import { HarnessSettingsSearchSchema } from '@foreman-code/contracts/management'
 import { ComputersSettingsRouteEntry, ComputerDetailsSettingsRouteEntry } from '../routes/SettingsExperienceRoutes'
 
 import { WorkspaceRouteEntry } from '../routes/WorkspaceRouteEntry'
@@ -158,7 +158,7 @@ const generalSettingsRoute = createRoute({
 const harnessSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings/harnesses',
-  validateSearch: HarnessComputerSearchSchema,
+  validateSearch: HarnessSettingsSearchSchema,
   component: HarnessSettingsRouteEntry,
 })
 const agentSettingsRoute = createRoute({

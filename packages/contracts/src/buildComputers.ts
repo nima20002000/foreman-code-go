@@ -1,8 +1,6 @@
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema, DeviceCommandIdSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
 
-/** After a preferred computer, primaries take builds before backups. */
-export const BuildComputerRoleSchema = z.enum(['primary', 'backup'])
 /** Share (percent) of the computer's CPU and memory that builds may use together. */
 export const BuildComputerAllowanceSchema = z.number().int().min(10).max(100)
 export const BuildComputerPreferenceSchema = z.object({
@@ -10,7 +8,6 @@ export const BuildComputerPreferenceSchema = z.object({
   revision: DeviceSafeIntegerSchema,
   buildEnabled: z.boolean(),
   buildPriority: z.number().int().min(0).max(100),
-  buildRole: BuildComputerRoleSchema.default('primary'),
   buildAllowancePercent: BuildComputerAllowanceSchema.default(100),
 }).strict()
 export const BuildComputerReadSchema = z.object({ target: DeviceProvisioningTargetSchema }).strict()
@@ -20,7 +17,6 @@ export const BuildComputerUpdateSchema = BuildComputerReadSchema.extend({
   buildEnabled: z.boolean(),
   buildPriority: z.number().int().min(0).max(100),
   /** Omitted fields keep their saved values. */
-  buildRole: BuildComputerRoleSchema.optional(),
   buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
 }).strict()
 export const BuildComputerChangeSchema = BuildComputerUpdateSchema.omit({ commandId: true })
@@ -47,7 +43,6 @@ export const BuildComputerStatusSchema = z.object({
 }).strict()
 export const BuildComputerBatchResultSchema = z.object({ computers: z.array(BuildComputerStatusSchema).min(1) }).strict()
 export type BuildComputerPreference = z.infer<typeof BuildComputerPreferenceSchema>
-export type BuildComputerRole = z.infer<typeof BuildComputerRoleSchema>
 export type BuildComputerUpdate = z.infer<typeof BuildComputerUpdateSchema>
 export type BuildComputerStatus = z.infer<typeof BuildComputerStatusSchema>
 export type BuildComputerChange = z.infer<typeof BuildComputerChangeSchema>

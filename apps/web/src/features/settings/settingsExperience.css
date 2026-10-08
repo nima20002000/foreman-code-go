@@ -20,8 +20,6 @@
 .settings-summary-row { display: flex; gap: var(--space-3); justify-content: space-between; min-width: 0; line-height: 1.6; font-size: 12px; }
 .settings-summary-row > span { color: var(--n-faint); flex-shrink: 0; }
 .settings-summary-row > strong { min-width: 0; text-align: end; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-choice-action { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--n-border); color: var(--n-accent); font-size: 12px; font-weight: 600; }
-.settings-draft-badge { color: var(--n-warning); }
 .settings-editor-layout { display: grid; grid-template-columns: 194px minmax(0, 1fr); align-items: start; gap: var(--space-8); min-width: 0; }
 .settings-editor-nav { display: grid; gap: var(--space-1); min-width: 0; padding: 0; }
 .settings-editor-nav > button { display: flex; gap: var(--space-2); justify-content: space-between; align-items: center; min-height: 44px; width: 100%; padding: 10px 12px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--n-muted); font: inherit; text-align: start; cursor: pointer; }
@@ -85,3 +83,4 @@
 .settings-choice-footer .operator-mcp-status { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--n-muted); }
 .settings-choice-footer small { color: var(--n-muted); }
 .settings-choice-footer .operator-mcp-error { flex-basis: 100%; color: var(--n-danger, var(--n-text)); overflow-wrap: anywhere; }
+.settings-choice-links { display: inline-flex; gap: .25rem; }

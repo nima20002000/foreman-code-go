@@ -36,13 +36,13 @@ export async function assertBuildComputerTarget(sql: JobSql, target: DeviceProvi
 
 export async function readBuildComputerPreference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
   const row = (await sql.query<{ target: DeviceProvisioningTarget; revision: string; build_enabled: boolean; build_priority: number;
-    build_role: 'primary' | 'backup'; build_allowance_percent: number }>(
-    'select target,revision::text,build_enabled,build_priority,build_role,build_allowance_percent from build_computer_preferences where host_key=$1 for share',
+    build_allowance_percent: number }>(
+    'select target,revision::text,build_enabled,build_priority,build_allowance_percent from build_computer_preferences where host_key=$1 for share',
     [buildComputerKey(target)])).rows[0]
   const matches = row && sameDeviceProvisioningTarget(DeviceProvisioningTargetSchema.parse(row.target), target)
   return BuildComputerPreferenceSchema.parse({ target, revision: Number(row?.revision ?? 0),
     buildEnabled: matches ? row.build_enabled : false, buildPriority: matches ? row.build_priority : 50,
-    buildRole: matches ? row.build_role : 'primary', buildAllowancePercent: matches ? row.build_allowance_percent : 100 })
+    buildAllowancePercent: matches ? row.build_allowance_percent : 100 })
 }
 
 export class BuildComputerSettings {
@@ -138,12 +138,12 @@ export class BuildComputerSettings {
     for (const [index, input] of updates.entries()) {
       const old = preferences[index]!
       await sql.query(`insert into build_computer_preferences
-          (host_key,target,revision,build_enabled,build_priority,build_role,build_allowance_percent,updated_by) values($1,$2::jsonb,$3,$4,$5,$6,$7,$8)
+          (host_key,target,revision,build_enabled,build_priority,build_allowance_percent,updated_by) values($1,$2::jsonb,$3,$4,$5,$6,$7)
           on conflict(host_key) do update set target=excluded.target,revision=excluded.revision,
-          build_enabled=excluded.build_enabled,build_priority=excluded.build_priority,build_role=excluded.build_role,
+          build_enabled=excluded.build_enabled,build_priority=excluded.build_priority,
           build_allowance_percent=excluded.build_allowance_percent,updated_by=excluded.updated_by`,
         [buildComputerKey(input.target), JSON.stringify(input.target), old.revision + 1,
-          input.buildEnabled, input.buildPriority, input.buildRole ?? old.buildRole,
+          input.buildEnabled, input.buildPriority,
           input.buildAllowancePercent ?? old.buildAllowancePercent, principal.id])
     }
     return Promise.all(updates.map(input => this.status(sql, input.target)))

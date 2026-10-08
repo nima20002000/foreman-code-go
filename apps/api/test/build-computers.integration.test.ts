@@ -147,13 +147,13 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     const audit = await database.pool.query("select outcome from management_audit where action='build.computer.update' and principal_id=$1", [writer.principal.id])
     expect(audit.rows.map(row => row.outcome)).toContain('succeeded')
   })
-  it('atomically saves all build roles and priorities over authenticated MCP with denied writes and persisted readback', async () => {
+  it('atomically saves all build priorities over authenticated MCP with denied writes and persisted readback', async () => {
     const f = await fixture()
     const client = await f.connect(writer.token)
     const readOnly = await f.connect(reader.token)
     const command = { commandId: randomUUID(), updates: f.computers.map((computer, index) => ({
       target: computer.target, expectedRevision: 0, buildEnabled: true, buildPriority: index * 50,
-      buildRole: index === 0 ? 'backup' : 'primary', buildAllowancePercent: 60,
+      buildAllowancePercent: 60,
     })) }
     const saved = BuildComputerBatchResultSchema.parse((await client.callTool({
       name: 'build_computers_update', arguments: command,
@@ -206,7 +206,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     const client = await f.connect(writer.token)
     const rejected = await client.callTool({ name: 'build_computers_update', arguments: {
       commandId: randomUUID(), updates: f.computers.map(computer => ({ target: computer.target,
-        expectedRevision: 0, buildEnabled: true, buildPriority: 100, buildRole: 'backup' })),
+        expectedRevision: 0, buildEnabled: true, buildPriority: 100 })),
     } })
     expect(rejected.isError).toBe(true)
     expect(JSON.stringify(rejected.content)).toContain('REVISION_CONFLICT')

@@ -4,13 +4,14 @@ import { deviceProvisioningTargetFixture } from './deviceProvisioningFixtures.js
 
 it('validates participation revisions and bounded priority without changing device authority', () => {
   const preference = { target: deviceProvisioningTargetFixture, revision: 0, buildEnabled: false, buildPriority: 50,
-    buildRole: 'backup' as const, buildAllowancePercent: 40 }
+    buildAllowancePercent: 40 }
   expect(BuildComputerPreferenceSchema.parse(preference)).toEqual(preference)
-  // Preferences saved before roles and allowances existed read as a primary computer with its whole allowance.
+  // Preferences saved before allowances existed read with the computer's whole allowance.
   const saved: Partial<typeof preference> = { ...preference }
-  delete saved.buildRole
   delete saved.buildAllowancePercent
-  expect(BuildComputerPreferenceSchema.parse(saved)).toEqual({ ...saved, buildRole: 'primary', buildAllowancePercent: 100 })
+  expect(BuildComputerPreferenceSchema.parse(saved)).toEqual({ ...saved, buildAllowancePercent: 100 })
+  // Builds use one priority order; the retired Primary/Backup role is not accepted.
+  expect(BuildComputerPreferenceSchema.safeParse({ ...preference, buildRole: 'backup' }).success).toBe(false)
   const input = { ...preference, commandId: 'build-command', expectedRevision: 0 }
   delete (input as Partial<typeof input>).revision
   expect(BuildComputerUpdateSchema.safeParse(input).success).toBe(true)
@@ -21,7 +22,7 @@ it('validates participation revisions and bounded priority without changing devi
 })
 it('validates one batch command with unique computers on the same Main and revisioned changes', () => {
   const change = { target: deviceProvisioningTargetFixture, expectedRevision: 2,
-    buildEnabled: true, buildPriority: 100, buildRole: 'primary', buildAllowancePercent: 60 }
+    buildEnabled: true, buildPriority: 100, buildAllowancePercent: 60 }
   const command = { commandId: 'save-order', updates: [change] }
   expect(BuildComputerBatchUpdateSchema.parse(command)).toEqual(command)
   expect(BuildComputerBatchUpdateSchema.safeParse({ ...command, updates: [] }).success).toBe(false)

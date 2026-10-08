@@ -76,11 +76,10 @@ it('discovers, installs, and removes using the exact reviewed snapshot', async (
   expect(changes[0]?.commandId).not.toBe(changes[1]?.commandId)
   expect(router.state.location.search.pluginId).toBeUndefined()
 }, 20_000)
-it('does not expose Codex Plugins in OpenCode settings', async () => {
-  const { router } = mount('/settings/harnesses?harness=opencode&section=plugins')
-  expect(await screen.findByRole('heading', { name: 'OpenCode settings' })).toBeVisible()
-  await waitFor(() => expect(router.state.location.search.section).toBe('model'))
-  expect(screen.queryByRole('button', { name: 'Plugins' })).not.toBeInTheDocument()
+it('opens Codex plugins only for Codex', async () => {
+  mount('/settings/harnesses?harness=opencode&section=plugins')
+  expect(await screen.findByRole('heading', { name: 'Harnesses' })).toBeVisible()
+  expect(screen.queryByRole('dialog', { name: 'Codex plugins' })).not.toBeInTheDocument()
 })
 it('retains a lost command through Refresh and panel remount, then retries its exact payload', async () => {
   reads()

@@ -13,6 +13,10 @@ interface OperatorChatUiState {
   historyOpen: boolean
   selectedConversationId?: string
   navigationGeneration: number
+  /** One request from elsewhere in the app; the chat sends it in a new conversation. */
+  request?: { id: string; content: string; send: boolean } | undefined
+  ask(content: string, options?: { send?: boolean }): void
+  takeRequest(id: string): void
   beginNavigation(): number
   setOpen(open: boolean): void
   setHistoryOpen(open: boolean): void
@@ -32,6 +36,11 @@ export const useOperatorChatStore = create<OperatorChatUiState>((set) => ({
   historyOpen: false,
   selectedConversationId: initial.selectedConversationId,
   navigationGeneration: 0,
+  ask: (content, options) => { if (!sessionIsSwitching()) set((state) => {
+    persist({ ...state, open: true })
+    return { open: true, historyOpen: false, request: { id: crypto.randomUUID(), content, send: options?.send ?? true } }
+  }) },
+  takeRequest: (id) => set((state) => state.request?.id === id ? { request: undefined } : {}),
   beginNavigation: () => {
     let generation = 0
     set((state) => { generation = state.navigationGeneration + 1; return { navigationGeneration: generation } })
@@ -46,6 +55,10 @@ export const useOperatorChatStore = create<OperatorChatUiState>((set) => ({
     const next = { selectedConversationId, navigationGeneration: state.navigationGeneration + 1, historyOpen: isNarrowOperatorChat() ? false : state.historyOpen }
     persist({ ...state, ...next }); return next
   }) },
-  reset: () => set((state) => ({ open: false, historyOpen: false, selectedConversationId: undefined, navigationGeneration: state.navigationGeneration + 1 })),
+  reset: () => set((state) => ({ open: false, historyOpen: false, selectedConversationId: undefined, request: undefined, navigationGeneration: state.navigationGeneration + 1 })),
 }))
 if (typeof window !== 'undefined') window.addEventListener(identityChangedEvent, () => useOperatorChatStore.getState().reset())
+
+/** Opens the Operator chat in a new conversation and sends the request, or only drafts it with `send: false`.
+ * The card or button that asked updates from readback once the Operator acts. */
+export function askOperator(content: string, options?: { send?: boolean }): void { useOperatorChatStore.getState().ask(content, options) }

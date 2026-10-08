@@ -1,10 +1,10 @@
-import { screen, within, fireEvent, waitFor } from '@testing-library/react'
+import { within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
 import type { ComputerSyncStatus, ComputerSyncUpdateInput } from '@foreman-code/contracts/computer-accounts'
 import { server } from '../../mocks/server'
-import { ComputerSyncControls } from './ComputerSync'
+import { ComputerSyncPanel } from './ComputerSync'
 import { computersFixture, mainTarget } from './computersTestFixture'
 
 const status = (): ComputerSyncStatus => ({ target: mainTarget, installed: true, running: true, message: null,
@@ -12,14 +12,13 @@ const status = (): ComputerSyncStatus => ({ target: mainTarget, installed: true,
     status: { workspaceId: 'workspace', path: '/home/owner/shared/workspace-id', state: 'idle', connected: true,
       conflicts: [], message: null } }] })
 async function open() {
-  await userEvent.click(await screen.findByRole('button', { name: /Manage shared files on Main/ }))
-  return within(screen.getByRole('dialog', { name: 'Shared files on Main' }))
+  return within(document.body)
 }
 
 it('shows status and persists off and on with readback revisions', async () => {
   let saved = status()
   const writes: ComputerSyncUpdateInput[] = []
-  computersFixture(<ComputerSyncControls target={mainTarget} name="Main" />, [
+  computersFixture(<ComputerSyncPanel target={mainTarget} />, [
     http.post('*/api/management/computers/sync/status', () => HttpResponse.json(saved)),
     http.post('*/api/management/computers/sync/update', async ({ request }) => {
       const input = await request.json() as ComputerSyncUpdateInput
@@ -41,11 +40,11 @@ it('shows status and persists off and on with readback revisions', async () => {
   expect(writes[0]!.commandId).not.toBe(writes[1]!.commandId)
 })
 
-it('retries an uncertain save with the same command and guards dismissal while pending', async () => {
+it('retries an uncertain save with the same command', async () => {
   const writes: ComputerSyncUpdateInput[] = []
   let release!: () => void
   const held = new Promise<void>(resolve => { release = resolve })
-  computersFixture(<ComputerSyncControls target={mainTarget} name="Main" />, [
+  computersFixture(<ComputerSyncPanel target={mainTarget} />, [
     http.post('*/api/management/computers/sync/status', () => HttpResponse.json(status())),
     http.post('*/api/management/computers/sync/update', async ({ request }) => {
       writes.push(await request.json() as ComputerSyncUpdateInput)
@@ -57,8 +56,6 @@ it('retries an uncertain save with the same command and guards dismissal while p
   const dialog = await open()
   await userEvent.click(await dialog.findByRole('switch', { name: 'Sync Website' }))
   await waitFor(() => expect(writes).toHaveLength(1))
-  fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
-  expect(screen.getByRole('dialog')).toBeVisible()
   release()
   await userEvent.click(await dialog.findByRole('button', { name: 'Retry sync save' }))
   await waitFor(() => expect(dialog.getByRole('switch', { name: 'Sync Website' })).not.toBeChecked())
@@ -66,7 +63,7 @@ it('retries an uncertain save with the same command and guards dismissal while p
 })
 
 it('recovers from an unavailable computer without treating old state as current', async () => {
-  computersFixture(<ComputerSyncControls target={mainTarget} name="Main" />, [
+  computersFixture(<ComputerSyncPanel target={mainTarget} />, [
     http.post('*/api/management/computers/sync/status', () => HttpResponse.json({ error: {
       code: 'COMPUTER_OFFLINE', message: 'Computer is offline.',
     } }, { status: 409 })),
@@ -79,29 +76,22 @@ it('recovers from an unavailable computer without treating old state as current'
   expect(await dialog.findByRole('switch', { name: 'Sync Website' })).toBeChecked()
 })
 
-it('explains deferred participation, folder errors and conflicts and closes on an outside click', async () => {
+it('explains deferred participation, folder errors and conflicts', async () => {
   const value = status()
   value.folders[0]!.participating = false
   value.folders[0]!.status = { ...value.folders[0]!.status!, state: 'error', connected: false,
     conflicts: ['draft.sync-conflict-20261008.txt'], message: 'One file could not be synced.' }
-  computersFixture(<ComputerSyncControls target={mainTarget} name="Main" />, [
+  computersFixture(<ComputerSyncPanel target={mainTarget} />, [
     http.post('*/api/management/computers/sync/status', () => HttpResponse.json(value)),
   ])
   const dialog = await open()
   expect(await dialog.findByText(/Sync starts when an Agent/)).toBeVisible()
   expect(dialog.getByText('One file could not be synced.')).toBeVisible()
   expect(dialog.getByText('draft.sync-conflict-20261008.txt')).toBeVisible()
-  const element = screen.getByRole('dialog')
-  fireEvent.pointerDown(dialog.getByText('draft.sync-conflict-20261008.txt'))
-  fireEvent.click(element)
-  expect(element).toBeVisible()
-  fireEvent.pointerDown(element)
-  fireEvent.click(element)
-  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 })
 
 it('rejects a mismatched computer response instead of showing another installation status', async () => {
-  computersFixture(<ComputerSyncControls target={mainTarget} name="Main" />, [
+  computersFixture(<ComputerSyncPanel target={mainTarget} />, [
     http.post('*/api/management/computers/sync/status', () => HttpResponse.json({ ...status(), target: {
       ...mainTarget, applicationInstallationId: '22222222-2222-4222-8222-222222222222',
     } })),
@@ -114,7 +104,7 @@ it('rejects a mismatched computer response instead of showing another installati
 it('recovers a revision conflict by refreshing before making a different save', async () => {
   let value = status()
   const writes: ComputerSyncUpdateInput[] = []
-  computersFixture(<ComputerSyncControls target={mainTarget} name="Main" />, [
+  computersFixture(<ComputerSyncPanel target={mainTarget} />, [
     http.post('*/api/management/computers/sync/status', () => HttpResponse.json(value)),
     http.post('*/api/management/computers/sync/update', async ({ request }) => {
       const input = await request.json() as ComputerSyncUpdateInput

@@ -39,7 +39,7 @@ describe('build computer readiness', () => {
         expires_at: new Date(principal.expiresAt), revoked_at: null }] }
       if (text.includes('from application_installation')) return { rows: [{ id: f.target.hostRef.mainId }] }
       if (text.includes('from build_computer_preferences')) return { rows: [{ target: f.target, revision: '1',
-        build_enabled: true, build_priority: 50, build_role: 'primary', build_allowance_percent: 10 }] }
+        build_enabled: true, build_priority: 50, build_allowance_percent: 10 }] }
       return f.sql.query(text)
     }
     const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
