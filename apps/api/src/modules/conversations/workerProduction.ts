@@ -13,6 +13,7 @@ import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.js'
 import type { HarnessQualificationRepository } from '../harnesses/qualification/repository.js'
+import { readInstalledHarnessQualification } from '../harnesses/installedCodexInspection.js'
 import type { AcceptedHarnessProfileAdmission } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
 import { PostgresClaudeInteractionAuthority } from '../harnesses/claudeSdk/domainAuthority.js'
@@ -67,7 +68,7 @@ export function createProductionWorkerConversations(input: {
   operators: PostgresOperatorConversationRepository
   agents: PostgresAgentChatRepository
   registry: ProductionHarnessRegistry
-  qualifications: Pick<HarnessQualificationRepository, 'find'>
+  qualifications: Pick<HarnessQualificationRepository, 'findInstalled'>
   suiteRevisions: Partial<Record<'codex' | 'opencode', string>>
   access: Pick<PostgresAccessService, 'authenticate'>
   mcpForward(): SelectedMainMcpForward
@@ -285,10 +286,13 @@ export function createProductionWorkerConversations(input: {
           const binary = installation.launcher.resolvedLauncher
           const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === binary)?.fingerprint
           const revision = harness === 'claude' ? undefined : input.suiteRevisions[harness]
-          if (harness !== 'claude' && sha256 && installation.observedVersion && revision) {
-            qualification = await input.qualifications.find(harness, installation.observedVersion, sha256, revision)
+          if (harness !== 'claude' && sha256 && revision) {
+            qualification = await readInstalledHarnessQualification(input.qualifications,
+              { target: accepted.override.target, binarySha256: sha256, installation }, revision)
           }
-          return WorkerConversationProfileFactsSchema.parse({ installation, override: accepted.override,
+          return WorkerConversationProfileFactsSchema.parse({
+            installation: qualification ? { ...installation, observedVersion: qualification.version } : installation,
+            override: accepted.override,
             profile: accepted.persistedProof, qualification,
             fileSourceHost: { bootId: bootIdentity(), storageRoot: input.fileStorageRoot } })
         },

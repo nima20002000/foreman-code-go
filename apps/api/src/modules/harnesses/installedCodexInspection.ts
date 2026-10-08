@@ -89,7 +89,8 @@ export async function inspectInstalledHarness(input: {
  * The authenticated execution authority owns calling this after its live tuple
  * checks. Worker file inventory and known baselines do not create a proof. */
 export async function readInstalledHarnessQualification(repository: Pick<HarnessQualificationRepository, 'findInstalled'>,
-  current: CurrentInstalledHarnessTarget, suiteRevision: string): Promise<HarnessQualification | null> {
+  current: Pick<CurrentInstalledHarnessTarget, 'target' | 'binarySha256' | 'installation'>,
+  suiteRevision: string): Promise<HarnessQualification | null> {
   const harness = current.installation.driverId
   if (harness !== 'codex' && harness !== 'opencode') return null
   const records = await repository.findInstalled(current.target, current.binarySha256, suiteRevision)
