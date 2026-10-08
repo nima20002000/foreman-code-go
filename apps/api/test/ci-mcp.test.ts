@@ -1,11 +1,18 @@
 import Fastify from 'fastify'
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
+import { jobVerificationTemplate } from '@foreman-code/contracts/job-verification'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import type { AppInteractionService } from '../src/modules/interactions/app.js'
 import { DomainError } from '../src/modules/errors.js'
 import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
 import { ciFixture } from './helpers/ciFixture.js'
+import { gitFixtureEnvironment } from './helpers/gitFixture.js'
+import { snapshotAgentWorktree } from '../src/modules/sources/agentSnapshot.js'
+import { systemGitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
 
 async function fixture() {
   const data = ciFixture()
@@ -22,12 +29,16 @@ async function fixture() {
     tools: principal.id === 'disabled-agent' ? ['context_get'] : ['ci_run', 'ci_get'] }),
   canRead: async () => false, canRespond: async () => false } as unknown as AppInteractionService
   registerGraphqlMcp(app, { access, operator: data.services, interactions })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
+  let requestId = 0
   const request = async (method: string, params: unknown, token = 'worker') => {
-    const response = await app.inject({ method: 'POST', url: '/mcp',
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method, params } })
-    const body = response.body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? response.body
-    return { status: response.statusCode, ...JSON.parse(body) }
+    const response = await fetch(`${address}/mcp`, { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream',
+        'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, method, params }) })
+    const text = await response.text()
+    const body = text.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? text
+    return { status: response.status, ...JSON.parse(body) }
   }
   const call = (name: string, input: unknown, token = 'worker') =>
     request('tools/call', { name, arguments: input }, token)
@@ -122,6 +133,93 @@ describe('CI over the authenticated unified MCP transport', () => {
       // An explicit commit is tested as given, still preferring the Agent's computer.
       await f.call('ci_run', { suite: 'unit', commandId: 'agent-ci-commit', commit: 'd'.repeat(40) })
       expect(f.snapshotCalls).toHaveLength(1)
+    } finally { await f.app.close() }
+  })
+
+  it('recovers the original snapshot after source approval commits but CI preparation fails', async () => {
+    const f = await fixture()
+    const root = await mkdtemp(join(tmpdir(), 'ci-retry-snapshot-'))
+    const git = systemGitWorktreePorts(gitFixtureEnvironment())
+    const runGit = async (args: string[]) => {
+      const result = await git.git(args, { cwd: root, signal: AbortSignal.timeout(30_000) })
+      if (result.code !== 0) throw new Error(result.stderr)
+      return result.stdout.trim()
+    }
+    try {
+      await runGit(['init', '-q', '-b', 'main'])
+      await writeFile(join(root, 'app.ts'), 'base\n')
+      await runGit(['add', '.'])
+      await runGit(['commit', '-qm', 'base'])
+      const baseCommit = await runGit(['rev-parse', 'HEAD'])
+      await writeFile(join(root, 'app.ts'), 'uncommitted agent work\n')
+      f.agentExecution.id = 'execution-agent'
+      let date = '2000-01-01T00:00:00Z'
+      const snapshots = vi.fn(async () => snapshotAgentWorktree(systemGitWorktreePorts({
+        ...gitFixtureEnvironment(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date,
+      }), { path: root, baseCommit }, AbortSignal.timeout(30_000)))
+      f.services.ci!.snapshots = snapshots
+      vi.spyOn(f.jobs, 'choices').mockRejectedValueOnce(new Error('Preparation interrupted after source approval'))
+      const input = { suite: 'unit', commandId: 'interrupted-ci' }
+      expect((await f.call('ci_run', input)).result.isError).toBe(true)
+      expect(f.counts()).toEqual({ sourceCaptures: 1, enqueues: 0 })
+      const original = snapshots.mock.results[0]!
+      const snapshot = await original.value
+      date = '2000-01-02T00:00:00Z'
+      await writeFile(join(root, 'app.ts'), 'later agent work\n')
+      f.services.ci = f.createCi()
+      f.services.ci.snapshots = snapshots
+      const retry = await f.call('ci_run', input)
+      expect(retry.result.isError, JSON.stringify(retry.result)).not.toBe(true)
+      const started = CiRunOutputSchema.parse(retry.result.structuredContent)
+      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
+      expect(read.queue.definition.spec.source.commit).toBe(snapshot.commit)
+      expect(snapshots).toHaveBeenCalledTimes(1)
+      expect(f.counts()).toEqual({ sourceCaptures: 1, enqueues: 1 })
+      expect(CiRunOutputSchema.parse((await f.call('ci_run', input)).result.structuredContent)).toEqual(started)
+      expect(f.counts().enqueues).toBe(1)
+    } finally {
+      await f.app.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['same source', 'different sources'])('reconciles parallel suites sharing one build root with %s', async kind => {
+    const f = await fixture()
+    try {
+      f.roots.splice(1)
+      const choices = await f.jobs.choices(f.operator, f.workspaceId, 'mcp')
+      const unit = choices.verificationTemplates![0]!
+      vi.spyOn(f.jobs, 'choices').mockResolvedValue({ ...choices, verificationTemplates: [unit,
+        jobVerificationTemplate({ ...unit, suite: 'lint' })] })
+      if (kind === 'same source') {
+        const source = await f.sources.approveProject(f.operator, { workspaceId: f.workspaceId, commandId: 'shared-source' })
+        vi.spyOn(f.sources, 'approveProject').mockResolvedValue(source)
+      }
+      const rootList = f.sources.rootList.bind(f.sources)
+      let bothRead!: () => void
+      const reads = new Promise<void>(resolve => { bothRead = resolve })
+      let count = 0
+      vi.spyOn(f.sources, 'rootList').mockImplementation(async (...args) => {
+        const roots = await rootList(...args)
+        if (++count === 2) bothRead()
+        if (count <= 2) await reads
+        return roots
+      })
+      const bind = vi.spyOn(f.sources, 'bindRoot')
+      const responses = await Promise.all([
+        f.call('ci_run', { workspaceId: f.workspaceId, suite: 'unit', commandId: 'parallel-unit' }, 'operator'),
+        f.call('ci_run', { workspaceId: f.workspaceId, suite: 'lint', commandId: 'parallel-lint' }, 'operator'),
+      ])
+      for (const [index, response] of responses.entries()) {
+        expect(response.result.isError, JSON.stringify(response.result)).not.toBe(true)
+        const result = CiRunOutputSchema.parse(response.result.structuredContent)
+        const read = await f.call('ci_get', { workspaceId: f.workspaceId, ticketId: result.ticketId }, 'operator')
+        expect(CiGetOutputSchema.parse(read.result.structuredContent).queue.definition.name)
+          .toBe(`CI: ${index === 0 ? 'unit' : 'lint'}`)
+      }
+      expect(bind).toHaveBeenCalledTimes(kind === 'same source' ? 2 : 3)
+      expect(f.roots[0]!.binding.bindingRevision).toBe(kind === 'same source' ? 2 : 3)
+      expect(f.counts().enqueues).toBe(2)
     } finally { await f.app.close() }
   })
 
