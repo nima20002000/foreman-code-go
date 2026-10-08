@@ -186,8 +186,17 @@ process.on('message',input=>{
         birth(join(dir,'birth.json'),{...certificate,containment})
         if(stopping || !process.connected){stop();return}
         const detachable=config.restartDetachable===true
+        const pipedOutput=!!config.claudeSessionScope||detachable
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
-          detached:false,stdio:config.claudeSessionScope?['pipe','pipe','pipe']:detachable?['ignore','pipe','pipe']:['inherit','inherit','inherit'],windowsHide:true})
+          detached:false,stdio:[detachable&&!config.claudeSessionScope?'ignore':'pipe',
+            pipedOutput?'pipe':'inherit',pipedOutput?'pipe':'inherit'],windowsHide:true})
+        // Forward request input after the provider record so fast replies cannot race owner capture.
+        try{if(native.pid)provider=identity(native.pid)}catch{}
+        try {
+          birth(join(dir,'provider.json'),{format:1,id:intent.id,owner:intent.owner,boot,
+            guardian:live,...(provider?{provider}:{}),capture:provider?'captured':'unavailable'})
+          if(process.connected)process.send({operation:'observation',id:intent.id},()=>{})
+        }catch{}
         if(config.claudeSessionScope) {
           capture=claudeCompactionCapture(config.claudeSessionScope,()=>{if(disconnected)stop()})
           let stdoutClosed=false,stderrClosed=false
@@ -210,15 +219,10 @@ process.on('message',input=>{
         } else if(detachable) {
           native.stdout.on('data',chunk=>{if(!detached&&process.connected)process.stdout.write(chunk)})
           native.stderr.on('data',chunk=>{if(!detached&&process.connected)process.stderr.write(chunk)})
+        } else {
+          native.stdin.on('error',stop)
+          process.stdin.pipe(native.stdin)
         }
-        // Capture the actual CLI generation while it is still our direct child.
-        // A very short-lived child may disappear before /proc capture; never guess.
-        try{if(native.pid)provider=identity(native.pid)}catch{}
-        try {
-          birth(join(dir,'provider.json'),{format:1,id:intent.id,owner:intent.owner,boot,
-            guardian:live,...(provider?{provider}:{}),capture:provider?'captured':'unavailable'})
-          if(process.connected)process.send({operation:'observation',id:intent.id},()=>{})
-        }catch{}
         native.once('error',stop)
         native.once('exit',(exitCode,exitSignal)=>{
           try {

@@ -1,19 +1,24 @@
 import { EventEmitter } from 'node:events'
 import { timingSafeEqual } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
+import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { NATIVE_GUARDIAN_SOURCE } from '../src/modules/harnesses/recovery/nativeGuardian.js'
 
 /** Execute the actual guardian program against deterministic private storage and
  * process APIs. No executable, kernel cgroup, signal or host setting is touched. */
 function guardianFixture(childAvailable = true, observationWriteFails = false,
-  options: { restartDetachable?: true } = {}) {
+  options: { restartDetachable?: true; earlyInput?: string } = {}) {
   const id = '11111111-1111-1111-1111-111111111111'
   const boot = '22222222-2222-2222-2222-222222222222'
   const records = new Map<string, string>()
   const descriptors = new Map<number, string>()
-  const native = Object.assign(new EventEmitter(), { pid: 902, stdout: new EventEmitter(), stderr: new EventEmitter() })
+  const native = Object.assign(new EventEmitter(), {
+    pid: 902, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+  })
+  if (options.earlyInput) native.stdin.on('data', chunk => native.stdout.write(`response:${String(chunk)}`))
   const output: unknown[] = []
+  const outputObservations: boolean[] = []
   const ipc: unknown[] = []
   const flushed: (() => void)[] = []
   const signals: unknown[] = []
@@ -24,7 +29,11 @@ function guardianFixture(childAvailable = true, observationWriteFails = false,
     exit: () => undefined, send: (value: unknown, callback?: () => void) => {
       ipc.push(value)
       if (callback && (value as { operation: string }).operation === 'native_exit') flushed.push(callback)
-    }, stdout: Object.assign(new EventEmitter(), { write: (chunk: unknown) => output.push(chunk) }),
+    }, stdin: new PassThrough(), stdout: Object.assign(new EventEmitter(), { write: (chunk: unknown) => {
+      outputObservations.push(records.has('/private/provider.json'))
+      output.push(chunk)
+      return true
+    } }),
     stderr: Object.assign(new EventEmitter(), { write: (chunk: unknown) => output.push(chunk) }),
   })
   records.set('/private/intent.json', JSON.stringify({ format: 1, id, boot, owner: 'same-lease', controlKey: 'a'.repeat(64) }))
@@ -54,6 +63,7 @@ function guardianFixture(childAvailable = true, observationWriteFails = false,
       records.set(path, value)
     },
     linkSync: (from: string, to: string) => {
+      if (to === '/private/provider.json' && options.earlyInput) process.stdin.write(options.earlyInput)
       if (observationWriteFails && /\/provider(?:-exit)?\.json$/.test(to)) throw new Error('Passive storage unavailable')
       if (records.has(to)) throw new Error('EEXIST')
       records.set(to, records.get(from)!)
@@ -65,7 +75,19 @@ function guardianFixture(childAvailable = true, observationWriteFails = false,
   let acceptSocket: (socket: EventEmitter) => void
   const requireFixture = (module: string): unknown => {
     if (module === 'node:fs') return fs
-    if (module === 'node:child_process') return { spawn: () => native }
+    if (module === 'node:child_process') return {
+      spawn: (_binary: string, _args: string[], spawnOptions: { stdio: string[] }) => {
+        if (spawnOptions.stdio[0] === 'inherit') {
+          process.stdin.on('data', chunk => native.stdin.write(chunk))
+          process.stdin.on('end', () => native.stdin.end())
+        }
+        if (spawnOptions.stdio[1] === 'inherit') {
+          native.stdout.on('data', chunk => process.stdout.write(chunk))
+          native.stderr.on('data', chunk => process.stderr.write(chunk))
+        }
+        return native
+      },
+    }
     if (module === 'node:net') return { createServer: (callback: typeof acceptSocket) => { acceptSocket = callback; return server } }
     if (module === 'node:crypto') return { randomUUID: () => `${records.size}`, timingSafeEqual }
     if (module === 'node:path') return { join: (...parts: string[]) => parts.join('/').replaceAll('//', '/'), dirname: (path: string) => path.slice(0, path.lastIndexOf('/')) || '/', resolve: (...parts: string[]) => parts.join('/').replace('/./', '/').replaceAll('//', '/'), parse: () => ({ root: '/' }), sep: '/' }
@@ -83,10 +105,31 @@ function guardianFixture(childAvailable = true, observationWriteFails = false,
     socket.emit('data', Buffer.from(JSON.stringify(message) + '\n'))
     return state
   }
-  return { records, native, ipc, signals, flushed, kills, timers, process, output, control, id }
+  return { records, native, ipc, signals, flushed, kills, timers, process, output, outputObservations, control, id }
 }
 
 describe('guardian actual child observation receipts', () => {
+  it('publishes the provider identity before a buffered request can receive its native response', async () => {
+    const f = guardianFixture(true, false, { earlyInput: 'initialize' })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(f.output.map(String)).toEqual(['response:initialize'])
+    expect(f.outputObservations).toEqual([true])
+  })
+  it('forwards ordinary native input, output, and EOF after provider publication', async () => {
+    const f = guardianFixture()
+    const input: string[] = []
+    f.native.stdin.on('data', chunk => {
+      expect(f.records.has('/private/provider.json')).toBe(true)
+      input.push(String(chunk))
+    })
+    f.process.stdin.end('initialize\n')
+    f.native.stdout.write('session ready\n')
+    f.native.stderr.write('diagnostic\n')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(input).toEqual(['initialize\n'])
+    expect(f.native.stdin.writableFinished).toBe(true)
+    expect(f.output.map(String)).toEqual(['session ready\n', 'diagnostic\n'])
+  })
   it('retains the original daemon across authenticated detachment and still closes on Stop', () => {
     const f = guardianFixture(true, false, { restartDetachable: true })
     const command = { operation: 'detach', id: f.id, owner: 'same-lease',
