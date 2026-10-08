@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createTestRoot, removeTestRoot, testAdminUrl } from './test-resources.mjs'
-import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, options, parseVitestCases, partitionIntegrationFiles, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
+import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, readDurations, parseVitestCases, partitionIntegrationFiles, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren, vitestCommand } from './test-integration.mjs'
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
   const files = discoverFiles()
@@ -325,4 +325,34 @@ test('admission recognizes legacy and secondary slots and rejects forged, stale 
     rmSync(legacy)
     assert.equal(hasHeavyJobAdmission(environment, common), true)
   } finally { rmSync(common, { recursive: true, force: true }) }
+})
+
+test('slowest recorded files start first and unmeasured files lead the queue', () => {
+  const durations = { 'b.ts': 5_000, 'c.ts': 90_000, 'd.ts': 5_000 }
+  assert.deepEqual(orderByDuration(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'], durations), ['a.ts', 'e.ts', 'c.ts', 'b.ts', 'd.ts'])
+})
+
+test('recorded durations replace earlier ones and forget removed files', () => {
+  assert.deepEqual(mergeDurations({ 'gone.ts': 1, 'kept.ts': 2, 'new.ts': 3 }, { 'new.ts': 30 }, ['kept.ts', 'new.ts']),
+    { 'kept.ts': 2, 'new.ts': 30 })
+})
+
+test('missing or corrupt duration records fall back to discovery order', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-durations-'))
+  try {
+    assert.deepEqual(readDurations(join(directory, 'missing.json')), {})
+    writeFileSync(join(directory, 'corrupt.json'), '{')
+    assert.deepEqual(readDurations(join(directory, 'corrupt.json')), {})
+    assert.deepEqual(orderByDuration(['b.ts', 'a.ts'], {}), ['a.ts', 'b.ts'])
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('integration files launch the workspace Vitest directly with package binaries on PATH', () => {
+  const vitest = vitestCommand({ PATH: '/usr/bin' }, 'apps/api/test/dev-startup.integration.test.ts')
+  assert.equal(vitest.args[1], 'test/dev-startup.integration.test.ts')
+  const version = spawnSync(vitest.command, ['--version'], { cwd: vitest.cwd, env: vitest.env, encoding: 'utf8' })
+  assert.equal(version.status, 0, version.stderr)
+  assert.match(version.stdout, /vitest\/\d+/)
+  const tsx = spawnSync('tsx', ['--version'], { cwd: vitest.cwd, env: vitest.env, encoding: 'utf8' })
+  assert.equal(tsx.status, 0, tsx.stderr)
 })

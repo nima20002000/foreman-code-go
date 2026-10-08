@@ -1,7 +1,8 @@
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { dirname, join, posix, resolve } from 'node:path'
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync,
+  renameSync, writeFileSync } from 'node:fs'
+import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot,
   testAdminPool, testEnvironment } from './test-resources.mjs'
@@ -118,6 +119,34 @@ export function integrationShardLimit(value) {
   const limit = value === undefined ? 12 : Number(value)
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 12) throw new Error('Integration shards must be an integer from 1 to 12')
   return limit
+}
+
+/** Longest recorded files start first so one slow file does not form the run's tail; unmeasured files lead. */
+export function orderByDuration(files, durations) {
+  const duration = (file) => Number.isFinite(durations[file]) ? durations[file] : Infinity
+  return [...files].sort((a, b) => duration(b) - duration(a) || (a < b ? -1 : a > b ? 1 : 0))
+}
+
+export function readDurations(path) {
+  try {
+    const durations = JSON.parse(readFileSync(path, 'utf8'))
+    return durations && typeof durations === 'object' && !Array.isArray(durations) ? durations : {}
+  } catch { return {} }
+}
+
+export function mergeDurations(previous, recorded, files) {
+  const known = new Set(files)
+  return Object.fromEntries(Object.entries({ ...previous, ...recorded })
+    .filter(([file, ms]) => known.has(file) && Number.isFinite(ms)).sort(([a], [b]) => a < b ? -1 : 1))
+}
+
+export function vitestCommand(environment, file) {
+  const api = join(root, 'apps', 'api')
+  // Same PATH that `pnpm exec` provides, without its per-file startup cost.
+  const path = [join(api, 'node_modules', '.bin'), join(root, 'node_modules', '.bin'), environment.PATH].filter(Boolean).join(delimiter)
+  return { command: join(api, 'node_modules', '.bin', 'vitest'), cwd: api, env: { ...environment, PATH: path },
+    args: ['run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--maxConcurrency=1',
+      '--reporter=verbose', '--fsModuleCache'] }
 }
 
 export async function scheduleFiles(files, slots, runFile, shouldStop = () => false) {
@@ -237,6 +266,9 @@ async function main() {
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
   if (files) selected = selectExactFiles(allFiles, files)
   const diagnostic = Boolean(startAt || failedFrom || files)
+  const durationsPath = join(common, 'graphql-integration-durations.json')
+  const durations = readDurations(durationsPath)
+  const recordedDurations = {}
   const shardCount = Math.min(integrationShardLimit(readProductEnvironment(process.env, 'INTEGRATION_SHARDS')), selected.length)
   const timeouts = integrationTimeouts(process.env)
   const admin = await testAdminPool()
@@ -318,9 +350,9 @@ async function main() {
       const log = integrationLogPath(slot.directory, file)
       mkdirSync(dirname(log), { recursive: true })
       const fd = openSync(log, 'w', 0o600)
-      const environment = integrationEnvironment(process.env, slot)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
-      const child = spawn('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'vitest', 'run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache'], { cwd: root, env: environment, detached: true, stdio: ['ignore', fd, fd] })
+      const vitest = vitestCommand(integrationEnvironment(process.env, slot), file)
+      const child = spawn(vitest.command, vitest.args, { cwd: vitest.cwd, env: vitest.env, detached: true, stdio: ['ignore', fd, fd] })
       closeSync(fd)
       const progress = integrationProcessProgress()
       active.set(slot.index, { child, file, progress })
@@ -347,6 +379,7 @@ async function main() {
       mkdirSync(dirname(retained), { recursive: true })
       copyFileSync(log, retained)
       const elapsedMs = Date.now() - started
+      if (!isRetest && !interrupted) recordedDurations[file] = elapsedMs
       const summary = parseVitestCases(readFileSync(log, 'utf8'))
       if (!isRetest) {
         if (summary) for (const kind of ['passed', 'failed', 'skipped']) cases[kind] += summary[kind]
@@ -417,7 +450,7 @@ async function main() {
       if (interrupted) { skipped = selected.length - index - 1; return }
     }
     phase = 'first pass'
-    const result = await scheduleFiles(partition.parallel, slots.filter((slot) => !slot.unavailable),
+    const result = await scheduleFiles(orderByDuration(partition.parallel, durations), slots.filter((slot) => !slot.unavailable),
       runSafely, () => Boolean(interrupted))
     skipped = interrupted ? result.skipped : 0
     if (!interrupted) recordUnexecuted(result.unexecuted)
@@ -461,7 +494,7 @@ async function main() {
           await runSafely(slot, file, 'retest')
         }
         phase = 'retest'
-        const retestResult = await scheduleFiles(retestPartition.parallel, retestSlots.filter((slot) => !slot.unavailable),
+        const retestResult = await scheduleFiles(orderByDuration(retestPartition.parallel, durations), retestSlots.filter((slot) => !slot.unavailable),
           (slot, file) => runSafely(slot, file, 'retest'), () => Boolean(interrupted))
         retest.skipped = interrupted ? toRetest.length - retest.passed - retest.failed : 0
         if (!interrupted) recordUnexecuted(retestResult.unexecuted, 'retest')
@@ -469,6 +502,12 @@ async function main() {
     }
   } finally {
     clearInterval(heartbeat)
+    if (Object.keys(recordedDurations).length) {
+      try {
+        writeFileSync(`${durationsPath}.${process.pid}`, `${JSON.stringify(mergeDurations(durations, recordedDurations, allFiles), null, 1)}\n`)
+        renameSync(`${durationsPath}.${process.pid}`, durationsPath)
+      } catch (error) { console.error(`[integration] could not record file durations: ${error.message}`) }
+    }
     let cleanupError
     for (const [index, { child }] of active) {
       try { await stopGroup(child.pid, { signal: interrupted || 'SIGTERM' }); active.delete(index) }
