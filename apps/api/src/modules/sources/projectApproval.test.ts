@@ -131,3 +131,34 @@ it('replays a captured default branch after it advances, without fetching replac
   await expect(f.service.approveProject(f.principal, { ...input, commit: f.otherCommit }))
     .rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
 })
+
+it('reports cleanup failure after fetching the default branch successfully', async () => {
+  const f = await fixture()
+  f.service.git.git = async (...args) => {
+    if (args[0][0] === 'update-ref' && args[0][1] === '-d') {
+      return { code: 1, stdout: '', stderr: 'Ref cleanup failed' }
+    }
+    return f.system.git(...args)
+  }
+  await expect(f.service.approveProject(f.principal, {
+    workspaceId: f.workspaceId, commandId: 'cleanup-failure',
+  })).rejects.toMatchObject({
+    code: 'SOURCE_REPOSITORY_UNAVAILABLE', message: 'Main could not remove its temporary fetch ref.',
+  })
+})
+
+it('preserves the fetch failure when temporary ref cleanup also fails', async () => {
+  const f = await fixture()
+  f.service.git.git = async (...args) => {
+    if (args[0][0] === 'fetch' || args[0][0] === 'update-ref') {
+      return { code: 1, stdout: '', stderr: 'Git operation failed' }
+    }
+    return f.system.git(...args)
+  }
+  await expect(f.service.approveProject(f.principal, {
+    workspaceId: f.workspaceId, commandId: 'fetch-and-cleanup-failure',
+  })).rejects.toMatchObject({
+    code: 'SOURCE_REPOSITORY_UNAVAILABLE',
+    message: 'Main could not fetch octo/site@main. Sign GitHub in on Main.',
+  })
+})

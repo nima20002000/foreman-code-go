@@ -288,6 +288,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
   private async fetchDefaultBranch(clone: string, repository: string, branch: string, signal: AbortSignal) {
     const ref = `refs/foreman/ci/fetch/${randomUUID()}`
+    let commit: string
+    let cleanupFailed = false
     try {
       const fetched = await this.git.git(['fetch', '--no-tags', 'origin', `refs/heads/${branch}:${ref}`],
         { cwd: clone, signal })
@@ -297,13 +299,15 @@ export class PostgresSourceService implements SourceAdmissionPort {
         throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE',
           `Main could not fetch ${repository}@${branch}. Sign GitHub in on Main.`, 409)
       }
-      return head.stdout.trim()
+      commit = head.stdout.trim()
     } finally {
       const removed = await this.git.git(['update-ref', '-d', ref], { cwd: clone, signal })
-      if (removed.code !== 0) {
-        throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'Main could not remove its temporary fetch ref.', 409)
-      }
+      cleanupFailed = removed.code !== 0
     }
+    if (cleanupFailed) {
+      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'Main could not remove its temporary fetch ref.', 409)
+    }
+    return commit
   }
   async resolveRootBinding(sql: Sql, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {
