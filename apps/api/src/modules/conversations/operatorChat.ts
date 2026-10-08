@@ -566,7 +566,7 @@ export class OperatorChatService {
     if (row.native_session_id) {
       runtime.session = await runtime.manager.attachSession({ harness: row.harness,
         providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id }, {
-        kind: 'operator', correlationId: nativeCorrelation(id, row.active_request_id!), configuration,
+        kind: 'operator', correlationId: nativeCorrelation(id, row.active_request_id ?? 'session-control'), configuration,
         workingDirectory: this.workingDirectory, environment,
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
       }, signal)

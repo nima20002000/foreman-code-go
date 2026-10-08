@@ -209,8 +209,12 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await chat.send(conversation.id, { requestId: randomUUID(), content: 'Complete a native turn' }, writer.principal)
     await waitFor(async () => (await chat.get(conversation.id, writer.principal)).turnState === 'idle')
     const discovered = await chat.readSessionControls(conversation.id, writer.principal)
+    const attaches = vi.spyOn(manager, 'attachSession')
     const saved = await chat.changeSessionControls(conversation.id, { kind: 'mode', mode: 'plan',
       requestId: randomUUID(), expectedRevision: discovered.revision }, writer.principal)
+    expect(attaches).toHaveBeenCalledWith(expect.objectContaining({ nativeSessionId: saved.nativeSessionId }),
+      expect.objectContaining({ correlationId: nativeCorrelation(conversation.id, 'session-control') }),
+      expect.any(AbortSignal))
     const history = (await chat.get(conversation.id, writer.principal)).messages
     const attachmentsBeforeReads = manager.attachments
     unloaded = true
