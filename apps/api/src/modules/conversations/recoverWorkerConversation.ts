@@ -62,7 +62,7 @@ export async function recoverWorkerConversation(input: {
   }
   await input.assertCurrent()
   await input.cleanupFiles?.(record, signal)
-  if (record.turns.some(turn => turn.status !== 'completed' && !turn.nativeTurnId && !turn.nativeSubmission)
+  if (record.turns.some(turn => !['completed', 'rejected'].includes(turn.status) && !turn.nativeTurnId && !turn.nativeSubmission)
     || record.compactions.some(control => !['completed', 'failed', 'no-op'].includes(control.state.status)
       && control.state.dispatchPhase !== 'dispatched')) {
     unavailable('The outstanding native input has no persisted dispatch identity; it will not be replayed.')
@@ -82,6 +82,7 @@ export async function recoverWorkerConversation(input: {
     if (!isDeepStrictEqual(attached, session)) unavailable('Native recovery returned another session.')
     const recoveredTurns: Array<{ correlationId: string; result: ExecutionResult }> = []
     for (const turn of record.turns) {
+      if (turn.status === 'rejected') continue
       const history = await allocation.manager.reconcile(session, turn.correlationId, signal)
       let terminal = history.correlationId === turn.correlationId ? history.terminalResult : undefined
       if (history.terminalTurn?.correlationId === turn.correlationId) terminal = history.terminalTurn.result
@@ -113,7 +114,7 @@ export async function recoverWorkerConversation(input: {
     for (const turn of recoveredTurns) await input.journal.finishTurn(record.binding, turn.correlationId, turn.result)
     for (const state of recoveredCompactions) await input.journal.compactProgress(record.binding, state)
     await input.journal.recoveredOwner(record.binding, input.connection, owner, await allocation.nativeOwner(session),
-      changingAccess ? targetBinding : undefined)
+      changingAccess ? { targetBinding } : undefined)
     if (preferences) await input.journal.preferences(targetBinding, preferences,
       allocation.manager.appliedSessionPreferences?.(session) ?? null)
     return allocation

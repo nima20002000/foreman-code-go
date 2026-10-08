@@ -22,6 +22,8 @@ import { verifiedSourceWorkingTree } from './nativeStamp.js'
 import { SOURCE_LIMITS } from './manifest.js'
 import { sourceCwdAttestationDigest } from './workingDirectory.js'
 import type { PostgresSourceOperationAuthority } from './operationAuthority.js'
+import { SourceReservationReclamationRequestSchema, SourceReservationReclamationAuthorityResponseSchema } from '@foreman-code/contracts/source-operations'
+import type { MaterializationReservationCleanup } from './materializationReservationCleanup.js'
 
 export interface AcceptedSourcePackageSender {
   /** Persist the actual B source intent and consume the original preparation
@@ -126,8 +128,20 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
 }
 /** Main accepts only owner lookup from the authenticated worker. */
 export function createMainSourceOperationExtension(owners: Pick<PostgresSourceOperationAuthority, 'resolve'>, transfers: Pick<PostgresSourcePackageTransfers, 'intent'>,
-  lifecycle?: Pick<PostgresSourceRsyncLifecycle, 'status'>): DeviceExtensionRegistration {
+  lifecycle?: Pick<PostgresSourceRsyncLifecycle, 'status'>,
+  reclamations?: (reservationId: string, reclamationId: string, context: DeviceExtensionContext) => ReturnType<MaterializationReservationCleanup['authorize']>): DeviceExtensionRegistration {
   return { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(raw, context) {
+    if (raw && typeof raw === 'object' && 'operation' in raw && raw.operation === 'sources.reclamation-authorize') {
+      const request = SourceReservationReclamationRequestSchema.parse(raw)
+      if (context.bytes?.byteLength || !reclamations) {
+        throw new DomainError('SOURCE_ROLE_DENIED', 'Source reservation cleanup authority is unavailable.', 403)
+      }
+      context.signal.throwIfAborted()
+      const grant = await reclamations(request.reservationId, request.reclamationId, context)
+      context.signal.throwIfAborted()
+      return { payload: SourceReservationReclamationAuthorityResponseSchema.parse({ version: 1,
+        operation: 'sources.reclamation-authorize', grant }) }
+    }
     const request = raw && typeof raw === 'object' && 'operation' in raw && raw.operation === 'sources.transfer-status'
       ? SourceTransferStatusRequestSchema.parse(raw) : SourceOperationRequestSchema.parse(raw)
     if ((context.bytes?.byteLength ?? 0) !== 0) throw new DomainError('SOURCE_ROLE_DENIED', 'Workers cannot invoke Main filesystem source operations.', 403)

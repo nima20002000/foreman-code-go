@@ -24,6 +24,8 @@ export function createWorkerClaudeAuthority(input: {
   signal: AbortSignal
   source(): WorkerConversationRpcRequest
   callbackJournal: ClaudeCallbackJournal
+  beginOwnerChange?(): () => void
+  refreshOwner?(session: import('@foreman-code/contracts').NativeSessionReference, correlationId?: string): Promise<void>
   request(source: WorkerConversationRpcRequest, request: WorkerClaudeAuthorityRequest,
     signal: AbortSignal): Promise<unknown>
 }) {
@@ -127,22 +129,59 @@ export function createWorkerClaudeAuthority(input: {
       const reconcile = manager.reconcile.bind(manager)
       manager.reconcile = async (session, correlationId, signal) => ({ ...await reconcile(session, correlationId, signal),
         responseDeliveries: await bridge.deliveryEvidence(session) })
+      const apply = manager.applySessionPreferences?.bind(manager)
+      if (apply) manager.applySessionPreferences = async (session, preferences, signal) => {
+        const complete = input.beginOwnerChange?.()
+        try {
+          await apply(session, preferences, signal)
+          await input.refreshOwner?.(session)
+        } finally { complete?.() }
+      }
       const initial = manager.startInitialTurn.bind(manager)
       manager.startInitialTurn = async function* (start, message: NativeInitialTurnInput, signal) {
         sessionStart = structuredClone(start)
-        const prepared = { ...await turn(message), onSessionObserved: message.onSessionObserved }
-        try { yield* initial(start, prepared, signal) }
-        finally { sources.delete(message.clientCorrelationId) }
+        let started = false
+        try {
+          const prepared = { ...await turn(message), onSessionObserved: message.onSessionObserved }
+          const stream = initial(start, prepared, signal)
+          started = true
+          yield* stream
+        } catch (error) {
+          if (started) throw error
+          throw Object.assign(error instanceof Error ? error : new Error('Claude input was not offered.'),
+            { certainty: 'definite', deliveryState: 'not-delivered' })
+        } finally { sources.delete(message.clientCorrelationId) }
       }
       const startTurn = manager.startTurn.bind(manager)
       manager.startTurn = async function* (session, message, signal) {
-        const prepared = await turn(message)
+        let started = false
+        let complete: (() => void) | undefined
         try {
+          const prepared = await turn(message)
           if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED', 'The message requires its admitted session context.', 409)
+          complete = input.beginOwnerChange?.()
           const attached = await manager.attachSession(session, sessionStart, signal)
-          yield* startTurn(attached, prepared, signal)
+          if (!isDeepStrictEqual(attached, session)) throw new DomainError('CLAUDE_SESSION_MISMATCH',
+            'The replacement process returned another native session.', 409)
+          await input.refreshOwner?.(attached, message.clientCorrelationId)
+          const stream = startTurn(attached, { ...prepared, onSettingsApplied: async () => {
+            await input.refreshOwner?.(attached, message.clientCorrelationId)
+            complete?.()
+            complete = undefined
+            await prepared.onSettingsApplied?.()
+          } }, signal)
+          started = true
+          yield* stream
         }
-        finally { sources.delete(message.clientCorrelationId) }
+        catch (error) {
+          if (started) throw error
+          throw Object.assign(error instanceof Error ? error : new Error('Claude input was not offered.'),
+            { certainty: 'definite', deliveryState: 'not-delivered' })
+        }
+        finally {
+          complete?.()
+          sources.delete(message.clientCorrelationId)
+        }
       }
     },
     interactionPort: {

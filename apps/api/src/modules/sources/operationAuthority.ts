@@ -13,6 +13,7 @@ import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import type { MaterializationAttempt } from './ports.js'
 import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
+import { requireUnreclaimedSourceOperation } from './reservations.js'
 
 /** Actual Main allocation/source facts; workers receive no database credentials. */
 export class PostgresSourceOperationAuthority {
@@ -36,6 +37,7 @@ export class PostgresSourceOperationAuthority {
   }
   async authorizePreparation(sql: GraphSqlClient, root: SourceRootRecord, attempt: MaterializationAttempt,
     identity: { operationId: string; ownerPrincipalId: string; expiresAt: string }) {
+    await requireUnreclaimedSourceOperation(sql, identity.operationId)
     if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [identity.operationId])).rowCount)
       throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original source transfer is fenced for reconciliation.', 409)
     const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
@@ -47,6 +49,7 @@ export class PostgresSourceOperationAuthority {
   async prepareIdentity(root: SourceRootRecord, attempt: MaterializationAttempt) {
     return this.transaction(async sql => {
       const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
+      await requireUnreclaimedSourceOperation(sql, allocated.operation_id)
       if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [allocated.operation_id])).rowCount)
         throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original preparation is fenced for reconciliation.', 409)
       await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
@@ -68,6 +71,7 @@ export class PostgresSourceOperationAuthority {
       const attempt = request.operation === 'sources.prepare' ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
         attemptId: receipt!.attemptId, keyRevision: receipt!.keyRevision, authorizationRevision: receipt!.authorizationRevision }
       const allocated = await this.allocation(sql, attempt)
+      if (request.operation !== 'sources.release') await requireUnreclaimedSourceOperation(sql, allocated.operation_id)
       const cleanup = request.operation === 'sources.release'
       const principal = cleanup ? undefined : await readLiveManagementPrincipal(sql, allocated.principal_id)
       if (request.operation === 'sources.verify') await assertAcceptedSourceRelativeCwd(sql, attempt.executionId, request.relativeCwd)

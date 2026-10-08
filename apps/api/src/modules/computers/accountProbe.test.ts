@@ -63,6 +63,7 @@ it('reports an installed Claude that cannot start', async () => {
 it('reads the Drive account the app recorded when rclone cannot report it', async () => {
   const result = await probeComputerAccounts(ports(['rclone'], {
     'rclone listremotes --long': { stdout: 'foreman-drive: drive owner@gmail.com\n' },
+    'rclone config file': { stdout: 'Configuration file is stored at:\n/home/agent/.config/rclone/rclone.conf\n' },
     'rclone config userinfo foreman-drive: --json': { code: 1, stderr: "Google drive root '' doesn't support UserInfo" },
   }, { '/home/agent/.config/rclone/rclone.conf': '[foreman-drive]\ndescription = owner@gmail.com\ntype = drive\ntoken = {"access_token":"secret"}\n' }))
   expect(result.accounts.find(account => account.tool === 'drive')).toEqual({ tool: 'drive', installed: true, signedIn: true,
@@ -70,6 +71,15 @@ it('reads the Drive account the app recorded when rclone cannot report it', asyn
   expect(JSON.stringify(result)).not.toContain('secret')
 })
 
+
+it('reads the managed Drive account from a non-default rclone configuration', async () => {
+  const result = await probeComputerAccounts(ports(['rclone'], {
+    'rclone listremotes --long': { stdout: 'foreman-drive: drive\n' },
+    'rclone config file': { stdout: 'Configuration file is stored at:\n/home/agent/custom/rclone.conf\n' },
+    'rclone config userinfo foreman-drive: --json': { code: 1 },
+  }, { '/home/agent/custom/rclone.conf': '[foreman-drive]\ndescription = custom@example.com\ntype = drive\n' }))
+  expect(result.accounts.find(account => account.tool === 'drive')).toMatchObject({ signedIn: true, account: 'custom@example.com' })
+})
 
 it('chooses the active GitHub account from structured status', async () => {
   const result = await probeComputerAccounts(ports(['gh'], {
