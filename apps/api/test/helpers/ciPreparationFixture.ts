@@ -88,7 +88,12 @@ export async function ciPreparationFixture(options: {
     saves: [] as Array<{ id: string; spec: { bindingRevision: number; policy: { imageDigest: string } } }>,
     refresh: [] as unknown[], qualified: [] as string[] }
   const memory = ciPreparationMemory()
-  const principals = new Map<string, ManagementPrincipal>([[data.operator.id, data.operator], [data.readonly.id, data.readonly]])
+  const reader: ManagementPrincipal = { ...data.readonly, id: 'runtime-reader', grants: [{
+    actions: ['job_definitions:read'], scope: { workspaceIds: [workspaceId] },
+  }] }
+  const principals = new Map<string, ManagementPrincipal>([
+    [data.operator.id, data.operator], [data.readonly.id, data.readonly], [reader.id, reader],
+  ])
   let disabled = options.disabled ?? false
   const query = async (text: string, values: unknown[] = []) => {
     if (text.includes('from management_principals')) {
@@ -233,7 +238,7 @@ export async function ciPreparationFixture(options: {
   const services = { ...data.services, commands, jobRuntimeProfiles: profileService, ciRuntime } as unknown as OperatorServices
   const app = Fastify()
   const access = { authenticate: async (token: string) => {
-    const principal = { operator: data.operator, readonly: data.readonly }[token]
+    const principal = { operator: data.operator, readonly: data.readonly, reader }[token]
     if (!principal) throw new DomainError('AUTH_INVALID', 'Invalid bearer token.', 401)
     return principal
   } } as unknown as PostgresAccessService
