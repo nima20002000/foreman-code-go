@@ -53,14 +53,18 @@ export class ReviewerDispatcher {
     for (const agentId of await this.coordination.reviewJobAgents()) {
       if (this.stopping.signal.aborted) break
       if (this.active.has(agentId)) continue
-      const task = this.dispatchNext(agentId, this.workerId).catch(onError)
+      const task = this.dispatchNext(agentId, this.workerId).catch(error => {
+        if (this.stopping.signal.aborted && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
+        onError(error)
+      })
         .finally(() => { this.active.delete(agentId) })
       this.active.set(agentId, task)
     }
   }
 
   shutdown(): Promise<void> {
-    this.stopping.abort(new Error('Reviewer dispatcher is shutting down.'))
+    this.stopping.abort(new DomainError('ENGINE_RESTART',
+      'Reviewer observation is stopping for application restart.', 409))
     this.shutdownTask ??= Promise.allSettled(this.active.values()).then((results) => {
       const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Reviewer shutdown was incomplete.')

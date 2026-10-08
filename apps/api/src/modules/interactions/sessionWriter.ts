@@ -236,10 +236,11 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
    * The SQL verifier additionally checks the actual token, generation and DB
    * clock through that SAME transaction, never a detached heartbeat query. */
   assertCapturedLease(session: NativeSessionReference, lease: SessionWriteLease): void {
-    if (this.active.get(session.nativeSessionId) !== lease || lease.guard.signal.aborted
+    if (this.active.get(session.nativeSessionId) !== lease
       || session.harness !== this.harness || lease.previous.nativeSessionId !== session.nativeSessionId) {
       throw new DomainError('SESSION_LANE_LEASE_LOST', 'The original native source no longer owns its writer lane.', 409)
     }
+    lease.guard.signal.throwIfAborted()
   }
 
   capturedLease(session: NativeSessionReference): SessionWriteLease | undefined {
