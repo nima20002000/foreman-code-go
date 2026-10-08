@@ -27,6 +27,20 @@ async function opened() {
   return { ...j, ...f }
 }
 
+it('keeps a persisted Agent session busy for runtime refresh until its own closure is confirmed', async () => {
+  const f = await opened()
+  await expect(f.store.assertRuntimeQuiescent()).rejects.toThrow('unfinished work')
+  expect((await f.chats.read(f.binding))?.closed).toBe(false)
+  await f.store.close()
+  const reopened = await RemoteOperationJournal.open(f.path)
+  closing.push(() => reopened.close())
+  expect(await reopened.isRuntimeQuiescent()).toBe(false)
+  expect((await reopened.conversations.read(f.binding))?.closed).toBe(false)
+  await reopened.conversations.closeConfirmed(f.binding)
+  expect(await reopened.isRuntimeQuiescent()).toBe(true)
+  await expect(reopened.assertRuntimeQuiescent()).resolves.toBeUndefined()
+})
+
 it('requires a reserved Operator access change before preparing its next file directory', async () => {
   const f = workerConversationFixture('operator', 'opencode')
   const j = await journal()

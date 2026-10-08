@@ -40,6 +40,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true,
     containerPresent: false, removals: 0, removalFailures: 0,
     collectionError: null as Error | null }
+  let executionGate: Promise<void> | undefined
   let started = false, released = false
   const waiting: Array<() => void> = []
   const cid='c'.repeat(64),policy=execution.acceptedSpec.policy
@@ -66,7 +67,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
       return { exitCode: 1, stdout: '' }
     }
     if(argv[0]==='wait')return new Promise(resolve => { waiting.push(() => resolve({exitCode:0,stdout:'7'})) })
-    if(argv[0]==='exec'){released=true;for(const finish of waiting.splice(0))finish();return{exitCode:0,stdout:''}}
+    if(argv[0]==='exec'){await executionGate;released=true;for(const finish of waiting.splice(0))finish();return{exitCode:0,stdout:''}}
     return{exitCode:0,stdout:JSON.stringify([{Id:cid,Config:{Labels:{'graphql.job.identity':jobSupervisorIdentity(execution),'graphql.job.spec':execution.acceptedSpec.specDigest,'graphql.job.attempt':execution.attemptId}},State:{Running:started&&!released,Pid:started&&!released?100:0,ExitCode:7,Status:released?'exited':started?'running':'created'}}])}
   },attach:async()=>{started=true;const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough()});waiting.push(()=>{child.stdout.end('build exit7');child.stderr.end();child.emit('close',7)});return child as unknown as Awaited<ReturnType<PodmanCommandRunner['attach']>>} }
   // OCI boundary authority is a unit double; this suite proves journal/input sequencing, not physical qualification.
@@ -85,9 +86,28 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     }},
     authorize:async(_intent,_execution,action)=>{if(denyPublication&&action==='publish')throw new Error('cleanup cannot publish');if(!state.allowed)throw new Error('revoked')},appendLog:async()=>{},observeReceipt:async receipt=>{state.reports.push(`${receipt.phase}:${receipt.publication}`);if(state.loseCollectionAck&&receipt.publication==='collecting')throw new Error('lost collecting ACK');if(receipt.terminal){if(state.loseClosureAck)throw new Error('lost process ACK');state.closureAccepted=true}},
     collectOutputs:async()=>{expect(state.closureAccepted).toBe(true);state.collected++;if(state.collectionError)throw state.collectionError} });hosts.push(host)
-  return {root,journal,execution,intent,state,host,supervisor}
+  return {root,journal,execution,intent,state,host,supervisor,
+    holdExecution(gate: Promise<void>) { executionGate = gate } }
 }
 describe('actual OCI job adapter with command doubles, no installed runtime claim',()=>{
+  it('stops new admissions and lets an active Job finish with its original outcome during runtime drain', async () => {
+    const f = await fixture()
+    let finish!: () => void
+    f.holdExecution(new Promise<void>(resolve => { finish = resolve }))
+    try {
+      await f.host.deliver(f.intent, f.execution)
+      const drained = f.host.beginDrain()
+      await expect(f.host.deliver(f.intent, f.execution)).rejects.toThrow('draining')
+      expect((await f.journal.jobStatus(f.intent.operationId)).status).toBe('known')
+      finish()
+      await drained
+      expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+        terminal: { outcome: 'build_failed', exitCode: 7, processStopped: true }, publication: 'complete',
+      } })
+      expect(f.state.creates).toBe(1)
+    } finally { finish() }
+  })
+
   it.each([false, true])('removes the owned container after its terminal result, including publication denial %s', async denied => {
     const f = await fixture(false, denied)
     await f.host.deliver(f.intent, f.execution)

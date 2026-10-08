@@ -37,6 +37,8 @@ export interface RemoteJobExecutionHostPorts {
 }
 export class RemoteJobExecutionHost {
   private readonly tasks = new Map<string, { controller: AbortController; task: Promise<void> }>()
+  private readonly admissions = new Set<Promise<unknown>>()
+  private draining = false
   constructor(private readonly ports: RemoteJobExecutionHostPorts) {}
   private validate(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord) {
     const target = execution.acceptedSpec.target, connection = this.ports.connection
@@ -101,7 +103,20 @@ export class RemoteJobExecutionHost {
     }
     return this.reconcile(status.receipt)
   }
-  async deliver(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord) {
+  deliver(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord) {
+    if (this.draining) return Promise.reject(new Error('Worker Job admissions are draining for runtime refresh.'))
+    const task = this.accept(intent, raw)
+    this.admissions.add(task)
+    void task.then(() => this.admissions.delete(task), () => this.admissions.delete(task))
+    return task
+  }
+  async beginDrain(): Promise<void> {
+    this.draining = true
+    await Promise.allSettled([...this.admissions])
+    await this.drain()
+  }
+  resumeAdmissions(): void { this.draining = false }
+  private async accept(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord) {
     const execution = JobExecutionRecordSchema.parse(raw)
     this.validate(intent, execution)
     await this.ports.authorize(intent, execution, 'start')

@@ -38,7 +38,7 @@ function profile(id: string, name: string, deviceId: string, rootId: string, sui
       reportBytes: 2 ** 26 }, approvalConfig: {}, policy: { imageDigest: oldImage, toolchainDigest: 't' } } }
 }
 
-async function fixture(options: { prepareFails?: boolean } = {}) {
+async function fixture(options: { prepareFails?: boolean; refreshGate?: Promise<void> } = {}) {
   const data = ciFixture()
   const workspaceId = data.workspaceId
   const profiles = new Map([
@@ -65,7 +65,12 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
       if (options.prepareFails) throw new Error('podman build failed: no space left on device')
       return prepared
     },
-    refresh: async (input: unknown) => { calls.refresh.push(input); refreshed = true; return { unit: 'refresh', workerUnit: 'worker.service' } },
+    refresh: async (input: unknown) => {
+      calls.refresh.push(input)
+      await options.refreshGate
+      refreshed = true
+      return { unit: 'refresh', workerUnit: 'worker.service' }
+    },
     lastRefresh: async () => refreshed ? { commit, ok: true, log: 'exit=0' } : null,
     currentRuntimePaths: async () => ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'],
     now: () => new Date('2026-10-07T00:00:00.000Z'),
@@ -119,11 +124,14 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
   const interactions = { toolAccess: async () => ({ role: 'coder', tools: [] }), canRead: async () => false,
     canRespond: async () => false } as unknown as AppInteractionService
   registerGraphqlMcp(app, { access, operator: services, interactions })
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const call = async (name: string, input: unknown, token = 'operator') => {
-    const response = await app.inject({ method: 'POST', url: '/mcp',
-      headers: { host: 'localhost', authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
-      payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } } })
-    const body = response.body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? response.body
+    const response = await fetch(`${address}/mcp`, { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream',
+        'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })
+    const responseBody = await response.text()
+    const body = responseBody.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? responseBody
     return JSON.parse(body).result as { isError?: boolean; structuredContent?: unknown; content?: { text: string }[] }
   }
   const settle = async (profileId: string) => {
@@ -134,10 +142,31 @@ async function fixture(options: { prepareFails?: boolean } = {}) {
     }
     throw new Error('Preparation did not settle.')
   }
-  return { ...data, app, call, settle, calls, profiles }
+  return { ...data, app, call, settle, calls, profiles,
+    workerState: () => worker.handle({ operation: 'status' }) }
 }
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
+  it('reports draining through MCP and delays qualification until the Worker finishes its active work', async () => {
+    let finish!: () => void
+    const refreshGate = new Promise<void>(resolve => { finish = resolve })
+    const f = await fixture({ refreshGate })
+    try {
+      await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-drain' })
+      for (let attempt = 0; attempt < 500 && !f.calls.refresh.length; attempt++) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      expect(f.calls.refresh).toHaveLength(1)
+      expect(await f.workerState()).toMatchObject({ state: 'refreshing', stage: 'draining', commit })
+      const status = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-unit' })
+      expect(BuildComputerPrepareStatusSchema.parse(status.structuredContent).state).toBe('refreshing')
+      expect(f.calls.qualified).toEqual([])
+      finish()
+      expect(await f.settle('p-unit')).toMatchObject({ state: 'qualified', commit })
+      expect(f.profiles.get('p-unit')).toMatchObject({ revision: 4, status: 'qualified', sourceCommit: commit })
+    } finally { finish(); await f.app.close() }
+  })
+
   it('prepares the computer, moves its profiles to the new image and root, refreshes it and requalifies them', async () => {
     const f = await fixture()
     try {

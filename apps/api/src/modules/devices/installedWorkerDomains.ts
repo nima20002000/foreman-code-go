@@ -1,4 +1,5 @@
 import { realpath } from 'node:fs/promises'
+import { setTimeout as wait } from 'node:timers/promises'
 import { recoverInstalledJobRuntimeQualifications } from '../jobs/installedRuntimeQualification.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { JOB_OUTPUT_NAMESPACE } from '../files/jobs/workerProtocol.js'
@@ -49,7 +50,8 @@ import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
 import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
 import { CiRuntimeWorker } from '../jobs/ciRuntimeWorker.js'
 import { prepareCiRuntime } from '../jobs/ciRuntimePrepare.js'
-import { currentCiRuntimePaths, lastCiRuntimeRefresh, scheduleCiRuntimeRefresh } from '../jobs/ciRuntimeRefresh.js'
+import { currentCiRuntimePaths, lastCiRuntimeRefresh, retainedCiRuntimeImages,
+  scheduleCiRuntimeRefresh } from '../jobs/ciRuntimeRefresh.js'
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
@@ -82,7 +84,9 @@ export async function createInstalledWorkerDomains(input: {
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
   rsync?: InstalledRsyncProviders
 }) {
-  const lifetime = new AbortController(), active = new Set<Promise<unknown>>()
+  const lifetime = new AbortController()
+  const active = new Map<Promise<unknown>, string>()
+  let runtimeDrain: ReturnType<typeof createWorkerRuntimeDrain> | undefined
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
@@ -251,9 +255,37 @@ export async function createInstalledWorkerDomains(input: {
     qualification = createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
     currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
     extensions.push(qualification)
+    runtimeDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
+      active: () => [...active].filter(([, namespace]) => namespace !== CI_RUNTIME_NAMESPACE).map(([task]) => task),
+      drainJobs: async () => { if (jobOpening) await (await jobOpening).beginDrain() },
+      drainQualifications: async () => { await qualification?.drain() },
+      quiescent: async () => {
+        const journals = await Promise.all([journal(), jobJournal()])
+        const quiet = await Promise.all(journals.map(log => log.isRuntimeQuiescent()))
+        const nativeActive = [registry, jobRegistry].some(value =>
+          value.snapshot().launches.some(launch => launch.lifecycle !== 'closed'))
+        return quiet.every(Boolean) && !nativeActive
+      } })
     const ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
-      managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot, prepare: prepareCiRuntime,
-      refresh: scheduleCiRuntimeRefresh, lastRefresh: lastCiRuntimeRefresh, currentRuntimePaths: currentCiRuntimePaths,
+      managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot,
+      prepare: async options => {
+        const retained = await jobJournal()
+        const executions = await retained.jobOperations()
+        const qualifications = await retained.pendingQualifications()
+        const images = [...options.keepImages ?? [], ...await retainedCiRuntimeImages(input.stateDirectory),
+          ...executions.map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
+          ...qualifications.map(receipt => receipt.candidate.fingerprint.imageDigest)]
+        return prepareCiRuntime({ ...options, keepImages: images })
+      },
+      refresh: async options => {
+        try { return await scheduleCiRuntimeRefresh({ ...options, drain: () => runtimeDrain!.run() }) }
+        catch (error) {
+          runtimeDrain!.resume()
+          jobs?.resumeAdmissions()
+          throw error
+        }
+      },
+      lastRefresh: lastCiRuntimeRefresh, currentRuntimePaths: currentCiRuntimePaths,
       now: () => new Date() }, lifetime.signal)
     extensions.push({ namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
       async handle(payload, context) {
@@ -395,8 +427,11 @@ export async function createInstalledWorkerDomains(input: {
   if (profileChecks) extensions.push(profileChecks.extension)
   const tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
     lifetime.signal.throwIfAborted()
+    try { runtimeDrain?.assertAdmission(extension.namespace, payload) }
+    catch (error) { return Promise.reject(error) }
     const task = extension.handle!(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) })
-    active.add(task); void task.then(() => active.delete(task), () => active.delete(task))
+    active.set(task, extension.namespace)
+    void task.then(() => active.delete(task), () => active.delete(task))
     return task
   } } : {}) }))
   let shutdown: Promise<void> | undefined
@@ -412,7 +447,7 @@ export async function createInstalledWorkerDomains(input: {
       try { await jobInputs?.close() } catch (error) { failures.push(error) }
       try { if (native?.kind === 'configured') await native.close() } catch (error) { failures.push(error) }
       try { await conversations?.close() } catch (error) { failures.push(error) }
-      await Promise.allSettled([...active])
+      await Promise.allSettled([...active.keys()])
       await qualification?.drain()
       try { await receiver?.receiver.close() } catch (error) { failures.push(error) }
       if (!failures.length) {
@@ -423,4 +458,47 @@ export async function createInstalledWorkerDomains(input: {
       if (failures.length) throw new AggregateError(failures, 'Actual installed worker domain cleanup is incomplete.')
     })() },
   }
+}
+
+export function createWorkerRuntimeDrain(ports: {
+  signal: AbortSignal
+  active(): Promise<unknown>[]
+  drainJobs(): Promise<void>
+  drainQualifications(): Promise<void>
+  quiescent(): Promise<boolean>
+}) {
+  let draining = false
+  return {
+    async run() {
+      draining = true
+      // In-flight dispatches finish admission before the Job host stops accepting work.
+      await Promise.allSettled(ports.active())
+      await ports.drainJobs()
+      await ports.drainQualifications()
+      while (!await ports.quiescent()) await wait(100, undefined, { signal: ports.signal })
+      ports.signal.throwIfAborted()
+    },
+    resume() { draining = false },
+    assertAdmission(namespace: string, payload: unknown) {
+      if (draining && isWorkerAdmission(namespace, payload)) {
+        throw new DomainError('WORKER_RUNTIME_DRAINING',
+          'This computer is waiting for active work to finish before refreshing its CI runtime.', 409)
+      }
+    },
+  }
+}
+
+function isWorkerAdmission(namespace: string, payload: unknown): boolean {
+  if (namespace === 'harness-discovery-v1' || namespace === 'host-harness-check-v1') return true
+  if (!payload || typeof payload !== 'object') return false
+  if (namespace === 'execution-v1' && 'method' in payload) {
+    return ['job-dispatch', 'prepare', 'prepare-review', 'start-turn', 'session-compact', 'capabilities', 'inspect-mcp',
+      'conversation.open', 'conversation.initial-turn', 'conversation.start-turn', 'conversation.compact',
+      'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read']
+      .includes(String(payload.method))
+  }
+  if (!('operation' in payload)) return false
+  return namespace === SOURCE_OPERATION_EXTENSION.namespace && payload.operation === 'sources.prepare'
+    || namespace === 'job-runtime-qualification-v1' && ['start', 'run'].includes(String(payload.operation))
+    || namespace === CI_RUNTIME_NAMESPACE && payload.operation === 'prepare'
 }

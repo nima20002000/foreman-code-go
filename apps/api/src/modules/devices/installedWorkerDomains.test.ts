@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
-import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
+import { createInstalledWorkerDomains, createWorkerRuntimeDrain } from './installedWorkerDomains.js'
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
 import { extensionDescriptors } from './deviceApplicationChannel.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
@@ -19,6 +19,37 @@ afterEach(async () => {
 })
 
 describe('actual installed worker mount availability, no physical acceptance', () => {
+  it('drains active Jobs and Agent sessions before refresh while preserving status and controls', async () => {
+    let finishJob!: () => void
+    const job = new Promise<void>(resolve => { finishJob = resolve })
+    let agentOpen = true
+    let jobOutcome = 'running'
+    let scheduled = false
+    const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal, active: () => [],
+      drainJobs: async () => { await job; jobOutcome = 'succeeded' },
+      drainQualifications: async () => {}, quiescent: async () => !agentOpen })
+    const refresh = drain.run().then(() => { scheduled = true })
+    expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).toThrow('waiting for active work')
+    expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.open' })).toThrow()
+    expect(() => drain.assertAdmission('job-runtime-qualification-v1', { operation: 'start' })).toThrow()
+    expect(() => drain.assertAdmission('harness-discovery-v1', {})).toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'job-status' })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.close' })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.respond' })).not.toThrow()
+    expect(scheduled).toBe(false)
+    expect(jobOutcome).toBe('running')
+    finishJob()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(jobOutcome).toBe('succeeded')
+    expect(scheduled).toBe(false)
+    agentOpen = false
+    await refresh
+    expect(scheduled).toBe(true)
+    expect(jobOutcome).toBe('succeeded')
+    drain.resume()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).not.toThrow()
+  })
+
   it('mounts the guarded native profile-check endpoint for an installed workflow configuration', async () => {
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-profile-check-'))
     const journal = await RemoteOperationJournal.open(join(stateDirectory, 'workflow-operations.json'),
