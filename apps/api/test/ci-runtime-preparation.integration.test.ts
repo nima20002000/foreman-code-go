@@ -83,7 +83,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       }
       throw new Error('Preparation did not settle')
     }
-    return { service, create, call, settle, writer, reader, services }
+    return { service, create, call, settle, writer, reader, services, access }
   }
 
   it('denies a reader, recovers a saved profile command after Main restarts and reads the completed command again', async () => {
@@ -97,6 +97,27 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
     } })
     const input = { workspaceId: fixture.workspaceId, profileId: 'p-unit', commit, commandId: randomUUID() }
     try {
+      const withoutDefinitionRead = await f.access.issue({
+        name: 'Runtime author without definition reads', audience: 'operator',
+        expiresAt: new Date(Date.now() + 3_600_000),
+        grants: [{ actions: ManagementActionSchema.options.filter(action => action !== 'job_definitions:read'),
+          scope: { workspaceIds: [fixture.workspaceId] } }],
+      })
+      const denied = await f.call('build_computer_prepare', input, withoutDefinitionRead.token)
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
+      expect((await database.pool.query(
+        'select source,outcome from management_audit where principal_id=$1 and action=$2',
+        [withoutDefinitionRead.principal.id, 'build_computer_prepare'],
+      )).rows).toEqual([{ source: 'mcp', outcome: 'denied' }])
+      expect((await database.pool.query(
+        'select command_id from management_command_receipts where principal_id=$1',
+        [withoutDefinitionRead.principal.id],
+      )).rows).toEqual([])
+      const unchanged = await f.call('build_computer_prepare_get', {
+        workspaceId: fixture.workspaceId, profileId: 'p-unit',
+      })
+      expect(BuildComputerPrepareStatusSchema.parse(unchanged.structuredContent).state).toBe('idle')
       expect((await f.call('build_computer_prepare', input, f.reader.token)).isError).toBe(true)
       expect(fixture.calls.prepare).toEqual([])
       expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
