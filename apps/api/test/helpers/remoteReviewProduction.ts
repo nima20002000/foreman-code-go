@@ -246,7 +246,9 @@ export async function remoteReviewProduction(options: {
     }
     async function value(name: string, args: Record<string, unknown>) {
       const response = await call(name, args)
-      if (response.isError) throw new Error(`${name}: ${JSON.stringify(response.content)}`)
+      if (response.isError) {
+        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`)
+      }
       return response.structuredContent
     }
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
