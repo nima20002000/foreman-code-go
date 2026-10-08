@@ -131,3 +131,22 @@ it.each(['/plan', '/plan off', '/compact'])('routes an explicitly resent %s to c
   expect(mounted.mock.calls.filter(call => call.path.endsWith('/messages') && call.method === 'POST')).toHaveLength(0)
   expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Independent draft')
 })
+
+it('allows resending a mode command when new message turns are unavailable', async () => {
+  const state: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
+  state.capabilities.resume = false
+  state.capabilities.unavailable.resume = 'This conversation cannot continue.'
+  const turn = state.turns[0]!
+  state.turns = [{ ...turn, delivery: 'unknown' }]
+  state.messages[0]!.originalInput = { requestId: turn.requestId, content: '/plan off', attachments: [] }
+  const mounted = mountChat(state)
+  await mounted.ready()
+  const resend = screen.getByRole('button', { name: 'Send again as new message' })
+  expect(resend).toBeEnabled()
+  fireEvent.click(resend)
+  const apply = within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Apply session command' })
+  expect(apply).toBeEnabled()
+  fireEvent.click(apply)
+  await waitFor(() => expect(controls.command).toHaveBeenCalledExactlyOnceWith('/plan off', expect.any(String)))
+  expect(mounted.mock.calls.filter(call => call.path.endsWith('/messages') && call.method === 'POST')).toHaveLength(0)
+})

@@ -113,6 +113,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     ? 'Plan messages need a new turn. Use Queue message or Interrupt and send.' : undefined
   const nextReason = writeReason ?? compactReason ?? (state ? intentUnavailable(state, 'next_turn') : 'Loading this conversation…')
   const controlReason = writeReason ?? (sessionControls.mutation.isPending ? 'A session control is still pending.' : undefined)
+  const resendReason = resendControl ? controlReason : nextReason
   const steerReason = commandOnly ? controlReason : writeReason ?? compactReason ?? planSteerReason
     ?? (state ? intentUnavailable(state, 'steer') : 'Loading this conversation…')
   const interruptReason = commandOnly ? controlReason : writeReason ?? compactReason
@@ -216,6 +217,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   return <div className="agent-conversation" data-testid="agent-conversation" data-chat-key={chat.draftKey}>
     {state ? <AgentChatTranscript key={state.conversation?.id ?? 'none'} state={state} name={name} commands={chat.commands} history={chat.history}
       notices={notices} cancelReason={cancelReason} responseReason={responseReason} resendReason={nextReason}
+      controlResendReason={controlReason}
       onRefresh={chat.refresh} refreshing={chat.query.isFetching} onCancel={chat.cancelQueued} onRespond={chat.respond}
       onSendAgain={(content, pins, mode) => setSendAgain({ content, attachments: pins, draftKey: chat.draftKey,
         sessionMode: parseSessionCommand(content).kind === 'plan-task' ? 'plan' : mode })} />
@@ -264,10 +266,10 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
           {resendFileClient ? <MessageFileCards attachments={sendAgain.attachments} files={resendFiles} client={resendFileClient} /> : null}
           </> : <p>No original files. This new message will contain text only.</p>}
         </>}
-        {nextReason ? <p className="n-field-error" role="alert">{nextReason}</p> : null}
+        {resendReason ? <p className="n-field-error" role="alert">{resendReason}</p> : null}
         <div className="n-actions"><Button disabled={resendPending} onClick={() => setSendAgain(undefined)}>Keep it</Button>
           <Button variant="danger" loading={resendPending}
-            disabled={resendPending || !!nextReason || !sendAgain.sessionMode && resendCommand.kind === 'message'}
+            disabled={resendPending || !!resendReason || !sendAgain.sessionMode && resendCommand.kind === 'message'}
             onClick={() => {
               void submit('next_turn', sendAgain.content, sendAgain.sessionMode, {
                 attachments: sendAgain.attachments,
