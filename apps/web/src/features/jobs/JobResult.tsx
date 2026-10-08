@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
+import type { JobInitiatingAgent } from '@foreman-code/contracts/jobs'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { Alert, Badge, Button, Card, CardBody, PageHeader } from '../../shared/ui/nocturne'
 import { jobsClient } from './client'
@@ -10,7 +11,16 @@ import { ArtifactDownload } from './ArtifactDownload'
 import { JobSpecFacts } from './JobSpecFacts'
 import { JobVerificationResult } from './JobVerificationResult'
 
-export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow, expectedDefinitionVersionId }: { workspaceId: string; executionId: string; onRerun?: (execution: JobExecutionRecord) => void; expectedWorkflow?: JobWorkflowExecutionReference; expectedDefinitionVersionId?: string }) {
+export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
+  expectedDefinitionVersionId, readOnly = false, expectedInitiatingAgent }: {
+  workspaceId: string
+  executionId: string
+  onRerun?: (execution: JobExecutionRecord) => void
+  expectedWorkflow?: JobWorkflowExecutionReference
+  expectedDefinitionVersionId?: string
+  expectedInitiatingAgent?: JobInitiatingAgent
+  readOnly?: boolean
+}) {
   const result = useJobExecution(workspaceId, executionId)
   const artifacts = useJobArtifacts(workspaceId, executionId, Boolean(result.data))
   const cache = useQueryClient()
@@ -25,8 +35,15 @@ export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
       || execution.workflow.nodeExecutionId !== expectedWorkflow.nodeExecutionId)) {
     return <Alert title="Run job result identity mismatch" tone="warning">The returned result does not match this saved node and Run execution. No substitute result is displayed.</Alert>
   }
+  if (expectedInitiatingAgent && (!execution.initiatingAgent
+    || execution.initiatingAgent.workflowId !== expectedInitiatingAgent.workflowId
+    || execution.initiatingAgent.runId !== expectedInitiatingAgent.runId
+    || execution.initiatingAgent.agentId !== expectedInitiatingAgent.agentId
+    || execution.initiatingAgent.executionId !== expectedInitiatingAgent.executionId)) {
+    return <Alert title="CI origin mismatch" tone="warning">This job does not belong to the selected Agent execution.</Alert>
+  }
   return <div className="jobs-page">
-    <PageHeader title="Job result" description={execution.id} actions={<>{onRerun && <Button onClick={() => onRerun(execution)}>Review rerun</Button>}{!execution.process.processStopped && <Button variant="danger" loading={cancel.isPending} disabled={Boolean(execution.cancelRequestedAt)} onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Request cancellation</Button>}</>} />
+    <PageHeader title="Job result" description={execution.id} actions={!readOnly && <>{onRerun && <Button onClick={() => onRerun(execution)}>Review rerun</Button>}{!execution.process.processStopped && <Button variant="danger" loading={cancel.isPending} disabled={Boolean(execution.cancelRequestedAt)} onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Request cancellation</Button>}</>} />
     <div className="job-status" aria-label="Independent job statuses">
       <Badge tone={execution.process.outcome === 'succeeded' ? 'success' : ['build_failed', 'preparation_failed', 'spawn_failed', 'timed_out'].includes(execution.process.outcome ?? '') ? 'danger' : 'neutral'}>Process: {processLabel(execution)}</Badge>
       <Badge tone={execution.transport === 'offline' ? 'warning' : 'neutral'}>Transport: {execution.transport}</Badge>
@@ -38,12 +55,16 @@ export function JobResult({ workspaceId, executionId, onRerun, expectedWorkflow,
       This Job kept its selected computer and did not start. Enable builds on that computer before creating a new Start request.
     </Alert>}
     {execution.transport !== 'connected' && <Alert title="Computer connection lost" tone="warning">Connection unavailable. The process may still be running. Reconnect to read persisted observations.</Alert>}
-    {cancel.error && <Alert title="Cancellation not confirmed" tone="warning">Cancellation acknowledgment unavailable: {jobError(cancel.error)} <Button onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Retry same cancellation request</Button></Alert>}
+    {!readOnly && cancel.error && <Alert title="Cancellation not confirmed" tone="warning">Cancellation acknowledgment unavailable: {jobError(cancel.error)} <Button onClick={() => cancel.mutate(cancel.variables ?? crypto.randomUUID())}>Retry same cancellation request</Button></Alert>}
     <dl className="job-facts"><dt>Exit / signal</dt><dd>{execution.process.exitCode ?? 'Not observed'} / {execution.process.signal ?? 'None observed'}</dd>
       <dt>Started / finished</dt><dd>{execution.startedAt ?? 'Not observed'} / {execution.finishedAt ?? 'Not observed'}</dd>
       <dt>Elapsed</dt><dd>{execution.startedAt ? `${Math.max(0, Date.parse(execution.finishedAt ?? execution.updatedAt) - Date.parse(execution.startedAt))} ms${execution.finishedAt ? '' : ' through last result update'}` : execution.process.phase === 'queued' || execution.process.phase === 'preparing' ? `Not started yet (${execution.process.phase})` : 'Start time not recorded'}</dd>
       {execution.resultIssue && <><dt>Result issue</dt><dd>{execution.resultIssue}</dd></>}
       {execution.workflow && <><dt>Parent Run / node</dt><dd><a href={`/workspaces/${encodeURIComponent(workspaceId)}?workflowId=${encodeURIComponent(execution.workflow.workflowId)}&selectedRunId=${encodeURIComponent(execution.workflow.runId)}`}>{execution.workflow.runId}</a> / {execution.workflow.nodeId} / {execution.workflow.nodeExecutionId}</dd></>}
+      {execution.initiatingAgent && <><dt>Initiating Run / Agent / execution</dt><dd>
+        <a href={`/workspaces/${encodeURIComponent(workspaceId)}?workflowId=${encodeURIComponent(execution.initiatingAgent.workflowId)}&selectedRunId=${encodeURIComponent(execution.initiatingAgent.runId)}`}>{execution.initiatingAgent.runId}</a>
+        {' / '}{execution.initiatingAgent.agentId}{' / '}{execution.initiatingAgent.executionId}
+      </dd></>}
     </dl>
     <JobLogs key={`${execution.id}:${execution.attemptId}`} workspaceId={workspaceId} executionId={execution.id} attemptId={execution.attemptId} enabled={!result.isError} />
     <section aria-label="Job artifacts"><h2>Artifacts</h2>{Boolean(artifacts.error) && <Alert title="Artifacts unavailable" tone="danger">{jobError(artifacts.error)}</Alert>}

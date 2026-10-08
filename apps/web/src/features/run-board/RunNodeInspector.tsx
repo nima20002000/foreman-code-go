@@ -1,0 +1,103 @@
+import { useInfiniteQuery } from '@tanstack/react-query'
+import type { RunBoardNodeSnapshot } from '@foreman-code/contracts/run-snapshots'
+import type { RepeatGraphScopeV3, RunExecutionSummary } from '@foreman-code/contracts/wave25'
+import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
+import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
+import { Button } from '../../shared/ui/nocturne'
+import type { SelectedRunState } from '../runs-selector/useSelectedRun'
+import { isRunAccessError, runReadErrorLabel } from '../runs-selector/query'
+import { SelectedNodePlacement } from '../node-placement/SelectedNodePlacement'
+import { readRunExecution, readRunExecutions } from '../workflow-board/runDetailsClient'
+import { ExecutionBranch } from '../workflow-board/inspect/ExecutionBranch'
+import { JsonValue } from '../workflow-board/inspect/JsonValue'
+import { JobRunResult } from '../jobs/JobRunResult'
+import type { AvailableRunBoardSnapshot } from './model'
+import { readForRunVisit, runNodeInspectionKey, useRunNodeRead } from './inspectionQuery'
+import { AgentExecutionResults } from './AgentExecutionResults'
+import '../workflow-board/inspect/inspection.css'
+
+function matchesNode(node: RunBoardNodeSnapshot, execution: RunExecutionSummary) {
+  if (node.id !== execution.workflowNodeId) return false
+  if (node.kind === 'job') return execution.kind === 'job'
+    && node.jobDefinitionId === execution.jobDefinitionId
+    && node.jobDefinitionVersionId === execution.jobDefinitionVersionId
+  return execution.kind !== 'job' && node.agentId === execution.agentId
+    && node.agentConfigurationVersionId === execution.agentConfigurationVersionId
+}
+
+export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onInspect }: {
+  selection: SelectedRunState; snapshot: AvailableRunBoardSnapshot; nodeId: string;
+  executionId?: string; onInspect(nodeId?: string, executionId?: string): void
+}) {
+  useHarnessSessionEpoch()
+  const node = snapshot.nodes.find(item => item.id === nodeId)
+  const scope: RepeatGraphScopeV3 = { workspaceId: snapshot.workspaceId, workflowId: snapshot.workflowId,
+    runId: snapshot.runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3 }
+  const pages = useInfiniteQuery({
+    queryKey: [...runNodeInspectionKey(selection), nodeId, 'executions'],
+    queryFn: ({ signal, pageParam }) => readForRunVisit(selection, signal,
+      () => readRunExecutions(scope, { workflowNodeId: nodeId }, pageParam, { signal })),
+    initialPageParam: null as string | null,
+    getNextPageParam: (page, _pages, _param, params) => page.pageInfo.nextCursor
+      && !params.includes(page.pageInfo.nextCursor) ? page.pageInfo.nextCursor : undefined,
+    enabled: Boolean(node) && !sessionIsSwitching(), retry: false, staleTime: 0, gcTime: 0, maxPages: 5,
+    refetchInterval: query => isRunAccessError(query.state.error) ? false : 3000,
+  })
+  if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
+  const items = pages.data?.pages.flatMap(page => page.items) ?? []
+  const invalid = node && items.some(item => !matchesNode(node, item))
+  const unavailable = pages.isError || invalid
+  return <section className="run-execution-inspector" aria-label={`Run node inspector: ${node?.name ?? nodeId}`}>
+    <header><h2>{node?.name ?? nodeId}</h2><span>Read only</span>
+      <Button size="sm" onClick={() => onInspect()}>Close inspector</Button></header>
+    {!node ? <p role="status">This node is not in the saved Run.</p> : <>
+      <SelectedNodePlacement selection={selection} nodeId={node.id} />
+      {unavailable ? <p role="status">{invalid ? 'Execution does not match this saved node.' : runReadErrorLabel(pages.error)}</p> : <>
+        {pages.isPending ? <p role="status">Reading node executions…</p> : null}
+        {!pages.isPending && !items.length ? <p>No execution recorded for this node yet.</p> : null}
+        <ol>{items.map(execution => <li key={execution.executionId}>
+          <Button size="sm" aria-pressed={executionId === execution.executionId}
+            onClick={() => onInspect(node.id, execution.executionId)}>
+            Attempt {execution.attempt} · {execution.executionId}
+          </Button>
+          <p>Recorded state: {execution.state}</p><ExecutionBranch execution={execution} />
+        </li>)}</ol>
+        {pages.hasNextPage ? <Button size="sm" disabled={pages.isFetching}
+          onClick={() => void pages.fetchNextPage()}>Load more executions</Button> : null}
+        {executionId ? <NodeExecutionResult key={executionId} selection={selection} scope={scope}
+          node={node} executionId={executionId} /> : null}
+      </>}
+      <Button size="sm" disabled={pages.isFetching} onClick={() => void pages.refetch()}>Refresh node executions</Button>
+    </>}
+  </section>
+}
+
+function NodeExecutionResult({ selection, scope, node, executionId }: {
+  selection: SelectedRunState; scope: RepeatGraphScopeV3; node: RunBoardNodeSnapshot; executionId: string
+}) {
+  const query = useRunNodeRead(selection, [node.id, executionId], signal => readRunExecution(scope, executionId, { signal }))
+  if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
+  if (query.isError || query.data && !matchesNode(node, query.data.execution)) return <p role="status">
+    Execution result unavailable. {runReadErrorLabel(query.error)}
+  </p>
+  if (!query.data) return <p role="status">Reading execution result…</p>
+  const detail = query.data
+  const execution = detail.execution
+  const occurrence = execution.occurrence
+  return <article aria-label={`Execution ${executionId}`}>
+    <ExecutionBranch execution={execution} />
+    {execution.kind === 'job' ? <JobRunResult readOnly definitionVersionId={execution.jobDefinitionVersionId}
+      reference={{ kind: 'job', workspaceId: scope.workspaceId, workflowId: scope.workflowId,
+        runId: scope.runId, workflowVersionId: scope.workflowVersionId, nodeId: node.id,
+        nodeExecutionId: execution.executionId, occurrenceId: occurrence?.occurrenceId ?? null,
+        occurrenceIndex: occurrence?.occurrenceIndex ?? 0 }} />
+      : <AgentExecutionResults selection={selection} scope={scope} execution={execution} name={node.name} />}
+    <details><summary>Accepted input and results</summary>
+      <JsonValue label={`Input ${executionId}`} value={detail.acceptedInput.value} />
+      {detail.acceptedResult.status === 'accepted'
+        ? <JsonValue label={`Accepted result ${executionId}`} value={detail.acceptedResult.value} />
+        : <p>No accepted result recorded.</p>}
+      {detail.reportedResult ? <JsonValue label={`Reported result ${executionId}`} value={detail.reportedResult} /> : null}
+    </details>
+  </article>
+}

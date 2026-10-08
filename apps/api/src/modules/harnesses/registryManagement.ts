@@ -23,7 +23,11 @@ export function registerHarnessRegistryTools(server: McpServer, service: Harness
   principal: ManagementPrincipal): void {
   if (!hasAction(principal, 'harnesses:read')) return
   server.registerTool('harness_registry_get', {
-    description: 'Read the authorized selected computer inventory and configured harness instances. Installation, authentication, qualification and connection facts remain separate; no discovery, native probe or fallback is performed.',
+    description: 'Read the authorized selected computer inventory and every saved global preset, including Claude. '
+      + 'Match its driver to an installed harness, use harness_instance_save to configure a host override, '
+      + 'then harness_instance_check to qualify the saved profile. Saving and checking require update grants. '
+      + 'Installation, authentication, qualification and connection facts remain separate; '
+      + 'no discovery, native probe or fallback is performed.',
     inputSchema: HarnessHostReferenceSchema, outputSchema: HarnessRegistryReadbackSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async input => {

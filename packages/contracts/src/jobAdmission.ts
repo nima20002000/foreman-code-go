@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { DeviceDigestSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
-import { JobTargetSchema, JobComputerSelectionSchema, JobRuntimeLimitsSchema, JobValidationSchema } from './jobs.js'
+import { JobTargetSchema, JobComputerSelectionSchema, JobRuntimeLimitsSchema,
+  JobValidationSchema, JobInitiatingAgentSchema } from './jobs.js'
 import { JobDefinitionRecordSchema, JobDefinitionSpecRecordSchema, JobExecutionRecordSchema } from './jobVerification.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { JobWorkflowAdmissionReferenceSchema } from './jobWorkflow.js'
@@ -101,6 +102,7 @@ export const JobQueueTicketSchema = z.object({
   attemptId: IdSchema,
   operationId: IdSchema,
   workflow: JobWorkflowAdmissionReferenceSchema.nullable(),
+  initiatingAgent: JobInitiatingAgentSchema.optional(),
   gateId: IdSchema.nullable(),
   placement: JobPlacementIntentSchema,
   placementOverride: JobPlacementIntentSchema.nullable(),
@@ -164,6 +166,7 @@ export const JobQueueCancelSchema = z.object({
 }).strict()
 
 export const JobQueueListInputSchema = z.object({
+  initiatingExecutionId: IdSchema.optional(),
   historyBeforeSequence: z.string().regex(/^[1-9][0-9]*$/).max(19)
     .refine(value => BigInt(value) <= 9223372036854775807n).optional(),
   historyLimit: z.number().int().min(1).max(100).default(100),

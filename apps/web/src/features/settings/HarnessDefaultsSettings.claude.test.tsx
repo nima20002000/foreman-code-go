@@ -24,14 +24,19 @@ vi.mock('../../shared/api/harnessSettings', () => ({
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const client of clients.splice(0)) client.clear() })
-function setup(defaults: HarnessDefaults, options: { conflicted?: boolean; claudeError?: { code: string; message: string } } = {}) {
+function setup(defaults: HarnessDefaults, options: { conflicted?: boolean; claudeQualified?: boolean; claudeError?: { code: string; message: string } } = {}) {
   let persisted = structuredClone(defaults)
   let revision = 4
   let submitted: ReturnType<typeof HarnessDefaultsUpdateInputSchema.parse> | undefined
   server.use(
     http.get('/api/management/harnesses', () => HttpResponse.json((['codex', 'opencode', 'claude'] as const)
       .filter((harness) => persisted[harness]).map((harness) => ({ harness, defaults: persisted[harness], defaultsRevision: revision,
-        capability: null, discoveryError: harness === 'claude' ? options.claudeError ?? null : null })))),
+        capability: harness === 'claude' && options.claudeQualified ? {
+          harness, version: 'checked-profile', authenticated: true, ready: true,
+          structuredEvents: true, supportsResume: true, supportsCancellation: true,
+          supportsWorkingDirectory: true, supportsStartupPrompt: true,
+          supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [],
+        } : null, discoveryError: harness === 'claude' ? options.claudeError ?? null : null })))),
     http.put('/api/management/harnesses/defaults', async ({ request }) => {
       submitted = HarnessDefaultsUpdateInputSchema.parse(await request.json())
       if (options.conflicted) { revision += 1; return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Harness defaults changed since they were read.' } }, { status: 409 }) }
@@ -91,6 +96,19 @@ describe('Claude defaults through the HTTP boundary', () => {
     await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
     expect(state.submitted()?.defaults.claude).toEqual({ ...configuration, sandbox: 'danger-full-access' })
+    expect(screen.getByText('Your Claude preset is saved. Configure a host override in computer settings and check the saved profile before using it.')).toBeVisible()
+    expect(screen.queryByText('Your saved settings are ready to use.')).not.toBeInTheDocument()
+  })
+  it('confirms a host profile check only when the saved revision has qualified readback', async () => {
+    setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: {
+      ...savedClaudeConfiguration, sandbox: 'read-only',
+    } }, { claudeQualified: true })
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Sandbox' }), 'danger-full-access')
+    await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+    expect(await screen.findByText('Your saved Claude preset passed its host profile check.')).toBeVisible()
+    expect(screen.queryByText('Your saved settings are ready to use.')).not.toBeInTheDocument()
   })
   it('saves an explicitly added Claude MCP connection through the revisioned preset boundary', async () => {
     const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: {} } })
@@ -100,6 +118,8 @@ describe('Claude defaults through the HTTP boundary', () => {
     await user.click(screen.getByRole('button', { name: 'Add Foreman Code MCP' }))
     await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
     expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(screen.getByText('Your Claude preset is saved. Configure a host override in computer settings and check the saved profile before using it.')).toBeVisible()
+    expect(screen.queryByText('Your saved settings are ready to use.')).not.toBeInTheDocument()
     expect(state.submitted()?.defaults.claude).toEqual({ ...savedClaudeConfiguration, mcpServers: { 'foreman-code': { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } })
     expect((await getManagedHarnessCatalog()).find(entry => entry.harness === 'claude')?.defaults).toEqual(state.submitted()?.defaults.claude)
   })

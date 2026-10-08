@@ -99,6 +99,15 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
   const activeSection = harness !== 'codex' && section === 'plugins' ? 'model' : section
   if (!draft && (query.isError || (query.isSuccess && !incoming))) return <ErrorState title="Harness defaults are unavailable" description={query.error?.message ?? 'The server returned an incomplete provider catalog.'} onRetry={() => void query.refetch()} />
   if (!draft) return <LoadingState label="Loading provider defaults…" />
+  const savedEntry = query.data?.find(entry => entry.harness === harness
+    && entry.defaultsRevision === form.savedRevision)
+  let savedMessage: string | undefined
+  if (harness === 'claude') {
+    savedMessage = 'Your Claude preset is saved. Configure a host override in computer settings and check the saved profile before using it.'
+    if (savedEntry?.capability?.ready && savedEntry.capability.authenticated) {
+      savedMessage = 'Your saved Claude preset passed its host profile check.'
+    }
+  }
   const update = (next: HarnessEditor) => form.setDraft((current) => current && ({ ...current, [harness]: next }))
   const reapply = () => {
     if (!form.conflicted || form.isSaving || form.uncertain) return
@@ -113,7 +122,7 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
   return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`}
     backLabel="All harnesses" onBack={onBack} section={activeSection} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
     feedback={<>{unavailable[harness] ? <Alert tone="warning" title="Preset needs configuration">{unavailable[harness]}</Alert> : null}
-      {query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={{ ...form, reapply }} /></>}
+      {query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={{ ...form, reapply }} savedMessage={savedMessage} /></>}
     footer={(activeSection === 'connections' && harness !== 'claude') || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
         const defaults = prepared(input.value, harness)

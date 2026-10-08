@@ -19,7 +19,7 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
   const setDraft = useConversationDraftStore((state) => state.setDraft)
   const input = useRef<HTMLTextAreaElement>(null)
   const id = useId()
-  const [commandError, setCommandError] = useState<string>()
+  const [commandError, setCommandError] = useState<{ conversationId: string; content: string; message: string }>()
   const command = parseSessionCommand(value)
   const commandOnly = command.kind === 'compact' || command.kind === 'mode'
   const isNew = command.kind === 'new'
@@ -33,7 +33,9 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
   useLayoutEffect(() => { input.current?.focus() }, [conversationId])
   async function send(content = value.trim()) {
     const parsed = parseSessionCommand(content)
-    if (parsed.kind !== 'new' && cannotSend) return
+    const controlOnly = parsed.kind === 'compact' || parsed.kind === 'mode'
+    const blocked = controlOnly ? sessionControls?.mutation.isPending : isSending || sendDisabled
+    if (parsed.kind !== 'new' && (blocked || (!content.trim() && !hasAttachments))) return
     setCommandError(undefined)
     try {
       if (parsed.kind === 'invalid') throw new Error(parsed.message)
@@ -44,9 +46,14 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
       } else if (parsed.kind === 'plan-task') onSubmit(content, 'plan')
       else onSubmit(content)
     } catch (failure) {
-      setCommandError(failure instanceof Error ? failure.message : 'The native command could not be confirmed.')
+      setCommandError({ conversationId, content,
+        message: failure instanceof Error ? failure.message : 'The native command could not be confirmed.' })
     }
   }
+  const feedback = sessionControls?.commandFeedback
+  const compaction = feedback?.draft.key === conversationId && feedback.draft.content === commandError?.content
+    ? feedback.compaction : undefined
+  const recovered = !!compaction && compaction.status !== 'failed'
   const menu = useSlashCommandMenu(value, content => setDraft(conversationId, content), content => { void send(content) }, true)
   return <form className="operator-composer" aria-label="Conversation composer" {...fileDropProps}
     onSubmit={event => { event.preventDefault(); void send() }}>
@@ -67,6 +74,7 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
       {onCancel && !commandOnly ? <IconButton label="Stop response" onClick={onCancel} className="operator-composer-send"><Icon name="stop" size={15} /></IconButton>
         : <IconButton label="Send message" type="submit" disabled={cannotSend} className="operator-composer-send" loading={pending}><Icon name="arrow" className="operator-send-arrow" size={17} /></IconButton>}
     </div>
-    {commandError ? <p role="alert">{commandError}</p> : null}
+    {commandError?.conversationId === conversationId && !recovered
+      ? <p role="alert">{compaction?.message ?? commandError.message}</p> : null}
   </form>
 }

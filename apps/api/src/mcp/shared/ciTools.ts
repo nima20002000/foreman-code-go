@@ -9,9 +9,10 @@ import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/
 import { DomainError } from '../../modules/errors.js'
 import { toolFailure, toolResult } from './results.js'
 
-export const CI_CAPABILITY_DETAIL = 'ci_run captures all tracked files at the requested commit or Main project HEAD, '
+export const CI_CAPABILITY_DETAIL = 'ci_run captures tracked files at the requested commit, the Agent’s accepted worktree, or Main project HEAD, '
   + 'reuses a workspace/suite Auto verification definition and queues build capacity. Retrying commandId returns the original ticket. '
   + 'ci_get returns queue reasons, selected computer, process, publication, digest-verified summary and a 32 KiB log tail. '
+  + 'Agent-triggered tickets retain initiatingAgent (workflow, Run, Agent and execution), separate from graph job membership. '
   + 'Agents are restricted to their active Run workspace and its accepted grants. Qualification matches dependency inputs; '
   + 'changed dependencies wait for a qualified offline seed. No CI approval step is required.'
 type CiTool = 'ci_run' | 'ci_get'

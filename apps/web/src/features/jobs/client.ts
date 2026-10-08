@@ -68,8 +68,10 @@ export const jobsClient = {
     const input = JobQueueListInputSchema.parse(pageInput)
     const query = new URLSearchParams({ historyLimit: String(input.historyLimit) })
     if (input.historyBeforeSequence) query.set('historyBeforeSequence', input.historyBeforeSequence)
+    if (input.initiatingExecutionId) query.set('initiatingExecutionId', input.initiatingExecutionId)
     const page = await apiClient.request(`${root(workspaceId)}/queue?${query}`, JobQueuePageSchema, options)
-    if (page.tickets.some(ticket => ticket.workspaceId !== workspaceId)) mismatch()
+    if (page.tickets.some(ticket => ticket.workspaceId !== workspaceId
+      || input.initiatingExecutionId && ticket.initiatingAgent?.executionId !== input.initiatingExecutionId)) mismatch()
     return page
   },
   async queueTicket(workspaceId: string, id: string, options?: RequestOptions) {
