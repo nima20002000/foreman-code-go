@@ -195,6 +195,57 @@ beforeEach(async () => {
 })
 
 describe('selected-Agent chat service', { timeout: 60_000 }, () => {
+  it('binds an authenticated reader before checking a completed native session through HTTP and MCP', async () => {
+    const { service } = makeService()
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { agentChat: service,
+        commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    const client = new Client({ name: 'completed-chat-reader', version: '1' })
+    try {
+      await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'Complete one native turn', null))
+      const done = await settled(service, () => service.read(writer, fixture.scope.workspaceId, query(codexNode)))
+      const reader = await access.authenticate(readOnlyToken)
+      let caller: string | undefined
+      const pending = vi.fn(async () => {
+        if (caller !== reader.id) throw new HarnessExecutionError('WORKER_CONVERSATION_UNAVAILABLE',
+          'The original conversation caller changed.')
+        return undefined
+      })
+      const native = FakeNative.all[0]!
+      Object.assign(native, { pending, setSessionControlPrincipal: (id: string) => { caller = id } })
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      const url = `/api/workspaces/${fixture.scope.workspaceId}/agent-chat?${new URLSearchParams(query(codexNode))}`
+      const http = await app.inject({ method: 'GET', url,
+        headers: { authorization: `Bearer ${readOnlyToken}` } })
+      expect(http.statusCode).toBe(200)
+      expect(AgentChatStateSchema.parse(http.json()).messages).toEqual(done.messages)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => readOnlyToken } }))
+      const target = { workspaceId: fixture.scope.workspaceId, query: query(codexNode) }
+      const mcp = await client.callTool({ name: 'agent_chat_read', arguments: target })
+      expect(mcp.isError).not.toBe(true)
+      expect(AgentChatStateSchema.parse(mcp.structuredContent).messages).toEqual(done.messages)
+      expect(pending).toHaveBeenCalledTimes(2)
+      await expectMcpAccessDenied(client.callTool({ name: 'agent_chat_send', arguments: {
+        workspaceId: fixture.scope.workspaceId,
+        request: request(codexNode, 'The reader must not send', done.conversation!.id),
+      } }))
+      const denied = await access.issue({ name: 'denied completed-chat reader', audience: 'operator', grants: [],
+        expiresAt: new Date(Date.now() + 600_000) })
+      expect((await app.inject({ method: 'GET', url,
+        headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+      expect(pending).toHaveBeenCalledTimes(2)
+      expect(native.prompts).toHaveLength(1)
+      const persisted = await new PostgresAgentChatRepository(pool).get(done.conversation!.id)
+      expect(persisted?.native_session_id).toBe(done.conversation?.nativeSession?.nativeSessionId)
+    } finally {
+      await client.close()
+      await app.close()
+      await service.shutdown()
+    }
+  })
+
   it.each(['codex', 'opencode', 'claude'] as const)('reads saved %s Agent controls through HTTP and MCP after unload and restart', async harness => {
     const configuration = harness === 'claude' ? {
       harness: 'claude' as const, model: 'fixture-model', authMode: 'subscription' as const,

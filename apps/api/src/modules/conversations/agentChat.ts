@@ -462,6 +462,7 @@ export class AgentChatService {
     let loaded = await this.repository.state(resolution.row.id, { recoverOverflow: true })
     if (!loaded) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
     const resident = this.runtimes.get(loaded.row.id)
+    resident?.manager.setSessionControlPrincipal?.(livePrincipal.id)
     if (!loaded.row.active_request_id && !loaded.row.pending_interaction && resident?.session) {
       const pending = await resident.manager.pending(resident.session)
       if (pending && isSessionNativeInteraction(pending)) {
