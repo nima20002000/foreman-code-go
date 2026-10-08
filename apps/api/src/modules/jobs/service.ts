@@ -216,13 +216,15 @@ export class JobService {
         limits: resources.limits,
       })
       const checked = await this.ports.preparation.validate(sql, live, workspaceId, spec)
-      if (!checked.valid) {
-        return JobLaunchValidationSchema.parse({ ...checked,
-          canQueue: checked.reasons.length > 0 && checked.reasons.every(jobCanWait) })
+      const mayWait = checked.reasons.length > 0 && checked.reasons.every(jobCanWait)
+      if (!checked.valid && !mayWait) {
+        return JobLaunchValidationSchema.parse({ ...checked, canQueue: false })
       }
       try {
-        return JobLaunchValidationSchema.parse(await this.ports.placement!.validateRequest(
-          sql, live, workspaceId, spec, input.placementOverride))
+        const readiness = await this.ports.placement!.validateRequest(sql, live, workspaceId,
+          spec, input.placementOverride)
+        return JobLaunchValidationSchema.parse({ ...readiness, valid: checked.valid && readiness.valid,
+          reasons: [...new Set([...checked.reasons, ...readiness.reasons])] })
       } catch (error) {
         if (!(error instanceof DomainError) || error.status !== 409) throw error
         return JobLaunchValidationSchema.parse({ valid: false, canQueue: jobCanWait(error.code),

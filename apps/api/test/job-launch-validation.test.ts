@@ -64,6 +64,18 @@ it('keeps invalid source configuration and stale saved revisions out of launch a
     .rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
 })
 
+it.each([
+  { reason: 'offline', canQueue: true },
+  { reason: 'authorization_revoked', canQueue: false },
+])('rechecks queue authority for $reason when static runtime readiness fails', async ({ reason, canQueue }) => {
+  const f = fixture()
+  f.validate.mockResolvedValue({ valid: false, reasons: ['JOB_RUNTIME_UNQUALIFIED'], sideEffects: false })
+  f.validateRequest.mockResolvedValue({ valid: false, canQueue, reasons: [reason], sideEffects: false })
+  expect(await f.service.validateLaunch(f.principal, f.definition.workspaceId, f.input))
+    .toMatchObject({ valid: false, canQueue, reasons: ['JOB_RUNTIME_UNQUALIFIED', reason] })
+  expect(f.validateRequest).toHaveBeenCalledOnce()
+})
+
 it('denies a read-only caller and workspace escape before computer discovery', async () => {
   const f = fixture()
   const reader = { ...f.principal, grants: [{ actions: ['job_definitions:read' as const], scope: {} }] }
