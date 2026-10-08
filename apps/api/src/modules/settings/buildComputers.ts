@@ -35,7 +35,7 @@ export async function assertBuildComputerTarget(sql: JobSql, target: DeviceProvi
 
 export class BuildComputerSettings {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly readiness: (sql: JobSql, target: DeviceProvisioningTarget) => Promise<
+    private readonly readiness: (sql: JobSql, target: DeviceProvisioningTarget, allowancePercent: number) => Promise<
       Pick<BuildComputerStatus, 'state' | 'reasons' | 'remoteExecutionEnabled'>>,
     private readonly changed?: () => void) {}
 
@@ -63,7 +63,7 @@ export class BuildComputerSettings {
   }
   private async status(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerStatus> {
     const preference = await this.preference(sql, target)
-    const readiness = await this.readiness(sql, target)
+    const readiness = await this.readiness(sql, target, preference.buildAllowancePercent)
     return { preference, ...readiness,
       state: preference.buildEnabled ? readiness.state : 'disabled',
       reasons: preference.buildEnabled ? readiness.reasons : ['Enable builds to participate.'] }
