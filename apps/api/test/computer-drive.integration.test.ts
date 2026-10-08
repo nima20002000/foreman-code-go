@@ -58,8 +58,7 @@ describe.skipIf(!postgresEnabled)('Drive authorization through authenticated Ope
     }
     const accounts = new ComputerAccountsService(database.pool, mainId, () => endpoint, commands,
       async () => ({ observedAt: new Date().toISOString(), accounts: [] }))
-    const drive = new ComputerDriveService(database.pool, mainId, () => endpoint, commands, undefined, Date.now,
-      target => accounts.invalidate(target))
+    const drive = new ComputerDriveService(database.pool, mainId, () => endpoint, commands, { changed: target => accounts.invalidate(target) })
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { computerDrive: drive, computerAccounts: accounts, commands } as unknown as OperatorServices } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })

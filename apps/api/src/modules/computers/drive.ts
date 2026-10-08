@@ -26,16 +26,25 @@ export class ComputerDriveService {
   private readonly sessions = new Map<string, Session>()
   private readonly current = new Map<string, Session>()
   private pending: Promise<unknown> = Promise.resolve()
+  private readonly local: Pick<DriveComputer, 'handle'>
+  private readonly now: () => number
+  private readonly changed: (target: DeviceProvisioningTarget) => void
 
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
     private readonly endpoint: () => ComputerAccountsEndpoint | undefined,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly local: Pick<DriveComputer, 'handle'> = new DriveComputer(),
-    private readonly now: () => number = Date.now,
-    private readonly changed: (target: DeviceProvisioningTarget) => void = () => {},
-  ) {}
+    options: {
+      local?: Pick<DriveComputer, 'handle'>
+      now?: () => number
+      changed?: (target: DeviceProvisioningTarget) => void
+    } = {},
+  ) {
+    this.local = options.local ?? new DriveComputer()
+    this.now = options.now ?? Date.now
+    this.changed = options.changed ?? (() => {})
+  }
 
   async connectStart(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget): Promise<DriveLoginState> {
     return this.audited(principal, source, target, 'computer_drive_connect_start', async () => {

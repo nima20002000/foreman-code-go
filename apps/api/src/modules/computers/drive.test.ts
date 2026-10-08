@@ -32,7 +32,7 @@ function fixture() {
   const service = new ComputerDriveService({} as pg.Pool, mainId, () => ({
     capabilities: () => [{ namespace: 'computer-drive-v1', mainCanRequest: true }],
     request: async (_device, _namespace, request) => ({ payload: await handle(request as { operation: string }) }),
-  }), commands as unknown as PostgresCommandCoordinator, { handle }, () => now, changed)
+  }), commands as unknown as PostgresCommandCoordinator, { local: { handle }, now: () => now, changed })
   return { service, handle, changed, commands, advance: () => { now += 11 * 60_000 } }
 }
 beforeEach(() => binding.check.mockReset().mockResolvedValue(undefined))

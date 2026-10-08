@@ -121,7 +121,7 @@ async function fixture() {
       driveCalls.push({ where: 'device', operation: request.operation, ...(request.operation === 'connect' ? { token: request.token } : {}) })
       return { payload: driveState(request.operation === 'connect') }
     },
-  }), commands, { handle: async () => driveState(false) }, Date.now, target => computerAccounts.invalidate(target))
+  }), commands, { local: { handle: async () => driveState(false) }, changed: target => computerAccounts.invalidate(target) })
   const services = { computerActivity: service, computerAccounts, computerGitHub, computerDrive, buildComputers, commands } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services } })
