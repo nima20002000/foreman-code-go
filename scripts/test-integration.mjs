@@ -2,6 +2,7 @@ import { readProductEnvironment } from '../packages/contracts/src/productEnviron
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync,
   renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot,
@@ -266,7 +267,10 @@ async function main() {
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
   if (files) selected = selectExactFiles(allFiles, files)
   const diagnostic = Boolean(startAt || failedFrom || files)
-  const durationsPath = join(common, 'graphql-integration-durations.json')
+  // Per machine, so worktrees and fresh snapshot checkouts share one schedule.
+  const durationsDirectory = join(homedir(), '.cache', 'graphql-disposable-tests')
+  mkdirSync(durationsDirectory, { recursive: true, mode: 0o700 })
+  const durationsPath = join(durationsDirectory, 'integration-durations.json')
   const durations = readDurations(durationsPath)
   const recordedDurations = {}
   const shardCount = Math.min(integrationShardLimit(readProductEnvironment(process.env, 'INTEGRATION_SHARDS')), selected.length)
