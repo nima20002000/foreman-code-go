@@ -29,7 +29,7 @@ export function WorkspaceDetailPage({ workspaceId, section, children }: {
               <Button variant="ghost" onClick={actions.chooseLocation}>Choose location</Button>
               <Button variant="danger" onClick={actions.remove}>Remove workspace</Button>
             </div>
-            {current && <WorkspaceRepositoryForm key={`${workspaceId}:${current.revision}`} workspaceId={workspaceId}
+            {current && <WorkspaceRepositoryForm key={workspaceId} workspaceId={workspaceId}
               revision={current.revision} repository={current.workspace.repository} />}
           </>)}
       </div>
