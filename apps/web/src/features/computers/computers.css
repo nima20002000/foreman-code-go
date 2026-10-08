@@ -64,7 +64,7 @@
 @media (prefers-reduced-motion: no-preference) {
   .computer-row-identity { transition: background-color 150ms ease-out; }
 }
-.computer-accounts { display: flex; gap: .25rem; }
+.computer-accounts { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; }
 .computer-account { display: grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 999px;
   border: 1px solid var(--n-border); color: var(--n-muted); }
 .computer-account[data-state='signed-in'] { color: var(--n-success); border-color: color-mix(in srgb, var(--n-success) 45%, var(--n-border)); }
@@ -79,3 +79,11 @@ button.computer-account:focus-visible { outline: 2px solid var(--n-focus); outli
 .github-code strong { font-size: 1.6rem; letter-spacing: .12em; font-variant-numeric: tabular-nums; }
 .github-link { display: inline-flex; align-items: center; gap: .3rem; font-size: .85rem; }
 .github-actions { display: flex; gap: .5rem; }
+
+.computer-account-details { position: relative; }
+.computer-account-details summary { cursor: pointer; list-style: none; }
+.computer-account-details summary::-webkit-details-marker { display: none; }
+.computer-account-details summary:focus-visible { outline: 2px solid var(--n-focus); outline-offset: 2px; }
+.computer-account-description { position: absolute; z-index: 1; inset-block-start: 100%; inset-inline-end: 0;
+  width: max-content; max-width: min(18rem, 80vw); padding: .65rem; border: 1px solid var(--n-border);
+  border-radius: var(--n-radius-sm); background: var(--n-surface); color: var(--n-text); overflow-wrap: anywhere; }

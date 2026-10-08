@@ -141,13 +141,15 @@ it('reports a failed compensation and refreshes persisted priorities instead of 
 
 it('shows which accounts each computer is signed in to without listing offline computers as signed out', async () => {
   computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />)
-  const main = await screen.findByRole('group', { name: 'Accounts' })
+  await screen.findByLabelText('Codex: coder@example.com')
+  const main = within(rows()[0]!).getByRole('group', { name: 'Accounts' })
   expect(within(main).getByLabelText('Codex: coder@example.com')).toBeInTheDocument()
   expect(within(main).getByRole('button', { name: 'GitHub: octo-owner. Manage GitHub' })).toBeInTheDocument()
   expect(within(main).getByLabelText('OpenCode: OpenCode Go')).toBeInTheDocument()
   expect(within(main).getByLabelText('Claude: signed out')).toBeInTheDocument()
   expect(within(main).getByRole('button', { name: 'Google Drive: not installed. Manage Google Drive' })).toBeInTheDocument()
-  expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(1)
+  expect(screen.getAllByRole('group', { name: 'Accounts' })).toHaveLength(2)
+  expect(screen.getByText('Account state unavailable')).toBeVisible()
 })
 
 it('connects GitHub on a computer with a one-time code and shows the signed-in account', async () => {
