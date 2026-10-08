@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { JobDefinitionSaveRecordSchema, JobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
-import { JobQueuedStartSchema, JobQueueCancelSchema, JobQueueListInputSchema } from '@foreman-code/contracts/job-admission'
+import { JobQueuedStartSchema, JobQueueCancelSchema, JobQueueListInputSchema,
+  JobLaunchValidationInputSchema } from '@foreman-code/contracts/job-admission'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { JobService } from '../modules/jobs/service.js'
 import { JobCancelInputSchema, JobCancellationProposalInputSchema } from '@foreman-code/contracts/job-cancellation-recovery'
@@ -18,6 +19,8 @@ export function registerJobRoutes(app:FastifyInstance,service:JobService):void {
   app.get<{Params:Scope}>(`${root}/definitions/:definitionId/versions/:versionId`,async request=>({definition:await service.getDefinitionVersion(requirePrincipal(request),request.params.workspaceId,request.params.definitionId,request.params.versionId)}))
   app.post<{Params:Scope;Body:unknown}>(`${root}/definitions`,async request=>({definition:await service.saveDefinition(requirePrincipal(request),'http',request.params.workspaceId,JobDefinitionSaveRecordSchema.parse(request.body))}))
   app.post<{Params:Scope;Body:unknown}>(`${root}/validate`,async request=>service.validate(requirePrincipal(request),request.params.workspaceId,z.object({spec:JobDefinitionSpecRecordSchema}).strict().parse(request.body).spec))
+  app.post<{ Params: Scope; Body: unknown }>(`${root}/launch/validate`, request => service.validateLaunch(
+    requirePrincipal(request), request.params.workspaceId, JobLaunchValidationInputSchema.parse(request.body)))
   app.post<{Params:Scope;Body:unknown}>(`${root}/executions`, async request => ({
     admission: await service.enqueue(requirePrincipal(request), 'http', request.params.workspaceId,
       JobQueuedStartSchema.parse(request.body)),

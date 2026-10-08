@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -10,9 +12,9 @@ import { DomainError } from '../src/modules/errors.js'
 import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js'
 import { ComputerActivityService } from '../src/modules/computers/activity.js'
 import { ComputerAccountsService } from '../src/modules/computers/accounts.js'
+import { GitHubLoginRunner } from '../src/modules/computers/githubLogin.js'
 import { ComputerGitHubService } from '../src/modules/computers/github.js'
 import { ComputerDriveService } from '../src/modules/computers/drive.js'
-import type { DriveComputer } from '../src/modules/computers/driveComputer.js'
 import { COMPUTER_DRIVE_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, DriveLoginStateSchema, GitHubLoginStateSchema,
   type DriveComputerRequest, type GitHubLoginRequest } from '@foreman-code/contracts/computer-accounts'
 import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsListSchema, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
@@ -39,7 +41,7 @@ const job = (id: string, workspaceId: string) => ({ target, activity: { id, name
 const agent = (id: string, workspaceId: string) => ({ target, activity: { id, workspaceId, workflowId: 'workflow',
   workflowName: 'Website', runId: 'run', nodeId: 'review', agentName: 'Reviewer', state: 'waiting' } })
 
-async function fixture() {
+async function fixture(options: { githubSetupFails?: boolean; githubLocal?: Pick<GitHubLoginRunner, 'handle'> } = {}) {
   const pool = new pg.Pool()
   const jobs = [job('visible', 'allowed'), job('secret', 'private')]
   const agents = [agent('visible', 'allowed'), agent('secret', 'private')]
@@ -88,34 +90,47 @@ async function fixture() {
     return principal
   })
   const buildComputers = new BuildComputerSettings(pool, commands, async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
-  const accountsOf = (email: string): ComputerAccounts => ({ observedAt: '2026-10-07T00:00:00.000Z', accounts: [
+  const accountsOf = (email: string, githubAccount: string | null = 'octo-owner'): ComputerAccounts => ({ observedAt: '2026-10-07T00:00:00.000Z', accounts: [
     { tool: 'codex', installed: true, signedIn: true, account: email, details: ['ChatGPT'] },
-    { tool: 'github', installed: true, signedIn: true, account: 'octo-owner', details: [] },
+    { tool: 'github', installed: true, signedIn: githubAccount !== null, account: githubAccount, details: [] },
   ] })
-  const deviceAnswers = { calls: 0, email: 'laptop@example.com' }
-  const mainProbes = { calls: 0 }
+  const deviceAnswers = { calls: 0, email: 'laptop@example.com', githubAccount: 'octo-owner' as string | null }
+  const mainProbes = { calls: 0, githubAccount: 'octo-owner' as string | null }
   const computerAccounts = new ComputerAccountsService(pool, mainId, () => ({
     capabilities: () => observed ? [{ namespace: COMPUTER_ACCOUNTS_NAMESPACE, mainCanRequest: true }] : [],
-    request: async () => { deviceAnswers.calls++; return { payload: accountsOf(deviceAnswers.email) } },
-  }), commands, async () => { mainProbes.calls++; return accountsOf('main@example.com') })
+    request: async () => { deviceAnswers.calls++; return { payload: accountsOf(deviceAnswers.email, deviceAnswers.githubAccount) } },
+  }), commands, async () => { mainProbes.calls++; return accountsOf('main@example.com', mainProbes.githubAccount) })
   const githubCalls: { where: string; request: GitHubLoginRequest }[] = []
-  const githubState = (request: GitHubLoginRequest) => GitHubLoginStateSchema.parse(request.operation === 'logout'
+  const githubState = (request: GitHubLoginRequest) => {
+    if (request.operation === 'setup-git') options.githubSetupFails = false
+    let state = options.githubSetupFails ? 'git-setup-failed' : 'signed-in'
+    if (request.operation === 'login-start') state = 'waiting'
+    return GitHubLoginStateSchema.parse(request.operation === 'logout'
     ? { loginId: null, state: 'signed-out', code: null, verificationUrl: null, expiresAt: null, account: null, message: null }
-    : { loginId: '66666666-6666-4666-8666-666666666666', state: request.operation === 'login-start' ? 'waiting' : 'signed-in',
+    : { loginId: '66666666-6666-4666-8666-666666666666', state,
       code: request.operation === 'login-start' ? 'AB12-CD34' : null,
       verificationUrl: request.operation === 'login-start' ? 'https://github.com/login/device' : null,
       expiresAt: '2026-10-07T00:15:00.000Z', account: request.operation === 'login-start' ? null : 'octo-owner', message: null })
+  }
   const computerGitHub = new ComputerGitHubService(pool, mainId, () => ({
     capabilities: () => observed ? [{ namespace: COMPUTER_GITHUB_NAMESPACE, mainCanRequest: true }] : [],
     request: async (_device, _namespace, payload) => {
       githubCalls.push({ where: 'device', request: payload as GitHubLoginRequest })
+      deviceAnswers.githubAccount = (payload as GitHubLoginRequest).operation === 'logout' ? null : 'signed-in-owner'
       return { payload: githubState(payload as GitHubLoginRequest) }
     },
-  }), commands, { handle: async request => { githubCalls.push({ where: 'main', request }); return githubState(request) } })
+  }), commands, {
+    local: { handle: async request => {
+      githubCalls.push({ where: 'main', request })
+      if (options.githubLocal) return options.githubLocal.handle(request)
+      mainProbes.githubAccount = request.operation === 'logout' ? null : 'signed-in-owner'
+      return githubState(request)
+    } },
+    accountChanged: target => computerAccounts.invalidate(target),
+  })
   const driveCalls: { where: string; operation: string; token?: string }[] = []
   const driveState = (connected: boolean) => ({ installed: true, connected, account: connected ? 'owner@gmail.com' : null,
     mountPath: connected ? '/home/laptop/Foreman Code Drive' : null, mounted: connected, message: null })
-  let finishSignIn!: (token: string) => void
   const computerDrive = new ComputerDriveService(pool, mainId, () => ({
     capabilities: () => observed ? [{ namespace: COMPUTER_DRIVE_NAMESPACE, mainCanRequest: true }] : [],
     request: async (_device, _namespace, payload) => {
@@ -123,10 +138,7 @@ async function fixture() {
       driveCalls.push({ where: 'device', operation: request.operation, ...(request.operation === 'connect' ? { token: request.token } : {}) })
       return { payload: driveState(request.operation === 'connect') }
     },
-  }), commands, { rclone: '/main/rclone', install: async () => { driveCalls.push({ where: 'main', operation: 'install' }) },
-    handle: async () => driveState(false) } as unknown as DriveComputer,
-  { start: () => ({ url: Promise.resolve('http://127.0.0.1:53682/auth?state=abc'),
-    token: new Promise<string>(resolve => { finishSignIn = resolve }), cancel: () => {} }) })
+  }), commands, { local: { handle: async () => driveState(false) }, changed: target => computerAccounts.invalidate(target) })
   const services = { computerActivity: service, computerAccounts, computerGitHub, computerDrive, buildComputers, commands } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services } })
@@ -138,7 +150,7 @@ async function fixture() {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return client
   }
-  return { app, service, jobs, agents, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, driveCalls, finishSignIn: (token: string) => finishSignIn(token), setPresence(value: DevicePresence | null) { observed = value },
+  return { app, service, jobs, agents, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, driveCalls, setPresence(value: DevicePresence | null) { observed = value },
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
 afterEach(() => vi.restoreAllMocks())
@@ -149,6 +161,7 @@ it('serves authenticated HTTP and MCP activity with persisted readback and permi
     const client = await f.connect('owner')
     expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_activity_list')
     const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    expect(capabilities.isError, JSON.stringify(capabilities)).not.toBe(true)
     expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['computer_activity_list']) })
     const read = await client.callTool({ name: 'computer_activity_list', arguments: {} })
     expect(read.isError).not.toBe(true)
@@ -281,21 +294,19 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
   } finally { await f.close() }
 })
 
-it('connects Google Drive on a paired computer through a sign-in on Main, sending the authorization only to that computer', async () => {
+it('connects Google Drive on a paired computer through remote authorization, sending the authorization only to that computer', async () => {
   const f = await fixture()
   try {
     const client = await f.connect('owner')
     const started = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_start', arguments: { target } })).structuredContent)
-    expect(started).toMatchObject({ state: 'waiting', authorizationUrl: 'http://127.0.0.1:53682/auth?state=abc' })
-    f.finishSignIn('{"access_token":"a","refresh_token":"r"}')
-    let done = started
-    for (let attempt = 0; attempt < 50 && done.state !== 'connected'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 10))
-      done = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_status',
-        arguments: { target, loginId: started.loginId } })).structuredContent)
-    }
+    expect(started).toMatchObject({ state: 'waiting', authorizationUrl: null, authorizationCommand: expect.stringMatching(/^rclone authorize drive /u) })
+    const done = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_complete',
+      arguments: { target, loginId: started.loginId, token: '{"access_token":"a","refresh_token":"r"}' } })).structuredContent)
+    const persisted = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_status',
+      arguments: { target, loginId: started.loginId } })).structuredContent)
+    expect(persisted).toEqual(done)
     expect(done).toMatchObject({ state: 'connected', account: 'owner@gmail.com', mountPath: '/home/laptop/Foreman Code Drive' })
-    expect(f.driveCalls).toEqual([{ where: 'main', operation: 'install' }, { where: 'device', operation: 'install' },
+    expect(f.driveCalls).toEqual([{ where: 'device', operation: 'intent' }, { where: 'device', operation: 'install' },
       { where: 'device', operation: 'connect', token: '{"access_token":"a","refresh_token":"r"}' }])
     const http = await f.app.inject({ method: 'POST', url: '/api/management/computers/drive/disconnect',
       headers: { authorization: 'Bearer owner' }, payload: { target } })
@@ -303,8 +314,136 @@ it('connects Google Drive on a paired computer through a sign-in on Main, sendin
     const reader = await f.connect('settings-reader')
     expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_drive_connect_start')
     expect((await reader.callTool({ name: 'computer_drive_connect_start', arguments: { target } })).isError).toBe(true)
-    expect(f.driveCalls).toHaveLength(4)
+    expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_drive_connect_complete')
+    expect((await reader.callTool({ name: 'computer_drive_connect_complete',
+      arguments: { target, loginId: started.loginId, token: '{"access_token":"a","refresh_token":"r"}' } })).isError).toBe(true)
+    expect(f.driveCalls).toHaveLength(5)
     expect(f.audited.mock.calls.map(call => [call[2], call[4]])).toEqual([
-      ['computer_drive_connect_start', 'succeeded'], ['computer_drive_disconnect', 'succeeded']])
+      ['computer_drive_connect_start', 'succeeded'], ['computer_drive_connect_complete', 'succeeded'], ['computer_drive_disconnect', 'succeeded']])
   } finally { await f.close() }
+})
+
+
+it('cancels Drive sign-in through authenticated MCP, denies readers and preserves persisted status', async () => {
+  const f = await fixture()
+  try {
+    const client = await f.connect('owner')
+    const reader = await f.connect('settings-reader')
+    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_drive_connect_cancel')
+    expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_drive_connect_cancel')
+    const start = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_start', arguments: { target } })).structuredContent)
+    const input = { target, loginId: start.loginId }
+    expect((await reader.callTool({ name: 'computer_drive_connect_cancel', arguments: input })).isError).toBe(true)
+    const cancel = DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_cancel', arguments: input })).structuredContent)
+    expect(cancel.state).toBe('cancelled')
+    expect(DriveLoginStateSchema.parse((await client.callTool({ name: 'computer_drive_connect_status', arguments: input })).structuredContent)).toEqual(cancel)
+    expect((await client.callTool({ name: 'computer_drive_connect_complete', arguments: { ...input,
+      token: '{"access_token":"a","refresh_token":"r"}' } })).isError).toBe(true)
+    expect(f.driveCalls.map(call => call.operation)).toEqual(['intent', 'install', 'intent'])
+  } finally { await f.close() }
+})
+
+
+it('refreshes the server account cache after GitHub account changes through authenticated MCP', async () => {
+  const f = await fixture()
+  const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }
+  try {
+    const client = await f.connect('owner')
+    const read = async () => ComputerAccountsListSchema.parse((await client.callTool({
+      name: 'computer_accounts_list', arguments: {},
+    })).structuredContent)
+    expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.account).toBe('octo-owner')
+    await client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
+    await client.callTool({ name: 'computer_github_login_status', arguments: {
+      target: mainTarget, loginId: '66666666-6666-4666-8666-666666666666',
+    } })
+    expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.account).toBe('signed-in-owner')
+    await client.callTool({ name: 'computer_github_logout', arguments: { target } })
+    expect((await read()).computers[1]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(false)
+    const reader = await f.connect('settings-reader')
+    expect((await reader.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget } })).isError).toBe(true)
+    expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(true)
+  } finally { await f.close() }
+})
+
+
+it('discovers Git setup retry through MCP and preserves write permission checks', async () => {
+  const f = await fixture({ githubSetupFails: true })
+  const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }
+  try {
+    const client = await f.connect('owner')
+    const tools = (await client.listTools()).tools.map(tool => tool.name)
+    expect(tools).toContain('computer_github_setup_git')
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['computer_github_setup_git']) })
+    const input = { target: mainTarget, loginId: '66666666-6666-4666-8666-666666666666' }
+    const status = await client.callTool({ name: 'computer_github_login_status', arguments: input })
+    expect(GitHubLoginStateSchema.parse(status.structuredContent)).toMatchObject({ state: 'git-setup-failed', account: 'octo-owner' })
+    const reader = await f.connect('settings-reader')
+    expect((await reader.callTool({ name: 'computer_github_setup_git', arguments: input })).isError).toBe(true)
+    expect(f.githubCalls).toHaveLength(1)
+    const retry = await client.callTool({ name: 'computer_github_setup_git', arguments: input })
+    expect(GitHubLoginStateSchema.parse(retry.structuredContent)).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
+    expect(f.audited).toHaveBeenCalledWith('owner', 'mcp', 'computer_github_setup_git', `main:${mainId}`, 'succeeded', { state: 'signed-in' })
+  } finally { await f.close() }
+})
+
+
+it('orders an authenticated MCP account switch after pending credential removal', async () => {
+  let account: string | null = 'owner'
+  let release!: () => void
+  const removing = new Promise<void>(resolve => { release = resolve })
+  const events: string[] = []
+  const child = new EventEmitter()
+  const stderr = new PassThrough()
+  const runner = new GitHubLoginRunner({ now: Date.now, probe: {
+    environment: {}, find: async name => name === 'gh' ? '/fixture/gh' : null, readText: async () => null,
+    run: async (_binary, args) => {
+      if (args[1] === 'logout') {
+        events.push('logout')
+        await removing
+        account = null
+      }
+      if (args[1] === 'status') {
+        if (!account) events.push('verified signed-out')
+        return { code: 0, stderr: '', stdout: JSON.stringify({ hosts: { 'github.com': account
+          ? [{ active: true, login: account, state: 'success' }] : [] } }) }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  }, spawn: () => {
+    events.push('login')
+    queueMicrotask(() => stderr.write('one-time code: AB12-CD34\n'))
+    return { stdout: new PassThrough(), stderr, stdin: new PassThrough(),
+      kill: () => { child.emit('exit', null); return true },
+      once: (event: string, listener: (...values: unknown[]) => void) => child.once(event, listener) } as never
+  } })
+  const f = await fixture({ githubLocal: runner })
+  const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }
+  try {
+    const client = await f.connect('owner')
+    const logout = client.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget } })
+    await vi.waitFor(() => expect(events).toContain('logout'))
+    const start = client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
+    await vi.waitFor(() => expect(f.githubCalls.map(call => call.request.operation)).toEqual(['logout', 'login-start']))
+    expect(events).not.toContain('login')
+    const reader = await f.connect('settings-reader')
+    expect((await reader.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })).isError).toBe(true)
+    release()
+    expect(GitHubLoginStateSchema.parse((await logout).structuredContent).state).toBe('signed-out')
+    const waiting = GitHubLoginStateSchema.parse((await start).structuredContent)
+    expect(events).toEqual(['logout', 'verified signed-out', 'login'])
+    account = 'switched-owner'
+    child.emit('exit', 0)
+    await vi.waitFor(async () => expect(GitHubLoginStateSchema.parse((await client.callTool({
+      name: 'computer_github_login_status', arguments: { target: mainTarget, loginId: waiting.loginId },
+    })).structuredContent)).toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
+  } finally {
+    release()
+    runner.close()
+    await f.close()
+  }
 })

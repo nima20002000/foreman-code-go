@@ -1,11 +1,13 @@
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { closeSync, openSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import { closeSync, openSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, posix, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot,
+import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
   testAdminPool, testEnvironment } from './test-resources.mjs'
 import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
@@ -125,6 +127,52 @@ export function integrationVitestArguments(file, testNamePattern, json) {
     '--maxConcurrency=1', '--reporter=verbose', ...(json ? ['--reporter=json', `--outputFile.json=${json}`] : []),
     '--fsModuleCache',
     ...(testNamePattern ? ['--testNamePattern', testNamePattern] : [])]
+}
+
+export function vitestCommand(environment, file, testNamePattern, json) {
+  const api = join(root, 'apps', 'api')
+  // Preserve package binaries on PATH without pnpm's per-file startup cost.
+  const path = [join(api, 'node_modules', '.bin'), join(root, 'node_modules', '.bin'), environment.PATH]
+    .filter(Boolean).join(delimiter)
+  return {
+    command: join(api, 'node_modules', '.bin', 'vitest'),
+    args: integrationVitestArguments(file, testNamePattern, json),
+    cwd: api,
+    env: { ...environment, PATH: path },
+  }
+}
+
+export function orderByDuration(files, durations) {
+  const duration = (file) => Number.isFinite(durations[file]) && durations[file] >= 0 ? durations[file] : Infinity
+  return [...files].sort((a, b) => duration(b) - duration(a))
+}
+
+export function readDurations(path) {
+  try {
+    const durations = JSON.parse(readFileSync(path, 'utf8'))
+    return durations && typeof durations === 'object' && !Array.isArray(durations) ? durations : {}
+  } catch (error) {
+    if (error.code === 'ENOENT' || error instanceof SyntaxError) return {}
+    console.error(`[integration] could not read file durations: ${error.message}`)
+    return {}
+  }
+}
+
+export function mergeDurations(previous, recorded, files) {
+  const known = new Set(files)
+  return Object.fromEntries(Object.entries({ ...previous, ...recorded })
+    .filter(([file, ms]) => known.has(file) && Number.isFinite(ms) && ms >= 0))
+}
+
+export function writeDurations(path, durations) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  const temporary = `${path}.${process.pid}.${randomUUID()}`
+  try {
+    writeFileSync(temporary, `${JSON.stringify(durations, null, 1)}\n`, { mode: 0o600, flag: 'wx' })
+    renameSync(temporary, path)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
 }
 
 export function fullRunExitCode(failed, interrupted) {
@@ -301,9 +349,13 @@ async function main() {
   if (files) selected = selectExactFiles(allFiles, files)
   const testNamePattern = readProductEnvironment(process.env, 'INTEGRATION_TEST_NAME_PATTERN')
   const diagnostic = Boolean(startAt || failedFrom || files || testNamePattern)
+  // Worktrees and fresh snapshot checkouts on this machine share one schedule.
+  const durationsPath = join(homedir(), '.cache', 'graphql-disposable-tests', 'integration-durations.json')
+  const durations = readDurations(durationsPath)
+  const recordedDurations = {}
   // TEST_DATABASE_URL only selects the loopback server; every slot still gets
   // its own disposable database there, so the run stays fully parallel.
-  if (process.env.TEST_DATABASE_URL) requireLoopbackTestDatabase(process.env.TEST_DATABASE_URL)
+  if (process.env.TEST_DATABASE_URL) requireTestServerUrl(process.env.TEST_DATABASE_URL)
   if (process.env.FOREMAN_CODE_VERIFICATION_ROOT && !process.env.TEST_DATABASE_URL) {
     throw new Error('Integration Jobs require an explicit Job-local test database URL')
   }
@@ -399,11 +451,10 @@ async function main() {
       mkdirSync(dirname(log), { recursive: true })
       const output = boundedLog(log, logBytes)
       const json = `${log}.json`
-      const environment = integrationEnvironment(process.env, slot)
+      const vitest = vitestCommand(integrationEnvironment(process.env, slot), file, testNamePattern, json)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
-      const child = spawn('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'vitest',
-        ...integrationVitestArguments(file, testNamePattern, json)],
-      { cwd: root, env: environment, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(vitest.command, vitest.args,
+        { cwd: vitest.cwd, env: vitest.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const progress = integrationProcessProgress()
       const recordOutput = (chunk) => {
         progress.bytes += chunk.length
@@ -438,6 +489,7 @@ async function main() {
       mkdirSync(dirname(retained), { recursive: true })
       copyFileSync(log, retained)
       const elapsedMs = Date.now() - started
+      if (!isRetest && !interrupted) recordedDurations[file] = elapsedMs
       let fileReport
       let reportError
       try {
@@ -525,7 +577,8 @@ async function main() {
       if (interrupted) { skipped = selected.length - index - 1; return }
     }
     phase = 'first pass'
-    const result = await scheduleFiles(partition.parallel, slots.filter((slot) => !slot.unavailable),
+    const result = await scheduleFiles(orderByDuration(partition.parallel, durations),
+      slots.filter((slot) => !slot.unavailable),
       runSafely, () => Boolean(interrupted))
     skipped = interrupted ? result.skipped : 0
     if (!interrupted) recordUnexecuted(result.unexecuted)
@@ -569,7 +622,8 @@ async function main() {
           await runSafely(slot, file, 'retest')
         }
         phase = 'retest'
-        const retestResult = await scheduleFiles(retestPartition.parallel, retestSlots.filter((slot) => !slot.unavailable),
+        const retestResult = await scheduleFiles(orderByDuration(retestPartition.parallel, durations),
+          retestSlots.filter((slot) => !slot.unavailable),
           (slot, file) => runSafely(slot, file, 'retest'), () => Boolean(interrupted))
         retest.skipped = interrupted ? toRetest.length - retest.passed - retest.failed : 0
         if (!interrupted) recordUnexecuted(retestResult.unexecuted, 'retest')
@@ -577,6 +631,13 @@ async function main() {
     }
   } finally {
     clearInterval(heartbeat)
+    if (Object.keys(recordedDurations).length) {
+      try {
+        writeDurations(durationsPath, mergeDurations(durations, recordedDurations, allFiles))
+      } catch (error) {
+        console.error(`[integration] could not record file durations: ${error.message}`)
+      }
+    }
     let cleanupError
     for (const [index, { child }] of active) {
       try { await stopGroup(child.pid, { signal: interrupted || 'SIGTERM' }); active.delete(index) }

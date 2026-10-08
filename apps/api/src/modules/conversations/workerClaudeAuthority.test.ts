@@ -127,3 +127,36 @@ it('forwards file calls only for the acknowledged root message and original send
   await expect(f.controls.file(f.identity, 'files.read', {}, signal))
     .rejects.toMatchObject({ code: 'CLAUDE_CALLBACK_SCOPE_DENIED' })
 })
+
+it('reports a Main admission failure before initial input as definite non-delivery', async () => {
+  const f = fixture()
+  if (!('agentId' in f.configuration)) throw new Error('Agent configuration required')
+  f.request.mockRejectedValueOnce(new Error('Main rejected this admission'))
+  const observed = vi.fn(async () => {})
+  const stream = f.manager.startInitialTurn({ kind: 'agent-chat', configuration: f.configuration,
+    correlationId: f.submission.clientCorrelationId, conversationId: f.binding.owner.conversationId,
+    workflowId: 'workflow', workflowNodeId: 'node', workingDirectory: f.binding.workingDirectory,
+    instructionsDelivered: false }, { prompt: 'Not offered', clientCorrelationId: f.submission.clientCorrelationId,
+    onMessageSubmitted: async () => {}, onSessionObserved: observed })[Symbol.asyncIterator]()
+  try {
+    await expect(stream.next()).rejects.toMatchObject({ certainty: 'definite', deliveryState: 'not-delivered' })
+    expect(observed).not.toHaveBeenCalled()
+    expect(f.nativeStart).not.toHaveBeenCalled()
+  } finally { await stream.return?.(); await f.controls.bridge.close() }
+})
+
+it('refuses a replacement attached to a foreign session before offering input', async () => {
+  const f = fixture()
+  if (!('agentId' in f.configuration)) throw new Error('Agent configuration required')
+  await f.manager.attachSession(f.session, { kind: 'agent-chat', configuration: f.configuration,
+    correlationId: f.submission.clientCorrelationId, conversationId: f.binding.owner.conversationId,
+    workflowId: 'workflow', workflowNodeId: 'node', workingDirectory: f.binding.workingDirectory,
+    instructionsDelivered: false })
+  f.manager.attachSession = async () => ({ ...f.session, nativeSessionId: 'foreign-session' })
+  const stream = f.manager.startTurn(f.session, { prompt: 'Not offered',
+    clientCorrelationId: f.submission.clientCorrelationId, onMessageSubmitted: async () => {} })[Symbol.asyncIterator]()
+  try {
+    await expect(stream.next()).rejects.toMatchObject({ certainty: 'definite', deliveryState: 'not-delivered' })
+    expect(f.nativeStart).not.toHaveBeenCalled()
+  } finally { await stream.return?.(); await f.controls.bridge.close() }
+})

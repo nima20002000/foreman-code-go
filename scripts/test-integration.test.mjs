@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { adminDatabaseUrl, autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport, integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, isIntegrationTestPath, isRegularIntegrationFile, options, parseVitestCases, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles, signalOwnedChildren } from './test-integration.mjs'
-import { integrationVitestArguments } from './test-integration.mjs'
+import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl } from './test-resources.mjs'
+import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases,
+  fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport,
+  integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, integrationVitestArguments,
+  isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases,
+  partitionIntegrationFiles, readDurations, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles,
+  signalOwnedChildren, vitestCommand, writeDurations } from './test-integration.mjs'
 
 test('diagnostic case selection preserves file and worker limits and passes the pattern as one argument', () => {
   const file = 'apps/api/test/remote-review-production.integration.test.ts'
@@ -309,6 +314,16 @@ test('database gates and storage paths use the current owned slot, overriding in
   } finally { removeTestRoot(resource) }
 })
 
+test('the runner database selector accepts only the dedicated disposable server', () => {
+  assert.equal(requireTestServerUrl(testAdminUrl).href, testAdminUrl)
+  assert.equal(requireTestServerUrl(new URL('/graphql_test_selected', testAdminUrl).href).pathname,
+    '/graphql_test_selected')
+  for (const url of ['postgresql://graphql:graphql@127.0.0.1:5432/graphql',
+    testAdminUrl.replace('127.0.0.1', 'remote'), `${testAdminUrl}?options=unsafe`]) {
+    assert.throws(() => requireTestServerUrl(url), /dedicated disposable/)
+  }
+})
+
 test('admission recognizes legacy and secondary slots and rejects forged, stale and foreign records', () => {
   const common = mkdtempSync(join(tmpdir(), 'integration-admission-'))
   try {
@@ -394,4 +409,69 @@ test('Job integration shards require and respect both reservation and qualificat
   assert.throws(() => reservedIntegrationShards({ ...job, GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
   assert.throws(() => reservedIntegrationShards({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '2',
     GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
+})
+
+test('slowest recorded files start first and unmeasured files lead the queue', async () => {
+  const files = ['unmeasured-b', 'fast', 'slow', 'same-speed', 'unmeasured-a']
+  const durations = { fast: 5000, slow: 90000, 'same-speed': 5000 }
+  const ordered = orderByDuration(files, durations)
+  assert.deepEqual(ordered, ['unmeasured-b', 'unmeasured-a', 'slow', 'fast', 'same-speed'])
+  const started = []
+  await scheduleFiles(ordered, [1], async (_slot, file) => {
+    started.push(file)
+    return { code: 0 }
+  })
+  assert.deepEqual(started, ordered)
+  assert.deepEqual(files, ['unmeasured-b', 'fast', 'slow', 'same-speed', 'unmeasured-a'])
+})
+
+test('recorded durations persist across runs, replace earlier ones and forget removed files', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-durations-'))
+  try {
+    const path = join(directory, 'cache', 'durations.json')
+    writeDurations(path, { gone: 1, kept: 2, updated: 3 })
+    writeDurations(path, mergeDurations(readDurations(path), { updated: 30 }, ['kept', 'updated']))
+    assert.deepEqual(readDurations(path), { kept: 2, updated: 30 })
+    assert.deepEqual(orderByDuration(['kept', 'updated'], readDurations(path)), ['updated', 'kept'])
+    assert.deepEqual(mergeDurations({ invalid: -1 }, { infinite: Infinity, string: '3', zero: 0 },
+      ['invalid', 'infinite', 'string', 'zero']), { zero: 0 })
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('missing or corrupt duration records fall back to discovery order', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-durations-'))
+  try {
+    const path = join(directory, 'durations.json')
+    assert.deepEqual(readDurations(path), {})
+    for (const contents of ['{', 'null', '[]', '42']) {
+      writeFileSync(path, contents)
+      assert.deepEqual(readDurations(path), {})
+      assert.deepEqual(orderByDuration(['b', 'a'], readDurations(path)), ['b', 'a'])
+    }
+    assert.deepEqual(orderByDuration(['b', 'a'], { b: -1, a: 'invalid' }), ['b', 'a'])
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('integration files launch workspace Vitest directly with package binaries and isolated state', () => {
+  const resource = createTestRoot()
+  try {
+    const file = 'apps/api/test/dev-startup.integration.test.ts'
+    const slot = { ...resource, databaseUrl: new URL('/graphql_test_owned', testAdminUrl).href }
+    const environment = integrationEnvironment({ PATH: process.env.PATH }, slot)
+    const json = join(resource.directory, 'vitest.json')
+    const vitest = vitestCommand(environment, file, 'first case|second case', json)
+    assert.deepEqual(vitest.args, ['run', 'test/dev-startup.integration.test.ts', '--no-file-parallelism',
+      '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--reporter=json',
+      `--outputFile.json=${json}`, '--fsModuleCache', '--testNamePattern', 'first case|second case'])
+    assert.equal(vitest.env.TEST_DATABASE_URL, slot.databaseUrl)
+    assert.equal(vitest.env.HOME, environment.HOME)
+    assert.equal(vitest.env.FOREMAN_CODE_TEST_OWNER, resource.token)
+    const version = spawnSync(vitest.command, ['--version'], { cwd: vitest.cwd, env: vitest.env, encoding: 'utf8' })
+    assert.equal(version.status, 0, version.stderr || version.error?.message)
+    assert.match(version.stdout, /vitest\/\d+/)
+    const tsx = spawnSync('tsx', ['--version'], { cwd: vitest.cwd, env: vitest.env, encoding: 'utf8' })
+    assert.equal(tsx.status, 0, tsx.stderr || tsx.error?.message)
+    assert.match(tsx.stdout, /tsx v\d+/)
+    assert.equal(environment.PATH, process.env.PATH)
+  } finally { removeTestRoot(resource) }
 })

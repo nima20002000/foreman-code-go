@@ -8,6 +8,14 @@ import { SettingsFormActions, SettingsFormFeedback } from './SettingsFormActions
 const stateLabels: Record<BuildComputerStatus['state'], string> = {
   disabled: 'Disabled', ready: 'Ready', busy: 'Busy', offline: 'Offline', 'setup-required': 'Setup required',
 }
+export function BuildComputerDiagnostics({ status }: { status: BuildComputerStatus }) {
+  return <>
+    <p role="status">{stateLabels[status.state]}{status.reasons.length ? ` · ${status.reasons.join(' ')}` : ''}</p>
+    {!status.remoteExecutionEnabled && <Alert title="Remote execution disabled on Main" tone="warning">
+      Participation is saved separately. Main’s startup execution setting must also be enabled to launch remote builds.
+    </Alert>}
+  </>
+}
 function BuildPreferenceEditor({ status }: { status: BuildComputerStatus }) {
   const { preference } = status
   const form = useRevisionedForm({ revision: preference.revision,
@@ -24,10 +32,7 @@ function BuildPreferenceEditor({ status }: { status: BuildComputerStatus }) {
   })
   const locked = form.isSaving || form.uncertain
   return <>
-    <p role="status">{stateLabels[status.state]}{status.reasons.length ? ` · ${status.reasons.join(' ')}` : ''}</p>
-    {!status.remoteExecutionEnabled && <Alert title="Remote execution disabled on Main" tone="warning">
-      Participation is saved separately. Main’s startup execution setting must also be enabled to launch remote builds.
-    </Alert>}
+    <BuildComputerDiagnostics status={status} />
     <Checkbox label="Enable builds on this computer" checked={draft.buildEnabled} disabled={locked}
       onChange={event => form.setDraft(current => current && ({ ...current, buildEnabled: event.target.checked }))} />
     <TextField label="Build priority" type="number" min={0} max={100} step={1} value={draft.buildPriority} disabled={locked}

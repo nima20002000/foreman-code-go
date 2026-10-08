@@ -50,7 +50,7 @@ async function writeRecord(root: FileHandle, name: string, record: unknown, sign
     if (!installed) await unlink(anchored(root, pending))
   }
 }
-async function removeDirectory(parent: FileHandle, name: string,
+export async function removeSourceDirectory(parent: FileHandle, name: string,
   receipt: Pick<MaterializationReceipt, 'binding' | 'quota'>, signal: AbortSignal, privateRoot = true): Promise<void> {
   signal.throwIfAborted()
   let directory: FileHandle
@@ -68,8 +68,9 @@ async function removeDirectory(parent: FileHandle, name: string,
     }
     const filesystem = await identity(directory)
     signal.throwIfAborted()
-    if (filesystem.device !== receipt.quota!.filesystem.device
-      || filesystem.mountId !== receipt.quota!.filesystem.mountId) {
+    const expectedFilesystem = receipt.quota?.filesystem ?? receipt.binding.filesystem
+    if (filesystem.device !== expectedFilesystem.device
+      || filesystem.mountId !== expectedFilesystem.mountId) {
       throw new SourceError('SOURCE_MOUNT_CHANGED', 'Quota cleanup cannot cross a filesystem boundary.')
     }
     // Closure is already confirmed; release sealed input directories through the owned handle.
@@ -79,7 +80,7 @@ async function removeDirectory(parent: FileHandle, name: string,
     signal.throwIfAborted()
     for (const entry of entries) {
       signal.throwIfAborted()
-      if (entry.isDirectory()) await removeDirectory(directory, entry.name, receipt, signal, false)
+      if (entry.isDirectory()) await removeSourceDirectory(directory, entry.name, receipt, signal, false)
       else await unlink(anchored(directory, entry.name))
       signal.throwIfAborted()
     }
@@ -155,7 +156,7 @@ export async function reclaimMaterializationQuota(receipt: MaterializationReceip
       signal.throwIfAborted()
       const slot = await openChildDirectory(root, receipt.quota!.namespace)
       try {
-        await removeDirectory(slot, receipt.materializationId, { binding, quota: slotFacts }, signal)
+        await removeSourceDirectory(slot, receipt.materializationId, { binding, quota: slotFacts }, signal)
         const usage = await verifyJobQuotaOwnership({ ...observedQuota, binding, slot: slotFacts, signal })
         signal.throwIfAborted()
         const stat = await slot.stat()
@@ -203,7 +204,7 @@ export async function reclaimPreparationQuota(
   signal.throwIfAborted()
   const slot = await openChildDirectory(root, claim.quota.namespace)
   try {
-    await removeDirectory(slot, claim.materializationId, claim, signal)
+    await removeSourceDirectory(slot, claim.materializationId, claim, signal)
     const usage = await verifyJobQuotaOwnership({ ...quotaPool, binding: claim.binding, slot: claim.quota, signal })
     signal.throwIfAborted()
     const entries = await readdir(anchored(slot))

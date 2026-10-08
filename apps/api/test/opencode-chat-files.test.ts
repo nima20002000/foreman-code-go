@@ -65,9 +65,10 @@ async function fixture(mode: 'read' | 'write' = 'write', editTools = false) {
   const harness = { ...configuration(), ...(mode === 'read' ? { nativeAgent: 'plan' } : {}) }
   const session = await manager.createSession({ request: request(harness), environment: { agentId: 'agent-1', variables: {} } })
   const iterators: AsyncIterator<unknown>[] = []
-  const start = (onSubmitted?: (id: string) => Promise<void>) => {
+  const start = (onSubmitted?: (id: string) => Promise<void>, onSettingsApplied?: () => Promise<void>) => {
     const iterator = manager.startTurn(session, { prompt: 'hello', clientCorrelationId: correlationId,
-      ...(onSubmitted ? { onSubmitted } : {}) })[Symbol.asyncIterator]()
+      ...(onSubmitted ? { onSubmitted } : {}),
+      ...(onSettingsApplied ? { onSettingsApplied } : {}) })[Symbol.asyncIterator]()
     iterators.push(iterator)
     return iterator
   }
@@ -156,6 +157,28 @@ describe('FIL-09a production OpenCodeNativeSessionManager with existing fake ser
       f.server.complete(f.correlationId); await drain(iterator)
       assert.equal(f.backend.revocations, 1); assert.equal(f.unmounts, 1)
       assert.equal(f.backend.hostFiles.size, 0)
+    } finally { await f.close() }
+  })
+
+  it('records provider acceptance and acknowledges files before a failing settings write', async () => {
+    const f = await fixture()
+    const receipts: string[] = []
+    let settingsAttempted = false
+    try {
+      const iterator = f.start(async id => { receipts.push(id) }, async () => {
+        settingsAttempted = true
+        assert.deepEqual(receipts, [nativeMessageId(f.correlationId)])
+        assert.equal(f.backend.issued.length, 1)
+        throw new Error('Settings storage unavailable')
+      })
+      await assert.rejects(iterator.next(), /Settings storage unavailable/)
+      assert.equal(settingsAttempted, true)
+      assert.deepEqual(receipts, [nativeMessageId(f.correlationId)])
+      assert.equal(f.backend.issued.length, 1)
+      assert.equal(f.prompts.length, 1)
+      f.server.complete(f.correlationId)
+      assert.equal((await f.manager.reconcile(f.session, f.correlationId)).nativeTurnId,
+        nativeMessageId(f.correlationId))
     } finally { await f.close() }
   })
 

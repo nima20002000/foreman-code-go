@@ -33,15 +33,18 @@ describe('native scheduled placement recovery', () => {
       onError: error => { errors.push(error) },
     })
     let output = ''
+    let stderr = ''
     diagnostic.child.stdout.on('data', chunk => { output += String(chunk) })
-    diagnostic.child.stderr.resume()
+    diagnostic.child.stderr.on('data', chunk => { stderr += String(chunk) })
     diagnostic.child.stdin.end()
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => reject(new Error('The owned diagnostic did not close after exiting.')), 5_000)
     })
     try {
-      expect(await Promise.race([diagnostic.closed, deadline])).toEqual({ exitCode: 0, exitSignal: null })
+      const exit = await Promise.race([diagnostic.closed, deadline])
+      expect(exit, `${harness} diagnostic stdout: ${output}\nstderr: ${stderr}`)
+        .toEqual({ exitCode: 0, exitSignal: null })
       if (harness === 'node') expect(output).toBe('diagnostic complete\n')
       else expect(parseInstalledVersion('codex', output, '')).toBe('0.154.0')
       expect(errors).toEqual([])

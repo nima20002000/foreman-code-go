@@ -136,7 +136,9 @@ export function useRevisionedForm<T>(incoming: Snapshot<T> | undefined, persiste
     // The serialized key tracks server content, not a newly allocated wrapper.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, incomingKey, generation, isDirty, hasPending])
-  const conflicted = Boolean(form?.latest && form.base.revision !== form.latest.revision && isDirty)
+  // A save refetch can arrive before its acknowledgement identifies the revision it wrote.
+  const conflicted = Boolean(form?.pending?.state !== 'sending' && form?.latest
+    && form.base.revision !== form.latest.revision && isDirty)
   return {
     draft: form?.value,
     baseRevision: form?.base.revision,

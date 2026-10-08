@@ -148,7 +148,10 @@ function projectBoardDeparture(target: LeaveTarget) {
   const search = RunsSelectorSearchSchema.parse(target.search)
   const board = resolveWorkflowBoardLocation(target.pathname, search)
   assertHistoryPin(board, search.selectedRunId)
-  return { target: { ...target, search: withoutRunsSelectorSearch(search) }, board,
+  const projectedSearch = search.selectedRunId && board.workflowId
+    ? boardSearchForRun(withoutRunsSelectorSearch(search), board.workflowId, board.run)
+    : withoutRunsSelectorSearch(search)
+  return { target: { ...target, search: projectedSearch }, board,
     runId: search.selectedRunId ?? board.run?.runId ?? null,
     history: Boolean(search.selectedRunId || target.pathname.includes('/runs/')) }
 }
