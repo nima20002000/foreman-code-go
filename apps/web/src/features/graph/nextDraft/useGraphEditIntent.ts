@@ -270,7 +270,8 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
   const intent = query.data?.intent
   const locked = activeEditIntent(intent) || outboxPending || mutation.isPending
   return { query, mutation, intent, locked, storageError, outboxPending,
-    sameDisplayedPayload: !intent || sameAuthoredWorkflow(edit.graph, intent.stagedDraft.graph)
+    // Only an active intent has a pending payload to compare with local edits.
+    sameDisplayedPayload: !intent || !activeEditIntent(intent) || sameAuthoredWorkflow(edit.graph, intent.stagedDraft.graph)
       && sameWorkflowValue(referencedAgentEdits(edit.graph, edit.agentEdits),
         Object.fromEntries((intent.stagedDraft.stagedAgents ?? []).map((item) => [item.agent.id, item.agent]))),
     save: () => mutation.mutateAsync({ action: 'save' }),

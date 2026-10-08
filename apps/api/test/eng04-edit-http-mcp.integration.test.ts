@@ -18,50 +18,68 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
   beforeAll(async () => { db = await currentDatabase() }, 60000)
   afterEach(async () => { await Promise.all(fixtures.splice(0).map((t) => t.app.close())) })
   afterAll(async () => { await db?.close() })
-  it('saves a workflow rename through MCP with denied writes, replay and persisted readback', async () => {
-    const t = await writerFixture(db)
-    fixtures.push(t)
-    const initial = await t.app.inject({ method: 'PUT', url: t.url,
-      headers: graphHeaders(t.writer.token), payload: t.input })
-    expect(initial.statusCode, initial.body).toBe(200)
-    const saved = CurrentWorkflowSaveResultSchema.parse(initial.json()).value
-    const stage = { ...t.input, action: 'stage_edits', draftId: `board-${t.input.workflowId}`,
-      commandId: randomUUID(), expectedRevision: saved.revision,
-      expectedWorkflowVersionId: saved.currentVersionId,
-      expectedNodePresentation: workflowNodeNames(saved.version.definition),
-      graph: { ...saved.version.definition, name: 'Renamed workflow' } }
-    const reader = await t.credential([{ actions: ['workflows:read', 'graph:read'],
-      scope: { workspaceIds: [t.input.workspaceId] } }])
-    expect((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage, reader.token)).result?.isError).toBe(true)
-    const staged = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
-    expect(staged.result?.isError, JSON.stringify(staged.result)).not.toBe(true)
-    const intent = CurrentEditReadResultSchema.parse(graphRpcValue(staged.result)).intent!
-    const advance = { action: 'stop_and_save', workspaceId: stage.workspaceId, workflowId: stage.workflowId,
-      draftId: stage.draftId, intentId: intent.id, commandId: intent.advanceCommandId }
-    const completed = await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)
-    expect(completed.result?.isError, JSON.stringify(completed.result)).not.toBe(true)
-    const published = CurrentEditReadResultSchema.parse(graphRpcValue(completed.result))
-    expect(published.intent?.state).toBe('saved')
-    expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result)).toEqual(published)
-    const read = await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { action: 'read_edits',
-      workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId })
-    expect(read.result?.isError, JSON.stringify(read.result)).not.toBe(true)
-    expect(CurrentEditReadResultSchema.parse(graphRpcValue(read.result))).toEqual(published)
-    const managed = await t.call('workflow_get', { workspaceId: stage.workspaceId,
-      workflowId: stage.workflowId }, reader.token)
-    expect(managed.result?.isError, JSON.stringify(managed.result)).not.toBe(true)
-    expect(graphRpcValue(managed.result)).toMatchObject({ workflow: { name: 'Renamed workflow' } })
-    const persisted = await t.app.inject({ method: 'GET', url: t.url, headers: graphHeaders(reader.token) })
-    expect(persisted.statusCode, persisted.body).toBe(200)
-    expect(CurrentWorkflowReadResultSchema.parse(persisted.json())).toMatchObject({
-      revision: published.intent!.result!.revision, currentVersionId: published.intent!.result!.currentVersionId,
-    })
-    const stale = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { ...stage, commandId: randomUUID(),
-      graph: { ...stage.graph, name: 'Stale rename' } })
-    expect(stale.result?.isError).toBe(true)
-    expect(graphRpcValue((await t.call('workflow_get', { workspaceId: stage.workspaceId,
-      workflowId: stage.workflowId })).result)).toMatchObject({ workflow: { name: 'Renamed workflow' } })
-  })
+  it.each(['workflow rename', 'Agent settings', 'one-pass dependencies'] as const)(
+    'saves %s through MCP with denied writes, replay and persisted readback', async (change) => {
+      const t = await writerFixture(db)
+      fixtures.push(t)
+      if (change === 'one-pass dependencies') t.input.graph.handoffs = { contractVersion: 1 }
+      const initial = await t.app.inject({ method: 'PUT', url: t.url,
+        headers: graphHeaders(t.writer.token), payload: t.input })
+      expect(initial.statusCode, initial.body).toBe(200)
+      const saved = CurrentWorkflowSaveResultSchema.parse(initial.json()).value
+      const graph = { ...saved.version.definition, name: 'Renamed workflow' }
+      if (change === 'one-pass dependencies') delete graph.handoffs
+      const agentId = t.configurations[0]!.agentId
+      const row = (await db.pool.query('select record,metadata_revision from agents where id=$1', [agentId])).rows[0]!
+      const edited = { ...AgentSchema.parse(row.record), name: 'Saved Worker', prompt: { system: 'Updated instructions' } }
+      const stage = { ...t.input, action: 'stage_edits', draftId: `board-${t.input.workflowId}`,
+        commandId: randomUUID(), expectedRevision: saved.revision,
+        expectedWorkflowVersionId: saved.currentVersionId,
+        expectedNodePresentation: workflowNodeNames(saved.version.definition),
+        graph, ...(change === 'Agent settings'
+          ? { stagedAgents: [{ agent: edited, baseRevision: Number(row.metadata_revision) }] } : {}) }
+      const reader = await t.credential([{ actions: ['workflows:read', 'graph:read'],
+        scope: { workspaceIds: [t.input.workspaceId] } }])
+      expect((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage, reader.token)).result?.isError).toBe(true)
+      const staged = await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
+      expect(staged.result?.isError, JSON.stringify(staged.result)).not.toBe(true)
+      const intent = CurrentEditReadResultSchema.parse(graphRpcValue(staged.result)).intent!
+      const advance = { action: 'stop_and_save', workspaceId: stage.workspaceId, workflowId: stage.workflowId,
+        draftId: stage.draftId, intentId: intent.id, commandId: intent.advanceCommandId }
+      const completed = await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)
+      expect(completed.result?.isError, JSON.stringify(completed.result)).not.toBe(true)
+      const published = CurrentEditReadResultSchema.parse(graphRpcValue(completed.result))
+      expect(published.intent?.state).toBe('saved')
+      expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)).result)).toEqual(published)
+      const read = await t.call(CURRENT_WORKFLOW_TOOLS.editRead, { action: 'read_edits',
+        workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId })
+      expect(read.result?.isError, JSON.stringify(read.result)).not.toBe(true)
+      expect(CurrentEditReadResultSchema.parse(graphRpcValue(read.result))).toEqual(published)
+      const managed = await t.call('workflow_get', { workspaceId: stage.workspaceId,
+        workflowId: stage.workflowId }, reader.token)
+      expect(managed.result?.isError, JSON.stringify(managed.result)).not.toBe(true)
+      expect(graphRpcValue(managed.result)).toMatchObject({ workflow: { name: 'Renamed workflow' } })
+      const persisted = await t.app.inject({ method: 'GET', url: t.url, headers: graphHeaders(reader.token) })
+      expect(persisted.statusCode, persisted.body).toBe(200)
+      const readback = CurrentWorkflowReadResultSchema.parse(persisted.json())
+      expect(readback).toMatchObject({
+        revision: published.intent!.result!.revision, currentVersionId: published.intent!.result!.currentVersionId,
+      })
+      if (change === 'one-pass dependencies') expect(readback.version.definition).not.toHaveProperty('handoffs')
+      if (change === 'Agent settings') {
+        const agentRow = (await db.pool.query('select record from agents where id=$1', [agentId])).rows[0]!
+        const persistedAgent = AgentSchema.parse(agentRow.record)
+        expect(persistedAgent).toMatchObject({ name: 'Saved Worker', prompt: { system: 'Updated instructions' },
+          configurationVersionId: readback.version.agentConfigurationVersionIds[agentId] })
+        expect(published.intent!.result!.agents).toContainEqual(expect.objectContaining({ agent: persistedAgent }))
+      }
+      const stale = await t.call(CURRENT_WORKFLOW_TOOLS.edits, { ...stage, commandId: randomUUID(),
+        graph: { ...stage.graph, name: 'Stale rename' } })
+      expect(stale.result?.isError).toBe(true)
+      expect(graphRpcValue((await t.call('workflow_get', { workspaceId: stage.workspaceId,
+        workflowId: stage.workflowId })).result)).toMatchObject({ workflow: { name: 'Renamed workflow' } })
+    },
+  )
 
   it.each(['name', 'label'] as const)('saves a node %s through a restarted edit journal while a Run remains active', async (field) => {
     const t = await writerFixture(db); fixtures.push(t)
