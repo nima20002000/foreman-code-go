@@ -62,7 +62,8 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name: 'job_runtime_profile_save',
         actions: ['job_definitions:write', 'sources:read', 'source_roots:read'] }))
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name: 'build_computer_prepare',
-        actions: ['job_definitions:write', 'sources:approve', 'sources:read', 'source_roots:bind', 'source_roots:read',
+        actions: ['job_definitions:read', 'job_definitions:write', 'sources:approve', 'sources:read',
+          'source_roots:bind', 'source_roots:read',
           'workspace_locations:read', 'jobs:start', 'job_artifacts:read'] }))
       const limit=capabilities.runtimeLimits!.find(limit=>limit.feature==='ci_jobs')
       expect(limit).toMatchObject({state:'limited'})
@@ -136,6 +137,23 @@ describe('Job capability summary matches mounted Operator tools',()=>{
     const listed=runtimeNames((await f.client.listTools()).tools.map(tool=>tool.name))
     expect(listed).not.toContain('job_runtime_profile_save')
     expect(listed).toContain('job_runtime_qualification_request')
+  })
+  it('denies computer preparation without definition read authority through MCP', async () => {
+    const f = await fixture(principal(actions.filter(action => action !== 'job_definitions:read')))
+    const listed = (await f.client.listTools()).tools.map(tool => tool.name)
+    expect(listed).not.toContain('build_computer_prepare')
+    const capabilities = await f.capabilities('workspace-a')
+    expect(capabilities.tools).not.toContain('build_computer_prepare')
+    expect(capabilities.requirements!.map(requirement => requirement.name)).not.toContain('build_computer_prepare')
+
+    const denied = await unavailableJobRuntimeToolCall(f.context, call('build_computer_prepare'))
+    expect(denied?.result.isError).toBe(true)
+    expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
+    expect(f.recordDenied).toHaveBeenCalledWith(
+      'job-discovery', 'mcp', 'build_computer_prepare', 'mcp:build_computer_prepare',
+    )
+    expect(f.listProfiles).not.toHaveBeenCalled()
+    expect(f.choices).not.toHaveBeenCalled()
   })
   it.each(['coder','orchestrator'] as const)('keeps %s workflow Agents outside Job-start authority',async role=>{
     const f=await fixture(),worker={...principal(),audience:'worker' as const,agentId:'agent-fixture'}
