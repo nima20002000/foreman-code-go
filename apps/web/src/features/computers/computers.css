@@ -67,7 +67,9 @@
 @media (prefers-reduced-motion: no-preference) {
   .computer-row-identity { transition: background-color 150ms ease-out; }
 }
-.computer-accounts { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; flex-shrink: 0; }
+.computer-accounts { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; flex-shrink: 1; min-width: 0; max-width: 100%; }
+.computer-accounts > .computer-list-feedback { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.computer-accounts > .computer-list-feedback > .n-button { flex-shrink: 0; }
 .computer-account { display: grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 999px;
   border: 1px solid var(--n-border); color: var(--n-muted); }
 .computer-account[data-state='signed-in'] { color: var(--n-success); border-color: color-mix(in srgb, var(--n-success) 45%, var(--n-border)); }

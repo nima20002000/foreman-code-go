@@ -5,6 +5,7 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it, vi } from 'vitest'
 import { server } from '../../mocks/server'
 import { ComputerRows } from './ComputerRows'
+import { ComputerAccountControls } from './ComputerAccounts'
 import { computersFixture, deviceName, deviceTarget, mainId, registration } from './computersTestFixture'
 import { useComputerUi } from './computerUiStore'
 
@@ -13,6 +14,52 @@ afterEach(() => {
   onlineManager.setOnline(true)
   useComputerUi.setState({ github: undefined, drive: undefined })
   vi.useRealTimers()
+})
+
+it.each([
+  { tool: 'github' as const, name: 'GitHub', connect: 'Connect GitHub' },
+  { tool: 'drive' as const, name: 'Google Drive', connect: 'Connect Google Drive' },
+])('preserves unavailable $name state for an offline Worker and recovers after account retry', async provider => {
+  let starts = 0
+  const f = computersFixture(<ComputerRows mainId={mainId} devices={[registration]} />, [
+    http.post(`*/api/management/computers/${provider.tool}/${provider.tool === 'github' ? 'login' : 'connect'}`, () => {
+      starts++
+      return unavailable()
+    }),
+  ])
+  const row = within(screen.getByRole('listitem', { name: deviceName }))
+  await row.findByText('Offline')
+  await waitFor(() => expect(f.client.isFetching({ queryKey: ['computer-accounts'] })).toBe(0))
+  await userEvent.click(row.getByRole('button', { name: `${provider.name}: account state unavailable. Manage ${provider.name}` }))
+  const dialog = within(await screen.findByRole('dialog', { name: `${provider.name} on ${deviceName}` }))
+  expect(dialog.getByText('Account state unavailable')).toBeVisible()
+  expect(dialog.getByText(/must be reachable to read its existing/)).toBeVisible()
+  const connect = dialog.getByRole('button', { name: provider.connect })
+  expect(connect).toBeDisabled()
+  expect(connect).toHaveAccessibleDescription(/must be reachable/)
+  await userEvent.click(connect)
+  expect(starts).toBe(0)
+  await userEvent.click(dialog.getByRole('button', { name: 'Close dialog' }))
+  server.use(http.get('*/api/management/computers/accounts', () => HttpResponse.json({ computers: [{
+    target: deviceTarget, accounts: { observedAt: new Date().toISOString(), accounts: [{
+      tool: provider.tool, installed: true, signedIn: false, account: null, details: [],
+    }] },
+  }] })))
+  await userEvent.click(row.getByRole('button', { name: 'Retry accounts' }))
+  await userEvent.click(await row.findByRole('button', { name: `${provider.name}: signed out. Manage ${provider.name}` }))
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: provider.connect })).toBeEnabled()
+})
+
+it.each(['github', 'drive'] as const)('keeps an unreadable %s login unknown when the tool is installed', async tool => {
+  const name = tool === 'github' ? 'GitHub' : 'Google Drive'
+  computersFixture(<ComputerAccountControls target={deviceTarget} name={deviceName} retrying={false}
+    onRetry={() => {}} accounts={{ observedAt: new Date().toISOString(), accounts: [{
+      tool, installed: true, signedIn: null, account: null, details: ['Sign-in could not be read'],
+    }] }} />)
+  await userEvent.click(screen.getByRole('button', { name: `${name}: Sign-in could not be read. Manage ${name}` }))
+  const dialog = within(screen.getByRole('dialog'))
+  expect(dialog.getByText('Account state unavailable')).toBeVisible()
+  expect(dialog.getByRole('button', { name: `Connect ${name}` })).toBeDisabled()
 })
 
 it('keeps management and a targeted retry available after the first account read fails', async () => {
@@ -24,7 +71,7 @@ it('keeps management and a targeted retry available after the first account read
   await userEvent.click(button)
   expect(await screen.findByRole('dialog', { name: 'GitHub on Main PC' })).toBeVisible()
   await userEvent.click(screen.getByRole('button', { name: 'Retry accounts' }))
-  expect(screen.getByText('Account state unavailable')).toBeVisible()
+  expect(within(screen.getByRole('group', { name: 'Accounts' })).getByText('Account state unavailable')).toBeVisible()
 })
 
 it('removes stale signed-in indicators after a failed refresh and recovers with account retry', async () => {
