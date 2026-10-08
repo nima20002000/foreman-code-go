@@ -212,6 +212,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const saved = await chat.changeSessionControls(conversation.id, { kind: 'mode', mode: 'plan',
       requestId: randomUUID(), expectedRevision: discovered.revision }, writer.principal)
     const history = (await chat.get(conversation.id, writer.principal)).messages
+    const attachmentsBeforeReads = manager.attachments
     unloaded = true
 
     async function checkReads(service: OperatorChatService) {
@@ -247,6 +248,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         const persisted = await pool.query<{ record: unknown }>(
           'select record from conversation_session_controls where conversation_id=$1', [conversation.id])
         expect(SessionControlStateSchema.parse(persisted.rows[0]!.record)).toMatchObject({ desiredMode: 'plan', capabilities })
+        expect(manager.attachments).toBe(attachmentsBeforeReads)
       } finally {
         await client.close()
         await deniedClient.close()
@@ -261,7 +263,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await checkReads(chat)
     expect(nativeCapabilities).toHaveBeenCalledTimes(nativeReads)
     expect(manager.turns).toBe(1)
-    expect(manager.attachments).toBe(0)
+    expect(manager.attachments).toBe(attachmentsBeforeReads)
   })
 
   it('reads stored controls while terminal cleanup still owns the native manager', async () => {
