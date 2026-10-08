@@ -27,7 +27,7 @@ import {
 } from '@foreman-code/contracts/job-verification'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import { requireAuthorization } from '../access/policy.js'
+import { requireAuthorization, type AuthorizedResource } from '../access/policy.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
@@ -105,16 +105,16 @@ export class JobService {
     }
   }
   private async authorize(sql: pg.PoolClient, principal: ManagementPrincipal, workspaceId: string,
-    action: ManagementAction, workflowId?: string) {
+    action: ManagementAction, scope: AuthorizedResource = {}) {
     const live = await readLiveManagementPrincipal(sql, principal.id)
-    requireAuthorization(live, action, { workspaceId, ...(workflowId ? { workflowId } : {}) })
+    requireAuthorization(live, action, { ...scope, workspaceId })
     return live
   }
   private async read<T>(principal: ManagementPrincipal, workspaceId: string, action: ManagementAction,
     work: (sql: pg.PoolClient, live: ManagementPrincipal) => Promise<T>,
-    source: 'http' | 'mcp' = 'http', workflowId?: string): Promise<T> {
+    source: 'http' | 'mcp' = 'http', scope: AuthorizedResource = {}): Promise<T> {
     try {
-      requireAuthorization(principal, action, { workspaceId, ...(workflowId ? { workflowId } : {}) })
+      requireAuthorization(principal, action, { ...scope, workspaceId })
     } catch (error) {
       await this.commands.recordDenied(principal.id, source, action, workspaceId)
       throw error
@@ -123,9 +123,9 @@ export class JobService {
     let releaseError: Error | undefined
     try {
       await sql.query('begin')
-      const live = await this.authorize(sql, principal, workspaceId, action, workflowId)
+      const live = await this.authorize(sql, principal, workspaceId, action, scope)
       const result = await work(sql, live)
-      await this.authorize(sql, principal, workspaceId, action, workflowId)
+      await this.authorize(sql, principal, workspaceId, action, scope)
       await sql.query('commit')
       return result
     } catch (error) {
@@ -136,6 +136,18 @@ export class JobService {
     } finally {
       sql.release(releaseError)
     }
+  }
+  private async readExecution<T>(principal: ManagementPrincipal, workspaceId: string, executionId: string,
+    action: ManagementAction, work: (sql: pg.PoolClient, live: ManagementPrincipal) => Promise<T>,
+    source: 'http' | 'mcp' = 'http'): Promise<T> {
+    const scope = await this.repository.executionScope(this.pool, workspaceId, executionId)
+    return this.read(principal, workspaceId, action, async (sql, live) => {
+      const persistedScope = await this.repository.executionScope(sql, workspaceId, executionId)
+      if (canonical(scope) !== canonical(persistedScope)) {
+        throw new DomainError('JOB_SCOPE_CONFLICT', 'The job workflow relationship changed during the read.', 409)
+      }
+      return work(sql, live)
+    }, source, scope)
   }
   private async command<T>(principal:ManagementPrincipal, source:'http'|'mcp', workspaceId:string, action:ManagementAction,
     commandId:string, operation:string, payload:unknown, perform:(sql:pg.PoolClient,live:ManagementPrincipal)=>Promise<T>):Promise<T> {
@@ -152,7 +164,7 @@ export class JobService {
     return this.read(principal,workspaceId,'job_definitions:read',(sql,live)=>this.ports.preparation.choices(sql,live,workspaceId),source)
   }
   readArtifact(principal:ManagementPrincipal,workspaceId:string,id:string,fileId:string,revisionId:string,source:'http'|'mcp'='http') {
-    return this.read(principal,workspaceId,'job_artifacts:read',async(sql,live)=>{
+    return this.readExecution(principal,workspaceId,id,'job_artifacts:read',async(sql,live)=>{
       await this.repository.execution(sql,workspaceId,id)
       const result=await this.ports.artifacts.read(sql,live,workspaceId,id,fileId,revisionId,source)
       const artifact=JobArtifactSchema.parse(result.artifact)
@@ -170,7 +182,7 @@ export class JobService {
     return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.definition(sql,workspaceId,id),source)
   }
   readLogTail(principal: ManagementPrincipal, workspaceId: string, executionId: string) {
-    return this.read(principal, workspaceId, 'job_logs:read', async sql => {
+    return this.readExecution(principal, workspaceId, executionId, 'job_logs:read', async sql => {
       await this.repository.execution(sql, workspaceId, executionId)
       const rows = (await sql.query<{ text: string }>(`select text from job_log_chunks
         where execution_id=$1 order by sequence desc limit 33`, [executionId])).rows
@@ -605,7 +617,7 @@ export class JobService {
     return execution
   }
   getExecution(principal:ManagementPrincipal,workspaceId:string,id:string,source:'http'|'mcp'='http') {
-    return this.read(principal,workspaceId,'jobs:read',sql=>this.repository.execution(sql,workspaceId,id),source)
+    return this.readExecution(principal,workspaceId,id,'jobs:read',sql=>this.repository.execution(sql,workspaceId,id),source)
   }
   listExecutions(principal:ManagementPrincipal,workspaceId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'jobs:read',async sql=>(await sql.query<{record:unknown}>('select record from job_executions where workspace_id=$1 order by id desc limit 100',[workspaceId])).rows.map(row=>JobExecutionRecordSchema.parse(row.record)),source)
@@ -618,7 +630,7 @@ export class JobService {
         [workspaceId, workflowId])
       if (!workflow.rows.length) throw new DomainError('WORKFLOW_NOT_FOUND', 'Workflow not found.', 404)
       return this.repository.workflowExecutions(sql, workspaceId, workflowId, input)
-    }, source, workflowId)
+    }, source, { workflowId })
   }
   private recovery() {
     if (!this.ports.cancellationRecovery) throw new DomainError('JOB_RECOVERY_UNAVAILABLE', 'Job cleanup recovery is unavailable.', 503)
@@ -652,7 +664,7 @@ export class JobService {
   }
   readLogs(principal:ManagementPrincipal,workspaceId:string,id:string,afterSequence:number,limit:number,source:'http'|'mcp'='http') {
     parse(z.number().int().nonnegative(),afterSequence); parse(z.number().int().min(1).max(100),limit)
-    return this.read(principal,workspaceId,'job_logs:read',async sql=>{
+    return this.readExecution(principal,workspaceId,id,'job_logs:read',async sql=>{
       await this.repository.execution(sql,workspaceId,id)
       const chunks=await this.repository.logs(sql,id,afterSequence,limit)
       const row=(await sql.query<{log_truncated:boolean}>('select log_truncated from job_executions where id=$1',[id])).rows[0]!
@@ -660,7 +672,7 @@ export class JobService {
     },source)
   }
   listArtifacts(principal:ManagementPrincipal,workspaceId:string,id:string,source:'http'|'mcp'='http') {
-    return this.read(principal,workspaceId,'job_artifacts:read',async(sql,live)=>{
+    return this.readExecution(principal,workspaceId,id,'job_artifacts:read',async(sql,live)=>{
       await this.repository.execution(sql,workspaceId,id)
       return this.ports.artifacts.list(sql,live,workspaceId,id)
     },source)

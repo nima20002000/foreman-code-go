@@ -53,6 +53,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       create table management_audit(principal_id text,source text,action text,target_key text,outcome text,details jsonb);
       create table job_executions(id text primary key,workspace_id text,record jsonb,accepted_spec jsonb,accepted_by text);
       create table job_definition_versions(id text primary key,workspace_id text,definition_id text,record jsonb);
+      create table runs(id text primary key,workspace_id text,workflow_id text);
       create table job_fixture_owner(grant_id text primary key,epoch text,revoked boolean,root_valid boolean);
       insert into job_fixture_owner values('grant-fixture','1',false,true);`)
     await pool.query(fileStorageMigration.sql);await pool.query(fileToolsMigration.sql);await pool.query(jobArtifactStorageMigration.sql)
@@ -186,6 +187,59 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
         published.artifact.fileId, published.artifact.revisionId, 'mcp')
       expect(read.bytes).toEqual(data)
     } finally { data = original }
+  })
+  it('reads retained CI artifacts with workflow-scoped HTTP and MCP grants and denies other workflows', async () => {
+    await pool.query('update job_fixture_owner set revoked=false')
+    const workflowId = randomUUID()
+    const runId = randomUUID()
+    const job = JobExecutionRecordSchema.parse({ ...execution, id: randomUUID(), attemptId: randomUUID(),
+      initiatingAgent: { workflowId, runId, agentId: randomUUID(), executionId: randomUUID() } })
+    await pool.query('insert into runs values($1,$2,$3)', [runId, job.workspaceId, workflowId])
+    await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',
+      [job.id, job.workspaceId, JSON.stringify(job), JSON.stringify(job.acceptedSpec), 'owner'])
+    const allowedToken = randomUUID()
+    const blockedToken = randomUUID()
+    for (const [token, allowedWorkflow] of [[allowedToken, workflowId], [blockedToken, randomUUID()]] as const) {
+      await pool.query("insert into management_principals values($1,$1,'operator',null,$2,$3::jsonb,'2099-01-01',null,null)",
+        [randomUUID(), digest(token), JSON.stringify([{ actions: ['job_artifacts:read'],
+          scope: { workspaceIds: [job.workspaceId], workflowIds: [allowedWorkflow] } }])])
+    }
+    const original = data
+    if (placementMode === 'verification') {
+      data = Buffer.from(JSON.stringify({ ...JSON.parse(data.toString()), executionId: job.id, attemptId: job.attemptId }))
+    }
+    try {
+      const published = await artifacts.publishAccepted({ workspaceId: job.workspaceId, executionId: job.id,
+        attemptId: job.attemptId, owner: job.owner, commandId: randomUUID(), path: outputPath,
+        mediaType: 'application/json', sha256: digest(data), byteSize: data.length })
+      const base = `/api/management/workspaces/${job.workspaceId}/jobs/executions/${job.id}/artifacts`
+      const input = { workspaceId: job.workspaceId, executionId: job.id,
+        fileId: published.artifact.fileId, revisionId: published.artifact.revisionId }
+      const url = `${base}/${input.fileId}/revisions/${input.revisionId}/content`
+      for (const [token, allowed] of [[allowedToken, true], [blockedToken, false]] as const) {
+        const client = new Client({ name: 'scoped-artifact-reader', version: '1' })
+        clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        }))
+        const http = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } })
+        const mcp = await client.callTool({ name: 'job_artifact_read', arguments: input })
+        const list = await client.callTool({ name: 'job_artifacts_list',
+          arguments: { workspaceId: job.workspaceId, executionId: job.id } })
+        expect(http.statusCode).toBe(allowed ? 200 : 403)
+        if (allowed) {
+          expect(http.rawPayload).toEqual(data)
+          expect(mcp.isError).not.toBe(true)
+          expect(mcp.structuredContent).toMatchObject({ artifact: published.artifact, content: data.toString('base64') })
+          expect(list.structuredContent).toEqual({ artifacts: [published.artifact] })
+        } else {
+          expect(mcp.isError).toBe(true)
+          expect(list.isError).toBe(true)
+        }
+      }
+    } finally {
+      data = original
+    }
   })
   if (placementMode === 'verification') {
   it('publishes JUnit XML and reads the retained bytes through authenticated MCP', async () => {

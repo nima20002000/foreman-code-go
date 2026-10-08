@@ -62,9 +62,11 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       fileId: job.file.fileId, revisionId: job.revision.revisionId, sha256: job.revision.sha256, byteSize: job.revision.byteSize,
       mediaType: job.revision.mediaType, expiresAt: job.file.expiresAt, state: state === 'ready' ? 'available' : state === 'removed' ? 'tombstoned' : 'expired' })
   }
-  private async authorizeRead(query: JobSql, principal: ManagementPrincipal, workspaceId: string) {
+  private async authorizeRead(query: JobSql, principal: ManagementPrincipal, workspaceId: string,
+    executionId: string) {
     const live = await readLiveManagementPrincipal(query, principal.id)
-    requireAuthorization(live, 'job_artifacts:read', { workspaceId })
+    const resource = await new JobRepository().executionScope(query, workspaceId, executionId)
+    requireAuthorization(live, 'job_artifacts:read', { ...resource, workspaceId })
     return live
   }
   /** Main-only Run result projection, after its caller proves actual Run ownership. No bearer enters a build. */
@@ -84,23 +86,23 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       .map(({link,value})=>this.artifact(link,value))
   }
   async list(query: JobSql, principal: ManagementPrincipal, workspaceId: string, executionId: string): Promise<JobArtifact[]> {
-    await this.authorizeRead(query, principal, workspaceId)
+    await this.authorizeRead(query, principal, workspaceId, executionId)
     const records = await this.ledger.list(query, workspaceId, executionId)
-    await this.authorizeRead(query, principal, workspaceId)
+    await this.authorizeRead(query, principal, workspaceId, executionId)
     return records.map(({link,value}) => this.artifact(link,value))
   }
   async read(query: JobSql, principal: ManagementPrincipal, workspaceId: string, executionId: string, fileId: string, revisionId: string, source: 'http'|'mcp' = 'http') {
-    await this.authorizeRead(query, principal, workspaceId)
+    await this.authorizeRead(query, principal, workspaceId, executionId)
     const records = await this.ledger.list(query,workspaceId,executionId)
     const found = records.find(({link})=>link.ref.fileId===fileId && link.ref.revisionId===revisionId)
     if (!found) throw new DomainError('JOB_ARTIFACT_NOT_FOUND','The exact job artifact was not found in this execution.',404)
     const artifact = this.artifact(found.link,found.value)
     if (artifact.state !== 'available') throw new DomainError('FILE_BYTES_UNAVAILABLE', `The pinned artifact is ${artifact.state}.`,410)
-    const live = await this.authorizeRead(query,principal,workspaceId)
+    const live = await this.authorizeRead(query,principal,workspaceId,executionId)
     const opened = await this.files.download(live,scope(workspaceId,executionId),{fileId,revisionId})
     const bytes = await completedBytes(opened.stream,Math.max(1,artifact.byteSize))
     if (bytes.length !== artifact.byteSize || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) throw new DomainError('FILE_HASH_MISMATCH','The exact artifact bytes failed verification.',410)
-    await this.authorizeRead(query,principal,workspaceId)
+    await this.authorizeRead(query,principal,workspaceId,executionId)
     const current = await this.files.repository.read(fileId,revisionId)
     if (!current || fileStateAt(current.value.file,this.clock().toISOString()) !== 'ready') throw new DomainError('FILE_BYTES_UNAVAILABLE','The job artifact expired during read.',410)
     await query.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)

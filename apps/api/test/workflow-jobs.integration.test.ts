@@ -43,10 +43,10 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {},
         actions: ['job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:read', 'settings:read', 'settings:update'] }] })
     reader = await access.issue({ name: 'Workflow history reader', audience: 'operator',
-      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['jobs:read', 'capabilities:read'],
+      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['jobs:read', 'job_logs:read', 'job_artifacts:read', 'capabilities:read'],
         scope: { workspaceIds: [workflow.run.workspaceId], workflowIds: [workflow.run.workflowId] } }] })
     denied = await access.issue({ name: 'Other workflow reader', audience: 'operator',
-      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['jobs:read', 'capabilities:read'],
+      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['jobs:read', 'job_logs:read', 'job_artifacts:read', 'capabilities:read'],
         scope: { workspaceIds: [workflow.run.workspaceId], workflowIds: ['foreign'] } }] })
     queue = await buildQueueFixture(database.pool, writer.principal, { workspaceId: workflow.run.workspaceId })
     queue.online()
@@ -141,6 +141,40 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
       headers: { authorization: `Bearer ${writer.token}` } })
     expect(http.statusCode).toBe(200)
     expect(http.json()).toEqual(expected)
+  })
+
+  it('opens node and Agent CI results with workflow-scoped grants over HTTP and MCP', async () => {
+    const client = await connect(reader.token)
+    const deniedClient = await connect(denied.token)
+    for (const execution of executions.slice(0, 2)) {
+      const arguments_ = { workspaceId: execution.workspaceId, executionId: execution.id }
+      const root = `/api/management/workspaces/${execution.workspaceId}/jobs/executions/${execution.id}`
+      const http = await app.inject({ method: 'GET', url: root, headers: headers() })
+      expect(http.statusCode).toBe(200)
+      expect(http.json()).toEqual({ execution })
+      const mcp = await client.callTool({ name: 'job_get', arguments: arguments_ })
+      expect(mcp.isError).not.toBe(true)
+      expect(mcp.structuredContent).toEqual(http.json())
+      for (const [suffix, tool] of [['/logs', 'job_logs_read'], ['/artifacts', 'job_artifacts_list']] as const) {
+        const result = await app.inject({ method: 'GET', url: `${root}${suffix}`, headers: headers() })
+        expect(result.statusCode).toBe(200)
+        const read = await client.callTool({ name: tool, arguments: arguments_ })
+        expect(read.isError).not.toBe(true)
+        expect(read.structuredContent).toEqual(result.json())
+      }
+      for (const [suffix, tool] of [['', 'job_get'], ['/logs', 'job_logs_read'], ['/artifacts', 'job_artifacts_list']] as const) {
+        const blocked = await app.inject({ method: 'GET', url: `${root}${suffix}`,
+          headers: { authorization: `Bearer ${denied.token}` } })
+        expect(blocked.statusCode).toBe(403)
+        expect((await deniedClient.callTool({ name: tool, arguments: arguments_ })).isError).toBe(true)
+      }
+    }
+    for (const executionId of ['orphan-run', 'foreign-workflow']) {
+      const result = await client.callTool({ name: 'job_get',
+        arguments: { workspaceId: workflow.run.workspaceId, executionId } })
+      expect(result.isError).toBe(true)
+      expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
+    }
   })
 
   it('denies other-workflow callers over HTTP and MCP and audits denial', async () => {

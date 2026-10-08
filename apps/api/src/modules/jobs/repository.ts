@@ -146,6 +146,22 @@ export class JobRepository {
     const nextCursor = rows.rows.length > limit && last ? { createdAt: last.createdAt, id: last.id } : null
     return WorkflowJobPageSchema.parse({ workspaceId, workflowId, items, nextCursor })
   }
+  async executionScope(sql: JobSql, workspaceId: string, executionId: string) {
+    const row = (await sql.query<{ record: unknown }>(
+      'select record from job_executions where workspace_id=$1 and id=$2', [workspaceId, executionId])).rows[0]
+    if (!row) return {}
+    const execution = JobExecutionRecordSchema.parse(row.record)
+    if (execution.id !== executionId || execution.workspaceId !== workspaceId) {
+      throw new DomainError('JOB_SCOPE_CONFLICT', 'The job scope conflicts with persistence.', 409)
+    }
+    for (const origin of [execution.workflow, execution.initiatingAgent]) {
+      if (!origin) continue
+      const run = await sql.query('select id from runs where workspace_id=$1 and workflow_id=$2 and id=$3',
+        [workspaceId, origin.workflowId, origin.runId])
+      if (run.rows.length) return { workflowId: origin.workflowId, runId: origin.runId }
+    }
+    return {}
+  }
   async putExecution(sql: JobSql, value: JobExecutionRecord): Promise<void> {
     const execution = JobExecutionRecordSchema.parse(value)
     await sql.query('update job_executions set record=$3::jsonb where workspace_id=$1 and id=$2',[execution.workspaceId, execution.id, JSON.stringify(execution)])
