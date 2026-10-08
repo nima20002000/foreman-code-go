@@ -6,13 +6,13 @@ import type { JobSql } from '../jobs/repository.js'
 import type { JobRuntimeProfiles } from '../jobs/runtimeProfiles.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { buildComputerTarget } from './buildComputers.js'
-import { jobComputerHasCapacity } from '../jobs/computerSelection.js'
+import { jobComputerCapacityDecision, type VerificationMemoryReader } from '../jobs/computerSelection.js'
 import type { WorkerExecutionPolicy } from './workerExecution.js'
 import { DomainError } from '../errors.js'
 
 export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; profiles: JobRuntimeProfiles;
-  workerExecution: WorkerExecutionPolicy; localExecutor: boolean }) {
-  return async (sql: JobSql, target: DeviceProvisioningTarget): Promise<
+  workerExecution: WorkerExecutionPolicy; localExecutor: boolean; availableMemory?: VerificationMemoryReader | undefined }) {
+  return async (sql: JobSql, target: DeviceProvisioningTarget, allowancePercent: number): Promise<
     Pick<BuildComputerStatus, 'state' | 'reasons' | 'remoteExecutionEnabled'>> => {
     let remoteExecutionEnabled = true
     try { input.workerExecution.requireEnabled({ kind: 'device' }) } catch (error) {
@@ -40,11 +40,26 @@ export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; prof
     const readyProfiles = []
     for (const profile of profiles) if ((await input.profiles.readiness(sql, profile)).ready) readyProfiles.push(profile)
     if (!readyProfiles.length) return result('setup-required', ['Approve a writable workspace root and qualify a CI runtime.'])
+    const failures: string[] = []
+    let waitingForCapacity = false
     for (const profile of readyProfiles) {
-      if (await jobComputerHasCapacity(sql, { mainId: target.hostRef.mainId, hostRef: target.hostRef }, profile)) {
+      const decision = await jobComputerCapacityDecision(sql,
+        { mainId: target.hostRef.mainId, hostRef: target.hostRef }, profile, input.availableMemory, allowancePercent)
+      if (decision.fits) {
         return result('ready', [])
       }
+      if (decision.reason === 'busy') {
+        waitingForCapacity = true
+        failures.push('Build capacity is reserved.')
+      } else if (decision.reason === 'memory_headroom_required') {
+        waitingForCapacity = true
+        failures.push('More available memory is required before another build can start.')
+      } else if (decision.reason === 'memory_unavailable') {
+        failures.push('Available memory could not be read.')
+      } else {
+        failures.push('The build allowance is too small for this runtime. Increase the allowance.')
+      }
     }
-    return result('busy', ['Build capacity is reserved.'])
+    return result(waitingForCapacity ? 'busy' : 'setup-required', [...new Set(failures)])
   }
 }
