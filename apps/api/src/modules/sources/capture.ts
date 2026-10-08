@@ -11,6 +11,7 @@ const gitEnvironment = { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG
 export interface SourceSnapshotSink {
   /** Writes quarantined, detached bytes into the source namespace, never file revisions. */
   write(snapshotId: string, entry: SourceEntry, bytes: Uint8Array): Promise<void>
+  writeGitMetadata?(snapshotId: string, bytes: Uint8Array): Promise<void>
   commit(manifest: SourceManifest): Promise<void>
   abort(snapshotId: string): Promise<void>
 }
@@ -108,7 +109,7 @@ async function captureBlobs(reader: ReturnType<typeof gitObjectReader>, records:
 }
 /** Exact Git objects, never archive/export filters or working-tree bytes. */
 export async function captureGitSource(input: { root: string; approvedSourceId: string; commit: string;
-  approvedPaths: readonly string[]; snapshotId?: string; executablePolicy: SourceManifest['executablePolicy']; sink: SourceSnapshotSink }): Promise<SourceManifest> {
+  approvedPaths: readonly string[]; snapshotId?: string; repository?: string; executablePolicy: SourceManifest['executablePolicy']; sink: SourceSnapshotSink }): Promise<SourceManifest> {
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.commit)) throw new SourceError('SOURCE_GIT_REF_INVALID', 'An exact Git commit object is required; branch names are not source pins.')
   if (await realpath(input.root) !== input.root || input.root === process.env.HOME || input.root === '/') throw new SourceError('SOURCE_ROOT_INVALID', 'An explicitly approved canonical project root is required.')
   const snapshotId = input.snapshotId ?? randomUUID(), entries: SourceEntry[] = [], signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
@@ -121,6 +122,8 @@ export async function captureGitSource(input: { root: string; approvedSourceId: 
     reader = gitObjectReader(input.root, objectFormat, signal)
     const objectBytes = (kind: 'commit' | 'tree' | 'blob', object: string, limit = 2 * 1024 * 1024) => reader!.read(kind, object, limit)
     const commit = input.commit, commitBytes = await objectBytes('commit', commit)
+    const objects = input.sink.writeGitMetadata
+      ? [{ kind: 'commit', object: commit, bytes: commitBytes.toString('base64') }] : undefined
     const tree = /^tree ([a-f0-9]+)\n/.exec(commitBytes.toString('utf8'))?.[1]
     if (!tree || tree.length !== (objectFormat === 'sha1' ? 40 : 64)) throw new SourceError('SOURCE_GIT_REF_INVALID', 'The accepted commit has no exact supported tree.')
     const names = new Set(input.approvedPaths.map(sourcePath))
@@ -129,6 +132,7 @@ export async function captureGitSource(input: { root: string; approvedSourceId: 
     let treeBytes = 0
     const readTree = async (object: string, prefix: string): Promise<void> => {
       const bytes = await objectBytes('tree', object)
+      objects?.push({ kind: 'tree', object, bytes: bytes.toString('base64') })
       if ((treeBytes += bytes.length) > 8 * 1024 * 1024) throw new SourceError('SOURCE_CAPACITY', 'Git tree metadata exceeds the separate source budget.')
       let offset = 0
       while (offset < bytes.length) {
@@ -150,6 +154,13 @@ export async function captureGitSource(input: { root: string; approvedSourceId: 
       if (!names.delete(record.path)) throw new SourceError('SOURCE_INCLUSION_NOT_APPROVED', 'Every exact tree entry must be explicitly approved; tracked secrets are never silently omitted.')
     }
     if (names.size) throw new SourceError('SOURCE_INCLUSION_NOT_FOUND', 'Approved files are absent from the exact Git tree.')
+    let metadata: NonNullable<SourceManifest['git']>['metadata']
+    if (objects && input.sink.writeGitMetadata) {
+      const metadataBytes = Buffer.from(JSON.stringify(objects))
+      metadata = { byteSize: metadataBytes.length, sha256: sourceSha256(metadataBytes) }
+      await input.sink.writeGitMetadata(snapshotId, metadataBytes)
+      objects.length = 0
+    }
     await captureBlobs(reader, records, signal, async (record, bytes) => {
       if (bytes.subarray(0, 200).toString().startsWith('version https://git-lfs.github.com/spec/v1\n')) throw new SourceError('SOURCE_LFS_UNSUPPORTED', 'Pin and qualify LFS object delivery before capturing this source.')
       const entry: SourceEntry = { path: record.path, kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: input.executablePolicy === 'preserve-approved' && record.mode === '100755' }
@@ -158,7 +169,12 @@ export async function captureGitSource(input: { root: string; approvedSourceId: 
     await reader.finish()
     entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
     const manifest = createSourceManifest({ version: 1, snapshotId, approvedSourceId: input.approvedSourceId,
-      capturePolicy: 'git-tree-v1', executablePolicy: input.executablePolicy, git: { commit, tree, objectFormat }, entries, deletions: [] })
+      capturePolicy: 'git-tree-v1', executablePolicy: input.executablePolicy,
+      git: { commit, tree, objectFormat, ...(input.repository ? { repository: input.repository } : {}),
+        ...(metadata ? { metadata } : {}) }, entries, deletions: [] })
+    if (metadata && Buffer.byteLength(JSON.stringify(manifest)) + 12 + metadata.byteSize + manifest.totalBytes > SOURCE_LIMITS.bytes) {
+      throw new SourceError('SOURCE_CAPACITY', 'The approved source and Git objects exceed the source transfer budget.')
+    }
     signal.throwIfAborted(); await input.sink.commit(manifest); return manifest
   } catch (error) {
     const timedOut = signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError'

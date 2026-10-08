@@ -53,6 +53,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const owner = await access.issue({ name: 'Source owner', audience: 'operator', grants: [{ actions: [...ManagementActionSchema.options], scope: {} }], expiresAt: new Date(Date.now() + 300_000) })
     const created = await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Source workspace' })
     const workspace = created.value.workspace
+    await workspaces.update(owner.principal, 'http', { workspaceId: workspace.id, commandId: randomUUID(),
+      expectedRevision: created.value.revision,
+      repository: { provider: 'github', owner: 'original', name: 'site', defaultBranch: 'main' } })
     const located = await locations.set(owner.principal, 'http', { workspaceId: workspace.id, commandId: randomUUID(), expectedLocationRevision: created.value.locationRevision, runnerId: locations.runnerId, rootPath: project })
     await qualifiedGit(project, ['init', '--template=']); await writeFile(join(project, 'source.ts'), 'export const revision = 1\n')
     await qualifiedGit(project, ['add', '.']); await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source1'])
@@ -108,6 +111,18 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const pin = { approvedSourceId: first.value.manifest.approvedSourceId, snapshotId: first.value.manifest.snapshotId, manifestDigest: first.value.manifest.manifestDigest }
     const read = ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)
     expect(read.manifest.git?.commit).toBe(commit)
+    expect(read.manifest.git?.repository).toBe('original/site')
+    expect(read.manifest.git?.metadata).toMatchObject({ byteSize: expect.any(Number), sha256: expect.any(String) })
+    const beforeEdit = await workspaces.get(owner.principal, workspace.id)
+    const changed = await workspaces.update(owner.principal, 'http', { workspaceId: workspace.id, commandId: randomUUID(),
+      expectedRevision: beforeEdit.revision,
+      repository: { provider: 'github', owner: 'other', name: 'site', defaultBranch: 'main' } })
+    await workspaces.update(owner.principal, 'http', { workspaceId: workspace.id, commandId: randomUUID(),
+      expectedRevision: changed.value.revision, repository: null })
+    const retained = ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get',
+      arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)
+    expect(retained.manifest.git?.repository).toBe('original/site')
+    expect(retained.manifest).toEqual(read.manifest)
     const bind = { workspaceId: workspace.id, commandId: randomUUID(), source: pin, selection: { hostRef: { kind: 'main', mainId }, rootPolicyId: policy.rootPolicyId, rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision }, expectedBindingRevision: 0, accessMode: 'exclusive-write' }
     const rootResult = await client.callTool({ name: 'source_root_bind', arguments: bind })
     expect(rootResult.isError, JSON.stringify(rootResult)).not.toBe(true)

@@ -29,3 +29,39 @@ it('rejects wrong source identity, trailing extents and incomplete packages with
 it('rejects source RPC caller filesystem overrides and invented bootstrap members', () => {
   expect(SourceFilesystemOperationSchema.safeParse({ version: 1, operation: 'sources.prepare', path: '/home/secret', bytes: 'shortcut', runId: 'fake' }).success).toBe(false)
 })
+
+
+it('transfers approved Git metadata with its source pin and rejects corrupted metadata', async () => {
+  const f = fixture()
+  const metadata = Buffer.from('approved commit and trees')
+  const manifest = createSourceManifest({ ...f.manifest, capturePolicy: 'git-tree-v1',
+    git: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), objectFormat: 'sha1', repository: 'octo/site',
+      metadata: { byteSize: metadata.length, sha256: sourceSha256(metadata) } } })
+  const chunks: Buffer[] = []
+  for await (const chunk of sourcePackageStream(manifest,
+    { read: async () => f.bytes, readGitMetadata: async () => metadata }, f.signal)) chunks.push(chunk as Buffer)
+  const packageBytes = Buffer.concat(chunks)
+  const reader = new VerifiedSourcePackageReader(Readable.from(chunks), packageBytes.length, f.signal)
+  await reader.open(manifest)
+  expect(await reader.read(manifest, manifest.entries[0]!, f.signal)).toEqual(f.bytes)
+  expect(reader.readyToComplete).toBe(false)
+  expect(await reader.readGitMetadata(manifest, f.signal)).toEqual(metadata)
+  await reader.complete()
+  const corrupt = Buffer.from(packageBytes)
+  corrupt[corrupt.length - 1] = 0
+  const rejected = new VerifiedSourcePackageReader(Readable.from([corrupt]), corrupt.length, f.signal)
+  await rejected.open(manifest)
+  await rejected.read(manifest, manifest.entries[0]!, f.signal)
+  await expect(rejected.readGitMetadata(manifest, f.signal)).rejects.toMatchObject({ code: 'SOURCE_BYTES_INVALID' })
+})
+
+
+it('keeps the source digest stable when Git metadata fields arrive in another order', () => {
+  const f = fixture()
+  const git = { commit: 'a'.repeat(40), tree: 'b'.repeat(40), objectFormat: 'sha1' as const }
+  const first = createSourceManifest({ ...f.manifest, capturePolicy: 'git-tree-v1',
+    git: { ...git, metadata: { byteSize: 123, sha256: 'c'.repeat(64) } } })
+  const reordered = createSourceManifest({ ...f.manifest, capturePolicy: 'git-tree-v1',
+    git: { ...git, metadata: { sha256: 'c'.repeat(64), byteSize: 123 } } })
+  expect(reordered.manifestDigest).toBe(first.manifestDigest)
+})

@@ -29,7 +29,10 @@ export function manifestDigest(manifest: Omit<SourceManifest, 'manifestDigest'>)
   return sourceSha256(Buffer.from(JSON.stringify({ version: manifest.version, snapshotId: manifest.snapshotId,
     approvedSourceId: manifest.approvedSourceId, capturePolicy: manifest.capturePolicy,
     executablePolicy: manifest.executablePolicy, git: manifest.git ? { commit: manifest.git.commit,
-      tree: manifest.git.tree, objectFormat: manifest.git.objectFormat } : null,
+      tree: manifest.git.tree, objectFormat: manifest.git.objectFormat,
+      ...(manifest.git.repository ? { repository: manifest.git.repository } : {}),
+      ...(manifest.git.metadata ? { metadata: { byteSize: manifest.git.metadata.byteSize,
+        sha256: manifest.git.metadata.sha256 } } : {}) } : null,
     entries: manifest.entries.map((e) => ({ path: e.path, kind: e.kind, byteSize: e.byteSize, sha256: e.sha256, executable: e.executable })),
     deletions: manifest.deletions, overlayBaseDigest: manifest.overlayBaseDigest ?? null,
     totalEntries: manifest.totalEntries, totalBytes: manifest.totalBytes })))

@@ -15,6 +15,7 @@ export interface CiPreparationStepPorts {
   checkpoint(): Promise<void>
   device(request: CiRuntimeRequest): Promise<CiRuntimeWorkerState>
   repository(workspaceId: string): Promise<string>
+  deliverSource(repository: string): Promise<void>
   wait(): Promise<void>
   now(): Date
 }
@@ -36,8 +37,14 @@ export async function runCiPreparation(record: CiPreparationRecord, ports: CiPre
   const commit = record.manifest.git!.commit
   if (!record.prepared) {
     await update('preparing')
+    const repository = record.manifest.git!.repository ?? await ports.repository(record.input.workspaceId)
+    const current = await ports.device({ operation: 'status' })
+    if (record.manifest.git?.metadata && (current.operationId !== record.id || current.commit !== commit
+      || !['preparing', 'prepared'].includes(current.state))) {
+      await ports.deliverSource(repository)
+    }
     let state = await ports.device({ operation: 'prepare', operationId: record.id,
-      repository: await ports.repository(record.input.workspaceId), commit,
+      repository, commit,
       review: { reviewedByPrincipalId: record.principal.id,
         decisionDigest: record.profile.approvalConfig.review!.decisionDigest },
       keepImages: [record.profile.spec.policy.imageDigest] })
