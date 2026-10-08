@@ -289,7 +289,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
   private async fetchDefaultBranch(clone: string, repository: string, branch: string, signal: AbortSignal) {
     const ref = `refs/foreman/ci/fetch/${randomUUID()}`
     let commit: string
-    let cleanupFailed = false
+    let cleanupFailed: boolean
     try {
       const fetched = await this.git.git(['fetch', '--no-tags', 'origin', `refs/heads/${branch}:${ref}`],
         { cwd: clone, signal })
