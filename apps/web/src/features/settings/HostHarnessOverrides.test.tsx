@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+import { HostHarnessOverrideSaveSchema, HostHarnessInstanceCheckInputSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
@@ -149,4 +149,69 @@ it('checks a saved profile only on explicit action and reconciles its exact comm
   await user.click(screen.getByRole('button', { name: 'Reconcile original profile check' }))
   expect(await screen.findByText('suite-v1')).toBeVisible()
   expect(requests).toHaveLength(2)
+})
+
+
+it('creates a Claude override from its saved preset, edits the profile directory and explicitly checks persisted settings', async () => {
+  let saved: HostHarnessOverride | undefined
+  let checks = 0
+  const target = { ...pc.target, harnessInstallationId: 'claude-sdk', installationFingerprint: 'claude-payload' }
+  server.use(
+    http.get('/api/management/harnesses/registry', () => HttpResponse.json({
+      instances: [{ instanceId: 'local-default:claude', instanceRevision: '5', driverId: 'claude',
+        enabled: true, configuration: savedClaudeConfiguration, availability: 'available', driverRevision: '1' }],
+      installations: [{ hostRef: target.hostRef, harnessInstallationId: target.harnessInstallationId,
+        installationFingerprint: target.installationFingerprint, driverId: 'claude', driverRevision: '1',
+        protocolRevision: 'claude-sdk', environmentGeneration: 'env', connectionGeneration: 'conn',
+        installed: true, authenticated: null, compatible: null, qualified: null, observedVersion: null,
+        launcher: { requested: 'claude', resolvedLauncher: '/host/claude', fingerprint: 'claude-payload',
+          status: 'installed', interpreter: null, diagnostics: [], checkedAt: '2026-10-01T00:00:00.000Z',
+          environment: { generation: 'env', provenance: 'terminal', cwd: '/host', path: '/host' } } }],
+    })),
+    http.post('/api/management/harness-instances/read', () => HttpResponse.json({ overrides: saved ? [saved] : [] })),
+    http.post('/api/management/harness-instances/save', async ({ request }) => {
+      const input = HostHarnessOverrideSaveSchema.parse(await request.json())
+      expect(input).toMatchObject({ expectedRevision: 0, target, presetId: 'local-default:claude',
+        configuration: { ...savedClaudeConfiguration, configDirectory: '/host/different-profile' } })
+      saved = { ...pc, instanceId: input.instanceId, target: input.target, presetId: input.presetId,
+        enabled: input.enabled, configuration: input.configuration,
+        revision: 1, instanceRevision: '1', driverId: 'claude',
+        configurationFingerprint: 'saved-claude', qualification: 'unqualified' }
+      return HttpResponse.json({ value: saved, replayed: false })
+    }),
+    http.post('/api/management/harness-instances/check', async ({ request }) => {
+      const input = HostHarnessInstanceCheckInputSchema.parse(await request.json())
+      expect(input).toMatchObject({ instanceId: saved!.instanceId, expectedRevision: 1, target })
+      expect(saved!.configuration).toMatchObject({ configDirectory: '/host/different-profile' })
+      checks += 1
+      saved = { ...saved!, qualification: 'qualified' }
+      return HttpResponse.json({ value: saved, replayed: false, proof: {
+        target, instanceRevision: '1', configurationFingerprint: 'saved-claude', driverId: 'claude',
+        driverRevision: '1', protocolRevision: 'claude-sdk', suiteRevision: 'profile-suite',
+        environmentGeneration: 'env', connectionGeneration: 'conn', authenticated: true,
+        compatible: true, qualified: true, checkedAt: '2026-10-01T00:00:00.000Z',
+      } })
+    }),
+  )
+  renderHost(pc)
+  const user = userEvent.setup()
+  const choices = await screen.findByRole('combobox', { name: 'Installation and global preset for new override' })
+  await waitFor(() => expect(choices.querySelectorAll('option')).toHaveLength(2))
+  expect(choices.querySelectorAll('option')[1]).toHaveTextContent('claude')
+  await user.selectOptions(choices, choices.querySelectorAll('option')[1]!.value)
+  await user.click(screen.getByRole('button', { name: 'Configure new host override' }))
+  const profile = screen.getByRole('textbox', { name: 'Local Claude profile directory' })
+  await user.clear(profile)
+  await user.type(profile, '/host/different-profile')
+  expect(screen.queryByRole('button', { name: 'Check saved profile on this computer' })).not.toBeInTheDocument()
+  expect(checks).toBe(0)
+  await user.click(screen.getByRole('button', { name: 'Create host override' }))
+  const check = await screen.findByRole('button', { name: 'Check saved profile on this computer' })
+  await waitFor(() => expect(check).toBeEnabled())
+  expect(screen.getByRole('textbox', { name: 'Local Claude profile directory' })).toHaveValue('/host/different-profile')
+  expect(screen.getByText(/subscription capacity/)).toBeVisible()
+  expect(checks).toBe(0)
+  await user.click(check)
+  await waitFor(() => expect(screen.getByText('Qualification').nextElementSibling).toHaveTextContent('qualified'))
+  expect(checks).toBe(1)
 })
