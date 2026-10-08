@@ -27,7 +27,7 @@ import { registerHarnessMcpTools } from './tools/harnessMcp.js'
 import { registerRunGraphTools } from './tools/runGraph.js'
 import { registerRunInspectionTools } from './tools/runInspection.js'
 import { registerRunTools } from './tools/runs.js'
-import { registerRunPlacementTool } from '../../modules/placement/transports.js'
+import { registerRunPlacementTool, registerNodePlacementChoicesTool } from '../../modules/placement/transports.js'
 import { registerWorkflowTools } from './tools/workflows.js'
 import { registerWorkflowScheduleTools } from './tools/workflowSchedules.js'
 import { registerWorkspaceTools } from './tools/workspaces.js'
@@ -77,6 +77,9 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerRunTools(server, context)
   if (context.services.runPlacements && operatorToolAvailable(context, 'run_node_placement_get')) {
     registerRunPlacementTool(server, context.services.runPlacements, context.principal, context.services.commands)
+  }
+  if (context.services.placementChoices && operatorToolAvailable(context, 'workflow_node_placement_choices')) {
+    registerNodePlacementChoicesTool(server, context.services.placementChoices, context.principal, context.services.commands)
   }
   registerSubagentTools(server, context)
   registerRunInspectionTools(server, context)

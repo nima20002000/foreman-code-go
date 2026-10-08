@@ -43,7 +43,7 @@ export function registerNodePlacementChoicesRoutes(app: FastifyInstance, reads: 
 export function registerNodePlacementChoicesTool(server: McpServer, reads: import('./choicesService.js').NodePlacementChoicesService,
   principal: ManagementPrincipal, commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
   server.registerTool('workflow_node_placement_choices', {
-    description: 'List main-authorized destinations for one saved node/configuration. Requires live workflows:read and workspace_locations:read. Readiness is not permission to launch; save and Start retain revision/auth/root validation.',
+    description: 'List authorized computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Choosing Main (default) clears the node placement through workflow_save_v3. Discovery does not grant execution; Save and Start revalidate revisions and authority.',
     inputSchema: NodePlacementChoicesInputSchema, outputSchema: NodePlacementChoicesResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async input => {
@@ -55,11 +55,10 @@ export function registerNodePlacementChoicesTool(server: McpServer, reads: impor
   })
 }
 
-/** Existing frozen capabilities enums cannot silently invent names. tools/list
- * publishes both strict schemas; root can append this explicit capability limit. */
+/** Discovery and accepted Run readback have separate grants and do not authorize execution. */
 export function placementCapabilityLimit(composed: boolean) {
   return { feature: 'accepted_node_placement', state: composed ? 'limited' as const : 'unsupported' as const,
     detail: composed
-      ? 'run_node_placement_get requires runs:read and workspace_locations:read. workflow_node_placement_choices requires workflows:read and workspace_locations:read. Discover exact schemas through tools/list. Accepted binding is distinct from observed native work; remote execution requires the approved device dispatch bridge.'
+      ? 'run_node_placement_get requires runs:read and workspace_locations:read. workflow_node_placement_choices requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Clear a saved node placement through workflow_save_v3 to inherit Main. Accepted Run binding remains unchanged; remote execution requires the approved device dispatch bridge.'
       : 'Placement readback and authorized choices are not composed in this application.' }
 }

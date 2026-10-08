@@ -153,6 +153,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'run_list', action: 'runs:read' },
   { name: 'run_get', action: 'runs:read' },
   { name: 'run_node_placement_get', action: 'runs:read' },
+  { name: 'workflow_node_placement_choices', action: 'workflows:read' },
   { name: 'run_current_get_v1', action: 'runs:read' },
   { name: 'run_history_get_v1', action: 'runs:read' },
   { name: 'run_events_list', action: 'runs:read' },
