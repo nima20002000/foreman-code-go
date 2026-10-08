@@ -55,6 +55,7 @@ export function jobEligibilityReason(code: string): JobComputerEligibility['reas
     return 'authorization_revoked'
   }
   if (code === 'BUILD_COMPUTER_DISABLED') return 'disabled'
+  if (code === 'SOURCE_CAPACITY' || code === 'SOURCE_DISK_CAPACITY') return 'busy'
   if (code === 'WORKER_EXECUTION_DISABLED') return 'remote_execution_disabled'
   if (code === 'JOB_ROOT_PIN_CONFLICT' || code === 'SOURCE_ROOT_NOT_FOUND') return 'root_changed'
   if (code === 'JOB_SOURCE_PIN_CONFLICT') return 'source_unavailable'
@@ -120,7 +121,7 @@ function jobComputerFullCapacity(profile: JobRuntimeProfileRecord): JobRuntimePr
 
 export type VerificationMemoryReader = (profile: JobVerificationProfile) => Promise<number | null>
 export type JobComputerCapacityDecision = { fits: true } | { fits: false;
-  reason: 'busy' | 'memory_unavailable' | 'memory_headroom_required' }
+  reason: 'busy' | 'memory_unavailable' | 'memory_headroom_required' | 'request_exceeds_maximum' }
 
 const closedJobExecutionSql = `(e.record #>> '{process,phase}'='terminal'
       and e.record #> '{process,processStopped}'='true'::jsonb
@@ -212,7 +213,13 @@ export class JobComputerSelection {
       }
       const preference = await this.settings.preference(sql, buildComputerTarget(candidate.spec.target))
       enrolled.push({ ...candidate, preference })
-      if (!preference.buildEnabled) reasons.push('disabled')
+    }
+    const readyHosts = new Set(enrolled.filter(candidate => candidate.ready)
+      .map(candidate => buildComputerKey(candidate.preference.target)))
+    const placementCandidates = enrolled.filter(candidate => candidate.ready
+      || !readyHosts.has(buildComputerKey(candidate.preference.target)))
+    for (const candidate of placementCandidates) {
+      if (!candidate.preference.buildEnabled) reasons.push('disabled')
       reasons.push(...candidate.reasons)
     }
     const compatibleTargetCount = new Set(enrolled.map(candidate => buildComputerKey(candidate.preference.target))).size
@@ -220,7 +227,7 @@ export class JobComputerSelection {
     const exceedsMaximum = enrolled.length > 0 && maximumCandidates.length === 0
       && enrolled.every(candidate => candidate.profile.schemaVersion !== 2 || candidate.profile.measurement !== null)
     const waitingHosts: string[] = []
-    for (const candidate of orderForPlacement(enrolled, options.placementOverride)) {
+    for (const candidate of orderForPlacement(placementCandidates, options.placementOverride)) {
       if (!this.fitsEmptyComputer(candidate)) {
         reasons.push('request_exceeds_maximum')
         continue
@@ -370,6 +377,10 @@ export async function jobComputerCapacityDecision(sql: JobSql,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
   const capacity = jobComputerCapacity(profile, allowancePercent)
+  if ((Object.keys(capacity) as (keyof typeof capacity)[])
+    .some(field => jobRuntimeProfileLimits(profile)[field] > capacity[field])) {
+    return { fits: false, reason: 'request_exceeds_maximum' }
+  }
   const computing = rows.filter(row => !row.compute_closed)
   let slots = 1
   if (profile.schemaVersion === 2) {

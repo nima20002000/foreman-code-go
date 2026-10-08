@@ -97,7 +97,8 @@ interface Runtime {
   appliedPreferences?: SessionPreferences
   commands?: string[]
   context?: ContextSnapshot
-  compaction?: { state: CompactionState; promptUuid: string; progress: import('../port.js').NativeCompactInput['onProgress']; finish(): void; fail(error: unknown): void } | undefined
+  compaction?: { state: CompactionState; promptUuid: string; boundary: boolean;
+    progress: import('../port.js').NativeCompactInput['onProgress']; finish(): void; fail(error: unknown): void } | undefined
 
   sdk: ClaudeSdkSession
   generation: string
@@ -543,6 +544,7 @@ export function createClaudeNativeSessionManager(options: {
     if (resume) runtime.session = structuredClone(resume)
     all.add(runtime)
     const startup = startupSignal(signal)
+    let offerStarted = false
     try {
       if (!runtime.sdk) runtime.sdk = await options.runner.open({
         scope: options.scope, options: nativeOptions,
@@ -584,6 +586,7 @@ export function createClaudeNativeSessionManager(options: {
           }
           await initial.turn.input.onSettingsApplied?.()
         }
+        offerStarted = true
         await runtime.sdk.offer({ promptUuid: initial.turn.promptUuid, content: initial.turn.input.prompt }, signal)
       }
       const timer = setTimeout(() => runtime.rejectInit(new HarnessExecutionError('CLAUDE_INIT_TIMEOUT', 'Claude initialization did not provide an exact native session.')), options.initializationTimeoutMs ?? 10_000)
@@ -597,7 +600,11 @@ export function createClaudeNativeSessionManager(options: {
       }
     } catch (error) {
       startup.release()
-      const failure = runtime.failure ?? error
+      let failure = runtime.failure ?? error
+      if (initial && (!offerStarted || error instanceof ClaudeInputNotDeliveredError)) {
+        failure = Object.assign(failure instanceof Error ? failure : new Error('Claude input was not offered.'),
+          { certainty: 'definite' as const, deliveryState: 'not-delivered' as const })
+      }
       runtime.rejectInit(failure)
       await runtime.sdk?.close()
       await runtime.pumping
@@ -640,9 +647,11 @@ export function createClaudeNativeSessionManager(options: {
             nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
             trigger: metadata?.trigger ?? 'unknown', beforeTokens: metadata?.pre_tokens ?? null }, runtime.active)
           if (runtime.compaction && metadata?.trigger === 'manual') {
+            runtime.compaction.boundary = true
             runtime.compaction.state = { ...runtime.compaction.state,
               nativeOperationId: typeof frame.uuid === 'string' ? frame.uuid : null,
-              status: 'completed', message: 'Context compacted.', beforeTokens: metadata?.pre_tokens ?? null }
+              message: 'Compaction boundary observed. Waiting for the command result.',
+              beforeTokens: metadata?.pre_tokens ?? null }
             await runtime.compaction.progress(runtime.compaction.state)
           }
         }
@@ -656,7 +665,8 @@ export function createClaudeNativeSessionManager(options: {
           && claudeCompactionResultMatches(frame, runtime.session.nativeSessionId, runtime.compaction.promptUuid)) {
           const control = runtime.compaction
           if (frame.is_error === true) control.state = { ...control.state, status: 'failed', message: 'Claude rejected compaction.' }
-          else if (control.state.status !== 'completed') control.state = { ...control.state,
+          else if (control.boundary) control.state = { ...control.state, status: 'completed', message: 'Context compacted.' }
+          else control.state = { ...control.state,
             status: 'no-op', message: 'Claude completed the command without a compaction boundary.' }
           control.finish()
           continue
@@ -1098,7 +1108,7 @@ export function createClaudeNativeSessionManager(options: {
         nativeOperationId: null, nativeRequestId: claudePromptUuid(input.clientCorrelationId),
         claudeSession: { ...options.scope }, claudeCursor: before.cursor, status: 'running' as CompactionState['status'], message: 'Compacting context.',
         beforeTokens: runtime.context?.usedTokens ?? null, observedAt: now() },
-        promptUuid: claudePromptUuid(input.clientCorrelationId), progress: input.onProgress, finish, fail }
+        promptUuid: claudePromptUuid(input.clientCorrelationId), boundary: false, progress: input.onProgress, finish, fail }
       runtime.compaction = control
       const waitSignal = AbortSignal.any([AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
       const abort = () => fail(waitSignal.reason)
@@ -1145,6 +1155,8 @@ export function createClaudeNativeSessionManager(options: {
         runtime.compaction = undefined
         runtime.controlPending = false
         if (recovered.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
+      } else {
+        runtime.controlPending = true
       }
       return recovered
     },

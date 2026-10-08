@@ -107,7 +107,7 @@ describe('workspace settings actions', () => {
     const section = within(await screen.findByRole('region', { name: 'GitHub repository' }))
     const save = section.getByRole('button', { name: 'Save repository' })
     await user.type(section.getByRole('textbox', { name: 'Repository' }), 'not a repo')
-    expect(section.getByText('Use owner/name')).toBeVisible()
+    expect(section.getByText('Use owner/name or a GitHub repository URL without extra path segments.')).toBeVisible()
     expect(save).toBeDisabled()
     await user.clear(section.getByRole('textbox', { name: 'Repository' }))
     await user.type(section.getByRole('textbox', { name: 'Repository' }), 'https://github.com/octo-owner/website.git')

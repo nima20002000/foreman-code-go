@@ -47,6 +47,9 @@ import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
 import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
 import { localWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
 import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
+import { MaterializationReservationCleanup } from './materializationReservationCleanup.js'
+import { reclaimSourceReservation } from './reclaimSourceReservation.js'
+import { SourceReservationReclamationResponseSchema } from '@foreman-code/contracts/source-operations'
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
@@ -246,7 +249,78 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     const intent = await lifecycle.forMaterialization(record, channel!.binding)
     await input.transferAcknowledged!(intent)
   } : undefined, preparationClosed: input.transferPreparationClosed, closed: input.transferMaterializationClosed })
+  const reclamations = new MaterializationReservationCleanup(input.pool, async grant => {
+    const root = grant.roots[0]!
+    const authorize = async () => {
+      const sql = await input.pool.connect()
+      try {
+        await sql.query('begin')
+        const current = await reclamations.authorize(sql, grant.reservationId, grant.reclamationId)
+        if (!isDeepStrictEqual(current, grant)) {
+          throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The original source cleanup changed.', 409)
+        }
+        await sql.query('commit')
+      } catch (error) {
+        await sql.query('rollback')
+        throw error
+      } finally { sql.release() }
+    }
+    if (root.binding.deviceId) {
+      const endpoint = input.endpoint()
+      const channel = endpoint.captureRequest(root.binding.deviceId, SOURCE_OPERATION_EXTENSION.namespace)
+      if (!channel || channel.binding.mainId !== root.binding.mainId
+        || channel.binding.workerInstallationId !== root.binding.workerInstallationId
+        || channel.binding.keyRevision !== root.registration?.keyRevision
+        || channel.binding.authorizationRevision !== root.registration.authorizationRevision) unavailable()
+      const reply = await channel!.request({ version: 1, operation: 'sources.reclaim-reservation',
+        reservationId: grant.reservationId, reclamationId: grant.reclamationId }, { signal: AbortSignal.timeout(60_000) })
+      const result = SourceReservationReclamationResponseSchema.parse(reply.payload)
+      if (reply.bytes !== undefined || result.reservationId !== grant.reservationId
+        || result.reclamationId !== grant.reclamationId || result.operationId !== grant.operationId
+        || !isDeepStrictEqual(endpoint.currentBinding(root.binding.deviceId), channel!.binding)) {
+        throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The original Worker cleanup reply changed.', 409)
+      }
+      return result.closures
+    }
+    return reclaimSourceReservation(grant, { authorize,
+      operationClosed: async () => { await authorize(); return true },
+      nativeClosed: async owner => {
+        const workflow = await input.pool.query('select 1 from execution_dispatch_intents where operation_id=$1',
+          [owner.identity.operationId])
+        if (workflow.rowCount) return localWorkflowPreparationClosed(input.pool,
+          { ...owner, preparationKind: 'workflow', preparationClosed: true })
+        return true
+      },
+      quotaPoolFor: async owner => {
+        const path = join(input.runtimeRoot, 'job-runtime.json')
+        const configuration = input.installedJobConfiguration ?? await lstat(path).then(
+          () => ({ path, ownerUid: process.getuid!() }), error => { if (error.code === 'ENOENT') return null; throw error })
+        const pool = await installedSourceQuotaPool(configuration, owner.root.binding)
+        return pool ? { pool } : undefined
+      },
+      closed: async closure => { await input.transferPreparationClosed?.(closure) },
+    }, AbortSignal.timeout(60_000))
+  })
   return { sources, policies, executions, snapshots, attempts, owners, transfers, lifecycle,
+    reconcileMaterializationReservations: (report: (error: unknown) => void) => reclamations.reconcile(report),
     reconcileFailedCaptures: (report: (error: unknown) => void) => reconcileFailedCaptures(input.pool, snapshots, report),
-    sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle) }
+    sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle, async (reservationId, reclamationId, context) => {
+      const sql = await input.pool.connect()
+      try {
+        await sql.query('begin')
+        const grant = await reclamations.authorize(sql, reservationId, reclamationId)
+        if (grant.roots.some(root => root.binding.mainId !== context.binding.mainId
+          || root.binding.deviceId !== context.binding.deviceId
+          || root.binding.workerInstallationId !== context.binding.workerInstallationId
+          || root.registration?.keyRevision !== context.binding.keyRevision
+          || root.registration.authorizationRevision !== context.binding.authorizationRevision)) {
+          throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Cleanup belongs to another Worker installation.', 403)
+        }
+        await sql.query('commit')
+        return grant
+      } catch (error) {
+        await sql.query('rollback')
+        throw error
+      } finally { sql.release() }
+    }) }
 }

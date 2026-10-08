@@ -27,7 +27,13 @@ it('recovers only the new manual boundary from the same persisted session and sc
     expect((await readClaudeCompactionHistory(reconstructed, before.cursor)).boundaries).toEqual(after.boundaries)
     const state = { requestId: 'compact-command', nativeSessionId, nativeOperationId: null,
       claudeCursor: before.cursor, status: 'uncertain' as const, message: '', beforeTokens: null, observedAt: new Date().toISOString() }
-    expect(recoveredClaudeCompaction(state, after.boundaries)).toMatchObject({ status: 'completed', nativeOperationId: 'new-boundary', beforeTokens: 123000 })
+    const pending = recoveredClaudeCompaction(state, after.boundaries)
+    expect(pending).toMatchObject({ status: 'uncertain', nativeOperationId: 'new-boundary', beforeTokens: 123000 })
+    const nativeRequestId = randomUUID()
+    await saveClaudeCompactionResult(session, nativeRequestId, 'completed')
+    expect(await recoverPersistedClaudeCompaction({ ...pending, nativeRequestId,
+      claudeSession: { deviceId: session.deviceId, configRevision: session.configRevision, profilePath, cwd } }))
+      .toMatchObject({ status: 'completed', nativeOperationId: 'new-boundary', beforeTokens: 123000 })
     await expect(readClaudeCompactionHistory({ ...session, configRevision: 'other' }, before.cursor)).rejects.toThrow('identity changed')
     expect(recoveredClaudeCompaction(state, [frame('a', 'manual'), frame('b', 'manual')]).status).toBe('uncertain')
     const unchanged = await readClaudeCompactionHistory(session, after.cursor)
@@ -61,7 +67,7 @@ it('recovers a completed boundary before a large unfinished native record withou
     expect(recovered.boundaries).toEqual([boundary])
     expect(recoveredClaudeCompaction({ requestId: randomUUID(), nativeSessionId, nativeOperationId: null,
       status: 'uncertain', message: '', beforeTokens: null, observedAt: new Date().toISOString() },
-    recovered.boundaries)).toMatchObject({ status: 'completed', nativeOperationId: boundary.uuid })
+    recovered.boundaries)).toMatchObject({ status: 'uncertain', nativeOperationId: boundary.uuid })
 
     expect((await readClaudeCompactionHistory(session, recovered.cursor)).boundaries).toEqual([])
     await appendFile(path, `${trailingRecord.slice(-2)}\n`)

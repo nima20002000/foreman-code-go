@@ -103,7 +103,7 @@ function metadata(state: State) {
     materializationId: state.record?.receipt.materializationId ?? (state.closure ? SourcePreparationClosureSchema.parse(state.closure).materializationId : null),
     closure: state.closure })
 }
-async function admissionClosed(sql: GraphSqlClient, state: State) {
+export async function admissionClosed(sql: GraphSqlClient, state: State) {
   if (state.kind === 'workflow') return assertWorkflowPreparationClosed(sql, state)
   const job = (await sql.query<{ record: unknown }>('select record from job_executions where id=$1 or operation_id=$2 for share',
     [state.attempt.executionId, state.operationId])).rows[0]

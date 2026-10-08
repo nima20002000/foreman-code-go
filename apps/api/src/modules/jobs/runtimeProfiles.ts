@@ -290,7 +290,6 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       }
     }
     const current=await this.producer.revalidate(sql,profile)
-    console.error('qualification-validation-debug',JSON.stringify({profileId:profile.id,schemaVersion:profile.schemaVersion,sourceCommit:'sourceCommit' in profile?profile.sourceCommit:null,current}))
     if(!current.ready)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The qualified runtime context changed.',409,{reasons:current.reasons})
   }
 }

@@ -8,7 +8,7 @@ import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import type { RegistryHarnessSelection } from '../installationRegistry.js'
 import { DomainError } from '../../errors.js'
 import { claudeCandidateConfiguration } from './configuration.js'
-import { loadOfficialClaudeSdk } from './official.js'
+import { assertClaudeHelperProfile, loadOfficialClaudeSdk } from './official.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { ClaudeSdkClient, ClaudeSdkSession } from './port.js'
 import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
@@ -28,6 +28,7 @@ export async function qualifyClaudeNativeProfile(input: {
 }) {
   if (input.value.configuration.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude qualification requires a Claude profile.', 409)
   const configuration = ClaudeFullAccessConfigurationSchema.parse(input.value.configuration)
+  assertClaudeHelperProfile(configuration.configDirectory)
   if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_REQUIRED', 'The native profile checker requires explicitly provisioned API-key authority for API-key mode.', 409)
   const binary = input.binding.installation.launcher.resolvedLauncher
   if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The exact Claude executable is unavailable.', 409)
