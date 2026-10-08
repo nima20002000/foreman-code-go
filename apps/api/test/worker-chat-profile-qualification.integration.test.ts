@@ -90,14 +90,15 @@ it('uses the selected Worker qualification when the general harness cache has a 
   } catch (error) {
     failure = error
     console.error('Worker chat qualification regression failed', { failures: fixture.failures().slice(-8) })
-    throw error
-  } finally {
-    try {
-      await fixture.close()
-    } catch (cleanupError) {
-      if (failure) throw new AggregateError([failure, cleanupError],
-        'Worker chat regression and fixture cleanup failed.', { cause: failure })
-      throw cleanupError
-    }
   }
+  let cleanupFailure: unknown
+  try {
+    await fixture.close()
+  } catch (error) {
+    cleanupFailure = error
+  }
+  if (failure && cleanupFailure) throw new AggregateError([failure, cleanupFailure],
+    'Worker chat regression and fixture cleanup failed.', { cause: failure })
+  if (failure) throw failure
+  if (cleanupFailure) throw cleanupFailure
 }, 240_000)
