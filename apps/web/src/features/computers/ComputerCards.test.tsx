@@ -1,9 +1,10 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import { http, HttpResponse } from 'msw'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it } from 'vitest'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { ComputerCards } from './ComputerCards'
-import { computersFixture, deviceName, mainTarget, registration } from './computersTestFixture'
+import { computersFixture, deviceName, deviceTarget, mainTarget, registration } from './computersTestFixture'
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 
 afterEach(() => useOperatorChatStore.getState().reset())
@@ -44,4 +45,37 @@ it.each([['pending', 'Pairing pending'], ['revoked', 'Access revoked']] as const
   computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[device]} />)
   const card = await screen.findByRole('article', { name: /^Computer / })
   expect(within(card).getByText(label)).toBeVisible()
+})
+
+it('shows versions, OS updates, restart need and disk, and starts maintenance on that computer in one click', async () => {
+  const started: unknown[] = []
+  const status = { observedAt: new Date().toISOString(), tasks: [{ id: '77777777-7777-4777-8777-777777777777', kind: 'update-system',
+      state: 'succeeded', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), summary: '4 packages upgraded', outputTail: '' }],
+    harnesses: [{ harness: 'codex', installed: true, version: '0.160.0', latest: '0.161.0' }, { harness: 'claude', installed: false, version: null, latest: '2.1.294' }],
+    system: { packageUpdates: 3, rebootRequired: true, sudo: true, disk: { path: '/home/owner', freeBytes: 41e9, totalBytes: 193e9 } } }
+  computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[registration]} />, [
+    http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [{ target: mainTarget, status }, { target: deviceTarget, status: null }] })),
+    http.post('*/api/management/computers/maintenance/start', async ({ request }) => { started.push(await request.json()); return HttpResponse.json({ computers: [] }) }),
+  ])
+  const main = await screen.findByRole('article', { name: 'Main PC' })
+  expect(await within(main).findByText('Codex 0.160.0 · 0.161.0 available')).toBeVisible()
+  expect(within(main).getByText('3 updates')).toBeVisible()
+  expect(within(main).getByText('Restart needed')).toBeVisible()
+  expect(within(main).getByText('41 GB free of 193 GB')).toBeVisible()
+  expect(within(main).getByRole('status')).toHaveTextContent('System update: 4 packages upgraded')
+  expect(within(screen.getByRole('article', { name: deviceName })).queryByRole('button', { name: 'Restart' })).not.toBeInTheDocument()
+  await userEvent.click(within(main).getAllByRole('button', { name: 'Update' })[0]!)
+  await userEvent.click(within(main).getByRole('button', { name: 'Install' }))
+  await userEvent.click(within(main).getByRole('button', { name: 'Restart' }))
+  await userEvent.click(within(main).getByRole('button', { name: 'Confirm restart' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Update computers' }))
+  await waitFor(() => expect(started).toHaveLength(5))
+  expect(started.map(value => (value as { task: unknown; targets?: unknown[] }))).toEqual([
+    expect.objectContaining({ task: { kind: 'update-harnesses', harnesses: ['codex'] }, targets: [mainTarget] }),
+    expect.objectContaining({ task: { kind: 'update-harnesses', harnesses: ['claude'] }, targets: [mainTarget] }),
+    expect.objectContaining({ task: { kind: 'restart' }, targets: [mainTarget] }),
+    expect.objectContaining({ task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } }),
+    expect.objectContaining({ task: { kind: 'update-system' } }),
+  ])
+  expect((started[3] as { targets?: unknown }).targets).toBeUndefined()
 })

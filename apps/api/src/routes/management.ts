@@ -1,5 +1,6 @@
 import { registerComputerActivityRoutes } from './computerActivity.js'
 import { registerComputerAccountsRoutes } from './computerAccounts.js'
+import { registerComputerMaintenanceRoutes } from './computerMaintenance.js'
 import { registerComputerGitHubRoutes } from './computerGitHub.js'
 import { registerComputerSyncRoutes } from './computerSync.js'
 import { registerBuildComputerRoutes } from './buildComputers.js'
@@ -88,6 +89,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   if (services.harnessRegistry) registerHarnessRegistryRoutes(app, services.harnessRegistry, async request => requirePrincipal(request))
   if (services.computerActivity) registerComputerActivityRoutes(app, services.computerActivity)
   if (services.computerAccounts) registerComputerAccountsRoutes(app, services.computerAccounts)
+  if (services.computerMaintenance) registerComputerMaintenanceRoutes(app, services.computerMaintenance)
   if (services.computerGitHub) registerComputerGitHubRoutes(app, services.computerGitHub)
   if (services.computerSync) registerComputerSyncRoutes(app, services.computerSync)
   if (services.buildComputers) registerBuildComputerRoutes(app, services.buildComputers)

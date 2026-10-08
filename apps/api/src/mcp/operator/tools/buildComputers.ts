@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
+import { ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema, ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema, ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
   GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
@@ -32,6 +33,24 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
     }, input => invokeOperatorTool(context, 'computer_accounts_list',
       () => context.services.computerAccounts!.list(context.principal, 'mcp', input.refresh === true, input.cursor)))
   }
+  const maintenance = context.services.computerMaintenance
+  if (maintenance && operatorToolAvailable(context, 'computers_maintenance_status')) server.registerTool('computers_maintenance_status', {
+    description: 'Read maintenance status for Main and every paired computer: installed and latest Codex/Claude versions, pending OS '
+      + 'package updates, whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome. '
+      + 'Requires global settings:read. Cached for 20 seconds unless refresh is true; an offline computer reports null status.',
+    inputSchema: z.object({ refresh: z.boolean().optional() }).strict(), outputSchema: ComputerMaintenanceListSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => maintenance.list(context.principal, 'mcp', input.refresh === true)))
+  if (maintenance && operatorToolAvailable(context, 'computers_maintenance_start')) server.registerTool('computers_maintenance_start', {
+    description: 'Start one maintenance task on the given computers, or on Main and every paired computer when targets is omitted: '
+      + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
+      + 'non-interactive upgrade), restart (sudo reboot; targets are required), sync-mcp (add Main\'s user-level Codex and Claude MCP '
+      + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
+      + 'sync-plugins (install Main\'s Codex plugins that other computers lack). Tasks run in the background; read their outcome with '
+      + 'computers_maintenance_status. Requires global settings:update. Reuse commandId to retry without starting work twice.',
+    inputSchema: ComputerMaintenanceStartInputSchema, outputSchema: ComputerMaintenanceStartResultSchema,
+    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
+  }, input => invokeOperatorTool(context, 'computers_maintenance_start', () => maintenance.start(context.principal, 'mcp', input)))
   const github = context.services.computerGitHub
   const writeAnnotations = { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: true }
   if (github && operatorToolAvailable(context, 'computer_github_login_start')) server.registerTool('computer_github_login_start', {

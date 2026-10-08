@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { ChevronRight, Monitor } from 'lucide-react'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -7,6 +8,8 @@ import { computerDisplayName, type ComputerActivity } from '@foreman-code/contra
 import { useBuildComputers } from '../../shared/api/buildComputers'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
+import { useComputerMaintenance, useStartMaintenance } from '../../shared/api/computerMaintenance'
+import type { MaintenanceStatus } from '@foreman-code/contracts/computer-maintenance'
 import { Badge, Button, IconButton } from '../../shared/ui/nocturne'
 import { askOperator } from '../operator-chat/operatorChatStore'
 import { MainRuntimeSetup } from '../runtime-qualification/MainRuntimeSetup'
@@ -34,6 +37,8 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
   const reads = useBuildComputers(targets)
   const activity = useComputerActivity()
   const accounts = useComputerAccounts()
+  const maintenance = useComputerMaintenance()
+  const start = useStartMaintenance()
   const fresh = useComputerActivityFreshness(activity.dataUpdatedAt, activity.fetchStatus)
   const cards: Card[] = targets.map((target, index) => ({ target, build: reads[index]!.data, buildError: reads[index]!.isError }))
     // The order builds use: enabled computers from the highest priority down.
@@ -42,13 +47,26 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
       || computerKey(a.target).localeCompare(computerKey(b.target)))
   const builders = cards.filter(card => card.build?.preference.buildEnabled)
   return <>
+    {only ? null : <div className="computer-fleet-actions" role="group" aria-label="All computers">
+      <Button size="sm" disabled={start.isPending} onClick={() => {
+        start.mutate({ task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } })
+        start.mutate({ task: { kind: 'update-system' } })
+      }}>Update computers</Button>
+      <Button size="sm" variant="ghost" disabled={start.isPending} onClick={() => {
+        start.mutate({ task: { kind: 'sync-mcp' } })
+        start.mutate({ task: { kind: 'sync-plugins' } })
+      }}>Sync MCP servers and plugins</Button>
+      {start.isError ? <small role="alert">{start.error.message}</small> : null}
+    </div>}
     <ul className="computer-card-grid" aria-label="Computers">
       {cards.map(card => {
         const observed = activity.data?.mainId === mainId && !activity.isError
           ? activity.data.computers.find(computer => sameDeviceProvisioningTarget(computer.target, card.target)) : undefined
         const entry = accounts.isError ? undefined : accounts.data?.computers.find(computer => sameDeviceProvisioningTarget(computer.target, card.target))
+        const upkeep = maintenance.data?.computers.find(computer => sameDeviceProvisioningTarget(computer.target, card.target))?.status
         return <li key={computerKey(card.target)}>
-          <ComputerCard card={card} observed={observed} fresh={fresh} accounts={entry?.accounts}
+          <ComputerCard card={card} observed={observed} fresh={fresh} accounts={entry?.accounts} maintenance={upkeep}
+            onMaintain={task => start.mutate({ task, targets: [card.target] })} maintaining={start.isPending}
             buildPosition={builders.indexOf(card) + 1} buildCount={builders.length}
             onOpen={card.target.hostRef.kind === 'device' && onSelectComputer
               ? () => { if (card.target.hostRef.kind === 'device') onSelectComputer(card.target.hostRef.deviceId) } : undefined} />
@@ -69,8 +87,10 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
   </>
 }
 
-function ComputerCard({ card, observed, fresh, accounts, buildPosition, buildCount, onOpen }: {
+type Task = Parameters<ReturnType<typeof useStartMaintenance>['mutate']>[0]['task']
+function ComputerCard({ card, observed, fresh, accounts, maintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
   card: Card; observed: ComputerActivity | undefined; fresh: boolean; accounts: ComputerAccounts | null | undefined
+  maintenance: MaintenanceStatus | null | undefined; onMaintain(task: Task): void; maintaining: boolean
   buildPosition: number; buildCount: number; onOpen: (() => void) | undefined
 }) {
   const name = observed?.name ?? computerDisplayName(card.target.hostRef)
@@ -88,7 +108,9 @@ function ComputerCard({ card, observed, fresh, accounts, buildPosition, buildCou
     <ComputerUtilization target={card.target} online={online} />
     <dl className="computer-card-facts">
       <div><dt>Harnesses</dt><dd className="computer-card-chips">
-        {HARNESSES.map(({ tool, label }) => <HarnessChip key={tool} label={label} account={account(tool)} computer={name} known={Boolean(accounts)} />)}
+        {HARNESSES.map(({ tool, label }) => <HarnessChip key={tool} label={label} account={account(tool)} computer={name} known={Boolean(accounts)}
+          version={maintenance?.harnesses.find(entry => entry.harness === tool)} busy={maintaining}
+          onInstall={() => onMaintain({ kind: 'update-harnesses', harnesses: [tool] })} />)}
       </dd></div>
       <div><dt>GitHub</dt><dd><GitHubState account={account('github')} computer={name} known={Boolean(accounts)} /></dd></div>
       <div><dt>Builds</dt><dd>{card.buildError ? 'Unavailable' : !preference ? 'Loading…'
@@ -96,25 +118,64 @@ function ComputerCard({ card, observed, fresh, accounts, buildPosition, buildCou
         {card.build?.state === 'setup-required' ? <Badge tone="warning">Setup needed</Badge> : null}</dd></div>
       <div><dt>Activity</dt><dd>{!observed ? '—' : `${count(observed.agents.length, 'agent')} running · ${count(workflows, 'workflow')}`
         + (observed.jobs.length ? ` · ${count(observed.jobs.length, 'job')}` : '')}</dd></div>
+      <div><dt>System</dt><dd><SystemState status={maintenance} busy={maintaining} onMaintain={onMaintain} agents={observed?.agents.length ?? 0} /></dd></div>
+      <div><dt>Disk</dt><dd>{maintenance?.system.disk ? `${bytes(maintenance.system.disk.freeBytes)} free of ${bytes(maintenance.system.disk.totalBytes)}` : '—'}</dd></div>
     </dl>
+    {maintenance?.tasks[0] ? <p className="computer-card-task" data-state={maintenance.tasks[0].state} role="status">
+      {maintenance.tasks[0].state === 'running' ? `${taskLabel(maintenance.tasks[0].kind)}…` : `${taskLabel(maintenance.tasks[0].kind)}: ${maintenance.tasks[0].summary}`}</p> : null}
     <footer className="computer-card-footer">
       <Button size="sm" variant="ghost" onClick={() => askOperator(`On ${name}: `, { send: false })}>Ask Operator to change…</Button>
     </footer>
   </article>
 }
 
-function HarnessChip({ label, account, computer, known }: { label: string; account: ComputerAccount | undefined; computer: string; known: boolean }) {
-  if (!known) return <Badge>{label} · unknown</Badge>
-  if (!account?.installed) return <span className="computer-card-chip">
+function HarnessChip({ label, account, computer, known, version, busy, onInstall }: {
+  label: string; account: ComputerAccount | undefined; computer: string; known: boolean
+  version: { installed: boolean; version: string | null; latest: string | null } | undefined; busy: boolean; onInstall(): void
+}) {
+  const installed = version ? version.installed : account?.installed
+  if (!known && !version) return <Badge>{label} · unknown</Badge>
+  if (!installed) return <span className="computer-card-chip">
     <Badge tone="warning">{label} · not installed</Badge>
-    <Button size="sm" variant="ghost" onClick={() => askOperator(`Install the latest ${label} on ${computer} and sign it in with the same account as Main.`)}>Install</Button>
+    <Button size="sm" variant="ghost" disabled={busy} onClick={onInstall}>Install</Button>
   </span>
-  if (account.signedIn === false) return <span className="computer-card-chip">
-    <Badge tone="warning">{label} · signed out</Badge>
+  const named = version?.version ? `${label} ${version.version}` : label
+  if (version?.latest && version.version && version.latest !== version.version) return <span className="computer-card-chip">
+    <Badge tone="warning">{named} · {version.latest} available</Badge>
+    <Button size="sm" variant="ghost" disabled={busy} onClick={onInstall}>Update</Button>
+  </span>
+  if (account?.signedIn === false) return <span className="computer-card-chip">
+    <Badge tone="warning">{named} · signed out</Badge>
     <Button size="sm" variant="ghost" onClick={() => askOperator(`Sign ${label} in on ${computer}.`)}>Sign in</Button>
   </span>
-  return <Badge tone="success">{label}</Badge>
+  return <Badge tone="success">{named}</Badge>
 }
+
+/** OS updates and restart. Restart asks once more because it stops what is running on that computer. */
+function SystemState({ status, busy, onMaintain, agents }: { status: MaintenanceStatus | null | undefined; busy: boolean; onMaintain(task: Task): void; agents: number }) {
+  const [confirming, setConfirming] = useState(false)
+  useEffect(() => {
+    if (!confirming) return
+    const timer = setTimeout(() => setConfirming(false), 6_000)
+    return () => clearTimeout(timer)
+  }, [confirming])
+  if (!status) return <>—</>
+  const updates = status.system.packageUpdates
+  return <span className="computer-card-chip">
+    {updates === null ? 'Updates unknown' : updates ? `${count(updates, 'update')}` : 'Up to date'}
+    {updates ? <Button size="sm" variant="ghost" disabled={busy || !status.system.sudo} title={status.system.sudo ? undefined : 'Needs passwordless sudo'}
+      onClick={() => onMaintain({ kind: 'update-system' })}>Update</Button> : null}
+    {status.system.rebootRequired ? <Badge tone="warning">Restart needed</Badge> : null}
+    <Button size="sm" variant={confirming ? 'danger' : 'ghost'} disabled={busy || !status.system.sudo}
+      onClick={() => { if (confirming) { setConfirming(false); onMaintain({ kind: 'restart' }) } else setConfirming(true) }}>
+      {confirming ? agents ? `Restart and stop ${count(agents, 'agent')}?` : 'Confirm restart' : 'Restart'}</Button>
+  </span>
+}
+
+const TASK_LABELS: Record<string, string> = { 'update-harnesses': 'Harness update', 'update-system': 'System update', restart: 'Restart',
+  'sync-mcp': 'MCP sync', 'sync-plugins': 'Plugin sync' }
+function taskLabel(kind: string) { return TASK_LABELS[kind] ?? kind }
+function bytes(value: number) { return value >= 1e12 ? `${(value / 1e12).toFixed(1)} TB` : `${Math.round(value / 1e9)} GB` }
 
 function GitHubState({ account, computer, known }: { account: ComputerAccount | undefined; computer: string; known: boolean }) {
   if (!known) return <>—</>

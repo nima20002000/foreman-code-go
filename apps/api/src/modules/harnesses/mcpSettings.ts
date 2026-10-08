@@ -82,6 +82,10 @@ export class HarnessMcpSettingsService {
   async warmup(harnesses: readonly Harness[]): Promise<void> {
     await Promise.allSettled(harnesses.map((harness) => this.cachedList(harness)))
   }
+  /** Raw user-layer server entries for fleet sync on Main. Callers must not expose them; they can contain secrets. */
+  async userServers(harness: Harness): Promise<Record<string, unknown>> {
+    return this.work(async (signal) => structuredClone((await this.adapters[harness].read(signal)).user))
+  }
   private async cachedList(harness: Harness): Promise<McpList> {
     const known = this.lists.get(harness)
     if (known && Date.now() - known.readAt < 300_000 && await fileStamp(known.file) === known.stamp) return structuredClone(known.list)

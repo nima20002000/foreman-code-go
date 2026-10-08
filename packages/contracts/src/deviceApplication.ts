@@ -71,7 +71,8 @@ export const DeviceHistoryPageSchema = z.object({
 export type DeviceHistoryPage = z.infer<typeof DeviceHistoryPageSchema>
 
 export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescriptor[] {
-  if (!Array.isArray(value) || value.length > 16) throw new Error('Invalid device extensions')
+  // Main and its workers update together; 32 leaves room as namespaces are added.
+  if (!Array.isArray(value) || value.length > 32) throw new Error('Invalid device extensions')
   const seen = new Set<string>()
   return value.map((item: unknown) => {
     if (!item || typeof item !== 'object') throw new Error('Invalid device extension')

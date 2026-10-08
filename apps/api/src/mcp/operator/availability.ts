@@ -136,7 +136,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['operator_chat_list', 'operator_chat_history_get', 'operator_chat_activity_get'].includes(name)) scope = 'global'
   if (['workflow_create','workspace_get','workspace_update','workspace_archive','workspace_location_validate','workspace_location_set','agent_get'].includes(name)) scope = 'workspace'
   if (name === 'execution_readiness_get' || name === 'harness_registry_get') scope = 'global'
-  if (name === 'computer_activity_list' || name === 'computer_accounts_list' || name.startsWith('computer_github_') || name === 'worker_execution_settings_get' || name.startsWith('build_computer')) scope = 'global'
+  if (name === 'computer_activity_list' || name === 'computer_accounts_list' || name.startsWith('computers_maintenance_') || name.startsWith('computer_github_') || name === 'worker_execution_settings_get' || name.startsWith('build_computer')) scope = 'global'
   if (name.startsWith('workspace_root_')) scope = 'workspace'
   if (name.startsWith('source_')) scope = 'workspace'
   if (name.startsWith('device_connection_')) scope = 'global'
@@ -248,6 +248,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (name.startsWith('interaction_') && !service.interactions) return false
   if (name === 'computer_activity_list' && !service.computerActivity) return false
   if (name === 'computer_accounts_list' && !service.computerAccounts) return false
+  if (name.startsWith('computers_maintenance_') && !service.computerMaintenance) return false
   if (name.startsWith('computer_github_') && !service.computerGitHub) return false
   if (name.startsWith('build_computer') && !service.buildComputers) return false
   if (name === 'worker_execution_settings_get' && !service.workerExecution) return false

@@ -228,6 +228,8 @@ export const handlers: RequestHandler[] = [
     sessionControlsResponse(String(params.conversationId))),
   http.get('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', ({ params }) =>
     sessionControlsResponse(String(params.conversationId))),
+  http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [] })),
+  http.post('*/api/management/computers/maintenance/start', () => HttpResponse.json({ computers: [] })),
   http.get('*/api/management/computers/activity', () => HttpResponse.json({
     mainId: '11111111-1111-4111-8111-111111111111', computers: [], truncated: false, activityComplete: true,
   })),

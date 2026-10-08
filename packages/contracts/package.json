@@ -131,6 +131,7 @@
     },
     "./computer-activity": { "types": "./dist/computerActivity.d.ts", "import": "./dist/computerActivity.js" },
     "./computer-accounts": { "types": "./dist/computerAccounts.d.ts", "import": "./dist/computerAccounts.js" },
+    "./computer-maintenance": { "types": "./dist/computerMaintenance.d.ts", "import": "./dist/computerMaintenance.js" },
     "./build-computers": { "types": "./dist/buildComputers.d.ts", "import": "./dist/buildComputers.js" },
     "./jobs": {
       "types": "./dist/jobs.d.ts",

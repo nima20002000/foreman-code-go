@@ -35,6 +35,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'device_main_identity_get', action: 'settings:read' },
   { name: 'computer_activity_list', action: 'settings:read' },
   { name: 'computer_accounts_list', action: 'settings:read' },
+  { name: 'computers_maintenance_status', action: 'settings:read' },
+  { name: 'computers_maintenance_start', action: 'settings:update' },
   { name: 'computer_sync_status', action: 'settings:read' },
   { name: 'computer_sync_update', action: 'settings:update' },
   { name: 'computer_github_login_start', action: 'settings:update' },

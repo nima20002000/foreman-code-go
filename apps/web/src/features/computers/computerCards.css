@@ -17,3 +17,7 @@
 .computer-card-chip .n-button { min-height: 1.6rem; padding: 0 .45rem; font-size: .75rem; }
 .computer-card-footer { display: flex; justify-content: flex-end; gap: .4rem; margin-top: auto; padding-top: .6rem; border-top: 1px solid var(--n-border); }
 .computer-card--registration { gap: .6rem; }
+.computer-fleet-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .5rem 0 0; }
+.computer-fleet-actions small { color: var(--n-danger, var(--n-text)); }
+.computer-card-task { margin: 0; color: var(--n-muted); font-size: .75rem; overflow-wrap: anywhere; }
+.computer-card-task[data-state='failed'] { color: var(--n-danger, var(--n-text)); }
