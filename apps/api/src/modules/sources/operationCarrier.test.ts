@@ -68,3 +68,25 @@ it.each(['timeout', 'source-repository-timeout'])('maps %s from the exact reposi
   await expect(host.privateRepository(f.record, {} as never)).rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_TIMEOUT', status: 503, details: { retryable: true } })
   expect(request).toHaveBeenCalledOnce()
 })
+
+it('waits out the Worker preparation budget instead of cancelling an activation midway', async () => {
+  const f = fixture()
+  const root: SourceRootRecord = { version: 1, binding: f.record.receipt.binding,
+    source: { approvedSourceId: randomUUID(), snapshotId: f.record.receipt.binding.snapshotId, manifestDigest: f.record.receipt.verifiedManifestDigest },
+    selection: { hostRef: { kind: 'device', mainId: f.binding.mainId, deviceId: f.binding.deviceId }, rootPolicyId: f.record.rootPolicyId, rootPolicyRevision: '1', locationRevision: '1' },
+    registration: { workerInstallationId: f.binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', attestationId: randomUUID(), attestationDigest: 'd'.repeat(64), boundAt: new Date().toISOString() }
+  const { connectionEpoch: _epoch, ...identity } = f.binding
+  void _epoch
+  const request = vi.fn<(namespace: string, payload: unknown, options?: { timeoutMs?: number }) => Promise<{ payload: unknown }>>(
+    async () => ({ payload: { version: 1, operation: 'sources.prepare', receipt: f.record.receipt } }))
+  const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity, request }) },
+    { prepareIdentity: async () => ({ operationId: f.intent.operationId }) as never, resolve: async () => ({ root }) as never },
+    { send: async () => ({ transferId: f.intent.transferId, receiptId: randomUUID(), sha256: 'b'.repeat(64), byteSize: 4 }) })
+  const manifest = { manifestDigest: f.intent.manifestDigest, totalEntries: 1, totalBytes: 4 } as never
+  const attempt = { placementHash: f.intent.placementHash, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
+    keyRevision: 1, authorizationRevision: 1 }
+  await expect(host.prepare(manifest, root, attempt)).resolves.toEqual(f.record.receipt)
+  // The Worker's own preparation budget is five minutes; a shorter Main deadline would cancel a slow activation.
+  expect(request.mock.calls[0]![2]!.timeoutMs).toBeGreaterThan(300_000)
+})

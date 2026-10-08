@@ -19,6 +19,7 @@ import type { PostgresSourcePackageTransfers } from './operationTransferAdmissio
 import { transferContextForBinding, type AcceptedTransferAuthority } from '../byte-transfer/carrier.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { verifiedSourceWorkingTree } from './nativeStamp.js'
+import { SOURCE_LIMITS } from './manifest.js'
 import { sourceCwdAttestationDigest } from './workingDirectory.js'
 import type { PostgresSourceOperationAuthority } from './operationAuthority.js'
 
@@ -47,7 +48,10 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     const connection = this.connection(root)
     // RootWorkerClient uses the same captured W07 request closure; this namespace
     // changes only the domain schema, never transport/connection authority.
-    const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request, signal ? { signal } : undefined).catch((error: unknown) => {
+    // The Worker bounds each operation by its own preparation budget. Cancelling sooner aborts an activation
+    // midway and leaves its claim uncertain, so Main waits out that budget plus time for the Worker's reply.
+    const timeoutMs = SOURCE_LIMITS.preparationMs + 30_000
+    const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request, signal ? { signal, timeoutMs } : { timeoutMs }).catch((error: unknown) => {
       if (request.operation === 'sources.reconcile-preparation' && error instanceof DeviceApplicationError)
         throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The worker did not positively confirm preparation closure. Retry the original reconciliation command.', 409)
       if (request.operation === 'sources.private-repository' && error instanceof DeviceApplicationError) {
