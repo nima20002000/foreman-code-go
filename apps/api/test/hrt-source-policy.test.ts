@@ -57,6 +57,7 @@ async function fixture(device = false) {
   const approved = ApprovedSourceSchema.parse({ version: 1, workspaceId, ownerPrincipalId: principal.id, approvedByPrincipalId: principal.id,
     locationRevision: 1, mainId, originIdentityHash: `sha256:${'c'.repeat(64)}`, manifest, approvedAt: new Date().toISOString(), availability: 'retained' })
   let record: SourceMaterializationRecord | undefined, revoked = false, configured = true
+  let reservationState: 'owned' | 'reclaiming' | 'reclaimed' = 'owned'
   // SQL persistence is modeled; production factories, policy services and private source IO are real.
   const query = vi.fn(async (text: string, values?: unknown[]) => {
     let rows: unknown[] = []
@@ -67,6 +68,9 @@ async function fixture(device = false) {
     else if (text.startsWith('select record,owner_id,owner_fence from job_admission_queue')) rows = []
     else if (text.startsWith('select version_id from job_definitions')) rows = [{ version_id: definition.versionId }]
     else if (text.startsWith('select 1 from job_executions')) rows = [{ known: true }]
+    else if (text.startsWith('select 1 from source_storage_reservations')) {
+      rows = values?.[0] === operationId && reservationState !== 'owned' ? [{ known: true }] : []
+    }
     else if (text === 'select 1 from source_preparation_reconciliations where operation_id=$1') rows = []
     else if (text.startsWith('select id,name,audience,grants')) rows = values?.[0] === principal.id ? [{ id: principal.id, name: principal.name, audience: 'operator', grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : []
     else if (text.startsWith('with recursive owners')) rows = [{ id: principal.id }]
@@ -96,6 +100,7 @@ async function fixture(device = false) {
   }
   return { factory, pool, principal, rootRecord, attempt, operationId, bytes, prepare, configuration,
     revoke: () => { revoked = true }, withdraw: () => { configured = false }, denyWrite: () => { configuration.bases[0]!.accessModes = ['read-only'] },
+    reclaim: (state: 'reclaiming' | 'reclaimed') => { reservationState = state },
     binding: { mainId, deviceId, workerInstallationId, keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1 } }
 }
 describe('production execution-source current root policy fence', () => {
@@ -121,4 +126,41 @@ describe('production execution-source current root policy fence', () => {
     f.revoke()
     await expect(f.factory.sourceExtension.handle!(request, frame)).rejects.toMatchObject({ code: 'ROOT_POLICY_UNAVAILABLE' })
   })
+
+  it.each(['reclaiming', 'reclaimed'] as const)(
+    'rejects a %s reservation without changing prepared source facts or bytes', async state => {
+      const f = await fixture()
+      const record = await f.prepare()
+      const original = structuredClone(record)
+      const path = await f.factory.sources.verifyPreparation({ principal: f.principal, record })
+      f.reclaim(state)
+
+      await expect(f.factory.attempts.revalidate(f.rootRecord, f.attempt))
+        .rejects.toMatchObject({ code: 'SOURCE_PREPARATION_RECONCILED' })
+      await expect(f.factory.sources.verifyPreparation({ principal: f.principal, record }))
+        .rejects.toMatchObject({ code: 'SOURCE_PREPARATION_RECONCILED' })
+      expect(record).toEqual(original)
+      expect(await readFile(join(path, 'file.txt'))).toEqual(f.bytes)
+    },
+  )
+
+  it.each(['reclaiming', 'reclaimed'] as const)(
+    'denies authenticated worker preparation after its reservation is %s', async state => {
+      const f = await fixture(true)
+      const identity = await f.factory.owners.prepareIdentity(f.rootRecord, f.attempt)
+      const request = { version: 1, operation: 'sources.authorize', request: {
+        version: 1, operation: 'sources.prepare', identity, root: f.rootRecord, attempt: f.attempt,
+        package: { transferId: randomUUID(), receiptId: randomUUID(), sha256: 'e'.repeat(64), byteSize: 2 },
+      } }
+      const frame = { binding: f.binding, signal: new AbortController().signal }
+      expect((await f.factory.sourceExtension.handle!(request, frame)).payload)
+        .toMatchObject({ operation: 'sources.authorize' })
+      f.reclaim(state)
+
+      await expect(f.factory.owners.prepareIdentity(f.rootRecord, f.attempt))
+        .rejects.toMatchObject({ code: 'SOURCE_PREPARATION_RECONCILED' })
+      await expect(f.factory.sourceExtension.handle!(request, frame))
+        .rejects.toMatchObject({ code: 'SOURCE_PREPARATION_RECONCILED' })
+    },
+  )
 })

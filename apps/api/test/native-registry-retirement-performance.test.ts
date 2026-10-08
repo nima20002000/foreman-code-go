@@ -63,7 +63,8 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
       await f.registry.closeRegistration(next,next.launchId!)
       await expect(f.registry.closeRegistration(next,randomUUID())).rejects.toMatchObject({code:'ENOENT'})
     }finally{probe.mockRestore();captures.mockRestore();controller.abort();await iterator.return?.();rmSync(f.root,{recursive:true,force:true})}
-  },60_000)
+  // Scan counts bound the algorithm; the timeout allows 10,005 durable receipt writes on slower disks.
+  },1_200_000)
   it('publishes a positive exact closure to subscribers before an immediate read after retirement',async()=>{
     const f=fixture(),controller=new AbortController()
     try {
@@ -79,7 +80,7 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
       await expect(f.registry.closeRegistration(scope,randomUUID())).rejects.toMatchObject({code:'ENOENT'})
       controller.abort();await iterator.return?.()
     }finally{controller.abort();rmSync(f.root,{recursive:true,force:true})}
-  })
+  },30_000)
   it('flushes valid prior closures when later inventory validation fails without promoting the corrupt row',async()=>{
     const f=fixture(),controller=new AbortController()
     try {

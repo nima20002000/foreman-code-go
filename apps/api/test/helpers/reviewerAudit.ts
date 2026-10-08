@@ -4,9 +4,11 @@ import type {
   AgentConfigurationVersion, DurableInteraction, HarnessExecution, NativeHarnessEvent,
   NativeSessionReference, PendingNativeInteraction, ReviewJob,
 } from '@foreman-code/contracts'
+import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 
 import type { IssuedWorkerCredential } from '../../src/modules/access/workerCredentials.js'
 import { DomainError } from '../../src/modules/errors.js'
+import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
 import type { ExecutionCredentialProvider } from '../../src/modules/harnesses/mcpDetection.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 import type { PostgresApprovalBudgetRepository } from '../../src/modules/interactions/budget.js'
@@ -23,6 +25,7 @@ import type { NativeSessionManagerResolver } from '../../src/modules/interaction
 import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { nativeLanes } from './nativeLanes.js'
+import { currentUnitSnapshot } from './currentUnitSnapshot.js'
 
 export const session: NativeSessionReference = {
   harness: 'codex', providerVersion: 'codex-cli 0.154.0', nativeSessionId: 'review-native-exact',
@@ -88,9 +91,29 @@ export async function reviewerFixture(options: {
     ...(options.workflow ? {} : { result: { outcome: 'succeeded' as const }, finishedAt: now }),
     createdAt: now, startedAt: now,
   }
-  const run = { id: execution.runId, workspaceId: configuration.workspaceId, workflowId: 'workflow-1',
+  const snapshot = currentUnitSnapshot('reviewer-audit', 'single')
+  const run = { ...snapshot.run, id: execution.runId, workspaceId: configuration.workspaceId, workflowId: 'workflow-1',
+    agentConfigurationVersionIds: { [configuration.agentId]: configuration.id },
     executionState: 'waiting', outcome: 'pending',
     approval: { handler: 'orchestrator' as const, designatedOrchestratorAgentId: execution.agentId } }
+  const version = WorkflowVersionV3Schema.parse({
+    ...snapshot.version,
+    workspaceId: run.workspaceId,
+    workflowId: run.workflowId,
+    entryNodeId: execution.workflowNodeId,
+    approval: run.approval,
+    agentConfigurationVersionIds: run.agentConfigurationVersionIds,
+    definition: {
+      ...snapshot.version.definition,
+      id: run.workflowId,
+      workspaceId: run.workspaceId,
+      entryNodeId: execution.workflowNodeId,
+      approval: run.approval,
+      nodes: [{ id: execution.workflowNodeId, agentId: execution.agentId, name: 'Reviewer' }],
+    },
+  })
+  version.contentHash = graphSourceDigest({ definition: version.definition,
+    configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
   let job: ReviewJob = {
     id: 'review-job-exact', interactionId: 'original-interaction', reviewerAgentId: execution.agentId,
     attempt: 0, state: options.recovering ? 'uncertain' : 'pending', provider: session.harness,
@@ -230,7 +253,12 @@ export async function reviewerFixture(options: {
   let stopped = false
   const owner = { runId: execution.runId, assertOwned() {}, client: {} } as unknown as RunOwnership
   const runs = {
-    async getRepeatSnapshot() { return { run, stopRequested: stopped, cleanupPending: false } },
+    async getRepeatSnapshot() { return { run, version, configurations: [configuration], stopRequested: stopped, cleanupPending: false } },
+    async getRepeatVersion(runId: string, versionId: string) {
+      assert.equal(runId, run.id)
+      assert.equal(versionId, run.workflowVersionId)
+      return structuredClone(version)
+    },
     async *executionPages() { yield [execution] },
     async get() { return structuredClone(run) },
     async getExecution() { return structuredClone(execution) },

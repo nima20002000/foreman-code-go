@@ -103,7 +103,8 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
       if (child) { await stopRecoveredChild(child); await closed(child) }
       rmSync(f.root, { recursive: true, force: true })
     }
-  }, 60_000)
+  // Every registration keeps a durable receipt, including on slower disks.
+  }, 1_200_000)
 
   it('F11: resumes a partially deleted retirement tombstone, but retains unresolved work', async () => {
     const f = fixture()

@@ -126,7 +126,12 @@ describe('explicit actual-suite worker qualification adapter', () => {
       const proof = await f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal })
       expect(proof).toMatchObject({ authenticated: null, compatible: null, qualified: false,
         completedNativeQualification: { record: { status: 'failed' } } })
-      expect(proof.completedNativeQualification?.record.checks).toContainEqual({ id: 'selected-profile', passed: false, detail: null })
+      expect(proof.completedNativeQualification?.record.checks).toContainEqual({
+        id: 'selected-profile', passed: false, detail: 'CODEX_SETTING_UNSUPPORTED',
+      })
+      expect(f.run).toHaveBeenCalledOnce()
+      expect(f.checkConfiguration).toHaveBeenCalledOnce()
+      expect(f.probe.close).toHaveBeenCalledOnce()
       expect(f.registry.closeOwner).toHaveBeenCalledTimes(2)
     } finally { await release(f) }
   })

@@ -28,6 +28,11 @@ it('F2: cold dispatcher recovery attaches the durable review correlation and nev
   assert.equal(result.providerTurnOrMessageId, providerId)
   assert.equal(fixture.starts.length, 0)
   assert.equal(fixture.attaches[0]?.correlationId, correlationId)
+  const attachment = fixture.attaches[0]
+  assert.ok(attachment?.kind === 'workflow')
+  assert.equal(attachment.request.workflowNodeId, fixture.execution.workflowNodeId)
+  assert.deepEqual(attachment.request.configuration, fixture.configuration)
+  assert.deepEqual(attachment.request.input, fixture.execution.input)
   assert.equal(fixture.responses, 0)
   assert.equal(fixture.saved.events.length, 1)
 })

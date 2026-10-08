@@ -10,6 +10,7 @@ import type { OperatorServices } from '../../mcp/operator/types.js'
 import { PostgresAccessService } from '../access/postgres.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { PostgresAppInteractionService } from '../interactions/app.js'
 import { ComputerSyncService } from './sync.js'
 import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
 import { fakeSyncthing, mainSyncId, workerSyncId } from '../../../test/helpers/syncthing.js'
@@ -80,9 +81,95 @@ async function fixture() {
       return { payload: await computers[index]!.handle(input.request) }
     } }
   const createService = () => new ComputerSyncService(pool, mainId, () => endpoint, commands, computers[0])
-  return { service: createService(), createService, targets, rest, workspaces, hosts, devices,
+  return { service: createService(), createService, targets, rest, computers, workspaces, hosts, devices,
     writer, reader, principals, preferences, denied, commands, pool }
 }
+
+it('serves authenticated Agent context while optional shared-file installation is pending', async () => {
+  const f = await fixture()
+  const worker: ManagementPrincipal = { ...f.writer, id: 'worker', audience: 'worker', agentId: 'agent',
+    grants: [{ actions: ['interactions:read'], scope: {
+      workspaceIds: ['workspace-a'], workflowIds: ['workflow'], runIds: ['run'],
+    } }] }
+  f.principals.set(worker.id, worker)
+  const access = new PostgresAccessService(f.pool)
+  vi.spyOn(access, 'authenticate').mockImplementation(async token => {
+    const principal = f.principals.get(token ?? '')
+    if (!principal) throw new DomainError('AUTH_REQUIRED', 'Invalid caller.', 401)
+    return principal
+  })
+  const query = async (text: string) => {
+    if (text.includes('workspaces w')) return { rows: [{ device_id: null, workspace_id: 'workspace-a' }] }
+    if (text.includes('execution_native_placements')) return { rows: [] }
+    return { rows: [{ role: 'coder', defaults: ['context_get'], override: null }] }
+  }
+  const interactions = Object.assign(new PostgresAppInteractionService({ query } as unknown as pg.Pool,
+    {} as never, {} as never), { syncedFolder: f.service.sharedFolder.bind(f.service) })
+  const app = buildApp({ logger: false,
+    readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+    operator: { access, services: { commands: f.commands } as OperatorServices }, appMcp: { access, interactions } })
+  const origin = await app.listen({ host: '127.0.0.1', port: 0 })
+  const client = new Client({ name: 'pending-sync-context', version: '1' })
+  cleanups.push(async () => { await client.close(); await app.close() })
+  await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin),
+    { requestInit: { headers: { authorization: 'Bearer worker' } } }))
+  expect((await app.inject({ method: 'POST', url: '/mcp', headers: {
+    authorization: 'Bearer invalid', accept: 'application/json, text/event-stream', 'content-type': 'application/json',
+  }, payload: {
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'context_get', arguments: {} },
+  } })).statusCode).toBe(401)
+  let release!: () => void
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const prepare = f.rest[0]!.ports.prepare
+  const preparing = vi.spyOn(f.rest[0]!.ports, 'prepare').mockImplementation(async () => {
+    await hold
+    return prepare()
+  })
+  const setup = f.service.reconcile()
+  let read: Promise<void> | undefined
+  try {
+    await vi.waitFor(() => { expect(preparing).toHaveBeenCalled() })
+    const readback = vi.fn()
+    read = client.callTool({ name: 'context_get', arguments: {} }).then(readback)
+    await vi.waitFor(() => { expect(readback).toHaveBeenCalledWith(expect.objectContaining({
+      structuredContent: expect.objectContaining({ principal: expect.objectContaining({ id: worker.id }) }),
+    })) })
+    await read
+    expect(readback.mock.calls[0]![0].structuredContent).not.toHaveProperty('sharedFiles')
+  } finally {
+    release()
+    await setup
+    await read
+  }
+  const available = await client.callTool({ name: 'context_get', arguments: {} })
+  expect(available.structuredContent).toMatchObject({ sharedFiles: { provider: 'syncthing',
+    path: `/computer-0/shared/${sharedFolderId('workspace-a')}` } })
+})
+
+it('omits an unavailable optional shared folder and preserves unexpected failures', async () => {
+  const f = await fixture()
+  const handle = vi.spyOn(f.computers[0]!, 'handle')
+    .mockRejectedValue(new DomainError('SYNC_UNAVAILABLE', 'Shared files are unavailable.', 502))
+  expect(await f.service.sharedFolder('workspace-a', { kind: 'main' })).toBeNull()
+  handle.mockRejectedValue(new Error('Unexpected configuration error'))
+  await expect(f.service.sharedFolder('workspace-a', { kind: 'main' }))
+    .rejects.toThrow('Unexpected configuration error')
+})
+
+it('stops offering a disabled workspace folder while a computer has not applied the change', async () => {
+  const f = await fixture()
+  await f.service.reconcile()
+  const handle = f.computers[1]!.handle.bind(f.computers[1]!)
+  vi.spyOn(f.computers[1]!, 'handle').mockImplementation(async request => {
+    const input = SyncChannelRequestSchema.shape.request.parse(request)
+    if (input.operation === 'configure') throw new DomainError('SYNC_UNAVAILABLE', 'Setup is pending.', 502)
+    return handle(request)
+  })
+  await f.service.update(f.writer, 'mcp', { target: f.targets[0], workspaceId: 'workspace-a', enabled: false,
+    expectedRevision: 0, commandId: randomUUID() })
+  expect(await f.rest[1]!.rest('GET', '/rest/config/folders')).toHaveLength(1)
+  expect(await f.service.sharedFolder('workspace-a', { kind: 'device', deviceId: f.devices[0]!.deviceId })).toBeNull()
+})
 
 it('pairs automatically through the channel and shares each workspace only with its participating computers', async () => {
   const f = await fixture()

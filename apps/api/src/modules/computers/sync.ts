@@ -92,12 +92,12 @@ export class ComputerSyncService {
     return this.queued ? Promise.resolve() : this.reconcile()
   }
 
-  private synchronize(workspaceId?: string): Promise<unknown[]> {
+  private synchronize(): Promise<unknown[]> {
     this.queued++
     const task = this.pending.then(async () => {
       const failures: unknown[] = []
       const workspaces = await this.repository.workspaces()
-      for (const workspace of workspaces.filter(value => !workspaceId || value.id === workspaceId)) {
+      for (const workspace of workspaces) {
         failures.push(...await this.configureWorkspace(workspace))
       }
       return failures
@@ -117,9 +117,15 @@ export class ComputerSyncService {
     const target = workspace?.targets.find(value => host.kind === 'main' ? value.hostRef.kind === 'main'
       : value.hostRef.kind === 'device' && value.hostRef.deviceId === host.deviceId)
     if (!workspace || !target || !(await this.repository.preference(this.pool, workspaceId, target)).enabled) return null
-    await this.synchronize(workspaceId)
-    const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' }))
-    return state.folders.find(folder => folder.workspaceId === workspaceId)?.path ?? null
+    if (!(await this.repository.preference(this.pool, workspaceId, this.repository.mainTarget)).enabled) return null
+    // Native context reads must remain usable while optional shared-file setup is pending.
+    try {
+      const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' }))
+      return state.folders.find(folder => folder.workspaceId === workspaceId)?.path ?? null
+    } catch (error) {
+      if (error instanceof DomainError && ['COMPUTER_OFFLINE', 'SYNC_UNAVAILABLE'].includes(error.code)) return null
+      throw error
+    }
   }
 
   private async configureWorkspace(workspace: SyncWorkspace) {
