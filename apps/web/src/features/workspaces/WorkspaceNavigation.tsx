@@ -275,6 +275,8 @@ function WorkspaceTreeItem({
               to="/workspaces/$workspaceId/workflows"
               params={{ workspaceId: entry.id }}
               activeOptions={{ exact: true }}
+              onMouseEnter={() => prefetch.workflows(entry.id)}
+              onFocus={() => prefetch.workflows(entry.id)}
               activeProps={{ className: 'nav-item-active', 'aria-current': 'page' }}
               className="nav-item"
               {...sections.getKeyboardProps(section)}

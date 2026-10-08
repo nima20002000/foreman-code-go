@@ -121,6 +121,41 @@ export function useManagedWorkflowQuery(workspaceId: string, workflowId: string,
   })
 }
 
+type Named = { id?: unknown; name?: unknown }
+function namedIn(value: unknown, id: string): string | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const entry = value as Named
+  return entry.id === id && typeof entry.name === 'string' ? entry.name : undefined
+}
+/** A workspace's name from any cached list or detail, so labels do not wait for a dedicated read. */
+export function cachedWorkspaceName(client: ReturnType<typeof useQueryClient>, workspaceId: string): string | undefined {
+  for (const [, data] of client.getQueriesData<unknown>({ queryKey: ['workbench'] })) {
+    if (!data || typeof data !== 'object') continue
+    const record = data as { workspace?: unknown; pages?: { items?: { workspace?: unknown }[] }[] }
+    const direct = namedIn(record.workspace, workspaceId)
+    if (direct) return direct
+    for (const page of record.pages ?? []) for (const item of page.items ?? []) {
+      const name = namedIn(item.workspace, workspaceId)
+      if (name) return name
+    }
+  }
+  return undefined
+}
+/** A workflow's name from any cached workspace detail or workflow list. */
+export function cachedWorkflowName(client: ReturnType<typeof useQueryClient>, workflowId: string): string | undefined {
+  for (const [, data] of client.getQueriesData<unknown>({ queryKey: ['workbench'] })) {
+    if (!data || typeof data !== 'object') continue
+    const record = data as { workflow?: unknown; workflows?: unknown[]; pages?: { items?: { workflow?: unknown }[] }[] }
+    const direct = namedIn(record.workflow, workflowId) ?? record.workflows?.map(item => namedIn(item, workflowId)).find(Boolean)
+    if (direct) return direct
+    for (const page of record.pages ?? []) for (const item of page.items ?? []) {
+      const name = namedIn(item.workflow, workflowId)
+      if (name) return name
+    }
+  }
+  return undefined
+}
+
 /** Hover/focus prefetch so opening a workspace or workflow shows data instead of a loader. Fresh data is not refetched. */
 export function usePrefetchBoard() {
   const client = useQueryClient()
@@ -134,6 +169,12 @@ export function usePrefetchBoard() {
     workspace: (workspaceId: string) => {
       void client.prefetchQuery({ queryKey: queryKeys.managedWorkspace(workspaceId), staleTime: 10_000,
         queryFn: ({ signal }) => getManagedWorkspace(workspaceId, { signal }) }).catch(() => undefined)
+    },
+    /** The Workflows directory's first page, under the same key the directory reads. */
+    workflows: (workspaceId: string) => {
+      void client.prefetchInfiniteQuery({ queryKey: [...queryKeys.managedWorkflows(workspaceId), 'pages', 'directory'], staleTime: 10_000,
+        initialPageParam: undefined as string | undefined,
+        queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkflowPage(workspaceId, pageParam, { signal }) }).catch(() => undefined)
     },
   }
 }

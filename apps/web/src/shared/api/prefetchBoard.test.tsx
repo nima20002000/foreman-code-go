@@ -23,3 +23,15 @@ it('prefetches a workflow board once on hover and reuses fresh data', async () =
   expect(getWorkflow).toHaveBeenCalledOnce()
   client.clear()
 })
+
+it('prefetches the Workflows directory under the key the directory reads', async () => {
+  const page = { items: [], pageInfo: { nextCursor: null } }
+  const list = vi.spyOn(apiClient, 'listManagedWorkflowPage').mockResolvedValue(page as never)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  const { result } = renderHook(() => usePrefetchBoard(), { wrapper })
+  result.current.workflows('workspace-a')
+  await waitFor(() => expect(client.getQueryData([...queryKeys.managedWorkflows('workspace-a'), 'pages', 'directory'])).toEqual({ pages: [page], pageParams: [undefined] }))
+  expect(list).toHaveBeenCalledOnce()
+  client.clear()
+})

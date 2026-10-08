@@ -13,3 +13,4 @@
 .app-navigation-trail [aria-current] { color: var(--n-text); }
 .app-navigation-trail :is(a, button):focus-visible { outline: 2px solid var(--n-accent); outline-offset: 3px; }
 @media (max-width: 640px) { .app-navigation-trail { padding-inline: 12px; } }
+.app-navigation-trail .is-pending { display: inline-block; min-width: 6rem; border-radius: 4px; color: transparent; background: var(--n-border); }

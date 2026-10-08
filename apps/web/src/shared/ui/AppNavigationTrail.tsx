@@ -1,13 +1,15 @@
 import { useLinkProps, useLocation, useRouter } from '@tanstack/react-router'
 import { useContext } from 'react'
 import { ArrowLeft, ChevronRight } from 'lucide-react'
-import { useManagedWorkflowQuery, useManagedWorkspaceQuery } from '../api/query'
+import { useQueryClient } from '@tanstack/react-query'
+import { cachedWorkflowName, cachedWorkspaceName, useManagedWorkflowQuery, useManagedWorkspaceQuery } from '../api/query'
 import { useAccessFailureLatch } from '../api/useAccessFailureLatch'
 import { harnessNames, harnessSections, rolePresentation } from '../../features/settings/settingsPresentation'
 import { AppNavigationHistoryContext } from './appNavigationHistoryContext'
 import './appNavigationTrail.css'
 
-type Crumb = { label: string; to: string; search?: Record<string, unknown> }
+/** pending: the label is a placeholder while the name loads; it keeps a stable width instead of swapping words. */
+type Crumb = { label: string; to: string; search?: Record<string, unknown>; pending?: boolean }
 const sectionNames: Record<string, string> = {
   workflows: 'Workflows', settings: 'Settings', files: 'Project files', agents: 'Agents',
   tasks: 'Tasks', runs: 'Runs', terminal: 'Terminal', approvals: 'Approvals', location: 'Location',
@@ -17,7 +19,8 @@ const sectionNames: Record<string, string> = {
 function BreadcrumbLink({ crumb }: { crumb: Crumb }) {
   const props = useLinkProps({ to: crumb.to, search: crumb.search ?? {} })
   // Router links mark matching ancestors active; only the final breadcrumb is the current page.
-  return <a {...props} aria-current={undefined} aria-label={`Go to ${crumb.label}`} title={crumb.label}>{crumb.label}</a>
+  return <a {...props} aria-current={undefined} aria-label={`Go to ${crumb.label}`} title={crumb.label}
+    className={[props.className, crumb.pending ? 'is-pending' : undefined].filter(Boolean).join(' ') || undefined}>{crumb.label}</a>
 }
 
 export function AppNavigationTrail({ activeWorkflowId }: { activeWorkflowId?: string }) {
@@ -31,16 +34,19 @@ export function AppNavigationTrail({ activeWorkflowId }: { activeWorkflowId?: st
   const workflow = useManagedWorkflowQuery(workspaceId, workflowId, Boolean(workspaceId && workflowId))
   const workspaceDenied = useAccessFailureLatch(workspace)
   const workflowDenied = useAccessFailureLatch(workflow)
-  const workspaceName = !workspaceDenied && workspace.data?.workspace.id === workspaceId ? workspace.data.workspace.name : undefined
-  const workflowName = !workspaceDenied && !workflowDenied && workflow.data?.workflow.id === workflowId
-    && workflow.data.workflow.workspaceId === workspaceId ? workflow.data.workflow.name : undefined
+  const client = useQueryClient()
+  const workspaceName = workspaceDenied ? undefined : workspace.data?.workspace.id === workspaceId ? workspace.data.workspace.name
+    : workspaceId ? cachedWorkspaceName(client, workspaceId) : undefined
+  const workflowName = workspaceDenied || workflowDenied ? undefined : workflow.data?.workflow.id === workflowId
+    && workflow.data.workflow.workspaceId === workspaceId ? workflow.data.workflow.name : workflowId ? cachedWorkflowName(client, workflowId) : undefined
   const workspacePath = `/workspaces/${encodeURIComponent(workspaceId)}`
   const crumbs: Crumb[] = []
   if (segments[0] === 'workspaces' && workspaceId) {
-    crumbs.push({ label: 'Workspaces', to: '/workspaces' }, { label: workspaceName ?? 'Workspace', to: workspacePath })
+    crumbs.push({ label: 'Workspaces', to: '/workspaces' }, { label: workspaceName ?? 'Workspace', to: workspacePath, pending: !workspaceName && !workspaceDenied && workspace.isPending })
     if (workflowId) {
       crumbs.push({ label: 'Workflows', to: `${workspacePath}/workflows` },
-        { label: workflowName ?? 'Workflow', to: `${workspacePath}/workflows/${encodeURIComponent(workflowId)}/draft` },
+        { label: workflowName ?? 'Workflow', to: `${workspacePath}/workflows/${encodeURIComponent(workflowId)}/draft`,
+          pending: !workflowName && !workflowDenied && workflow.isPending },
         { label: segments[4] === 'runs' || location.search.runId || location.search.selectedRunId ? 'Run graph' : 'Board', to: location.pathname })
     } else {
       const section = segments[2]
@@ -82,7 +88,7 @@ export function AppNavigationTrail({ activeWorkflowId }: { activeWorkflowId?: st
     <nav aria-label="Breadcrumbs"><ol>
       {crumbs.map((crumb, index) => <li key={`${index}:${crumb.to}`}>
         {index > 0 ? <ChevronRight aria-hidden="true" size={12} /> : null}
-        {index === crumbs.length - 1 ? <span aria-current="page" title={crumb.label}>{crumb.label}</span>
+        {index === crumbs.length - 1 ? <span aria-current="page" title={crumb.label} className={crumb.pending ? 'is-pending' : undefined}>{crumb.label}</span>
           : <BreadcrumbLink crumb={crumb} />}
       </li>)}
     </ol></nav>
