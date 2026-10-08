@@ -242,7 +242,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
       description: 'External protocol fixture', hidden: false, isDefault: true, defaultReasoningEffort: 'low',
       supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' },
         { reasoningEffort: 'medium', description: 'Medium' }] }]
-    reply(message.id, { data: existsSync(join(root, 'hide-models')) ? [] : models, nextCursor: null })
+    const respond = async () => {
+      while (existsSync(join(root, 'block-models'))) await new Promise(resolve => setTimeout(resolve, 20))
+      reply(message.id, { data: existsSync(join(root, 'hide-models')) ? [] : models, nextCursor: null })
+    }
+    void respond()
   } else if (message.method === 'config/mcpServer/reload') {
     reply(message.id, {})
   } else {

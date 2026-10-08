@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import pg from 'pg'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { HostHarnessOverrideSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { DomainError } from '../../errors.js'
@@ -6,6 +6,13 @@ import { DomainError } from '../../errors.js'
 export const harnessHostKey = (host: CanonicalMachineReference): string => host.kind === 'main' ? `main:${host.mainId}` : `device:${host.mainId}:${host.deviceId}`
 export class HarnessInstanceSettingsRepository {
   constructor(private readonly pool: pg.Pool) {}
+  async withProfileConnection<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    const pool = new pg.Pool({ ...this.pool.options, max: 1, application_name: 'graphql-profile-check' })
+    try {
+      const client = await pool.connect()
+      try { return await operation(client) } finally { client.release() }
+    } finally { await pool.end() }
+  }
   async list(host: CanonicalMachineReference, applicationInstallationId: string, client?: pg.ClientBase): Promise<HostHarnessOverride[]> {
     const result = await (client ?? this.pool).query<{ record: unknown }>(`select distinct on(instance_id) record from harness_instance_settings
       where host_key=$1 and application_installation_id=$2 order by instance_id,revision desc`, [harnessHostKey(host), applicationInstallationId])

@@ -51,6 +51,8 @@ int main(int argc, char **argv) {
   return { directory, binary, payloadPaths,
     hideModels: () => writeFile(join(directory, 'hide-models'), '', { mode: 0o600 }),
     showModels: () => rm(join(directory, 'hide-models')),
+    blockModels: () => writeFile(join(directory, 'block-models'), '', { mode: 0o600 }),
+    releaseModels: () => rm(join(directory, 'block-models')),
     async calls(): Promise<Array<Record<string, unknown>>> {
       try {
         const contents = await readFile(join(directory, 'calls.jsonl'), 'utf8')

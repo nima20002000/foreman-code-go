@@ -5,6 +5,7 @@ import { AgentConfigurationVersionSchema, withAdvancedDefaults,
   type AgentConfigurationVersion, type HarnessExecution, type CompatibilityHarness } from '@foreman-code/contracts'
 import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
 import { type AcceptedNodePlacement, type DispatchIntent, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { type RunStartV3Input, sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { readImmutableWorkflowVersion, IMMUTABLE_WORKFLOW_VERSION_COLUMNS, type ImmutableWorkflowVersionRow } from '../workflows/immutableRead.js'
@@ -34,7 +35,8 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     private readonly sources: SourceAdmissionPort, private readonly roots: WorkspaceRootPolicyPort,
     private readonly registry: Pick<ProductionHarnessRegistry, 'installations' | 'pinOverride'>,
     private readonly qualificationSuites: Readonly<Record<CompatibilityHarness, string>>,
-    private readonly workerExecution = new WorkerExecutionPolicy()) {}
+    private readonly workerExecution = new WorkerExecutionPolicy(),
+    private readonly assertProfileReady?: (host: CanonicalMachineReference) => void) {}
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
     signal?: AbortSignal): Promise<PreparedRunPlacementAdmission | undefined> {
     signal?.throwIfAborted()
@@ -82,6 +84,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           || instance.target.harnessInstallationId !== saved!.harnessInstallationId
           || !sameWorkflowValue(withAdvancedDefaults(instance.configuration), withAdvancedDefaults(config.harness))
           || instance.driverId !== config.harness.harness) this.conflict()
+        this.assertProfileReady?.(instance.target.hostRef)
         const selection = this.registry.pinOverride(instance)
         prepared.push({ selection, saved, configuration: config, implicit: !node.placement, pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
           ...(!node.placement ? { labelAtAcceptance: 'Main' } : {}),
