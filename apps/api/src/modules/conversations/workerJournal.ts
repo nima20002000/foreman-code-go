@@ -378,8 +378,8 @@ export class WorkerConversationJournal {
         || control.state.nativeOperationId && state.nativeOperationId !== control.state.nativeOperationId) {
         conflict('The original native compaction outcome changed.')
       }
-      control.state = state
-      return state
+      control.state = { ...state, dispatchPhase: state.dispatchPhase ?? control.state.dispatchPhase }
+      return control.state
     })
   }
 

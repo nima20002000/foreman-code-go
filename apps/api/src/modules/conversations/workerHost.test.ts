@@ -17,6 +17,9 @@ import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../devices/deviceWire.js'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
+import { CodexRpcError } from '../harnesses/codexStdioTransport.js'
+import { OpenCodeNativeDeliveryError } from '../harnesses/opencodeTransport.js'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 
 /** Provider I/O fixture only; these cases do not qualify native installations. */
 class ProviderFixture implements NativeHarnessSessionManager {
@@ -123,7 +126,7 @@ async function setup(harness: AgentHarness = 'codex') {
   closing.push(async () => { manager.releaseCompact?.(); await host.shutdown() })
   const request = (input: Record<string, unknown>) => host.handle({ ...input, binding: f.binding }, current)
   const open = { method: 'conversation.open', operationId: 'original-message', mode: 'create', configuration: f.configuration }
-  return { ...f, journal, manager, ports, host, observed, request, open,
+  return { ...f, journal, journalPath: join(root, 'operations.json'), manager, ports, host, observed, request, open,
     deny: () => { allowed = false }, replaceConnection: () => { current = { ...current, connectionEpoch: randomUUID() } } }
 }
 function receipt(value: unknown) {
@@ -333,8 +336,9 @@ it('reauthorizes controls and rejects a foreign native session or replaced chann
   expect(other.manager.creates).toBe(0)
 })
 
-it('retains compaction across a lost response without blocking reads or dispatching twice', async () => {
-  const f = await setup()
+it.each(['codex', 'opencode', 'claude'] as const)(
+  'retains %s compaction across a lost response without blocking reads or dispatching twice', async harness => {
+  const f = await setup(harness)
   await f.request(f.open)
   f.manager.holdCompact = true
   const compact = { method: 'conversation.compact', session: f.session,
@@ -351,6 +355,122 @@ it('retains compaction across a lost response without blocking reads or dispatch
   expect(await f.request(compact)).toMatchObject({ compaction: { status: 'completed' } })
   expect(f.manager.compactCalls).toBe(1)
   expect((await f.journal.conversations.read(f.binding))?.closed).toBe(false)
+})
+
+for (const harness of ['codex', 'opencode', 'claude'] as const) {
+  it.each(['timeout', 'disconnect'] as const)(
+    `keeps uncertain ${harness} compaction blocked after %s and restart until its terminal result`, async outcome => {
+      const f = await setup(harness)
+      await f.request(f.open)
+      let offered!: () => void
+      const dispatched = new Promise<void>(resolve => { offered = resolve })
+      const compact = vi.spyOn(f.manager, 'compactSession').mockImplementation(async (_session, input) => {
+        await input.onProgress({ requestId: input.requestId, nativeSessionId: f.session.nativeSessionId,
+          nativeOperationId: 'compaction-operation', status: 'running', beforeTokens: 50,
+          observedAt: new Date().toISOString(), message: 'Compacting context' })
+        await input.onDispatch?.()
+        offered()
+        if (outcome === 'timeout') throw new DOMException('Response timed out', 'TimeoutError')
+        throw new Error('Native connection closed')
+      })
+      const request = { method: 'conversation.compact', session: f.session,
+        requestId: 'uncertain-request', correlationId: 'uncertain-correlation' }
+      await f.request(request)
+      await dispatched
+      await f.host.shutdown()
+      expect((await f.journal.conversations.read(f.binding))?.compactions[0]?.state.status).toBe('uncertain')
+      await f.journal.close()
+      const reopened = await RemoteOperationJournal.open(f.journalPath)
+      closing.push(() => reopened.close())
+      const state = (await reopened.conversations.read(f.binding))!.compactions[0]!.state
+      expect(await reopened.conversations.reserveCompact(f.binding, request.requestId,
+        commandInputHash({ session: f.session, correlationId: request.correlationId })))
+        .toMatchObject({ dispatch: false, state: { status: 'uncertain' } })
+      let terminal = false
+      const read = vi.fn(async () => terminal ? { ...state, status: 'completed' as const } : state)
+      const allocation = vi.fn(async (): Promise<never> => { throw new Error('Read opened a writer') })
+      const restarted = new WorkerConversationHost({ ...f.ports,
+        journal: reopened.conversations, readCompaction: read, allocate: allocation })
+      closing.push(() => restarted.shutdown())
+      const recovery = { method: 'conversation.compact-read', binding: f.binding,
+        configuration: f.configuration, session: f.session, state, correlationId: 'recovery-read' }
+      expect(await restarted.handle(recovery, f.connection)).toMatchObject({ compaction: { status: 'uncertain' } })
+      await expect(reopened.conversations.reserveTurn(f.binding, 'early', commandInputHash('early-input'))).rejects.toThrow('pending')
+      terminal = true
+      expect(await restarted.handle(recovery, f.connection)).toMatchObject({ compaction: { status: 'completed' } })
+      expect((await reopened.conversations.reserveTurn(f.binding, 'followup', commandInputHash('followup-input'))).dispatch).toBe(true)
+      expect(compact).toHaveBeenCalledOnce()
+      expect(allocation).not.toHaveBeenCalled()
+    },
+  )
+}
+
+it.each(['codex', 'opencode', 'claude'] as const)(
+  'persists %s definite compaction rejection and allows the next turn after restart', async harness => {
+    const f = await setup(harness)
+    await f.request(f.open)
+    const error = {
+      codex: new CodexRpcError('thread/compact/start', 'compact-rpc', false, 'REJECTED'),
+      opencode: new OpenCodeNativeDeliveryError('REJECTED', 'Provider rejected compaction', 'definite'),
+      claude: Object.assign(new Error('Command was not delivered'), { deliveryState: 'not-delivered' }),
+    }[harness]
+    let offered!: () => void
+    const dispatched = new Promise<void>(resolve => { offered = resolve })
+    const compact = vi.spyOn(f.manager, 'compactSession').mockImplementation(async (_session, input) => {
+      await input.onDispatch?.()
+      offered()
+      throw error
+    })
+    const request = { method: 'conversation.compact', session: f.session,
+      requestId: 'rejected-compact', correlationId: 'rejected-correlation' }
+    await f.request(request)
+    await dispatched
+    expect(await f.request(request)).toMatchObject({ compaction: { requestId: 'rejected-compact' } })
+    await f.host.shutdown()
+    expect((await f.journal.conversations.read(f.binding))?.compactions[0]?.state)
+      .toMatchObject({ status: 'failed', dispatchPhase: 'dispatched' })
+    await f.journal.close()
+    const reopened = await RemoteOperationJournal.open(f.journalPath)
+    closing.push(() => reopened.close())
+    const coldRead = vi.fn(async () => { throw new Error('A terminal outcome must not read provider history') })
+    const restarted = new WorkerConversationHost({ ...f.ports, journal: reopened.conversations, readCompaction: coldRead })
+    closing.push(() => restarted.shutdown())
+    const saved = (await reopened.conversations.read(f.binding))!.compactions[0]!.state
+    expect(await restarted.handle({ method: 'conversation.compact-read', binding: f.binding,
+      configuration: f.configuration, session: f.session, state: saved, correlationId: 'recovery-read' }, f.connection))
+      .toMatchObject({ compaction: { status: 'failed' } })
+    expect(coldRead).not.toHaveBeenCalled()
+    expect(await reopened.conversations.reserveCompact(f.binding, request.requestId,
+      commandInputHash({ session: f.session, correlationId: request.correlationId })))
+      .toMatchObject({ dispatch: false, state: { status: 'failed' } })
+    expect((await reopened.conversations.reserveTurn(f.binding, 'after-rejection', commandInputHash('next-input'))).dispatch).toBe(true)
+    expect(compact).toHaveBeenCalledOnce()
+  },
+)
+
+it('keeps the native boundary when the provider saves progress before dispatch', async () => {
+  const f = await setup('opencode')
+  await f.request(f.open)
+  let finish!: () => void
+  const finished = new Promise<void>(resolve => { finish = resolve })
+  const compact = vi.spyOn(f.manager, 'compactSession').mockImplementation(async (_session, input) => {
+    const state: CompactionState = { requestId: input.requestId, nativeSessionId: f.session.nativeSessionId,
+      nativeOperationId: 'history-baseline', status: 'running', beforeTokens: 50,
+      observedAt: new Date().toISOString(), message: 'Compacting context' }
+    try {
+      await input.onProgress(state)
+      await input.onDispatch?.()
+      await input.onProgress(state)
+      return { ...state, status: 'completed' }
+    } finally { finish() }
+  })
+  await f.request({ method: 'conversation.compact', session: f.session,
+    requestId: 'progress-first', correlationId: 'progress-first' })
+  await finished
+  await f.host.shutdown()
+  expect((await f.journal.conversations.read(f.binding))?.compactions[0]?.state)
+    .toMatchObject({ status: 'completed', nativeOperationId: 'history-baseline', dispatchPhase: 'dispatched' })
+  expect(compact).toHaveBeenCalledOnce()
 })
 
 it('forks independently, keeps its source untouched and carries real initial-message observations', async () => {
