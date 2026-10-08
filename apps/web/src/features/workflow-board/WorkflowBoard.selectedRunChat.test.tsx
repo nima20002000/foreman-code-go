@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
@@ -165,6 +165,13 @@ it('keeps the saved Agent and Inspect reachable after desktop resize and Selecte
   const node = await screen.findByRole('group', { name: 'Removed Coder, saved agent, read only' })
   await waitFor(() => expect(renderedNodeBounds(node).left).toBeGreaterThan(320))
   const savedPosition = node.style.transform
+  const pane = node.closest('.react-flow')!.querySelector('.react-flow__pane')!
+  for (const type of ['mousedown', 'mouseup']) {
+    const event = new MouseEvent(type, { bubbles: true, clientX: 200, clientY: 200, button: 0 })
+    // jsdom's UIEvent constructor rejects Vitest's Window proxy.
+    Object.defineProperty(event, 'view', { value: document.defaultView })
+    fireEvent(pane, event)
+  }
 
   act(() => layout.resize(320, 480))
   await userEvent.click(screen.getByRole('button', { name: 'Close Selected Run panel' }))

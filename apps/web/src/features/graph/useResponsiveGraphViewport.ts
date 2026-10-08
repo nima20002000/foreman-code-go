@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import type { Edge, Node, OnMoveStart, ReactFlowInstance } from '@xyflow/react'
+import type { Edge, Node, OnMove, ReactFlowInstance } from '@xyflow/react'
 
 /** Fit options shared by both canvases. The low zoom floor keeps saved nodes reachable on phone widths. */
 export const RESPONSIVE_MIN_ZOOM = 0.1
@@ -20,7 +20,7 @@ export function useResponsiveGraphViewport<N extends Node = Node, E extends Edge
   const moved = useRef(false)
   const onInit = useCallback((next: ReactFlowInstance<N, E>) => { instance.current = next }, [])
   const onManualMove = useCallback(() => { moved.current = true }, [])
-  const onMoveStart = useCallback<OnMoveStart>((event) => {
+  const onMove = useCallback<OnMove>((event) => {
     if (event) onManualMove()
   }, [onManualMove])
 
@@ -57,5 +57,5 @@ export function useResponsiveGraphViewport<N extends Node = Node, E extends Edge
     }
   }, [enabled, delay, fitViewOptions])
 
-  return { containerRef, onInit, onMoveStart, onManualMove }
+  return { containerRef, onInit, onMove, onManualMove }
 }

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
 import { useGraphDraftStore } from '../store'
+import { installFlowLayout } from '../../run-board/testFlowLayout'
 import { fixture } from './core.cases'
 import { DraftCanvas } from './DraftCanvas'
 import { nextDraftKey } from './state'
@@ -49,6 +50,47 @@ function mouse(target: Element | Window, type: 'mousedown' | 'mousemove' | 'mous
   Object.defineProperty(event, 'view', { value: document.defaultView })
   fireEvent(target, event)
 }
+
+it.each(['pan', 'wheel zoom'])('preserves the draft viewport after a manual %s and canvas resize', async (gesture) => {
+  const layout = installFlowLayout(1000, 800)
+  const { container } = mount()
+  const viewport = container.querySelector<HTMLElement>('.react-flow__viewport')!
+  await waitFor(() => expect(viewport.style.transform).toContain('scale(1)'))
+  const initial = viewport.style.transform
+  const pane = container.querySelector('.react-flow__pane')!
+  if (gesture === 'pan') {
+    mouse(pane, 'mousedown', 200, 200)
+    mouse(document.defaultView!, 'mousemove', 250, 240)
+    mouse(document.defaultView!, 'mouseup', 250, 240)
+  } else {
+    fireEvent.wheel(pane, { deltaY: -100, clientX: 200, clientY: 200 })
+  }
+  await waitFor(() => expect(viewport.style.transform).not.toBe(initial))
+  const adjusted = viewport.style.transform
+  act(() => layout.resize(320, 480))
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+  expect(viewport.style.transform).toBe(adjusted)
+  expect(geometry).not.toHaveBeenCalled()
+  expect(change).not.toHaveBeenCalled()
+})
+
+it('refits the draft after a stationary canvas click and resize', async () => {
+  const layout = installFlowLayout(1000, 800)
+  const { container } = mount()
+  const viewport = container.querySelector<HTMLElement>('.react-flow__viewport')!
+  await waitFor(() => expect(viewport.style.transform).toContain('scale(1)'))
+  const initial = viewport.style.transform
+  const pane = container.querySelector('.react-flow__pane')!
+  mouse(pane, 'mousedown', 200, 200)
+  mouse(document.defaultView!, 'mouseup', 200, 200)
+  expect(viewport.style.transform).toBe(initial)
+  act(() => layout.resize(320, 480))
+  await waitFor(() => expect(viewport.style.transform).not.toBe(initial))
+  const zoom = Number(/scale\(([-\d.]+)\)/.exec(viewport.style.transform)![1])
+  expect(zoom).toBeLessThan(1)
+  expect(geometry).not.toHaveBeenCalled()
+  expect(change).not.toHaveBeenCalled()
+})
 
 it('resizes from a corner at minimum zoom in graph coordinates without moving or connecting the node', async () => {
   const { container } = mount()

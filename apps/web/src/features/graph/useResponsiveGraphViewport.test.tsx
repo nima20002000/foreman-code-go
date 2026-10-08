@@ -14,12 +14,12 @@ class FakeObserver {
 }
 
 function Harness({ flow, enabled = true }: { flow: unknown; enabled?: boolean }) {
-  const { containerRef, onInit, onMoveStart, onManualMove } = useResponsiveGraphViewport({ enabled })
+  const { containerRef, onInit, onMove, onManualMove } = useResponsiveGraphViewport({ enabled })
   useEffect(() => { onInit(flow as never) }, [flow, onInit])
   return <div ref={containerRef} data-testid="canvas"
-    onWheel={(event) => onMoveStart(event.nativeEvent, { x: 10, y: 20, zoom: 0.5 })}>
+    onWheel={(event) => onMove(event.nativeEvent, { x: 10, y: 20, zoom: 0.5 })}>
     <button onClick={onManualMove}>Zoom in</button>
-    <button onClick={() => onMoveStart(null, { x: 10, y: 20, zoom: 0.5 })}>Programmatic move</button>
+    <button onClick={() => onMove(null, { x: 10, y: 20, zoom: 0.5 })}>Programmatic move</button>
   </div>
 }
 const settle = () => act(() => { vi.advanceTimersByTime(100) })

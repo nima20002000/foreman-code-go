@@ -41,7 +41,7 @@ const proOptions = { hideAttribution: true }
 export function RunBoardCanvas({ snapshot, onInspectNode }: {
   snapshot: AvailableRunBoardSnapshot; onInspectNode?: (nodeId: string) => void
 }) {
-  const { containerRef, onInit, onMoveStart, onManualMove } = useResponsiveGraphViewport<SavedBoardNode, SavedBoardEdge>({
+  const { containerRef, onInit, onMove, onManualMove } = useResponsiveGraphViewport<SavedBoardNode, SavedBoardEdge>({
     fitViewOptions,
   })
   const { nodes, edges } = useMemo(() => {
@@ -61,7 +61,7 @@ export function RunBoardCanvas({ snapshot, onInspectNode }: {
     <ReactFlowProvider>
       <ReactFlow<SavedBoardNode, SavedBoardEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         {...READ_ONLY_FLOW_PROPS} fitView fitViewOptions={fitViewOptions} minZoom={0.02} maxZoom={2}
-        onInit={onInit} onMoveStart={onMoveStart}
+        onInit={onInit} onMove={onMove}
         proOptions={proOptions} preventScrolling={false} aria-label="Saved Run graph"
         ariaLabelConfig={{ 'node.a11yDescription.default': 'Saved agent, read only.', 'edge.a11yDescription.default': 'Saved connection, read only.' }}>
         <RunSubagentsOverlay scope={snapshot} nodes={snapshot.nodes} />

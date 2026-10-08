@@ -233,6 +233,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       {selectedRun ? null : <ReactFlow<GraphNode, DraftEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} connectionMode={ConnectionMode.Loose} connectionRadius={120} deleteKeyCode={null}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={RESPONSIVE_MIN_ZOOM} maxZoom={1.6} onInit={responsive.onInit}
+        onMove={responsive.onMove}
         isValidConnection={(connection) => connection.source !== connection.target}
         onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
         onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}

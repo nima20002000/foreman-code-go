@@ -132,7 +132,7 @@ export const GraphCanvas = memo(function GraphCanvas({
     return [...topology.edges, ...departing.edges.filter((edge) => !ids.has(edge.id))]
   }, [topology.edges, departing.edges])
   const [connecting, setConnecting] = useState(false)
-  const { containerRef, onInit: fitOnInit, onMoveStart } = useResponsiveGraphViewport<GraphNode, GraphEdge>()
+  const { containerRef, onInit: fitOnInit, onMove } = useResponsiveGraphViewport<GraphNode, GraphEdge>()
   const handleInit = useCallback((instance: ReactFlowInstance<GraphNode, GraphEdge>) => {
     fitOnInit(instance)
     onInit?.(instance)
@@ -164,7 +164,7 @@ export const GraphCanvas = memo(function GraphCanvas({
         nodesDraggable={!readOnly} nodesConnectable={!readOnly} elementsSelectable
         panOnDrag zoomOnScroll deleteKeyCode={null} fitView fitViewOptions={fitViewOptions} minZoom={RESPONSIVE_MIN_ZOOM}
         defaultEdgeOptions={defaultEdgeOptions} proOptions={proOptions}
-        aria-label={readOnly ? 'Run graph canvas' : 'Workflow editor canvas'} onInit={handleInit} onMoveStart={onMoveStart}>
+        aria-label={readOnly ? 'Run graph canvas' : 'Workflow editor canvas'} onInit={handleInit} onMove={onMove}>
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow>
     </GraphGeometryContext.Provider>
