@@ -15,7 +15,7 @@ import { ClaudeSetupOptionsSchema } from '@foreman-code/contracts/claude'
 
 export function registerHarnessTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'claude_setup_options_get')) server.registerTool('claude_setup_options_get', {
-    description: 'Read the owning API Foreman Code MCP HTTP endpoint for a pinned Claude configuration. Add it as mcpServers["foreman-code"] (existing graphql entries remain supported) using harness_defaults_update or harness_instance_save. Saving configuration does not qualify execution, grant tools, install packages or change native login files. Scoped credentials are delivered only at authorized execution admission.',
+    description: 'Read the owning API Foreman Code MCP HTTP endpoint for a pinned Claude configuration. Add it as mcpServers["foreman-code"] (existing graphql entries remain supported) using harness_defaults_update or harness_instance_save. Saving configuration does not qualify execution, grant tools, install packages or change native login files. External MCP servers are rejected because their tool manifests are not supported. Scoped credentials are delivered only at authorized execution admission.',
     inputSchema: z.object({}).strict(), outputSchema: ClaudeSetupOptionsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'claude_setup_options_get', async () => context.services.harnesses.claudeSetupOptions(context.principal)))
@@ -51,7 +51,7 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
       + 'saved defaults and application interactionSupport limits. Discovery errors identify unmet contracts. '
       + 'Codex supports generic questions, MCP approvals, and schema-validated data-entry forms. '
       + 'When native discovery cannot select a default model, capability is null with HARNESS_MODEL_DEFAULT_UNAVAILABLE; '
-      + 'choose an explicit native model before using that preset.',
+      + 'choose an explicit native model before using that preset. Claude access choices that need configuration return CLAUDE_FULL_ACCESS_REQUIRED; choose Full access explicitly.',
     inputSchema: z.object({}).strict(),
     outputSchema: HarnessCatalogResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -62,13 +62,13 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
       + 'authentication and host policy still apply. '
       + 'Read supported and unsupported descriptions before requesting native input; '
       + 'Codex supports generic questions and schema-validated data-entry forms. '
-      + 'An unavailable native default returns capability null and HARNESS_MODEL_DEFAULT_UNAVAILABLE; template values do not qualify execution.',
+      + 'An unavailable native default returns capability null and HARNESS_MODEL_DEFAULT_UNAVAILABLE; template values do not qualify execution. Claude presets with unsupported access return capability null and CLAUDE_FULL_ACCESS_REQUIRED until the user explicitly chooses Full access.',
     inputSchema: HarnessGetInputSchema,
     outputSchema: HarnessCatalogEntrySchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_get', () => context.services.harnesses.get(context.principal, input.harness)))
   if (operatorToolAvailable(context, 'harness_defaults_update')) server.registerTool('harness_defaults_update', {
-    description: 'Revision-check and replace defaults copied into future board agents. Claude accepts only Full access; other modes are refused without changing them. Use configure to explicitly select a preset even if its template values match. Other unavailable presets stay unavailable. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex/OpenCode selections require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
+    description: 'Revision-check and replace defaults copied into future board agents. Claude accepts only explicit Full access and the app MCP connection; other access modes and external MCP servers are refused without changing them. Use configure to explicitly select a preset even if its template values match. Other unavailable presets stay unavailable. Claude presets persist explicit configuration without native qualification; saving grants no execution or tool authority. Codex/OpenCode selections require their model-free native checks.', inputSchema: HarnessDefaultsUpdateInputSchema,
     outputSchema: HarnessDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'harness_defaults_update', () => context.services.harnesses.updateDefaults(context.principal, 'mcp', input)))

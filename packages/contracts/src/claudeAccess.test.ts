@@ -44,3 +44,22 @@ it('uses the same Full access validation in agent saves, host saves, preset save
   const defaults = HarnessDefaultsUpdateInputSchema.shape.defaults.shape
   expect(defaults.claude.safeParse(unsupported).success).toBe(false)
 })
+
+it('rejects external MCP servers on configuration writes while preserving stored readback', () => {
+  const external = { ...configuration, tools: ['mcp__external__lookup'],
+    permissionRules: [{ tool: 'mcp__external__lookup', effect: 'allow' }],
+    mcpServers: { external: { type: 'http', url: 'https://external.example/mcp' } } }
+  expect(ClaudeHarnessConfigurationSchema.parse(external)).toEqual(external)
+  const result = SupportedHarnessConfigurationSchema.safeParse(external)
+  expect(result.success).toBe(false)
+  if (result.success) throw new Error('Unsupported external MCP server was accepted')
+  expect(result.error.issues).toContainEqual(expect.objectContaining({
+    path: ['mcpServers', 'external'], message: expect.stringContaining('External MCP servers are not supported'),
+  }))
+  expect(HarnessDefaultsUpdateInputSchema.shape.defaults.shape.claude.safeParse(external).success).toBe(false)
+})
+
+it.each(['foreman-code', 'graphql'])('accepts the supported app MCP connection named %s', name => {
+  const value = { ...configuration, mcpServers: { [name]: { type: 'http', url: 'http://127.0.0.1:3050/mcp' } } }
+  expect(SupportedHarnessConfigurationSchema.parse(value)).toEqual(value)
+})

@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults, type ClaudeHarnessConfiguration } from '@foreman-code/contracts'
+import { CLAUDE_FULL_ACCESS_REQUIRED, DEFAULT_HARNESS_DEFAULTS, type HarnessDefaults, type ClaudeHarnessConfiguration } from '@foreman-code/contracts'
 import { HarnessDefaultsUpdateInputSchema } from '@foreman-code/contracts/management'
 import { queryKeys } from '../../shared/api/query'
 import { getManagedHarnessCatalog } from '../../shared/api/client'
@@ -24,17 +24,17 @@ vi.mock('../../shared/api/harnessSettings', () => ({
 vi.mock('./HarnessDirectoryPicker', () => ({ HarnessDirectoryPicker: () => <div>Folder picker</div> }))
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clearRevisionedFormPersistence(); for (const client of clients.splice(0)) client.clear() })
-function setup(defaults: HarnessDefaults, conflicted = false) {
+function setup(defaults: HarnessDefaults, options: { conflicted?: boolean; claudeError?: { code: string; message: string } } = {}) {
   let persisted = structuredClone(defaults)
   let revision = 4
   let submitted: ReturnType<typeof HarnessDefaultsUpdateInputSchema.parse> | undefined
   server.use(
     http.get('/api/management/harnesses', () => HttpResponse.json((['codex', 'opencode', 'claude'] as const)
       .filter((harness) => persisted[harness]).map((harness) => ({ harness, defaults: persisted[harness], defaultsRevision: revision,
-        capability: null, discoveryError: null })))),
+        capability: null, discoveryError: harness === 'claude' ? options.claudeError ?? null : null })))),
     http.put('/api/management/harnesses/defaults', async ({ request }) => {
       submitted = HarnessDefaultsUpdateInputSchema.parse(await request.json())
-      if (conflicted) { revision += 1; return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Harness defaults changed since they were read.' } }, { status: 409 }) }
+      if (options.conflicted) { revision += 1; return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Harness defaults changed since they were read.' } }, { status: 409 }) }
       expect(submitted.expectedRevision).toBe(revision)
       persisted = submitted.defaults
       revision += 1
@@ -51,6 +51,25 @@ function setup(defaults: HarnessDefaults, conflicted = false) {
     } }
 }
 describe('Claude defaults through the HTTP boundary', () => {
+  it('shows detected read-only defaults as incomplete and requires an explicit Full access choice', async () => {
+    const configuration = { ...savedClaudeConfiguration, sandbox: 'read-only' as const }
+    const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: configuration }, {
+      claudeError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED', message: CLAUDE_FULL_ACCESS_REQUIRED },
+    })
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
+    expect(screen.getByText('Preset needs configuration')).toBeVisible()
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument()
+    const sandbox = screen.getByRole('combobox', { name: 'Sandbox' })
+    expect(sandbox).toHaveValue('read-only')
+    await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+    expect(state.submitted()).toBeUndefined()
+    expect(sandbox).toHaveValue('read-only')
+    await user.selectOptions(sandbox, 'danger-full-access')
+    await user.click(screen.getByRole('button', { name: 'Save Claude preset' }))
+    expect(await screen.findByText('Changes saved to the server')).toBeVisible()
+    expect(state.submitted()?.defaults.claude).toEqual({ ...configuration, sandbox: 'danger-full-access' })
+  })
   it('saves an explicitly added Claude MCP connection through the revisioned preset boundary', async () => {
     const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: {} } })
     const user = userEvent.setup()
@@ -103,7 +122,7 @@ describe('Claude defaults through the HTTP boundary', () => {
     expect((await getManagedHarnessCatalog()).map((entry) => entry.harness)).toEqual(['codex', 'opencode'])
   })
   it('preserves the Claude draft and exact permissions after a revision conflict', async () => {
-    const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }, true)
+    const state = setup({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration }, { conflicted: true })
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Edit Claude defaults' }))
     expect(screen.getByText('Claude profile is not verified')).toBeVisible()

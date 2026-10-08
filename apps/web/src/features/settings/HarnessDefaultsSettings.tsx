@@ -36,7 +36,8 @@ function useProviderDefaults() {
   const catalogQuery = useManagedHarnessCatalogQuery(true)
   const unavailable: Partial<Record<Harness, string>> = {}
   for (const entry of catalogQuery.data ?? []) {
-    if (entry.discoveryError?.code === 'HARNESS_MODEL_DEFAULT_UNAVAILABLE') {
+    if (entry.discoveryError && ['HARNESS_MODEL_DEFAULT_UNAVAILABLE',
+      'CLAUDE_FULL_ACCESS_REQUIRED', 'CLAUDE_EXTERNAL_MCP_UNSUPPORTED'].includes(entry.discoveryError.code)) {
       unavailable[entry.harness] = entry.discoveryError.message
     }
   }
@@ -104,7 +105,7 @@ function ProviderEditor({ harness, section, onSectionChange, onBack, showBack }:
   }
   return <div ref={(node) => { root.current = node }}><SettingsEditorLayout showBack={showBack} title={`${name} settings`}
     backLabel="All harnesses" onBack={onBack} section={activeSection} onSectionChange={onSectionChange} connections plugins={harness === 'codex'}
-    feedback={<>{unavailable[harness] ? <Alert tone="warning" title="Default model unavailable">{unavailable[harness]}</Alert> : null}
+    feedback={<>{unavailable[harness] ? <Alert tone="warning" title="Preset needs configuration">{unavailable[harness]}</Alert> : null}
       {query.isError ? <p role="alert">Could not refresh. Your draft is kept. <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></p> : null}<SettingsFormFeedback form={{ ...form, reapply }} /></>}
     footer={(activeSection === 'connections' && harness !== 'claude') || activeSection === 'workspace' || activeSection === 'plugins' ? null : <SettingsFormActions form={form} saveLabel={`Save ${name} preset`}
       onSave={() => form.save(async (input) => {
