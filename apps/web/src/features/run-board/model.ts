@@ -2,7 +2,7 @@ import type { Edge, Node, ReactFlowProps } from '@xyflow/react'
 import type { RunBoardSnapshot, RunBoardNodeSnapshot, RunBoardEdgeSnapshot } from '@foreman-code/contracts/run-snapshots'
 
 export type AvailableRunBoardSnapshot = Extract<RunBoardSnapshot, { kind: 'available' }>
-export type SavedBoardNode = Node<{ snapshot: RunBoardNodeSnapshot }, 'savedBoardNode'>
+export type SavedBoardNode = Node<{ snapshot: RunBoardNodeSnapshot; inspect?: () => void }, 'savedBoardNode'>
 export type SavedBoardEdge = Edge<{ snapshot: RunBoardEdgeSnapshot; lane: number }, 'savedBoardEdge'>
 
 /** No caller-provided canvas props may override these locks. Viewport movement is harmless. */
@@ -24,7 +24,7 @@ export function projectRunBoard(snapshot: AvailableRunBoardSnapshot): { nodes: S
     initialWidth: node.size.width, initialHeight: node.size.height,
     style: { width: node.size.width, height: node.size.height }, data: { snapshot: node },
     draggable: false, connectable: false, selectable: false, deletable: false, focusable: true,
-    ariaRole: 'img', ariaLabel: `${node.name}, saved ${node.kind==='job'?'job':'agent'}, read only`,
+    ariaRole: 'group', ariaLabel: `${node.name}, saved ${node.kind==='job'?'job':'agent'}, read only`,
     domAttributes: { title: node.kind==='job'?`${node.name}\nJob: ${node.jobDefinitionId}\nRevision: ${node.jobDefinitionRevision}`:`${node.name}\nAgent: ${node.agentId}\nConfiguration: ${node.agentConfigurationVersionId}` },
   }))
   const lanes = new Map<string, number>()

@@ -139,8 +139,11 @@ async function drive(ports: AccountProbePorts, signal: AbortSignal): Promise<Com
   catch { email = null }
   // Drive cannot report its account through rclone; the app keeps it as the remote's description.
   if (!email && remote === DRIVE_REMOTE) {
-    email = driveRemoteSetting(await ports.readText(join(ports.environment.HOME ?? homedir(), '.config', 'rclone', 'rclone.conf')) ?? '',
-      'description')?.slice(0, 320) ?? null
+    const location = await ports.run(binary, ['config', 'file'], signal)
+    const configPath = location.stdout.trim().split('\n').at(-1)?.trim()
+    if (location.code === 0 && configPath?.startsWith('/')) {
+      email = driveRemoteSetting(await ports.readText(configPath) ?? '', 'description')?.slice(0, 320) ?? null
+    }
   }
   // The app's own remote is mounted at ~/Foreman Code Drive; Agents on this computer share files there.
   const mountPath = join(ports.environment.HOME ?? homedir(), DRIVE_MOUNT_DIRECTORY)
