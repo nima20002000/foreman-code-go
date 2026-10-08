@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { copyFile, link, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -21,6 +21,17 @@ import { runLauncherProcess } from './helpers/launcherInstallationProcess.js'
 import { ownedTestDatabaseUrl } from './helpers/testResources.js'
 
 const cleanup: Array<() => Promise<unknown>> = []
+let runtimeFixtureDirectory: string | undefined
+let runtimeFixtureBinary: string
+beforeAll(async () => {
+  // Aliases share a private copy so linking them cannot change installed Node metadata.
+  runtimeFixtureDirectory = await mkdtemp(join(tmpdir(), 'production-mcp-runtime-'))
+  runtimeFixtureBinary = join(runtimeFixtureDirectory, 'node')
+  await copyFile(process.execPath, runtimeFixtureBinary, constants.COPYFILE_FICLONE)
+})
+afterAll(async () => {
+  if (runtimeFixtureDirectory) await rm(runtimeFixtureDirectory, { recursive: true, force: true })
+})
 afterEach(async () => {
   try {
     while (cleanup.length) await cleanup.pop()!()
@@ -42,7 +53,15 @@ it.each(cases)(
     const developmentRuntime = join(home, 'development-node')
     const concurrentRuntime = join(home, 'concurrent-node')
     await Promise.all([installedRuntime, developmentRuntime, concurrentRuntime]
-      .map(runtime => copyFile(process.execPath, runtime, constants.COPYFILE_FICLONE)))
+      .map(async runtime => {
+        try {
+          await link(runtimeFixtureBinary, runtime)
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if (code !== 'EXDEV' && code !== 'EPERM') throw error
+          await copyFile(runtimeFixtureBinary, runtime, constants.COPYFILE_FICLONE)
+        }
+      }))
     vi.stubEnv('GRAPHQL_APP_MCP_DIRECTORY', undefined)
     const savedLauncher = change === 'unused-directory' ? shared : previous
     vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', dirname(savedLauncher))
