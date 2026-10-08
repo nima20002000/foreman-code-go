@@ -1,4 +1,4 @@
-import type { CompactionState, ContextSnapshot, SessionMode } from '@foreman-code/contracts'
+import { compactionBlocksSend, type CompactionState, type ContextSnapshot, type SessionMode } from '@foreman-code/contracts'
 import type { OpenCodeMessage } from './opencodeProtocol.js'
 
 export function openCodeSessionAgent(mode: SessionMode | undefined, regularAgent: string): string {
@@ -6,6 +6,7 @@ export function openCodeSessionAgent(mode: SessionMode | undefined, regularAgent
 }
 
 export function openCodeCompactionResult(state: CompactionState, messages: readonly OpenCodeMessage[]): CompactionState {
+  if (!compactionBlocksSend(state)) return state
   const baseline = messages.findIndex(message => message.info.id === state.nativeOperationId)
   if (baseline < 0) return state
   const later = messages.slice(baseline + 1)

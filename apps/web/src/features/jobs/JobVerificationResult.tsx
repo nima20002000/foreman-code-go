@@ -40,7 +40,7 @@ export function JobVerificationResult({ execution, artifacts, artifactsUnavailab
   if (artifactsUnavailable || query.isError) return <Alert title="Verification report unavailable" tone="warning">
     {query.isError ? jobError(query.error) : 'Artifact history unavailable or permission lost.'}
   </Alert>
-  if (!query.data) {
+  if (!query.data || summary?.state !== 'available') {
     let message = 'Waiting for the verification summary. Process exit alone does not confirm a suite pass.'
     if (summary?.state === 'expired') message = 'The verification summary has expired.'
     if (summary?.state === 'tombstoned') message = 'The verification summary is unavailable.'

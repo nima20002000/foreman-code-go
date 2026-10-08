@@ -13,18 +13,27 @@ import { GitHubLoginRunner } from './githubLogin.js'
 
 /** Starts, follows and ends GitHub CLI sign-in on Main or a paired computer. Credentials stay on that computer. */
 export class ComputerGitHubService {
+  private readonly local: Pick<GitHubLoginRunner, 'handle'>
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
     private readonly endpoint: () => ComputerAccountsEndpoint | undefined,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly local: Pick<GitHubLoginRunner, 'handle'> = new GitHubLoginRunner(),
-  ) {}
+    private readonly options: {
+      local?: Pick<GitHubLoginRunner, 'handle'>
+      accountChanged?: (target: DeviceProvisioningTarget) => void
+    } = {},
+  ) {
+    this.local = options.local ?? new GitHubLoginRunner()
+  }
 
   async handle(principal: ManagementPrincipal, source: 'http' | 'mcp', target: DeviceProvisioningTarget,
     request: GitHubLoginRequest): Promise<GitHubLoginState> {
-    const action = request.operation === 'login-start' ? 'computer_github_login_start'
-      : request.operation === 'logout' ? 'computer_github_logout' : 'computer_github_login_status'
+    const actions = {
+      'login-start': 'computer_github_login_start', 'login-status': 'computer_github_login_status',
+      'logout': 'computer_github_logout', 'setup-git': 'computer_github_setup_git',
+    }
+    const action = actions[request.operation]
     const targetKey = target.hostRef.kind === 'main' ? `main:${this.mainId}` : `device:${target.hostRef.deviceId}`
     try { requireAuthorization(principal, 'settings:update') } catch (error) {
       await this.commands.recordDenied(principal.id, source, action, targetKey)
@@ -37,11 +46,14 @@ export class ComputerGitHubService {
         : await this.device(target.hostRef.deviceId, parsed))
       if (request.operation !== 'login-status') await this.commands.recordAudit(principal.id, source, action, targetKey, 'succeeded',
         { state: state.state })
+      if (request.operation === 'login-status' && state.state !== 'waiting') this.options.accountChanged?.(target)
       return state
     } catch (error) {
       if (request.operation !== 'login-status') await this.commands.recordAudit(principal.id, source, action, targetKey, 'failed',
         { code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' })
       throw error
+    } finally {
+      if (request.operation !== 'login-status') this.options.accountChanged?.(target)
     }
   }
 

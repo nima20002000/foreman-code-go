@@ -80,7 +80,7 @@ describe('canonical original send input', () => {
     value.turns = [{ ...turn, delivery: 'unknown', messageId: message.id }]
     const { onSendAgain } = transcript(value)
     fireEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
-    expect(onSendAgain).toHaveBeenCalledWith('exact admitted text', value.messages[0]!.originalInput!.attachments)
+    expect(onSendAgain).toHaveBeenCalledWith('exact admitted text', value.messages[0]!.originalInput!.attachments, undefined)
     expect(screen.getByText(`output-${count + 11}.md`)).toBeInTheDocument()
   })
   it('does not infer resend inputs when the exact admitted source is unavailable', () => {
@@ -118,6 +118,7 @@ describe('canonical original send input', () => {
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(sends()).toHaveLength(0)
     await userEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
+    await userEvent.selectOptions(within(screen.getByRole('alertdialog')).getByRole('combobox', { name: 'Mode for new message' }), 'regular')
     await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Send as new message' }))
     await waitFor(() => expect(sends()).toHaveLength(1))
     const sent = sends()[0]!.body as SendAgentChatMessageRequest

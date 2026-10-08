@@ -96,9 +96,21 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const) {
       if (receipt.connection[field] !== this.options.channel.binding[field]) conflict('The original worker installation changed.')
     }
+    const older = this.receipt && receipt.revision < this.receipt.revision
+    const transitions = older ? this.receipt : receipt
+    let transitioned = older ? receipt.nativeOwner : this.receipt?.nativeOwner
+    for (const change of transitions?.ownerTransitions ?? []) {
+      if (change.previous.sessionId !== receipt.session?.nativeSessionId
+        || change.next.sessionId !== receipt.session?.nativeSessionId) {
+        conflict('The worker process transition belongs to another native session.')
+      }
+      if (isDeepStrictEqual(change.previous, transitioned)) transitioned = change.next
+    }
+    const recovered = this.receipt?.nativeOwner && receipt.revision !== this.receipt.revision
+      && isDeepStrictEqual(older ? this.receipt.nativeOwner : receipt.nativeOwner, transitioned)
     if (this.receipt && (this.receipt.session && !isDeepStrictEqual(receipt.session, this.receipt.session)
       || this.receipt.nativeOwner && !isDeepStrictEqual(receipt.nativeOwner, this.receipt.nativeOwner)
-        && (!attachment || !isDeepStrictEqual(this.receipt.session, attachment)
+        && !recovered && (!attachment || !isDeepStrictEqual(this.receipt.session, attachment)
           || !isDeepStrictEqual(receipt.session, attachment)))) {
       conflict('The original worker native owner changed.')
     }
@@ -255,6 +267,14 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     } catch (error) { await this.release(lease); throw error }
   }
 
+  private checkRejection(correlationId: string) {
+    const turn = this.receipt?.turns.find(turn => turn.correlationId === correlationId)
+    if (turn?.status !== 'rejected' || !turn.result) return
+    throw Object.assign(new Error(turn.result.error?.message ?? 'Native input was not delivered.'), {
+      result: turn.result, certainty: 'definite', deliveryState: 'not-delivered',
+    })
+  }
+
   private async *stream(frame: WorkerConversationRpcRequest, input: NativeTurnInput,
     initial: NativeInitialTurnInput | undefined, signal?: AbortSignal) {
     const lease = this.capture(frame, { callbacks: {
@@ -280,16 +300,19 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         sequence = (history.nextSequence ?? Math.max(-1, ...history.events.map(event => event.sequence)) + 1) - 1
       }
       this.adopt(await lease.request(pollSignal))
+      this.checkRejection(input.clientCorrelationId)
       while (true) {
         pollSignal.throwIfAborted()
         if (!this.session) {
           this.adopt(await this.request({ method: 'conversation.status' }, pollSignal))
+          this.checkRejection(input.clientCorrelationId)
           if (!this.session) { await delay(100, undefined, { signal: pollSignal }); continue }
         }
         const value = z.object({ history: WorkerConversationHistorySchema, context: ContextSnapshotSchema.nullable(),
           receipt: WorkerConversationReceiptSchema }).parse(await this.request({ method: 'conversation.history',
           session: this.session, correlationId: input.clientCorrelationId }, pollSignal))
         this.adopt(value)
+        this.checkRejection(input.clientCorrelationId)
         this.context = value.context
         if (sequence !== undefined && value.history.firstRetainedSequence !== undefined
           && sequence < value.history.firstRetainedSequence - 1) conflict('The worker event window has advanced; recover persisted history.')

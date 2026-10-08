@@ -77,7 +77,10 @@ export const localHarnessDrivers: readonly HarnessDriverRegistration[] = ['codex
 
 /** Existing managed-default CAS/auth remains in the catalog/settings services. */
 export function localDefaultInstances(defaults: HarnessDefaults, revision: number): ConfiguredHarnessInstance[] {
-  return (['codex', 'opencode'] as const).map((driverId) => ({
-    instanceId: `local-default:${driverId}`, instanceRevision: String(revision), driverId, enabled: true, configuration: defaults[driverId],
-  }))
+  return (['codex', 'opencode', 'claude'] as const)
+    .filter(driverId => defaults[driverId] !== undefined)
+    .map((driverId) => ({
+      instanceId: `local-default:${driverId}`, instanceRevision: String(revision), driverId,
+      enabled: true, configuration: defaults[driverId],
+    }))
 }

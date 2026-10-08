@@ -9,9 +9,13 @@ import { qualifyClaudeNativeProfile } from '../src/modules/harnesses/claudeSdk/n
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 
 const directories: string[] = []
-afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
+afterEach(async () => {
+  vi.unstubAllEnvs()
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
+})
 
 async function fixture(models: unknown[], emitReceipt = false) {
+  vi.stubEnv('CLAUDE_CONFIG_DIR', '/unit/profile')
   const directory = await mkdtemp(join(tmpdir(), 'claude-producer-unit-')); directories.push(directory)
   const configuration = { harness: 'claude' as const, model: 'unit-model', effort: 'medium' as const, configDirectory: '/unit/profile',
     authMode: 'subscription' as const, permissionMode: 'default' as const, sandbox: 'danger-full-access' as const, tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} }
@@ -36,6 +40,17 @@ async function fixture(models: unknown[], emitReceipt = false) {
     pin: { sdkVersion: '0.3.284', sdkIntegrity: 'unit-integrity', cliVersion: '2.1.284', executableSha256: 'a'.repeat(64), profilePath: '/unit/profile', configRevision: '1' },
     directory, recovery: { root: directory, owner: 'unit-producer' }, signal: AbortSignal.timeout(3000), assertCurrent: async () => {}, loadClient } }
 }
+
+it('rejects a different process profile before loading the SDK or offering paid diagnostic input', async () => {
+  const f = await fixture([{ value: 'unit-model', supportedEffortLevels: ['medium'] }])
+  vi.stubEnv('CLAUDE_CONFIG_DIR', '/other/profile')
+  await expect(qualifyClaudeNativeProfile(f.input)).rejects.toMatchObject({
+    code: 'CLAUDE_PROFILE_DIRECTORY_MISMATCH',
+    message: expect.stringContaining('CLAUDE_CONFIG_DIR'),
+  })
+  expect(f.input.loadClient).not.toHaveBeenCalled()
+  expect(f.offered).not.toHaveBeenCalled()
+})
 
 it('does not turn initialization/model metadata into basic, auth or full-access proof', async () => {
   const f = await fixture([{ value: 'unit-model', supportedEffortLevels: ['medium'] }])

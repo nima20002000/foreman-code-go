@@ -40,6 +40,8 @@ import { createClaudeNativeSessionManager } from '../src/modules/harnesses/claud
 import { createClaudeSdkRunner } from '../src/modules/harnesses/claudeSdk/runner.js'
 import { ClaudeBoundedQueue } from '../src/modules/harnesses/claudeSdk/queue.js'
 import type { ClaudeSdkClient } from '../src/modules/harnesses/claudeSdk/port.js'
+import { CodexRpcError } from '../src/modules/harnesses/codexStdioTransport.js'
+import { OpenCodeNativeDeliveryError } from '../src/modules/harnesses/opencodeTransport.js'
 
 const connectionString = process.env.TEST_DATABASE_URL
 
@@ -237,6 +239,153 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
   }, 30000)
 
+  it('merges settings acknowledgment with concurrent HTTP controls without losing the native receipt', async () => {
+    const issued = await access.issue({ name: 'concurrent settings owner', audience: 'operator',
+      grants: owner.grants, expiresAt: new Date(Date.now() + 600000) })
+    const conversation = await chat.create(issued.principal)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed this session' }, issued.principal)
+    await waitFor(async () => (await chat.get(conversation.id, issued.principal)).turnState === 'idle')
+    Object.assign(manager, { sessionControlCapabilities: async () => ({ ...unavailableSessionControls('profile'),
+      plan: { supported: true, reason: null }, contextBudgets: [100000], modelCapacity: 200000 }) })
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+      operator: { access, services: { operatorChat: chat,
+        commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    registerOperatorChatRoutes(app, chat)
+    const client = new Client({ name: 'concurrent-session-settings', version: '1' })
+    const query = pool.query.bind(pool)
+    const start = manager.startTurn.bind(manager)
+    let acknowledgeSettings = false
+    let paused = false
+    let reached!: () => void
+    let resume!: () => void
+    const writing = new Promise<void>(resolve => { reached = resolve })
+    const released = new Promise<void>(resolve => { resume = resolve })
+    manager.startTurn = async function* (session, input, signal) {
+      const callback = input.onSettingsApplied
+      yield* start(session, { ...input, onSettingsApplied: async () => {
+        acknowledgeSettings = true
+        try { await callback?.() } finally { acknowledgeSettings = false }
+      } }, signal)
+    }
+    pool.query = (async (text: string, values?: unknown[]) => {
+      if (!paused && acknowledgeSettings && text.includes('update conversation_session_controls')) {
+        paused = true
+        reached()
+        await released
+      }
+      return query(text, values)
+    }) as typeof pool.query
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => issued.token } }))
+      const requestId = randomUUID()
+      await chat.send(conversation.id, { requestId, content: 'Planned task', sessionMode: 'plan' }, issued.principal)
+      await writing
+      const path = `/api/operator/conversations/${conversation.id}/session-controls`
+      const headers = { authorization: `Bearer ${issued.token}` }
+      const read = await app.inject({ method: 'GET', url: path, headers })
+      expect(read.statusCode, read.body).toBe(200)
+      const before = SessionControlStateSchema.parse(read.json())
+      const off = await app.inject({ method: 'POST', url: path, headers,
+        payload: { kind: 'mode', mode: 'regular', expectedRevision: before.revision, requestId: randomUUID() } })
+      expect(off.statusCode, off.body).toBe(200)
+      const changed = await client.callTool({ name: 'operator_chat_controls_update', arguments: {
+        conversationId: conversation.id,
+        request: { kind: 'preferences', preferences: SessionPreferencesSchema.parse({ contextBudget: 100000 }),
+          expectedRevision: off.json().revision, requestId: randomUUID() } } })
+      expect(changed.isError).not.toBe(true)
+      resume()
+      await waitFor(async () => (await chat.get(conversation.id, issued.principal)).turnState === 'idle')
+      const row = (await query<{ native_turn_id: string | null; result: ExecutionResult }>(
+        'select native_turn_id,result from operator_conversation_turns where conversation_id=$1 and request_id=$2',
+        [conversation.id, requestId])).rows[0]
+      expect(row?.result.outcome).toBe('succeeded')
+      expect(row?.native_turn_id).toBeTruthy()
+      const settings = SessionControlStateSchema.parse((await app.inject({ method: 'GET', url: path, headers })).json())
+      expect(settings).toMatchObject({ desiredMode: 'regular', appliedMode: 'plan', desired: { contextBudget: 100000 } })
+    } finally {
+      resume()
+      await chat.shutdown()
+      pool.query = query
+      await client.close()
+      await app.close()
+    }
+  }, 30000)
+
+  it('saves future budgets through authenticated MCP independently of current history and denies callers without permission', async () => {
+    const writer = await access.issue({ name: 'default settings owner', audience: 'operator', grants: owner.grants,
+      expiresAt: new Date(Date.now() + 600000) })
+    const denied = await access.issue({ name: 'chat writer without defaults permission', audience: 'operator',
+      grants: [{ actions: ['operator_chat:read', 'operator_chat:write'], scope: {} }],
+      expiresAt: new Date(Date.now() + 600000) })
+    Object.assign(manager, {
+      sessionControlCapabilities: async () => ({ ...unavailableSessionControls('profile'), model: 'fixture',
+        contextBudgets: [100000, 200000, 300000], modelCapacity: 200000 }),
+      contextSnapshot: (session: NativeSessionReference): ContextSnapshot => ({ nativeSessionId: session.nativeSessionId,
+        model: 'fixture', generation: 'connection', sequence: 1, source: 'codex', accuracy: 'native',
+        usedTokens: 150000, capacityTokens: 200000, lifetimeTokens: 150000, cost: null,
+        observedAt: new Date().toISOString(), stale: false }),
+    })
+    const deniedConversation = await chat.create(denied.principal)
+    const conversation = await chat.create(writer.principal)
+    await chat.send(conversation.id, { requestId: randomUUID(), content: 'Existing history' }, writer.principal)
+    await waitFor(async () => (await chat.get(conversation.id, writer.principal)).turnState === 'idle')
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+      operator: { access, services: { operatorChat: chat,
+        commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })
+    registerOperatorChatRoutes(app, chat)
+    const client = new Client({ name: 'future-default-owner', version: '1' })
+    const limited = new Client({ name: 'future-default-denied', version: '1' })
+    try {
+      const address = await app.listen({ host: '127.0.0.1', port: 0 })
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => writer.token } }))
+      await limited.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { authProvider: { token: async () => denied.token } }))
+      const target = { conversationId: conversation.id }
+      const before = SessionControlStateSchema.parse((await client.callTool({
+        name: 'operator_chat_controls_get', arguments: target })).structuredContent)
+      expect(before.context?.usedTokens).toBe(150000)
+      const preferences = SessionPreferencesSchema.parse({ contextBudget: 100000 })
+      const request = { kind: 'save-default', preferences, expectedRevision: before.revision, requestId: randomUUID() }
+      const result = await client.callTool({ name: 'operator_chat_controls_update', arguments: { ...target, request } })
+      expect(result.isError).not.toBe(true)
+      const saved = SessionControlStateSchema.parse(result.structuredContent)
+      expect(saved.defaults).toEqual(preferences)
+      expect(saved.desired).toEqual(before.desired)
+      const deniedBefore = SessionControlStateSchema.parse((await limited.callTool({
+        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } })).structuredContent)
+      await expectMcpAccessDenied(limited.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: deniedConversation.id,
+        request: { ...request, expectedRevision: 0, requestId: randomUUID(),
+          preferences: SessionPreferencesSchema.parse({ contextBudget: 200000 }) } } }))
+      const deniedAfter = SessionControlStateSchema.parse((await limited.callTool({
+        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } })).structuredContent)
+      expect(deniedAfter.defaults).toEqual(deniedBefore.defaults)
+      expect(deniedAfter.revision).toBe(deniedBefore.revision)
+      const persisted = SessionControlStateSchema.parse((await client.callTool({
+        name: 'operator_chat_controls_get', arguments: target })).structuredContent)
+      expect(persisted.defaults).toEqual(preferences)
+      const headers = { authorization: `Bearer ${writer.token}` }
+      const url = `/api/operator/conversations/${conversation.id}/session-controls`
+      const lowering = await app.inject({ method: 'POST', url, headers,
+        payload: { ...request, kind: 'preferences', expectedRevision: persisted.revision, requestId: randomUUID() } })
+      expect(lowering.statusCode, lowering.body).toBe(422)
+      expect(lowering.json().error.code).toBe('SESSION_BUDGET_TOO_SMALL')
+      const oversized = await client.callTool({ name: 'operator_chat_controls_update', arguments: { ...target,
+        request: { ...request, expectedRevision: persisted.revision, requestId: randomUUID(),
+          preferences: SessionPreferencesSchema.parse({ contextBudget: 300000 }) } } })
+      expect(oversized.isError).toBe(true)
+      const fresh = await chat.create(writer.principal)
+      expect((await chat.readSessionControls(fresh.id, writer.principal)).desired).toEqual(preferences)
+    } finally {
+      await Promise.all([client.close(), limited.close()])
+      await app.close()
+    }
+  }, 30000)
+
   it('retains desired preferences and recovers their receipt after native application fails', async () => {
     const conversation = await chat.create(owner)
     await chat.send(conversation.id, { requestId: randomUUID(), content: 'Seed this session' }, owner)
@@ -399,13 +548,24 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(manager.turns).toBe(1)
   }, 30000)
 
-  it('shares authenticated HTTP/MCP controls, retry identity and persisted readback without model turns', async () => {
+  it.each([
+    { outcome: 'success', status: 'completed', error: null },
+    { outcome: 'Codex rejection', status: 'failed',
+      error: new CodexRpcError('thread/compact/start', 'compact', false, 'REJECTED') },
+    { outcome: 'OpenCode rejection', status: 'failed',
+      error: new OpenCodeNativeDeliveryError('REJECTED', 'Provider refused compaction', 'definite') },
+    { outcome: 'Claude non-delivery', status: 'failed',
+      error: Object.assign(new Error('Not delivered'), { deliveryState: 'not-delivered' }) },
+    { outcome: 'timeout', status: 'uncertain', error: new DOMException('Response timed out', 'TimeoutError') },
+    { outcome: 'disconnect', status: 'uncertain', error: new Error('Native connection closed') },
+  ] as const)('shares authenticated HTTP/MCP compaction $outcome, retries and persisted readback', async testCase => {
     const writer = await access.issue({ name: 'Session controls writer', audience: 'operator',
       grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'settings:update'], scope: {} }],
       expiresAt: new Date(Date.now() + 60000) })
     const denied = await access.issue({ name: 'Denied controls caller', audience: 'operator', grants: [],
       expiresAt: new Date(Date.now() + 60000) })
     let compactions = 0
+    let confirmed = false
     Object.assign(manager, {
       async sessionControlCapabilities() {
         return { ...unavailableSessionControls('fixture'), model: 'fixture-model', compact: { supported: true, reason: null },
@@ -416,10 +576,15 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
           source: 'codex', accuracy: 'native', usedTokens: 100, capacityTokens: null, lifetimeTokens: 100,
           cost: null, observedAt: new Date().toISOString(), stale: false }
       },
-      async compactSession(session: NativeSessionReference, input: { requestId: string }) {
+      async compactSession(session: NativeSessionReference, input: import('../src/modules/harnesses/port.js').NativeCompactInput) {
+        await input.onDispatch?.()
         compactions++
+        if (testCase.error) throw testCase.error
         return { requestId: input.requestId, nativeSessionId: session.nativeSessionId, nativeOperationId: 'compact-operation',
           status: 'completed', message: 'Context compacted.', beforeTokens: 100, observedAt: new Date().toISOString() }
+      },
+      async reconcileCompaction(_session: NativeSessionReference, state: import('@foreman-code/contracts').CompactionState) {
+        return confirmed ? { ...state, status: 'completed', message: 'Context compacted.' } : state
       },
     })
     const conversation = await chat.create(writer.principal)
@@ -439,7 +604,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const accepted = await client.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: conversation.id, request } })
       expect(accepted.isError).not.toBe(true)
       const result = SessionControlStateSchema.parse(accepted.structuredContent)
-      expect(result.compaction?.status).toBe('completed')
+      expect(result.compaction?.status).toBe(testCase.status)
       expect(result.context).toMatchObject({ usedTokens: 100 })
       const refreshed = await app.inject({ method: 'GET', url: root, headers })
       expect(SessionControlStateSchema.parse(refreshed.json()).revision).toBe(result.revision)
@@ -464,8 +629,21 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       } finally { await deniedClient.close() }
       const read = SessionControlStateSchema.parse((await client.callTool({ name: 'operator_chat_controls_get',
         arguments: { conversationId: conversation.id } })).structuredContent)
+      expect(read.compaction?.status).toBe(testCase.status)
+      const persisted = await pool.query<{ record: unknown }>(
+        'select record from conversation_session_controls where conversation_id=$1', [conversation.id])
+      expect(SessionControlStateSchema.parse(persisted.rows[0]!.record).compaction?.status).toBe(testCase.status)
+      let recovered = read
+      if (testCase.status === 'uncertain') {
+        await expect(chat.send(conversation.id, { requestId: randomUUID(), content: 'Too early' }, writer.principal))
+          .rejects.toMatchObject({ code: 'SESSION_COMPACT_UNCONFIRMED' })
+        confirmed = true
+        recovered = SessionControlStateSchema.parse((await client.callTool({ name: 'operator_chat_controls_get',
+          arguments: { conversationId: conversation.id } })).structuredContent)
+        expect(recovered.compaction?.status).toBe('completed')
+      }
       const plan = await chat.changeSessionControls(conversation.id,
-        { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: read.revision }, writer.principal)
+        { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: recovered.revision }, writer.principal)
       expect(plan.desiredMode).toBe('plan')
       expect(manager.turns).toBe(1)
       const freshService = new OperatorChatService(repository, operators, () => manager, '/tmp/graphql-test-operator', authority)
@@ -473,6 +651,9 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       // The restarted read must keep the native identity and history; this fixture does not qualify a native adapter.
       expect((await freshService.get(conversation.id, writer.principal)).messages).toEqual((await chat.get(conversation.id, writer.principal)).messages)
       await freshService.shutdown()
+      await chat.send(conversation.id, { requestId: randomUUID(), content: 'Next planned task', sessionMode: 'plan' }, writer.principal)
+      await waitFor(async () => (await chat.get(conversation.id, writer.principal)).turnState === 'idle')
+      expect(compactions).toBe(1)
     } finally { await client.close(); await app.close() }
   }, 30000)
 
