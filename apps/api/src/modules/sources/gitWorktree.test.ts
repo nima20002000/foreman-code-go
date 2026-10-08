@@ -29,12 +29,12 @@ it('gives each agent its own branch at the approved commit and keeps an earlier 
   const f = await fixture()
   const signal = AbortSignal.timeout(30_000)
   const first = await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-abc' }, f.commit, join(f.root, 'a'), signal)
-  expect(first).toEqual({ branch: 'foreman/review/coder-abc', commit: f.commit })
+  expect(first).toEqual({ branch: expect.stringMatching(/^foreman\/review\/coder-abc-[a-f0-9-]+$/), commit: f.commit })
   expect(await readFile(join(f.root, 'a', 'README.md'), 'utf8')).toBe('approved\n')
   await writeFile(join(f.root, 'a', 'work.txt'), 'agent work\n')
   git(join(f.root, 'a'), 'add', '.'); git(join(f.root, 'a'), 'commit', '-qm', 'agent work')
   const second = await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-abc' }, f.commit, join(f.root, 'b'), signal)
-  expect(second.branch).toBe('foreman/review/coder-abc-2')
+  expect(second.branch).not.toBe(first.branch)
   expect(git(join(f.root, 'b'), 'rev-parse', 'HEAD')).toBe(f.commit)
   expect(git(join(f.root, 'a'), 'log', '-1', '--format=%s')).toBe('agent work')
 })
@@ -42,12 +42,12 @@ it('gives each agent its own branch at the approved commit and keeps an earlier 
 it('forgets worktrees whose Run directory was removed while keeping their branches', async () => {
   const f = await fixture()
   const signal = AbortSignal.timeout(30_000)
-  await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-old' }, f.commit, join(f.root, 'old'), signal)
+  const old = await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-old' }, f.commit, join(f.root, 'old'), signal)
   await rm(join(f.root, 'old'), { recursive: true, force: true })
   await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/review/coder-new' }, f.commit, join(f.root, 'new'), signal)
   const clone = join(f.root, 'clones', 'octo', 'site')
   expect(git(clone, 'worktree', 'list')).not.toContain(join(f.root, 'old'))
-  expect(git(clone, 'branch', '--list', 'foreman/review/coder-old')).toContain('foreman/review/coder-old')
+  expect(git(clone, 'branch', '--list', old.branch)).toContain(old.branch)
 })
 
 it('refuses unsafe repository and branch names before running git', async () => {
@@ -74,4 +74,30 @@ it('keeps fixture repositories independent of inherited CI Git routing and ident
     expect(git(path, 'rev-parse', 'HEAD')).toBe(f.commit)
     expect(await readFile(join(path, 'README.md'), 'utf8')).toBe('approved\n')
   } finally { vi.unstubAllEnvs() }
+})
+
+
+it('prepares two agents concurrently on the first use of a repository cache', async () => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const prepared = await Promise.all(['one', 'two'].map(name => addGitWorktree(f.ports,
+    { repository: 'octo/site', branch: `foreman/review/${name}` }, f.commit, join(f.root, name), signal)))
+  expect(new Set(prepared.map(value => value.branch)).size).toBe(2)
+  for (const name of ['one', 'two']) {
+    expect(git(join(f.root, name), 'rev-parse', 'HEAD')).toBe(f.commit)
+    expect(await readFile(join(f.root, name, 'README.md'), 'utf8')).toBe('approved\n')
+  }
+})
+
+it('prepares more than twenty occurrences while retaining all earlier branches', async () => {
+  const f = await fixture()
+  const branches = []
+  for (let index = 0; index < 23; index++) {
+    branches.push((await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/repeat/agent' },
+      f.commit, join(f.root, `occurrence-${index}`), AbortSignal.timeout(30_000))).branch)
+  }
+  expect(new Set(branches).size).toBe(23)
+  for (const branch of branches) {
+    expect(git(f.ports.cloneDirectory('octo/site'), 'rev-parse', branch)).toBe(f.commit)
+  }
 })

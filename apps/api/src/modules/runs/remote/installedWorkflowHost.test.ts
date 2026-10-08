@@ -287,9 +287,11 @@ async function sourceFixture(relativeCwd='', options: {
 }
 
 async function runningInstalledFixture(phase: 'generation' | 'approval wait' = 'generation',
-  artifactOutputKeys?: string[]) {
+  fixtureOptions: { retainReviewer?: boolean; artifactOutputKeys?: string[] } = {}) {
+  const { artifactOutputKeys } = fixtureOptions
   const f = await sourceFixture('', artifactOutputKeys
     ? { artifactOutputKeys, attemptId: randomUUID(), operationId: randomUUID() } : {})
+  if (fixtureOptions.retainReviewer) f.request.configuration.productRole = 'orchestrator'
   if (artifactOutputKeys) {
     f.request.configuration.harness = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' }
   }
@@ -334,6 +336,14 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   vi.spyOn(log, 'terminal').mockImplementation(async (operationId, evidence) => {
     const result = await recordTerminal(operationId, evidence)
     terminalRecorded()
+    return result
+  })
+  let reviewerRetained!: () => void
+  const retained = new Promise<void>(resolve => { reviewerRetained = resolve })
+  const retainReviewer = log.retainReviewer.bind(log)
+  vi.spyOn(log, 'retainReviewer').mockImplementation(async (...args) => {
+    const result = await retainReviewer(...args)
+    reviewerRetained()
     return result
   })
   const launch: NativeLaunchObservation = { owner: 'execution:execution', launchId: randomUUID(), bootId: f.context.binding.bootId,
@@ -406,6 +416,9 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
   let expiresAt = new Date(Date.now() + 15 * 60_000).toISOString()
   let launchDenied = false
   let cleanupOnly = false
+  const retain = fixtureOptions.retainReviewer ?? false
+  let retentionDenied = false
+  let mcpDenied = false
   const requests: Array<{ namespace: string; payload: unknown; binding: DeviceSessionBinding }> = []
   const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, registry,
     pairing: { formatVersion: 1, mainId: f.context.binding.mainId, deviceId: f.context.binding.deviceId,
@@ -420,11 +433,15 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
         requests.push({ namespace, payload, binding })
         if (namespace === 'execution-authority-v1') {
           const request = payload as { action: string; intent: typeof f.intent }
+          if (retentionDenied && request.action === 'retain-reviewer') throw new Error('Reviewer retention revoked')
           if (launchDenied && request.action !== 'stop' && request.action !== 'read') throw new Error('Launch authority revoked')
           return { payload: { version: 1, action: request.action, operationId: f.intent.operationId,
             attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: request.intent.owner,
+            ...(retain && request.action === 'retain-reviewer'
+              ? { reviewer: { agentId: 'agent', expiresAt: new Date(Date.now() + 60_000).toISOString() } } : {}),
             ...(cleanupOnly ? { cleanupOnly: true } : {}) } }
         }
+        if (mcpDenied) throw new Error('App binding requires recovery')
         if (launchDenied) throw new Error('Original MCP lease revoked')
         if (outputMain && namespace === 'byte-transfer-v1') {
           return outputMain.handleBytes(payload, binding, requestOptions?.bytes)
@@ -473,8 +490,10 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
     f.intent = nextIntent
     return nextIntent
   }
-  return { ...f, host, journal: log, prepared, call, stop, finish, settled, history, create, attach, turns, cancel, closeOwner, requests,
+  return { ...f, host, journal: log, prepared, call, stop, finish, settled, retained, history, create, attach, turns, cancel, closeOwner, requests,
     outputs, outputMain, session, renewOwner,
+    denyMcp: () => { mcpDenied = true },
+    revokeRetention: () => { retentionDenied = true },
     disconnect: () => { live = undefined }, reconnect: (binding: DeviceSessionBinding) => { live = binding },
     cleanup: () => { cleanupOnly = true; launchDenied = true },
     renew: (expiry: string) => { expiresAt = expiry }, revoke: () => { launchDenied = true },
@@ -482,6 +501,46 @@ async function runningInstalledFixture(phase: 'generation' | 'approval wait' = '
 }
 
 describe('installed host resident execution continuity', () => {
+  it.each(['status', 'reattach'] as const)(
+    'reads the original retained reviewer through %s before App rebinding', async method => {
+      const f = await runningInstalledFixture('generation', { retainReviewer: true })
+      try {
+        f.finish('succeeded')
+        await f.retained
+        f.denyMcp()
+        const appRequests = f.requests.filter(request => request.namespace === 'worker-mcp-v1').length
+        const reply = await f.call(method, method === 'reattach'
+          ? { request: f.request, session: { harness: 'codex', providerVersion: '0.132.0', nativeSessionId: 'original-session' } }
+          : {})
+        expect(reply.payload).toMatchObject(method === 'reattach'
+          ? { session: { nativeSessionId: 'original-session' }, status: { receipt: { retainedReviewer: { agentId: 'agent' } } } }
+          : { receipt: { retainedReviewer: { agentId: 'agent' } } })
+        expect(f.requests.filter(request => request.namespace === 'worker-mcp-v1')).toHaveLength(appRequests)
+        expect(f.create).toHaveBeenCalledOnce()
+        expect(f.attach).not.toHaveBeenCalled()
+        await expect(f.call('history')).rejects.toThrow('App binding requires recovery')
+      } finally {
+        f.cleanup()
+        await f.stop()
+        await f.host.close()
+      }
+    },
+  )
+
+  it('denies retained reviewer observation when Main retention authority is revoked', async () => {
+    const f = await runningInstalledFixture('generation', { retainReviewer: true })
+    try {
+      f.finish('succeeded')
+      await f.retained
+      f.revokeRetention()
+      await expect(f.call('status')).rejects.toThrow('Reviewer retention revoked')
+    } finally {
+      f.cleanup()
+      await f.stop()
+      await f.host.close()
+    }
+  })
+
   it('reads the original native history during cleanup without renewing model-tool access', async () => {
     const f = await runningInstalledFixture()
     try {
@@ -602,7 +661,7 @@ describe('installed host resident execution continuity', () => {
     ['reconnect', 'before create'], ['reconnect', 'after seal'],
     ['owner renewal', 'before create'], ['owner renewal', 'after seal'],
   ] as const)('publishes original artifacts after %s %s', async (change, stage) => {
-    const f = await runningInstalledFixture('generation', ['report'])
+    const f = await runningInstalledFixture('generation', { artifactOutputKeys: ['report'] })
     if (!f.outputs || !f.outputMain) throw new Error('Missing output composition')
     const outputMain = f.outputMain
     const configuration = f.request.configuration.harness

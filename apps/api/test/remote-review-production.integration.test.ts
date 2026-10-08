@@ -11,6 +11,7 @@ import { RunExecutionLocationV3Schema, SavedRunDetailsSchema } from '@foreman-co
 import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema, HarnessDefaultsUpdateResultSchema,
   HarnessOptionsResultSchema, ManagementHarnessDefaultsSchema } from '@foreman-code/contracts/management'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
+import { hasRetainedRemoteReviewerSource } from '../src/modules/interactions/retainedRemoteReviewer.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
@@ -217,7 +218,8 @@ describe('production remote review and native recovery through authenticated MCP
     })
   }, 240_000)
 
-  it('continues credential maintenance and the retained review after Main crashes with the Worker still alive', async () => {
+  it.each(['crash', 'graceful', 'expired-receipt'] as const)(
+    'continues the original retained review after Main recovery from %s with the Worker alive', async recovery => {
     await withRemoteReviewFixture(async fixture => {
       const active = await reviewInProgress(fixture)
       const beforeInventory = await fixture.inventory()
@@ -228,7 +230,39 @@ describe('production remote review and native recovery through authenticated MCP
       const ownerLaunchIds = fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
         original => original.owner === owner.owner)).map(owner => owner.launchId).sort()
       const originalReceipts = await receipts(fixture, active.run.id)
-      await fixture.restartMain()
+      const processCredentials = async () => (await fixture.db.pool.query<{
+        principal_id: string; execution_id: string
+      }>(`select principal_id,execution_id from worker_credential_bindings
+        where run_id=$1 and revoked_at is null order by execution_id,principal_id`, [active.run.id])).rows
+      const originalCredentials = await processCredentials()
+      expect(originalCredentials.map(row => row.execution_id).sort())
+        .toEqual([active.reviewer.id, active.requester.id].sort())
+      await fixture.restartMain({ mode: recovery === 'graceful' ? 'graceful' : 'crash', afterShutdown: async () => {
+        if (recovery === 'graceful') {
+          const lifetime = (await fixture.db.pool.query<{ detached: boolean; closed: boolean }>(`select
+            detached_at is not null as detached,closed_at is not null as closed from execution_native_closures
+            where execution_id=$1 order by generation desc limit 1`, [active.reviewer.id])).rows[0]
+          expect(lifetime).toEqual({ detached: true, closed: false })
+          expect(await hasRetainedRemoteReviewerSource(fixture.db.pool, active.reviewer)).toBe(true)
+        }
+        if (recovery === 'expired-receipt') {
+          const expired = new Date(Date.now() - 60_000).toISOString()
+          const journal = JSON.parse(await readFile(join(fixture.stateDirectory, 'workflow-operations.json'), 'utf8')) as
+            { receipts: unknown[] }
+          const worker = journal.receipts.map(receipt => RemoteOperationReceiptSchema.parse(receipt))
+            .find(receipt => receipt.intent.executionId === active.reviewer.id)!
+          expect(Date.parse(worker.retainedReviewer!.expiresAt)).toBeGreaterThan(Date.now())
+          expect(worker.native?.sessionId).toBe(active.reviewer.nativeSessionId)
+          const stale = RemoteOperationReceiptSchema.parse({ ...worker, sequence: worker.sequence - 1,
+            retainedReviewer: { ...worker.retainedReviewer, expiresAt: expired } })
+          await fixture.db.pool.query(`update remote_execution_receipts set sequence=$2,receipt=$3::jsonb
+            where operation_id=$1`, [stale.intent.operationId, stale.sequence, JSON.stringify(stale)])
+          const cached = (await receipts(fixture, active.run.id)).find(receipt =>
+            receipt.intent.executionId === active.reviewer.id)!
+          expect(Date.parse(cached.retainedReviewer!.expiresAt)).toBeLessThan(Date.now())
+          expect(worker.sequence).toBeGreaterThan(cached.sequence)
+        }
+      } })
       const inventory = await waitForRemoteReview(fixture.inventory, value => {
         const original = beforeInventory.hostMetadata?.connection?.binding
         const current = value.hostMetadata?.connection?.binding
@@ -248,11 +282,43 @@ describe('production remote review and native recovery through authenticated MCP
       expect(reconnected.every(owner => owner.lifecycle === 'active')).toBe(true)
       await waitForRemoteReview(async () => {
         await fixture.reconcile()
-        const row = (await fixture.db.pool.query<{ record: unknown }>(
-          'select record from review_jobs where id=$1', [active.job.id])).rows[0]!
-        return ReviewJobSchema.parse(row.record)
-      }, value => value.attempt > active.job.attempt && value.state === 'acknowledged',
+        const row = (await fixture.db.pool.query<{ record: unknown; credential_bound: boolean; reviewer_live: boolean }>(`select
+          j.record,exists(select 1 from worker_credential_bindings b where b.execution_id=j.execution_id
+            and b.approval_review_lease_fence=j.lease_fence and b.revoked_at is null) as credential_bound,
+          exists(select 1 from execution_dispatch_intents i join remote_execution_receipts r using(operation_id)
+            where i.execution_id=j.execution_id
+              and (r.receipt#>>'{retainedReviewer,expiresAt}')::timestamptz>clock_timestamp()) as reviewer_live
+          from review_jobs j where j.id=$1`, [active.job.id])).rows[0]
+        if (!row) return undefined
+        return { job: ReviewJobSchema.parse(row.record),
+          credentialBound: row.credential_bound, reviewerLive: row.reviewer_live }
+      }, value => !!value && value.job.attempt > active.job.attempt && value.job.state === 'acknowledged'
+        && value.credentialBound && value.reviewerLive,
       'replacement Main review lease and original process credential rebinding')
+      expect(await processCredentials()).toEqual(originalCredentials)
+      if (recovery === 'graceful') {
+        const generations = (await fixture.db.pool.query<{ generation: string; detached: boolean; closed: boolean }>(`select
+          generation::text,detached_at is not null as detached,closed_at is not null as closed
+          from execution_native_closures where execution_id=$1 order by generation`, [active.reviewer.id])).rows
+        expect(generations).toHaveLength(2)
+        expect(generations[0]).toMatchObject({ detached: true, closed: false })
+        expect(generations[1]).toMatchObject({ detached: false, closed: false })
+      }
+      if (recovery === 'expired-receipt') {
+        const renewed = (await receipts(fixture, active.run.id)).find(receipt =>
+          receipt.intent.executionId === active.reviewer.id)!
+        expect(Date.parse(renewed.retainedReviewer!.expiresAt)).toBeGreaterThan(Date.now())
+      }
+      const reader = await fixture.access.issue({ name: 'Recovered review reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['interactions:read'],
+          scope: { runIds: [active.run.id] } }] })
+      const pending = await readInteraction(fixture, active.interaction.id)
+      const option = pending.responseOptions.find(option => option.semantic === 'approve_once')!
+      const denied = await fixture.call('interaction_respond', { interactionId: pending.id,
+        optionId: option.optionId, expectedRevision: pending.revision }, reader.token)
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+      expect(await readInteraction(fixture, pending.id)).toEqual(pending)
       // Retained review renewal runs every ten seconds; wait beyond one interval
       // before using the original process credential to deliver the decision.
       await new Promise(resolve => setTimeout(resolve, 11_000))
@@ -269,7 +335,8 @@ describe('production remote review and native recovery through authenticated MCP
         original => original.owner === owner.owner)).map(owner => owner.launchId).sort())
         .toEqual(ownerLaunchIds)
     })
-  }, 240_000)
+    }, 240_000,
+  )
 
   it('settles the original native owners after an installed Worker crash without launching a replacement', async () => {
     await withRemoteReviewFixture(async fixture => {

@@ -895,6 +895,63 @@ test('a proven idle lane starts its first turn without inventing a recovery corr
   assert.equal(f.coordination.lane.observedStatus, 'idle')
 })
 
+test('shutdown releases reviewer observation without reporting a runtime failure or canceling its turn', async () => {
+  const f = fixture()
+  await enqueue(f)
+  let began!: () => void
+  const observing = new Promise<void>(resolve => { began = resolve })
+  f.manager.startTurn = async function* (_session, input) {
+    yield startEvent(input.clientCorrelationId)
+    began()
+    await new Promise<void>(() => undefined)
+  }
+  const errors: unknown[] = []
+  await f.dispatcher.reconcile(error => { errors.push(error) })
+  await observing
+  await f.dispatcher.shutdown()
+  assert.deepEqual(errors, [])
+  assert.equal(f.coordination.job?.state, 'acknowledged')
+  assert.equal(f.coordination.pending, true)
+  assert.equal(f.coordination.lane.observedStatus, 'uncertain')
+  assert.equal(f.coordination.lane.leaseToken, undefined)
+  assert.equal(f.coordination.lane.currentTurnOrMessageId, 'native-turn')
+  assert.equal(f.counts().canceled, 0)
+  assert.equal(f.counts().responded, 0)
+})
+
+test('a captured writer preserves the restart cancellation reason while refusing further evidence', async () => {
+  const f = fixture()
+  const owner = new SingleWriterSessionManager(f.manager, f.coordination.asRepository(), 'reviewer')
+  const stopped = new AbortController()
+  const reason = new DomainError('ENGINE_RESTART', 'Restart requested.', 409)
+  await owner.withLane(session, 'review', stopped.signal, async (_manager, lane) => {
+    owner.assertCapturedLease(session, lane)
+    stopped.abort(reason)
+    assert.throws(() => owner.assertCapturedLease(session, lane), error => error === reason)
+  })
+  assert.equal(f.coordination.lane.leaseToken, undefined)
+  assert.equal(f.coordination.lane.observedStatus, 'uncertain')
+})
+
+test('shutdown still reports an unexpected native capture failure', async () => {
+  const f = fixture()
+  await enqueue(f)
+  let captured!: () => void
+  const failure = new Promise<void>(resolve => { captured = resolve })
+  f.runtime.captureReviewNative = () => {
+    captured()
+    void f.dispatcher.shutdown()
+    throw new Error('Unexpected native capture failure')
+  }
+  const errors: unknown[] = []
+  await f.dispatcher.reconcile(error => { errors.push(error) })
+  await failure
+  await f.dispatcher.shutdown()
+  assert.equal(errors.length, 1)
+  assert.ok(errors[0] instanceof Error)
+  assert.equal(errors[0].message, 'Unexpected native capture failure')
+})
+
 test('reviewer and normal workflow turn share active lane; long turns renew both leases', async () => {
   const f = fixture(150); await enqueue(f)
   let started!: () => void

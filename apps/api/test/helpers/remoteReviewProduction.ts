@@ -156,8 +156,8 @@ export async function remoteReviewProduction(options: {
     await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure }), { mode: 0o600 })
     let main: ChildProcess | undefined
     let mainFailure = ''
-    const failures: Array<{ code: string; runId: string | null; phase?: unknown; errorType?: unknown;
-      errorLocation?: unknown; errorDetail?: string | undefined }> = []
+    const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
+      phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined }> = []
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (!main || main.exitCode !== null || main.signalCode !== null) return
@@ -185,7 +185,7 @@ export async function remoteReviewProduction(options: {
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
-            runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown }; msg?: unknown;
+            namespace?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
             phase?: unknown; errorType?: unknown; errorLocation?: unknown }
           const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
@@ -197,8 +197,10 @@ export async function remoteReviewProduction(options: {
           const errorDetail = code === 'source-reconciliation-unconfirmed' && typeof sourceMessage === 'string'
             && /^Process \d+ (?:still |could not be inspected|exceeded )/.test(sourceMessage)
             ? sourceMessage.slice(0, 200) : undefined
-          failures.push({ code, phase: event.phase, errorType: event.errorType,
+          failures.push({ code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
             errorDetail,
+            namespace: typeof event.namespace === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.namespace)
+              ? event.namespace : undefined,
             errorLocation: event.errorLocation ?? (frames.length ? frames.map(frame => frame.trim()).join(' ') : undefined)
               ?? (typeof event.err?.stack === 'string'
               ? event.err.stack.split('\n').slice(1, 3).map(line => line.trim()).join(' ') : undefined),
@@ -252,7 +254,9 @@ export async function remoteReviewProduction(options: {
     }
     async function value(name: string, args: Record<string, unknown>) {
       const response = await call(name, args)
-      if (response.isError) throw new Error(`${name}: ${JSON.stringify(response.content)}`)
+      if (response.isError) {
+        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`)
+      }
       return response.structuredContent
     }
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
@@ -458,9 +462,11 @@ export async function remoteReviewProduction(options: {
             && /^[A-Z][A-Z0-9_]{1,127}$/.test(message.code) ? message.code : undefined
           const detail = 'message' in message ? String(message.message) : 'Main reconciliation failed.'
           const reason = 'details' in message ? JSON.stringify(message.details) : ''
-          const error = new Error(`${code ? `${code}: ` : ''}${detail}${reason ? ` (${reason})` : ''}`)
+          const nativeFailures = JSON.stringify(failures.slice(-8))
+          const error = new Error(`${code ? `${code}: ` : ''}${detail}${reason ? ` (${reason})` : ''}\nNative failure codes: ${nativeFailures}`)
           if ('stack' in message && typeof message.stack === 'string') error.stack = message.stack
           if (reason) error.stack = `${error.stack}\nDetails: ${reason}`
+          error.stack = `${error.stack}\nNative failure codes: ${nativeFailures}`
           finish(error)
         }
       }
@@ -495,12 +501,13 @@ export async function remoteReviewProduction(options: {
         [command.executionId, command.operationId, command.owner.grantId, command.owner.epoch])
         if (changed.rowCount !== 1) throw new Error('The original response grant changed before retry.')
       },
-      async restartMain() {
+      async restartMain(options: { mode?: 'crash' | 'graceful'; afterShutdown?: () => Promise<void> } = {}) {
         const previousWorkerState = workerStateRevision
         ready = false
-        await stopMain('SIGKILL')
+        await stopMain(options.mode === 'graceful' ? 'SIGTERM' : 'SIGKILL')
         await waitForRemoteReview(async () => workerStateRevision,
-          value => value > previousWorkerState, 'Worker observing the crashed Main connection')
+          value => value > previousWorkerState, 'Worker observing the stopped Main connection')
+        await options.afterShutdown?.()
         await startMain()
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },

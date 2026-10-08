@@ -75,6 +75,36 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
       await snapshot.sync(); await root.sync()
     } finally { await snapshot.close(); await root.close() }
   }
+  async writeGitMetadata(snapshotId: string, bytes: Uint8Array): Promise<void> {
+    if (bytes.byteLength > 16 * 1024 * 1024) throw new SourceError('SOURCE_CAPACITY', 'Git metadata exceeds its source budget.')
+    const { root, snapshot } = await this.directory(snapshotId, true)
+    try {
+      const file = await open(anchored(snapshot, 'git-objects.json'),
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400)
+      try { await file.writeFile(bytes); await file.sync() } finally { await file.close() }
+      await snapshot.sync()
+    } finally { await snapshot.close(); await root.close() }
+  }
+  async readGitMetadata(input: SourceManifest, signal: AbortSignal): Promise<Uint8Array> {
+    signal.throwIfAborted()
+    const { root, snapshot } = await this.directory(input.snapshotId, false)
+    try {
+      const { manifest } = await this.readManifest(snapshot, input.snapshotId)
+      if (!isDeepStrictEqual(input, manifest) || !manifest.git?.metadata) {
+        throw new SourceError('SOURCE_PIN_CONFLICT', 'Git metadata requires the approved source manifest.')
+      }
+      const file = await open(anchored(snapshot, 'git-objects.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+      try {
+        const stat = await file.stat()
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size !== manifest.git.metadata.byteSize) {
+          throw new SourceError('SOURCE_BYTES_INVALID', 'Git metadata changed.')
+        }
+        const bytes = await file.readFile({ signal })
+        verifySourceBytes({ ...manifest.git.metadata, path: 'git-objects.json', kind: 'file', executable: false }, bytes)
+        return bytes
+      } finally { await file.close() }
+    } finally { await snapshot.close(); await root.close() }
+  }
   async commit(input: SourceManifest): Promise<void> {
     const manifest = verifySourceManifest(input), { root, snapshot } = await this.directory(manifest.snapshotId, true)
     try {
@@ -85,6 +115,12 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
       if (aborted) { await aborted.close(); throw new SourceError('SOURCE_CAPTURE_ABORTED', 'An aborted capture cannot become ready.') }
       const claim = await open(anchored(snapshot, 'commit.lock'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400)
       try { await claim.writeFile(manifest.manifestDigest); await claim.sync() } finally { await claim.close() }
+      if (manifest.git?.metadata) {
+        const file = await open(anchored(snapshot, 'git-objects.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+        try {
+          verifySourceBytes({ ...manifest.git.metadata, path: 'git-objects.json', kind: 'file', executable: false }, await file.readFile())
+        } finally { await file.close() }
+      }
       const entries = manifest.entries.values()
       let failed: { error: unknown } | undefined
       await Promise.all(Array.from({ length: Math.min(8, manifest.entries.length) }, async () => {

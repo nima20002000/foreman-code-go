@@ -1,5 +1,9 @@
 import Fastify from 'fastify'
 import type pg from 'pg'
+import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
+import type { PrivateSourceSnapshotStore } from '../../src/modules/sources/store.js'
+import type { GitWorktreePorts } from '../../src/modules/sources/gitWorktree.js'
+import { sourcePackageStream } from '../../src/modules/sources/operationPackage.js'
 import { BuildComputerPrepareStatusSchema, CI_RUNTIME_NAMESPACE, type CiRuntimeRequest, type PreparedCiRuntime }
   from '@foreman-code/contracts'
 import { JobVerificationProfileSchema, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
@@ -70,10 +74,13 @@ export function preparationProfile(id: string, name: string, deviceId: string, r
       policy: { ...baseline.spec.policy, imageDigest: oldImage } } }))
 }
 
-type Stage = 'source' | 'root' | 'profile' | 'refresh' | 'capture' | 'qualify'
+type Stage = 'source' | 'source-transfer' | 'root' | 'profile' | 'refresh' | 'capture' | 'qualify'
 export async function ciPreparationFixture(options: {
   prepareFails?: boolean; disabled?: boolean; statusDrops?: number; loseRefreshAck?: boolean
   refreshGate?: Promise<void>
+  loseSourceAck?: 'first' | 'complete'
+  corruptSourceRetry?: boolean
+  source?: { manifest: SourceManifest; store: PrivateSourceSnapshotStore; git: GitWorktreePorts }
   pause?(stage: Stage): Promise<void>
 } = {}) {
   const data = ciFixture()
@@ -116,16 +123,19 @@ export async function ciPreparationFixture(options: {
   const commands = { ...data.services.commands, execute: async (input: Parameters<typeof data.services.commands.execute>[0]) =>
     data.services.commands.execute({ ...input, authorize: async () => { await input.authorize?.(pool as never) },
       perform: async () => input.perform(pool as never) }) } as typeof data.services.commands
-  const manifest = { version: 1 as const, ...newPin, capturePolicy: 'git-tree-v1' as const,
+  const manifest = options.source?.manifest ?? { version: 1 as const, ...newPin, capturePolicy: 'git-tree-v1' as const,
     executablePolicy: 'preserve-approved' as const, git: { commit, tree: 'f'.repeat(40), objectFormat: 'sha1' as const },
     entries: [], deletions: [], totalEntries: 0, totalBytes: 0 }
-  const prepared: PreparedCiRuntime = { commit, imageId: newImage, imageManifestDigest: `sha256:${'9'.repeat(64)}`,
+  const acceptedCommit = manifest.git!.commit
+  const acceptedPin = { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
+    manifestDigest: manifest.manifestDigest }
+  const prepared: PreparedCiRuntime = { commit: acceptedCommit, imageId: newImage, imageManifestDigest: `sha256:${'9'.repeat(64)}`,
     seedReceiptPath: '/ci/installer/context/seed-receipt.json', contextReceiptPath: '/ci/installer/context/context-receipt.json',
     qualificationSource: '/ci/installer/qualification-source', unitCodex: { executable: '/opt/graphql-ci/tools/codex',
       sourceExecutable: '/ci/codex', version: 'codex-cli 1.0.0', binarySha256: '8'.repeat(64) } }
   let refreshRecord: { operationId: string; commit: string; ok: boolean; log: string } | null = null
   const workerPorts = {
-    git: { cloneDirectory: (repository: string) => `/clones/${repository}`,
+    git: options.source?.git ?? { cloneDirectory: (repository: string) => `/clones/${repository}`,
       git: async () => ({ code: 0, stdout: '', stderr: '' }) },
     managedRuntimeRoot: async () => '/ci/managed',
     prepare: async (input: { repository: string; commit: string; installer: string; keepImages?: readonly string[];
@@ -150,16 +160,32 @@ export async function ciPreparationFixture(options: {
   let restartedOperation: string | undefined
   let statusDrops = options.statusDrops ?? 0
   let ackLost = false
+  let sourceAckLost = false
+  let sourceRetryChanged = false
   const endpoint = {
     capabilities: (deviceId: string) => deviceId === dexter ? [{ namespace: CI_RUNTIME_NAMESPACE, mainCanRequest: true }] : [],
     request: async (_deviceId: string, _namespace: string, raw: unknown) => {
-      const payload = raw as CiRuntimeRequest
+      let payload = raw as CiRuntimeRequest
+      if (payload.operation === 'source' && sourceAckLost && options.corruptSourceRetry && !sourceRetryChanged) {
+        const bytes = Buffer.from(payload.dataBase64, 'base64')
+        bytes[0] = bytes[0]! ^ 1
+        payload = { ...payload, dataBase64: bytes.toString('base64') }
+        sourceRetryChanged = true
+      }
       if (refreshRecord && restartedOperation !== refreshRecord.operationId) {
         restartedOperation = refreshRecord.operationId
         worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
       }
       if (payload.operation === 'status' && statusDrops-- > 0) throw new DeviceConnectionError('transport')
       const state = await worker.handle(payload)
+      if (payload.operation === 'source' && payload.complete) {
+        await options.pause?.('source-transfer')
+      }
+      if (payload.operation === 'source' && !sourceAckLost
+        && (options.loseSourceAck === 'first' || options.loseSourceAck === 'complete' && payload.complete)) {
+        sourceAckLost = true
+        throw new DeviceConnectionError('transport')
+      }
       if (payload.operation === 'refresh') {
         await options.pause?.('refresh')
         if (options.loseRefreshAck && !ackLost) { ackLost = true; throw new DeviceConnectionError('transport') }
@@ -175,9 +201,13 @@ export async function ciPreparationFixture(options: {
   const sources = {
     approveProject: async (principal: ManagementPrincipal, input: { commandId: string; commit?: string }) => {
       const approved = await command(principal, 'fixture.source', input,
-        async () => ({ manifest: { ...manifest, git: { ...manifest.git, commit: input.commit ?? commit } } }))
+        async () => ({ manifest: { ...manifest, git: { ...manifest.git!, commit: input.commit ?? acceptedCommit } } }))
       await options.pause?.('source')
       return approved
+    },
+    sourcePackage: async () => {
+      if (!options.source) throw new Error('This fixture has no source package.')
+      return sourcePackageStream(options.source.manifest, options.source.store, AbortSignal.timeout(30_000))
     },
     rootList: async () => ({ items: [...currentRoots.values()].map(value => structuredClone(value)) }),
     bindRoot: async (principal: ManagementPrincipal, _source: unknown,
@@ -186,7 +216,7 @@ export async function ciPreparationFixture(options: {
         calls.bind.push(input)
         const current = currentRoots.get(dexterRoot)!
         if (current.binding.bindingRevision !== input.expectedBindingRevision) throw new DomainError('REVISION_CONFLICT', 'changed', 409)
-        const value = root(dexter, dexterRoot, current.binding.bindingRevision + 1, newPin)
+        const value = root(dexter, dexterRoot, current.binding.bindingRevision + 1, acceptedPin)
         currentRoots.set(dexterRoot, value)
         return { value }
       })
@@ -205,7 +235,7 @@ export async function ciPreparationFixture(options: {
         if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'changed', 409)
         calls.saves.push(input)
         const value = createVerificationProfile({ id: input.id, name: input.name, workspaceId: scope,
-          revision: current.revision + 1, sourceCommit: commit, root: currentRoots.get(input.spec.rootId)!,
+          revision: current.revision + 1, sourceCommit: acceptedCommit, root: currentRoots.get(input.spec.rootId)!,
           spec: input.spec, previous: current, now: new Date().toISOString() })
         profiles.set(input.id, value)
         return value
@@ -259,7 +289,8 @@ export async function ciPreparationFixture(options: {
     for (let attempt = 0; attempt < 500; attempt++) {
       const status = BuildComputerPrepareStatusSchema.parse(await provisioner.get(data.operator, { workspaceId, profileId }))
       if (['qualified', 'failed'].includes(status.state)) return status
-      await new Promise(resolve => setImmediate(resolve))
+      if (options.source) await new Promise(resolve => setTimeout(resolve, 10))
+      else await new Promise(resolve => setImmediate(resolve))
     }
     throw new Error('Preparation did not settle.')
   }
