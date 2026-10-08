@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
@@ -89,8 +89,15 @@ it('refuses snapshot cleanup through a link and preserves the linked bytes', asy
 
 it('refuses to follow a link while measuring quarantined capture bytes', async () => {
   const f = await fixture()
-  await symlink('/etc/passwd', join(f.directory, f.manifest.snapshotId, 'external'))
-  await expect(f.store.retainedCaptureBytes(f.manifest.snapshotId)).rejects.toThrow()
+  const snapshot = join(f.directory, f.manifest.snapshotId)
+  const beforeBytes = await f.store.retainedCaptureBytes(f.manifest.snapshotId)
+  const before = await lstat(snapshot)
+  const path = join(snapshot, 'external')
+  await symlink('/missing/source-dependency', path)
+  const [after, link] = await Promise.all([lstat(snapshot), lstat(path)])
+  const directoryGrowth = Math.max(4096, after.blocks * 512) - Math.max(4096, before.blocks * 512)
+  expect(await f.store.retainedCaptureBytes(f.manifest.snapshotId))
+    .toBe(beforeBytes + directoryGrowth + Math.max(4096, link.size, link.blocks * 512))
 })
 
 it('requires the original root identity before measuring closed execution storage', async () => {

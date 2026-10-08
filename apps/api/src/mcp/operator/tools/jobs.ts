@@ -82,7 +82,9 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   if (jobToolAvailable(context, 'job_definition_save')) server.registerTool('job_definition_save', {
     description: 'Create or edit an Auto or fixed build or verification Job with command receipt and optimistic '
       + 'revision. Verification retains its suite, parameters, resource request and report declarations from '
-      + 'job_choices_get templates. Auto saves source, command, inputs, outputs and runtime requirements without '
+      + 'job_choices_get templates, identified by profile ID, profile revision and suite. Auto limits must equal '
+      + 'verification.resources.limits; update both when editing resources or choosing runtime requirements. '
+      + 'Auto saves source, command, inputs, outputs and runtime requirements without '
       + 'an online computer. Selection and capacity are checked when the queued request is claimed. '
       + 'No execution or installation.',
     inputSchema: JobDefinitionSaveRecordSchema.extend({ workspaceId: z.string().min(1) }),
