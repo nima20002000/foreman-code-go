@@ -14,14 +14,14 @@ export class CommandAttempt<T extends object> {
   failed(error: unknown): void {
     // A structured 4xx rejection is definitive. Transport, response-validation,
     // timeout and server failures can follow a commit, so retain their identity.
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'INVALID_REQUEST') {
-      this.pending = undefined
-      return
-    }
-    if (error && typeof error === 'object' && 'status' in error && 'code' in error
-      && typeof error.status === 'number' && error.status >= 400 && error.status < 500
-      && error.status !== 408 && error.status !== 429
-      && error.code !== 'HTTP_ERROR' && error.code !== 'INVALID_RESPONSE') this.pending = undefined
+    if (commandWasRejected(error)) this.pending = undefined
   }
   get unresolved(): boolean { return this.pending !== undefined }
+}
+/** Only a structured rejection proves that a write did not commit. */
+export function commandWasRejected(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false
+  if (error.code === 'INVALID_REQUEST') return true
+  return 'status' in error && typeof error.status === 'number' && error.status >= 400 && error.status < 500
+    && error.status !== 408 && error.status !== 429 && error.code !== 'HTTP_ERROR' && error.code !== 'INVALID_RESPONSE'
 }

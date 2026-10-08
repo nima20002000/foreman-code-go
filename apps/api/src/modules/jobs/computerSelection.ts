@@ -124,7 +124,7 @@ function jobComputerFullCapacity(profile: JobRuntimeProfileRecord): JobRuntimePr
 
 export type VerificationMemoryReader = (profile: JobVerificationProfile) => Promise<number | null>
 export type JobComputerCapacityDecision = { fits: true } | { fits: false;
-  reason: 'busy' | 'memory_unavailable' | 'memory_headroom_required' }
+  reason: 'busy' | 'memory_unavailable' | 'memory_headroom_required' | 'request_exceeds_maximum' }
 
 const closedJobExecutionSql = `(e.record #>> '{process,phase}'='terminal'
       and e.record #> '{process,processStopped}'='true'::jsonb
@@ -404,6 +404,10 @@ export async function jobComputerCapacityDecision(sql: JobSql,
   [hostKey, target.mainId,
     target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'])).rows
   const capacity = jobComputerCapacity(profile, allowancePercent)
+  if ((Object.keys(capacity) as (keyof typeof capacity)[])
+    .some(field => jobRuntimeProfileLimits(profile)[field] > capacity[field])) {
+    return { fits: false, reason: 'request_exceeds_maximum' }
+  }
   const computing = rows.filter(row => !row.compute_closed)
   let slots = 1
   if (profile.schemaVersion === 2) {

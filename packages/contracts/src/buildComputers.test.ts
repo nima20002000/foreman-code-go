@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { BuildComputerPreferenceSchema, BuildComputerUpdateSchema } from './buildComputers.js'
+import { BuildComputerPreferenceSchema, BuildComputerUpdateSchema, BuildComputerBatchUpdateSchema } from './buildComputers.js'
 import { deviceProvisioningTargetFixture } from './deviceProvisioningFixtures.js'
 
 it('validates participation revisions and bounded priority without changing device authority', () => {
@@ -18,4 +18,17 @@ it('validates participation revisions and bounded priority without changing devi
     expect(BuildComputerUpdateSchema.safeParse({ ...input, buildPriority }).success).toBe(false)
   }
   expect(BuildComputerUpdateSchema.safeParse({ ...input, expectedRevision: -1 }).success).toBe(false)
+})
+it('validates one batch command with unique computers on the same Main and revisioned changes', () => {
+  const change = { target: deviceProvisioningTargetFixture, expectedRevision: 2,
+    buildEnabled: true, buildPriority: 100, buildRole: 'primary', buildAllowancePercent: 60 }
+  const command = { commandId: 'save-order', updates: [change] }
+  expect(BuildComputerBatchUpdateSchema.parse(command)).toEqual(command)
+  expect(BuildComputerBatchUpdateSchema.safeParse({ ...command, updates: [] }).success).toBe(false)
+  expect(BuildComputerBatchUpdateSchema.safeParse({ ...command, updates: [change, change] }).success).toBe(false)
+  const foreign = { ...change, target: { ...change.target,
+    hostRef: { ...change.target.hostRef, mainId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } } }
+  expect(BuildComputerBatchUpdateSchema.safeParse({ ...command, updates: [change, foreign] }).success).toBe(false)
+  expect(BuildComputerBatchUpdateSchema.safeParse({ ...command,
+    updates: [{ ...change, expectedRevision: -1 }] }).success).toBe(false)
 })

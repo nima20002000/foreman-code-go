@@ -87,6 +87,14 @@ describe('reviewed verification admission capacity', () => {
       .toEqual({ fits: false, reason: 'busy' })
     expect(await jobComputerCapacityDecision(capacityRows(profile, 1), target, profile)).toEqual({ fits: true })
   })
+  it('reports a request that cannot fit even an empty computer at the saved allowance', async () => {
+    const profile = verificationCapacityFixture('main')
+    profile.measurement!.fingerprint.deviceLimits!.cpuLimit = 4
+    const target = { mainId, hostRef: profile.root.selection.hostRef }
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 0), target, profile, undefined, 10))
+      .toEqual({ fits: false, reason: 'request_exceeds_maximum' })
+    expect(await jobComputerCapacityDecision(capacityRows(profile, 0), target, profile)).toEqual({ fits: true })
+  })
   it('accounts for the provisioned independent byte and inode quotas, including closed retained owners', async () => {
     const profile = verificationCapacityFixture('main')
     const fingerprint = profile.measurement!.fingerprint

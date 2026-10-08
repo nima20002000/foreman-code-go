@@ -17,6 +17,7 @@ import { DomainError } from '../src/modules/errors.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { buildComputerFixture, buildQueueConfigurationFixture } from './helpers/buildComputerFixture.js'
 import { JobAdmissionResultSchema } from '@foreman-code/contracts/job-admission'
+import { BuildComputerBatchResultSchema } from '@foreman-code/contracts/build-computers'
 import { JobDefinitionSchema, JobExecutionSchema, type JobDefinition, type ResolvedJobDefinitionSpec } from '@foreman-code/contracts/jobs'
 
 // Real settings/command/admission SQL and authenticated transports; runtime/source I/O is a bounded fixture.
@@ -145,6 +146,104 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       .rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     const audit = await database.pool.query("select outcome from management_audit where action='build.computer.update' and principal_id=$1", [writer.principal.id])
     expect(audit.rows.map(row => row.outcome)).toContain('succeeded')
+  })
+  it('atomically saves all build roles and priorities over authenticated MCP with denied writes and persisted readback', async () => {
+    const f = await fixture()
+    const client = await f.connect(writer.token)
+    const readOnly = await f.connect(reader.token)
+    const command = { commandId: randomUUID(), updates: f.computers.map((computer, index) => ({
+      target: computer.target, expectedRevision: 0, buildEnabled: true, buildPriority: index * 50,
+      buildRole: index === 0 ? 'backup' : 'primary', buildAllowancePercent: 60,
+    })) }
+    const saved = BuildComputerBatchResultSchema.parse((await client.callTool({
+      name: 'build_computers_update', arguments: command,
+    })).structuredContent)
+    expect(saved.computers.map(status => status.preference.revision)).toEqual([1, 1, 1])
+    expect((await client.callTool({ name: 'build_computers_update', arguments: command })).structuredContent).toEqual(saved)
+    const denied = await readOnly.callTool({ name: 'build_computers_update', arguments: {
+      ...command, commandId: randomUUID(), updates: command.updates.map(change => ({ ...change, expectedRevision: 1 })),
+    } })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    for (const status of saved.computers) {
+      expect((await readOnly.callTool({ name: 'build_computer_get', arguments: { target: status.preference.target } }))
+        .structuredContent).toEqual(status)
+    }
+    const restarted = new BuildComputerSettings(database.pool, new PostgresCommandCoordinator(database.pool),
+      async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
+    expect(await restarted.updateBatch(writer.principal, 'http', command)).toEqual(saved)
+    const different = await client.callTool({ name: 'build_computers_update', arguments: {
+      ...command, updates: command.updates.map(change => ({ ...change, buildPriority: 42 })),
+    } })
+    expect(different.isError).toBe(true)
+    expect(JSON.stringify(different.content)).toContain('COMMAND_ID_CONFLICT')
+    const audit = await database.pool.query(
+      "select source,outcome from management_audit where action='build.computers.update' and details->>'commandId'=$1",
+      [command.commandId])
+    expect(audit.rows.filter(row => row.outcome === 'succeeded')).toEqual([{ source: 'mcp', outcome: 'succeeded' }])
+    const definition = await f.save()
+    const start = { commandId: randomUUID(), definitionId: definition.id, expectedRevision: 1 }
+    await expect(f.jobs.start(writer.principal, 'http', f.workspaceId, start)).rejects.toMatchObject({
+      code: 'JOB_NO_BUILD_COMPUTER', details: { reasons: ['request_exceeds_maximum'] },
+    })
+    const expanded = BuildComputerBatchResultSchema.parse((await client.callTool({
+      name: 'build_computers_update', arguments: {
+        commandId: randomUUID(), updates: command.updates.map(change => ({
+          ...change, expectedRevision: 1, buildAllowancePercent: 100,
+        })),
+      },
+    })).structuredContent)
+    expect(expanded.computers.map(status => status.preference)).toEqual(saved.computers.map(status => ({
+      ...status.preference, revision: 2, buildAllowancePercent: 100,
+    })))
+    const selected = await f.jobs.start(writer.principal, 'http', f.workspaceId, start)
+    expect(selected.acceptedSpec.target).toEqual(f.computers[2]!.candidate.spec.target)
+  })
+  it('rejects a stale last row without changing any earlier row in the batch', async () => {
+    const f = await fixture()
+    await f.enroll(2, true, 25)
+    const before = await Promise.all(f.computers.map(computer => f.settings.read(writer.principal, { target: computer.target })))
+    const client = await f.connect(writer.token)
+    const rejected = await client.callTool({ name: 'build_computers_update', arguments: {
+      commandId: randomUUID(), updates: f.computers.map(computer => ({ target: computer.target,
+        expectedRevision: 0, buildEnabled: true, buildPriority: 100, buildRole: 'backup' })),
+    } })
+    expect(rejected.isError).toBe(true)
+    expect(JSON.stringify(rejected.content)).toContain('REVISION_CONFLICT')
+    expect(await Promise.all(f.computers.map(computer => f.settings.read(writer.principal, { target: computer.target }))))
+      .toEqual(before)
+  })
+  it('retains the whole scheduling order while a competing batch waits, then uses the committed order', async () => {
+    const f = await fixture()
+    const original = await Promise.all(f.computers.map((_computer, index) => f.enroll(index, true, 100 - index * 50)))
+    const sql = await database.pool.connect()
+    let saving: ReturnType<BuildComputerSettings['updateBatch']> | undefined
+    try {
+      await sql.query('begin')
+      const first = await f.settings.preference(sql, f.computers[0]!.target)
+      expect(first.buildPriority).toBe(100)
+      saving = f.settings.updateBatch(writer.principal, 'http', { commandId: randomUUID(),
+        updates: original.map((status, index) => ({ target: status.preference.target,
+          expectedRevision: status.preference.revision, buildEnabled: true, buildPriority: index * 50 })),
+      })
+      for (const computer of f.computers.slice(1)) {
+        const preference = await f.settings.preference(sql, computer.target)
+        expect(preference).toEqual(original[f.computers.indexOf(computer)]!.preference)
+      }
+      const definition = await f.save()
+      const identity = { executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID() }
+      const claim = await f.placement.claim(sql, writer.principal, definition, identity)
+      expect(claim.spec?.target).toEqual(f.computers[0]!.candidate.spec.target)
+      await sql.query('commit')
+      await saving
+      const after = await f.jobs.start(writer.principal, 'http', f.workspaceId,
+        { commandId: randomUUID(), definitionId: definition.id, expectedRevision: 1 })
+      expect(after.acceptedSpec.target).toEqual(f.computers[2]!.candidate.spec.target)
+    } finally {
+      await sql.query('rollback')
+      sql.release()
+      await saving
+    }
   })
   it('edits build participation without login while preserving read-only MCP permissions', async () => {
     const f = await fixture()
