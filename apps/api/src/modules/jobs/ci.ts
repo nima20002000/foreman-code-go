@@ -38,7 +38,7 @@ export class CiService {
     const outcome = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.run',
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
-      perform: async () => {
+      perform: async commandConnection => {
         // An Agent's CI tests its current files and runs on its own computer first, then spills over in build order.
         const agent = scope.executionId ? await this.agentWorkspace(scope.executionId) : undefined
         const snapshot = agent?.worktree && !input.commit && this.snapshots ? { baseCommit: agent.worktree.commit,
@@ -47,10 +47,10 @@ export class CiService {
           workspaceId: scope.workspaceId, commandId: `${commandKey}:source`,
           ...(input.commit ? { commit: input.commit } : {}), ...(snapshot ? { snapshot } : {}),
         })
-        const lock = await this.pool.connect()
+        // Suite waiters use the command connection, leaving the application pool available for nested work.
         const lockKey = `ci:${scope.workspaceId}:${input.suite}`
         try {
-          await lock.query('select pg_advisory_lock(hashtext($1))', [lockKey])
+          await commandConnection.query('select pg_advisory_lock(hashtext($1))', [lockKey])
           const prepared = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.prepare',
             commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
             authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
@@ -72,8 +72,7 @@ export class CiService {
           return CiRunOutputSchema.parse({ ticketId: admitted.kind === 'accepted' ? admitted.ticketId : admitted.ticket.id,
             ...(admitted.kind === 'accepted' ? { executionId: admitted.executionId } : {}) })
         } finally {
-          try { await lock.query('select pg_advisory_unlock(hashtext($1))', [lockKey]) }
-          finally { lock.release() }
+          await commandConnection.query('select pg_advisory_unlock(hashtext($1))', [lockKey])
         }
       },
     })

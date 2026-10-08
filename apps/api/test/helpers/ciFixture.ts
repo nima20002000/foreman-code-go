@@ -36,7 +36,8 @@ export function ciFixture() {
   const commands = {
     execute: async (input: { principal: ManagementPrincipal; operation: string; commandId: string;
       targetKey: string; payload: unknown; authorize?(sql: unknown): Promise<void>; perform(sql: unknown): Promise<unknown> }) => {
-      await input.authorize?.({})
+      const sql = { query: async () => ({ rows: [] }) }
+      await input.authorize?.(sql)
       const key = `${input.principal.id}:${input.operation}:${input.commandId}`
       const digest = jobDigest(input.payload)
       const existing = receipts.get(key)
@@ -46,7 +47,7 @@ export function ciFixture() {
         }
         return { value: structuredClone(existing.result), replayed: true }
       }
-      const value = await input.perform({})
+      const value = await input.perform(sql)
       receipts.set(key, { digest, target: input.targetKey, result: structuredClone(value) })
       audits.push({ principalId: input.principal.id, action: input.operation, outcome: 'succeeded' })
       return { value, replayed: false }
@@ -166,7 +167,8 @@ export function ciFixture() {
       return { commit: 'c'.repeat(40), bundle: Buffer.from('bundle') }
     } })
   const services = { commands, ci: createCi() } as unknown as OperatorServices
-  return { workspaceId, worker, operator, readonly, services, audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
+  return { workspaceId, worker, operator, readonly, services, commands, authority, sources, jobs,
+    audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
     complete: () => {
       if (!ticket) throw new Error('Missing queued ticket')
