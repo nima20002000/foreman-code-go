@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
@@ -74,7 +75,9 @@ it.each(['opencode', 'claude'] as const)('requires an explicitly approved read-w
   const f = fixture()
   const configuration = { ...f.configuration, harness: harness === 'opencode'
     ? structuredClone(DEFAULT_HARNESS_DEFAULTS.opencode)
-    : { ...structuredClone(DEFAULT_HARNESS_DEFAULTS.claude), sandbox: 'danger-full-access' as const } }
+    : ClaudeFullAccessConfigurationSchema.parse({ harness: 'claude', model: 'profile-model',
+      authMode: 'subscription', configDirectory: '/profile', permissionMode: 'default',
+      sandbox: 'danger-full-access', tools: ['Write'], permissionRules: [], instructions: '', mcpServers: {} }) }
   const input = { ...f.input, configuration }
   await expect(resolveAgentChatDirectory(input)).rejects.toThrow('approved host settings')
   f.policy.accessMode = 'read-write'
