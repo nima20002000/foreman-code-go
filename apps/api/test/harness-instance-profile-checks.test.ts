@@ -7,6 +7,10 @@ import type { PostgresCommandCoordinator } from '../src/modules/commands/postgre
 import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
 import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks, nativeProfileCheckId } from '../src/modules/harnesses/instanceSettings/profileChecks.js'
+import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
+import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
+
+vi.mock('../src/modules/devices/hostAuthorization.js', () => ({ assertDeviceHostInstallation: vi.fn() }))
 
 const mainId = '00000000-0000-4000-8000-000000000001'
 const principal: ManagementPrincipal = { id: 'writer', name: 'Writer', audience: 'operator', revokedAt: null, expiresAt: '9999-12-31T00:00:00.000Z', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }] }
@@ -15,11 +19,14 @@ function fixture() {
     presetId: 'local-default:codex', driverId: 'codex', enabled: true, configuration: { harness: 'codex', model: 'test', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' }, configurationFingerprint: 'profile-sha', qualification: 'unqualified' }
   const client = { query: vi.fn(async () => undefined) } as unknown as pg.PoolClient
   let readTransaction = false
-  const settings = { latest: async () => structuredClone(current), lockRevision: vi.fn(async () => undefined),
+  const settings = { latest: async () => structuredClone(current), list: async () => [structuredClone(current)],
+    withProfileConnection: async (work: (client: pg.PoolClient) => Promise<unknown>) => work(client),
+    lockRevision: vi.fn(async () => undefined),
     readAuthorized: async (work: (client: pg.PoolClient) => Promise<unknown>) => { readTransaction = true; try { return await work(client) } finally { readTransaction = false } } } as unknown as HarnessInstanceSettingsRepository
   const stored = new Map<string, HostHarnessProfileEvidence>()
   const append = vi.fn(async (_client: pg.PoolClient, checkId: string, _value: HostHarnessOverride, proof: HostHarnessProfileEvidence) => { stored.set(checkId, proof) })
-  const proofs = { findCheck: async (id: string) => stored.get(id) ?? null, append } as unknown as HostHarnessProfileEvidenceRepository
+  const proofs = { findCheck: async (id: string) => stored.get(id) ?? null,
+    latest: async () => [...stored.values()].at(-1) ?? null, append } as unknown as HostHarnessProfileEvidenceRepository
   const commands = { execute: vi.fn(async (command: { authorize: (client: pg.PoolClient) => Promise<void>; perform: (client: pg.PoolClient) => Promise<unknown> }) => {
     await command.authorize(client); return { value: await command.perform(client), replayed: false }
   }) } as unknown as PostgresCommandCoordinator
@@ -29,7 +36,10 @@ function fixture() {
   const qualify = vi.fn(async (value: HostHarnessOverride) => { expect(readTransaction).toBe(false); return proof(value) })
   const service = new HostHarnessInstanceProfileChecks(settings, proofs, commands, { authorize }, { qualify })
   const input = { commandId: randomUUID(), instanceId: current.instanceId, expectedRevision: current.revision, target: current.target }
-  return { service, qualify, append, proof, input, authorize, settings, commands, change: () => { current = { ...current, revision: 2, instanceRevision: '2' } } }
+  return { service, qualify, append, proof, input, authorize, settings, commands,
+    seed: (evidence: HostHarnessProfileEvidence) => stored.set('previous', evidence),
+    setOverride: (value: HostHarnessOverride) => { current = value },
+    change: () => { current = { ...current, revision: 2, instanceRevision: '2' } } }
 }
 describe('explicit exact-host native profile checks', () => {
   it('checks outside authority transactions and recovers persisted proof without repeating native effects', async () => {
@@ -70,5 +80,78 @@ describe('explicit exact-host native profile checks', () => {
     expect(nativeProfileCheckId(mainId, principal.id, commandId)).toBe(id)
     expect(nativeProfileCheckId(mainId, 'other', commandId)).not.toBe(id)
     expect(nativeProfileCheckId('other-main', principal.id, commandId)).not.toBe(id)
+  })
+})
+
+function workerFixture() {
+  const f = fixture()
+  const binding = { mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
+    keyRevision: 1, authorizationRevision: 1, connectionGeneration: 2, connectionEpoch: randomUUID() }
+  const host = { kind: 'device' as const, mainId, deviceId: binding.deviceId }
+  const override: HostHarnessOverride = { instanceId: f.input.instanceId, revision: 1, instanceRevision: '1',
+    target: { ...f.input.target, hostRef: host, applicationInstallationId: binding.workerInstallationId },
+    presetId: 'worker-codex', driverId: 'codex', enabled: true,
+    configuration: { harness: 'codex', model: 'test', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' },
+    configurationFingerprint: 'profile-sha', qualification: 'unqualified' }
+  f.setOverride(override)
+  vi.mocked(assertDeviceHostInstallation).mockResolvedValue({ ...binding,
+    publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] })
+  f.qualify.mockImplementation(async selected => ({ ...f.proof(selected),
+    connectionGeneration: harnessConnectionGeneration(binding) }))
+  return { ...f, binding, host, override }
+}
+
+describe('Worker reconnect profile checks', () => {
+  it('checks an enabled qualified profile once per connection and refuses Start while it runs', async () => {
+    const f = workerFixture()
+    f.seed(f.proof(f.override))
+    let release!: () => void
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    let started!: () => void
+    const entered = new Promise<void>(resolve => { started = resolve })
+    f.qualify.mockImplementationOnce(async selected => {
+      started()
+      await waiting
+      return { ...f.proof(selected), connectionGeneration: harnessConnectionGeneration(f.binding) }
+    })
+    const signal = new AbortController().signal
+    const task = f.service.recheckWorker(f.binding, signal, () => f.binding)
+    expect(f.service.recheckWorker(f.binding, signal, () => f.binding)).toBe(task)
+    await entered
+    expect(() => f.service.assertReady(f.host)).toThrow(expect.objectContaining({
+      code: 'HARNESS_PROFILE_CHECK_PENDING', details: expect.objectContaining({ retryable: true }),
+    }))
+    release()
+    await task
+    expect(() => f.service.assertReady(f.host)).not.toThrow()
+    await f.service.recheckWorker(f.binding, signal, () => f.binding)
+    expect(f.qualify).toHaveBeenCalledTimes(1)
+    expect(f.append).toHaveBeenCalledTimes(1)
+    await f.service.close()
+  })
+
+  it.each(['disabled', 'unqualified', 'never-checked'] as const)('leaves a %s profile unchecked', async state => {
+    const f = workerFixture()
+    if (state !== 'never-checked') f.seed({ ...f.proof(f.override), qualified: state !== 'unqualified' })
+    if (state === 'disabled') f.setOverride({ ...f.override, enabled: false })
+    await f.service.recheckWorker(f.binding, new AbortController().signal, () => f.binding)
+    expect(f.qualify).not.toHaveBeenCalled()
+    expect(f.append).not.toHaveBeenCalled()
+    await f.service.close()
+  })
+
+  it('discards a successful native result when the connection changes before persistence', async () => {
+    const f = workerFixture()
+    f.seed(f.proof(f.override))
+    let current = f.binding
+    f.qualify.mockImplementationOnce(async selected => {
+      current = { ...current, connectionGeneration: 3 }
+      return { ...f.proof(selected), connectionGeneration: harnessConnectionGeneration(f.binding) }
+    })
+    await expect(f.service.recheckWorker(f.binding, new AbortController().signal, () => current))
+      .rejects.toThrow('Automatic Worker profile checks failed')
+    expect(f.append).not.toHaveBeenCalled()
+    expect(() => f.service.assertReady(f.host)).not.toThrow()
+    await f.service.close()
   })
 })

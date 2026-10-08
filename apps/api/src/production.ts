@@ -420,6 +420,11 @@ export function buildProductionApp(
       if (failures.length) throw new AggregateError(failures, 'Original device domain binding cleanup remains incomplete')
     },
     async bindingReady(binding, signal, endpoint) {
+      void hostProfileChecks.recheckWorker(binding, signal,
+        () => deviceRuntime.currentBinding(binding.deviceId)).catch(error => {
+        if (!signal.aborted) app.log.error({ err: error, deviceId: binding.deviceId },
+          'Automatic Worker harness profile checks failed')
+      })
       try {
         const session = await remoteTelemetry.ready(binding, signal, endpoint)
         if (session) void session.completion.catch(error => {
@@ -1636,7 +1641,7 @@ export function buildProductionApp(
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
           harnessRegistry, { codex: selectedSuites.codex.revision, opencode: selectedSuites.opencode.revision },
-          workerExecution)
+          workerExecution, host => hostProfileChecks.assertReady(host))
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
       }
