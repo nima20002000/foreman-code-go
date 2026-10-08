@@ -12,6 +12,7 @@ import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteRev
 
 it('uses the selected Worker qualification when the general harness cache has a conflicting record', async () => {
   const fixture = await remoteReviewProduction({ workflow: 'sequential' })
+  let failure: unknown
   try {
     const profile = fixture.profiles[0]!
     const workspaceId = fixture.version.workspaceId
@@ -73,8 +74,8 @@ it('uses the selected Worker qualification when the general harness cache has a 
     const state = await waitForRemoteReview(async () => AgentChatStateSchema.parse(await fixture.value(
       'agent_chat_read', { workspaceId, query: context })), value =>
       Boolean(value.conversation?.nativeSession) && value.turns.some(turn =>
-        turn.requestId === request.requestId && turn.nativeTurnId !== undefined),
-    'selected Worker chat submission')
+        turn.requestId === request.requestId && turn.nativeTurnId !== undefined && turn.delivery === 'completed'),
+    'selected Worker chat completion')
     expect(state.conversation?.nativeSession?.nativeSessionId).toBeTruthy()
     const turn = state.turns.find(turn => turn.requestId === request.requestId)!
     expect(turn.nativeTurnId).toBeTruthy()
@@ -86,7 +87,17 @@ it('uses the selected Worker qualification when the general harness cache has a 
     const persisted = await fixture.db.pool.query<{ native_session_id: string | null }>(
       'select native_session_id from operator_conversations where id=$1', [state.conversation!.id])
     expect(persisted.rows[0]?.native_session_id).toBe(state.conversation?.nativeSession?.nativeSessionId)
+  } catch (error) {
+    failure = error
+    console.error('Worker chat qualification regression failed', { failures: fixture.failures().slice(-8) })
+    throw error
   } finally {
-    await fixture.close()
+    try {
+      await fixture.close()
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure, cleanupError],
+        'Worker chat regression and fixture cleanup failed.', { cause: failure })
+      throw cleanupError
+    }
   }
 }, 240_000)
