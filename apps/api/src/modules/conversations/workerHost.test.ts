@@ -123,7 +123,7 @@ async function setup(harness: AgentHarness = 'codex') {
   closing.push(async () => { manager.releaseCompact?.(); await host.shutdown() })
   const request = (input: Record<string, unknown>) => host.handle({ ...input, binding: f.binding }, current)
   const open = { method: 'conversation.open', operationId: 'original-message', mode: 'create', configuration: f.configuration }
-  return { ...f, journal, manager, ports, host, observed, request, open,
+  return { ...f, root, journal, manager, ports, host, observed, request, open,
     deny: () => { allowed = false }, replaceConnection: () => { current = { ...current, connectionEpoch: randomUUID() } } }
 }
 function receipt(value: unknown) {
@@ -146,7 +146,7 @@ it('closes only the idle old owner and attaches the same session under the reque
     expect(record.applicationAccessChange?.state).toBe('reserved')
     expect('applicationAccess' in request && request.applicationAccess)
       .toEqual({ kind: 'operator-chat-mcp', token: 'normally-issued-credential' })
-    await f.journal.conversations.recoveredOwner(f.binding, connection, f.nativeOwner, owner, next)
+    await f.journal.conversations.recoveredOwner(f.binding, connection, f.nativeOwner, owner, { targetBinding: next })
     return { ...allocation, nativeOwner: async () => owner }
   }) satisfies WorkerConversationHostPorts['recover']
   f.ports.recover = recover
@@ -451,4 +451,82 @@ it('carries conversation operations on the paired channel and applies Main denia
     await Promise.allSettled(readers)
     await Promise.all([main.join(), worker.join()])
   }
+})
+
+
+it('persists definite non-delivery and admits a later message without replaying the rejected one', async () => {
+  const f = await setup('claude')
+  await f.request(f.open)
+  const start = f.manager.startTurn.bind(f.manager)
+  f.manager.startTurn = async function* (session, input) {
+    if (input.clientCorrelationId === 'rejected') {
+      throw Object.assign(new Error('Settings failed before offer'), {
+        certainty: 'definite', deliveryState: 'not-delivered',
+      })
+    }
+    yield* start(session, input)
+  }
+  const rejected = { method: 'conversation.start-turn', session: f.session,
+    prompt: 'Never offered', correlationId: 'rejected' }
+  await f.request(rejected)
+  await vi.waitFor(async () => expect((await f.journal.conversations.read(f.binding))?.turns[0]?.status).toBe('rejected'))
+  const history = await f.request({ method: 'conversation.reconcile', session: f.session, correlationId: 'rejected' })
+  expect(history).toMatchObject({ history: { nonSubmission: {
+    nativeSessionId: f.session.nativeSessionId, clientCorrelationId: 'rejected', result: { outcome: 'failed' },
+  } } })
+  await f.request(rejected)
+  await f.request({ ...rejected, prompt: 'Delivered later', correlationId: 'later' })
+  await vi.waitFor(async () => expect((await f.journal.conversations.read(f.binding))?.turns[1]?.status).toBe('completed'))
+  expect(f.manager.prompts).toEqual(['Delivered later'])
+  expect(f.manager.creates).toBe(1)
+})
+
+it('keeps a possibly delivered message fenced even if an error claims non-delivery', async () => {
+  const f = await setup('claude')
+  await f.request(f.open)
+  f.manager.startTurn = async function* (_session, input) {
+    await input.onMessageSubmitted?.({ kind: 'message', nativeSessionId: f.session.nativeSessionId,
+      nativeMessageId: 'already-offered', clientCorrelationId: input.clientCorrelationId })
+    throw Object.assign(new Error('Submission acknowledgement failed'), {
+      certainty: 'definite', deliveryState: 'not-delivered',
+    })
+  }
+  await f.request({ method: 'conversation.start-turn', session: f.session, prompt: 'Offered', correlationId: 'uncertain' })
+  await vi.waitFor(async () => expect((await f.journal.conversations.read(f.binding))?.turns[0]?.status).toBe('uncertain'))
+  await expect(f.request({ method: 'conversation.start-turn', session: f.session,
+    prompt: 'Blocked', correlationId: 'blocked' })).rejects.toThrow('pending')
+})
+
+it('recovers an initial startup failure after reservation and preserves retry idempotency across journal reopen', async () => {
+  const f = await setup('claude')
+  const allocation = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
+  let fail = true
+  const startup = vi.fn(async (input: Parameters<typeof allocation.start>[0]) => {
+    if (fail) throw new Error('Profile changed before native startup')
+    return allocation.start(input)
+  })
+  f.ports.allocate = async () => ({ ...allocation, start: startup })
+  const initial = { method: 'conversation.initial-turn', operationId: 'initial-operation', configuration: f.configuration,
+    prompt: 'Initial input', correlationId: 'initial-message' }
+  expect(receipt(await f.request(initial))).toMatchObject({
+    creation: { status: 'rejected' }, turns: [{ status: 'rejected', result: { outcome: 'failed' } }],
+  })
+  expect(f.manager.creates).toBe(0)
+  await f.journal.close()
+  const reopened = await RemoteOperationJournal.open(join(f.root, 'operations.json'))
+  closing.push(() => reopened.close())
+  const host = new WorkerConversationHost({ ...f.ports, journal: reopened.conversations,
+    observeSession: async (_binding, session) => {
+      expect((await reopened.conversations.read(f.binding))?.session).toEqual(session)
+      f.observed.sessions.push(session)
+    } })
+  closing.push(() => host.shutdown())
+  fail = false
+  const request = (input: Record<string, unknown>) => host.handle({ ...input, binding: f.binding }, f.connection)
+  expect(receipt(await request(initial)).turns[0]?.status).toBe('rejected')
+  expect(startup).toHaveBeenCalledOnce()
+  await request({ ...initial, operationId: 'retry-operation', correlationId: 'retry-message' })
+  await vi.waitFor(async () => expect((await reopened.conversations.read(f.binding))?.turns[1]?.status).toBe('completed'))
+  expect(f.manager.prompts).toEqual(['Initial input'])
+  expect(f.manager.creates).toBe(1)
 })
