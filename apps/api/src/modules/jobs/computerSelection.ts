@@ -5,7 +5,6 @@ import { JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
 import {
   isAutoJobSpecRecord,
   ResolvedJobDefinitionSpecRecordSchema,
-  jobPolicyRequirementsRecord,
   type JobDefinitionRecord,
   type JobDefinitionSpecRecord,
   type ResolvedJobDefinitionSpecRecord,
