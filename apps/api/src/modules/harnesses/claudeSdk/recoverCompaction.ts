@@ -1,9 +1,10 @@
-import type { CompactionState } from '@foreman-code/contracts'
+import { compactionBlocksSend, type CompactionState } from '@foreman-code/contracts'
 import { readClaudeCompactionResult } from './compactionResults.js'
 import { readClaudeCompactionHistory, recoveredClaudeCompaction, ClaudeCompactionHistoryUnavailableError } from './compactionHistory.js'
 
 /** Observes the admitted native request without opening an SDK query or issuing credentials. */
 export async function recoverPersistedClaudeCompaction(state: CompactionState): Promise<CompactionState> {
+  if (!compactionBlocksSend(state)) return state
   if (!state.claudeSession || !state.nativeSessionId) return state
   const session = { ...state.claudeSession, nativeSessionId: state.nativeSessionId }
   if (state.nativeRequestId) {

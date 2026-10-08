@@ -6,6 +6,7 @@ import { expect, it } from 'vitest'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { readClaudeCompactionHistory } from '../harnesses/claudeSdk/compactionHistory.js'
+import { saveClaudeCompactionResult } from '../harnesses/claudeSdk/compactionResults.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { WorkerConversationHost } from './workerHost.js'
 import { WorkerConversationManager } from './workerManager.js'
@@ -13,7 +14,8 @@ import { MainWorkerConversationBridge } from './workerBridge.js'
 import { workerConversationCallbacks } from './workerCallbacks.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 
-it('recovers the worker’s persisted Claude boundary after Main restarts without creating or attaching a writer', async () => {
+it.each(['completed', 'failed'] as const)(
+  'recovers the Worker Claude %s result after a boundary and restart without opening a writer', async status => {
   const root = await mkdtemp(join(tmpdir(), 'worker-compaction-'))
   const f = workerConversationFixture('operator', 'claude')
   if (!('operatorId' in f.configuration) || f.configuration.harness.harness !== 'claude') throw new Error('Claude Operator fixture required')
@@ -50,18 +52,26 @@ it('recovers the worker’s persisted Claude boundary after Main restarts withou
     const reserved = await journal.conversations.reserveCompact(binding, 'compact-request', commandInputHash('compact-request'))
     const claudeSession = { profilePath: root, cwd: session.cwd,
       configRevision: session.configRevision, deviceId: session.deviceId }
-    const state = { ...reserved.state, status: 'uncertain' as const,
+    const nativeRequestId = randomUUID()
+    const state = { ...reserved.state, status: 'uncertain' as const, nativeRequestId,
       claudeSession, claudeCursor: before.cursor }
     await journal.conversations.compactProgress(binding, state)
     const boundaryId = randomUUID()
     await appendFile(transcript, frame('automatic', 'auto') + frame(boundaryId, 'manual'))
     const start = { kind: 'operator' as const, configuration, correlationId: 'recovery-read',
       workingDirectory: binding.workingDirectory }
-    const recovered = await manager.readCompaction(f.session, start, state)
+    const pending = await manager.readCompaction(f.session, start, state)
+    expect(pending).toMatchObject({ status: 'uncertain', nativeOperationId: boundaryId, beforeTokens: 12000 })
+    await expect(journal.conversations.reserveTurn(binding, 'early-message', commandInputHash('early-message')))
+      .rejects.toThrow('pending')
+    await saveClaudeCompactionResult(session, nativeRequestId, status)
+    const recovered = await manager.readCompaction(f.session, start, pending)
     expect(recovered).toMatchObject({ requestId: state.requestId, nativeSessionId: session.nativeSessionId,
-      status: 'completed', nativeOperationId: boundaryId, beforeTokens: 12000 })
+      status, nativeOperationId: boundaryId, beforeTokens: 12000 })
     expect((await journal.conversations.read(binding))?.compactions[0]?.state).toEqual(recovered)
     expect(allocations).toBe(0)
+    expect((await journal.conversations.reserveTurn(binding, 'next-message', commandInputHash('next-message'))).dispatch)
+      .toBe(true)
     allowed = false
     await expect(manager.readCompaction(f.session, start, state)).rejects.toThrow('Read grant revoked')
     expect(allocations).toBe(0)
