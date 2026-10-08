@@ -3,6 +3,8 @@ import type { RunBoardNodeSnapshot } from '@foreman-code/contracts/run-snapshots
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/query'
 import { SelectedNodePlacement } from '../node-placement/SelectedNodePlacement'
+import { RunNodeInspector } from './RunNodeInspector'
+import { useRunNodeInspectionNavigation } from './inspectionNavigation'
 import { RunBoardCanvas } from './RunBoardCanvas'
 import './runBoard.css'
 
@@ -13,6 +15,7 @@ export type RunBoardProps = { selection: SelectedRunState }
  */
 export function RunBoard({ selection }: RunBoardProps) {
   const query = useSelectedRunSnapshot(selection)
+  const inspection = useRunNodeInspectionNavigation(selection)
   if (!selection.active) return null
   if (selection.invalid) return <section className="run-board" aria-label="Selected Run board"><p role="status">Invalid Run</p></section>
   if (selection.identity.runId === null) return null
@@ -21,7 +24,8 @@ export function RunBoard({ selection }: RunBoardProps) {
   const snapshot = current ? query.snapshot : undefined
   const failed = current && query.isError
   const loading = !failed && !snapshot
-  return <section className="run-board" aria-label="Selected Run board" aria-busy={loading}
+  return <section className={inspection.nodeId ? 'run-board run-board-inspecting' : 'run-board'}
+    aria-label="Selected Run board" aria-busy={loading}
     data-run-id={selection.identity.runId} data-generation={selection.generation.id}>
     {failed ? <div className="run-board-message" role="status">
       <span>{runReadErrorLabel(query.error)}</span>
@@ -32,7 +36,10 @@ export function RunBoard({ selection }: RunBoardProps) {
       : snapshot?.kind === 'unavailable' ? <p role="status">Snapshot unavailable</p>
       : snapshot?.kind === 'available' ? <>
         <span className="run-board-label">Read only</span>
-        {snapshot.nodes.length ? <RunBoardCanvas key={selection.generation.id} snapshot={snapshot} /> : <p role="status">No nodes</p>}
+        {snapshot.nodes.length ? <RunBoardCanvas key={selection.generation.id} snapshot={snapshot} onInspectNode={inspection.inspect} /> : <p role="status">No nodes</p>}
+        {inspection.nodeId ? <RunNodeInspector key={`inspector:${selection.generation.id}:${inspection.nodeId}`}
+          selection={selection} snapshot={snapshot} nodeId={inspection.nodeId}
+          executionId={inspection.executionId} onInspect={inspection.inspect} /> : null}
         <SelectedRunComputers key={`placement:${selection.generation.id}`} selection={selection} nodes={snapshot.nodes} />
       </> : null}
   </section>

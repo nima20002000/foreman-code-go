@@ -28,7 +28,8 @@ describe.skipIf(!postgresEnabled)('W08 exact accepted host readback parity', () 
     try {
       const draft = await insertCurrentRunFixture(f.db.pool, { ...f.f, run: { ...f.run, id: randomUUID() } }, f.saved.value, f.owner.principal.id, { insert: false })
       const node = agentWorkflowNode(draft.version.definition.nodes[0]), configuration = f.f.configurations[0]!, digest = 'a'.repeat(64)
-      const mainId = randomUUID(), deviceId = randomUUID()
+      const mainId = (await f.db.pool.query('select id from application_installation')).rows[0].id
+      const deviceId = randomUUID()
       const placement = freezePlacement({ schemaVersion: 1, mainId, runId: draft.run.id, nodeId: node.id,
         hostRef: { kind: 'device', mainId, deviceId }, labelAtAcceptance: 'Original laptop', mainInstallationId: 'main-installation',
         registration: { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 },
@@ -45,7 +46,7 @@ describe.skipIf(!postgresEnabled)('W08 exact accepted host readback parity', () 
           draft.run.agentConfigurationVersionIds, [placement], { assertCurrent: async () => {} })
       }))
       const reads = new RunPlacementReadService(f.db.pool, async () => []) // no native work in this fixture
-      const choices = new NodePlacementChoicesService(f.db.pool, mainId, { list: async () => [{ id: 'approved-laptop-choice', label: 'Original laptop',
+      const choices = new NodePlacementChoicesService(f.db.pool, { list: async () => [{ id: 'approved-laptop-choice', label: 'Original laptop',
         placement: { schemaVersion: 1, hostRef: placement.hostRef, rootPolicyId: 'approved-root', rootPolicyRevision: '1', locationRevision: '1',
           projectRoot: '/approved/project', cwdPolicy: 'project-root', relativeCwd: '', instanceId: 'instance', instanceRevision: 'instance-v1', harnessInstallationId: 'installation' },
         availability: 'ready', reason: null }] })

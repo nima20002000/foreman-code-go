@@ -227,9 +227,17 @@ describe('AgentChatPanel commands and drafts', () => {
     const warning = screen.getByRole('alertdialog')
     expect(within(warning).getByText(/original message may already have been accepted/)).toBeInTheDocument()
     expect(sent(mounted.mock)).toHaveLength(0)
-    await userEvent.click(within(warning).getByRole('button', { name: 'Send as new message' }))
+    const confirm = within(warning).getByRole('button', { name: 'Send as new message' })
+    expect(confirm).toBeDisabled()
+    await userEvent.click(confirm)
+    expect(sent(mounted.mock)).toHaveLength(0)
+    await userEvent.selectOptions(within(warning).getByRole('combobox', { name: 'Mode for new message' }), 'regular')
+    expect(confirm).toBeEnabled()
+    await userEvent.click(confirm)
     await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
-    expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'next_turn', content: 'Summarize the repository.' })
+    expect(sent(mounted.mock)[0]!.body).toMatchObject({
+      intent: 'next_turn', content: 'Summarize the repository.', sessionMode: 'regular',
+    })
     expect((sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest).requestId).not.toBe('request-1')
   })
 

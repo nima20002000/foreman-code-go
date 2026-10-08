@@ -27,7 +27,9 @@ function ChangeList({ title, changes }: { title: string; changes: SettingsChange
   </details>
 }
 
-export function SettingsFormFeedback({ form }: { form: SettingsFormState }) {
+export function SettingsFormFeedback({ form, savedMessage = 'Changes are saved to the server.' }: {
+  form: SettingsFormState; savedMessage?: string;
+}) {
   return <>
     {form.conflicted ? <div className="settings-form-feedback settings-defaults-conflict" role="alert">
       <Alert tone="warning" title="These defaults changed elsewhere. Your edits are preserved.">
@@ -46,7 +48,7 @@ export function SettingsFormFeedback({ form }: { form: SettingsFormState }) {
     </Alert></div> : null}
     {form.savedRevision !== undefined && !form.error && !form.uncertain ? <div className="settings-form-feedback">
       <Alert live tone={form.isDirty ? 'warning' : 'success'} title={form.isDirty ? 'Earlier changes saved' : 'Changes saved to the server'}>
-        {form.isDirty ? 'Newer edits are still unsaved.' : 'Your saved settings are ready to use.'}
+        {form.isDirty ? 'Newer edits are still unsaved.' : savedMessage}
       </Alert>
     </div> : null}
   </>

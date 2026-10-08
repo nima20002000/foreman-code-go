@@ -32,6 +32,7 @@ export class HarnessCatalogService {
   }
 
   private async inspectConfiguration(value: HarnessConfiguration) {
+    assertClaudeFullAccess(value)
     try {
       return await this.checks.get(canonical(withAdvancedDefaults(value)), async () => {
         const qualification = HarnessQualificationSchema.parse(
@@ -88,6 +89,13 @@ export class HarnessCatalogService {
     const configuration = defaults[harness]
     if (!configuration) throw new DomainError('HARNESS_PROFILE_REQUIRED', 'Save a Claude preset with an actual host-local profile, model, authentication and sandbox choice in Claude settings. Installation alone does not create this app configuration.', 409)
     const support = harness === 'codex' ? { interactionSupport: structuredClone(CODEX_INTERACTION_SUPPORT) } : {}
+    try {
+      assertClaudeFullAccess(configuration)
+    } catch (error) {
+      if (!(error instanceof DomainError)) throw error
+      return { harness, defaults: configuration, defaultsRevision: revision, capability: null, ...support,
+        discoveryError: { code: error.code, message: error.message } }
+    }
     if (unavailable.has(harness)) {
       return { harness, defaults: configuration, defaultsRevision: revision, capability: null, ...support,
         discoveryError: { code: 'HARNESS_MODEL_DEFAULT_UNAVAILABLE',
@@ -109,7 +117,6 @@ export class HarnessCatalogService {
   }) {
     requireAuthorization(principal, 'harnesses:update')
     const defaults = HarnessDefaultsSchema.parse(input.defaults)
-    if (defaults.claude) assertClaudeFullAccess(defaults.claude)
     return this.commands.execute({
       principal, source, operation: 'harness.defaults.update', commandId: input.commandId,
       targetKey: 'harness-defaults', payload: input,
@@ -124,6 +131,7 @@ export class HarnessCatalogService {
             'Choose a complete preset before selecting its default.', 409)
           if (!next || (previous && !configure.has(harness)
             && isDeepStrictEqual(withAdvancedDefaults(previous), withAdvancedDefaults(next)))) continue
+          assertClaudeFullAccess(next)
           // Claude presets are configuration templates, like unqualified host
           // overrides. Exact-host proof is required separately at admission;
           // the model-free defaults checker cannot produce that native proof.
