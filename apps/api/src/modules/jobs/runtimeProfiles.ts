@@ -250,7 +250,10 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       const row=(await sql.query<{measurement:unknown;run_result:JobRuntimeQualificationResult|null;native_admission:unknown}>('select measurement,run_result,native_admission from job_runtime_qualification_approvals where id=$1',[id])).rows[0]!
       const measurement=row.measurement?JobRuntimeMeasurementRecordSchema.parse(row.measurement):null
       let readiness: { ready: boolean; reasons: string[] }
-      if (usesRetiredHarness(profile)) readiness = { ready: false, reasons: ['HARNESS_RETIRED'] }
+      if (usesRetiredHarness(profile)
+        || measurement?.schemaVersion === 2 && measurement.fingerprint.tools.some(tool => tool.kind === 'opencode')) {
+        readiness = { ready: false, reasons: ['HARNESS_RETIRED'] }
+      }
       else if (profile.status === 'qualified' && measurement && Date.parse(measurement.expiresAt) > Date.now()) {
         readiness = await this.producer.revalidate(sql, profile)
       } else {

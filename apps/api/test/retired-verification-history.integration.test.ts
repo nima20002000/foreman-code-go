@@ -85,6 +85,16 @@ it('preserves retired qualification profiles through HTTP and MCP and reports th
       headers: { authorization: `Bearer ${denied.token}` } })
     expect(deniedResponse.statusCode).toBe(403)
     expect(await snapshots()).toEqual(saved)
+    await f.database.pool.query('update job_runtime_profiles set record=$2::jsonb where id=$1',
+      [profile.id, JSON.stringify(qualified)])
+    const supportedCurrent = await snapshots()
+    const oldQualification = await client.callTool({ name: 'job_runtime_qualification_get',
+      arguments: { workspaceId, approvalId } })
+    expect(oldQualification.isError, JSON.stringify(oldQualification.content)).not.toBe(true)
+    expect(JobRuntimeQualificationReadRecordSchema.parse(oldQualification.structuredContent)).toMatchObject({
+      profile: qualified, approval, measurement, readiness: { ready: false, reasons: ['HARNESS_RETIRED'] },
+    })
+    expect(await snapshots()).toEqual(supportedCurrent)
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))
     await app.close()
