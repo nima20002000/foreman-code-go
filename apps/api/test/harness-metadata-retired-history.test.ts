@@ -47,8 +47,9 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
       expect(snapshot.launches.filter(row => row.lifecycle !== 'closed')).toHaveLength(1)
       const script = `import { NativeProcessRegistry } from './src/modules/harnesses/recovery/processRegistry.ts';
         process.stdout.write(JSON.stringify(new NativeProcessRegistry(process.argv[1]).snapshot().launches));`
+      // The full 10,000-row snapshot exceeds execFile's default output buffer.
       const restarted = await execute(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, root], {
-        cwd: new URL('../', import.meta.url), timeout: 20_000,
+        cwd: new URL('../', import.meta.url), timeout: 20_000, maxBuffer: 4 * 1024 * 1024,
       })
       const restored = JSON.parse(restarted.stdout) as { lifecycle: string; closureEvidence?: string }[]
       expect(restored).toHaveLength(10_000)
@@ -60,7 +61,8 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
       await expect(registry.closeRegistration(registry.scope('retired-owner-0'), randomUUID())).rejects.toMatchObject({ code: 'ENOENT' })
       expect(() => registry.reserveLaunch('unresolved-owner')).toThrow('active or unconfirmed')
     } finally { rmSync(root, { recursive: true, force: true }) }
-  }, 60_000)
+  // Every retirement fsyncs its receipts; slower disks need time for the full history.
+  }, 1_200_000)
 
   it('keeps the 10,000-launch scan bound while excluding compact receipts inside a live owner directory', () => {
     const root = mkdtempSync(join(tmpdir(), 'harness-live-bound-')), registry = new NativeProcessRegistry(root)
