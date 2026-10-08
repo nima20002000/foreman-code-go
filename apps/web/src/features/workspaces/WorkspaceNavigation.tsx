@@ -50,7 +50,7 @@ export type WorkspaceSection =
   | 'terminal'
   | 'settings'
 
-export type GlobalNavigationSection = 'terminal' | 'settings' | 'account'
+export type GlobalNavigationSection = 'terminal' | 'settings'
 
 export type WorkspaceNavigationEntry = Pick<Workspace, 'id' | 'name'>
 

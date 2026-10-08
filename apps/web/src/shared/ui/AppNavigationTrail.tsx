@@ -11,7 +11,7 @@ type Crumb = { label: string; to: string; search?: Record<string, unknown> }
 const sectionNames: Record<string, string> = {
   workflows: 'Workflows', settings: 'Settings', files: 'Project files', agents: 'Agents', jobs: 'Jobs',
   tasks: 'Tasks', runs: 'Runs', terminal: 'Terminal', browsers: 'Browsers', approvals: 'Approvals', location: 'Location',
-  harnesses: 'Harnesses', computers: 'Computers', skills: 'Skills', workspaces: 'Workspaces', account: 'Account',
+  harnesses: 'Harnesses', computers: 'Computers', skills: 'Skills', workspaces: 'Workspaces', general: 'General',
 }
 
 function BreadcrumbLink({ crumb }: { crumb: Crumb }) {

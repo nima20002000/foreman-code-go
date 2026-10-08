@@ -7,7 +7,7 @@ import { Alert } from '../shared/ui/nocturne'
 import { HarnessComputerScope } from '../features/settings/HarnessComputerScope'
 import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSettings'
 import { WorkspaceDefaultsSettings } from '../features/settings/WorkspaceDefaultsSettings'
-import { LocalAccount } from '../features/settings/LocalAccount'
+import { GeneralSettings } from '../features/settings/GeneralSettings'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
 import { SkillsLibrary } from '../features/skills/SkillsLibrary'
 import { NewSkillPage, SkillDetailPage } from '../features/skills/SkillPages'
@@ -61,10 +61,8 @@ export function SkillDetailRouteEntry() {
 export function WorkspaceDefaultsSettingsRouteEntry() {
   return <SettingsShell><WorkspaceDefaultsSettings /></SettingsShell>
 }
-export function AccountRouteEntry() {
-  return <WorkspaceShell workspaceId="workspace-1" activeGlobalSection="account" slots={{ main:
-    <div className="settings-page settings-experience"><LocalAccount /></div>,
-  }} />
+export function GeneralSettingsRouteEntry() {
+  return <SettingsShell><GeneralSettings /></SettingsShell>
 }
 
 export function ComputersSettingsRouteEntry() {

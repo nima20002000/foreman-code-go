@@ -195,6 +195,16 @@ export function GlobalSettingsRouteEntry() {
               title="Settings"
               description="Configure application preferences and connected capabilities."
             />
+            <h2 className="settings-group-heading" id="settings-preferences-heading">Preferences</h2>
+            <ul className="settings-card-list" aria-labelledby="settings-preferences-heading">
+              <li>
+                <Card className="settings-card">
+                  <Link to="/settings/general" className="settings-card-open">
+                    <SettingsCardBody icon="settings" title="General" description="Application preferences and chat retention" />
+                  </Link>
+                </Card>
+              </li>
+            </ul>
             <h2 className="settings-group-heading" id="settings-defaults-heading">Defaults</h2>
             <ul className="settings-card-list" aria-labelledby="settings-defaults-heading">
               <li>
