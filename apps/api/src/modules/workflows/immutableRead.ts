@@ -59,6 +59,24 @@ export function readImmutableAgentConfiguration(row: ImmutableAgentConfiguration
   return parsed.data
 }
 
+/** Saved history keeps exact topology and configuration identities even when a harness is retired. */
+export function readPinnedAgentConfigurations(version: SavedWorkflowVersion,
+  rows: ImmutableAgentConfigurationRow[]): AgentConfigurationVersion[] {
+  const pins = version.agentConfigurationVersionIds
+  const agentIds = new Set(version.definition.nodes.flatMap((node) => node.kind === 'job' ? [] : [node.agentId]))
+  const keys = Object.keys(pins)
+  if (keys.length !== agentIds.size || keys.some((id) => !agentIds.has(id))
+    || new Set(Object.values(pins)).size !== keys.length || rows.length !== keys.length) {
+    throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE', 'The immutable configurations do not match the pinned topology.', 409)
+  }
+  return rows.map((row) => {
+    const id = pins[row.agent_id]
+    if (id !== row.id) throw new DomainError('AGENT_CONFIGURATION_UNAVAILABLE',
+      'An immutable configuration does not match its pinned Agent.', 409)
+    return readImmutableAgentConfiguration(row, { id, workspaceId: version.workspaceId, agentId: row.agent_id })
+  })
+}
+
 export function readSavedWorkflowDefinition(row: { id: string; workspace_id: string; record: unknown },
   expected: { workspaceId: string; workflowId?: string }) {
   const parsed = SavedWorkflowDefinitionSchema.safeParse(row.record)

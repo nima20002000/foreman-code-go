@@ -7,7 +7,7 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
-import { readAcceptedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
+import { readAcceptedRepeatRunLocked, readRecordedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { readRepeatExecutionLocked } from './repeatPostgres.js'
 
 /** Same primary-pool immutable V3 reader as Start/owner recovery. This is Run
@@ -16,7 +16,7 @@ import { readRepeatExecutionLocked } from './repeatPostgres.js'
 export async function withCurrentRunRead<T>(pool: pg.Pool, principal: ManagementPrincipal,
   workspaceId: string, runId: string, action: 'runs:read' | 'runs:stop',
   work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, live: ManagementPrincipal) => Promise<T>,
-  readAcceptedRun = readAcceptedRepeatRunLocked): Promise<T> {
+  readAcceptedRun = action === 'runs:read' ? readRecordedRepeatRunLocked : readAcceptedRepeatRunLocked): Promise<T> {
   return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
     const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(
       'select workspace_id,workflow_id from runs where id=$1 and workspace_id=$2', [runId, workspaceId])).rows[0]

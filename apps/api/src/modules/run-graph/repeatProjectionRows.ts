@@ -12,7 +12,7 @@ import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'
 import { repeatSlotId, workActivationSlotId } from '../runs/repeatResolution.js'
-import { readImmutableWorkflowVersion, readImmutableAgentConfiguration,
+import { readImmutableWorkflowVersion, readPinnedAgentConfigurations,
   type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
 
 const conflict = (): never => { throw new RunGraphError('GRAPH_INVARIANT_VIOLATION') }
@@ -24,7 +24,16 @@ export function boundedRepeatRows<T>(rows: T[], limit: number): T[] {
 
 /** Private pins remain local. Only the caller's explicit whitelist reaches wire
  * schemas. This is a same-transaction read, not Start admission/authorization. */
-export async function readRepeatGraphPinsLocked(sql: GraphTransactionSql, input: RepeatGraphScopeV3) {
+export function readRepeatGraphPinsLocked(sql: GraphTransactionSql, input: RepeatGraphScopeV3) {
+  return readRepeatGraphPins(sql, input, 'executable')
+}
+
+export function readRecordedRepeatGraphPinsLocked(sql: GraphTransactionSql, input: RepeatGraphScopeV3) {
+  return readRepeatGraphPins(sql, input, 'recorded')
+}
+
+async function readRepeatGraphPins(sql: GraphTransactionSql, input: RepeatGraphScopeV3,
+  configurationPolicy: 'executable' | 'recorded') {
   assertGraphTransaction(sql)
   const scope = RepeatGraphScopeV3Schema.parse(input)
   const rows = await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string;
@@ -49,12 +58,8 @@ export async function readRepeatGraphPinsLocked(sql: GraphTransactionSql, input:
   const configs = await sql.query<ImmutableAgentConfigurationRow>(
     'select id,workspace_id,agent_id,version,record from agent_configuration_versions where id=any($1::text[]) order by id',
     [Object.values(version.agentConfigurationVersionIds)])
-  const configurations = configs.rows.map((record) => {
-    const id = version.agentConfigurationVersionIds[record.agent_id]
-    if (!id) return conflict()
-    return readImmutableAgentConfiguration(record, { id, workspaceId: scope.workspaceId, agentId: record.agent_id })
-  })
-  ExecutableWorkflowV3Schema.parse({ version, configurations })
+  const configurations = readPinnedAgentConfigurations(version, configs.rows)
+  if (configurationPolicy === 'executable') ExecutableWorkflowV3Schema.parse({ version, configurations })
   return { scope, run, version, configurations }
 }
 export const readRepeatRunStateLocked = readPublicRunStateLocked

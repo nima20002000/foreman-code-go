@@ -18,11 +18,12 @@ import { PostgresSettingsRepository } from '../../src/modules/settings/postgres.
 import { PostgresFoundationSettingsRepository } from '../../src/modules/settings/foundation.js'
 import { FoundationSettingsManagementService } from '../../src/modules/settings/management.js'
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
+import { RunGraphReadService } from '../../src/modules/run-graph/readService.js'
 import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
 
 /** Real authenticated transport and qualified production binding over the shared
  * provider-boundary fixture. No fake engine Start/Stop receipt or native proof. */
-export async function currentOperatorIntegration(options: Parameters<typeof checkpointRuntimeFixture>[2] & { agentManagement?: boolean } = {}) {
+export async function currentOperatorIntegration(options: Parameters<typeof checkpointRuntimeFixture>[2] & { agentManagement?: boolean; graphReads?: boolean } = {}) {
   const f = await checkpointRuntimeFixture(1, 1, options)
   const clients: Client[] = []
   const commands = new PostgresCommandCoordinator(f.db.pool), access = new PostgresAccessService(f.db.pool)
@@ -46,6 +47,7 @@ export async function currentOperatorIntegration(options: Parameters<typeof chec
     agents: new OperatorAgentMutationService(f.db.pool, commands, harnesses),
     history: new VersionHistoryService(f.db.pool),
   } })
+  if (options.graphReads) Object.assign(services, { runGraph: new RunGraphReadService(f.db.pool, { qualifiedReads: true }) })
   const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
   try {
     const address = await app.listen({ host: '127.0.0.1', port: 0 })

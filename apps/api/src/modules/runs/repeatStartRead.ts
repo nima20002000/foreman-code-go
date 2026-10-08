@@ -7,7 +7,7 @@ import {
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import {
-  IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, readImmutableAgentConfiguration,
+  IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, readPinnedAgentConfigurations,
   type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow,
 } from '../workflows/immutableRead.js'
 
@@ -30,17 +30,27 @@ interface RunRow {
  * Do not replace the central repository's old 1/2 parser with a permissive union;
  * its explicit third arm must call this after acquiring the appropriate locks. */
 export function readAcceptedRepeatRunLocked(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
-  return readAcceptedRepeatRun(sql, runId, 'for share of r')
+  return readAcceptedRepeatRun(sql, runId, 'for share of r', 'executable')
+}
+
+/** History validates the saved pins without applying today's execution policy to old configurations. */
+export function readRecordedRepeatRunLocked(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
+  return readAcceptedRepeatRun(sql, runId, 'for share of r', 'recorded')
 }
 
 /** The Run, physical columns and lifecycle flags share one committed SQL cut.
  * Remaining rows are immutable pins. This read grants no mutation authority. */
 export function readAcceptedRepeatRunSnapshot(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
-  return readAcceptedRepeatRun(sql, runId, '')
+  return readAcceptedRepeatRun(sql, runId, '', 'executable')
+}
+
+/** Unlocked committed history snapshot; it grants no execution authority. */
+export function readRecordedRepeatRunSnapshot(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
+  return readAcceptedRepeatRun(sql, runId, '', 'recorded')
 }
 
 function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
-  lock: '' | 'for share of r'): Promise<AcceptedRepeatRunSnapshot> {
+  lock: '' | 'for share of r', configurationPolicy: 'executable' | 'recorded'): Promise<AcceptedRepeatRunSnapshot> {
   return timeRuntimeOperation('db', 'snapshot.read_run', async () => {
     assertGraphTransaction(sql)
     const found = await sql.query<RunRow>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,
@@ -75,10 +85,8 @@ function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
       throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'A v3 Run cannot execute a legacy/one-shot version.', 409)
     }
     SavedRunVersionSnapshotSchema.parse({ run, version })
-    const configurations = related.configurations.map((configuration) => readImmutableAgentConfiguration(configuration, {
-      id: run.agentConfigurationVersionIds[configuration.agent_id]!, workspaceId: run.workspaceId, agentId: configuration.agent_id,
-    }))
-    ExecutableWorkflowV3Schema.parse({ version, configurations })
+    const configurations = readPinnedAgentConfigurations(version, related.configurations)
+    if (configurationPolicy === 'executable') ExecutableWorkflowV3Schema.parse({ version, configurations })
     return { run, version, configurations, stopRequested: row.stopped, cleanupPending: row.cleanup_pending }
   }, { runId })
 }

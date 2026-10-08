@@ -12,7 +12,7 @@ import {
 import { withExclusiveGraphConnection, type GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
 import {
-  readRepeatGraphPinsLocked, readRepeatRunStateLocked, readRepeatGraphOccurrencesLocked,
+  readRecordedRepeatGraphPinsLocked, readRepeatRunStateLocked, readRepeatGraphOccurrencesLocked,
   readRepeatGraphExecutionsLocked, readRepeatGraphBindingsLocked, readRepeatGraphResolutionsLocked,
   readRepeatGraphResultsLocked, readRepeatGraphDecisionsLocked,
 } from './repeatProjectionRows.js'
@@ -63,7 +63,7 @@ function reset(scope: RepeatGraphScopeV3, requestedSequence: string, head: Repea
  * One bounded primary repeatable-read cut; no second source of live facts. */
 async function verifiedRepeatCut(sql: GraphTransactionSql, scope: RepeatGraphScopeV3, head: RepeatGraphHead): Promise<RepeatGraphSnapshotV3> {
   try {
-    const { version } = await readRepeatGraphPinsLocked(sql, scope)
+    const { version } = await readRecordedRepeatGraphPinsLocked(sql, scope)
     const run = await readRepeatRunStateLocked(sql, scope)
     const occurrences = await readRepeatGraphOccurrencesLocked(sql, scope)
     const executions = await readRepeatGraphExecutionsLocked(sql, scope)
@@ -71,7 +71,7 @@ async function verifiedRepeatCut(sql: GraphTransactionSql, scope: RepeatGraphSco
     const resolutions = await readRepeatGraphResolutionsLocked(sql, scope)
     const results = await readRepeatGraphResultsLocked(sql, scope, executions)
     const decisions = await readRepeatGraphDecisionsLocked(sql, scope)
-    const publicView = await readPublicProjectionLocked(sql, scope)
+    const publicView = await readPublicProjectionLocked(sql, scope, version)
     await assertPublicProjectionCommittedLocked(sql, scope, head.head_sequence, publicView)
     const data = { ...publicView, run, occurrences, executions, bindings, resolutions, results, decisions }
     if (graphJsonBytes(data) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
