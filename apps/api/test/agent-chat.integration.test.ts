@@ -673,6 +673,46 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
     }
   })
 
+  it('rejects mode-changing steering through HTTP and authenticated MCP without admitting another turn', async () => {
+    const { service } = makeService()
+    const transport = await f4Transport(service)
+    try {
+      const initial = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'Seed chat', null))
+      const id = initial.state.conversation!.id
+      const read = () => service.read(writer, fixture.scope.workspaceId, query(codexNode))
+      await settled(service, read)
+      const native = FakeNative.all[0]!
+      native.hold = true
+      await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'Active regular turn', id))
+      await vi.waitFor(() => expect(native.activeTurn).toBeTruthy())
+      const mcp = await transport.connect(writerToken)
+      const reader = await transport.connect(readOnlyToken)
+      const url = `/api/workspaces/${fixture.scope.workspaceId}/agent-chat/messages`
+      for (const content of ['Plan steering task', '/plan Plan steering task']) {
+        const input = request(codexNode, content, id, { intent: 'steer', sessionMode: 'plan',
+          expectedNativeTurnId: native.activeTurn! })
+        const http = await transport.app.inject({ method: 'POST', url,
+          headers: { authorization: `Bearer ${writerToken}` }, payload: input })
+        expect(http.statusCode, http.body).toBe(422)
+        expect(http.json().error.code).toBe('SESSION_STEER_MODE_UNSUPPORTED')
+        const result = await mcp.callTool({ name: 'agent_chat_send', arguments: {
+          workspaceId: fixture.scope.workspaceId, request: { ...input, requestId: randomUUID() } } })
+        expect(result.isError).toBe(true)
+        expect(JSON.stringify(result)).toContain('SESSION_STEER_MODE_UNSUPPORTED')
+        await expectMcpAccessDenied(reader.callTool({ name: 'agent_chat_send', arguments: {
+          workspaceId: fixture.scope.workspaceId, request: { ...input, requestId: randomUUID() } } }))
+      }
+      expect(native.steers).toEqual([])
+      const persisted = AgentChatStateSchema.parse((await reader.callTool({ name: 'agent_chat_read', arguments: {
+        workspaceId: fixture.scope.workspaceId, query: query(codexNode) } })).structuredContent)
+      expect(persisted.turns).toHaveLength(2)
+      expect(persisted.messages.filter(message => message.role === 'user').map(message => message.content))
+        .toEqual(['Seed chat', 'Active regular turn'])
+      native.finish()
+      await settled(service, read)
+    } finally { await transport.close() }
+  })
+
   it('serves HTTP and Operator MCP on the same service with scope checks and persisted readback', async () => {
     const { service } = makeService()
     const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },

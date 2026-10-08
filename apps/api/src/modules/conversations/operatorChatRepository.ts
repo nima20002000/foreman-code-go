@@ -560,7 +560,7 @@ export class PostgresOperatorConversationRepository {
         }
         // Receipt-only replay above does not require still-live bytes. A fresh admission or
         // definitely-failed relaunch does; hold lifecycle locks through message/receipt commit.
-        if (!prior) await admitSessionMessage(client, id, input.sessionMode)
+        if (!prior) await admitSessionMessage(client, id, input)
         await validateMessageAttachments(client, id, input.attachments)
         if (!prior) {
           await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash,operator_configuration_version_id)

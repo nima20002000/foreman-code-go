@@ -11,6 +11,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { DomainError } from '../../errors.js'
 import { NativeConversationControlCommands } from '../nativeControlCommands.js'
+import { componentLogger } from '../../diagnostics/logger.js'
 
 export interface SessionControlBinding {
   conversationId: string
@@ -289,7 +290,7 @@ export class SessionControlStore {
     if (budget !== null && capacity !== null && budget > capacity) {
       throw new DomainError('SESSION_BUDGET_TOO_LARGE', 'The budget exceeds this model’s supported capacity.', 422)
     }
-    if (preferences.contextBudget !== null && state.context?.usedTokens !== null
+    if (input.kind === 'preferences' && preferences.contextBudget !== null && state.context?.usedTokens !== null
       && state.context?.usedTokens !== undefined && preferences.contextBudget < state.context.usedTokens) {
       throw new DomainError('SESSION_BUDGET_TOO_SMALL', 'Compact this session before lowering its context budget.', 422)
     }
@@ -323,28 +324,41 @@ export class SessionControlStore {
     return result.rows[0] ? SessionControlStateSchema.parse(result.rows[0].record).desired : undefined
   }
 
-  async appliedMode(conversationId: string, mode: SessionControlState['desiredMode']) {
-    const result = await this.pool.query<{ record: unknown }>(
-      'select record from conversation_session_controls where conversation_id=$1', [conversationId])
-    if (!result.rows[0]) return
-    const state = SessionControlStateSchema.parse(result.rows[0].record)
-    state.appliedMode = mode
-    const nativeDefault = SessionPreferencesSchema.parse({})
-    if (!state.applied && JSON.stringify(state.desired) === JSON.stringify(nativeDefault)) state.applied = nativeDefault
-    if (state.desiredMode === mode && state.applied && JSON.stringify(state.applied) === JSON.stringify(state.desired)) {
-      state.applicability = 'applied'
-    }
-    await this.save(state)
+  private async recordAppliedSettings(conversationId: string,
+    target: { requestId: string; nativeSessionId: string | null }, profileKey: string,
+    applied: Pick<SessionControlState, 'appliedMode'>) {
+    // Merge only the acknowledgment while the same session and request still own the conversation.
+    await this.pool.query(`with target as materialized (
+      select id from operator_conversations where id=$1 and active_request_id=$2
+        and native_session_id is not distinct from $3::text and deleted_at is null for update
+    ) update conversation_session_controls as controls
+      set record=controls.record || $5::jsonb || jsonb_build_object(
+        'revision', (controls.record->>'revision')::bigint+1,
+        'applicability', case when controls.record->>'desiredMode'=$5::jsonb->>'appliedMode'
+          and controls.record->'desired'=controls.record->'applied'
+          then 'applied' else controls.record->>'applicability' end)
+      from target where controls.conversation_id=target.id and controls.record->>'profileKey'=$4`,
+    [conversationId, target.requestId, target.nativeSessionId, profileKey, JSON.stringify(applied)])
   }
 
-  async turnSettings(conversationId: string, selectedMode?: SessionControlState['desiredMode']) {
+  async turnSettings(conversationId: string, target: { requestId: string; nativeSessionId: string | null },
+    selectedMode?: SessionControlState['desiredMode']) {
     await this.assertSendAllowed(conversationId)
     const result = await this.pool.query<{ record: unknown }>(
       'select record from conversation_session_controls where conversation_id=$1', [conversationId])
     if (!result.rows[0]) return selectedMode ? { sessionMode: selectedMode } : {}
     const state = SessionControlStateSchema.parse(result.rows[0].record)
     const sessionMode = selectedMode ?? state.desiredMode
-    return { sessionMode, sessionPreferences: state.desired, onSettingsApplied: () => this.appliedMode(conversationId, sessionMode) }
+    const applied = { appliedMode: sessionMode }
+    return { sessionMode, sessionPreferences: state.desired, onSettingsApplied: async () => {
+      try {
+        await this.recordAppliedSettings(conversationId, target, state.profileKey, applied)
+      } catch (error) {
+        // Bookkeeping failure cannot turn native acceptance into a failed message.
+        componentLogger('db').warn({ err: error, conversationId, requestId: target.requestId },
+          'Could not record applied session settings')
+      }
+    } }
   }
 
   private async claimCompaction(state: SessionControlState): Promise<void> {

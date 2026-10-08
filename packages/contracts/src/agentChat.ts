@@ -208,9 +208,10 @@ export const SendAgentChatMessageRequestSchema = z.object({
   ...MessageAttachmentFields,
   context: AgentChatQuerySchema,
   content: z.string().trim().max(32000),
-  sessionMode: z.enum(['regular', 'plan']).optional(),
+  sessionMode: z.enum(['regular', 'plan']).optional()
+    .describe('Selects the mode for a new turn. Steering may only retain the active applied mode; mode changes and /plan tasks require next_turn or interrupt_and_send.'),
   intent: AgentChatIntentSchema.default("next_turn")
-    .describe("steer supports text only; send attachments with next_turn or interrupt_and_send"),
+    .describe("steer supports text only in the active mode; use next_turn or interrupt_and_send for mode changes, /plan tasks or attachments"),
   /** Null = the client saw no conversation (first message). A mismatch returns 409 context_stale. */
   expectedConversationId: IdSchema.nullable(),
   /** Required for steer when capabilities.steer is "native_expected_turn". */
