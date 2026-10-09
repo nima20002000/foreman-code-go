@@ -92,16 +92,16 @@ export class PostgresSourceService implements SourceAdmissionPort {
   private scope(deviceId: string | null, installationId: string | null, filesystem: RootBinding['filesystem']): string {
     return `${this.mainId}:${deviceId ?? 'original-main'}:${installationId ?? this.mainId}:${filesystem.device}:${filesystem.mountId}`
   }
-  async releaseUnusedSnapshots(report?: (error: unknown) => void): Promise<void> {
+  async releaseUnusedSnapshots(report?: (error: unknown) => void, underPressure = false): Promise<void> {
     const filesystem = await this.store.storageIdentity()
-    await releaseUnusedSourceSnapshots(this.pool, this.store, this.scope(null, null, filesystem), report)
+    await releaseUnusedSourceSnapshots(this.pool, this.store, this.scope(null, null, filesystem), report, underPressure)
   }
   private async captureTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     try {
       return await this.transaction(work)
     } catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'SOURCE_CAPACITY') throw error
-      await this.releaseUnusedSnapshots()
+      await this.releaseUnusedSnapshots(undefined, true)
       return this.transaction(work)
     }
   }

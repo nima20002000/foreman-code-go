@@ -6,7 +6,9 @@ import type { PrivateSourceSnapshotStore } from './store.js'
 export const SOURCE_RETENTION_SECONDS = 3600
 
 /** Current profiles retain their source so qualification can still be requested. */
-async function releasable(sql: GraphSqlClient, snapshotId: string): Promise<boolean> {
+/** Under storage pressure, a snapshot that nothing actively uses is released before its retention window ends:
+ * otherwise a busy day of commits fills Main's capture budget and blocks every new CI request. */
+async function releasable(sql: GraphSqlClient, snapshotId: string, underPressure = false): Promise<boolean> {
   const result = await sql.query<{ releasable: boolean }>(`with uses(active,used_at,retention) as (
     select e.record#>>'{process,phase}' is distinct from 'terminal'
         or e.record#>>'{process,processStopped}' is distinct from 'true'
@@ -76,10 +78,10 @@ async function releasable(sql: GraphSqlClient, snapshotId: string): Promise<bool
     select false,(b.record->>'boundAt')::timestamptz,null::integer
     from source_root_bindings b where b.snapshot_id::text=$1
   ) select not coalesce(bool_or(active),false)
-      and greatest(max(used_at),(s.record->>'approvedAt')::timestamptz)
-        + make_interval(secs=>coalesce(max(retention),$2)) < clock_timestamp() as releasable
+      and ($3::boolean or greatest(max(used_at),(s.record->>'approvedAt')::timestamptz)
+        + make_interval(secs=>coalesce(max(retention),$2)) < clock_timestamp()) as releasable
     from source_snapshots s left join uses on true where s.snapshot_id::text=$1 group by s.record`,
-  [snapshotId, SOURCE_RETENTION_SECONDS])
+  [snapshotId, SOURCE_RETENTION_SECONDS, underPressure])
   return result.rows[0]?.releasable === true
 }
 
@@ -102,12 +104,12 @@ async function lockSnapshot(sql: pg.PoolClient, candidate: Candidate, scopeId: s
 }
 
 async function releaseSnapshot(pool: pg.Pool, store: Pick<PrivateSourceSnapshotStore, 'remove'>,
-  scopeId: string, candidate: Candidate): Promise<void> {
+  scopeId: string, candidate: Candidate, underPressure: boolean): Promise<void> {
   const sql = await pool.connect()
   try {
     await sql.query('begin')
     const snapshot = await lockSnapshot(sql, candidate, scopeId)
-    if (!snapshot || (snapshot.availability === 'retained' && !await releasable(sql, candidate.snapshot_id))) {
+    if (!snapshot || (snapshot.availability === 'retained' && !await releasable(sql, candidate.snapshot_id, underPressure))) {
       await sql.query('commit')
       return
     }
@@ -132,14 +134,14 @@ async function releaseSnapshot(pool: pg.Pool, store: Pick<PrivateSourceSnapshotS
 
 export async function releaseUnusedSourceSnapshots(pool: pg.Pool,
   store: Pick<PrivateSourceSnapshotStore, 'remove'>, scopeId: string,
-  report?: (error: unknown) => void): Promise<void> {
+  report?: (error: unknown) => void, underPressure = false): Promise<void> {
   const candidates = await pool.query<Candidate>(`select a.snapshot_id,a.requested_by,a.command_id
     from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
     join source_storage_reservations r on r.owner_kind='capture' and r.owner_id=a.snapshot_id::text
     where a.state='approved' and r.state='retained' and r.scope_id=$1 order by a.created_at`, [scopeId])
   for (const candidate of candidates.rows) {
     try {
-      await releaseSnapshot(pool, store, scopeId, candidate)
+      await releaseSnapshot(pool, store, scopeId, candidate, underPressure)
     } catch (error) {
       if (!report) throw error
       report(error)

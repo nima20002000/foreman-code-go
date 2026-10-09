@@ -133,7 +133,8 @@ it('real Codex medium runs current files on Dexter, reads logs and artifacts and
     const placement = RunPlacementGetResultSchema.parse(await call(writer, 'run_node_placement_get', {
       workspaceId: input.workspaceId, workflowId: graph.id, runId, nodeId,
     }))
-    expect(placement.readback).toMatchObject({ evidence: 'accepted', placement: { hostRef: mainHost } })
+    // A workflow without Agent placements runs on inherited Main and keeps no per-node binding (run_node_placement_get contract).
+    expect(placement.readback).toEqual({ evidence: 'legacy_missing', originalMainInstallationId: null })
     const queued = JobQueuePageSchema.parse(await call(writer, 'job_queue_list', {
       workspaceId: input.workspaceId, initiatingExecutionId: execution.id,
     }))

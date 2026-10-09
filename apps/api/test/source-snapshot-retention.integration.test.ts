@@ -195,6 +195,31 @@ it('reclaims older terminal snapshots before capture capacity fails and exposes 
     expect(JSON.stringify(deniedApproval.content)).toContain('ACCESS_DENIED')
   }, 120_000)
 
+it('releases recently finished snapshots when a new capture would exceed capacity, never an active Job source', async () => {
+  fixture = await setup()
+  const f = fixture
+  const active = (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source
+  await f.seedJob(active)
+  const held = await f.reservation(active)
+  await f.sources.reservations.retain(f.pool, held.record, 'retained')
+  let chargedBytes = held.record.reservedBytes
+  const recent = []
+  // Every finished Job is inside its retention window; before pressure release the next capture failed.
+  while (chargedBytes <= SOURCE_AGGREGATE_LIMITS.bytes) {
+    const approved = await f.approve(SOURCE_RETENTION_SECONDS * 3)
+    recent.push(approved.source)
+    await f.finishJob(await f.seedJob(approved.source), new Date().toISOString())
+    const reservation = await f.reservation(approved.source)
+    await f.sources.reservations.retain(f.pool, reservation.record, 'retained')
+    chargedBytes += reservation.record.reservedBytes
+  }
+  expect(recent.length).toBeGreaterThan(1)
+  expect((await f.reservation(recent[0]!)).state).toBe('reclaimed')
+  expect((await f.reservation(active)).state).toBe('retained')
+  expect((await f.read(active)).availability).toBe('retained')
+  expect((await f.read(recent.at(-1)!)).availability).toBe('retained')
+}, 120_000)
+
 it('keeps active Jobs, recent terminal use, longer Job retention and a qualified verification profile retained', async () => {
   fixture = await setup()
   const f = fixture

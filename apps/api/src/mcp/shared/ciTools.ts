@@ -13,6 +13,7 @@ import type { PostgresCommandCoordinator } from '../../modules/commands/postgres
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { DomainError } from '../../modules/errors.js'
 import { toolFailure, toolResult } from './results.js'
+import { logOperatorToolFailure } from '../operator/invoke.js'
 
 export const CI_CAPABILITY_DETAIL = 'ci_run captures tracked files at the requested commit, the Agent’s accepted worktree, or Main project HEAD, '
   + 'reuses a workspace/suite Auto verification definition and queues build capacity. Retrying commandId returns the original ticket. '
@@ -57,6 +58,8 @@ export function registerCiTools(server: McpServer, context: CiContext) {
   const invoke = async (name: CiTool, work: () => Promise<unknown>) => {
     try { return toolResult(await work()) }
     catch (error) {
+      // Callers only see INTERNAL_ERROR; keep the cause in the server log.
+      logOperatorToolFailure(name, error)
       if (error instanceof DomainError && [401, 403, 404].includes(error.status)) {
         await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
       } else {
