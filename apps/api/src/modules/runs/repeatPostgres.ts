@@ -1005,6 +1005,7 @@ export class RepeatRunRepository {
         if (successor) await this.putOccurrence(context, successor)
         if (exported) await this.putResolution(context, exported, true)
       })
+      if (decision) return { kind: 'resolved', resolution }
       return { kind: 'accepted', resolution }
     })
   }

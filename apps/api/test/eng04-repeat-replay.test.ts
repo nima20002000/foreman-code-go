@@ -58,8 +58,10 @@ describe('NIM-2648 ENG04-D replay and retry separation', () => {
     }).toEqual(countsBeforeReplay)
 
     const review = await harness.admit(occurrence, 'review', 'raw-review-replay-1')
-    harness.finish(review.id, repeatExitOutput(1, 'issues'))
-    await harness.accept(review.id)
+    const completedReview = harness.finish(review.id, repeatExitOutput(1, 'issues'))
+    expect(await harness.accept(review.id)).toMatchObject({ kind: 'resolved', resolution: { value: {
+      resolution: 'succeeded', acceptedResultDigest: repeatDigest(completedReview.result),
+    } } })
     const firstTransition = await harness.store.transition(occurrence.identity.occurrenceId)
     const publications = harness.state().publications.length
     const secondTransition = await harness.store.transition(occurrence.identity.occurrenceId)

@@ -286,8 +286,9 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // failed intent retains the owner for the same shutdown retry.
       if (this.restartIntent) await this.restartIntent
       // Wait only for captured native closure, never shutdownTask (which drains
-      // this drive). Failed closure retains the original owner for its retry.
-      if (this.restartClosure) await this.restartClosure
+      // this drive). A rejected closure is explicit uncertainty reported by
+      // shutdown; release still drains G1 writes without rewriting Run history.
+      if (this.restartClosure) await this.restartClosure.catch(() => undefined)
       // Drains in-flight G1 writes. Old captures cannot write after release.
       if (this.activeOwners.get(runId) === owner) this.activeOwners.delete(runId)
       await owner.release()
@@ -443,13 +444,11 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       await this.restartIntent
       this.restartClosure = this.nativeExecutions.closeForRestart()
       for (const controller of this.activeRuns.values()) controller.abort(reason)
-      // Drive finalizers wait for restart closure before releasing their owners.
-      // Start their drain deadline after that dependency has settled.
-      const closure = await Promise.allSettled([this.restartClosure])
-      const outcomes = [...closure, ...await Promise.allSettled([
+      const outcomes = await Promise.allSettled([
+        this.restartClosure,
         withCleanupDeadline(async () => { await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()]) }),
         ...this.cleanupTasks.values(),
-      ])]
+      ])
       const errors = outcomes.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Workflow restart closure or task draining remains unconfirmed.')
       // A naturally finished drive may have retained its owner after a failed

@@ -19,24 +19,15 @@ function deferred() {
 
 // Current engine and checkpoint inspection; recording repository/native ports.
 // This isolates shutdown ordering and does not claim database or provider proof.
-for (const uncertain of [false, true]) test(`restart retains owner until closure succeeds${uncertain ? ' after a failed attempt' : ''}`, async () => {
+for (const uncertain of [false, true]) test(`restart holds owner until captured native closure ${uncertain ? 'rejects' : 'completes'}`, async () => {
   const f = makeCurrentWorkflowFixture('restart-order', 'single')
   const entered = deferred(), closure = deferred(), events: string[] = []
-  let released = false
-  const owner = {
-    runId: f.run.id,
-    assertOwned() { assert.equal(released, false) },
-    release: async () => {
-      released = true
-      events.push('release')
-    },
-  }
+  const owner = { runId: f.run.id, assertOwned() {}, release: async () => { events.push('release') } }
   const runs = {
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
     get: async (runId: string) => { assert.equal(runId, f.run.id); return f.run },
     requestCleanup: async (runId: string, actual: typeof owner) => {
       assert.equal(runId, f.run.id); assert.equal(actual, owner); events.push('cleanup-intent')
-      actual.assertOwned()
     },
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations,
       stopRequested: false, cleanupPending: false }),
@@ -48,7 +39,6 @@ for (const uncertain of [false, true]) test(`restart retains owner until closure
       return false
     }),
     closeForRestart: vi.fn(async () => {
-      owner.assertOwned()
       events.push('close-start')
       try { await closure.promise } finally { events.push('close-settled') }
     }),
@@ -84,12 +74,13 @@ for (const uncertain of [false, true]) test(`restart retains owner until closure
   else closure.resolve()
   await shutdownResult
   await activeResult
-  assert.equal(released, !uncertain)
+  assert(events.indexOf('close-settled') < events.indexOf('release'))
+  assert.equal(events.filter((event) => event === 'release').length, 1)
   assert.equal(native.cancelRun.mock.calls.length, 0)
   assert.equal(native.finishRun.mock.calls.length, 0)
   await assert.rejects(engine.start(f.run.id), { code: 'ENGINE_CLOSING' })
   if (uncertain) {
-    native.closeForRestart.mockImplementationOnce(async () => { owner.assertOwned() })
+    native.closeForRestart.mockResolvedValueOnce(undefined)
     const retry = engine.shutdown()
     assert.notEqual(retry, shutdown)
     assert.equal(engine.shutdown(), retry)
@@ -99,8 +90,6 @@ for (const uncertain of [false, true]) test(`restart retains owner until closure
     assert.equal(native.finishRun.mock.calls.length, 0)
     await assert.rejects(engine.start(f.run.id), { code: 'ENGINE_CLOSING' })
   }
-  assert(events.indexOf('close-settled') < events.indexOf('release'))
-  assert.equal(events.filter((event) => event === 'release').length, 1)
 })
 
 

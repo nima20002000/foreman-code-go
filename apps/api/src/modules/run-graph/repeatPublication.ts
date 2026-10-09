@@ -88,7 +88,8 @@ async function assertPersistedFact(sql: GraphTransactionSql, scope: RepeatGraphS
       return
     }
     case 'repeat.result.accepted': {
-      const [execution] = await readRepeatGraphExecutionsLocked(sql, scope, [fact.result.execution.executionId])
+      const [execution] = await readRepeatGraphExecutionsLocked(sql, scope,
+        { executionIds: [fact.result.execution.executionId] })
       const row = (await sql.query<{ result_digest: string; occurrence_id: string | null }>(
         'select result_digest,occurrence_id from run_repeat_results where run_id=$1 and execution_id=$2',
         [scope.runId, fact.result.execution.executionId])).rows[0]
@@ -191,7 +192,8 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
             const metadata: RepeatGraphFactV3[] = []
             for (const fact of facts) {
               if (fact.type === 'repeat.execution.queued') {
-                const [execution] = await readRepeatGraphExecutionsLocked(sql, scope, [fact.execution.executionId])
+                const [execution] = await readRepeatGraphExecutionsLocked(sql, scope,
+                  { executionIds: [fact.execution.executionId], version })
                 if (!execution || execution.state !== 'queued' || execution.inputDigest !== fact.inputDigest
                   || fact.ref.nodeId !== fact.execution.workflowNodeId
                   || !same(execution.identity, qualifyRepeatGraphExecution(fact.execution, fact.ref.occurrence))) return fail()
@@ -221,7 +223,7 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
         checkNative(change)
         let effect: RepeatGraphEffectV3 | null = null
         if (change.kind === 'launch') {
-          const [before] = await readRepeatGraphExecutionsLocked(sql, scope, [change.next.id])
+          const [before] = await readRepeatGraphExecutionsLocked(sql, scope, { executionIds: [change.next.id], version })
           if (!before) return fail()
           const claim = repeatLaunchClaim(scope, change.ref, change.next, before.inputDigest)
           if (!same(claim, change.source)) return fail()
@@ -229,7 +231,7 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
         }
         const evidence = { sourceKind: 'execution' as const, sourceId: change.sourceId, sourceRevision: change.sourceRevision }
         const project = async (): Promise<RepeatGraphFactV3[]> => {
-          const [execution] = await readRepeatGraphExecutionsLocked(sql, scope, [change.next.id])
+          const [execution] = await readRepeatGraphExecutionsLocked(sql, scope, { executionIds: [change.next.id], version })
           if (!execution || !same(execution.identity, qualifyRepeatGraphExecution(repeatExecutionIdentity(change.next), change.ref.occurrence))
             || execution.state !== change.next.state || execution.resultOutcome !== (change.next.result?.outcome ?? null)) return fail()
           const facts: RepeatGraphFactV3[] = [{ type: 'repeat.execution', execution }]

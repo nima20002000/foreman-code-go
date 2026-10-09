@@ -131,6 +131,7 @@ export interface RepeatGraphSourceChange {
 export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScope> {
   readonly sql: GraphTransactionSql
   readonly scope: S
+  readonly #hasJobNodes: boolean
   readonly #sources = new Map<string, StagedSource>()
   readonly #effects = new Map<string, StagedEffect>()
   #bytes = 0
@@ -139,10 +140,11 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
   readonly #ownerCommitChecks = new WeakMap<RunOwnership, (expected: readonly { ownerId: string; fence: string }[]) => Promise<void>>()
   #finalized = false
   #receipt: GraphPublicationReceipt = { sequence: null, batchId: null, kind: 'none' }
-  constructor(key: symbol, sql: GraphTransactionSql, scope: S) {
+  constructor(key: symbol, sql: GraphTransactionSql, scope: S, version: { hasJobNodes: boolean }) {
     if (key !== constructionKey) throw new RunGraphError('GRAPH_TRANSACTION_CLOSED')
     this.sql = sql
     this.scope = Object.freeze({ ...scope })
+    this.#hasJobNodes = version.hasJobNodes
     beforeGraphCommit(sql, () => timeRuntimeOperation('db', 'graph.finalize', () => this.finalize(),
       { runId: this.scope.runId }))
   }
@@ -674,7 +676,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
           || canonicalGraphJson(final.fact) !== canonicalGraphJson(current.fact)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
       })
     }
-    const jobChanges = await workflowJobGraphSourceChangesLocked(this.sql, this.scope)
+    const jobChanges = this.#hasJobNodes ? await workflowJobGraphSourceChangesLocked(this.sql, this.scope) : []
     for (const change of jobChanges) {
       const executionId = change.fact.execution.identity.executionId
       const published = [...this.#sources.values()].some(source => source.events.some(({ fact }) => {
@@ -809,8 +811,10 @@ export async function openRunGraphPublication<S extends CanonicalRunGraphScope>(
   try {
     const scope = CanonicalRunGraphScopeSchema.parse(input) as S
     if (publications.has(sql)) throw new RunGraphError('GRAPH_TRANSACTION_NESTED')
-    const found = await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string; execution_semantics_version: number }>(
-      `select r.workspace_id,r.workflow_id,r.workflow_version_id,v.execution_semantics_version
+    const found = await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string;
+      execution_semantics_version: number; has_job_nodes: boolean }>(
+      `select r.workspace_id,r.workflow_id,r.workflow_version_id,v.execution_semantics_version,
+         v.record->'definition'->'nodes' @> '[{"kind":"job"}]'::jsonb as has_job_nodes
        from runs r join workflow_versions v on v.id=r.workflow_version_id
        where r.id=$1 for no key update of r`, [scope.runId],
     )
@@ -828,7 +832,7 @@ export async function openRunGraphPublication<S extends CanonicalRunGraphScope>(
       const priorRun = await readRepeatRunSourceLocked(sql, scope)
       if (!priorRun.replayed) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
       await assertPublicProjectionCommittedLocked(sql, scope, head.rows[0].sequence)
-      if ((await workflowJobGraphSourceChangesLocked(sql, scope)).length) {
+      if (run.has_job_nodes && (await workflowJobGraphSourceChangesLocked(sql, scope)).length) {
         throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
       }
     } else {
@@ -836,7 +840,7 @@ export async function openRunGraphPublication<S extends CanonicalRunGraphScope>(
         'select xmin=pg_current_xact_id_if_assigned()::xid and created_at=transaction_timestamp() as fresh from runs where id=$1', [scope.runId])).rows[0]
       if (!initialize || initialize.historyCoverage !== 'from_admission' || inserted?.fresh !== true) throw new RunGraphError('GRAPH_NOT_INITIALIZED')
     }
-    const publication = new RunGraphPublication(constructionKey, sql, scope)
+    const publication = new RunGraphPublication(constructionKey, sql, scope, { hasJobNodes: run.has_job_nodes })
     publications.set(sql, publication)
     return publication
   } catch (error) { poisonGraphTransaction(sql); throw error }

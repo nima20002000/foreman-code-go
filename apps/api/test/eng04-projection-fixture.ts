@@ -202,7 +202,8 @@ export class ProjectionDatabase {
         "select decision_id,occurrence_id,exit_execution_id,result_digest,record-'resultData' as metadata",
       ]) if (q.startsWith(prefix)) return result()
       if (q.startsWith('select r.workspace_id')) return result([{ workspace_id: this.scope.workspaceId, workflow_id: this.scope.workflowId,
-        workflow_version_id: this.scope.workflowVersionId, execution_semantics_version: this.scope.executionSemanticsVersion }])
+        workflow_version_id: this.scope.workflowVersionId, execution_semantics_version: this.scope.executionSemanticsVersion,
+        has_job_nodes: this.fixture.version.definition.nodes.some(node => node.kind === 'job') }])
       if (q.startsWith('select h.head_sequence')) return result(values[0] !== this.scope.runId || values[1] !== this.scope.workspaceId
         || values[2] !== this.scope.workflowId || values[3] !== this.scope.workflowVersionId || this.scope.executionSemanticsVersion !== 3 ? [] : [{ head_sequence: this.initialized ? String(s.head) : null,
         retention_floor: String(s.floor), protocol_version: this.protocolVersion, history_coverage: 'from_admission' }])

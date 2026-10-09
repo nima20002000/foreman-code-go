@@ -79,68 +79,6 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
     terminalTurn: { correlationId: 'execution:execution', providerId: 'native-turn', result } }
 }
 
-describe('remote native restart recovery', () => {
-  it('requires persisted recovery before releasing an unacknowledged preparation', async () => {
-    const f = setup(() => ({ events: [], pendingInteractions: [] }))
-    f.request.mockRejectedValueOnce(new Error('Preparation channel disconnected'))
-    await expect(f.proxy.createSession(f.start)).rejects.toThrow('Preparation channel disconnected')
-    let record!: () => void
-    const pending = new Promise<void>(resolve => { record = resolve })
-    const persist = vi.fn(() => pending)
-    const releasing = f.proxy.releaseForRecovery(persist)
-    await expect(f.proxy.dispose()).rejects.toMatchObject({ code: 'NATIVE_RUNTIME_CLOSING' })
-    await expect(f.proxy.capabilities()).rejects.toMatchObject({ code: 'NATIVE_RUNTIME_CLOSING' })
-    record()
-    await releasing
-    await f.proxy.dispose()
-    await f.proxy.releaseForRecovery(persist)
-    expect(persist).toHaveBeenCalledOnce()
-    expect(f.observedReceipts).toEqual([])
-    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare'])
-  })
-
-  it('keeps disposal failed when recording recovery fails and permits persistence retry', async () => {
-    const f = setup(() => ({ events: [], pendingInteractions: [] }))
-    await f.proxy.createSession(f.start)
-    const persist = vi.fn<() => Promise<void>>(async () => { throw new Error('Recovery storage unavailable') })
-    await expect(f.proxy.releaseForRecovery(persist)).rejects.toThrow('Recovery storage unavailable')
-    await expect(f.proxy.dispose()).rejects.toMatchObject({ code: 'NATIVE_RUNTIME_CLOSING' })
-    persist.mockResolvedValueOnce(undefined)
-    await f.proxy.releaseForRecovery(persist)
-    await f.proxy.dispose()
-    expect(persist).toHaveBeenCalledTimes(2)
-    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare'])
-    expect(f.receipt.phase).toBe('running')
-    expect(f.receipt.terminal).toBeUndefined()
-  })
-
-  it('aborts unavailable restart history and releases only after recording recovery', async () => {
-    const f = setup(() => ({ events: [], pendingInteractions: [] }))
-    const session = await f.proxy.createSession(f.start)
-    let reading!: () => void
-    const entered = new Promise<void>(resolve => { reading = resolve })
-    f.request.mockImplementation(async (_method, _payload, signal) => {
-      if (!signal) throw new Error('Restart history needs its cleanup signal')
-      reading()
-      return new Promise<never>((_resolve, reject) => {
-        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
-      })
-    })
-    const controller = new AbortController()
-    const closing = f.proxy.closeForRestart(session, controller.signal)
-    const rejected = expect(closing).rejects.toThrow('Restart history timed out')
-    await entered
-    controller.abort(new Error('Restart history timed out'))
-    await rejected
-    const persist = vi.fn(async () => {})
-    await f.proxy.releaseForRecovery(persist)
-    await f.proxy.dispose()
-    expect(persist).toHaveBeenCalledOnce()
-    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'history'])
-    expect(f.receipt.phase).toBe('running')
-  })
-})
-
 describe('remote native history streaming', () => {
   it('refreshes authenticated history before a slow consumer uses expired event observations', async () => {
     let now = Date.now()

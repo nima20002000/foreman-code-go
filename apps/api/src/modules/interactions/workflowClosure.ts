@@ -8,7 +8,6 @@ import { DomainError } from '../errors.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { readExecutionPlacement } from '../placement/persistence.js'
-import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 
 /** Backend-only lifetime receipt. It is not a native action or Run authority.
  * Reserve BEFORE credential preflight, create or
@@ -19,9 +18,6 @@ export interface WorkflowClosureStore {
   record(execution: HarnessExecution, session: NativeSessionReference, generation: string,
     assertCurrent: () => void): Promise<ClosedWorkflowSession>
   recordDetached(execution: HarnessExecution, session: NativeSessionReference, generation: string,
-    assertCurrent: () => void): Promise<void>
-  /** Keep the lifetime open when Main cannot confirm the remote Worker's disposition. */
-  recordRecoveryPending(execution: HarnessExecution, generation: string, placement: AcceptedNodePlacement,
     assertCurrent: () => void): Promise<void>
   read(execution: HarnessExecution): Promise<ClosedWorkflowSession | undefined>
   /** Positive disposal of the ORIGINAL manager, including a failed create or
@@ -327,30 +323,6 @@ export class PostgresWorkflowClosureStore implements WorkflowClosureStore {
       }
       assertCurrent()
       return { execution: executionIdentity(current), durableGeneration: generation }
-    })
-  }
-
-  async recordRecoveryPending(execution: HarnessExecution, generation: string, placement: AcceptedNodePlacement,
-    assertCurrent: () => void): Promise<void> {
-    assertCurrent()
-    await this.transaction(execution, async (sql, current) => {
-      assertCurrent()
-      const row = await exactLifetime(sql, execution.id, generation)
-      const accepted = await readExecutionPlacement(sql, execution.id)
-      if (!row || row.closed || row.detached || row.prior_unclosed
-        || !isDeepStrictEqual(row.execution_identity, executionIdentity(current))
-        || placement.hostRef.kind !== 'device' || !isDeepStrictEqual(accepted, placement)) return conflict()
-      const newest = await latest(sql, execution.id)
-      if (newest?.generation !== generation) return conflict()
-      const native = (await sql.query<{ reference: unknown }>(
-        'select reference from execution_native_sessions where execution_id=$1 for share', [execution.id])).rows[0]
-      const session = native ? NativeSessionReferenceSchema.parse(native.reference) : null
-      if ((current.nativeSessionId ?? null) !== (session?.nativeSessionId ?? null)
-        || row.expected_reference !== null && !isDeepStrictEqual(row.expected_reference, session)) return conflict()
-      await sql.query(`update execution_native_closures
-        set recovery_requested_at=coalesce(recovery_requested_at,clock_timestamp())
-        where execution_id=$1 and generation=$2::bigint`, [execution.id, generation])
-      assertCurrent()
     })
   }
 

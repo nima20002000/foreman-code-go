@@ -258,41 +258,25 @@ describe('actual worker native-port adapter', () => {
     }
   })
 
-  it('retains remote managers and channels after failed detachment and retries before releasing ownership', async () => {
+  it('production reports failed remote detachment and keeps runtime ownership', async () => {
     const f = await setup()
-    let historyUnavailable = true
     const proxy = new RemoteNativeSessionManager({
       intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
       transport: { request: (method, frame) => {
-        if (historyUnavailable && method === 'history') throw new Error('Original history unavailable')
+        if (method === 'history') throw new Error('Original history unavailable')
         return f.host.handle(frame)
       } },
       observeReceipt: async () => {}, controlFor: async () => { throw new Error('No control is requested') },
     })
     const session = await proxy.createSession({ request: f.request, correlationId: 'execution:execution' })
-    const original = await f.journal.status(f.intent.operationId)
     const runtime = await productionShutdownFixture()
     runtime.detach.mockImplementation(() => proxy.closeForRestart(session))
     runtime.managerDispose.mockImplementation(() => proxy.dispose())
     try {
-      const failed = runtime.production.shutdown()
-      await expect(failed).rejects.toThrow('runtime ownership was not released')
-      expect(runtime.detach).toHaveBeenCalledOnce()
-      expect(runtime.managerDispose).not.toHaveBeenCalled()
-      expect(runtime.channels).not.toHaveBeenCalled()
+      await expect(runtime.production.shutdown()).rejects.toThrow('runtime ownership was not released')
+      expect(runtime.channels).toHaveBeenCalledOnce()
       expect(runtime.ownerClose).not.toHaveBeenCalled()
       await expect(proxy.dispose()).rejects.toThrow('disposal is unconfirmed')
-      historyUnavailable = false
-      const retry = runtime.production.shutdown()
-      expect(retry).not.toBe(failed)
-      expect(runtime.production.shutdown()).toBe(retry)
-      await retry
-      await runtime.production.shutdown()
-      expect(runtime.detach).toHaveBeenCalledTimes(2)
-      expect(runtime.managerDispose).toHaveBeenCalledOnce()
-      expect(runtime.channels).toHaveBeenCalledOnce()
-      expect(runtime.ownerClose).toHaveBeenCalledOnce()
-      expect(await f.journal.status(f.intent.operationId)).toEqual(original)
       expect(f.state).toMatchObject({ starts: 1, turns: 0, cancels: 0 })
     } finally { await runtime.close() }
   })

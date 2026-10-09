@@ -49,30 +49,6 @@ function silentProvider() {
   return { manager, reading, release, detached, signal: () => nativeSignal }
 }
 
-it('retries failed disposal without reopening native admission', async () => {
-  const provider = silentProvider()
-  const completed = deferred()
-  const dispose = vi.fn(async () => completed.promise)
-    .mockRejectedValueOnce(new Error('Native disposal is unconfirmed.'))
-  provider.manager.dispose = dispose
-  const create = vi.spyOn(provider.manager, 'createSession')
-  const writer = new SingleWriterSessionManager(provider.manager, nativeLanes(), 'stream-agent')
-  const start = { kind: 'operator' } as Parameters<typeof writer.createSession>[0]
-  await expect(writer.dispose()).rejects.toThrow('Native disposal is unconfirmed')
-  await expect(writer.createSession(start)).rejects.toMatchObject({ code: 'NATIVE_MANAGER_DISPOSED' })
-  await expect(writer.acquire(session, 'another-turn')).rejects.toMatchObject({ code: 'NATIVE_MANAGER_DISPOSED' })
-  const initial = writer.startInitialTurn!(start, {
-    prompt: 'initial', clientCorrelationId: 'initial', onSessionObserved: async () => undefined,
-  })[Symbol.asyncIterator]()
-  await expect(initial.next()).rejects.toMatchObject({ code: 'NATIVE_INITIAL_TURN_UNAVAILABLE' })
-  const retry = writer.dispose()
-  expect(writer.dispose()).toBe(retry)
-  completed.resolve()
-  await retry
-  expect(create).not.toHaveBeenCalled()
-  expect(dispose).toHaveBeenCalledTimes(2)
-})
-
 it('batches ready output independently of database lease-check latency', async () => {
   vi.useFakeTimers()
   const frames = Array.from({ length: 35 }, (_, sequence) => ({ ...frame, sequence }))

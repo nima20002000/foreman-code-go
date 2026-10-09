@@ -19,7 +19,6 @@ import { HarnessExecutionError } from '../../harnesses/errors.js'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { decodeResultCopies } from './executionResultCodec.js'
-import { DomainError } from '../../errors.js'
 
 export interface RemoteNativeTransport {
   request(method: 'prepare' | 'reattach' | 'prepare-review' | 'get-application-access' | 'start-turn'
@@ -61,13 +60,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private appliedPreferences: SessionPreferences | null = null
   private prepareAttempted = false
   private detached = false
-  private recoveryRequired = false
-  private recoveryRecorded = false
   private review: RemoteReviewerRequest | undefined
   private historyCorrelation: string | undefined
-  get retainsReviewerSession() {
-    return !this.recoveryRequired && this.receipt?.retainedReviewer !== undefined && !this.receipt.terminal
-  }
+  get retainsReviewerSession() { return this.receipt?.retainedReviewer !== undefined && !this.receipt.terminal }
   constructor(private readonly options: RemoteNativeManagerOptions) { this.harness = options.harness; this.intent = structuredClone(options.intent) }
   private async request(method: Parameters<RemoteNativeTransport['request']>[0], payload: Record<string, unknown>, signal?: AbortSignal) {
     const { operationId: _operationId, ...fields } = payload
@@ -77,21 +72,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   private async requestWithIntent(method: Parameters<RemoteNativeTransport['request']>[0],
     payload: unknown, intent: DispatchIntent, signal?: AbortSignal) {
-    this.assertOpen()
     const response = await this.options.transport.request(method, payload, signal)
-    this.assertOpen()
-    const value = await readRemoteReceiptResponse(response, intent, continuation => {
-      this.assertOpen()
-      return this.options.transport.request('receipt-continuation', {
-        method: 'receipt-continuation', intent, placement: this.options.placement, ...continuation,
-      }, signal)
-    }, signal)
-    this.assertOpen()
-    return value
-  }
-  private assertOpen(): void {
-    if (this.recoveryRequired) throw new DomainError(
-      'NATIVE_RUNTIME_CLOSING', 'The remote native execution is awaiting recovery.', 503)
+    return readRemoteReceiptResponse(response, intent, continuation => this.options.transport.request(
+      'receipt-continuation', { method: 'receipt-continuation', intent,
+        placement: this.options.placement, ...continuation }, signal), signal)
   }
   private async historyResponse(raw: unknown, signal?: AbortSignal) {
     const value = HistoryResponseSchema.parse(raw)
@@ -400,24 +384,16 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async close(session: NativeSessionReference) { this.assertSession(session); if (this.receipt?.phase !== 'confirmed_terminal') await this.cancel(session); if (this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native closure is unconfirmed') }
   async dispose() {
-    if (this.recoveryRecorded) return
-    this.assertOpen()
     if (!this.prepareAttempted) return
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') {
       await this.status(await this.request('status', {}))
     }
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native disposal is unconfirmed')
   }
-  async closeForRestart(session: NativeSessionReference, signal?: AbortSignal) {
+  async closeForRestart(session: NativeSessionReference) {
     this.assertSession(session)
     if (this.detached) return
-    await this.history(session, signal)
+    await this.history(session)
     this.detached = true
-  }
-  async releaseForRecovery(persistPending: () => Promise<void>): Promise<void> {
-    this.recoveryRequired = true
-    if (this.recoveryRecorded) return
-    await persistPending()
-    this.recoveryRecorded = true
   }
 }

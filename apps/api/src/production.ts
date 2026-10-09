@@ -1486,9 +1486,12 @@ export function buildProductionApp(
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
       { name: 'Foreman Code MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
-        // A failed close must retain managers and authenticated channels for retry.
-        await approvals.closeForRestart()
+        // Ordinary restart must persist the exact retained Worker/reviewer
+        // closes before raw disposal loses their manager lifetime identities.
+        // Still dispose all allocations after a receipt failure, but propagate
+        // that failure so shutdown cannot release runtime ownership.
         const errors: unknown[] = []
+        try { await approvals.closeForRestart() } catch (error) { errors.push(error) }
         try { await managers.dispose() } catch (error) { errors.push(error) }
         // Remote session disposition still needs the authenticated device channels.
         try { await deviceRuntime.drain() } catch (error) { errors.push(error) }
@@ -1910,16 +1913,8 @@ export function buildProductionApp(
     // External callers close HTTP first. Repeated calls share app.close(), and
     // cannot release ownership while HTTP is draining in preClose.
     // onClose hooks must use drainShutdown(), not await this enclosing close.
-    applicationClose ??= Promise.resolve().then(async () => {
-      await app.close()
-      // Fastify consumes onClose hooks once, so retries must drain retained work explicitly.
-      await drainShutdown()
-    })
-    const attempt = applicationClose
-    void attempt.catch(() => {
-      if (applicationClose === attempt) applicationClose = undefined
-    })
-    return attempt
+    applicationClose ??= Promise.resolve().then(() => app.close())
+    return applicationClose
   }
   return { app, engine, initialize, reconcile, shutdown, drainShutdown, rsync,
     registerFileStorage: () => {

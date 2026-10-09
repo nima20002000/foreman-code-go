@@ -28,7 +28,6 @@ import { ciRuntimePreparationMigration } from './ciRuntimePreparationMigration.j
 import { ciRuntimeMainComputerMigration } from './ciRuntimeMainComputerMigration.js'
 import { ciEnrollmentMigration } from './ciEnrollmentMigration.js'
 import { workflowFailureCauseMigration } from './workflowFailureCauseMigration.js'
-import { nativeRecoveryPendingMigration } from './nativeRecoveryPendingMigration.js'
 import { workflowJobAttemptIdentityMigration } from './workflowJobAttemptIdentityMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
@@ -888,7 +887,6 @@ export const migrations = [
   ciRuntimeMainComputerMigration,
   ciEnrollmentMigration,
   workflowFailureCauseMigration,
-  nativeRecoveryPendingMigration,
   workflowJobAttemptIdentityMigration,
 ] as const
 

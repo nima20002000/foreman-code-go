@@ -6,7 +6,7 @@ import {
   CurrentRunVersionSnapshotSchema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, REPEAT_GRAPH_LIMITS,
   sameCanonicalGraphScope, canonicalGraphJson, qualifyRepeatGraphExecution,
   type RepeatGraphScopeV3, type RepeatGraphExecutionV3, type RepeatGraphBindingV3,
-  type RepeatGraphResolutionV3, type RepeatGraphFactV3,
+  type RepeatGraphResolutionV3, type RepeatGraphFactV3, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
@@ -78,7 +78,8 @@ interface ExecutionRow {
 /** Whitelisted SQL expressions: never select input_json, result_json, an entire
  * harness record, prompt, path, session, credential, or raw native payload. */
 export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, scope: RepeatGraphScopeV3,
-  executionIds?: readonly string[]): Promise<RepeatGraphExecutionV3[]> {
+  options: { executionIds?: readonly string[]; version?: WorkflowVersionV3 } = {}): Promise<RepeatGraphExecutionV3[]> {
+  const { executionIds } = options
   if (executionIds && executionIds.length > REPEAT_GRAPH_LIMITS.executions) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const rows = await sql.query<ExecutionRow>(`select x.execution_id,x.run_id,x.slot_id,x.occurrence_id,x.technical_attempt,
       x.work_activation_id,
@@ -118,7 +119,15 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
       ...(row.work_activation_id ? { workActivationId: row.work_activation_id } : {}),
       previousExecutionId: row.previous_execution_id, state: row.state, resultOutcome: row.result_outcome })
   })
-  const jobs = await readWorkflowJobGraphExecutionsLocked(sql, scope, executionIds)
+  const agentIds = new Set(parsed.map(execution => execution.identity.executionId))
+  const jobIds = executionIds?.filter(id => !agentIds.has(id))
+  let jobs: RepeatGraphExecutionV3[] = []
+  if (!jobIds || jobIds.length) {
+    const version = options.version ?? (await readRecordedRepeatGraphPinsLocked(sql, scope)).version
+    if (version.definition.nodes.some(node => node.kind === 'job')) {
+      jobs = await readWorkflowJobGraphExecutionsLocked(sql, scope, jobIds)
+    }
+  }
   const executions = boundedRepeatRows([...parsed, ...jobs], REPEAT_GRAPH_LIMITS.executions)
     .sort((left, right) => left.identity.executionId.localeCompare(right.identity.executionId))
   if (executionIds && (new Set(executionIds).size !== executions.length
@@ -139,7 +148,8 @@ export async function readRepeatGraphBindingsLocked(sql: GraphTransactionSql, sc
     order by recipient_execution_id,ordinal,binding_id limit $3`,
   [scope.runId, recipientIds ? [...recipientIds] : null, REPEAT_GRAPH_LIMITS.bindings + 1])).rows, REPEAT_GRAPH_LIMITS.bindings)
   const identities = [...new Set(rows.flatMap((row) => [row.recipient_execution_id, row.source_execution_id]))]
-  const executions = suppliedExecutions ?? (identities.length ? await readRepeatGraphExecutionsLocked(sql, scope, identities) : [])
+  const executions = suppliedExecutions ?? (identities.length
+    ? await readRepeatGraphExecutionsLocked(sql, scope, { executionIds: identities }) : [])
   const byId = new Map(executions.map((execution) => [execution.identity.executionId, execution]))
   return rows.map((row) => {
     const recipient = byId.get(row.recipient_execution_id), sender = byId.get(row.source_execution_id)

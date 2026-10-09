@@ -17,7 +17,7 @@ export async function publishRepeatExecutionStateLocked(publication: RunGraphPub
   owner: RunOwnership, executionId: string): Promise<void> {
   const { sql, scope } = publication
   try {
-    const [execution] = await readRepeatGraphExecutionsLocked(sql, scope, [executionId])
+    const [execution] = await readRepeatGraphExecutionsLocked(sql, scope, { executionIds: [executionId] })
     if (!execution) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     const sourceDigest = repeatExecutionStateDigest(scope, execution)
     const fact = { type: 'repeat.execution' as const, execution }
@@ -39,7 +39,7 @@ export async function publishRepeatExecutionStateLocked(publication: RunGraphPub
     const result = await publication.repeatExecutionReadback({ evidence, sourceDigest }, owner, async () => [fact])
     requireRepeatCanonicalReceiptBeforeCommit(sql, { scope, evidence, sourceDigest, effect: null, semanticDigest: result.semanticDigest })
     beforeGraphCommit(sql, async () => {
-      const [current] = await readRepeatGraphExecutionsLocked(sql, scope, [executionId])
+      const [current] = await readRepeatGraphExecutionsLocked(sql, scope, { executionIds: [executionId] })
       if (!current || canonicalGraphJson(current) !== canonicalGraphJson(execution)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
     })
   } catch (error) {

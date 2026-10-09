@@ -77,7 +77,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect(admitted.reused).toBe(false)
         expect((await store.admitWorkActivation(entry, () => { throw new Error('replay allocated') })).reused).toBe(true)
         const projected = await owner.oneShotConnection().transaction((sql) =>
-          readRepeatGraphExecutionsLocked(sql, t.scope, [admitted.execution.id]), true)
+          readRepeatGraphExecutionsLocked(sql, t.scope, { executionIds: [admitted.execution.id] }), true)
         expect(projected[0]?.workActivationId).toBe(entry)
         const privateEffect = (await pool.query<{ payload_digest: string }>(`select payload_digest
           from run_repeat_effects where run_id=$1 and effect_kind='input.bind' and entity_id=$2`,
@@ -354,7 +354,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
         expect((await store.admitWorkActivation(first.request.destinationActivationId, () => { throw new Error('replay allocated') })).reused).toBe(true)
         expect((await store.readExecution(queued.execution.id)).workActivationId).toBe(first.request.destinationActivationId)
         const projected = await owner.oneShotConnection().transaction((sql) =>
-          readRepeatGraphExecutionsLocked(sql, fixture.scope, [queued.execution.id]), true)
+          readRepeatGraphExecutionsLocked(sql, fixture.scope, { executionIds: [queued.execution.id] }), true)
         expect(projected[0]?.identity.executionId).toBe(queued.execution.id)
         expect(projected[0]?.workActivationId).toBe(first.request.destinationActivationId)
         const review = { ...queued.execution, state: 'completed', result: { outcome: 'succeeded', output: {

@@ -59,7 +59,9 @@ describe('F-01 repeat artifact result acceptance and recovery', () => {
       await expect(harness.accept(review.id)).rejects.toThrow('ARTIFACT_PUBLICATION_MISSING')
       expect(harness.state().results.has(review.id)).toBe(false)
       publications.set(commandId, review.id)
-      expect(await harness.accept(review.id)).toMatchObject({ kind: 'resolved' })
+      const accepted = await harness.accept(review.id)
+      expect(accepted).toMatchObject({ kind: 'resolved' })
+      if (accepted.kind !== 'resolved') throw new Error('Expected repeat decision resolution')
       const stored = harness.state().results.get(review.id)!
       expect(JSON.parse(stored.result_json)).toEqual(original)
       expect(stored.result_digest).toBe(digest)
@@ -69,7 +71,7 @@ describe('F-01 repeat artifact result acceptance and recovery', () => {
       expect(transition.decision.reason).toBe(index === 1 ? 'repeat' : outcome === 'pass' ? 'early_exit' : 'limit_exit')
       const counts = { results: harness.state().results.size, decisions: harness.state().decisions.size,
         occurrences: harness.state().occurrences.size, publications: harness.state().publications.length }
-      await recovered.acceptTerminal(review.id)
+      expect(await recovered.acceptTerminal(review.id)).toEqual({ kind: 'resolved', resolution: accepted.resolution })
       expect(await harness.repository().transition(occurrence.identity.occurrenceId)).toEqual(transition)
       expect({ results: harness.state().results.size, decisions: harness.state().decisions.size,
         occurrences: harness.state().occurrences.size, publications: harness.state().publications.length }).toEqual(counts)

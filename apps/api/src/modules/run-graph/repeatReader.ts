@@ -66,7 +66,7 @@ async function verifiedRepeatCut(sql: GraphTransactionSql, scope: RepeatGraphSco
     const { version } = await readRecordedRepeatGraphPinsLocked(sql, scope)
     const run = await readRepeatRunStateLocked(sql, scope)
     const occurrences = await readRepeatGraphOccurrencesLocked(sql, scope)
-    const executions = await readRepeatGraphExecutionsLocked(sql, scope)
+    const executions = await readRepeatGraphExecutionsLocked(sql, scope, { version })
     const bindings = await readRepeatGraphBindingsLocked(sql, scope, undefined, executions)
     const resolutions = await readRepeatGraphResolutionsLocked(sql, scope)
     const results = await readRepeatGraphResultsLocked(sql, scope, executions)

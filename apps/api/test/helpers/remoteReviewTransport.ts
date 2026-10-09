@@ -17,14 +17,9 @@ export async function createRemoteReviewTransport(input: {
   const [cert, key] = await Promise.all([readFile(input.certificateFile), readFile(input.privateKeyFile)])
   const server = createServer({ cert, key })
   const sockets = new Set<WebSocket>()
-  let disconnected = false
   const deliveryReads: Array<{ command: ReturnType<typeof RemoteOwnerControlSchema.parse>; phase: string }> = []
   const websocket = new WebSocketServer({ server, perMessageDeflate: false, maxPayload: 16384 })
   websocket.on('connection', (worker, request) => {
-    if (disconnected) {
-      worker.terminate()
-      return
-    }
     const main = new WebSocket(input.endpoint, { ca: cert,
       headers: { authorization: request.headers.authorization! }, perMessageDeflate: false })
     sockets.add(worker)
@@ -122,13 +117,6 @@ export async function createRemoteReviewTransport(input: {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Expected a loopback transport fixture port.')
   return { endpoint: `wss://127.0.0.1:${address.port}/device/connect`, deliveryReads,
-    disconnect: async () => {
-      disconnected = true
-      await Promise.all([...sockets].map(socket => new Promise<void>(resolve => {
-        socket.once('close', () => resolve())
-        socket.terminate()
-      })))
-    },
     close: async () => {
       for (const socket of sockets) socket.terminate()
       await new Promise<void>((resolve, reject) => websocket.close(error => error ? reject(error) : resolve()))

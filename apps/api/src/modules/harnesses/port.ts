@@ -233,9 +233,7 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   reconcileResponse?(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal): Promise<NativeHistory>
   close(session: NativeSessionReference): Promise<void>
   /** Detach the local runtime for process restart without canceling unresolved provider work. */
-  closeForRestart?(session: NativeSessionReference, signal?: AbortSignal): Promise<void>
-  /** Release a remote proxy only after persisting its unresolved native lifetime for recovery. */
-  releaseForRecovery?(persistPending: () => Promise<void>): Promise<void>
+  closeForRestart?(session: NativeSessionReference): Promise<void>
   /** Stop every owned transport, including creations without a known session identity. */
   dispose?(): Promise<void>
 }
