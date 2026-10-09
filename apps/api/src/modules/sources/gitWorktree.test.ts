@@ -1,10 +1,12 @@
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { randomUUID } from 'node:crypto'
+import { captureGitSource } from './capture.js'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { addGitWorktree, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
+import { addGitWorktree, ensureCommit, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -100,4 +102,25 @@ it('prepares more than twenty occurrences while retaining all earlier branches',
   for (const branch of branches) {
     expect(git(f.ports.cloneDirectory('octo/site'), 'rev-parse', branch)).toBe(f.commit)
   }
+})
+
+
+it('fetches promised blobs before isolated source capture needs them offline', async () => {
+  const f = await fixture()
+  git(f.origin, 'config', 'uploadpack.allowFilter', 'true')
+  const clone = f.ports.cloneDirectory('octo/site')
+  await mkdir(join(clone, '..'), { recursive: true })
+  git(f.root, 'clone', '--no-checkout', '--filter=blob:none', `file://${f.origin}`, clone)
+  expect(git(clone, 'rev-list', '--objects', '--missing=print', `${f.commit}^{tree}`)).toContain('\n?')
+  await ensureCommit(f.ports, 'octo/site', f.commit, AbortSignal.timeout(30_000))
+  await rename(f.origin, join(f.root, 'offline-origin'))
+  const captured: Buffer[] = []
+  const manifest = await captureGitSource({ root: clone, commit: f.commit, approvedSourceId: randomUUID(),
+    approvedPaths: ['README.md'], executablePolicy: 'strip', sink: {
+      async write(_snapshot, _entry, bytes) { captured.push(Buffer.from(bytes)) },
+      async commit() {},
+      async abort() {},
+    } })
+  expect(manifest.totalEntries).toBe(1)
+  expect(captured.map(bytes => bytes.toString())).toEqual(['approved\n'])
 })

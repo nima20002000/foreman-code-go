@@ -61,8 +61,26 @@ export async function ensureCommit(ports: GitWorktreePorts, repository: string, 
   if ((await ports.git(['cat-file', '-e', `${commit}^{commit}`], { cwd: clone, signal })).code !== 0) {
     await runGit(ports, ['fetch', '--no-tags', 'origin', commit], clone, signal)
   }
+  await fetchMissingSourceObjects(ports, clone, commit, signal)
   return clone
 }
+
+async function fetchMissingSourceObjects(ports: GitWorktreePorts, clone: string, commit: string, signal: AbortSignal) {
+  const objects = await runGit(ports, ['rev-list', '--objects', '--no-object-names', '--missing=print',
+    `${commit}^{tree}`], clone, signal)
+  const missing = objects.split('\n').filter(line => /^\?(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(line))
+    .map(line => line.slice(1))
+  // The authenticated fetch fills partial clones before credential-free capture reads their objects.
+  for (let offset = 0; offset < missing.length; offset += 128) {
+    await runGit(ports, ['fetch', '--no-tags', '--no-write-fetch-head', '--recurse-submodules=no', '--no-filter',
+      'origin', ...missing.slice(offset, offset + 128)], clone, signal)
+  }
+  if (missing.length) {
+    await runGit(ports, ['rev-list', '--objects', '--no-object-names', '--missing=error', `${commit}^{tree}`],
+      clone, signal)
+  }
+}
+
 export async function ensureClone(ports: GitWorktreePorts, repository: string, signal: AbortSignal): Promise<string> {
   assertWorktreeRequest({ repository, branch: 'foreman/source' })
   const clone = ports.cloneDirectory(repository)

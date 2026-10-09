@@ -270,6 +270,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
             const clone = this.git.cloneDirectory(name)
             await ensureClone(this.git, name, signal)
             commit = await this.fetchDefaultBranch(clone, name, configured.defaultBranch, signal)
+            await ensureCommit(this.git, name, commit, signal)
             repository = { repository: name, clone }
           }
         } else if (input.snapshot) {
