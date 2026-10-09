@@ -24,7 +24,8 @@ vi.mock('node:child_process', async importOriginal => {
       file: string, args: string[], options: Parameters<typeof run>[2],
     ) => {
       if (file !== 'podman') return run(file, args, options)
-      if (args.includes('images')) return { stdout: '[]', stderr: '' }
+      // No image or interrupted Buildah working container exists in this fixture store.
+      if (args.includes('images') || args.includes('ps')) return { stdout: '[]', stderr: '' }
       if (args.includes('build')) {
         ports.imageBuilds++
         throw new Error('Fixture stopped at the OCI image build boundary.')
