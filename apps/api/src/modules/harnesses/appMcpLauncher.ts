@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -110,6 +110,14 @@ export function isAppLauncher(entry: Record<string, unknown>): boolean {
     || (entry.env_http_headers != null && Object.keys(entry.env_http_headers as object).length > 0)) return false
   const tokenName = appLauncherTokenName(entry)
   return (!entry.env || Object.keys(entry.env as object).length === 0) && tokenName !== undefined
+}
+/** This app's launcher entry whose recorded Node interpreter no longer exists (removed or upgraded). Its
+ * transport is otherwise exactly the managed launcher, so repair may replace the interpreter. */
+export function isStaleAppLauncher(entry: Record<string, unknown>): boolean {
+  const args = Array.isArray(entry.args) ? entry.args : []
+  if (typeof entry.command !== 'string' || !isAbsolute(entry.command) || args.length !== 1 || args[0] !== appLauncherPath()
+    || existsSync(entry.command)) return false
+  return isAppLauncher({ ...entry, command: process.execPath })
 }
 export async function installAppLauncher(): Promise<void> {
   await installManagedLauncher(new URL('../../../../../scripts/graphql-mcp.mjs', import.meta.url), appLauncherPath())

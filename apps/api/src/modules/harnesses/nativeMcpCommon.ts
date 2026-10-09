@@ -1,4 +1,4 @@
-import { APP_MCP_PATH, APP_MCP_SERVER_NAME, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, appLauncherPath, isAppLauncher, isManagedLauncherCommand, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
+import { APP_MCP_PATH, APP_MCP_SERVER_NAME, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, appLauncherPath, isAppLauncher, isManagedLauncherCommand, isStaleAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { createHash } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
@@ -133,7 +133,7 @@ function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcp
     const retiredPolicies = legacyAppPolicies(snapshot)
     if (!Object.hasOwn(snapshot.user, name)) return { ...nativeConnection(appLauncherConnection()), ...retiredPolicies }
     const existing = record(snapshot.user[name])
-    if (!standardAppRemote(existing) && !(isAppLauncher(existing) && appReference(existing))) {
+    if (!standardAppRemote(existing) && !(isAppLauncher(existing) && appReference(existing)) && !isStaleAppLauncher(existing)) {
       throw new DomainError('MCP_PRESET_CUSTOMIZED', 'The graphql entry has custom transport or authentication settings. Edit it at its native source.', 409)
     }
     // Do not reconstruct the entry. Native policy fields, including future supported

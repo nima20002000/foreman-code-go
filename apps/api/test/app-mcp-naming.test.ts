@@ -43,6 +43,16 @@ describe.each(['codex'] as const)('%s managed MCP naming', (harness) => {
     expect(managedStatus(snapshot(after), 'graphql')).toBe('disabled')
   })
 
+  it('repairs its own launcher entry whose Node interpreter was removed, but not a customized one', () => {
+    const stale = { ...connection('GRAPHQL_MCP_TOKEN'), command: '/removed/node/bin/node' }
+    expect(isAppLauncher(stale)).toBe(false)
+    const repaired = applyMcpEdits({ graphql: stale }, mcpEdits(snapshot({ graphql: stale }), add, managed))
+    expect(repaired).toEqual({ 'foreman-code': connection('FOREMAN_CODE_MCP_TOKEN') })
+    expect(managedStatus(snapshot(repaired), 'graphql')).toBe('installed')
+    const customized = { ...stale, env: { EXTRA: 'value' } }
+    expect(() => mcpEdits(snapshot({ graphql: customized }), add, managed)).toThrow('custom')
+  })
+
   it('rejects name collisions, inherited entries, and custom authentication without editing either entry', () => {
     const entry = connection('GRAPHQL_MCP_TOKEN')
     const collision = { graphql: entry, 'foreman-code': { url: 'https://custom.example/mcp' } }
