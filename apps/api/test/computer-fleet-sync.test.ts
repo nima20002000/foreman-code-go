@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { MaintenanceRequestSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerMaintenance, systemMaintenancePorts } from '../src/modules/computers/maintenance.js'
 import { syncableServers } from '../src/modules/computers/fleet.js'
-import { fakeComputer, fakeFleet, server, settle } from './helpers/fleetSync.js'
+import { fakeComputer, fakeFleet, mcpRequest, pluginRequest, server, settle } from './helpers/fleetSync.js'
 
 describe('fleet source propagation', () => {
   it('distinguishes an absent native catalog from a failed file read', async () => {
@@ -124,6 +125,64 @@ describe('fleet source propagation', () => {
     await settle(computer)
   })
 
+  it.each(['sync-mcp', 'sync-plugins'] as const)('tracks a queued %s task through persisted completion', async kind => {
+    const computer = fakeComputer()
+    const read = computer.ports.readText
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    computer.ports.readText = async path => {
+      if (path.endsWith('fleet-sync.json')) await gate
+      return read(path)
+    }
+    const older = await computer.maintenance.start(kind === 'sync-mcp'
+      ? mcpRequest(['old']) : pluginRequest(['old@official']))
+    const { fleet, requested, sources } = fakeFleet(computer)
+    sources.codexPlugins = async () => ['notes@official']
+    try {
+      await fleet.syncChangedSources()
+      const status = await computer.maintenance.status(AbortSignal.timeout(1000))
+      const queued = status.tasks.find(task => task.kind === kind && task.id !== older.id)!
+      expect(queued).toMatchObject({ state: 'running', summary: 'Waiting for the previous task…' })
+      expect(queued.sourceFingerprint).toMatch(/^sha256:/u)
+      expect(queued.sourceFingerprint).not.toBe(older.sourceFingerprint)
+      await fleet.syncChangedSources()
+      expect(requested).toHaveLength(2)
+      release()
+      await settle(computer)
+      computer.maintenance = new ComputerMaintenance(computer.ports)
+      const persisted = await computer.maintenance.status(AbortSignal.timeout(1000))
+      expect(persisted.tasks.find(task => task.id === queued.id)).toMatchObject({
+        state: 'succeeded', sourceFingerprint: queued.sourceFingerprint,
+      })
+      await fleet.syncChangedSources()
+      await fleet.syncChangedSources()
+      expect(requested).toHaveLength(2)
+      expect([...computer.codexMcp]).toEqual(['docs'])
+      expect([...computer.claudeMcp]).toEqual([])
+      expect([...computer.codexPlugins]).toEqual(['notes@official'])
+      expect([...computer.claudePlugins]).toEqual([])
+    } finally {
+      release()
+      await settle(computer)
+    }
+  })
+
+  it('acknowledges plugin sources when receiver validation changes property order', async () => {
+    const computer = fakeComputer()
+    const { fleet, sources, requested } = fakeFleet(computer)
+    sources.codexPlugins = async () => ['notes@official']
+    sources.codexMarketplaces = async () => [{ source: 'owner/official', name: 'official' }]
+    await fleet.syncChangedSources()
+    await settle(computer)
+    sources.codexMarketplaces = async () => [{ name: 'official', source: 'owner/official' }]
+    await fleet.syncChangedSources()
+    await settle(computer)
+    await fleet.syncChangedSources()
+    expect([...computer.codexPlugins]).toEqual(['notes@official'])
+    expect(requested.filter(task => task.kind === 'sync-plugins')).toHaveLength(1)
+    expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(1)
+  })
+
   it('does not acknowledge an older source task, even with a fast receiver clock', async () => {
     const computer = fakeComputer()
     computer.ports.now = () => new Date('2099-01-01T00:00:00.000Z')
@@ -134,9 +193,20 @@ describe('fleet source propagation', () => {
       if (path.endsWith('fleet-sync.json')) await gate
       return originalRead(path)
     }
-    computer.maintenance.start({ kind: 'sync-mcp', servers: { codex: [server('old')], claude: [] } })
-    const { fleet, requested } = fakeFleet(computer)
+    const older = await computer.maintenance.start({ kind: 'sync-mcp', servers: { codex: [server('old')], claude: [] } })
+    const { fleet, requested, endpoint } = fakeFleet(computer)
+    const workerRequest = endpoint.request
+    // An older receiver reply must not acknowledge Main's current sources.
+    endpoint.request = async (device, namespace, payload) => {
+      const request = MaintenanceRequestSchema.parse(payload)
+      if (request.operation === 'start' && request.task.kind === 'sync-mcp') {
+        requested.push(request.task)
+        return { payload: { operation: 'start', task: older } }
+      }
+      return workerRequest(device, namespace, payload)
+    }
     await fleet.syncChangedSources()
+    endpoint.request = workerRequest
     release()
     await settle(computer)
     expect([...computer.codexMcp]).toEqual(['old'])

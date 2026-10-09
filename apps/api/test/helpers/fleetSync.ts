@@ -118,7 +118,7 @@ export function fakeFleet(computer: ReturnType<typeof fakeComputer>) {
         return { payload: { operation: 'status', status: await computer.maintenance.status(AbortSignal.timeout(1000)) } }
       }
       requested.push(request.task)
-      return { payload: { operation: 'start', task: computer.maintenance.start(request.task) } }
+      return { payload: { operation: 'start', task: await computer.maintenance.start(request.task) } }
     },
   }
   const fleet = new FleetMaintenanceService(pool, mainId, () => endpoint,
