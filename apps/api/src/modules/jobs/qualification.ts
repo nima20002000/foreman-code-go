@@ -195,6 +195,38 @@ export function createPhysicalJobRuntimeProducer(dependencies: PhysicalJobRuntim
   }
 }
 
+const QUALIFICATION_COMMAND_OUTPUT_LIMIT_BYTES = 65_536
+type QualificationCommandInterruptionFacts = {
+  reason: 'signal_aborted' | 'command_timeout' | 'output_limit'
+  elapsedMs: number
+  outputBytes: number
+  timeoutMs: number
+  stopConfirmed: boolean
+}
+
+export class QualificationCommandInterruptedError extends Error {
+  readonly reason: QualificationCommandInterruptionFacts['reason']
+  readonly elapsedMs: number
+  readonly outputBytes: number
+  readonly timeoutMs: number
+  readonly stopConfirmed: boolean
+  readonly outputLimitBytes = QUALIFICATION_COMMAND_OUTPUT_LIMIT_BYTES
+
+  constructor(facts: QualificationCommandInterruptionFacts) {
+    const triggers = { signal_aborted: 'signal aborted', command_timeout: 'command timed out',
+      output_limit: 'output limit exceeded' }
+    const stop = facts.stopConfirmed ? 'confirmed' : 'unconfirmed'
+    super(`Diagnostic ${triggers[facts.reason]} after ${facts.elapsedMs}ms with ${facts.outputBytes} output bytes `
+      + `(deadline ${facts.timeoutMs}ms, limit ${QUALIFICATION_COMMAND_OUTPUT_LIMIT_BYTES} bytes); physical stop ${stop}.`)
+    this.name = 'QualificationCommandInterruptedError'
+    this.reason = facts.reason
+    this.elapsedMs = facts.elapsedMs
+    this.outputBytes = facts.outputBytes
+    this.timeoutMs = facts.timeoutMs
+    this.stopConfirmed = facts.stopConfirmed
+  }
+}
+
 /** Concrete physical command runner, never a caller-supplied observation/ready result. */
 export async function runQualificationCommand(
   owner: Pick<QualificationNativeOwner, 'reserveProcess' | 'spawnProcess' | 'readNativeExit' | 'stopProcess'>, binary: string, argv: string[],
@@ -202,6 +234,7 @@ export async function runQualificationCommand(
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 86400000) {
     throw new Error('Bounded qualification command deadline required.')
   }
+  const startedAt = performance.now()
   const reservation = await owner.reserveProcess(binary, argv)
   signal.throwIfAborted()
   const child = owner.spawnProcess(reservation, binary, argv, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: environment })
@@ -212,23 +245,29 @@ export async function runQualificationCommand(
     let diagnostics = ''
     let bytes = 0
     let interrupted = false
-    const interrupt = () => {
+    const interrupt = (reason: QualificationCommandInterruptionFacts['reason']) => {
       if (interrupted) return
       interrupted = true
-      void owner.stopProcess(reservation).then(stopped => reject(new Error(stopped ? 'Diagnostic interrupted.' : 'Diagnostic physical stop unconfirmed.')), reject)
+      const facts = { reason, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        outputBytes: bytes, timeoutMs }
+      void owner.stopProcess(reservation).then(stopConfirmed => {
+        reject(new QualificationCommandInterruptedError({ ...facts, stopConfirmed }))
+      }, reject)
     }
-    signal.addEventListener('abort', interrupt, { once: true })
-    const timeout = setTimeout(interrupt, timeoutMs)
+    const abort = () => interrupt('signal_aborted')
+    signal.addEventListener('abort', abort, { once: true })
+    const timeout = setTimeout(() => interrupt('command_timeout'), timeoutMs)
     const read = (chunk: Buffer, stdout: boolean) => {
+      if (interrupted) return
       bytes += chunk.length
-      if (bytes > 65536) interrupt()
+      if (bytes > QUALIFICATION_COMMAND_OUTPUT_LIMIT_BYTES) interrupt('output_limit')
       else if (stdout) output += chunk.toString('utf8')
       else diagnostics += chunk.toString('utf8')
     }
     stdout.on('data', chunk => read(chunk, true)); stderr.on('data', chunk => read(chunk, false))
     child.once('error', reject)
     child.once('close', (exitCode, exitSignal) => {
-      clearTimeout(timeout); signal.removeEventListener('abort', interrupt)
+      clearTimeout(timeout); signal.removeEventListener('abort', abort)
       if (!interrupted) void owner.readNativeExit(reservation, child, { exitCode, signal: exitSignal }).then(native => {
         if (!native.confirmed || native.exitCode === null) reject(new Error('Exact native exit receipt unavailable.'))
         else resolve({ exitCode: native.exitCode, stdout: output, stderr: diagnostics })

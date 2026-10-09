@@ -59,3 +59,34 @@ it('keeps the report reference in a bounded reason when stderr is large', async 
   expect(reason).toContain('Reports: Job qualification:unit.')
   expect(reason.length).toBeLessThanOrEqual(500)
 })
+
+it('retains a completed suite after later confirmed closure while preserving the inspection failure', async () => {
+  const failure = new Error('container inspection interrupted')
+  const report = JobVerificationReportSchema.parse({ ...failedReport(),
+    totals: { total: 5, passed: 5, failed: 0, skipped: 0 }, firstPassFailed: 0,
+    completedPortions: 3, completeness: 'complete', outcome: 'passed',
+  })
+  const calls: string[] = []
+  const request = { suite: 'unit', exitCode: 0, stderr: '', failure,
+    closeContainer: async () => { calls.push('confirmed closure'); return true },
+    publish: async () => { calls.push('publish original report'); return report },
+  }
+  const error = await publishFailedQualification(request).catch((error: Error) => error)
+  calls.push('cleanup')
+  expect(error.message).toContain(failure.message)
+  expect(error.cause).toBe(failure)
+  expect(calls).toEqual(['confirmed closure', 'publish original report', 'cleanup'])
+})
+
+it('retains the inspection failure without publishing when later closure is unconfirmed', async () => {
+  const failure = new Error('container inspection interrupted')
+  const publications: string[] = []
+  const request = { suite: 'unit', exitCode: 0, stderr: '', failure,
+    closeContainer: async () => false,
+    publish: async () => { publications.push('published'); return failedReport() },
+  }
+  const error = await publishFailedQualification(request).catch((error: Error) => error)
+  expect(error.message).toContain(failure.message)
+  expect(error.cause).toBe(failure)
+  expect(publications).toEqual([])
+})
