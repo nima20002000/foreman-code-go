@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
+import { HarnessMcpArgumentSchema, HarnessMcpEndpointSchema } from './management/harnessSettings.js'
 
 /** Device channel namespace: Main asks a paired computer for maintenance status and starts maintenance tasks. */
 export const COMPUTER_MAINTENANCE_NAMESPACE = 'computer-maintenance-v1'
@@ -14,8 +15,8 @@ export type MaintenanceTaskKind = z.infer<typeof MaintenanceTaskKindSchema>
 /** A user-level MCP server definition. Secret values are never copied: only environment variable names and URLs. */
 export const SyncedMcpServerSchema = z.discriminatedUnion('transport', [
   z.object({ transport: z.literal('stdio'), name: z.string().min(1).max(100), command: z.string().min(1).max(4096),
-    args: z.array(z.string().max(4096)).max(100), envVars: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)).max(100) }).strict(),
-  z.object({ transport: z.literal('http'), name: z.string().min(1).max(100), url: z.string().url().max(4096),
+    args: z.array(HarnessMcpArgumentSchema).max(100), envVars: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)).max(100) }).strict(),
+  z.object({ transport: z.literal('http'), name: z.string().min(1).max(100), url: HarnessMcpEndpointSchema,
     bearerTokenEnvVar: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u).nullable() }).strict(),
 ])
 export type SyncedMcpServer = z.infer<typeof SyncedMcpServerSchema>
