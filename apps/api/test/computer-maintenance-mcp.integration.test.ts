@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartResultSchema, MaintenanceRequestSchema,
   type MaintenanceStatus, type MaintenanceTaskStart,
@@ -30,6 +30,9 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
   const clients: Client[] = []
   const homes: string[] = []
   beforeAll(async () => { database = await agent3Database() }, 60000)
+  beforeEach(async () => {
+    await database.pool.query('delete from device_registrations')
+  })
   afterAll(async () => {
     await Promise.allSettled(clients.map(client => client.close()))
     await Promise.allSettled(apps.map(app => app.close()))
@@ -96,7 +99,8 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(sync.computers.map(computer => computer.target.hostRef.kind)).toEqual(['device'])
     expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-mcp', servers: {
       codex: [{ transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: null }],
-      claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
+      claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] },
+      warnings: ['codex MCP server private is unsafe or invalid; skipped.'] })
     await operator.callTool({ name: 'computers_maintenance_start', arguments: { commandId: randomUUID(), task: { kind: 'sync-plugins' } } })
     expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-plugins', plugins: ['pdf@openai'],
       marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }], claudePlugins: [], claudeMarketplaces: [] })
@@ -277,7 +281,8 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     }), new PostgresCommandCoordinator(database.pool), local, {
       codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}),
       codexPlugins: async () => { throw new Error('Codex plugin catalog unavailable') },
-      codexMarketplaces: async () => [], claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
+      codexMarketplaces: async () => [],
+      claudePlugins: async () => { throw new Error('Claude plugin catalog unavailable') },
     })
     await expect(service.keepCurrent()).rejects.toThrow('Some fleet settings could not be read.')
     expect(starts.map(input => input.kind)).toEqual(expect.arrayContaining(['update-harnesses', 'sync-mcp']))
