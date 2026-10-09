@@ -44,3 +44,16 @@ it('explains empty local limit fields without dumping schema errors', () => {
   expect(screen.getByText('Enter a positive whole number for “Maximum parallelism”.')).toBeVisible()
   expect(screen.getByText('Enter a positive whole number for “Maximum node executions”.')).toBeVisible()
 })
+
+it('explains an invalid active-time budget and targets the workflow setting', async () => {
+  const result = z.object({ executionPolicy: WorkflowExecutionPolicySchema }).safeParse({
+    executionPolicy: { maxParallelism: 2, maxNodeExecutions: 8, agentActiveTimeoutMs: 0 },
+  })
+  if (result.success) throw new Error('Expected an invalid active-time budget')
+  const openField = vi.fn()
+  render(<WorkflowSaveError error={result.error} pending={false} openField={openField} />)
+  expect(screen.getByText('Can’t save — fix 1 setting')).toBeVisible()
+  expect(screen.getByText(/Enter an Agent active-time budget.*leave it blank for the server default/)).toBeVisible()
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Fix setting' }))
+  expect(openField).toHaveBeenCalledWith(['executionPolicy', 'agentActiveTimeoutMs'])
+})

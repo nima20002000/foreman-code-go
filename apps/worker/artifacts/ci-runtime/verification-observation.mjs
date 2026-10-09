@@ -83,6 +83,7 @@ export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [
   descendant.unref();
   return {
     schemaVersion: 1, node: process.version, toolchain, tools: measuredTools, rootfsWriteError,
+    verificationEnvironment: process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT,
     gitWriteErrors: gitWriteErrors.join(','), schedulerWrite, detachedChildPid: descendant.pid,
     environment: Object.keys(process.env).sort(),
     pidNamespace: await readlink('/proc/self/ns/pid'), networkNamespace: await readlink('/proc/self/ns/net'),

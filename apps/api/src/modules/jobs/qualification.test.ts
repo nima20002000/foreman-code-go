@@ -160,6 +160,7 @@ describe('offline verification launch validation with structured physical observ
     const { resources } = verificationFixture()
     const ownerSentinelPaths = ['/owner/home/qualification-sentinel']
     const observation = { schemaVersion: 1, node: 'v22.23.3', pidNamespace: 'pid:[2]', networkNamespace: 'net:[2]',
+      verificationEnvironment: 'isolated-job-v1',
       interfaces: ['lo'], memoryMax: String(resources.limits.memoryBytes), swapMax: '0',
       pidsMax: String(resources.limits.pidsLimit), cpuRatio: resources.limits.cpuLimit,
       capabilities: '0000000000000000', noNewPrivileges: '1', controlExecution: 'EACCES', scratchExecution: 0,
@@ -174,7 +175,8 @@ describe('offline verification launch validation with structured physical observ
       ].join('\n') }
     const input = { observation, resources, ownerSentinelPaths, hostPidNamespace: 'pid:[1]', hostNetworkNamespace: 'net:[1]' }
     expect(() => validateVerificationIsolationObservation(input)).not.toThrow()
-    for (const change of [{ pidNamespace: 'pid:[1]' }, { interfaces: ['lo', 'eth0'] }, { controlExecution: 0 },
+    for (const change of [{ verificationEnvironment: undefined }, { verificationEnvironment: 'unknown' },
+      { pidNamespace: 'pid:[1]' }, { interfaces: ['lo', 'eth0'] }, { controlExecution: 0 },
       { shmCapacityBytes: resources.shmBytes + 1 }, { ownerSentinels: [{ path: ownerSentinelPaths[0], result: 'accessible' }] },
       { mountInfo: observation.mountInfo.replace('rw,nosuid,nodev - ext4', 'rw,nodev - ext4') }]) {
       expect(() => validateVerificationIsolationObservation({ ...input, observation: { ...observation, ...change } }))
@@ -224,6 +226,7 @@ describe('offline verification launch validation with structured physical observ
     expect(argv).toContain('--read-only-tmpfs=false')
     expect(argv).toContain(`${input.verification.scratchDirectory}:/job-scratch:rw,nosuid,nodev,exec,rprivate`)
     expect(argv).toContain('HOME=/job-scratch/home')
+    expect(argv).toContain('FOREMAN_CODE_VERIFICATION_ENVIRONMENT=isolated-job-v1')
     expect(argv).toContain('FOREMAN_CODE_VERIFICATION_UNIT_WORKERS=1')
     expect(argv).toContain('FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS=1')
     expect(() => podmanIsolationCreateArgv({ ...input, verification: { resources, scratchDirectory: '/owner/home' } }))

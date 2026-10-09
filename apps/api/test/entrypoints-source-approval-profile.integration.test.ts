@@ -1,7 +1,7 @@
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, realpath } from 'node:fs/promises'
-import { join } from 'node:path'
+import { cp, mkdir, mkdtemp, realpath } from 'node:fs/promises'
+import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { performance } from 'node:perf_hooks'
 import pg from 'pg'
@@ -63,13 +63,21 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
   const directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/entrypoints-source-profile-`)
   const storage = join(directory, 'state', 'runtime', 'main', 'canonical', 'source-snapshots')
   await mkdir(storage, { recursive: true, mode: 0o700 })
-  const root = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))
-  const commit = process.env.ENTRYPOINTS_PROFILE_COMMIT ?? (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
+  const repository = fileURLToPath(new URL('../../../', import.meta.url))
+  const root = join(await realpath(directory), 'repository')
+  const excluded = new Set(['.git', 'node_modules', 'dist', '.logs', '.cache', '.vite'])
+  await cp(repository, root, { recursive: true,
+    filter: path => !relative(repository, path).split(sep).some(part => excluded.has(part)) })
+  await qualifiedGit(root, ['init', '-q'])
+  await qualifiedGit(root, ['add', '.'])
+  await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+    'commit', '-qm', 'Source approval fixture'])
+  const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
   const lsTreeStart = performance.now()
   const approvedPaths = (await qualifiedGit(root, ['ls-tree', '-r', '--name-only', '-z', commit])).toString().split('\0').filter(Boolean)
   const lsTreeMs = performance.now() - lsTreeStart
   const commands = new PostgresCommandCoordinator(db.pool), access = new PostgresAccessService(db.pool)
-  const locations = new WorkspaceLocationService(db.pool, commands, directory, 'runner-local', join(root, '..'))
+  const locations = new WorkspaceLocationService(db.pool, commands, join(directory, 'runtime'), 'runner-local', directory)
   const workspaces = new WorkspaceManagementService(db.pool, commands, locations)
   const owner = await access.issue({ name: 'Profile owner', audience: 'operator', grants: [{ actions: ManagementActionSchema.options, scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
   const created = await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Actual repository approval' })

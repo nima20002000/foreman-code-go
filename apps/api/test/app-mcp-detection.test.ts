@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ScopedMcpDetectionSchema } from '@foreman-code/contracts'
 
 import {
@@ -108,5 +108,59 @@ describe('App MCP detection normalization', () => {
       executionId: 'execution-a', harness: 'codex', workingDirectory: '/workspace',
     })).rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_FAILED' })
     expect(issued).toBe(0)
+  })
+
+  it('reports an inspection deadline distinctly from configuration failure', async () => {
+    vi.useFakeTimers()
+    try {
+      let signal: AbortSignal | undefined
+      const detection = new McpDetectionService({ inspect: async input => {
+        signal = input.signal
+        return new Promise(() => {})
+      } }, 'http://127.0.0.1:3000/mcp', 'foreman-code', 50)
+      const pending = detection.preflight({ harness: 'codex', runnerId: 'runner-a', workingDirectory: '/workspace' })
+      const assertion = expect(pending).rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_TIMEOUT',
+        details: { inspectionCodes: ['NATIVE_MCP_INSPECTION_TIMEOUT'] } })
+      await vi.advanceTimersByTimeAsync(50)
+      await assertion
+      expect(signal?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports native command timeouts without exposing provider errors', async () => {
+    const detection = service(new DOMException('private provider output', 'TimeoutError'))
+    const result = await detection.inspect({ harness: 'codex', runnerId: 'runner-a', workingDirectory: '/workspace' })
+    expect(result.nativeFilters.diagnostics).toEqual(['NATIVE_MCP_INSPECTION_TIMEOUT'])
+    expect(result.detection.detail).toContain('timed out')
+    expect(result.detection.detail).not.toContain('private provider output')
+    await expect(detection.preflight({ harness: 'codex', runnerId: 'runner-a', workingDirectory: '/workspace' }))
+      .rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_TIMEOUT' })
+  })
+
+  it('preserves caller cancellation instead of reporting a preflight failure', async () => {
+    const controller = new AbortController()
+    const reason = new Error('caller canceled')
+    const detection = new McpDetectionService({ inspect: async () => {
+      controller.abort(reason)
+      return new Promise(() => {})
+    } }, 'http://127.0.0.1:3000/mcp')
+    await expect(detection.preflight({ harness: 'codex', runnerId: 'runner-a', workingDirectory: '/workspace',
+      signal: controller.signal })).rejects.toBe(reason)
+  })
+
+  it('does not issue a credential when configuration inspection times out', async () => {
+    const issueForExecution = vi.fn()
+    const credentials = { ttlMs: 15 * 60 * 1000, issueForExecution, revoke: async () => undefined }
+    const launch = new WorkerLaunchCredentialService(
+      service(new DOMException('private provider output', 'TimeoutError')),
+      credentials as never,
+      'runner-a',
+    )
+    await expect(launch.prepare({
+      executionId: 'execution-a', harness: 'codex', workingDirectory: '/workspace',
+    })).rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_TIMEOUT' })
+    expect(issueForExecution).not.toHaveBeenCalled()
   })
 })

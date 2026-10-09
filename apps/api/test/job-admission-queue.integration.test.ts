@@ -65,6 +65,68 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     return (await service.listQueue(reader.principal, f.workspaceId))
       .sort((a, b) => Number(BigInt(a.enqueueSequence) - BigInt(b.enqueueSequence)))
   }
+  it('persists source capacity waiting through authenticated MCP and resumes the original attempt', async () => {
+    let now = new Date()
+    const f = await fixture({ clock: () => now })
+    const definition = await f.save()
+    const input = command(definition)
+    f.accept.mockRejectedValueOnce(new DomainError('SOURCE_CAPACITY', 'Source storage is full', 409))
+    const startApp = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access,
+      services: { jobs: f.jobs, commands: f.commands } as unknown as OperatorServices } })
+    apps.push(startApp)
+    const startAddress = await startApp.listen({ host: '127.0.0.1', port: 0 })
+    const starter = new Client({ name: 'source-capacity-starter', version: '1' })
+    clients.push(starter)
+    await starter.connect(new StreamableHTTPClientTransport(new URL('/mcp', startAddress),
+      { requestInit: { headers: { authorization: `Bearer ${writer.token}` } } }))
+    const started = await starter.callTool({ name: 'job_start', arguments: { workspaceId: f.workspaceId, ...input } })
+    expect(started.isError).not.toBe(true)
+    const admission = JobPendingAdmissionSchema.parse(
+      (started.structuredContent as { admission: unknown }).admission)
+    const id = admission.ticket.id
+    f.online()
+    await f.jobs.wakeQueue()
+    const waiting = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, id)
+    expect(waiting).toMatchObject({ state: 'waiting', waitingReasons: ['busy'],
+      sourceCapacityWait: { attempts: 1, waitedMs: 0 } })
+    expect(waiting.reservationId).toBe(id)
+    await f.jobs.closeQueue()
+    const restarted = f.createService()
+    services.push(restarted)
+    await restarted.wakeQueue()
+    expect(f.accept).toHaveBeenCalledTimes(1)
+    const scopedReader = await access.issue({ name: 'Capacity reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300000), grants: [{
+        actions: ['jobs:read', 'capabilities:read'], scope: { workspaceIds: [f.workspaceId] },
+      }] })
+    const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access,
+      services: { jobs: restarted, commands: f.commands } as unknown as OperatorServices } })
+    apps.push(app)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const client = new Client({ name: 'source-capacity-reader', version: '1' })
+    clients.push(client)
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { requestInit: { headers: { authorization: `Bearer ${scopedReader.token}` } } }))
+    const read = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: f.workspaceId, ticketId: id } })
+    expect(JobQueueTicketSchema.parse((read.structuredContent as { ticket: unknown }).ticket)).toEqual(waiting)
+    const denied = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: 'foreign-workspace', ticketId: id } })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    const deniedStart = await client.callTool({ name: 'job_start', arguments: { workspaceId: f.workspaceId, ...input } })
+    expect(deniedStart.isError).toBe(true)
+    now = new Date(Date.parse(waiting.sourceCapacityWait!.retryAt))
+    await restarted.wakeQueue()
+    const accepted = await restarted.getQueueTicket(reader.principal, f.workspaceId, id)
+    expect(accepted).toMatchObject({ state: 'accepted', executionId: waiting.executionId,
+      operationId: waiting.operationId, attemptId: waiting.attemptId, reservationId: id })
+    expect(accepted.sourceCapacityWait).toBeUndefined()
+    expect(f.accept).toHaveBeenCalledTimes(2)
+    const acceptedRead = await client.callTool({ name: 'job_queue_get',
+      arguments: { workspaceId: f.workspaceId, ticketId: id } })
+    expect(JobQueueTicketSchema.parse((acceptedRead.structuredContent as { ticket: unknown }).ticket)).toEqual(accepted)
+  })
   it('persists Agent CI origin separately from graph membership and reads it through authenticated MCP', async () => {
     const f = await fixture()
     const scopedReader = await access.issue({ name: 'CI origin reader', audience: 'operator',

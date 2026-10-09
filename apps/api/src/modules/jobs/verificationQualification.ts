@@ -188,7 +188,8 @@ export async function qualifyVerificationRuntime(input: {
     validateVerificationIsolationObservation({ observation, resources: fingerprint.resources,
       hostPidNamespace: await readlink('/proc/self/ns/pid'), hostNetworkNamespace: await readlink('/proc/self/ns/net'),
       ownerSentinelPaths: [ownerSentinel] })
-    const environment = ['CI', 'FOREMAN_CODE_JOB_INPUT_MANIFEST', 'GRAPHQL_JOB_INPUT_MANIFEST', 'HOME', 'LANG',
+    const environment = ['CI', 'FOREMAN_CODE_JOB_INPUT_MANIFEST', 'GRAPHQL_JOB_INPUT_MANIFEST',
+      'FOREMAN_CODE_VERIFICATION_ENVIRONMENT', 'HOME', 'LANG',
       'PATH', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', ...Object.keys(JOB_GIT_ENVIRONMENT)]
     if (Array.isArray(observation.environment) && observation.environment.includes('HOSTNAME')) environment.push('HOSTNAME')
     if (!isDeepStrictEqual(observation.environment, environment.sort()) || jobDigest(observation.toolchain) !== fingerprint.toolchainDigest

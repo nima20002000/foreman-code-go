@@ -4,7 +4,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
-  workflowSaveIssues, CURRENT_WORKFLOW_CAPABILITIES, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema,
+  workflowSaveIssues, CURRENT_WORKFLOW_CAPABILITIES, DEFAULT_AGENT_ACTIVE_TIMEOUT_MS,
+  CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema,
   CurrentWorkflowSavedSchema, CurrentWorkflowReadInputSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowValidationSchema, WorkflowDefinitionV3Schema, WorkflowVersionV3Schema,
   ExecutableWorkflowV3Schema, canonicalGraphJson, sameAuthoredWorkflow, sameExecutableWorkflow,
@@ -59,7 +60,8 @@ export class CurrentWorkflowAuthoring {
   readonly editIntents: ReturnType<typeof createCurrentEditIntentService>
   private editStop: RunManagementService['stop'] | undefined
   private runtime: Pick<RunManagementService, 'availability' | 'assertCurrentStopReady'> | undefined
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
+    private readonly agentActiveTimeoutMs = DEFAULT_AGENT_ACTIVE_TIMEOUT_MS) {
     this.editIntents = createCurrentEditIntentService(pool, commands, {
       validate: async (client, principal, input, options) => {
         authorize(principal, input, true)
@@ -98,6 +100,8 @@ export class CurrentWorkflowAuthoring {
     requireAuthorization(principal, 'capabilities:read')
     const availability = this.availability()
     return { ...structuredClone(CURRENT_WORKFLOW_CAPABILITIES), ...availability,
+      agentActiveTimeBudget: { ...CURRENT_WORKFLOW_CAPABILITIES.agentActiveTimeBudget,
+        defaultMs: this.agentActiveTimeoutMs },
       meaningfulEdit: availability.stopAvailable,
       editIntents: { ...CURRENT_WORKFLOW_CAPABILITIES.editIntents, stopUnsettled: availability.stopAvailable },
       reasons: [...(availability.runtimeAdmission ? [] : ['NATIVE_START_NOT_READY' as const]),

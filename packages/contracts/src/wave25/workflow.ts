@@ -7,6 +7,8 @@ import { IdSchema, TimestampSchema } from '../schemaPrimitives.js'
 import { ExecutionSemanticsVersionSchema } from './workflowShape.js'
 export { EXECUTION_SEMANTICS_VERSION, ExecutionSemanticsVersionSchema } from './workflowShape.js'
 export {
+  DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS, AgentActiveTimeoutMsSchema,
+  WorkflowExecutionPolicySchema,
   ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema,
   WorkflowExecutionRelationshipSchema, WorkflowApprovalRelationshipSchema, WorkflowRelationshipSchema,
 } from './workflowShape.js'

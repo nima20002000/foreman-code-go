@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
-import { cp, mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -50,7 +51,17 @@ it('keeps source development commands usable after successful and failed product
     await writeFile(join(contracts, 'dist/index.js'), 'export const contractValue = () => "production API available"\n')
     await writeFile(join(api, 'dist/index.js'),
       'import { contractValue } from "@foreman-code/contracts"; export const deployed = () => contractValue()\n')
-    await run('corepack', ['pnpm', 'install'])
+    const require = createRequire(new URL('../../worker/package.json', import.meta.url))
+    const { parse } = require('yaml') as { parse: (text: string) => Record<string, unknown> }
+    const lock = parse(await readFile(new URL('../../../pnpm-lock.yaml', import.meta.url), 'utf8'))
+    await writeFile(join(source, 'pnpm-lock.yaml'), JSON.stringify({ ...lock, importers: {
+      '.': { devDependencies: { '@types/node': { specifier: '26.5.1', version: '26.5.1' } } },
+      'apps/api': { dependencies: {
+        '@foreman-code/contracts': { specifier: 'workspace:*', version: 'link:../../packages/contracts' },
+      } },
+      'packages/contracts': {},
+    } }))
+    await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
     await verifyDevelopment()
     await deployProductionApi(run, destination)
     const deployed = await import(pathToFileURL(join(destination, 'dist/index.js')).href)

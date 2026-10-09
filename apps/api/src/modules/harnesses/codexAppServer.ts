@@ -1651,6 +1651,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       return McpDetectionSchema.parse({
         harness: 'codex', serverName: this.appMcpServerName, state: notConfigured ? 'not_detected' : 'check_failed',
         endpointMatches: null, credentialEnvironmentVariable: null, checkedAt,
+        ...(error instanceof Error && error.name === 'TimeoutError'
+          ? { detail: 'Native MCP inspection timed out. Retry after Codex finishes starting.' } : {}),
       })
     }
   }

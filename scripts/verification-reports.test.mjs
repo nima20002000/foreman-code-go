@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -126,6 +126,7 @@ test('a native Node test process records each file and case, including skips', a
     writeFileSync(file, "import { test } from 'node:test'; test('passes', () => {}); test.skip('skips', () => {});\n")
     const code = await runVerificationCommand([process.execPath, '--test', file], {
       root: f.root, cwd: f.root, script: 'test', env: { ...process.env,
+        FOREMAN_CODE_VERIFICATION_COMMAND_KEY: '',
         NODE_TEST_CONTEXT: 'child-v8',
         FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory, FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192',
         FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '65536' },
@@ -135,6 +136,35 @@ test('a native Node test process records each file and case, including skips', a
       { root: f.root, expectedFiles: ['example.test.mjs'], maxBytes: 65536 })
     assert.equal(report.complete, true)
     assert.deepEqual(report.totals, { total: 2, passed: 1, failed: 0, skipped: 1 })
+  } finally { f.close() }
+})
+
+test('nested builds retain the outer report and allocate separate reports for repeated commands', async () => {
+  const f = fixture()
+  try {
+    const env = { ...process.env, FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory,
+      FOREMAN_CODE_VERIFICATION_COMMAND_KEY: '',
+      FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192', FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '65536' }
+    const options = { root: f.root, cwd: f.root, script: 'build', env }
+    assert.equal(await runVerificationCommand([process.execPath, '-e', 'console.log("outer build")'], options), 0)
+    const outer = readFileSync(portionPath(f.directory, 'root:build', 'command.json'), 'utf8')
+    const module = new URL('./verification-reports.mjs', import.meta.url).href
+    const script = `import { runVerificationCommand } from ${JSON.stringify(module)};
+      for (let index = 0; index < 2; index++) {
+        const code = await runVerificationCommand([process.execPath, '-e', 'console.log("nested build")'],
+          { root: process.cwd(), cwd: process.cwd(), script: 'build', env: process.env });
+        if (code) process.exit(code);
+      }`
+    assert.equal(await runVerificationCommand([process.execPath, '--input-type=module', '-e', script],
+      { ...options, script: 'test' }), 0)
+    assert.equal(readFileSync(portionPath(f.directory, 'root:build', 'command.json'), 'utf8'), outer)
+    const nested = readdirSync(f.directory).filter(name => name.startsWith('nested-'))
+    assert.equal(nested.length, 2)
+    for (const name of nested) {
+      const receipt = JSON.parse(readFileSync(portionPath(join(f.directory, name), 'root:build', 'command.json')))
+      assert.equal(receipt.code, 0)
+      assert.match(readFileSync(portionPath(join(f.directory, name), 'root:build', 'log'), 'utf8'), /nested build/)
+    }
   } finally { f.close() }
 })
 

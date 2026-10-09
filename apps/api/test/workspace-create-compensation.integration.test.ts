@@ -8,6 +8,7 @@ import pg from 'pg'
 import * as contracts from '@foreman-code/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
+import { WorkspaceProjectProvisioning } from '../src/modules/workspaces/projectProvisioning.js'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -53,7 +54,8 @@ describe('workspace project folder compensation through authenticated MCP', () =
         }
         const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicitName ? { name } : {}) }
         const failed = await f.owner.client.callTool({ name: 'workspace_create', arguments: input })
-        expect(failed.isError).toBe(true)
+        expect(failed.isError, JSON.stringify(failed)).toBe(true)
+        expect(JSON.stringify(failed)).toContain('INTERNAL_ERROR')
         expect(await readdir(f.parentPath)).toEqual([])
         expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
         expect((await f.pool.query('select count(*)::int as count from workspaces')).rows[0].count).toBe(0)
@@ -102,7 +104,9 @@ describe('workspace project folder compensation through authenticated MCP', () =
         }
         return response
       } as never)
-      expect((await f.owner.client.callTool({ name: 'workspace_create', arguments: input })).isError).toBe(true)
+      const failed = await f.owner.client.callTool({ name: 'workspace_create', arguments: input })
+      expect(failed.isError, JSON.stringify(failed)).toBe(true)
+      expect(JSON.stringify(failed)).toContain('INTERNAL_ERROR')
       vi.restoreAllMocks()
       const directory = join(f.parentPath, input.name)
       expect((await stat(directory)).isDirectory()).toBe(true)
@@ -137,6 +141,37 @@ describe('workspace project folder compensation through authenticated MCP', () =
     } finally { await f.close() }
   }, 30_000)
 
+  it('preserves an empty destination created between validation and publication', async () => {
+    const f = await workspaceMcpFixture()
+    try {
+      const name = 'Racing project'
+      const destination = join(f.parentPath, name)
+      let destinationIdentity: Awaited<ReturnType<typeof stat>> | undefined
+      const create = WorkspaceProjectProvisioning.prototype.create
+      vi.spyOn(WorkspaceProjectProvisioning.prototype, 'create').mockImplementation(async function (
+        this: WorkspaceProjectProvisioning, rootPath, owner,
+      ) {
+        if (rootPath === destination) {
+          await mkdir(destination)
+          destinationIdentity = await stat(destination)
+        }
+        return create.call(this, rootPath, owner)
+      })
+      const result = await f.owner.client.callTool({ name: 'workspace_create', arguments: {
+        commandId: randomUUID(), name, parentPath: f.parentPath,
+      } })
+      expect(result.isError, JSON.stringify(result)).toBe(true)
+      expect(JSON.stringify(result)).toContain('WORKSPACE_FOLDER_EXISTS')
+      expect(await stat(destination)).toMatchObject({ dev: destinationIdentity!.dev, ino: destinationIdentity!.ino })
+      expect(await readdir(f.parentPath)).toEqual([name])
+      expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])
+      expect((await f.pool.query('select id from workspaces')).rows).toEqual([])
+    } finally {
+      vi.restoreAllMocks()
+      await f.close()
+    }
+  }, 30_000)
+
   it('recovers an unpublished stage without deleting a pre-existing project folder', async () => {
     const f = await workspaceMcpFixture()
     let child: ChildProcess | undefined
@@ -152,7 +187,8 @@ describe('workspace project folder compensation through authenticated MCP', () =
       })
       child.send({ database: f.pool.options, parentPath: f.parentPath, token: f.owner.token,
         input, interrupt: 'staged' })
-      expect((await once(child, 'message'))[0]).toEqual({ phase: 'staged' })
+      const [paused] = await once(child, 'message')
+      expect(paused, JSON.stringify(paused)).toEqual({ phase: 'staged' })
       const exited = once(child, 'exit')
       child.kill('SIGKILL')
       await exited
@@ -189,7 +225,7 @@ describe('workspace project folder compensation through authenticated MCP', () =
       const input = { commandId: randomUUID(), parentPath: f.parentPath, ...(explicit ? { name } : {}) }
       const interrupted = launch(input, true)
       const [paused] = await once(interrupted, 'message')
-      expect(paused).toEqual({ phase: 'provisioned' })
+      expect(paused, JSON.stringify(paused)).toEqual({ phase: 'provisioned' })
       expect(await readdir(f.parentPath)).toEqual([name])
       expect((await f.pool.query('select id from workspaces')).rows).toEqual([])
       expect((await f.pool.query('select identity from workspace_project_provisioning')).rows)
@@ -200,8 +236,8 @@ describe('workspace project folder compensation through authenticated MCP', () =
       const restarted = launch(input, false)
       const completion = once(restarted, 'exit')
       const [message] = await once(restarted, 'message')
-      expect(message.phase).toBe('completed')
-      expect(message.result.isError).not.toBe(true)
+      expect(message.phase, JSON.stringify(message)).toBe('completed')
+      expect(message.result.isError, JSON.stringify(message.result)).not.toBe(true)
       const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
       expect(saved.replayed).toBe(false)
       expect(saved.value.workspace.name).toBe(name)
@@ -235,7 +271,7 @@ describe('workspace project folder compensation through authenticated MCP', () =
     const errors: unknown[] = []
     try {
       await mkdir(gate)
-      await writeFile(join(gate, 'mv'), `#!/usr/bin/env node
+      await writeFile(join(gate, 'python3'), `#!/usr/bin/env node
 const { writeFile, stat } = require('node:fs/promises')
 const { join } = require('node:path')
 const { execFile } = require('node:child_process')
@@ -250,7 +286,7 @@ async function publish() {
       await new Promise(done => setTimeout(done, 10))
     }
   }
-  await promisify(execFile)('/usr/bin/mv', process.argv.slice(2))
+  await promisify(execFile)('/usr/bin/python3', process.argv.slice(2))
   await writeFile(join(gate, 'published'), '')
 }
 publish().catch(error => { console.error(error); process.exitCode = 1 })
@@ -285,8 +321,8 @@ publish().catch(error => { console.error(error); process.exitCode = 1 })
       const restarted = launch(true)
       const completion = once(restarted, 'exit')
       const [message] = await once(restarted, 'message')
-      expect(message.phase).toBe('completed')
-      expect(message.result.isError).not.toBe(true)
+      expect(message.phase, JSON.stringify(message)).toBe('completed')
+      expect(message.result.isError, JSON.stringify(message.result)).not.toBe(true)
       const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
       expect(saved.value.workspace.name).toBe(name)
       expect(await completion).toEqual([0, null])

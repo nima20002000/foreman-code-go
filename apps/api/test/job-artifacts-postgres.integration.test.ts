@@ -1,5 +1,9 @@
 import { logArchive } from '../../../scripts/verification-reports.mjs'
+import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities }
+  from '../../../scripts/integration-capabilities.mjs'
+import { integrationReport } from '../../../scripts/test-integration.mjs'
 import { AutoJobDefinitionSpecSchema, JobArtifactReadOutputSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
+import { execFileSync } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
@@ -278,6 +282,90 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     }
   })
   if (placementMode === 'verification') {
+  it('retains unavailable runtime capabilities through authenticated MCP after report cleanup', async () => {
+    await pool.query('update job_fixture_owner set revoked=false')
+    const environment = await integrationEnvironmentCapabilities({
+      FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+    })
+    const selected = [
+      'apps/api/test/local-human-native.integration.test.ts',
+      'apps/api/test/test-database-startup.integration.test.ts',
+      'apps/api/test/computer-workflow-save.regression.integration.test.ts',
+      'apps/api/test/remote-review-production.integration.test.ts',
+      'apps/api/test/worker-chat-profile-qualification.integration.test.ts',
+      'apps/api/test/worker-profile-requalification.integration.test.ts',
+    ]
+    const { runnable, unavailable } = partitionIntegrationCapabilities(selected, environment)
+    expect(runnable).toEqual([])
+    const diagnostics = integrationReport(selected, unavailable, [], {
+      startedAt: execution.createdAt,
+      finishedAt: execution.finishedAt!,
+      diagnostic: false,
+      processStopped: true,
+      environment,
+    })
+    const path = '.logs/verification/logs.tar.gz'
+    const output = { path, required: true, mediaType: 'application/gzip' as const,
+      kind: 'logs-archive' as const, maxBytes: 65536 }
+    const job = VerificationJobExecutionSchema.parse({ ...execution, id: randomUUID(), attemptId: randomUUID(),
+      acceptedSpec: { ...execution.acceptedSpec,
+        policy: { ...execution.acceptedSpec.policy, maxOutputBytes: 128 * 1024 },
+        outputs: [...execution.acceptedSpec.outputs, output] } })
+    await pool.query('insert into job_executions values($1,$2,$3::jsonb,$4::jsonb,$5)',
+      [job.id, job.workspaceId, JSON.stringify(job), JSON.stringify(job.acceptedSpec), 'owner'])
+    const parts = join(root, `capability-reports-${job.id}`)
+    await mkdir(parts)
+    await writeFile(join(parts, 'summary.json'), JSON.stringify(diagnostics))
+    const archive = logArchive(parts, output.maxBytes)
+    const original = data
+    data = archive
+    let published
+    try {
+      published = await artifacts.publishAccepted({ workspaceId: job.workspaceId, executionId: job.id,
+        attemptId: job.attemptId, owner: job.owner, commandId: randomUUID(), path,
+        mediaType: output.mediaType, sha256: digest(archive), byteSize: archive.length })
+    } finally {
+      data = original
+      await rm(parts, { recursive: true })
+    }
+    const input = { workspaceId: job.workspaceId, executionId: job.id,
+      fileId: published.artifact.fileId, revisionId: published.artifact.revisionId }
+    const denied = new Client({ name: 'denied capability report reader', version: '1' })
+    clients.push(denied)
+    await denied.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { authProvider: { token: async () => deniedToken } }))
+    const listInput = { workspaceId: job.workspaceId, executionId: job.id }
+    expect((await denied.callTool({ name: 'job_artifacts_list', arguments: listInput })).isError).toBe(true)
+    expect((await denied.callTool({ name: 'job_artifact_read', arguments: input })).isError).toBe(true)
+    const owner = new Client({ name: 'capability report reader', version: '1' })
+    clients.push(owner)
+    await owner.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { authProvider: { token: async () => ownerToken } }))
+    const listed = await owner.callTool({ name: 'job_artifacts_list', arguments: listInput })
+    expect(listed.isError, JSON.stringify(listed.content)).not.toBe(true)
+    expect(listed.structuredContent).toMatchObject({ artifacts: [published.artifact] })
+    const result = await owner.callTool({ name: 'job_artifact_read', arguments: input })
+    expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+    const retained = JobArtifactReadOutputSchema.parse(result.structuredContent)
+    const bytes = Buffer.from(retained.content, 'base64')
+    expect(bytes).toEqual(archive)
+    const summary = JSON.parse(execFileSync('tar', ['-xzOf', '-', 'logs/0-summary.json'], {
+      input: bytes, encoding: 'utf8', timeout: 5000, maxBuffer: 65536,
+    }))
+    expect(summary).toEqual(diagnostics)
+    expect(summary).toMatchObject({ environment: { runtime: 'isolated-job',
+      capabilities: { nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false } },
+      outcome: 'incomplete', completeness: 'partial', expectedPortions: 6, completedPortions: 0,
+      totals: { total: 0, passed: 0, failed: 0, skipped: 0 },
+      files: [
+        { complete: false, requiredCapabilities: ['nativeCgroupDelegation'] },
+        { complete: false, requiredCapabilities: ['dockerCompose'] },
+        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
+        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
+        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
+        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
+      ] })
+  })
   it.each([7, 0])('reads reports after a failed qualification with command exit %i over MCP after cleanup', async exitCode => {
     const f = qualificationReportFixture()
     const candidate = f.candidate

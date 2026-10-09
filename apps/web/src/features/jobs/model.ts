@@ -32,6 +32,7 @@ export function jobNetworkLabel(network: JobDefinitionSpecRecord['policy']['netw
 export function queueLabel(ticket: JobQueueTicket) {
   if (ticket.state === 'terminal') return (ticket.terminalReason ?? 'terminal').replaceAll('_', ' ')
   if (ticket.cancelRequestedAt) return 'Cancellation requested · stop unconfirmed'
+  if (ticket.sourceCapacityWait) return 'Waiting for source capacity'
   const labels = { waiting: 'Queued · waiting', blocked: 'Queued · blocked',
     claimed: 'Claimed · preparing', accepted: 'Accepted' }
   return labels[ticket.state]

@@ -76,3 +76,18 @@ it('drops records of pruned images and the installer copies only they used', asy
     'seed-receipt.json'])
   expect(await readdir(join(f.installer, 'runtime-cache'))).toEqual([f.inputDigest + '.json'])
 })
+
+it('keeps installed receipts through cache pruning and removes them after their configuration is retired', async () => {
+  const f = await fixture()
+  const retained = join(f.installer, 'seed-receipt-' + '1'.repeat(12) + '.json')
+  const current = join(f.installer, 'seed-receipt-' + '2'.repeat(64) + '.json')
+  const unused = join(f.installer, 'context-receipt-' + '3'.repeat(64) + '.json')
+  for (const path of [retained, current, unused]) await writeFile(path, 'protected bytes', { mode: 0o600 })
+  await pruneCiRuntimeCache({ ...f, keepPaths: [retained, current] })
+  expect(await readFile(retained, 'utf8')).toBe('protected bytes')
+  expect(await readFile(current, 'utf8')).toBe('protected bytes')
+  await expect(readFile(unused)).rejects.toMatchObject({ code: 'ENOENT' })
+  await pruneCiRuntimeCache(f)
+  await expect(readFile(retained)).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(readFile(current)).rejects.toMatchObject({ code: 'ENOENT' })
+})

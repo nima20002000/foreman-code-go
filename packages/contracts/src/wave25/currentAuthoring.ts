@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { ApprovalHandlerSchema, CurrentAgentWorkflowNodeSchema } from './workflowShape.js'
+import { ApprovalHandlerSchema, CurrentAgentWorkflowNodeSchema,
+  DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
 import { GraphIdSchema } from './protocol.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
@@ -96,6 +97,10 @@ export const CURRENT_WORKFLOW_TOOLS = Object.freeze({
 })
 export const CurrentWorkflowCapabilitiesSchema = z.object({
   executionSemanticsVersion: z.literal(3), repeatOptional: z.literal(true),
+  agentActiveTimeBudget: z.object({
+    defaultMs: z.number().int().positive(), maximumMs: z.literal(MAX_AGENT_ACTIVE_TIMEOUT_MS),
+    perExecution: z.literal(true), approvalWaitExcluded: z.literal(true),
+  }).strict(),
   approvalHandlers: z.array(ApprovalHandlerSchema),
   forms: z.tuple([z.literal('sequential'), z.literal('parallel_all_required'), z.literal('conditional'),
     z.literal('approval'), z.literal('bounded_repeat')]),
@@ -122,6 +127,8 @@ export const CurrentWorkflowCapabilitiesSchema = z.object({
 })
 export const CURRENT_WORKFLOW_CAPABILITIES = CurrentWorkflowCapabilitiesSchema.parse({
   executionSemanticsVersion: 3, repeatOptional: true,
+  agentActiveTimeBudget: { defaultMs: DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, maximumMs: MAX_AGENT_ACTIVE_TIMEOUT_MS,
+    perExecution: true, approvalWaitExcluded: true },
   approvalHandlers: ApprovalHandlerSchema.options,
   forms: ['sequential', 'parallel_all_required', 'conditional', 'approval', 'bounded_repeat'],
   savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, stopAvailable: false, meaningfulEdit: false,

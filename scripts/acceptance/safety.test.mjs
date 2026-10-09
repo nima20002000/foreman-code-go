@@ -6,7 +6,23 @@ import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, 
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { BASE, assertOwned, environment, freePort, options, publicError } from './safety.mjs'
+import { BASE, assertOwned, environment, freePort, options, publicError, verificationToolEnvironment } from './safety.mjs'
+
+test('verification identity and build tools use only the fixed read-only Job Git mount', () => {
+  const source = { FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+    GIT_DIR: '/unrelated/repository', GIT_WORK_TREE: '/unrelated/tree',
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/unrelated/hooks' }
+  assert.deepEqual(verificationToolEnvironment(source), {
+    FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+    GIT_DIR: '/graphql-job-git', GIT_WORK_TREE: '/workspace',
+    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1',
+  })
+  assert.deepEqual(environment(source), {})
+  assert.deepEqual(verificationToolEnvironment({ GIT_DIR: '/unrelated/repository' }), {})
+  assert.throws(() => verificationToolEnvironment({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'unknown' }),
+    /Unknown verification environment/)
+})
 
 async function fixture(work) {
   const state = await mkdtemp(join(await realpath('/tmp'), 'eng07-'))

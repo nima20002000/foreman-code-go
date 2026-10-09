@@ -46,6 +46,7 @@ export async function readBuildComputerPreference(sql: JobSql, target: DevicePro
 }
 
 export class BuildComputerSettings {
+  enrollment?: { request(): void }
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly readiness: (sql: JobSql, target: DeviceProvisioningTarget, allowancePercent: number) => Promise<
       Pick<BuildComputerStatus, 'state' | 'reasons' | 'remoteExecutionEnabled'>>,
@@ -122,7 +123,10 @@ export class BuildComputerSettings {
         for (const change of input.updates) await assertBuildComputerTarget(sql, change.target)
       },
       perform })
-    if (!result.replayed) this.changed?.()
+    if (!result.replayed) {
+      this.changed?.()
+      this.enrollment?.request()
+    }
     return result.value
   }
   private async savePreferences(sql: JobSql, principal: ManagementPrincipal, updates: BuildComputerChange[]) {

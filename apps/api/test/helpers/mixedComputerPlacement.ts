@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
-import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
+import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
 import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
 import { AgentPlacementProducer } from '../../src/modules/placement/agentProducer.js'
@@ -27,7 +28,10 @@ type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 /** Persisted source/root/profile fixtures over the real authorization services.
  * Device filesystem and native qualification records are fixture data. No native
  * execution, remote physical qualification or process result is produced here. */
-export async function mixedComputerPlacement(f: Fixture, directory: string) {
+export async function mixedComputerPlacement(f: Fixture, directory: string, options: {
+  git?: SourceManifest['git']
+  sourceAccessMode?: SourceRootRecord['binding']['accessMode']
+} = {}) {
   const mainId = (await f.db.pool.query<{ id: string }>(
     'select id from application_installation where singleton=true')).rows[0]!.id
   const project = join(directory, 'project')
@@ -54,6 +58,7 @@ export async function mixedComputerPlacement(f: Fixture, directory: string) {
   const bytes = Buffer.from('export const approved = true\n')
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
     capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip', deletions: [],
+    ...(options.git ? { git: options.git } : {}),
     entries: [{ path: 'source.ts', kind: 'file', byteSize: bytes.length,
       sha256: sourceSha256(bytes), executable: false }] })
   const source = { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
@@ -107,7 +112,8 @@ export async function mixedComputerPlacement(f: Fixture, directory: string) {
       workerInstallationId: kind === 'main' ? null : registration.workerInstallationId, workspaceId: policy.workspaceId,
       rootId: randomUUID(), bindingRevision: 1, locationRevision,
       canonicalPath: join(managedRuntimeRoot, 'source-materializations', policy.rootPolicyId), filesystem,
-      accessMode: 'read-only', snapshotId: source.snapshotId, manifestDigest: source.manifestDigest },
+      accessMode: options.sourceAccessMode ?? 'read-only',
+      snapshotId: source.snapshotId, manifestDigest: source.manifestDigest },
     ownerPrincipalId: f.writer.principal.id, authorizedByPrincipalId: f.writer.principal.id,
     registration: policy.registration, attestationId: randomUUID(), attestationDigest: 'a'.repeat(64), boundAt: f.f.createdAt })
     await f.db.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
@@ -162,6 +168,7 @@ export async function mixedComputerPlacement(f: Fixture, directory: string) {
       connectionGeneration: '1', environmentGeneration: '1' }),
   },
     { codex: 'codex-live-4' }, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
-  return { producer, locationRevision, source, local: placements[0]!, remote: placements[1]!,
+  return { producer, locationRevision, source, sources, policies, hosts, installations,
+    local: placements[0]!, remote: placements[1]!,
     reads: new RunPlacementReadService(f.db.pool, readRemoteObservations) }
 }

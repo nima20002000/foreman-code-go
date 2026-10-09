@@ -98,7 +98,7 @@ export async function callWorkspaceTool<T>(
   client: Client, name: string, schema: z.ZodType<T>, args: Record<string, unknown> = {},
 ): Promise<T> {
   const response = await client.callTool({ name, arguments: args })
-  if (response.isError) throw new Error(JSON.stringify(response))
+  if (response.isError) throw new Error(`MCP tool ${name} failed: ${JSON.stringify(response)}`)
   return schema.parse(response.structuredContent)
 }
 

@@ -38,6 +38,7 @@ function usesRetiredHarness(profile: JobRuntimeProfileRecord): boolean {
 
 /** Main CI policy metadata; machine/root identity continues to come from W07/W09/W12. */
 export class JobRuntimeProfiles implements JobRuntimeInventory {
+  enrollment?: { profileSaved(principal: ManagementPrincipal, workspaceId: string): Promise<void> }
   constructor(private readonly pool:pg.Pool,private readonly commands:PostgresCommandCoordinator,private readonly sources:PostgresSourceService,
     private readonly producer:JobRuntimeQualificationProducer,
     private readonly changed?: () => void) {}
@@ -106,6 +107,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         await sql.query('insert into job_runtime_profile_versions(profile_id,revision,record) values($1,$2,$3::jsonb)',[id,revision,JSON.stringify(profile)])
         return profile
       }})
+    await this.enrollment?.profileSaved(principal, workspaceId)
     this.changed?.()
     return result.value
   }

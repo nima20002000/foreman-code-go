@@ -1,4 +1,5 @@
 import { jobPlacementRequest } from './placementRequest.js'
+import { ciEnrollmentDisabled } from './ciEnrollmentInventory.js'
 import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
@@ -272,6 +273,10 @@ export class JobComputerSelection {
         continue
       }
       const preference = await this.settings.preference(sql, buildComputerTarget(candidate.spec.target))
+      if (await ciEnrollmentDisabled(sql, workspaceId, preference.target)) {
+        reasons.push('disabled')
+        continue
+      }
       enrolled.push({ ...candidate, preference })
     }
     const readyHosts = new Set(enrolled.filter(candidate => candidate.ready)

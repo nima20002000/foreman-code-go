@@ -6,7 +6,8 @@ import type { PreparedCiRuntime } from '@foreman-code/contracts'
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { InstalledVerificationRuntimeConfigurationSchema } from './installedVerificationConfiguration.js'
-import { nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
+import { currentCiRuntimePaths, nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations,
+  scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { refreshMainJobRuntime } from '../../cli/refreshMainJobRuntime.js'
 
 const commands = vi.hoisted(() => ({ run: vi.fn() }))
@@ -194,15 +195,25 @@ describe('CI runtime refresh', () => {
     const used = `sha256:${'c'.repeat(64)}`, unused = `sha256:${'d'.repeat(64)}`
     const previous = (image: string, source: string) => JSON.stringify({ ...f.current,
       machine: { ...f.current.machine, imageDigest: image },
+      seedReceiptPath: source + '-seed.json',
       qualificationSource: { ...f.current.qualificationSource, directory: source } })
     await writeFile(join(directory, 'job-runtime.json'), JSON.stringify(f.current))
     await writeFile(join(directory, `job-runtime-${'b'.repeat(64)}.json`), previous(used, '/ci/installer/qualification-source-used'))
     await writeFile(join(directory, `job-runtime-${'e'.repeat(64)}.json`), previous(unused, '/ci/installer/qualification-source-old'))
     const retained = await retireCiRuntimeConfigurations(directory, [used])
     expect(retained.images.sort()).toEqual([f.current.machine.imageDigest, used].sort())
-    expect(retained.paths.sort()).toEqual([f.current.qualificationSource.directory,
-      '/ci/installer/qualification-source-used'].sort())
+    expect(retained.paths.sort()).toEqual([f.current.qualificationSource.directory, f.current.seedReceiptPath,
+      '/ci/installer/qualification-source-used', '/ci/installer/qualification-source-used-seed.json'].sort())
     expect((await readdir(directory)).sort()).toEqual(['job-runtime.json', `job-runtime-${'b'.repeat(64)}.json`].sort())
+  })
+
+  it('preserves the current qualification source and its seed receipt before preparation', async () => {
+    const f = fixture()
+    const directory = await privateFixtureDirectory('ci-current-paths-')
+    roots.push(directory)
+    await writeFile(join(directory, 'job-runtime.json'), JSON.stringify(f.current), { mode: 0o600 })
+    expect(await currentCiRuntimePaths(directory))
+      .toEqual([f.current.qualificationSource.directory, f.current.seedReceiptPath])
   })
 
   it('schedules the Worker stop only after both its active Job and Agent session finish', async () => {

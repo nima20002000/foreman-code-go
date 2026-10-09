@@ -114,6 +114,12 @@ export const JobQueueTicketSchema = z.object({
   deadlineAt: TimestampSchema,
   state: z.enum(['waiting', 'blocked', 'claimed', 'accepted', 'terminal']),
   waitingReasons: z.array(JobComputerEligibilityReasonSchema).max(32),
+  sourceCapacityWait: z.object({
+    attempts: PositiveInteger,
+    waitedMs: DeviceSafeIntegerSchema,
+    startedAt: TimestampSchema,
+    retryAt: TimestampSchema,
+  }).strict().optional(),
   compatibleTargetCount: DeviceSafeIntegerSchema,
   queuePosition: PositiveInteger.nullable(),
   estimatedStartAt: TimestampSchema.nullable(),
@@ -143,12 +149,17 @@ export const JobQueueTicketSchema = z.object({
   if (JSON.stringify(value.placement) !== JSON.stringify(expectedPlacement)) {
     context.addIssue({ code: 'custom', path: ['placement'], message: 'Placement records the saved default or explicit Start override.' })
   }
+  if (value.sourceCapacityWait && (value.state !== 'waiting' || value.reservationId === null
+    || !value.waitingReasons.includes('busy'))) {
+    context.addIssue({ code: 'custom', message: 'Source capacity waits retain the claimed reservation and busy reason.' })
+  }
   const terminal = value.state === 'terminal'
   if (terminal !== (value.terminalReason !== null) || terminal !== (value.finishedAt !== null)
     || (value.terminalReason === 'cancelled' && value.cancelRequestedAt === null)
     || (value.terminalReason === 'completed' && value.reservationId === null)
     || (['claimed', 'accepted'].includes(value.state) && value.reservationId === null)
-    || (['waiting', 'blocked'].includes(value.state) && value.reservationId !== null)) {
+    || (['waiting', 'blocked'].includes(value.state) && value.reservationId !== null
+      && !(value.state === 'waiting' && value.sourceCapacityWait))) {
     context.addIssue({ code: 'custom', message: 'Ticket state must retain claim, cancellation and terminal facts.' })
   }
   if (['waiting', 'blocked'].includes(value.state)

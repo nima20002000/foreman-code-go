@@ -105,14 +105,14 @@ export async function writeCiRuntimeCache(input: {
   }
 }
 
-/** After image pruning, drops cache records whose image is gone, then the per-image Codex copies and receipts
- * no remaining record uses. Protected configurations hold their own copies; none reads these installer files. */
+/** Drops unused cache artifacts while preserving files referenced by installed configurations. */
 export async function pruneCiRuntimeCache(input: {
   installer: string
   imageExists(imageId: string): Promise<boolean>
+  keepPaths?: readonly string[]
 }): Promise<void> {
   const directory = join(input.installer, 'runtime-cache')
-  const used = new Set<string>()
+  const used = new Set(input.keepPaths ?? [])
   for (const name of await readdir(directory).catch(() => [] as string[])) {
     const digest = /^([a-f0-9]{64})\.json$/u.exec(name)?.[1]
     if (!digest) continue
@@ -127,7 +127,7 @@ export async function pruneCiRuntimeCache(input: {
   }
   for (const name of await readdir(input.installer)) {
     const path = join(input.installer, name)
-    if (/^(?:codex-[a-f0-9]{12}|(?:seed|context)-receipt-[a-f0-9]{12}\.json)$/u.test(name) && !used.has(path)) {
+    if (/^(?:codex-[a-f0-9]{12}|(?:seed|context)-receipt-(?:[a-f0-9]{12}|[a-f0-9]{64})\.json)$/u.test(name) && !used.has(path)) {
       await rm(path, { force: true })
     }
   }

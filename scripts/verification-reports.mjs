@@ -289,11 +289,14 @@ export async function reportedCommand(command, { cwd, env, key, directory, logBy
 }
 
 export async function runVerificationCommand(command, { root, cwd, env, script }) {
-  const directory = privateDirectory(env.FOREMAN_CODE_VERIFICATION_REPORT_DIR)
+  const reportDirectory = privateDirectory(env.FOREMAN_CODE_VERIFICATION_REPORT_DIR)
+  const directory = env.FOREMAN_CODE_VERIFICATION_COMMAND_KEY
+    ? privateDirectory(join(reportDirectory, `nested-${randomUUID()}`)) : reportDirectory
   const key = portionKey(relative(root, cwd).split(sep).join('/'), script)
   const logBytes = positiveInteger(Number(env.FOREMAN_CODE_VERIFICATION_LOG_BYTES), 'Log byte limit')
   const nodeTests = basename(command[0]) === 'node' && command.includes('--test')
-  const commandEnvironment = { ...env }
+  const commandEnvironment = { ...env, FOREMAN_CODE_VERIFICATION_REPORT_DIR: directory,
+    FOREMAN_CODE_VERIFICATION_COMMAND_KEY: key }
   // An independent suite must use its requested reporters, not its parent's test IPC channel.
   if (nodeTests) delete commandEnvironment.NODE_TEST_CONTEXT
   const options = { cwd, env: commandEnvironment, key, directory, logBytes }

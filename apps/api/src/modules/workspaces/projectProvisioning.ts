@@ -1,11 +1,10 @@
-import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, realpath, rmdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
 import pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { renameDirectory } from './renameDirectory.js'
 
 interface FolderIdentity { device: string; inode: string }
 interface ProvisioningRow {
@@ -53,10 +52,7 @@ export class WorkspaceProjectProvisioning {
     const identity = await lstat(stagingPath, { bigint: true })
     await this.journal.query('update workspace_project_provisioning set identity=$2::jsonb where id=$1',
       [id, JSON.stringify({ device: String(identity.dev), inode: String(identity.ino) })])
-    // GNU mv uses a no-replace rename. The stage stays on the same filesystem;
-    // --no-copy prevents a partial destination if the atomic rename is unavailable.
-    await promisify(execFile)('mv', ['--no-clobber', '--no-copy', '--no-target-directory', '--', stagingPath, rootPath])
-    if (await details(stagingPath)) {
+    if (!await renameDirectory(stagingPath, rootPath)) {
       await this.remove(stagingPath, { device: String(identity.dev), inode: String(identity.ino) })
       await this.journal.query('delete from workspace_project_provisioning where id=$1', [id])
       throw new DomainError('WORKSPACE_FOLDER_EXISTS',

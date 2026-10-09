@@ -1,6 +1,7 @@
 import { createServer } from 'node:net'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { basename, isAbsolute, join } from 'node:path'
+import { readVerificationEnvironment } from '../../packages/contracts/src/verificationEnvironment.mjs'
 
 export const BASE = '16b33373b3b2962dd0d0c57ad0b2f2c93198c400'
 export const HELP = `ENG07-C isolated local acceptance (PostgreSQL 17; non-root Linux; macOS setup smoke only)
@@ -49,6 +50,17 @@ export function environment(source) {
     'FOREMAN_CODE_TEST_ROOT', 'FOREMAN_CODE_TEST_OWNER', 'TEST_DATABASE_URL',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]))
+}
+
+/** Build/identity probes may read the Job's fixed Git mount; API processes still use the smaller allowlist. */
+export function verificationToolEnvironment(source) {
+  if (!readVerificationEnvironment(source)) return {}
+  return {
+    FOREMAN_CODE_VERIFICATION_ENVIRONMENT: source.FOREMAN_CODE_VERIFICATION_ENVIRONMENT,
+    GIT_DIR: '/graphql-job-git', GIT_WORK_TREE: '/workspace',
+    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1',
+  }
 }
 export async function freePort(port) {
   await new Promise((yes, no) => {

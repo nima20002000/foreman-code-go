@@ -52,6 +52,19 @@ export function verificationInstallArguments(argv) {
   return ['install', '--frozen-lockfile', '--offline', '--prod=false'];
 }
 
+export function assertVerificationPackageArguments(args) {
+  let commandIndex = 0;
+  while (['--filter', '-F'].includes(args[commandIndex])) commandIndex += 2;
+  const deploy = args[commandIndex] === 'deploy';
+  const configurationOption = /^--(?:minimum-release-age|config\.|userconfig|globalconfig|store-dir|cache-dir|offline|prod|prefix|ignore-pnpmfile|verify-store-integrity)/;
+  for (const argument of args) {
+    if (!configurationOption.test(argument)) continue;
+    if (['--offline', '--prod=false'].includes(argument)) continue;
+    if (deploy && argument === '--prod') continue;
+    throw new Error('Caller package configuration overrides are unavailable in verification.');
+  }
+}
+
 export function assertEffectivePackagePolicy(config) {
   const value = key => config[key] ?? config[key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)];
   if (Number(value('minimumReleaseAge')) !== RELEASE_AGE_MINUTES
@@ -134,10 +147,7 @@ export async function prepareVerificationPnpm(argv, environment = process.env) {
   if (receipt.packageManager !== PACKAGE_MANAGER) throw new Error('Pinned offline package manager unavailable.');
   await assertDependencyInputs('/workspace', receipt);
   const args = verificationInstallArguments(argv.slice(1));
-  if (args.some(arg => /^--(?:minimum-release-age|config\.|userconfig|globalconfig|store-dir|cache-dir|offline|prod|prefix|ignore-pnpmfile|verify-store-integrity)/.test(arg)
-    && !['--offline', '--prod=false'].includes(arg))) {
-    throw new Error('Caller package configuration overrides are unavailable in verification.');
-  }
+  assertVerificationPackageArguments(args);
   await prepareVerificationWorkspace(args, `${imageRoot}/seed`, VERIFICATION_SCRATCH, receiptBytes);
   const config = JSON.parse(execFileSync(process.execPath, [corepack, 'pnpm', 'config', 'list', '--json'],
     { env, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 30_000 }));

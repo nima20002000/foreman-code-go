@@ -8,6 +8,7 @@ import {
   type RepeatOccurrenceV1,
 } from '@foreman-code/contracts/wave25'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { DomainError } from '../src/modules/errors.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { normalizeRepeatTerminal, repeatNodeAction, repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 import { RepeatRunRepository, type RepeatRepositoryHost, type RepeatRuntimeRun } from '../src/modules/runs/repeatPostgres.js'
@@ -525,6 +526,36 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
     expect(db.events.filter((event) => event === 'complete')).toHaveLength(1)
     db.state().receipts.delete(`run.complete:${db.f.scope.runId}`)
     await expect(db.store.completeRun()).rejects.toThrow('GRAPH_RECEIPT_MISMATCH')
+  })
+  it('settles the run when an agent configuration preflight times out', async () => {
+    const db = postgresShape(1)
+    const calls: string[] = []
+    const timeout = new DomainError('APP_MCP_PREFLIGHT_TIMEOUT', 'MCP inspection timed out.', 409)
+    await expect(executeRepeatRuntime({
+      runId: db.f.scope.runId, version: db.f.version, store: db.store, owner: db.owner,
+      signal: new AbortController().signal, checkpointer: new MemorySaver(),
+      lifecycle: {
+        preflight: async () => {}, markRunning: async () => {}, persistWait: async () => false,
+        currentState: async () => ({ executionState: db.state().run.executionState, stopRequested: false }),
+        requestCleanup: async () => { calls.push('cleanup') },
+        cancelNativeAndRequestCleanup: async () => { calls.push('cancel'); return true },
+        settleRun: async () => {
+          calls.push('settle')
+          db.state().run.executionState = 'completed'
+        },
+        finishNative: async () => { calls.push('finish native') },
+        finishCleanup: async () => { calls.push('finish cleanup') },
+      },
+      driver: {
+        candidate: (ref, attempt) => execution(db.f, ref.nodeId, 'timed-out-agent', attempt),
+        observe: async () => { throw timeout },
+      },
+    })).rejects.toBe(timeout)
+    expect(calls).toContain('cancel')
+    expect(calls).toContain('settle')
+    expect(calls.slice(-2)).toEqual(['finish native', 'finish cleanup'])
+    expect(db.state().run.executionState).toBe('completed')
+    expect([...db.state().executions.values()].map(row => row.record.workflowNodeId)).toEqual(['work'])
   })
   it('runs repeated static barriers on the existing LangGraph checkpointer and does not release final nodes early', async () => {
     const db = postgresShape(2), signal = new AbortController().signal, calls: string[] = []

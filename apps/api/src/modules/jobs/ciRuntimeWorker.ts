@@ -6,6 +6,7 @@ import { DomainError } from '../errors.js'
 import { ensureCommit, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { prepareCiRuntime } from './ciRuntimePrepare.js'
 import { lastCiRuntimeRefresh, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
+import { readCiInstalledStorage } from './ciInstalledStorage.js'
 
 export interface CiRuntimeWorkerPorts {
   git: GitWorktreePorts
@@ -31,7 +32,9 @@ export class CiRuntimeWorker {
 
   async handle(raw: unknown): Promise<CiRuntimeWorkerState> {
     const request = CiRuntimeRequestSchema.parse(raw)
-    if (request.operation === 'status') return this.status()
+    if (request.operation === 'status') {
+      return { ...await this.status(), installedStorage: await readCiInstalledStorage(this.stateDirectory) }
+    }
     if (request.operation === 'source') {
       if (this.state?.state === 'preparing' || this.state?.state === 'refreshing') {
         throw new DomainError('CI_RUNTIME_BUSY', 'This computer is already preparing its CI runtime.', 409)

@@ -110,13 +110,14 @@ async function runGit(ports: GitWorktreePorts, args: string[], cwd: string | und
 
 export function systemGitWorktreePorts(environment: NodeJS.ProcessEnv = process.env): GitWorktreePorts {
   const home = environment.HOME ?? homedir()
+  const gitEnvironment = Object.fromEntries(Object.entries(environment).filter(([key]) => !key.startsWith('GIT_')))
   return {
     cloneDirectory: repository => join(home, '.local', 'share', 'foreman-code', 'git', ...repository.split('/')),
     // GitHub CLI credentials (gh auth setup-git) supply authentication; no prompt can block a Run.
     git: (args, options) => new Promise(resolve => {
       // Worktree files stay private to this user, like every other app-managed source directory.
       execFile('/bin/sh', ['-c', 'umask 077 && exec git "$@"', 'git', ...args], { ...(options.cwd ? { cwd: options.cwd } : {}), signal: options.signal, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024,
-        encoding: 'utf8', env: { ...environment, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...options.env } }, (error, stdout, stderr) => {
+        encoding: 'utf8', env: { ...gitEnvironment, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...options.env } }, (error, stdout, stderr) => {
         const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0
         resolve({ code, stdout, stderr })
       })

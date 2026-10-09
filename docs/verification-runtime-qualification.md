@@ -13,6 +13,39 @@ pre-seeded with the strict 2,880-minute package release-age policy. The qualifie
 checks effective pnpm settings, owner-home isolation, resource usage and physical
 byte/inode quota denial.
 
+The container launcher reports `FOREMAN_CODE_VERIFICATION_ENVIRONMENT=isolated-job-v1`.
+The shared `verificationEnvironment` contract describes this runtime as providing
+Job-private PostgreSQL and separately mounted read-only Git metadata. It does
+**not** provide delegated child cgroups, Docker Compose, or an installed Worker
+host (`installedWorkerHost=false`). The Debian Job image is not an approved
+Worker packaging target, and its ephemeral root does not satisfy Worker storage
+persistence policy. Outer Job containment
+does not imply that a nested native harness can create its own `cgroup.kill`
+boundary. No host Docker socket, privileges, or writable host cgroup mount is
+provided. The smoke controller reads the fixed Git mount for checkout identity
+and builds; application processes retain their isolated environment.
+
+The integration runner reads this contract before scheduling tests. Native
+local-human isolation and Operator file-delivery/management suites require
+`nativeCgroupDelegation`; the shared Compose database-startup test requires
+`dockerCompose`. The computer workflow-save regression, remote production review,
+Worker chat-profile qualification and Worker profile requalification suites require
+`installedWorkerHost`: a host matching an approved Worker packaging target's OS,
+release, architecture, libc and Node version, with persistent root, home and
+disposable-test state storage. Outside a Job the runner uses the Worker's host-fact
+probe and the committed packaging targets to determine this capability, and probes
+existing delegation and Docker availability without starting or configuring
+services. Job declarations are read without host probing. Worker target and
+persistence policy remain unchanged. Its `summary.json`
+records the environment, every required file, and each unavailable file's missing
+capabilities. Unavailable files have no test results, are not marked skipped or
+passed, and keep the full run **incomplete with a nonzero exit**. Explicit file
+selection cannot turn an unavailable file into success. Run those same files on
+a host with the required capabilities to obtain their coverage; an image-only
+result is not a full integration gate. The original protected test inventory and
+publication completeness checks still apply. Operators can read these diagnostics
+from the published logs archive using the existing scoped artifact tools.
+
 Each ordinary suite closes its original container before reports are finalized
 and published through the canonical Job file store. Publication verifies the
 declared byte limits and reads retained bytes back by file ID, revision and hash.

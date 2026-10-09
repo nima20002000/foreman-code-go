@@ -1,4 +1,5 @@
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities } from './integration-capabilities.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { closeSync, openSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
@@ -186,7 +187,7 @@ function recordFileAttempt(reports, file, details) {
 }
 
 export function integrationReport(selected, firstPass, retests, { startedAt, finishedAt, interrupted,
-  diagnostic, processStopped }) {
+  diagnostic, processStopped, environment }) {
   const totals = emptyCounts()
   const files = selected.map((file) => {
     const result = firstPass.find((record) => record.file === file)
@@ -201,7 +202,7 @@ export function integrationReport(selected, firstPass, retests, { startedAt, fin
   let outcome = complete ? 'passed' : 'incomplete'
   if (complete && (firstPassFailed || totals.failed || totals.skipped)) outcome = 'failed'
   if (interrupted) outcome = 'cancelled'
-  return { schemaVersion: 1, suite: 'integration', startedAt, finishedAt, totals,
+  return { schemaVersion: 1, suite: 'integration', startedAt, finishedAt, totals, environment,
     expectedPortions: selected.length, completedPortions, firstPassFailed,
     disallowedSkipped: diagnostic ? 0 : totals.skipped,
     completeness: complete ? 'complete' : 'partial', outcome, files,
@@ -347,6 +348,8 @@ async function main() {
   let selected = selectFiles(allFiles, startAt)
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
   if (files) selected = selectExactFiles(allFiles, files)
+  const environment = await integrationEnvironmentCapabilities()
+  const { runnable, unavailable } = partitionIntegrationCapabilities(selected, environment)
   const testNamePattern = readProductEnvironment(process.env, 'INTEGRATION_TEST_NAME_PATTERN')
   const diagnostic = Boolean(startAt || failedFrom || files || testNamePattern)
   // Worktrees and fresh snapshot checkouts on this machine share one schedule.
@@ -359,7 +362,7 @@ async function main() {
   if (process.env.FOREMAN_CODE_VERIFICATION_ROOT && !process.env.TEST_DATABASE_URL) {
     throw new Error('Integration Jobs require an explicit Job-local test database URL')
   }
-  const shardCount = Math.min(reservedIntegrationShards(process.env), selected.length)
+  const shardCount = Math.min(reservedIntegrationShards(process.env), runnable.length)
   const timeouts = integrationTimeouts(process.env)
   const admin = await testAdminPool()
   const slots = []
@@ -372,7 +375,7 @@ async function main() {
     ? privateDirectory(join(process.env.FOREMAN_CODE_VERIFICATION_REPORT_DIR, 'parts', 'integration'))
     : createTestRoot(retainedDirectory).directory
   const startedAt = new Date().toISOString()
-  const firstPass = []
+  const firstPass = [...unavailable]
   const retestReports = []
   const logBytes = positiveInteger(Number(process.env.FOREMAN_CODE_VERIFICATION_LOG_BYTES
     ?? readProductEnvironment(process.env, 'INTEGRATION_LOG_BYTES') ?? 8 * 1024 * 1024), 'Integration log byte limit')
@@ -396,7 +399,7 @@ async function main() {
   const cases = { passed: 0, failed: 0, skipped: 0 }
   const retest = { passed: 0, failed: 0, skipped: 0 }
   let phase = 'first pass'
-  let phaseTotal = selected.length
+  let phaseTotal = runnable.length
   let heartbeat
   const reportProgress = () => {
     const counts = phase.startsWith('retest') ? retest : { passed, failed }
@@ -433,6 +436,7 @@ async function main() {
       slots.push({ index: index + 1, ...database })
     }
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
+    for (const entry of unavailable) console.error(`[integration] UNAVAILABLE ${entry.file}: ${entry.reason}`)
     console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file.`)
     heartbeat = setInterval(reportProgress, 30_000)
     if (files) console.log('[integration] REQUESTED files only; skipped cases still fail this run.')
@@ -567,7 +571,7 @@ async function main() {
         return { code: 1, error, slotUnavailable: slot.unavailable }
       }
     }
-    const partition = partitionIntegrationFiles(selected)
+    const partition = partitionIntegrationFiles(runnable)
     for (const [index, file] of partition.exclusive.entries()) {
       phase = `bounded resource checks (exclusive): ${file}`
       const slot = slots.find(slot => !slot.unavailable)
@@ -661,7 +665,8 @@ async function main() {
       try { await admin.end() }
       catch (error) { cleanupError ??= error }
       const report = integrationReport(selected, firstPass, retestReports, { startedAt,
-        finishedAt: new Date().toISOString(), interrupted, diagnostic, processStopped: !active.size && !cleanupError })
+        finishedAt: new Date().toISOString(), interrupted, diagnostic, environment,
+        processStopped: !active.size && !cleanupError })
       const fileResults = firstPass.flatMap((file) => file.report?.files ?? [])
       try {
         writeReport(join(failedLogs, 'vitest.json'), mergedVitestReport(fileResults, startedAt, report.outcome), reportBytes)
@@ -677,10 +682,14 @@ async function main() {
       writeReport(join(failedLogs, 'summary.json'), report, reportBytes)
       console.log(`[integration] machine-readable reports: ${failedLogs}`)
       if (!active.size && !cleanupError) removeTestRoot(tempRoot)
-      console.log(`[integration] files: ${passed} passed, ${failed} failed, ${skipped} skipped; cases: ${cases.passed} passed, ${cases.failed} failed, ${cases.skipped} skipped${unreported ? `; ${unreported} files without case totals` : ''}${diagnostic || files ? '; partial run is not full-suite proof' : ''}.`)
+      console.log(`[integration] files: ${passed} passed, ${failed} failed, ${skipped} skipped;`
+        + ` ${unavailable.length} unavailable; cases: ${cases.passed} passed, ${cases.failed} failed,`
+        + ` ${cases.skipped} skipped${unreported ? `; ${unreported} files without case totals` : ''}`
+        + `${diagnostic || files ? '; partial run is not full-suite proof' : ''}.`)
       if (retest.passed || retest.failed || retest.skipped) console.log(`[integration] retest files: ${retest.passed} passed, ${retest.failed} failed, ${retest.skipped} skipped; first-pass failures still fail this run.`)
       if (failedFiles.length) console.error(`[integration] failed files: ${failedFiles.sort().join(', ')}`)
-      process.exitCode = fullRunExitCode(failed || (!diagnostic && report.outcome !== 'passed'), interrupted)
+      process.exitCode = fullRunExitCode(failed || unavailable.length
+        || (!diagnostic && report.outcome !== 'passed'), interrupted)
     }
     if (cleanupError) throw cleanupError
   }

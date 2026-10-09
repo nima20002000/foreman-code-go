@@ -109,7 +109,14 @@ export class JobQueuePreparation {
               await this.finish(sql, ticket, 'authorization_revoked', [error.code])
               return null
             }
-            if (ticket.state === 'claimed') {
+            if (ticket.sourceCapacityWait && this.clock().getTime() >= Date.parse(ticket.deadlineAt)) {
+              await this.finish(sql, ticket, 'timed_out')
+              return null
+            }
+            if (ticket.sourceCapacityWait && this.clock().getTime() < Date.parse(ticket.sourceCapacityWait.retryAt)) {
+              return null
+            }
+            if (ticket.state === 'claimed' || ticket.sourceCapacityWait) {
               await this.fence(sql, owner, ticket)
               return ticket
             }
@@ -271,10 +278,15 @@ export class JobQueuePreparation {
 
   private async prepare(original: JobQueueTicket, owner: JobOwnership): Promise<void> {
     let executionToWake: JobExecutionRecord | null
+    const capacityWaitMs = original.sourceCapacityWait
+      ? original.sourceCapacityWait.waitedMs + Math.max(0,
+        this.clock().getTime() - Date.parse(original.sourceCapacityWait.startedAt))
+      : 0
     try {
       const principal = await owner.connection.transaction(sql => this.principal(sql, original))
+      // Capacity waiting uses the queue deadline, not the source I/O budget.
       await owner.connection.transaction(sql => requireJobPreparationDeadline(sql, 'manual', original.executionId,
-        original.definition.spec.policy.preparationTimeoutMs, this.clock().getTime()))
+        original.definition.spec.policy.preparationTimeoutMs + capacityWaitMs, this.clock().getTime()))
       const prepared = await this.ports.prepare(principal, JobDefinitionRecordSchema.parse(original.definition), original)
       owner.assertOwned()
       executionToWake = await owner.connection.transaction(async sql => {
@@ -287,10 +299,12 @@ export class JobQueuePreparation {
         }
         const live = await this.principal(sql, ticket)
         await requireJobPreparationDeadline(sql, 'manual', ticket.executionId,
-          ticket.definition.spec.policy.preparationTimeoutMs, this.clock().getTime())
+          ticket.definition.spec.policy.preparationTimeoutMs + capacityWaitMs, this.clock().getTime())
         await this.fence(sql, owner, ticket)
         const execution = await this.ports.admit(sql, live, JobDefinitionRecordSchema.parse(ticket.definition), prepared, ticket)
-        await this.repository.putQueueTicket(sql, { ...ticket, state: 'accepted', waitingReasons: [] })
+        const accepted = { ...ticket }
+        delete accepted.sourceCapacityWait
+        await this.repository.putQueueTicket(sql, { ...accepted, state: 'accepted', waitingReasons: [] })
         return execution
       })
     } catch (error) {
@@ -298,16 +312,30 @@ export class JobQueuePreparation {
         owner.assertOwned()
         await owner.connection.transaction(async sql => {
           const ticket = await this.repository.queueTicket(sql, original.workspaceId, original.id, true)
-          if (ticket.state !== 'claimed') return
+          if (ticket.state !== 'claimed' && !ticket.sourceCapacityWait) return
           if (error.status === 403) await this.finish(sql, ticket, 'authorization_revoked', [error.code])
           else if (error.code === 'JOB_PREPARATION_TIMEOUT') await this.finish(sql, ticket, 'timed_out', [error.code])
+          else if (error.code === 'SOURCE_CAPACITY' || error.code === 'SOURCE_DISK_CAPACITY') {
+            const attempts = (ticket.sourceCapacityWait?.attempts ?? 0) + 1
+            const now = this.clock().getTime()
+            const delayMs = Math.min(60_000, 5_000 * 2 ** Math.min(attempts - 1, 4))
+            await this.repository.putQueueTicket(sql, { ...ticket, state: 'waiting', waitingReasons: ['busy'],
+              sourceCapacityWait: { attempts, waitedMs: capacityWaitMs, startedAt: new Date(now).toISOString(),
+                retryAt: new Date(now + delayMs).toISOString() } })
+            if (!ticket.sourceCapacityWait) {
+              componentLogger('jobs').info({ ticketId: ticket.id }, 'Queued Job waiting for source capacity')
+            }
+          }
           else {
-            await this.repository.putQueueTicket(sql, { ...ticket, waitingReasons: [jobEligibilityReason(error.code)] })
+            const failed = { ...ticket }
+            delete failed.sourceCapacityWait
+            await this.repository.putQueueTicket(sql, { ...failed, state: 'claimed', waitingReasons: [jobEligibilityReason(error.code)] })
             await sql.query('update job_admission_queue set diagnostic_codes=$2::jsonb where id=$1',
               [ticket.id, JSON.stringify([error.code])])
           }
         })
       }
+      if (error instanceof DomainError && ['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY'].includes(error.code)) return
       componentLogger('jobs').error({ err: error, ticketId: original.id }, 'Queued Job preparation or dispatch failed')
       throw error
     } finally {

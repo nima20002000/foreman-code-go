@@ -12,7 +12,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { buildCiRuntimeContext } from '../../../scripts/build-ci-runtime-context.mjs';
 import { acquireWorkerLock } from '../src/runtime.mjs';
 import { validateSeedReceipt, verifySeedFiles } from '../artifacts/ci-runtime/seed-policy.mjs';
-import { assertEffectivePackagePolicy, assertEffectiveVerificationStore, needsTestDatabase, verificationEnvironment, verificationInstallArguments }
+import { assertEffectivePackagePolicy, assertEffectiveVerificationStore, assertVerificationPackageArguments,
+  needsTestDatabase, verificationEnvironment, verificationInstallArguments }
   from '../artifacts/ci-runtime/verification-policy.mjs';
 import { copyVerificationSeed, prepareVerificationWorkspace } from '../artifacts/ci-runtime/verification-policy.mjs';
 
@@ -234,6 +235,17 @@ test('verification installer fixes offline frozen dev installs, isolates caches 
   assert.throws(() => assertEffectiveVerificationStore({ ...store, offline: false }));
   assert.throws(() => assertEffectiveVerificationStore({ ...store, storeDir: '/owner/.pnpm-store' }));
   assert.throws(() => assertEffectiveVerificationStore({ ...store, workspaceConcurrency: 9 }));
+});
+
+test('verification allows production deployment while preserving package policy', () => {
+  const args = ['--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', '/tmp/release'];
+  assert.doesNotThrow(() => assertVerificationPackageArguments(args));
+  assert.deepEqual(verificationInstallArguments(args), args);
+  for (const override of ['--prod=true', '--offline=false', '--minimum-release-age=0',
+    '--store-dir=/owner/store', '--config.minimumReleaseAge=0']) {
+    assert.throws(() => assertVerificationPackageArguments([...args, override]));
+  }
+  assert.throws(() => assertVerificationPackageArguments(['run', 'build', '--prod']));
 });
 
 test('the pinned pnpm reads the enforced offline store and cache from its supported environment', async t => {

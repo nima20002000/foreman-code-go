@@ -21,27 +21,23 @@ export async function resolveLocalMainPlacement(input: {
   principal: ManagementPrincipal
   mainId: string
   workspaceId: string
-  locationRevision: number
   configuration: AgentConfigurationVersion
   roots: WorkspaceRootPolicyPort
   installations: HarnessInstallationRegistry
 }): Promise<SavedNodePlacement> {
   const { sql, principal, mainId, workspaceId, configuration } = input
   const hostRef = { kind: 'main' as const, mainId }
-  const policies = (await input.roots.read(sql, principal, workspaceId)).filter(policy =>
-    sameWorkflowValue(policy.hostRef, hostRef) && policy.locationRevision === String(input.locationRevision))
-  const policy = policies[0]
-  if (policies.length !== 1 || !policy || policy.registration !== null
-    || policy.applicationInstallationId !== mainId) return unavailable('main_root_policy')
   const bindings = await sql.query<{ record: unknown }>(`select b.record from source_root_catalog c
     join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
-    where c.workspace_id=$1 and b.record->'selection'=$2::jsonb for share of c,b`, [workspaceId,
-    JSON.stringify({ hostRef, rootPolicyId: policy.rootPolicyId,
-      rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision })])
+    where c.workspace_id=$1 and b.record#>'{selection,hostRef}'=$2::jsonb for share of c,b`,
+  [workspaceId, JSON.stringify(hostRef)])
   const root = bindings.rows[0] && SourceRootRecordSchema.parse(bindings.rows[0].record)
   if (bindings.rows.length !== 1 || !root || root.binding.workspaceId !== workspaceId) {
     return unavailable('main_source_binding')
   }
+  const policy = await input.roots.resolve(sql, principal, { workspaceId, ...root.selection })
+  if (!sameWorkflowValue(policy.hostRef, hostRef) || policy.registration !== null
+    || policy.applicationInstallationId !== mainId) return unavailable('main_root_policy')
   const profiles = await sql.query<{ record: unknown }>(`select settings.record from harness_instance_settings settings
     where settings.record#>>'{target,applicationInstallationId}'=$1
       and settings.record#>'{target,hostRef}'=$2::jsonb

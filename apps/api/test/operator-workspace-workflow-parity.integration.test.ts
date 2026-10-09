@@ -1,4 +1,5 @@
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { callWorkspaceTool } from './helpers/workspaceMcp.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
@@ -101,7 +102,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     const reader = await access.issue({ name: 'Metadata only', audience: 'operator',
       grants: [{ actions: ['workspaces:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     const readerClient = await connect(reader.token)
-    const restrictedList = c.ManagedWorkspacePageSchema.parse((await readerClient.callTool({ name: 'workspace_list', arguments: {} })).structuredContent)
+    const restrictedList = await callWorkspaceTool(readerClient, 'workspace_list', c.ManagedWorkspacePageSchema)
     expect(restrictedList.items[0]?.locationValidation.status).toBe('restricted')
     expect(restrictedList.items[0]?.executionLocation).toBeNull()
     expect((await call('workspace_create', c.ManagedWorkspaceCommandResultSchema, create)).replayed).toBe(true)

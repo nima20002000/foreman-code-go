@@ -12,7 +12,7 @@ import { JobVerificationQuotaPoolSchema } from '@foreman-code/contracts/job-veri
 import { z } from 'zod'
 import { pruneCiRuntimeCache, readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
 import { readJobProjectQuota } from './quotaOwnership.js'
-import { readProtectedRuntimeConfiguration } from './installedRuntimeHost.js'
+import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile } from './installedRuntimeHost.js'
 import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
 
 const run = promisify(execFile)
@@ -68,7 +68,10 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   if (!COMMIT.test(commit)) throw new Error('A full commit id is required.')
   if (!review?.reviewedByPrincipalId || !/^[a-f0-9]{64}$/u.test(review.decisionDigest ?? '')) throw new Error('Owner decision is required.')
   const short = commit.slice(0, 12)
-  const env = { ...environment, GIT_TERMINAL_PROMPT: '0' }
+  const env = {
+    ...Object.fromEntries(Object.entries(environment).filter(([key]) => !key.startsWith('GIT_'))),
+    GIT_TERMINAL_PROMPT: '0',
+  }
   const sh = async (file: string, args: string[], options: { cwd?: string } = {}) => {
     const result = await run(file, args, { env, maxBuffer: 64 * 1024 * 1024, ...options })
     return result.stdout
@@ -107,7 +110,7 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   log('prune-images')
   // Other preparations and recovery records may still own older installer files.
   await pruneCiImages(keepImages, env)
-  await pruneCiRuntimeCache({ installer, imageExists })
+  await pruneCiRuntimeCache({ installer, imageExists, keepPaths })
   // 1. The build stage fetches the frozen lockfile's packages with network into its own store.
   const buildContext = join(installer, `build-context-${short}`)
   await rm(buildContext, { recursive: true, force: true })
@@ -163,9 +166,8 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   const qualificationSource = await extractQualificationSource(repository, commit,
     join(installer, `qualification-source-${short}`), env)
   // The image holds the seed and context; keep only their receipts and drop the multi-gigabyte build inputs.
-  const seedReceiptPath = join(installer, `seed-receipt-${short}.json`), contextReceiptPath = join(installer, `context-receipt-${short}.json`)
-  await writeFile(seedReceiptPath, await readFile(join(context, 'seed-receipt.json')), { mode: 0o600 })
-  await writeFile(contextReceiptPath, await readFile(join(context, 'context-receipt.json')), { mode: 0o600 })
+  const seedReceiptPath = await writeRuntimeReceipt(installer, 'seed', await readFile(join(context, 'seed-receipt.json')))
+  const contextReceiptPath = await writeRuntimeReceipt(installer, 'context', await readFile(join(context, 'context-receipt.json')))
   // The refresh captures the unit suite's Codex from this copy; the checkout it came from is removed.
   const codex = join(installer, `codex-${short}`)
   if (unitCodex) await writeFile(codex, await readFile(unitCodex.path), { mode: 0o700 })
@@ -183,6 +185,19 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   }
   await writeCiRuntimeCache({ installer, inputDigest, prepared })
   return prepared
+}
+
+async function writeRuntimeReceipt(installer: string, kind: 'seed' | 'context', bytes: Buffer): Promise<string> {
+  // Rebuilding the same commit can change review and package metadata held by an older configuration.
+  const path = join(installer, `${kind}-receipt-${hash(bytes)}.json`)
+  try {
+    await writeFile(path, bytes, { mode: 0o600, flag: 'wx' })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    const existing = await readProtectedRuntimeFile({ path, ownerUid: process.getuid!() }, 16 * 1024 * 1024)
+    if (!existing.equals(bytes)) throw new Error('A retained CI receipt changed.', { cause: error })
+  }
+  return path
 }
 
 export async function codexBinary(image: string, output: string, env: NodeJS.ProcessEnv) {

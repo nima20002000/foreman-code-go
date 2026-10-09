@@ -7,7 +7,8 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { BASE, HELP, assertOwned, environment, freePort, options, publicError } from './safety.mjs'
+import { BASE, HELP, assertOwned, environment, freePort, options, publicError,
+  verificationToolEnvironment } from './safety.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const exec = promisify(execFile)
@@ -214,6 +215,7 @@ async function main() {
     FOREMAN_CODE_API_ENV_FILE: isolated.FOREMAN_CODE_API_ENV_FILE }
   toolEnv = {
     ...Object.fromEntries(Object.entries(safeEnv).filter(([key]) => !key.endsWith('_API_KEY'))),
+    ...verificationToolEnvironment(isolated),
     // A build must validate the prepared dependencies rather than reinstall them under the isolated home.
     pnpm_config_verify_deps_before_run: 'error',
     // pnpm's default virtual-store setting depends on the install's CI context.
@@ -223,6 +225,7 @@ async function main() {
   }
   stage = 'port reservation check'
   await freePort(opts.apiPort); await freePort(opts.webPort)
+  stage = 'checkout identity'
   const head = await command('git', ['rev-parse', 'HEAD'], { capture: true })
   if (head !== BASE) console.log('ENG07 checkout differs from the documented base; record its commit separately before accepting results.')
   stage = 'contracts build (run corepack pnpm install beforehand)'

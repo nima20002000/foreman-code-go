@@ -53,7 +53,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       if (!workflowUsesAgentPlacements(version.definition)) return undefined
       const resolveMain = (sql: GraphTransactionSql, principal: ManagementPrincipal, configuration: AgentConfigurationVersion) =>
         resolveLocalMainPlacement({ sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
-          locationRevision: input.expectedLocationRevision, roots: this.roots, installations: this.registry.installations })
+          roots: this.roots, installations: this.registry.installations })
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection;
         saved: SavedNodePlacement; configuration: AgentConfigurationVersion; implicit: boolean }[] = []
       for (const node of nodes) {

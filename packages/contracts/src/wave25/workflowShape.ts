@@ -66,11 +66,17 @@ export const ExecutionConditionSchema = z
   .strict();
 export type ExecutionCondition = z.infer<typeof ExecutionConditionSchema>;
 
+export const DEFAULT_AGENT_ACTIVE_TIMEOUT_MS = 300_000
+export const MAX_AGENT_ACTIVE_TIMEOUT_MS = 2_147_483_647
+export const AgentActiveTimeoutMsSchema = z.number().int().positive().max(MAX_AGENT_ACTIVE_TIMEOUT_MS)
+
 export const WorkflowExecutionPolicySchema = z
   .object({
     maxParallelism: z.number().int().positive(),
     /** Global safety bound across first attempts and repeats. */
     maxNodeExecutions: z.number().int().positive(),
+    /** Active time per Agent execution, excluding approval waits. Omit to use the server default. */
+    agentActiveTimeoutMs: AgentActiveTimeoutMsSchema.optional(),
   })
   .strict();
 export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;

@@ -128,6 +128,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   if (jobToolAvailable(context, 'job_queue_get')) server.registerTool('job_queue_get', {
     description: 'Read one workspace-scoped build queue ticket, original enqueue/deadline, state, waiting reasons, compatible-target count and workspace queue position. '
       + 'Claimed tickets expose the persisted selected computer, root binding and runtime profile; cleanup status shows retained capacity after cancellation or terminal execution. '
+      + 'Source capacity waits retain the reservation and expose sourceCapacityWait with bounded retryAt and attempts. '
       + 'Accepted tickets reference the original executionId. Start estimates are unknown. No selection or launch.',
     inputSchema: scope.extend({ ticketId: z.uuid() }),
     outputSchema: z.object({ ticket: JobQueueTicketSchema }), annotations: read,

@@ -66,7 +66,7 @@ function fixture() {
   const input = { workspaceId: configuration.workspaceId, workflowId: workflow.scope.workflowId,
     nodeId: workflow.version.definition.nodes[0]!.id, agentConfigurationVersionId: configuration.id }
   return { service: new ProductionPlacementChoiceDiscovery(pool, () => services), input, principal,
-    policy, root, profile, configuration, resolve, resolveSource, sourceRoots, profiles, evidence, installations }
+    policy, root, profile, configuration, readRoots, resolve, resolveSource, sourceRoots, profiles, evidence, installations }
 }
 
 it('discovers an authorized matching profile with the persisted root, source and revision pins', async () => {
@@ -93,6 +93,21 @@ it('omits disabled or incompatible profiles and respects a saved profile selecti
     instanceId: randomUUID(), instanceRevision: f.profile.instanceRevision }
   f.profiles.mockResolvedValue([f.profile])
   expect(await f.service.list(f.principal, f.input)).toEqual([])
+})
+
+it('uses the retained binding policy after the workspace selects a newer location policy', async () => {
+  const f = fixture()
+  f.readRoots.mockResolvedValue([{ ...f.policy, rootPolicyRevision: '2', locationRevision: '3' }])
+
+  const choices = await f.service.list(f.principal, f.input)
+
+  expect(choices).toHaveLength(1)
+  expect(choices[0]).toMatchObject({ availability: 'ready', placement: {
+    ...f.root.selection, rootBinding: { rootId: f.root.binding.rootId, bindingRevision: 2 },
+  } })
+  expect(f.resolve).toHaveBeenCalledWith(expect.anything(), f.principal, {
+    workspaceId: f.input.workspaceId, ...f.root.selection,
+  })
 })
 
 it('keeps an unqualified installation unavailable and omits roots whose host authority is revoked', async () => {

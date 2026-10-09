@@ -1,6 +1,6 @@
 import { it, expect } from 'vitest'
-import { loadedChunks, plainLog, processLabel } from './model'
-import { execution, logPage } from './fixtures'
+import { loadedChunks, plainLog, processLabel, queueLabel } from './model'
+import { execution, logPage, queueTicket } from './fixtures'
 
 it('deduplicates reconnect chunks while retaining Unicode and stream labels', () => {
   expect(loadedChunks([logPage, logPage])).toEqual(logPage.chunks)
@@ -18,4 +18,10 @@ it('preserves long unbroken Unicode text within the contract chunk bound', () =>
   const text = '🙂λ'.repeat(10000)
   expect(plainLog(text)).toBe(text)
   expect(loadedChunks([{ ...logPage, chunks: [{ ...logPage.chunks[0]!, text }] }])[0]?.text).toBe(text)
+})
+
+it('labels a retained source reservation as waiting for capacity', () => {
+  expect(queueLabel({ ...queueTicket, state: 'waiting', reservationId: queueTicket.id, waitingReasons: ['busy'],
+    sourceCapacityWait: { attempts: 1, waitedMs: 0, startedAt: queueTicket.enqueuedAt, retryAt: queueTicket.deadlineAt } }))
+    .toBe('Waiting for source capacity')
 })

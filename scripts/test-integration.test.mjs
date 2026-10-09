@@ -4,6 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities,
+  supportsInstalledWorkerHost } from './integration-capabilities.mjs'
+import { readVerificationEnvironment } from '../packages/contracts/src/verificationEnvironment.mjs'
 import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl } from './test-resources.mjs'
 import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases,
   fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport,
@@ -11,6 +14,117 @@ import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog,
   isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases,
   partitionIntegrationFiles, readDurations, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles,
   signalOwnedChildren, vitestCommand, writeDurations } from './test-integration.mjs'
+
+test('the installed Job environment reports its unsupported host capabilities without probing the host', async () => {
+  const environment = { FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1', PATH: '/no-tools' }
+  assert.deepEqual(await integrationEnvironmentCapabilities(environment), {
+    schemaVersion: 1, runtime: 'isolated-job',
+    capabilities: { nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false },
+    postgres: 'job-private', git: 'mounted-readonly',
+  })
+  assert.equal(readVerificationEnvironment({}), null)
+  assert.throws(() => readVerificationEnvironment({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'unknown' }), /Unknown/)
+  assert.throws(() => readVerificationEnvironment({ FOREMAN_CODE_VERIFICATION_ROOT: '/workspace' }), /missing/)
+  await assert.rejects(integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'unknown' }), /Unknown/)
+  await assert.rejects(integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ROOT: '/workspace' }), /missing/)
+})
+
+test('installed Worker capability requires an approved matching target and persistent root, home and state', () => {
+  const target = { os: 'ubuntu', osRelease: '26.04', arch: 'x64', libc: 'glibc-2.43', node: 'v22.23.2' }
+  const facts = { ...target, rootPersistent: true, homePersistent: true, storagePersistent: true }
+  assert.equal(supportsInstalledWorkerHost(facts, [target]), true)
+  assert.equal(supportsInstalledWorkerHost(facts, []), false)
+  for (const field of ['rootPersistent', 'homePersistent', 'storagePersistent']) {
+    assert.equal(supportsInstalledWorkerHost({ ...facts, [field]: false }, [target]), false)
+  }
+  const unsupported = { os: 'debian', osRelease: '12', arch: 'arm64', libc: 'glibc-2.36', node: 'v22.23.3' }
+  for (const [field, value] of Object.entries(unsupported)) {
+    assert.equal(supportsInstalledWorkerHost({ ...facts, [field]: value }, [target]), false)
+  }
+  const debian = { ...facts, os: 'debian', osRelease: '12' }
+  assert.equal(supportsInstalledWorkerHost(debian, [debian]), false)
+})
+
+test('each affected integration file runs only when its required capability is present', () => {
+  const requirements = [
+    ['apps/api/test/local-human-native.integration.test.ts', 'nativeCgroupDelegation'],
+    ['apps/api/test/operator-file-delivery.integration.test.ts', 'nativeCgroupDelegation'],
+    ['apps/api/test/operator-management-file-authority.integration.test.ts', 'nativeCgroupDelegation'],
+    ['apps/api/test/test-database-startup.integration.test.ts', 'dockerCompose'],
+    ['apps/api/test/computer-workflow-save.regression.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-profile-requalification.integration.test.ts', 'installedWorkerHost'],
+  ]
+  for (const [file, capability] of requirements) {
+    const environment = { schemaVersion: 1, runtime: 'host',
+      capabilities: { nativeCgroupDelegation: true, dockerCompose: true, installedWorkerHost: true } }
+    assert.deepEqual(partitionIntegrationCapabilities([file], environment), { runnable: [file], unavailable: [] })
+    environment.capabilities[capability] = false
+    const { runnable, unavailable } = partitionIntegrationCapabilities([file], environment)
+    assert.deepEqual(runnable, [])
+    assert.equal(unavailable.length, 1)
+    assert.deepEqual(unavailable[0].requiredCapabilities, [capability])
+    assert.equal(unavailable[0].complete, false)
+    assert.equal(unavailable[0].code, null)
+  }
+})
+
+test('unsupported integration files remain required and prevent a complete or passing report', async () => {
+  const native = 'apps/api/test/operator-file-delivery.integration.test.ts'
+  const database = 'apps/api/test/test-database-startup.integration.test.ts'
+  const ordinary = 'apps/api/test/operator-mcp.integration.test.ts'
+  const selected = [native, database, ordinary]
+  const environment = await integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1' })
+  const { runnable, unavailable } = partitionIntegrationCapabilities(selected, environment)
+  assert.deepEqual(runnable, [ordinary])
+  assert.deepEqual(unavailable.map(file => file.requiredCapabilities), [['nativeCgroupDelegation'], ['dockerCompose']])
+  const counts = { total: 1, passed: 1, failed: 0, skipped: 0 }
+  const passed = { file: ordinary, code: 0, complete: true, report: { totals: counts } }
+  const report = integrationReport(selected, [...unavailable, passed], [], {
+    startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), diagnostic: false,
+    processStopped: true, environment,
+  })
+  assert.equal(report.outcome, 'incomplete')
+  assert.equal(report.completeness, 'partial')
+  assert.equal(report.expectedPortions, 3)
+  assert.equal(report.completedPortions, 1)
+  assert.equal(report.totals.skipped, 0)
+  assert.deepEqual(report.files.slice(0, 2), unavailable.map(file => ({ ...file,
+    totals: { total: 0, passed: 0, failed: 0, skipped: 0 },
+  })))
+  assert.deepEqual(report.environment, environment)
+  assert.deepEqual(partitionIntegrationCapabilities(selected, {
+    capabilities: { nativeCgroupDelegation: true, dockerCompose: true, installedWorkerHost: true },
+  }), { runnable: selected, unavailable: [] })
+})
+
+test('installed Worker suites remain unavailable and nonzero even when explicitly selected in a Job', async () => {
+  const files = [
+    'apps/api/test/computer-workflow-save.regression.integration.test.ts',
+    'apps/api/test/remote-review-production.integration.test.ts',
+    'apps/api/test/worker-chat-profile-qualification.integration.test.ts',
+    'apps/api/test/worker-profile-requalification.integration.test.ts',
+  ]
+  const environment = await integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1' })
+  for (const requested of [files, ...files.map(file => [file])]) {
+    const selected = selectExactFiles(files, requested)
+    const { runnable, unavailable } = partitionIntegrationCapabilities(selected, environment)
+    assert.deepEqual(runnable, [])
+    assert.deepEqual(unavailable.map(file => file.requiredCapabilities), selected.map(() => ['installedWorkerHost']))
+    const report = integrationReport(selected, unavailable, [], {
+      startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), diagnostic: requested.length === 1,
+      processStopped: true, environment,
+    })
+    assert.equal(report.outcome, 'incomplete')
+    assert.equal(report.completeness, 'partial')
+    assert.equal(report.expectedPortions, selected.length)
+    assert.equal(report.completedPortions, 0)
+    assert.deepEqual(report.totals, { total: 0, passed: 0, failed: 0, skipped: 0 })
+    assert.ok(report.files.every(file => file.code === null && file.complete === false))
+    assert.equal(fullRunExitCode(unavailable.length, null), 1)
+  }
+})
 
 test('diagnostic case selection preserves file and worker limits and passes the pattern as one argument', () => {
   const file = 'apps/api/test/remote-review-production.integration.test.ts'

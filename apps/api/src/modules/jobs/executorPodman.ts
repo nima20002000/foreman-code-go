@@ -71,7 +71,8 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
       '--shm-size', String(resources.shmBytes),
       '--tmpfs', `/dev/shm:rw,nosuid,nodev,noexec,size=${resources.shmBytes}`,
       '--volume', `${scratch}:/job-scratch:rw,nosuid,nodev,${execution},rprivate`]
-    environment = { HOME: '/job-scratch/home', TMPDIR: '/job-scratch/tmp',
+    environment = { FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+      HOME: '/job-scratch/home', TMPDIR: '/job-scratch/tmp',
       XDG_CACHE_HOME: '/job-scratch/cache', XDG_CONFIG_HOME: '/job-scratch/config', XDG_DATA_HOME: '/job-scratch/data' }
     if (input.verification.parameters) {
       const parameters = JobVerificationParametersSchema.parse(input.verification.parameters)

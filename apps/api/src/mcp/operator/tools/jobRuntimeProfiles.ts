@@ -12,22 +12,40 @@ import { BuildComputerPrepareGetInputSchema, BuildComputerPrepareInputSchema, Bu
 import type { PostgresCommandCoordinator } from '../../../modules/commands/postgres.js'
 import { DomainError } from '../../../modules/errors.js'
 import { toolFailure, toolResult } from '../../shared/results.js'
-export const JOB_RUNTIME_TOOLS=['job_runtime_profile_list','job_runtime_profile_save','job_runtime_qualification_request','job_runtime_qualification_run','job_runtime_qualification_get','build_computer_prepare','build_computer_prepare_get'] as const
+import { CiEnrollmentReadSchema, CiEnrollmentUpdateSchema, CiEnrollmentStateSchema } from '@foreman-code/contracts'
+import { CI_ENROLLMENT_ACTIONS, type CiEnrollment } from '../../../modules/jobs/ciEnrollment.js'
+export const JOB_RUNTIME_TOOLS=['job_runtime_profile_list','job_runtime_profile_save','job_runtime_qualification_request','job_runtime_qualification_run','job_runtime_qualification_get','build_computer_prepare','build_computer_prepare_get','ci_enrollment_get','ci_enrollment_update'] as const
 export type JobRuntimeToolName=typeof JOB_RUNTIME_TOOLS[number]
-interface Context {principal:ManagementPrincipal;services:{jobRuntimeProfiles?:JobRuntimeProfiles;ciRuntime?:CiRuntimeProvisioner;commands:PostgresCommandCoordinator}}
+interface Context {principal:ManagementPrincipal;services:{jobRuntimeProfiles?:JobRuntimeProfiles;ciRuntime?:CiRuntimeProvisioner;ciEnrollment?:CiEnrollment;commands:PostgresCommandCoordinator}}
 const action=(name:JobRuntimeToolName)=>name==='job_runtime_profile_list'||name==='job_runtime_qualification_get'||name==='build_computer_prepare_get'?'job_definitions:read' as const:'job_definitions:write' as const
 function requiredActions(name: JobRuntimeToolName): ManagementAction[] {
+  if (name === 'ci_enrollment_get') return ['job_definitions:read']
+  if (name === 'ci_enrollment_update') return CI_ENROLLMENT_ACTIONS
   if (name === 'job_runtime_profile_save') return [action(name), 'sources:read', 'source_roots:read']
   if (name === 'build_computer_prepare') return [...BUILD_COMPUTER_PREPARE_ACTIONS]
   return [action(name)]
 }
 export function jobRuntimeToolAvailable(context:Context,name:JobRuntimeToolName,resource:AuthorizedResource={}) {
+  if (name.startsWith('ci_enrollment_') && !context.services.ciEnrollment) return false
   if (name.startsWith('build_computer_prepare') && !context.services.ciRuntime) return false
   return !!context.services.jobRuntimeProfiles && requiredActions(name).every(required =>
     Object.keys(resource).length ? isAuthorized(context.principal, required, resource) : hasAction(context.principal, required))
 }
 export function jobRuntimeCapabilities(context:Context,resource:AuthorizedResource) {
-  return JOB_RUNTIME_TOOLS.filter(name=>jobRuntimeToolAvailable(context,name,resource)).map(name=>({name,actions:requiredActions(name),detail:'Read/save existing-root CI policy metadata, capture an installed candidate on a paired, authorized computer and run or reconcile its qualification with the original command. There is no approval step; GET performs no probe or installation.'}))
+  return JOB_RUNTIME_TOOLS.filter(name=>jobRuntimeToolAvailable(context,name,resource)).map(name=>({
+    name, actions: requiredActions(name), detail: jobRuntimeCapabilityDetail(name),
+  }))
+}
+function jobRuntimeCapabilityDetail(name: JobRuntimeToolName): string {
+  if (name === 'ci_enrollment_get') {
+    return 'Read per-computer workspace CI enrollment, persisted disable choices, profiles and preparation progress.'
+  }
+  if (name === 'ci_enrollment_update') {
+    return 'Enable, retry or disable workspace CI enrollment with revision checks and idempotent commands. '
+      + 'Enabling derives storage-sized profiles and prepares installed runtimes using approved writable roots.'
+  }
+  return 'Read/save existing-root CI policy metadata, capture an installed candidate on a paired, authorized '
+    + 'computer and run or reconcile its qualification with the original command. GET performs no probe or installation.'
 }
 async function invoke(context:Context,name:JobRuntimeToolName,work:()=>Promise<unknown>) {
   try{return toolResult(await work())}catch(error){
@@ -40,6 +58,20 @@ export function registerJobRuntimeTools(server:McpServer,context:Context) {
   if(!service)return
   const scope=z.object({workspaceId:z.string().min(1)}).strict(),approval=scope.extend({approvalId:z.string().uuid()})
   const read={readOnlyHint:true,idempotentHint:true,openWorldHint:false},write={readOnlyHint:false,idempotentHint:true,openWorldHint:false}
+  const enrollment = context.services.ciEnrollment
+  if (enrollment && jobRuntimeToolAvailable(context, 'ci_enrollment_get')) {
+    server.registerTool('ci_enrollment_get', {
+      description: 'Read automatic workspace CI enrollment per computer, including persisted disable choices, profile IDs, readiness and setup failures. Reads do not install, prepare or qualify runtimes. Requires job_definitions:read.',
+      inputSchema: CiEnrollmentReadSchema, outputSchema: CiEnrollmentStateSchema, annotations: read,
+    }, input => invoke(context, 'ci_enrollment_get', () => enrollment.read(context.principal, input)))
+  }
+  if (enrollment && jobRuntimeToolAvailable(context, 'ci_enrollment_update')) {
+    server.registerTool('ci_enrollment_update', {
+      description: 'Enable or retry automatic CI enrollment, or disable it for this workspace and computer. Enabling derives storage-sized profiles from existing workspace profiles and prepares the installed runtime in the background; read ci_enrollment_get for progress. Disabling excludes the computer from new workspace CI placement and preparation without cancelling accepted Jobs. Requires the same workspace grants as build_computer_prepare; expectedRevision protects concurrent changes and commandId makes retries idempotent. Approved writable workspace roots and installed runtimes are required.',
+      inputSchema: CiEnrollmentUpdateSchema, outputSchema: CiEnrollmentStateSchema,
+      annotations: { ...write, openWorldHint: true },
+    }, input => invoke(context, 'ci_enrollment_update', () => enrollment.update(context.principal, 'mcp', input)))
+  }
   if(jobRuntimeToolAvailable(context,'job_runtime_profile_list'))server.registerTool('job_runtime_profile_list',{description:'Read existing CI policy profiles, captured qualification fingerprints and metadata readiness. Never probes or installs a runtime. Protected host configuration capture/refresh is a stopped-Worker installer action, unavailable through MCP.',inputSchema:scope,outputSchema:JobRuntimeProfileListRecordSchema,annotations:read},input=>invoke(context,'job_runtime_profile_list',()=>service.list(context.principal,input.workspaceId)))
   if(jobRuntimeToolAvailable(context,'job_runtime_profile_save'))server.registerTool('job_runtime_profile_save',{description:'Save a revisioned CI policy for an existing approved root. Build and verification records retain their formats. Verification saves the approved source commit, offline network policy and reviewed 24-hour lifetime; activation requires measured runtime resources. Caller cannot declare review, qualification evidence or readiness.',inputSchema:JobRuntimeProfileSaveRecordSchema.extend({workspaceId:z.string().min(1)}),outputSchema:z.object({profile:JobRuntimeProfileRecordSchema}),annotations:write},input=>invoke(context,'job_runtime_profile_save',async()=>{const{workspaceId,...body}=input;return {profile:await service.save(context.principal,'mcp',workspaceId,body)}}))
   if(jobRuntimeToolAvailable(context,'job_runtime_qualification_request'))server.registerTool('job_runtime_qualification_request',{description:'Capture the exact installed candidate on a paired, authorized computer; run job_runtime_qualification_run next, with no approval step. This does not probe or install the runtime. Verification candidates bind the saved source commit and profile; another commit requires a new capture. Native entry uses the original guarded runtime owner.',inputSchema:JobRuntimeQualificationRequestSchema.extend({workspaceId:z.string().min(1)}),outputSchema:z.object({approval:JobRuntimeApprovalRecordSchema}),annotations:write},input=>invoke(context,'job_runtime_qualification_request',async()=>{const{workspaceId,...body}=input;return {approval:await service.requestQualification(context.principal,'mcp',workspaceId,body)}}))

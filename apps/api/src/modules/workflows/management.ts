@@ -33,8 +33,9 @@ function managed(row: WorkflowRow): ManagedWorkflow {
 export class WorkflowManagementService {
   readonly current: CurrentWorkflowAuthoring
   readonly schedules: WorkflowScheduleService
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {
-    this.current = new CurrentWorkflowAuthoring(pool, commands)
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
+    agentActiveTimeoutMs?: number) {
+    this.current = new CurrentWorkflowAuthoring(pool, commands, agentActiveTimeoutMs)
     this.schedules = new WorkflowScheduleService(pool, commands)
   }
 

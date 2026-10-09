@@ -332,6 +332,7 @@ export async function qualifyCodex(
       verifiedProtocols.set(key, result)
     } catch (error) {
       signal?.throwIfAborted()
+      if (error instanceof Error && error.name === 'TimeoutError') throw error
       if (error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_EXECUTABLE_CHANGED') throw error
       if (error instanceof CompatibilityCheckError) {
         throw new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED', `Codex ${actual}: ${error.message}`)

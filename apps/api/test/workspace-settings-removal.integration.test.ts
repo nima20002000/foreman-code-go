@@ -1,4 +1,5 @@
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { callWorkspaceTool } from './helpers/workspaceMcp.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile, readFile, rename, stat } from 'node:fs/promises'
@@ -48,9 +49,9 @@ it('removes a workspace through authenticated MCP with denied access, replay and
     const denied = await connect(reader.token)
 
     // The single-workspace removal action uses the same authenticated archive capability.
-    const single = c.ManagedWorkspaceCommandResultSchema.parse((await client.callTool({ name: 'workspace_create', arguments: {
+    const single = (await callWorkspaceTool(client, 'workspace_create', c.ManagedWorkspaceCommandResultSchema, {
       commandId: randomUUID(), name: 'Single removal', parentPath: directory,
-    } })).structuredContent).value
+    })).value
     const project = join(directory, 'Single removal')
     await writeFile(join(project, 'owned.txt'), 'owned content')
     // Existing workspaces recover ownership only from their creation receipt and original location identity.
@@ -64,10 +65,12 @@ it('removes a workspace through authenticated MCP with denied access, replay and
     const archiveOnly = await access.issue({ name: 'Archive only', audience: 'operator', grants: [{ actions: ['workspaces:archive'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     expect((await (await connect(archiveOnly.token)).callTool({ name: 'workspace_archive', arguments: singleInput })).isError).toBe(true)
     expect(await readFile(join(project, 'owned.txt'), 'utf8')).toBe('owned content')
-    const removed = c.ManagedWorkspaceCommandResultSchema.parse((await client.callTool({ name: 'workspace_archive', arguments: singleInput })).structuredContent)
+    const removed = await callWorkspaceTool(client, 'workspace_archive', c.ManagedWorkspaceCommandResultSchema, singleInput)
     expect(removed.value.archivedAt).not.toBeNull()
-    expect(c.ManagedWorkspaceCommandResultSchema.parse((await client.callTool({ name: 'workspace_archive', arguments: singleInput })).structuredContent).replayed).toBe(true)
-    const persisted = c.ManagedWorkspaceSchema.parse((await client.callTool({ name: 'workspace_get', arguments: { workspaceId: single.workspace.id } })).structuredContent)
+    const replayed = await callWorkspaceTool(client, 'workspace_archive', c.ManagedWorkspaceCommandResultSchema, singleInput)
+    expect(replayed.replayed).toBe(true)
+    const persisted = await callWorkspaceTool(client, 'workspace_get', c.ManagedWorkspaceSchema,
+      { workspaceId: single.workspace.id })
     expect(persisted.archivedAt).toBe(removed.value.archivedAt)
     expect(persisted.revision).toBe(single.revision + 1)
     await expect(stat(project)).rejects.toMatchObject({ code: 'ENOENT' })
@@ -93,12 +96,13 @@ it('removes a workspace through authenticated MCP with denied access, replay and
     expect((await client.callTool({ name: 'workspace_archive', arguments: retryInput })).isError).toBe(true)
     expect(await readFile(join(retryPath, 'keep.txt'), 'utf8')).toBe('replacement')
     await removeFixtureDirectory(retryPath, { force: false }); await rename(moved, retryPath)
-    expect(c.ManagedWorkspaceCommandResultSchema.parse((await client.callTool({ name: 'workspace_archive', arguments: retryInput })).structuredContent).replayed).toBe(true)
+    const retried = await callWorkspaceTool(client, 'workspace_archive', c.ManagedWorkspaceCommandResultSchema, retryInput)
+    expect(retried.replayed).toBe(true)
     await expect(stat(retryPath)).rejects.toMatchObject({ code: 'ENOENT' })
 
     const batch = await Promise.all(['Batch A', 'Batch B'].map(async (name) => (await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name, parentPath: directory })).value))
     const batchResult = await client.callTool({ name: 'workspace_batch_archive', arguments: { commandId: randomUUID(), workspaces: batch.map((item) => ({ workspaceId: item.workspace.id, expectedRevision: item.revision })) } })
-    expect(batchResult.isError).not.toBe(true)
+    expect(batchResult.isError, JSON.stringify(batchResult)).not.toBe(true)
     for (const name of ['Batch A', 'Batch B']) await expect(stat(join(directory, name))).rejects.toMatchObject({ code: 'ENOENT' })
     expect((await pool.query("select 1 from management_audit where action='workspace.folder.cleanup' and outcome='succeeded'")).rowCount).toBeGreaterThan(0)
   } finally {

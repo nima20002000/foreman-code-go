@@ -98,6 +98,7 @@ interface ApprovalObservationInput {
   candidate: HarnessExecution
   request: HarnessExecutionRequest
   approval?: WorkflowApprovalConfiguration | undefined
+  agentActiveTimeoutMs?: number | undefined
   workflowId: string
   graphThreadId: string
   owner: RunOwnership
@@ -1718,7 +1719,7 @@ export class ApprovalExecutionCoordinator {
         await this.finishRepeatExecution(execution, repeat, input.owner, signal)
         return { state: 'completed', execution, result: execution.result }
       }
-      await this.budgets.ensure(execution.id, input.graphThreadId, this.activeTimeoutMs)
+      await this.budgets.ensure(execution.id, input.graphThreadId, input.agentActiveTimeoutMs ?? this.activeTimeoutMs)
       if (execution.state === 'waiting') await this.budgets.resume(execution.id)
       const budgetStarted = performance.now()
       // An exhausted budget found on recovery takes the same deadline path as a

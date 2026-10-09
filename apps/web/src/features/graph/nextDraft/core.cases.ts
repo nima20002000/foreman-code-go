@@ -56,7 +56,13 @@ function harness(context = fixture()) {
         case 'nodes.reorder': graph = { ...graph, nodes: op.nodeIds.map((id) => graph.nodes.find((node) => node.id === id)!) }; break
         case 'edges.reorder': graph = { ...graph, edges: op.edgeIds.map((id) => graph.edges.find((edge) => edge.id === id)!) }; break
         case 'workflow.set_approval': graph = { ...graph, approval: op.approval }; break
-        case 'workflow.set_execution_limits': graph = { ...graph, executionPolicy: { maxParallelism: op.maxParallelism, maxNodeExecutions: op.maxNodeExecutions } }; break
+        case 'workflow.set_execution_limits':
+          graph = { ...graph, executionPolicy: {
+            maxParallelism: op.maxParallelism,
+            maxNodeExecutions: op.maxNodeExecutions,
+            ...(op.agentActiveTimeoutMs === undefined ? {} : { agentActiveTimeoutMs: op.agentActiveTimeoutMs }),
+          } }
+          break
         default: throw new Error(`Unsupported synthetic fixture operation ${op.type}`)
       }
     }
@@ -83,6 +89,27 @@ function harness(context = fixture()) {
 }
 const rename = (graph: WorkflowDefinitionV3, name = 'Edited node') => ({ ...graph, nodes: graph.nodes.map((node, index) => index === 0 ? { ...node, name } : node) })
 export const coreCases: { name: string; run: () => void | Promise<void> }[] = [
+  { name: 'saving and clearing the Agent active-time budget survives draft acknowledgements', async run() {
+    const h = harness()
+    h.change((graph) => ({ ...graph, executionPolicy: {
+      ...graph.executionPolicy!, agentActiveTimeoutMs: 3_600_000,
+    } }))
+    await h.writer().write('key', true)
+    assert.equal(h.server().graph.executionPolicy?.agentActiveTimeoutMs, 3_600_000)
+    assert.equal(h.edit().graph.executionPolicy?.agentActiveTimeoutMs, 3_600_000)
+    assert.equal(nextDraftDirty(h.edit()), false)
+    h.change((graph) => {
+      const executionPolicy = { ...graph.executionPolicy! }
+      delete executionPolicy.agentActiveTimeoutMs
+      return { ...graph, executionPolicy }
+    })
+    await h.writer().write('key', true)
+    assert.equal(Object.hasOwn(h.server().graph.executionPolicy!, 'agentActiveTimeoutMs'), false)
+    assert.equal(Object.hasOwn(h.edit().graph.executionPolicy!, 'agentActiveTimeoutMs'), false)
+    assert.equal(h.server().graph.executionPolicy?.maxParallelism, 4)
+    assert.equal(h.server().graph.executionPolicy?.maxNodeExecutions, 1000)
+    assert.equal(nextDraftDirty(h.edit()), false)
+  } },
   { name: 'draft keys cannot collide across opaque workspace or workflow separators', run() { assert.notEqual(nextDraftKey('a::b', 'c'), nextDraftKey('a', 'b::c')); assert.notEqual(nextDraftKey('a', 'b:c'), nextDraftKey('a:b', 'c')) } },
   { name: 'sole Worker explicitly starts itself', run() { const c = fixture(['coder']); assert.equal(entryChoices(c.draft.graph, c).valid, true); assert.equal(entryChoices(c.draft.graph, c).mode, 'sole') } },
   { name: 'sole Orchestrator explicitly starts itself', run() { const c = fixture(['orchestrator']); assert.equal(entryChoices(c.draft.graph, c).valid, true) } },

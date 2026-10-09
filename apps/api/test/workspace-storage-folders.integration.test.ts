@@ -1,4 +1,5 @@
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { callWorkspaceTool } from './helpers/workspaceMcp.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile, readFile, rename, lstat, symlink } from 'node:fs/promises'
@@ -63,9 +64,8 @@ it('discovers real unregistered folders without writes and safely deletes conten
     await writeFile(join(external, 'keep.txt'), 'keep outside')
     await symlink(external, join(root, 'A missing', 'external-link'))
     const registered = (await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Registered', parentPath: root })).value
-    const read = async (caller: Client, cursor?: string) => c.WorkspaceStorageFoldersPageSchema.parse((await caller.callTool({
-      name: 'workspace_storage_folders_list', arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
-    })).structuredContent)
+    const read = (caller: Client, cursor?: string) => callWorkspaceTool(caller,
+      'workspace_storage_folders_list', c.WorkspaceStorageFoldersPageSchema, { limit: 1, ...(cursor ? { cursor } : {}) })
     const before = (await pool.query('select count(*)::int as count from workspaces')).rows[0].count
     const first = await read(denied)
     expect(first.rootPath).toBe(root)
@@ -87,9 +87,12 @@ it('discovers real unregistered folders without writes and safely deletes conten
       headers: { authorization: `Bearer ${reader.token}` }, payload: input })
     expect(deniedHttp.statusCode).toBe(403)
     expect(await readFile(join(input.path, 'content.txt'), 'utf8')).toBe('A missing')
-    const removed = c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: input })).structuredContent)
+    const removed = await callWorkspaceTool(client, 'workspace_storage_folder_delete',
+      c.WorkspaceStorageFolderDeleteResultSchema, input)
     expect(removed.value.path).toBe(input.path)
-    expect(c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: input })).structuredContent).replayed).toBe(true)
+    const replayed = await callWorkspaceTool(client, 'workspace_storage_folder_delete',
+      c.WorkspaceStorageFolderDeleteResultSchema, input)
+    expect(replayed.replayed).toBe(true)
     await expect(lstat(input.path)).rejects.toMatchObject({ code: 'ENOENT' })
     expect((await read(client)).items[0]!.name).toBe('B missing')
     expect((await pool.query("select result from management_command_receipts where operation='workspace.storage_folder.delete' and command_id=$1", [input.commandId])).rows[0].result).toEqual({ path: input.path })
@@ -97,16 +100,18 @@ it('discovers real unregistered folders without writes and safely deletes conten
     // The bulk UI uses these same authenticated per-folder commands and receipts.
     const bulkPaths = ['Bulk first', 'Bulk second'].map((name) => join(root, name))
     for (const path of bulkPaths) { await mkdir(path); await writeFile(join(path, 'owned.txt'), 'owned bulk test content') }
-    const bulkFolders = c.WorkspaceStorageFoldersPageSchema.parse((await client.callTool({
-      name: 'workspace_storage_folders_list', arguments: { limit: 100 },
-    })).structuredContent).items.filter((item) => bulkPaths.includes(item.path))
+    const bulkFolders = (await callWorkspaceTool(client, 'workspace_storage_folders_list',
+      c.WorkspaceStorageFoldersPageSchema, { limit: 100 })).items.filter((item) => bulkPaths.includes(item.path))
     expect(bulkFolders).toHaveLength(2)
     for (const item of bulkFolders) {
       const command = { commandId: randomUUID(), path: item.path, expectedIdentity: item.identity }
       await expectMcpAccessDenied(denied.callTool({ name: 'workspace_storage_folder_delete', arguments: command }))
-      const result = c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).structuredContent)
+      const result = await callWorkspaceTool(client, 'workspace_storage_folder_delete',
+        c.WorkspaceStorageFolderDeleteResultSchema, command)
       expect(result.value.path).toBe(item.path)
-      expect(c.WorkspaceStorageFolderDeleteResultSchema.parse((await client.callTool({ name: 'workspace_storage_folder_delete', arguments: command })).structuredContent).replayed).toBe(true)
+      const replayed = await callWorkspaceTool(client, 'workspace_storage_folder_delete',
+        c.WorkspaceStorageFolderDeleteResultSchema, command)
+      expect(replayed.replayed).toBe(true)
       expect((await pool.query("select result->>'path' as path from management_command_receipts where operation='workspace.storage_folder.delete' and command_id=$1", [command.commandId])).rows[0].path).toBe(item.path)
       await expect(lstat(item.path)).rejects.toMatchObject({ code: 'ENOENT' })
     }

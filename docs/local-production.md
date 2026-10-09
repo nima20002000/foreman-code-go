@@ -1,11 +1,15 @@
 # Local production on Linux
 
 From a desktop session, with Node 22.23.2, the pinned Corepack/pnpm runtime,
-Docker Compose, user systemd, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed:
+Docker Compose, user systemd, Python 3, `/usr/bin/ss`, and `/usr/bin/google-chrome` installed:
 
 ```sh
 corepack pnpm production:install
 ```
+
+Workspace folder publication uses Python's standard-library `ctypes` to call
+Linux `renameat2` with `RENAME_NOREPLACE`. The filesystem must support this atomic
+rename; unavailable support fails without overwriting or copying a folder.
 
 Use the same command to update. It installs dependencies under the release-age
 policy, builds, stages a standalone release, stops the API, migrates the production

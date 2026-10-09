@@ -47,29 +47,21 @@ export class ProductionPlacementChoiceDiscovery implements PlacementChoiceDiscov
         [input.agentConfigurationVersionId, input.workspaceId],
       )).rows[0]
       const configuration = AgentConfigurationVersionSchema.parse(row?.record)
-      const policies = await services.roots.read(sql, principal, input.workspaceId)
+      const roots = await this.sourceRoots(sql, input.workspaceId)
       const choices: NodePlacementChoice[] = []
-      for (const policy of policies) {
+      for (const root of roots) {
         try {
-          await services.roots.resolve(sql, principal, { workspaceId: input.workspaceId, hostRef: policy.hostRef,
-            rootPolicyId: policy.rootPolicyId, rootPolicyRevision: policy.rootPolicyRevision,
-            locationRevision: policy.locationRevision })
-          const roots = await this.sourceRoots(sql, input, policy)
+          // Location changes do not replace an existing host's approved source namespace.
+          const policy = await services.roots.resolve(sql, principal, {
+            workspaceId: input.workspaceId, ...root.selection,
+          })
+          await services.sources.resolveRootBinding(sql, principal, {
+            workspaceId: input.workspaceId, rootId: root.binding.rootId,
+            bindingRevision: root.binding.bindingRevision, source: root.source,
+          })
           const profiles = await services.profiles.list(policy.hostRef, policy.applicationInstallationId, sql)
-          for (const root of roots) {
-            try {
-              await services.sources.resolveRootBinding(sql, principal, {
-                workspaceId: input.workspaceId, rootId: root.binding.rootId,
-                bindingRevision: root.binding.bindingRevision, source: root.source,
-              })
-            } catch (error) {
-              // An unavailable source must not hide valid bindings on the same computer.
-              if (!(error instanceof DomainError) || ![403, 404, 409, 410].includes(error.status)) throw error
-              continue
-            }
-            for (const profile of profiles.filter(value => matchesConfiguration(value, configuration))) {
-              choices.push(await this.choice(sql, services, policy, root, profile))
-            }
+          for (const profile of profiles.filter(value => matchesConfiguration(value, configuration))) {
+            choices.push(await this.choice(sql, services, policy, root, profile))
           }
         } catch (error) {
           // A stale root or revoked host cannot authorize a choice on that computer.
@@ -86,13 +78,10 @@ export class ProductionPlacementChoiceDiscovery implements PlacementChoiceDiscov
     }
   }
 
-  private async sourceRoots(sql: pg.PoolClient, input: NodePlacementChoicesInput, policy: WorkspaceRootPolicy) {
-    const selection = { hostRef: policy.hostRef, rootPolicyId: policy.rootPolicyId,
-      rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision }
+  private async sourceRoots(sql: pg.PoolClient, workspaceId: string) {
     const rows = await sql.query<{ record: unknown }>(`select b.record from source_root_catalog c
       join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
-      where c.workspace_id=$1 and b.record->'selection'=$2::jsonb order by c.root_id`,
-    [input.workspaceId, JSON.stringify(selection)])
+      where c.workspace_id=$1 order by c.root_id`, [workspaceId])
     return rows.rows.map(row => SourceRootRecordSchema.parse(row.record))
   }
 

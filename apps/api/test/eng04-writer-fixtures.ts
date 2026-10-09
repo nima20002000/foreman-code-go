@@ -18,7 +18,8 @@ import { graphRpc, graphRpcValue, graphHeaders } from './eng04-graph-composition
 
 
 /** Current product Create and full-definition Save fixture; only workspace and Agent rows are seeded. */
-export async function writerFixture(db: Awaited<ReturnType<typeof currentDatabase>>, form: CurrentFixtureForm = 'sequential') {
+export async function writerFixture(db: Awaited<ReturnType<typeof currentDatabase>>, form: CurrentFixtureForm = 'sequential',
+  options: { agentActiveTimeoutMs?: number } = {}) {
     const f = makeCurrentWorkflowFixture(randomUUID(), form)
     const configurations = f.configurations
     // Only workspace/Agent configuration fixtures are seeded. No workflow or
@@ -42,7 +43,7 @@ export async function writerFixture(db: Awaited<ReturnType<typeof currentDatabas
     const writer = await credential([{ actions: ['capabilities:read'], scope: {} }, {
       actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'), scope: { workspaceIds: [f.scope.workspaceId] },
     }])
-    const workflows = new WorkflowManagementService(db.pool, commands)
+    const workflows = new WorkflowManagementService(db.pool, commands, options.agentActiveTimeoutMs)
     const services = { workflows, commands,
       runGraph: new RunGraphReadService(db.pool, { qualifiedReads: true }) } as unknown as OperatorServices
     const app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } }, checkpoints: { ping: async () => undefined } },

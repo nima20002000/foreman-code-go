@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { appendFile, link, realpath, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, it } from 'vitest'
+import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 import { assertCodexUnchanged, canonical, codexBinaryIdentity, qualifyCodex, type QualifiedCodex } from '../src/modules/harnesses/codexProtocol.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { calls, errorCode, fixture, fixtureProtocol, type Fixture } from './fixtures/codex-test-helpers.js'
@@ -10,6 +10,7 @@ import { removeFixtureDirectory } from './helpers/testResources.js'
 import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
+import * as nativeProcess from '../src/modules/harnesses/process.js'
 
 let f: Fixture
 const newer = 'codex-cli 0.160.0'
@@ -46,6 +47,21 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
     await assert.rejects(qualify(), error => error instanceof Error
       && error.message.includes(newer) && error.message.includes('thread/resume')
       && errorCode(error) === 'CODEX_CONTRACT_UNSUPPORTED')
+  })
+
+  it('preserves a schema command timeout instead of reporting an unsupported contract', async () => {
+    await configure()
+    const timeout = new DOMException('Schema command deadline exceeded.', 'TimeoutError')
+    const command = nativeProcess.runCommand
+    const spy = vi.spyOn(nativeProcess, 'runCommand').mockImplementation((binary, args, ...rest) => {
+      if (args.includes('generate-json-schema')) return Promise.reject(timeout)
+      return command(binary, args, ...rest)
+    })
+    try {
+      await assert.rejects(qualify(), error => error === timeout)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('names a missing history response field on the installed version', async () => {

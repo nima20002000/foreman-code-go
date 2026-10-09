@@ -5,6 +5,8 @@ import { ComputerAccountsService } from './modules/computers/accounts.js'
 import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
 import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
+import { CiEnrollment } from './modules/jobs/ciEnrollment.js'
+import { ProductionCiEnrollmentInventory } from './modules/jobs/ciEnrollmentInventory.js'
 import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
@@ -463,7 +465,12 @@ export function buildProductionApp(
         else harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
-      setImmediate(() => { if (!signal.aborted) jobRuntime?.requestQueueWake() })
+      setImmediate(() => {
+        if (!signal.aborted) {
+          jobRuntime?.requestQueueWake()
+          runtimeServices.ciEnrollment?.request()
+        }
+      })
     },
   })
   const commands = new PostgresCommandCoordinator(database.pool)
@@ -1334,7 +1341,7 @@ export function buildProductionApp(
     agentChat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings, projectRoot),
     locations,
-    workflows: new WorkflowManagementService(database.pool, commands),
+    workflows: new WorkflowManagementService(database.pool, commands, config.harnesses.timeoutMs),
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
     harnessCompatibility,
@@ -1746,6 +1753,18 @@ export function buildProductionApp(
         () => deviceRuntime.endpointForDomains(), commands, { changed: () => jobRuntime?.jobs.requestQueueWake(),
           main: () => jobRuntime?.mainCiRuntime })
       jobRuntime.jobs.runtimePreparation = runtimeServices.ciRuntime
+      runtimeServices.ciEnrollment = new CiEnrollment(database.pool, commands, jobRuntime.profiles,
+        runtimeServices.ciRuntime, new ProductionCiEnrollmentInventory(database.pool, jobRuntime.sources,
+          () => deviceRuntime.endpointForDomains(), () => jobRuntime?.mainCiRuntime, workerExecution))
+      jobRuntime.profiles.enrollment = runtimeServices.ciEnrollment
+      jobRuntime.buildComputers.enrollment = runtimeServices.ciEnrollment
+      runtimeServices.ciEnrollment.request()
+      const enrollmentTimer = setInterval(() => runtimeServices.ciEnrollment?.request(), 30_000)
+      enrollmentTimer.unref()
+      app.addHook('onClose', async () => {
+        clearInterval(enrollmentTimer)
+        await runtimeServices.ciEnrollment?.close()
+      })
       await runtimeServices.ciRuntime.recover()
       jobRuntime.jobs.requestQueueWake()
       registerSourceRoutes(app, jobRuntime.sources)

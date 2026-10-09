@@ -104,6 +104,21 @@ test('NATIVE-2 existing-session recovery does not consume another launch permit'
   assert.ok(f.calls.includes('live-observe'))
 })
 
+test.each([undefined, 3_600_000])('passes the saved workflow active-time budget to native execution (%s)', async (timeoutMs) => {
+  const f = observerFixture()
+  if (timeoutMs !== undefined) f.context.version.definition.executionPolicy!.agentActiveTimeoutMs = timeoutMs
+  let observed = false
+  const observe = f.native.observeExact
+  f.native.observeExact = async (input) => {
+    observed = true
+    assert.equal(input.agentActiveTimeoutMs, timeoutMs)
+    return observe(input)
+  }
+  f.store.claimLaunch = async () => undefined
+  await f.observer()(f.get(), new AbortController().signal)
+  assert.equal(observed, true)
+})
+
 test('NATIVE-2 Stop while waiting for the shared runner gate cannot claim a launch', async () => {
   const f = observerFixture(), signal = new AbortController()
   let release!: () => void

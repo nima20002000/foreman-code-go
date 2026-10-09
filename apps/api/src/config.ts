@@ -2,6 +2,7 @@ import { resolveProductEnvironment } from '@foreman-code/contracts/product-envir
 import { isAbsolute } from 'node:path'
 import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origin'
 import { z } from 'zod'
+import { DEFAULT_AGENT_ACTIVE_TIMEOUT_MS } from '@foreman-code/contracts/wave25'
 import type { WorkerExecutionSettings } from '@foreman-code/contracts/management'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
 import { harnessBinaries } from './modules/harnesses/binaries.js'
@@ -26,7 +27,7 @@ const EnvironmentSchema = z.object({
   FILE_STORAGE_ROOT: z.string().trim().min(1).refine(isAbsolute, 'File storage requires an absolute directory').optional(),
   WORKSPACE_STORAGE_ROOT: z.string().trim().min(1).refine(isAbsolute, 'Workspace storage requires an absolute directory').optional(),
   HARNESS_WORKSPACE_ROOT: z.string().trim().min(1).default('/tmp/graphql-harness-runs'),
-  HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
+  HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(DEFAULT_AGENT_ACTIVE_TIMEOUT_MS),
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
   FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
   FOREMAN_CODE_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),

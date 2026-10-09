@@ -98,7 +98,9 @@ export class JobRepository {
   }
   async finishQueueTicket(sql: JobSql, ticket: JobQueueTicket,
     reason: NonNullable<JobQueueTicket['terminalReason']>, now: string): Promise<JobQueueTicket> {
-    return this.putQueueTicket(sql, { ...ticket, state: 'terminal', terminalReason: reason,
+    const finished = { ...ticket }
+    delete finished.sourceCapacityWait
+    return this.putQueueTicket(sql, { ...finished, state: 'terminal', terminalReason: reason,
       finishedAt: now, waitingReasons: [], queuePosition: null, estimatedStartAt: null })
   }
   async finishCompletedQueueTickets(sql: JobSql): Promise<void> {

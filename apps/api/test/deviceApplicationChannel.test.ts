@@ -185,6 +185,7 @@ describe('authenticated namespace carrier mechanics', () => {
     ['PLACEMENT_BINDING_CONFLICT', false],
     ['REMOTE_AUTHORITY_DENIED', false],
     ['AUTH_REVOKED', false],
+    ['AUTH_RUN_ENDED', false],
     ['REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', true],
     ['REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', false],
     ['NATIVE_ARTIFACT_CONTEXT_PENDING', true],
@@ -193,6 +194,15 @@ describe('authenticated namespace carrier mechanics', () => {
     ['backpressure', true],
     ['job-publication-pending', true],
     ['source-repository-uncertain', false],
+    ['source-reconciliation-unconfirmed', true],
+    ['SOURCE_RECLAMATION_UNCONFIRMED', false],
+    ['SOURCE_EXECUTION_UNCERTAIN', true],
+    ['SOURCE_PREPARATION_ACTIVE', true],
+    ['SOURCE_PREPARATION_RECONCILED', false],
+    ['SOURCE_QUOTA_MISSING', false],
+    ['SOURCE_ROOT_CHANGED', false],
+    ['SOURCE_CLAIM_INVALID', false],
+    ['SOURCE_CLAIM_CONFLICT', false],
   ] as const)('preserves supported %s and safe retryability from worker to Main', async (code, retryable) => {
     const secret = 'private-token-and-process-path'
     const pair = setup(async () => {
@@ -206,6 +216,20 @@ describe('authenticated namespace carrier mechanics', () => {
       expect(reply).toEqual({ code, retryable })
       expect(JSON.stringify(reply)).not.toContain(secret)
       expect(pair.rawMain.closed).toBe(false)
+    } finally { await pair.close() }
+  })
+  it('returns Main cleanup authorization failures to the Worker without exposing private details', async () => {
+    const pair = setup(async () => ({ payload: {} }),
+      { maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576 }, 1000, async () => {
+        throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'private reservation and filesystem details', 403)
+      })
+    try {
+      await expect(pair.worker.request('execution-v1', { operation: 'sources.reclamation-authorize' }))
+        .rejects.toMatchObject({ code: 'SOURCE_RECLAMATION_UNCONFIRMED', retryable: false })
+      const chunks = pair.rawMain.frames.map(frame => JSON.parse(frame) as { type: string; data?: string })
+        .filter(frame => frame.type === 'application-chunk')
+      const reply = JSON.parse(Buffer.concat(chunks.map(frame => Buffer.from(frame.data!, 'base64'))).toString())
+      expect(reply).toEqual({ code: 'SOURCE_RECLAMATION_UNCONFIRMED', retryable: false })
     } finally { await pair.close() }
   })
   it.each([

@@ -22,6 +22,7 @@ const retryability: Readonly<Record<string, boolean>> = {
   'source-repository-timeout': true,
   'source-repository-uncertain': false,
   AUTH_REVOKED: false,
+  AUTH_RUN_ENDED: false,
   REMOTE_AUTHORITY_DENIED: false,
   REMOTE_REVIEWER_DENIED: false,
   REVIEWER_BINDING_REBIND_REQUIRED: true,
@@ -54,6 +55,15 @@ const retryability: Readonly<Record<string, boolean>> = {
   SOURCE_DISK_CAPACITY: false,
   SOURCE_REPOSITORY_TIMEOUT: true,
   SOURCE_REPOSITORY_UNCERTAIN: false,
+  'source-reconciliation-unconfirmed': true,
+  SOURCE_RECLAMATION_UNCONFIRMED: false,
+  SOURCE_EXECUTION_UNCERTAIN: true,
+  SOURCE_PREPARATION_ACTIVE: true,
+  SOURCE_PREPARATION_RECONCILED: false,
+  SOURCE_QUOTA_MISSING: false,
+  SOURCE_ROOT_CHANGED: false,
+  SOURCE_CLAIM_INVALID: false,
+  SOURCE_CLAIM_CONFLICT: false,
 }
 
 export function deviceApplicationFailure(error: unknown): DeviceApplicationFailure {

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CI_RUNTIME_NAMESPACE, CiRuntimeWorkerStateSchema } from '@foreman-code/contracts'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
@@ -69,6 +69,8 @@ async function repository(directory: string, marker: string) {
 }
 
 describe('installed Worker preparation host boundary', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
   it('denies a stale channel and does not execute committed preparation code outside the approved root', async () => {
     await withPrivateFixtureDirectories(async () => {
       const directory = await privateFixtureDirectory('worker-preparation-isolation-')
@@ -99,6 +101,8 @@ describe('installed Worker preparation host boundary', () => {
       const binding = { mainId: pairing.mainId, deviceId: pairing.deviceId,
         workerInstallationId: pairing.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
         bootId: bootIdentity(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
+      vi.stubEnv('GIT_DIR', join(directory, 'outer-job.git'))
+      vi.stubEnv('GIT_WORK_TREE', join(directory, 'outer-job-source'))
       const mounted = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId: binding.bootId,
         configuration: null, jobConfiguration: { path: join(stateDirectory, 'job-runtime.json'), ownerUid: process.getuid!() },
         approvedRoots: async () => approved,

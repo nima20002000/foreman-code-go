@@ -253,9 +253,10 @@ function fixture(harness: AgentHarness = 'codex') {
     },
     async cancelPendingForRun() { cancelPendingCalls += 1; return 0 },
   } as unknown as PostgresInteractionRepository
+  let activeBudgetMs: number | undefined
   const budgets = {
-    async ensure() {},
-    async remaining() { if (budgetFailure) throw budgetFailure; return 60_000 },
+    async ensure(_executionId: string, _graphThreadId: string, timeoutMs: number) { activeBudgetMs ??= timeoutMs },
+    async remaining() { if (budgetFailure) throw budgetFailure; return activeBudgetMs ?? 60_000 },
     async assertActive() { if (budgetFailure) throw budgetFailure },
     async beginWait(id: string) { waits.push(id) },
     async resume(id: string) { resumes.push(id) },
@@ -722,6 +723,33 @@ it('does not stop the shared budget or revoke replacement credentials after owne
   assert.equal(f.revoked.length, 0)
   assert.equal(f.manager.canceled.length, 0)
   assert.equal(f.manager.closed.length, 0)
+})
+
+it.each([undefined, 3_600_000])('initializes an execution budget from the workflow or server default (%s)', async (override) => {
+  const f = fixture()
+  f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
+  const observation = await f.coordinator.observeExact({ ...f.input, agentActiveTimeoutMs: override })
+  assert.equal(observation.state, 'completed')
+  assert.equal(await f.budgets.remaining(f.candidate.id), override ?? 60_000)
+})
+
+it('preserves the initialized budget across an approval wait and recovery', async () => {
+  const f = fixture()
+  f.snapshot('approve-budget')
+  assert.equal((await f.coordinator.observeExact({ ...f.input, agentActiveTimeoutMs: 3_600_000 })).state, 'waiting')
+  f.delivered('approve-budget')
+  f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
+  assert.equal((await f.coordinator.observeExact(f.input)).state, 'completed')
+  assert.equal(await f.budgets.remaining(f.candidate.id), 3_600_000)
+})
+
+it('aborts a stalled native iterator at its workflow active-time budget', async () => {
+  const f = fixture()
+  f.manager.startTurn = async function* () { await new Promise(() => undefined); yield {} as NativeHarnessEvent }
+  await assert.rejects(f.coordinator.observeExact({ ...f.input, agentActiveTimeoutMs: 20 }),
+    { code: 'EXECUTION_ACTIVE_TIMEOUT' })
+  assert.equal(f.manager.canceled.length, 1)
+  assert.equal(f.manager.closed.length, 1)
 })
 
 it('aborts a stalled native iterator at its own remaining execution budget', async () => {

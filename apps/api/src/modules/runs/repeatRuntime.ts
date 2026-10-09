@@ -147,7 +147,8 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
   const run = AcceptedWorkflowRunV3Schema.parse(context.run)
   CurrentRunVersionSnapshotSchema.parse({ run, version: context.version })
   const { owner, store, native, locations } = context
-  const common = { workflowId: run.workflowId, graphThreadId: run.id, approval: run.approval, owner }
+  const common = { workflowId: run.workflowId, graphThreadId: run.id, approval: run.approval, owner,
+    agentActiveTimeoutMs: context.version.definition.executionPolicy?.agentActiveTimeoutMs }
   return async (admitted, signal) => {
     const check = () => {
       signal.throwIfAborted()
@@ -345,7 +346,8 @@ export async function executeRepeatRuntime(input: {
       'WORKFLOW_SELECTED_EXECUTION_FAILED', 'WORKFLOW_UNRESOLVED', 'WORKFLOW_RESULT_TOO_LARGE', 'EXECUTION_OCCURRENCE_CONFLICT',
       'RUN_PIN_CONFLICT', 'ACCESS_DENIED', 'GRAPH_SECURITY_UNQUALIFIED', 'GRAPH_STOP_CONFLICT', 'GRAPH_TERMINAL_CONFLICT',
       // Launch preflight refusals happen before any native session exists.
-      'APP_MCP_PREFLIGHT_FAILED', 'MCP_INSPECTION_CONTEXT_MISMATCH', 'HARNESS_INSPECTOR_UNAVAILABLE',
+      'APP_MCP_PREFLIGHT_FAILED', 'APP_MCP_PREFLIGHT_TIMEOUT',
+      'MCP_INSPECTION_CONTEXT_MISMATCH', 'HARNESS_INSPECTOR_UNAVAILABLE',
       'WORKER_EXECUTION_IDENTITY_INVALID', 'HARNESS_CONFIGURATION_MISMATCH',
       'WORKER_NATIVE_OUTPUT_PROTECTION_FAILED', 'WORKFLOW_ARTIFACT_OUTPUTS_CONFLICT',
       'WORKFLOW_ARTIFACT_SOURCE_CONFLICT', 'WORKFLOW_TERMINAL_SOURCE_CONFLICT',

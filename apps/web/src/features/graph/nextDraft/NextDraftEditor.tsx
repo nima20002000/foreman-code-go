@@ -1,4 +1,5 @@
 import type { PinnedPanelNode } from './DraftCanvas'
+import { AgentActiveTimeField } from './AgentActiveTimeField'
 import { JobNodePanel, JobNodePicker } from '../../jobs'
 import { attachJob } from './model'
 import { BoardNotice } from './BoardNotice'
@@ -112,8 +113,16 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   const workflowName = useRef<WorkflowNameHandle>(null)
   const openSaveField = (path: (string | number)[]) => {
     flushSync(() => setPanel('workflow'))
-    const field = path[0] === 'approval' ? (path[1] === 'designatedOrchestratorAgentId' ? 'orchestrator' : 'approval')
-      : path[0] === 'entryNodeId' ? 'entry' : path[1] === 'maxNodeExecutions' ? 'executions' : 'limits'
+    let field = 'limits'
+    if (path[0] === 'approval') {
+      field = path[1] === 'designatedOrchestratorAgentId' ? 'orchestrator' : 'approval'
+    } else if (path[0] === 'entryNodeId') {
+      field = 'entry'
+    } else if (path[0] === 'executionPolicy' && path[1] === 'maxNodeExecutions') {
+      field = 'executions'
+    } else if (path[0] === 'executionPolicy' && path[1] === 'agentActiveTimeoutMs') {
+      field = 'active-time'
+    }
     settingsPanel.current?.querySelector<HTMLElement>(`[data-save-field="${field}"]`)?.focus()
   }
   const [openNode, setOpenNode] = useState<OpenAgentPanel>()
@@ -543,6 +552,9 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
             <EntryFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} />
             <ApprovalFields graph={graph} context={context} agentEdits={edit.agentEdits} change={change} report={report} />
             <section className="next-draft-section" aria-label="Execution bounds"><h3>Limits</h3>
+              {graph.executionPolicy ? <AgentActiveTimeField policy={graph.executionPolicy}
+                defaultMs={preflight.data?.capabilities.agentActiveTimeBudget.defaultMs}
+                onChange={(executionPolicy) => change((item) => ({ ...item, executionPolicy }))} /> : null}
               {graph.executionPolicy ? <div className="next-draft-inline">
                 <TextField data-save-field="limits" label="Maximum parallelism" hint="Agents running at once" type="number" min={1} max={100} value={Number.isFinite(graph.executionPolicy.maxParallelism) ? graph.executionPolicy.maxParallelism : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxParallelism: value } })) }} />
                 <TextField data-save-field="executions" label="Maximum node executions" hint="Agent turns per run" type="number" min={1} max={10000} value={Number.isFinite(graph.executionPolicy.maxNodeExecutions) ? graph.executionPolicy.maxNodeExecutions : ''} onChange={(event) => { const value = event.target.valueAsNumber; change((item) => ({ ...item, executionPolicy: { ...item.executionPolicy!, maxNodeExecutions: value } })) }} />

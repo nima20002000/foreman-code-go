@@ -107,8 +107,9 @@ async function currentServiceUnit(): Promise<string> {
 export async function currentCiRuntimePaths(stateDirectory: string): Promise<string[]> {
   const text = await readFile(join(stateDirectory, 'job-runtime.json'), 'utf8').catch(() => null)
   if (!text) return []
-  const configuration = JSON.parse(text) as { qualificationSource?: { directory?: unknown } }
-  return typeof configuration.qualificationSource?.directory === 'string' ? [configuration.qualificationSource.directory] : []
+  const configuration = JSON.parse(text) as { qualificationSource?: { directory?: unknown }; seedReceiptPath?: unknown }
+  return [configuration.qualificationSource?.directory, configuration.seedReceiptPath]
+    .filter((path): path is string => typeof path === 'string')
 }
 
 /** Protected previous configurations remain recovery inputs after a refresh while something still uses their
@@ -128,6 +129,7 @@ export async function retireCiRuntimeConfigurations(stateDirectory: string, keep
     }
     retained.images.push(image)
     if (typeof raw.qualificationSource?.directory === 'string') retained.paths.push(raw.qualificationSource.directory)
+    if (configuration.schemaVersion === 2) retained.paths.push(configuration.seedReceiptPath)
   }
   return retained
 }

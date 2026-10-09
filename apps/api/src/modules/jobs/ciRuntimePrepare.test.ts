@@ -144,6 +144,22 @@ describe('CI runtime preparation boundaries', () => {
     expect(seed.packages.map(pkg => pkg.name)).toEqual(['fixture'])
     expect(await readFile(join(prepared.qualificationSource, 'package.json'), 'utf8'))
       .toBe(await readFile(join(f.source, 'package.json'), 'utf8'))
+
+    const originalReceipt = await readFile(prepared.seedReceiptPath)
+    const installedReceipt = join(installer, `seed-receipt-${commit.slice(0, 12)}.json`)
+    await writeFile(installedReceipt, originalReceipt, { mode: 0o600 })
+    // A missing image cache forces a rebuild of the same commit with another review.
+    await rm(join(installer, 'runtime-cache'), { recursive: true })
+    const rebuilt = await prepareCiRuntime({ repository: f.source, commit, installer,
+      keepPaths: [prepared.seedReceiptPath, installedReceipt, prepared.qualificationSource],
+      review: { reviewedByPrincipalId: 'owner', decisionDigest: 'b'.repeat(64) } })
+    expect(rebuilt.seedReceiptPath).not.toBe(prepared.seedReceiptPath)
+    expect(await readFile(prepared.seedReceiptPath)).toEqual(originalReceipt)
+    expect(await readFile(installedReceipt)).toEqual(originalReceipt)
+    expect(await readFile(join(prepared.qualificationSource, 'package.json'), 'utf8'))
+      .toBe(await readFile(join(f.source, 'package.json'), 'utf8'))
+    const rebuiltReceipt = JSON.parse(await readFile(rebuilt.seedReceiptPath, 'utf8'))
+    expect(rebuiltReceipt.review.decisionDigest).toBe('b'.repeat(64))
   })
 
   it('does not execute the requested commit\'s context builder on the Worker host', async () => {

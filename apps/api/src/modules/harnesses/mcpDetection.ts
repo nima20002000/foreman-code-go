@@ -20,7 +20,8 @@ import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from './errors.js'
 import { APP_MCP_SERVER_NAME, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 
-export const MCP_INSPECTION_TIMEOUT_MS = 30_000
+// Cover binary hashing, qualification, and MCP lookups; each native command still has its own 30-second bound.
+export const MCP_INSPECTION_TIMEOUT_MS = 120_000
 export type NativeMcpStatus = 'connected' | 'disabled' | 'authentication_required' | 'broken' | 'status_unavailable'
 export type McpInspectionPhase = 'configuration' | 'health'
 
@@ -189,14 +190,25 @@ export class McpDetectionService {
       let reportedCode: string | undefined
       if (error instanceof DomainError) reportedCode = error.code
       else if (error instanceof HarnessExecutionError) reportedCode = error.result.error?.code
-      const failureCode = reportedCode && /^[A-Z][A-Z0-9_]{0,95}$/u.test(reportedCode)
+      const canceled = input.signal?.aborted === true
+      const timedOut = !canceled && (controller.signal.aborted
+        || error instanceof Error && error.name === 'TimeoutError')
+      let failureCode = reportedCode && /^[A-Z][A-Z0-9_]{0,95}$/u.test(reportedCode)
         ? reportedCode : 'NATIVE_MCP_INSPECTION_FAILED'
+      let detail = details.check_failed
+      if (canceled) {
+        failureCode = 'NATIVE_MCP_INSPECTION_CANCELED'
+        detail = 'Native MCP inspection was canceled.'
+      } else if (timedOut) {
+        failureCode = 'NATIVE_MCP_INSPECTION_TIMEOUT'
+        detail = 'Native MCP inspection timed out. Retry after the provider finishes starting.'
+      }
       return ScopedMcpDetectionSchema.parse({
         detection: McpDetectionSchema.parse({
           harness: input.harness, serverName: this.serverName, state: 'check_failed',
           endpointMatches: null, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString(),
           credentialArrangement: { kind: 'unknown' },
-          detail: signal.aborted ? 'Native MCP inspection was canceled or exceeded its deadline.' : details.check_failed,
+          detail,
         }),
         runnerId: input.runnerId, workingDirectory: input.workingDirectory, providerVersion: 'unknown',
         nativeFilters: { diagnostics: [failureCode] },
@@ -214,6 +226,12 @@ export class McpDetectionService {
     signal?: AbortSignal
   }): Promise<ScopedMcpDetection> {
     const result = await this.inspect({ ...input, phase: 'configuration' })
+    input.signal?.throwIfAborted()
+    if (result.nativeFilters.diagnostics?.includes('NATIVE_MCP_INSPECTION_TIMEOUT')) {
+      throw new DomainError('APP_MCP_PREFLIGHT_TIMEOUT',
+        'Foreman Code MCP inspection timed out before credentials could be injected. Retry after the provider finishes starting.',
+        409, { inspectionCodes: result.nativeFilters.diagnostics })
+    }
     // A correctly configured bearer endpoint may require the not-yet-issued
     // token. This does NOT accept broken connections or relax config checks.
     if (!['connected', 'status_unavailable', 'authentication_required'].includes(result.detection.state)) {

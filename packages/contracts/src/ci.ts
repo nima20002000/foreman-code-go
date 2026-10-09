@@ -46,6 +46,8 @@ export type CiCancelInput = z.infer<typeof CiCancelInputSchema>
 export type CiLogsInput = z.infer<typeof CiLogsInputSchema>
 export type CiArtifactInput = z.infer<typeof CiArtifactInputSchema>
 
+export * from './ciEnrollment.js'
+import { CiInstalledStorageSchema } from './ciEnrollment.js'
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 const AbsolutePathSchema = z.string().min(2).max(4096).startsWith('/')
 /** Build computers prepare their own CI runtime for a commit: offline seed, image and qualification source. */
@@ -71,6 +73,7 @@ export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
     resources: JobResourceRequestSchema }).strict(),
 ])
 export const CiRuntimeWorkerStateSchema = z.object({
+  installedStorage: CiInstalledStorageSchema.nullable().optional(),
   operationId: z.uuid().nullable(),
   state: z.enum(['idle', 'preparing', 'prepared', 'failed', 'refreshing']),
   commit: CommitSchema.nullable(), stage: z.string().max(80).nullable(), prepared: PreparedCiRuntimeSchema.nullable(),

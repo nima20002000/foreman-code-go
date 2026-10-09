@@ -26,8 +26,10 @@ import { computerSyncMigration } from './computerSyncMigration.js'
 import { buildComputersMigration } from './buildComputersMigration.js'
 import { ciRuntimePreparationMigration } from './ciRuntimePreparationMigration.js'
 import { ciRuntimeMainComputerMigration } from './ciRuntimeMainComputerMigration.js'
+import { ciEnrollmentMigration } from './ciEnrollmentMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
+import { jobSourceCapacityWaitMigration } from './jobSourceCapacityWaitMigration.js'
 import { jobQueueCompletionMigration } from './jobQueueCompletionMigration.js'
 import { agentCiActivityMigration } from './agentCiActivityMigration.js'
 import { jobSelectionTimeMigration } from './jobSelectionTimeMigration.js'
@@ -878,8 +880,10 @@ export const migrations = [
   buildComputerPriorityMigration,
   retiredHarnessCredentialsMigration,
   jobQueueCompletionMigration,
+  jobSourceCapacityWaitMigration,
   agentCiActivityMigration,
   ciRuntimeMainComputerMigration,
+  ciEnrollmentMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
