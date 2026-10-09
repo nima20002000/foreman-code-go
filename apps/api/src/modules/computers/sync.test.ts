@@ -13,6 +13,7 @@ import { DomainError } from '../errors.js'
 import { PostgresAppInteractionService } from '../interactions/app.js'
 import { ComputerSyncService } from './sync.js'
 import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { fakeSyncthing, mainSyncId, workerSyncId } from '../../../test/helpers/syncthing.js'
 
 const cleanups: (() => Promise<void>)[] = []
@@ -151,6 +152,10 @@ it('omits an unavailable optional shared folder and preserves unexpected failure
   const handle = vi.spyOn(f.computers[0]!, 'handle')
     .mockRejectedValue(new DomainError('SYNC_UNAVAILABLE', 'Shared files are unavailable.', 502))
   expect(await f.service.sharedFolder('workspace-a', { kind: 'main' })).toBeNull()
+  handle.mockRejectedValue(new DeviceApplicationError('timeout'))
+  expect(await f.service.sharedFolder('workspace-a', { kind: 'main' })).toBeNull()
+  handle.mockRejectedValue(new DeviceApplicationError('extension-rejected'))
+  await expect(f.service.sharedFolder('workspace-a', { kind: 'main' })).rejects.toThrow('extension-rejected')
   handle.mockRejectedValue(new Error('Unexpected configuration error'))
   await expect(f.service.sharedFolder('workspace-a', { kind: 'main' }))
     .rejects.toThrow('Unexpected configuration error')

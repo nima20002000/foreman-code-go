@@ -8,6 +8,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { assertBuildComputerTarget, buildComputerKey } from '../settings/buildComputers.js'
 import type { ComputerAccountsEndpoint } from './accounts.js'
 import { SyncthingComputer } from './syncthingComputer.js'
@@ -118,12 +119,14 @@ export class ComputerSyncService {
       : value.hostRef.kind === 'device' && value.hostRef.deviceId === host.deviceId)
     if (!workspace || !target || !(await this.repository.preference(this.pool, workspaceId, target)).enabled) return null
     if (!(await this.repository.preference(this.pool, workspaceId, this.repository.mainTarget)).enabled) return null
-    // Native context reads must remain usable while optional shared-file setup is pending.
+    // Native context reads must remain usable while optional shared-file setup is pending or the computer is slow.
+    const bound = AbortSignal.timeout(10_000)
     try {
-      const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' }))
+      const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' }, bound))
       return state.folders.find(folder => folder.workspaceId === workspaceId)?.path ?? null
     } catch (error) {
       if (error instanceof DomainError && ['COMPUTER_OFFLINE', 'SYNC_UNAVAILABLE'].includes(error.code)) return null
+      if (error instanceof DeviceApplicationError && (error.retryable || bound.aborted)) return null
       throw error
     }
   }
@@ -168,14 +171,15 @@ export class ComputerSyncService {
     this.identities.set(key, { target, identity })
     return identity
   }
-  private async computer(target: DeviceProvisioningTarget, request: SyncComputerRequest): Promise<unknown> {
+  private async computer(target: DeviceProvisioningTarget, request: SyncComputerRequest,
+    signal = AbortSignal.timeout(150_000)): Promise<unknown> {
     await this.assertTarget(this.pool, target)
     if (target.hostRef.kind === 'main') return this.local.handle(request)
     const endpoint = this.endpoint()
     if (!endpoint?.capabilities(target.hostRef.deviceId).some(value => value.namespace === COMPUTER_SYNC_NAMESPACE
       && value.mainCanRequest)) throw new DomainError('COMPUTER_OFFLINE', 'This computer is offline or needs an app update.', 409)
     return (await endpoint.request(target.hostRef.deviceId, COMPUTER_SYNC_NAMESPACE, { target, request },
-      { signal: AbortSignal.timeout(150_000) })).payload
+      { signal })).payload
   }
   private async assertTarget(sql: Pick<pg.Pool, 'query'>, target: DeviceProvisioningTarget) {
     if (target.hostRef.mainId !== this.mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'Computer belongs to another Main.', 404)
