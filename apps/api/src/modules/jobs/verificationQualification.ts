@@ -126,6 +126,7 @@ export async function qualifyVerificationRuntime(input: {
   let closed = false
   let denial: Error | undefined
   let result: ReturnType<typeof JobVerificationRuntimeQualificationResultSchema.parse> | undefined
+  let pendingReport: Omit<Parameters<typeof publishFailedQualification>[0], 'closeContainer' | 'failure'> | undefined
   try {
     const quotas = await readVerificationQuotaPool(pool, fingerprint.root.binding, input.signal, readQuota)
     for (const slot of pool.slots) {
@@ -269,6 +270,9 @@ export async function qualifyVerificationRuntime(input: {
       terminal: JobQualificationReport['terminal'], reserve: Awaited<ReturnType<typeof reserveVerificationReportSpace>>,
       materialization: JobQualificationReport['materialization']) => {
       const closure = await owner.readClosure!()
+      if (closure.containerId !== containerId) {
+        throw new Error('Report publication requires the original container closure certificate.')
+      }
       const execution = qualificationExecution(candidate, { context, startedAt, terminal, materialization })
       await finalizeVerificationPublication(execution, { ...terminal, processStopped: true,
         closureEvidenceDigest: jobDigest(closure), resultDigest: jobDigest(terminal),
@@ -333,12 +337,18 @@ export async function qualifyVerificationRuntime(input: {
       const execution = await podman(['exec', containerId, 'node', '/opt/graphql-ci/verification/verify-repository.mjs',
         '--context', `/workspace/${JOB_INPUT_DIRECTORY}/qualification-context.json`],
       context.executionTimeoutMs + context.cancellationTimeoutMs + candidate.profile.spec.policy.publicationTimeoutMs)
+      const terminal = { outcome: execution.exitCode === 0 ? 'succeeded' as const : 'build_failed' as const,
+        exitCode: execution.exitCode, signal: null, finishedAt: new Date().toISOString() }
+      const publishOrdinaryReport = async () => {
+        const report = await publish(context, startedAt, terminal, reserve, materialization)
+        pendingReport = undefined
+        return report
+      }
+      pendingReport = { suite, exitCode: execution.exitCode, stderr: execution.stderr, publish: publishOrdinaryReport }
       if (execution.exitCode !== 0) {
-        const terminal = { outcome: 'build_failed' as const, exitCode: execution.exitCode,
-          signal: null, finishedAt: new Date().toISOString() }
         await publishFailedQualification({ suite, exitCode: execution.exitCode, stderr: execution.stderr,
           closeContainer: () => owner.closeContainer!(),
-          publish: () => publish(context, startedAt, terminal, reserve, materialization) })
+          publish: publishOrdinaryReport })
       }
       if (!await owner.closeContainer!()) throw new Error('Ordinary verification descendants are still active.')
       const samples = JSON.parse((await readBoundedJobFile(source.sourceRoot,
@@ -350,8 +360,7 @@ export async function qualifyVerificationRuntime(input: {
         slot: pool.slots[0]!, directory: namespace, signal: input.signal, read: readQuota })
       const coldCachePeakBytes = Math.max(quota.usedBytes, samples.sampledPeaks.mutableBytes - bytesBefore, 1)
       const coldCachePeakInodes = Math.max(quota.usedInodes, samples.sampledPeaks.mutableInodes - inodesBefore, 1)
-      const terminal = { outcome: 'succeeded' as const, exitCode: 0, signal: null, finishedAt: new Date().toISOString() }
-      const report = await publish(context, startedAt, terminal, reserve, materialization)
+      const report = await publishOrdinaryReport()
       if (report.outcome !== 'passed' || report.completeness !== 'complete') {
         throw new Error(`Canonical ${suite} report did not establish a complete pass.`)
       }
@@ -413,7 +422,18 @@ export async function qualifyVerificationRuntime(input: {
   } finally {
     if (!closed) {
       try { closed = await owner.close() }
-      catch (error) { denial = error instanceof Error ? error : new Error('Qualification closure failed.') }
+      catch (error) {
+        const message = error instanceof Error ? error.message : 'Qualification closure failed.'
+        denial = new Error(`${denial?.message ?? 'Qualification failed.'} Closure failed: ${message}`.slice(0, 500),
+          { cause: error })
+      }
+    }
+    if (closed && denial && pendingReport) {
+      try {
+        await publishFailedQualification({ ...pendingReport, failure: denial, closeContainer: async () => closed })
+      } catch (error) {
+        denial = error instanceof Error ? error : new Error('Qualification report publication failed.')
+      }
     }
     for (const claim of claims) await claim.file.close()
   }

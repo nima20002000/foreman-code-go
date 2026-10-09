@@ -13,11 +13,16 @@ export async function publishFailedQualification(input: {
   suite: string
   exitCode: number
   stderr: string
+  failure?: Error
   closeContainer(): Promise<boolean>
   publish(): Promise<JobVerificationReport>
 }): Promise<never> {
-  if (!await input.closeContainer()) throw new Error('Failed verification descendants are still active.')
+  const originalFailure = input.failure?.message.slice(0, 240)
   const failure = `${input.suite} qualification failed (exit ${input.exitCode}).`
+    + (originalFailure ? ` ${originalFailure}` : '')
+  if (!await input.closeContainer()) {
+    throw new Error(`${failure} Physical closure of verification descendants is unconfirmed.`, { cause: input.failure })
+  }
   const diagnostic = input.stderr.trim().slice(0, 300)
   let report: JobVerificationReport
   try {
@@ -29,7 +34,7 @@ export async function publishFailedQualification(input: {
   }
   const retained = `Reports: Job ${report.executionId}. ${report.totals.failed} failed checks; `
     + `${report.completedPortions}/${report.expectedPortions} portions complete (${report.outcome}).`
-  throw new Error(`${failure} ${retained} ${diagnostic}`.trim().slice(0, 500))
+  throw new Error(`${failure} ${retained} ${diagnostic}`.trim().slice(0, 500), { cause: input.failure })
 }
 
 /** Qualification has human diagnostic admission; it does not borrow a qualified Job grant. */

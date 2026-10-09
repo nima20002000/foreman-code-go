@@ -18,11 +18,11 @@ export function qualificationReportFixture() {
   const approvalId = randomUUID()
   const resources = { ...f.measurement.fingerprint.resources, reportBytes: 8 * 1024 * 1024 }
   const policy = { ...jobPolicyRequirementsRecord(f.spec.policy), maxOutputBytes: resources.reportBytes, maxWorkerSpoolBytes: 131072 }
-  const profile = createVerificationProfile({ id: f.spec.profile.profileId, workspaceId: f.measurement.fingerprint.root.binding.workspaceId, revision: 1,
+  const profile = createVerificationProfile({ id: randomUUID(), workspaceId: f.measurement.fingerprint.root.binding.workspaceId, revision: 1,
     name: 'Packet fixture', root: f.measurement.fingerprint.root, sourceCommit: f.spec.source.commit,
     spec: { rootId: f.measurement.fingerprint.root.binding.rootId, bindingRevision: 1, resources, policy,
       suites: ['unit'], approvalConfig: { approvalLifetimeMs: 86400000 } }, previous: null, now })
-  const fingerprint = { ...f.measurement.fingerprint, resources, specDigest: profile.specDigest,
+  const fingerprint = { ...f.measurement.fingerprint, profileId: profile.id, resources, specDigest: profile.specDigest,
     approvalConfig: profile.approvalConfig }
   const candidate = JobVerificationQualificationCandidateSchema.parse({ qualificationId, operationId: qualificationId,
     approvalId, profile, fingerprint, approvedAt: now, sourceParent: profile.root.binding.canonicalPath,
@@ -43,7 +43,7 @@ export function qualificationReportFixture() {
   const filesystem = { ...profile.root.binding.filesystem, inode: '999' }
   const context = JobVerificationRepositoryContextSchema.parse({ identity: {
     commit: f.spec.source.commit, manifestDigest: f.spec.source.manifestDigest,
-    profile: { ...f.spec.profile, fingerprintDigest: jobDigest(fingerprint), approvalId, qualificationId,
+    profile: { ...f.spec.profile, profileId: profile.id, fingerprintDigest: jobDigest(fingerprint), approvalId, qualificationId,
       approvalExpiresAt: expiresAt, qualificationExpiresAt: expiresAt },
     suite: 'unit', executionId: `${qualificationId}:unit`, attemptId: `${qualificationId}:unit`,
     definitionVersionId: `${profile.id}:1:${qualificationId}:unit`,

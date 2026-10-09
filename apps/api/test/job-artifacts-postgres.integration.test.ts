@@ -107,6 +107,18 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
         target: execution.acceptedSpec.target, source: jobSpec().source, outputs: execution.acceptedSpec.outputs }
       : {...jobSpec(),outputs:execution.acceptedSpec.outputs},createdAt:execution.createdAt,updatedAt:execution.createdAt}
     await pool.query('insert into job_definition_versions values($1,$2,$3,$4::jsonb)',[definition.versionId,definition.workspaceId,definition.id,JSON.stringify(definition)])
+    if (placementMode === 'verification') {
+      await pool.query(`create table workspaces(id text primary key,archived_at timestamptz);
+        create table job_runtime_profiles(id text primary key,workspace_id text,record jsonb);
+        create table job_runtime_qualification_approvals(id uuid primary key,workspace_id text,record jsonb,
+          measurement jsonb,run_result jsonb,native_admission jsonb,run_command_id text,run_principal_id text);
+        create table management_command_receipts(principal_id text,operation text,command_id text,target_key text,
+          input_hash text,result jsonb,primary key(principal_id,operation,command_id));
+        create table job_definitions(id text primary key,workspace_id text,revision bigint,version_id text,
+          record jsonb,updated_by text);
+        alter table job_definition_versions add column revision bigint;
+        alter table job_executions add column definition_version_id text,add column operation_id text,add column attempt_id text;`)
+    }
     root=await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!,'.ci-artifact-db-'))
     const authority=new JobPublicationAuthority({require:async(sql,job,fence)=>{
       const r=(await sql.query<{epoch:string;revoked:boolean}>('select epoch,revoked from job_fixture_owner where grant_id=$1 for share',[fence.owner.grantId])).rows[0]
@@ -266,25 +278,31 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     }
   })
   if (placementMode === 'verification') {
-  it('reads failed qualification diagnostics over authenticated MCP after workload cleanup', async () => {
+  it.each([7, 0])('reads reports after a failed qualification with command exit %i over MCP after cleanup', async exitCode => {
     const f = qualificationReportFixture()
     const candidate = f.candidate
     const profile = candidate.profile
     const workspaceId = profile.workspaceId
-    const report = { ...f.report, terminal: { ...f.report.terminal, outcome: 'build_failed' as const, exitCode: 7 } }
+    const failure = exitCode === 0 ? new Error('Container inspection interrupted after the suite completed.') : undefined
+    const report = { ...f.report, terminal: { ...f.report.terminal,
+      outcome: exitCode === 0 ? 'succeeded' as const : 'build_failed' as const, exitCode } }
+    const failed = exitCode === 0 ? 0 : 1
     const summary = JobVerificationReportSchema.parse({ schemaVersion: 1, ...report.context.identity,
       startedAt: report.startedAt, finishedAt: report.terminal.finishedAt,
-      totals: { total: 1, passed: 0, failed: 1, skipped: 0 }, firstPassFailed: 1,
-      expectedPortions: 1, completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: 'failed' })
+      totals: { total: 1, passed: 1 - failed, failed, skipped: 0 }, firstPassFailed: failed,
+      expectedPortions: 1, completedPortions: 1, disallowedSkipped: 0, completeness: 'complete',
+      outcome: exitCode === 0 ? 'passed' : 'failed' })
     const workload = join(root, 'failed-qualification-workload')
     await mkdir(workload)
-    await writeFile(join(workload, 'worker.log'), 'approved_root_not_persistent: worker persistence test failed\n')
+    await writeFile(join(workload, 'worker.log'), failure ? 'Unit checks passed before container inspection.\n'
+      : 'approved_root_not_persistent: worker persistence test failed\n')
     const reports = new Map([
       ['summary.json', Buffer.from(JSON.stringify(summary))],
-      ['junit.xml', Buffer.from('<testsuites tests="1" failures="1"><testsuite name="worker" tests="1" failures="1">'
-        + '<testcase name="persistent root"><failure>approved_root_not_persistent</failure></testcase>'
-        + '</testsuite></testsuites>')],
-      ['vitest.json', Buffer.from(JSON.stringify({ success: false, numFailedTests: 1 }))],
+      ['junit.xml', Buffer.from(`<testsuites tests="1" failures="${failed}">`
+        + `<testsuite name="worker" tests="1" failures="${failed}"><testcase name="persistent root">`
+        + (failed ? '<failure>approved_root_not_persistent</failure>' : '')
+        + '</testcase></testsuite></testsuites>')],
+      ['vitest.json', Buffer.from(JSON.stringify({ success: failed === 0, numFailedTests: failed }))],
       ['logs.tar.gz', logArchive(workload, report.context.limits.logsArchiveBytes)],
     ])
     const approval = JobRuntimeApprovalRecordSchema.parse({ schemaVersion: 2, id: candidate.approvalId,
@@ -293,17 +311,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       requestedByPrincipalId: 'owner', status: 'captured', expiresAt: report.context.identity.profile.approvalExpiresAt,
       requestedAt: new Date(Date.parse(report.context.identity.profile.approvalExpiresAt)
         - candidate.fingerprint.approvalConfig.approvalLifetimeMs).toISOString() })
-    await pool.query(`create table workspaces(id text primary key,archived_at timestamptz);
-      create table job_runtime_profiles(id text primary key,workspace_id text,record jsonb);
-      create table job_runtime_qualification_approvals(id uuid primary key,workspace_id text,record jsonb,
-        measurement jsonb,run_result jsonb,native_admission jsonb,run_command_id text,run_principal_id text);
-      create table management_command_receipts(principal_id text,operation text,command_id text,target_key text,
-        input_hash text,result jsonb,primary key(principal_id,operation,command_id));
-      create table job_definitions(id text primary key,workspace_id text,revision bigint,version_id text,
-        record jsonb,updated_by text);
-      alter table job_definition_versions add column revision bigint;
-      alter table job_executions add column definition_version_id text,add column operation_id text,add column attempt_id text;`)
-    await pool.query('insert into workspaces values($1,null)', [workspaceId])
+    await pool.query('insert into workspaces values($1,null) on conflict do nothing', [workspaceId])
     await pool.query('insert into job_runtime_profiles values($1,$2,$3::jsonb)',
       [profile.id, workspaceId, JSON.stringify({ ...profile, status: 'captured' })])
     await pool.query('insert into job_runtime_qualification_approvals(id,workspace_id,record) values($1,$2,$3::jsonb)',
@@ -320,7 +328,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       run: async () => {
         qualificationRuns++
         try {
-          return await publishFailedQualification({ suite: 'unit', exitCode: 7, stderr: '',
+          return await publishFailedQualification({ suite: 'unit', exitCode, stderr: '', ...(failure ? { failure } : {}),
             closeContainer: async () => true,
             publish: async () => {
               for (const [name, bytes] of reports) {
@@ -347,10 +355,10 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     const status = await owner.callTool({ name: 'job_runtime_qualification_get',
       arguments: { workspaceId, approvalId: approval.id } })
     const retained = JobRuntimeQualificationReadRecordSchema.parse(status.structuredContent)
-    expect(retained.readiness).toMatchObject({ ready: false, reasons: [
-      `unit qualification failed (exit 7). Reports: Job ${summary.executionId}. `
-        + '1 failed checks; 1/1 portions complete (failed).',
-    ] })
+    expect(retained.readiness).toMatchObject({ ready: false,
+      reasons: [expect.stringContaining(`Reports: Job ${summary.executionId}.`)] })
+    expect(retained.readiness.reasons[0]).toContain(`exit ${exitCode}`)
+    if (failure) expect(retained.readiness.reasons[0]).toContain(failure.message)
     const executionId = /Reports: Job ([^.]+)\./.exec(retained.readiness.reasons[0]!)![1]!
     const list = await owner.callTool({ name: 'job_artifacts_list', arguments: { workspaceId, executionId } })
     expect(list.isError, JSON.stringify(list.content)).not.toBe(true)
