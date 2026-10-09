@@ -16,7 +16,19 @@ vi.mock('node:child_process', async importOriginal => {
       return run(file, args, options as Parameters<typeof run>[2])
     },
   })
-  return { ...actual, execFile }
+  // Streamed podman runs answer from the same fake: { stdout: Buffer, stderr: string }.
+  const { EventEmitter } = await import('node:events')
+  const { PassThrough } = await import('node:stream')
+  const spawn = ((file: string, args: string[], options: unknown) => {
+    if (file !== 'podman') return actual.spawn(file, args, options as Parameters<typeof actual.spawn>[2])
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() })
+    void Promise.resolve(command.run(file, args)).then((result: { stdout: Buffer; stderr: string }) => {
+      child.stderr.end(result.stderr); child.stdout.end(result.stdout)
+      child.stdout.once('end', () => child.emit('close', 0))
+    }, (error: unknown) => { child.stdout.end(); child.stderr.end(); child.emit('error', error) })
+    return child
+  }) as unknown as typeof actual.spawn
+  return { ...actual, execFile, spawn }
 })
 
 const roots: string[] = []
@@ -91,7 +103,7 @@ describe('CI runtime preparation boundaries', () => {
       expect(args).toEqual(expect.arrayContaining(['run', '--network=none', '--read-only', '--cap-drop=all',
         '--security-opt=no-new-privileges', '--memory=2g', '--pids-limit=256']))
       expect(args.some(arg => arg.startsWith('--volume') || arg.startsWith('--mount'))).toBe(false)
-      return JSON.stringify({ version: 'codex-cli-fixture', binary: bytes.toString('base64') })
+      return { stdout: bytes, stderr: JSON.stringify({ version: 'codex-cli-fixture' }) }
     })
     const result = await codexBinary(f.source, seed, process.env)
     expect(result.version).toBe('codex-cli-fixture')

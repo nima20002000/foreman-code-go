@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { createWriteStream } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -136,18 +137,22 @@ export async function codexBinary(image: string, output: string, env: NodeJS.Pro
     const native = createRequire(launcher).resolve('@openai/codex-linux-x64/package.json');
     const binary = join(dirname(native), 'vendor/x86_64-unknown-linux-musl/bin/codex');
     const version = execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim();
-    process.stdout.write(JSON.stringify({ version, binary: readFileSync(binary).toString('base64') }));
+    process.stderr.write(JSON.stringify({ version }));
+    process.stdout.write(readFileSync(binary));
   `
-  const result = JSON.parse(await podmanOut(['run', '--rm', '--pull=never', '--network=none', '--read-only',
-    '--cap-drop=all', '--security-opt=no-new-privileges', '--cpus=2', '--memory=2g', '--pids-limit=256',
-    '--tmpfs=/tmp:rw,exec,nosuid,nodev,size=8g', '--entrypoint=node', image, '-e', script], env)) as {
-    version: string; binary: string
-  }
-  if (!result.version || typeof result.binary !== 'string') throw new Error('The isolated Codex capture is incomplete.')
-  const bytes = Buffer.from(result.binary, 'base64')
+  // The binary (hundreds of MB) streams raw to the file; its version arrives on stderr.
   const path = join(output, 'unit-codex')
-  await writeFile(path, bytes, { mode: 0o700 })
-  return { path, version: result.version, sha256: hash(bytes) }
+  await rm(path, { force: true })
+  const child = spawn('podman', ['--remote=false', 'run', '--rm', '--pull=never', '--network=none', '--read-only',
+    '--cap-drop=all', '--security-opt=no-new-privileges', '--cpus=2', '--memory=2g', '--pids-limit=256',
+    '--tmpfs=/tmp:rw,exec,nosuid,nodev,size=8g', '--entrypoint=node', image, '-e', script], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  let diagnostics = ''
+  child.stderr!.on('data', (chunk: Buffer) => { diagnostics = `${diagnostics}${chunk.toString('utf8')}`.slice(-65_536) })
+  await Promise.all([pipeline(child.stdout!, createWriteStream(path, { mode: 0o700, flags: 'wx' })), closed(child, 'Codex capture')])
+  const version = (() => { try { return (JSON.parse(diagnostics.slice(diagnostics.lastIndexOf('{'))) as { version?: unknown }).version } catch { return undefined } })()
+  const bytes = await readFile(path)
+  if (typeof version !== 'string' || !version || !bytes.length) throw new Error('The isolated Codex capture is incomplete.')
+  return { path, version, sha256: hash(bytes) }
 }
 
 /** Same receipt the CI image policy verifies: every locked release with its registry publish time. */

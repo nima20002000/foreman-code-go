@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Fixed
 
 - Build computer CI preparation no longer fails at the offline package install when the CI image holds a node_modules layout from another lockfile.
+- Build computer CI preparation streams the unit suite's Codex binary instead of buffering it, so it no longer fails on Codex releases larger than about 190 MB.
 
 ## [0.0.54] - 2026-10-09
 
