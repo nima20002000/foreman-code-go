@@ -11,8 +11,11 @@ export const SourcePinSchema = z.object({ approvedSourceId: z.uuid(), snapshotId
 export type ApprovedSourcePin = z.infer<typeof SourcePinSchema>
 export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, commandId: z.string().min(8).max(200),
   expectedLocationRevision: z.number().int().positive(), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
-  approvedPaths: z.array(z.string().min(1).max(1024)).min(1).max(4096), executablePolicy: z.enum(['strip', 'preserve-approved']),
-}).strict()
+  approvedPaths: z.array(z.string().min(1).max(1024)).min(1).max(4096).optional(),
+  approveTrackedTree: z.literal(true).optional(), executablePolicy: z.enum(['strip', 'preserve-approved']),
+}).strict().refine(input => (input.approvedPaths !== undefined) !== (input.approveTrackedTree === true), {
+  message: 'Provide approvedPaths or approveTrackedTree: true, but not both.',
+})
 export type SourceApproveInput = z.infer<typeof SourceApproveInputSchema>
 export const ApprovedSourceSchema = z.object({ version: z.literal(1), workspaceId: IdSchema, ownerPrincipalId: IdSchema,
   approvedByPrincipalId: IdSchema, locationRevision: z.number().int().positive(),

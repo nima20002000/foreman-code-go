@@ -1,11 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JobRuntimeApprovalRecord } from '@foreman-code/contracts/job-verification-runtime'
+import { JobVerificationRuntimeApprovalSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 import { preparationProfile, dexter } from '../../../test/helpers/ciPreparationFixture.js'
-import { qualificationDeadline, qualificationTimeoutMs } from './runtimeQualificationFacts.js'
+import { qualificationDeadline, qualificationTimeoutMs,validateRuntimeQualification } from './runtimeQualificationFacts.js'
 
 afterEach(() => vi.useRealTimers())
 
 describe('qualification deadlines', () => {
+  it('validates expired original evidence for recovery without accepting a changed identity or new publication', () => {
+    const profile = verificationCapacityFixture('main')
+    const measurement = profile.measurement!
+    const approval = JobVerificationRuntimeApprovalSchema.parse({ schemaVersion:2,
+      id:measurement.identity.approvalId,qualificationId:measurement.identity.qualificationId,
+      workspaceId:profile.workspaceId,profileId:profile.id,profileRevision:profile.revision,
+      fingerprint:measurement.fingerprint,fingerprintDigest:measurement.identity.fingerprintDigest,
+      requestedByPrincipalId:'owner',requestedAt:measurement.approvedAt,status:'qualifying',expiresAt:measurement.expiresAt })
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse(measurement.expiresAt) + 1)
+    expect(() => validateRuntimeQualification(approval,measurement)).toThrow('lifetime')
+    expect(() => validateRuntimeQualification(approval,measurement,{ allowExpired:true })).not.toThrow()
+    expect(() => validateRuntimeQualification(approval,{ ...measurement,
+      identity:{ ...measurement.identity,profileRevision:measurement.identity.profileRevision + 1 } },
+    { allowExpired:true })).toThrow('context')
+  })
   it('reserves every integration run and interruption probe within the reviewed approval', () => {
     vi.useFakeTimers()
     const profile = preparationProfile('integration', 'Integration', dexter,

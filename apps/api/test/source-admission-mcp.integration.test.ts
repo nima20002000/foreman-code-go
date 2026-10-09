@@ -1,14 +1,14 @@
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
 import { jobVerificationTemplate } from '@foreman-code/contracts/job-verification'
-import { ManagementActionSchema } from '@foreman-code/contracts/management'
-import { SourceApproveResultSchema, SourceListResultSchema, ApprovedSourceSchema, SourceRootBindResultSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { ManagementActionSchema, OperatorCapabilitiesSchema } from '@foreman-code/contracts/management'
+import { SourceApproveResultSchema, SourceListResultSchema, ApprovedSourceSchema, SourceRootBindResultSchema, SourceRootListResultSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -58,6 +58,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
       repository: { provider: 'github', owner: 'original', name: 'site', defaultBranch: 'main' } })
     const located = await locations.set(owner.principal, 'http', { workspaceId: workspace.id, commandId: randomUUID(), expectedLocationRevision: created.value.locationRevision, runnerId: locations.runnerId, rootPath: project })
     await qualifiedGit(project, ['init', '--template=']); await writeFile(join(project, 'source.ts'), 'export const revision = 1\n')
+    await writeFile(join(project, 'run.sh'), '#!/bin/sh\nexit 0\n')
+    await chmod(join(project, 'run.sh'), 0o755)
     await qualifiedGit(project, ['add', '.']); await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source1'])
     const commit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
     const nativeNotInvoked = async (): Promise<never> => { throw new Error('This source metadata fixture does not invoke native execution.') }
@@ -89,23 +91,65 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
       await bindingSql.query('commit')
     } finally { bindingSql.release() }
     const roots = new RegisteredWorkspaceSourceRoots(policies, hosts)
-    const sources = new PostgresSourceService(pool, commands, locations, new PrivateSourceSnapshotStore(canonical), mainId, roots,
+    const createSources = () => new PostgresSourceService(pool, new PostgresCommandCoordinator(pool), locations, new PrivateSourceSnapshotStore(canonical), mainId, roots,
       { authorize: nativeNotInvoked, prepare: nativeNotInvoked, verifyWorkingDirectory: nativeNotInvoked, verify: nativeNotInvoked, releaseClaim: nativeNotInvoked, authorizeFinal: nativeNotInvoked }, { confirmedClosed: nativeNotInvoked })
+    let sources = createSources()
     const ciData = ciFixture()
     const createCi = () => new CiService(pool, new PostgresCommandCoordinator(pool),
       new RunCiAuthority(pool), sources, ciData.jobs)
     const services = { commands, workspaces, locations, sources, ci: createCi() } as unknown as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
-    const operator = await access.issue({ name: 'Scoped source Operator', audience: 'operator', grants: [{ actions: ['sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 240_000) })
+    const operator = await access.issue({ name: 'Scoped source Operator', audience: 'operator', grants: [{ actions: ['capabilities:read', 'sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 240_000) })
     await pool.query('update management_principals set delegated_from=$2 where id=$1', [operator.principal.id, owner.principal.id])
     async function connect(token: string) { const client = new Client({ name: 'source-fixture', version: '1.0.0' }); clients.push(client)
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } })); return client }
     const client = await connect(operator.token)
-    const approve = { workspaceId: workspace.id, commandId: randomUUID(), expectedLocationRevision: Number(policy.locationRevision), commit, approvedPaths: ['source.ts'], executablePolicy: 'strip' }
+    const approve = { workspaceId: workspace.id, commandId: randomUUID(), expectedLocationRevision: Number(policy.locationRevision), commit, approveTrackedTree: true, executablePolicy: 'strip' }
+    const tools = await client.listTools()
+    expect(tools.tools.find(tool => tool.name === 'source_approve')?.inputSchema.properties)
+      .toHaveProperty('approveTrackedTree')
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities',
+      arguments: { workspaceId: workspace.id } })
+    expect(capabilities.isError).not.toBe(true)
+    const { runtimeLimits } = OperatorCapabilitiesSchema.parse(capabilities.structuredContent)
+    expect(runtimeLimits?.find(limit => limit.feature === 'source_approval')?.detail)
+      .toContain('approveTrackedTree: true')
+    const failure = (response: Awaited<ReturnType<Client['callTool']>>) => {
+      expect(response.isError).toBe(true)
+      const text = (response.content as { type: string; text?: string }[]).find(item => item.type === 'text')!.text!
+      return JSON.parse(text).error
+    }
+    for (const [approvedPaths, code, message] of [
+      [['../source.ts'], 'SOURCE_PATH_INVALID', 'Source paths must be unambiguous relative paths.'],
+      [['source.ts'], 'SOURCE_INCLUSION_NOT_APPROVED', 'Every exact tree entry must be explicitly approved; tracked secrets are never silently omitted.'],
+    ] as const) {
+      const explicit: Omit<typeof approve, 'approveTrackedTree'> & { approveTrackedTree?: boolean } = { ...approve }
+      delete explicit.approveTrackedTree
+      const request = { ...explicit, commandId: randomUUID(), approvedPaths: [...approvedPaths] }
+      expect(failure(await client.callTool({ name: 'source_approve', arguments: request })))
+        .toEqual({ code, message })
+      const httpError = await app.inject({ method: 'POST',
+        url: `/api/management/workspaces/${workspace.id}/sources/approve`,
+        headers: { authorization: `Bearer ${operator.token}` }, payload: { ...request, commandId: randomUUID() } })
+      expect(httpError.statusCode).toBe(400)
+      expect(httpError.json().error).toMatchObject({ code, message })
+    }
     const firstCall = await client.callTool({ name: 'source_approve', arguments: approve })
     expect(firstCall.isError, JSON.stringify(firstCall)).not.toBe(true)
     const first = SourceApproveResultSchema.parse(firstCall.structuredContent)
+    expect(first.value.manifest.entries.map(entry => entry.path)).toEqual(['run.sh', 'source.ts'])
+    expect(first.value.manifest.entries.every(entry => !entry.executable)).toBe(true)
+    const storedApproval = (await pool.query<{ request: unknown; origin: { approvedPaths: string[] } }>(
+      'select request,origin from source_approvals where requested_by=$1 and command_id=$2',
+      [operator.principal.id, approve.commandId])).rows[0]!
+    expect(storedApproval.request).toEqual(approve)
+    expect(storedApproval.origin.approvedPaths).toEqual(['run.sh', 'source.ts'])
+    const approvalAudit = (await pool.query<{ count: number }>(
+      `select count(*)::int as count from management_audit where principal_id=$1
+        and action='source.approve' and outcome='succeeded' and details->>'commandId'=$2`,
+      [operator.principal.id, approve.commandId])).rows[0]!
+    expect(approvalAudit.count).toBe(1)
     const replay = SourceApproveResultSchema.parse((await client.callTool({ name: 'source_approve', arguments: approve })).structuredContent)
     expect(replay.replayed).toBe(true); expect(replay.value).toEqual(first.value)
     const pin = { approvedSourceId: first.value.manifest.approvedSourceId, snapshotId: first.value.manifest.snapshotId, manifestDigest: first.value.manifest.manifestDigest }
@@ -124,12 +168,34 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(retained.manifest.git?.repository).toBe('original/site')
     expect(retained.manifest).toEqual(read.manifest)
     const bind = { workspaceId: workspace.id, commandId: randomUUID(), source: pin, selection: { hostRef: { kind: 'main', mainId }, rootPolicyId: policy.rootPolicyId, rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision }, expectedBindingRevision: 0, accessMode: 'exclusive-write' }
+    await pool.query(`create function reject_root_receipt() returns trigger language plpgsql as $$
+      begin
+        if new.operation='source.root.bind' then raise exception 'Receipt persistence interrupted'; end if;
+        return new;
+      end $$`)
+    await pool.query(`create trigger interrupt_root_receipt before insert on management_command_receipts
+      for each row execute function reject_root_receipt()`)
+    const interruptedBind = await client.callTool({ name: 'source_root_bind', arguments: bind })
+    expect(interruptedBind.isError).toBe(true)
+    expect(SourceRootListResultSchema.parse((await client.callTool({ name: 'source_root_list',
+      arguments: { workspaceId: workspace.id } })).structuredContent).items).toEqual([])
+    expect((await pool.query('select count(*)::int as count from source_root_bindings')).rows[0].count).toBe(0)
+    await pool.query('drop trigger interrupt_root_receipt on management_command_receipts')
+    await pool.query('drop function reject_root_receipt()')
+    sources = createSources()
+    services.sources = sources
     const rootResult = await client.callTool({ name: 'source_root_bind', arguments: bind })
     expect(rootResult.isError, JSON.stringify(rootResult)).not.toBe(true)
     const bound = SourceRootBindResultSchema.parse(rootResult.structuredContent).value
     expect(bound.binding.deviceId).toBeNull(); expect(bound.binding.workerInstallationId).toBeNull()
     const rootRead = SourceRootRecordSchema.parse((await client.callTool({ name: 'source_root_get', arguments: { workspaceId: workspace.id, rootId: bound.binding.rootId, bindingRevision: 1 } })).structuredContent)
     expect(rootRead).toEqual(bound)
+    const replayedBind = await client.callTool({ name: 'source_root_bind', arguments: bind })
+    expect(SourceRootBindResultSchema.parse(replayedBind.structuredContent)).toEqual({ value: bound, replayed: true })
+    const bindingAudit = await pool.query<{ count: number }>(`select count(*)::int as count from management_audit
+      where principal_id=$1 and action='source.root.bind' and outcome='succeeded' and details->>'commandId'=$2`,
+    [operator.principal.id, bind.commandId])
+    expect(bindingAudit.rows[0]!.count).toBe(1)
 
     const ciClient = await connect(owner.token)
     const ciInput = { workspaceId: workspace.id, suite: 'unit', commandId: randomUUID() }
@@ -202,7 +268,10 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(wrong.isError).toBe(true)
     const denied = await access.issue({ name: 'Other scope', audience: 'operator', grants: [{ actions: ['sources:read', 'sources:approve', 'workspace_locations:read'], scope: { workspaceIds: ['workspace-other'] } }], expiresAt: new Date(Date.now() + 120_000) })
     const deniedClient = await connect(denied.token)
-    expect((await deniedClient.callTool({ name: 'source_approve', arguments: { ...approve, commandId: randomUUID() } })).isError).toBe(true)
+    expect(failure(await deniedClient.callTool({ name: 'source_approve',
+      arguments: { ...approve, commandId: randomUUID() } }))).toMatchObject({ code: 'ACCESS_DENIED' })
+    expect(ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get',
+      arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)).toEqual(read)
     expect((await deniedClient.callTool({ name: 'ci_run', arguments: {
       workspaceId: workspace.id, suite: 'unit', commandId: randomUUID(),
     } })).isError).toBe(true)
@@ -210,11 +279,27 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const reader = await access.issue({ name: 'Read-only source', audience: 'operator', grants: [{ actions: ['sources:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 120_000) })
     const readerClient = await connect(reader.token)
     expect((await readerClient.listTools()).tools.map(t => t.name)).not.toContain('source_approve')
+    const beforeDenied = await sources.list(owner.principal, 'mcp', { workspaceId: workspace.id })
+    expect((await readerClient.callTool({ name: 'source_approve',
+      arguments: { ...approve, commandId: randomUUID() } })).isError).toBe(true)
+    expect(await sources.list(owner.principal, 'mcp', { workspaceId: workspace.id })).toEqual(beforeDenied)
     await writeFile(join(project, 'source.ts'), 'export const revision = 2\n'); await qualifiedGit(project, ['add', '.']); await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source2'])
     const newCommit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
     const second = await client.callTool({ name: 'source_approve', arguments: { ...approve, commandId: randomUUID(), commit: newCommit } }); expect(second.isError).not.toBe(true)
     expect(ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).structuredContent).manifest.git?.commit).toBe(commit)
     expect(SourceListResultSchema.parse((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id } })).structuredContent).items).toHaveLength(5)
+    await writeFile(join(project, '.env'), 'SECRET=fixture\n')
+    await qualifiedGit(project, ['add', '.env'])
+    await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-m', 'tracked sensitive file'])
+    const sensitiveCommit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
+    expect(failure(await client.callTool({ name: 'source_approve', arguments: {
+      ...approve, commandId: randomUUID(), commit: sensitiveCommit,
+    } }))).toMatchObject({ code: 'SOURCE_SENSITIVE_PATH' })
+    expect(SourceListResultSchema.parse((await client.callTool({ name: 'source_list',
+      arguments: { workspaceId: workspace.id } })).structuredContent).items).toHaveLength(5)
+    expect(ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get',
+      arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)).toEqual(read)
     const http = await app.inject({ method: 'POST', url: `/api/management/workspaces/${workspace.id}/sources/get`, headers: { authorization: `Bearer ${operator.token}` }, payload: pin })
     expect(http.statusCode).toBe(200); expect(ApprovedSourceSchema.parse(http.json()).manifest.manifestDigest).toBe(pin.manifestDigest)
     await pool.query(`update source_snapshots set availability='unavailable' where snapshot_id=$1`, [pin.snapshotId])

@@ -12,6 +12,7 @@ export async function createRemoteReviewTransport(input: {
   certificateFile: string
   privateKeyFile: string
   beforeAuthorization(request: ReturnType<typeof ExecutionAuthorityRequestSchema.parse>): Promise<void>
+  beforeDiscovery?(): Promise<void>
 }) {
   const [cert, key] = await Promise.all([readFile(input.certificateFile), readFile(input.privateKeyFile)])
   const server = createServer({ cert, key })
@@ -59,8 +60,22 @@ export async function createRemoteReviewTransport(input: {
       ready = true
       for (const message of waiting.splice(0)) main.send(message.data, { binary: message.binary })
     })
+    const discoveryFrames = new Map<string, Array<{ data: RawData; binary: boolean }>>()
     main.on('message', (data, binary) => {
       observe(data, 'to-worker')
+      const frame = JSON.parse(data.toString()) as DeviceApplicationFrame
+      if (input.beforeDiscovery && frame.type === 'application-open' && frame.kind === 'request'
+        && frame.namespace === 'harness-discovery-v1') {
+        const waiting = [{ data, binary }]
+        discoveryFrames.set(frame.id, waiting)
+        void input.beforeDiscovery().then(() => {
+          discoveryFrames.delete(frame.id)
+          for (const message of waiting) worker.send(message.data, { binary: message.binary })
+        }).catch(fail)
+        return
+      }
+      const waiting = 'id' in frame ? discoveryFrames.get(frame.id) : undefined
+      if (waiting) { waiting.push({ data, binary }); return }
       worker.send(data, { binary })
     })
     main.on('error', fail)

@@ -12,7 +12,7 @@ import { registerMcpDetectionRoute } from '../src/routes/mcpDetection.js'
 function route(service: McpDetectionService) {
   let handler!: (request: unknown, reply: unknown) => Promise<unknown>
   registerMcpDetectionRoute({ get: (_path: string, action: typeof handler) => { handler = action } } as never, {
-    query: async () => ({ rows: [{ execution_location: { runnerId: 'runner-local', rootPath: '/workspace' } }] }),
+    inspectionSnapshot: async () => ({ runnerId: 'runner-local', rootPath: '/workspace' }),
   } as never, service)
   const request = {
     params: { workspaceId: 'workspace-1', harness: 'codex' },

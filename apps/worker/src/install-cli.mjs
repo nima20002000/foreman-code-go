@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { hostFacts, WorkerError } from './diagnostics.mjs';
 import { installVersion, rollbackVersion } from './installation.mjs';
-import { acquireWorkerLock } from './runtime.mjs';
 import { renderUserService } from './service.mjs';
 
 const [command, ...args] = process.argv.slice(2);
@@ -38,30 +37,22 @@ async function main() {
     process.stdout.write(renderUserService(template, { node: options['--node'], app: root, state, home: options['--home'], path: options['--path'] }));
     return;
   }
-  // The human must explicitly stop/drain via W08/service policy first. An active
-  // installation cannot be updated by this CLI, even with an approval flag.
-  let updateUnlock;
-  const approveStop = async () => {
-    if (options['--approve-stopped-update'] !== 'yes') return false;
-    updateUnlock = await acquireWorkerLock(state); return true;
-  };
+  const approveStop = async () => options['--approve-stopped-update'] === 'yes';
   const facts = await hostFacts(process.env.HOME ?? '', [root, state]);
   const expected = { protocolVersion: 1, identityFormat: 1 };
-  try {
-    if (command === 'setup') {
-      const { setupCompanion } = await import('./setup.mjs');
-      const result = await setupCompanion({ home, node: process.execPath, artifact: options['--artifact'] ?? dirname(dirname(fileURLToPath(import.meta.url))), approvedManifestSha256: options['--manifest-sha256'], facts, updatePolicy: approveStop,
-        serviceTemplate: await readFile(new URL('../artifacts/graphql-worker.service.in', import.meta.url), 'utf8') });
-      console.log(`Foreman Code Companion installed. Open Foreman Code Companion from Applications, or run ${result.launcher}.\nIdentity and configuration: ${result.state}\nThis installer did not start or enable the background service. After reviewing ${result.proposedService}, opt in with:\n  install -D -m 0600 ${result.proposedService} ${home}/.config/systemd/user/graphql-worker.service\n  systemctl --user daemon-reload\n  systemctl --user enable --now graphql-worker.service\nUpdates need the approved drain/stop policy; rerun setup with --approve-stopped-update yes.\nRollback: ${process.execPath} ${result.root}/current/src/install-cli.mjs rollback --root ${result.root} --state ${result.state} --approve-stopped-update yes`);
-      if (options['--pair'] === 'yes') {
-        const child = spawnSync(result.launcher, ['onboard'], { stdio: 'inherit' });
-        process.exitCode = child.status ?? 1;
-      }
-    } else if (command === 'install') {
-      const result = await installVersion({ root, artifact: options['--artifact'], approvedManifestSha256: options['--manifest-sha256'], facts, expected, updatePolicy: approveStop });
-      console.log(JSON.stringify(result));
-    } else if (command === 'rollback') await rollbackVersion({ root, approveStop, facts, expected });
-    else throw new WorkerError('installer_command_invalid');
-  } finally { await updateUnlock?.(); }
+  if (command === 'setup') {
+    const { setupCompanion } = await import('./setup.mjs');
+    const result = await setupCompanion({ home, node: process.execPath, artifact: options['--artifact'] ?? dirname(dirname(fileURLToPath(import.meta.url))), approvedManifestSha256: options['--manifest-sha256'], facts, updatePolicy: approveStop,
+      serviceTemplate: await readFile(new URL('../artifacts/graphql-worker.service.in', import.meta.url), 'utf8') });
+    console.log(`Foreman Code Companion installed. Open Foreman Code Companion from Applications, or run ${result.launcher}.\nIdentity and configuration: ${result.state}\nThis installer did not start or enable the background service. After reviewing ${result.proposedService}, opt in with:\n  install -D -m 0600 ${result.proposedService} ${home}/.config/systemd/user/graphql-worker.service\n  systemctl --user daemon-reload\n  systemctl --user enable --now graphql-worker.service\nUpdates need the approved drain/stop policy; rerun setup with --approve-stopped-update yes.\nRollback: review ${result.root}/previous/manifest.json and approve a Node executable matching its target.node. Then run APPROVED_RETAINED_NODE ${result.root}/current/src/install-cli.mjs rollback --root ${result.root} --state ${result.state} --approve-stopped-update yes`);
+    if (options['--pair'] === 'yes') {
+      const child = spawnSync(result.launcher, ['onboard'], { stdio: 'inherit' });
+      process.exitCode = child.status ?? 1;
+    }
+  } else if (command === 'install') {
+    const result = await installVersion({ root, stateDirectory: state, artifact: options['--artifact'], approvedManifestSha256: options['--manifest-sha256'], facts, expected, updatePolicy: approveStop });
+    console.log(JSON.stringify(result));
+  } else if (command === 'rollback') await rollbackVersion({ root, stateDirectory: state, approveStop, facts, expected });
+  else throw new WorkerError('installer_command_invalid');
 }
 main().catch((error) => { console.error(error instanceof WorkerError ? error.code : 'installation_failed'); process.exitCode = 1; });

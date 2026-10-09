@@ -115,11 +115,21 @@ export function systemGitWorktreePorts(environment: NodeJS.ProcessEnv = process.
     cloneDirectory: repository => join(home, '.local', 'share', 'foreman-code', 'git', ...repository.split('/')),
     // GitHub CLI credentials (gh auth setup-git) supply authentication; no prompt can block a Run.
     git: (args, options) => new Promise(resolve => {
+      let result: { code: number; stdout: string; stderr: string } | undefined
       // Worktree files stay private to this user, like every other app-managed source directory.
-      execFile('/bin/sh', ['-c', 'umask 077 && exec git "$@"', 'git', ...args], { ...(options.cwd ? { cwd: options.cwd } : {}), signal: options.signal, timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024,
+      const child = execFile('/bin/sh', ['-c', 'umask 077 && exec git "$@"', 'git', ...args], { ...(options.cwd ? { cwd: options.cwd } : {}), signal: options.signal, killSignal: 'SIGKILL', timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024,
         encoding: 'utf8', env: { ...gitEnvironment, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...options.env } }, (error, stdout, stderr) => {
         const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0
-        resolve({ code, stdout, stderr })
+        result = { code, stdout, stderr }
+      })
+      // execFile's abort handler can use SIGTERM despite its killSignal option.
+      const stop = () => { child.kill('SIGKILL') }
+      options.signal.addEventListener('abort', stop, { once: true })
+      if (options.signal.aborted) stop()
+      // Cancellation invokes execFile's callback before close; source cleanup waits for the process too.
+      child.once('close', () => {
+        options.signal.removeEventListener('abort', stop)
+        resolve(result ?? { code: 1, stdout: '', stderr: 'Git process closed without a result.' })
       })
     }),
   }

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import { passiveDriverPayloads } from './payloadDiscovery.js'
+import { inventoryDriverPayloads, passiveDriverPayloads } from './payloadDiscovery.js'
 
 const require = createRequire(import.meta.url)
 
@@ -35,17 +35,17 @@ it('resolves the pinned npm launcher payload from its selected standalone instal
   }
 })
 
-it('rejects modified and arbitrary script launchers without treating their filenames as trust', async () => {
+it.each([passiveDriverPayloads, inventoryDriverPayloads])('rejects modified and arbitrary script launchers without treating their filenames as trust (%#)', async (discover) => {
   const f = await fixture()
   try {
     const original = await readFile(f.launcher)
     const modified = Buffer.from(original)
     modified[modified.length - 2] = modified[modified.length - 2]! ^ 1
     await writeFile(f.launcher, modified)
-    expect(await passiveDriverPayloads('codex', f.launcher, 'linux', 'x64'))
+    expect(await discover('codex', f.launcher, 'linux', 'x64'))
       .toEqual({ complete: false, paths: [] })
     await writeFile(f.launcher, '#!/usr/bin/env node\nprocess.exit(0)\n')
-    expect(await passiveDriverPayloads('codex', f.launcher, 'linux', 'x64'))
+    expect(await discover('codex', f.launcher, 'linux', 'x64'))
       .toEqual({ complete: false, paths: [] })
   } finally {
     await rm(f.root, { recursive: true, force: true })

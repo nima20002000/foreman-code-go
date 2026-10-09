@@ -20,6 +20,8 @@ export const DevicePresenceSchema = z.object({
   appVersion: z.string().min(1).max(128),
   protocolVersion: z.literal(DEVICE_PROTOCOL_VERSION),
   lastSeenAt: z.string().datetime(),
+  clockSkewMs: z.number().nullable().optional(),
+  clockReason: z.string().nullable().optional(),
 }).strict()
 export type DevicePresence = z.infer<typeof DevicePresenceSchema>
 
@@ -28,6 +30,7 @@ export interface DeviceHello extends DeviceSessionBinding {
   protocolVersion: number
   appVersion: string
   nonce: string
+  observedAt?: string
   extensions?: DeviceExtensionDescriptor[]
 }
 export interface DeviceWelcome extends DeviceSessionBinding {
@@ -35,9 +38,12 @@ export interface DeviceWelcome extends DeviceSessionBinding {
   protocolVersion: number
   appVersion: string
   mainIdentityProof: MainSignedIdentityProof
+  observedAt?: string
   capabilities: { heartbeat: true; dispatch: boolean; transfer: boolean; extensions?: DeviceNegotiatedExtension[] }
 }
-export type DeviceFrame = DeviceApplicationFrame | DeviceHello | DeviceWelcome | { type: 'ping' | 'pong' | 'ready'; connectionEpoch: string } | { type: 'blocked'; code: DeviceFailureCode }
+export type DeviceFrame = DeviceApplicationFrame | DeviceHello | DeviceWelcome
+  | { type: 'ping' | 'pong' | 'ready'; connectionEpoch: string; observedAt?: string }
+  | { type: 'blocked'; code: DeviceFailureCode }
 export interface DeviceConnectionView {
   desired: boolean
   phase: DeviceConnectionPhase

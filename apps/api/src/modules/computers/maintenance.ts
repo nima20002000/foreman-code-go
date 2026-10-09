@@ -1,6 +1,9 @@
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
 import { syncFingerprint } from './syncFingerprint.js'
 import { MaintenanceTaskStore } from './maintenanceTaskStore.js'
+import { MaintenanceCommandStore } from './maintenanceCommandStore.js'
+import { DomainError } from '../errors.js'
+import { z } from 'zod'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { access, mkdir, readFile, rename, statfs, writeFile } from 'node:fs/promises'
@@ -55,18 +58,23 @@ export class ComputerMaintenance {
   private readonly activeTasks = new Map<string, { requestHash: string; completion: Promise<void> }>()
   private taskRevision = 0
   private readonly taskStore: MaintenanceTaskStore
+  private readonly commandStore: MaintenanceCommandStore
+  private readonly taskCommands = new Map<string, Map<string, string>>()
+  private admissions: Promise<unknown> = Promise.resolve()
   private loadedTasks: Promise<void> | undefined
   private storageFailure: unknown
   private latest: { at: number; value: Promise<Partial<Record<MaintainedHarness, string | null>>> } | undefined
   constructor(private readonly ports: MaintenancePorts = systemMaintenancePorts()) {
     const home = ports.environment.HOME ?? homedir()
     this.taskStore = new MaintenanceTaskStore(join(home, '.local', 'state', 'foreman-code', 'maintenance-tasks.json'), ports)
+    this.commandStore = new MaintenanceCommandStore(join(home, '.local', 'state', 'foreman-code', 'maintenance-commands'), ports)
   }
 
   private async loadTasks(): Promise<void> {
     this.loadedTasks ??= this.taskStore.load().then(tasks => { this.tasks.push(...tasks) })
     await this.loadedTasks
     await this.taskStore.flushed()
+    await this.commandStore.flushed()
     if (this.storageFailure) throw this.storageFailure
   }
 
@@ -100,28 +108,56 @@ export class ComputerMaintenance {
   }
 
   /** Saves the task before acknowledgement; status readback follows its background progress. */
-  async start(raw: MaintenanceTaskStart): Promise<MaintenanceTask> {
-    await this.loadTasks()
+  async start(raw: MaintenanceTaskStart, commandId: string = randomUUID()): Promise<MaintenanceTask> {
+    const id = z.uuid().parse(commandId)
     const request = MaintenanceTaskStartSchema.parse(raw)
+    const admission = this.admissions.then(() => this.admit(request, id))
+    // A rejected request does not prevent a later independent command from being admitted.
+    this.admissions = admission.catch(() => undefined)
+    return admission
+  }
+
+  async drain(): Promise<void> {
+    await this.admissions
+    await Promise.all([...this.activeTasks.values()].map(task => task.completion))
+    await this.loadTasks()
+  }
+
+  private async admit(request: MaintenanceTaskStart, commandId: string): Promise<MaintenanceTask> {
+    await this.loadTasks()
     const identity = request.kind === 'update-harnesses'
       ? { ...request, harnesses: [...new Set(request.harnesses)].sort() } : request
     const requestHash = commandInputHash(identity)
-    const running = this.tasks.find(task => task.state === 'running'
-      && this.activeTasks.get(task.id)?.requestHash === requestHash)
-    if (running) {
-      await this.taskStore.flushed()
-      return structuredClone(running)
+    const receipt = await this.commandStore.read(commandId)
+    if (receipt) {
+      if (receipt.requestHash !== requestHash) {
+        throw new DomainError('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.', 409)
+      }
+      const retained = this.tasks.find(task => task.id === receipt.task.id) ?? receipt.task
+      if (retained.state === 'running' && !this.activeTasks.has(retained.id)) {
+        retained.state = 'failed'
+        retained.summary = 'Maintenance was interrupted when the application stopped. Check its status before retrying.'
+        retained.finishedAt = this.ports.now().toISOString()
+      }
+      await this.commandStore.save(commandId, requestHash, retained)
+      return structuredClone(retained)
     }
     const previous = this.tasks.findLast(task => task.state === 'running' && task.kind === request.kind)
+    if (previous && this.activeTasks.get(previous.id)?.requestHash === requestHash) {
+      await this.taskStore.flushed()
+      await this.bindCommand(commandId, requestHash, previous)
+      return structuredClone(previous)
+    }
     if (this.tasks.length === 20) {
       const oldestFinished = this.tasks.findIndex(task => task.state !== 'running')
       if (oldestFinished < 0) throw new Error('The maintenance queue is full. Wait for a task to finish before retrying.')
       this.tasks.splice(oldestFinished, 1)
     }
-    const task: MaintenanceTask = { id: randomUUID(), kind: request.kind, state: 'running',
+    const task: MaintenanceTask = { id: commandId, kind: request.kind, state: 'running',
       startedAt: this.ports.now().toISOString(), finishedAt: null,
       summary: previous ? 'Waiting for the previous task…' : 'Running…', outputTail: '' }
     if (request.kind === 'sync-mcp' || request.kind === 'sync-plugins') task.sourceFingerprint = syncFingerprint(request)
+    await this.bindCommand(commandId, requestHash, task)
     this.tasks.push(task)
     this.taskRevision++
     const saved = this.taskStore.save(this.tasks)
@@ -136,6 +172,16 @@ export class ComputerMaintenance {
     this.activeTasks.set(task.id, { requestHash, completion })
     await saved
     return MaintenanceTaskSchema.parse(structuredClone(task))
+  }
+
+  private async bindCommand(commandId: string, requestHash: string, task: MaintenanceTask): Promise<void> {
+    let commands = this.taskCommands.get(task.id)
+    if (!commands) {
+      commands = new Map()
+      this.taskCommands.set(task.id, commands)
+    }
+    commands.set(commandId, requestHash)
+    await this.commandStore.save(commandId, requestHash, task)
   }
 
   /** Which MCP servers and plugins this computer last received from Main, so a later sync can remove the ones Main
@@ -169,8 +215,12 @@ export class ComputerMaintenance {
     task.summary = summary.slice(0, 2000)
     task.finishedAt = this.ports.now().toISOString()
     this.taskRevision++
-    this.activeTasks.delete(task.id)
     await this.taskStore.save(this.tasks)
+    for (const [commandId, requestHash] of this.taskCommands.get(task.id) ?? []) {
+      await this.commandStore.save(commandId, requestHash, task)
+    }
+    this.taskCommands.delete(task.id)
+    this.activeTasks.delete(task.id)
   }
 
   private async perform(request: MaintenanceTaskStart, task: MaintenanceTask): Promise<string> {
@@ -227,8 +277,11 @@ export class ComputerMaintenance {
       }
       case 'restart': {
         await this.requireSudo(signal)
-        this.ports.later(() => { void this.ports.run('sudo', ['-n', 'systemctl', 'reboot'], { signal: AbortSignal.timeout(60_000), timeoutMs: 60_000 }) }, 3_000)
-        return 'Restarting in a few seconds.'
+        task.summary = 'Restart scheduled in a few seconds.'
+        await this.taskStore.save(this.tasks)
+        await new Promise<void>(resolve => { this.ports.later(resolve, 3_000) })
+        await step('sudo', ['-n', 'systemctl', 'reboot'], 'Restart command', { timeoutMs: 60_000 })
+        return 'Restart command accepted. Waiting for this computer to reconnect.'
       }
       case 'sync-mcp': {
         const ledger = await this.readLedger()
@@ -239,7 +292,9 @@ export class ComputerMaintenance {
           if (servers === undefined) continue
           const managed = new Set(ledger.mcp[harness])
           try {
-            const summary = await this.syncMcp(harness, servers, managed, step, signal)
+            const summary = await this.syncMcp(harness, servers, managed, step, signal,
+              request.skippedServers?.[harness] ?? [],
+              () => this.updateLedger(current => { current.mcp[harness] = [...managed] }))
             if (summary) results.push(`${LABELS[harness]}: ${summary}`)
           } catch (error) {
             failures.push(error instanceof Error ? error.message : `${LABELS[harness]} MCP sync failed.`)
@@ -259,7 +314,8 @@ export class ComputerMaintenance {
             if (request.plugins === undefined || request.marketplaces === undefined) return 'Skipped'
             const managed = new Set(ledger.codexPlugins)
             try {
-              return await this.syncPlugins(request.plugins, request.marketplaces, managed, step, signal)
+              return await this.syncPlugins(request.plugins, request.marketplaces, managed, step, signal,
+                () => this.updateLedger(current => { current.codexPlugins = [...managed] }))
             } finally {
               await this.updateLedger(current => { current.codexPlugins = [...managed] })
             }
@@ -268,7 +324,8 @@ export class ComputerMaintenance {
             if (request.claudePlugins === undefined || request.claudeMarketplaces === undefined) return 'Skipped'
             const managed = new Set(ledger.claudePlugins)
             try {
-              return await this.syncClaudePlugins(request.claudePlugins, request.claudeMarketplaces, managed, step, signal)
+              return await this.syncClaudePlugins(request.claudePlugins, request.claudeMarketplaces, managed, step, signal,
+                () => this.updateLedger(current => { current.claudePlugins = [...managed] }))
             } finally {
               await this.updateLedger(current => { current.claudePlugins = [...managed] })
             }
@@ -301,18 +358,21 @@ export class ComputerMaintenance {
   /** Adds Main's servers this computer lacks and removes the ones it received from Main earlier that Main has since
    * removed. Servers the computer has on its own are never touched. */
   private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[], managed: Set<string>, step: Step,
-    signal: AbortSignal): Promise<string> {
+    signal: AbortSignal, skipped: readonly string[], saveOwnership: () => Promise<void>): Promise<string> {
     const previous = [...managed]
-    const wanted = servers.map(server => server.name)
+    const wanted = new Set([...servers.map(server => server.name), ...skipped])
     const binary = await this.ports.find(harness)
-    if (!binary) return servers.length || previous.length ? 'not installed, skipped' : ''
+    if (!binary) {
+      if (servers.length || previous.length) throw new Error(`${LABELS[harness]} is not installed; MCP sync remains pending.`)
+      return ''
+    }
     if (!servers.length && !previous.length) return ''
     const existing = new Set(await this.mcpNames(harness, binary, signal))
     const added: string[] = []
     const removed: string[] = []
     const kept: string[] = []
     for (const name of previous) {
-      if (wanted.includes(name)) continue
+      if (wanted.has(name)) continue
       if (!existing.has(name)) {
         managed.delete(name)
         continue
@@ -326,6 +386,9 @@ export class ComputerMaintenance {
     }
     for (const server of servers) {
       if (existing.has(server.name)) continue
+      // Reserve only absent native entries before installation so interruption preserves ownership.
+      managed.add(server.name)
+      await saveOwnership()
       if (harness === 'codex') {
         const label = `codex mcp add ${server.name}`
         // Codex saves the server, then waits for a browser sign-in on OAuth servers. That sign-in
@@ -363,7 +426,7 @@ export class ComputerMaintenance {
   }
 
   private async syncPlugins(plugins: readonly string[], marketplaces: readonly SyncedMarketplace[], managed: Set<string>,
-    step: Step, signal: AbortSignal): Promise<string> {
+    step: Step, signal: AbortSignal, saveOwnership: () => Promise<void>): Promise<string> {
     const previous = [...managed]
     if (!plugins.length && !previous.length) return 'Nothing to sync'
     const codex = await this.ports.find('codex')
@@ -394,6 +457,8 @@ export class ComputerMaintenance {
     }
     // One plugin that cannot install does not keep the others from installing.
     for (const plugin of missing) {
+      managed.add(plugin)
+      await saveOwnership()
       const result = await step(codex, ['plugin', 'add', plugin], `codex plugin add ${plugin}`, { allowFailure: true })
       if (result.code === 0) {
         added.push(plugin)
@@ -409,7 +474,7 @@ export class ComputerMaintenance {
 
   private async syncClaudePlugins(
     plugins: readonly { pluginId: string; enabled: boolean }[], marketplaces: readonly SyncedMarketplace[],
-    managed: Set<string>, step: Step, signal: AbortSignal,
+    managed: Set<string>, step: Step, signal: AbortSignal, saveOwnership: () => Promise<void>,
   ): Promise<string> {
     const previous = [...managed]
     const wanted = plugins.map(plugin => plugin.pluginId)
@@ -447,6 +512,10 @@ export class ComputerMaintenance {
       if (!plugin.enabled) actions.push('disable')
       else if (existing && !existing.enabled) actions.push('enable')
       for (const action of actions) {
+        if (action === 'install') {
+          managed.add(plugin.pluginId)
+          await saveOwnership()
+        }
         const result = await step(claude, ['plugin', action, plugin.pluginId, '--scope', 'user', '--json'],
           `claude plugin ${action} ${plugin.pluginId}`, { allowFailure: true })
         if (result.code !== 0 || claudeCliResult(result.stdout)?.outcome !== 'ok') {

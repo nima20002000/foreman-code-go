@@ -1083,6 +1083,23 @@ describe('installed worker cold recovery', () => {
   })
 })
 describe('lazy installed worker host qualification boundary',()=>{
+  it('rejects unavailable Main qualification before journaling or launching an inspected installation', async () => {
+    const f = await constructionFixture()
+    f.readMain.mockRejectedValue(new Error('Actual Main qualification is unavailable'))
+    const reserve = vi.spyOn(f.registry, 'reserveLaunch')
+    const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+    try {
+      await expect(f.handler({ method: 'prepare', intent: f.intent, placement: f.placement,
+        request: f.request, executionPlacement: f.nativePlacement }, f.context))
+        .rejects.toThrow('Actual Main qualification is unavailable')
+      expect(f.inspect).toHaveBeenCalledOnce()
+      expect(f.readMain).toHaveBeenCalledOnce()
+      expect(f.openJournal).not.toHaveBeenCalled()
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({ status: 'unknown' })
+      expect(reserve).not.toHaveBeenCalled()
+      expect(create).not.toHaveBeenCalled()
+    } finally { await f.host.close() }
+  })
   it('closes and retires a saved OpenCode preparation without allocating another native session', async () => {
     const f = await constructionFixture()
     const savedSession = { harness: 'opencode' as const, providerVersion: '1.18.31',
@@ -1152,8 +1169,8 @@ describe('lazy installed worker host qualification boundary',()=>{
         expect.objectContaining({ namespace: 'worker-mcp-v1', workerCanRequest: true, mainCanRequest: false }),
       ])
       const handler=host.extensions[0]!.handle!
-      await expect(handler({method:'prepare',intent:f.intent,placement:f.placement,request:f.request,executionPlacement:f.nativePlacement},f.context)).rejects.toThrow('Actual Main qualification is unavailable')
-      expect(readMain).toHaveBeenCalledOnce()
+      await expect(handler({method:'prepare',intent:f.intent,placement:f.placement,request:f.request,executionPlacement:f.nativePlacement},f.context)).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+      expect(readMain).not.toHaveBeenCalled()
       expect(reserve).not.toHaveBeenCalled();expect(create).not.toHaveBeenCalled()
       await expect(access(join(f.root,'workflow-operations.json'))).rejects.toThrow()
       expect(await host.preparationClosed({ ...f.owner, preparationKind: 'workflow' })).toBe(false)

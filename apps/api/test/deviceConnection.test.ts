@@ -137,6 +137,30 @@ describe('device-only carrier and lifecycle', () => {
     const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket)); socket.frame(hello); await flush(); socket.frame({ type: 'ready', connectionEpoch: socket.sent[0]!.connectionEpoch }); await flush(); await vi.advanceTimersByTimeAsync(101); await task
     expect(socket.closed).toBe(true); expect(presence.mock.calls.at(-1)![0].phase).toBe('offline')
   })
+  it.each([-120001, 120001])('reads authenticated Worker clock skew %s and clears it after synchronization', async offset => {
+    vi.useFakeTimers()
+    const mainTime = new Date('2026-10-09T12:00:00.000Z')
+    vi.setSystemTime(mainTime)
+    const { endpoint, presence } = makeEndpoint()
+    const socket = new Socket()
+    const task = endpoint.accept({ authorization: 'Bearer device' }, adaptDeviceSocket(socket))
+    socket.frame({ ...hello, observedAt: new Date(mainTime.getTime() + offset).toISOString() })
+    await flush()
+    const epoch = socket.sent[0]!.connectionEpoch
+    expect(socket.sent[0]!.observedAt).toBe(mainTime.toISOString())
+    socket.frame({ type: 'ready', connectionEpoch: epoch })
+    await flush()
+    expect(endpoint.clockReason(identity.deviceId)).toContain('more than 2 minutes')
+    expect(DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0]).clockSkewMs).toBe(offset)
+    socket.frame({ type: 'ping', connectionEpoch: epoch, observedAt: mainTime.toISOString() })
+    await flush()
+    expect(endpoint.clockReason(identity.deviceId)).toBeNull()
+    expect(DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0])).toMatchObject({
+      clockSkewMs: 0, clockReason: null,
+    })
+    endpoint.close()
+    await task
+  })
   it('rejects malformed/oversize messages and bounded slow-reader queue', async () => {
     expect(() => readFrame('{')).toThrow('malformed-frame'); expect(() => readFrame(' '.repeat(16_385))).toThrow('malformed-frame')
     const raw = new Socket(); const adapted = adaptDeviceSocket(raw)
@@ -209,7 +233,8 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       expect(client.extensions).toBe('')
       client.send(JSON.stringify({ type: 'ready', connectionEpoch: negotiated.connectionEpoch }))
       const pong = once(client, 'message'); client.send(JSON.stringify({ type: 'ping', connectionEpoch: negotiated.connectionEpoch }))
-      expect(JSON.parse(String((await pong)[0]))).toEqual({ type: 'pong', connectionEpoch: negotiated.connectionEpoch })
+      expect(JSON.parse(String((await pong)[0]))).toEqual({ type: 'pong', connectionEpoch: negotiated.connectionEpoch,
+        observedAt: expect.any(String) })
       const closed = once(client, 'close'); endpoint.revoke(identity.deviceId, 2); await closed
       await flush(); expect(presence.mock.calls.at(-1)![0].phase).toBe('offline')
     } finally {

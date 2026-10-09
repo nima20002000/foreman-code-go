@@ -77,9 +77,20 @@ export const SourceReservationReclamationSchema = z.object({ reservationId: z.uu
 export type SourceReservationReclamation = z.infer<typeof SourceReservationReclamationSchema>
 export const SourceReservationReclamationAuthorityResponseSchema = z.object({ version: z.literal(1),
   operation: z.literal('sources.reclamation-authorize'), grant: SourceReservationReclamationSchema }).strict()
+export const RetainedSourceFootprintSchema = z.object({
+  retainedBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  sharedTree: z.object({
+    id: z.uuid(),
+    bytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  }).strict().optional(),
+}).strict().refine(value => !value.sharedTree || value.sharedTree.bytes <= value.retainedBytes,
+  'Shared tree bytes must be included in the retained footprint')
+export type RetainedSourceFootprint = z.infer<typeof RetainedSourceFootprintSchema>
 export const SourceReservationReclamationResponseSchema = z.object({ version: z.literal(1),
   operation: z.literal('sources.reclaim-reservation'), reservationId: z.uuid(), reclamationId: z.uuid(),
-  operationId: IdSchema, reclaimed: z.literal(true), closures: z.array(SourcePreparationClosureSchema).max(1024) }).strict()
+  operationId: IdSchema, reclaimed: z.boolean(), closures: z.array(SourcePreparationClosureSchema).max(1024),
+  retained: RetainedSourceFootprintSchema.optional() }).strict()
+  .refine(value => value.reclaimed === !value.retained, 'Retained working trees keep their storage reservation')
 export const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),
   generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict()
 export const SourceOperationResponseSchema = z.discriminatedUnion('operation', [
@@ -90,7 +101,10 @@ export const SourceOperationResponseSchema = z.discriminatedUnion('operation', [
     filesystem: RootFilesystemIdentitySchema, accessMode: z.enum(['read-only', 'exclusive-write']),
     cwdAttestation: SourceCwdAttestationSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.private-repository'), repository: PrivateSourceRepositoryResultSchema }).strict(),
-  z.object({ version: z.literal(1), operation: z.literal('sources.release'), materializationId: z.uuid(), operationId: IdSchema, released: z.literal(true), retainedBytes: z.number().int().nonnegative().max(1024 * 1024 * 1024) }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('sources.release'), materializationId: z.uuid(),
+    operationId: IdSchema, released: z.literal(true), ...RetainedSourceFootprintSchema.shape }).strict()
+    .refine(value => !value.sharedTree || value.sharedTree.bytes <= value.retainedBytes,
+      'Shared tree bytes must be included in the retained footprint'),
   z.object({ version: z.literal(1), operation: z.literal('sources.reconcile-preparation'), closure: SourcePreparationClosureSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.authorize'), owner: SourceOperationOwnerSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.transfer-authorize'), intent: TransferIntentSchema }).strict(),

@@ -35,10 +35,12 @@ export class HarnessInstanceSettingsRepository {
     const result = await client.query<{ record: unknown }>('select record from harness_instance_settings where instance_id=$1 order by revision desc limit 1', [instanceId])
     return result.rows[0] ? HostHarnessOverrideSchema.parse(result.rows[0].record) : null
   }
-  async savedRevision(client: pg.ClientBase, instanceId: string, instanceRevision: string): Promise<HostHarnessOverride | null> {
+  async savedRevision(client: pg.ClientBase, instanceId: string, instanceRevision: string,
+    options?: { target: HostHarnessOverride['target'] }): Promise<HostHarnessOverride | null> {
     const result = await client.query<{ record: unknown }>(`select record from harness_instance_settings
-      where instance_id=$1 and record->>'instanceRevision'=$2 order by revision desc limit 1`,
-    [instanceId, instanceRevision])
+      where instance_id=$1 and record->>'instanceRevision'=$2
+        and ($3::jsonb is null or record->'target'=$3::jsonb) order by revision desc limit 1`,
+    [instanceId, instanceRevision, options ? JSON.stringify(options.target) : null])
     return result.rows[0] ? HostHarnessOverrideSchema.parse(result.rows[0].record) : null
   }
   async lockRevision(client: pg.ClientBase, instanceId: string): Promise<void> {
@@ -53,6 +55,26 @@ export class HarnessInstanceSettingsRepository {
       || previous.driverId !== value.driverId)) throw new DomainError('HARNESS_INSTANCE_TARGET_CONFLICT', 'A configured instance cannot move to another host, installation or driver.', 409)
     await client.query(`insert into harness_instance_settings(instance_id,revision,host_key,application_installation_id,record,configuration_fingerprint,created_by)
       values($1,$2,$3,$4,$5::jsonb,$6,$7)`, [value.instanceId, value.revision, harnessHostKey(value.target.hostRef), value.target.applicationInstallationId, JSON.stringify(value), value.configurationFingerprint, principalId])
+    return value
+  }
+  async replaceInstallation(client: pg.PoolClient, previous: HostHarnessOverride,
+    target: HostHarnessOverride['target']): Promise<HostHarnessOverride> {
+    await this.lockRevision(client, previous.instanceId)
+    const current = await this.latest(client, previous.instanceId)
+    if (!current || current.revision !== previous.revision) throw new DomainError(
+      'REVISION_CONFLICT', 'The harness profile changed during automatic qualification.', 409)
+    const value: HostHarnessOverride = { ...previous, revision: previous.revision + 1,
+      target, qualification: 'unqualified' }
+    // Keep the configuration revision and its author; the audit identifies the system installation update.
+    await client.query(`insert into harness_instance_settings
+      (instance_id,revision,host_key,application_installation_id,record,configuration_fingerprint,created_by)
+      select instance_id,$3,host_key,application_installation_id,$4::jsonb,configuration_fingerprint,created_by
+      from harness_instance_settings where instance_id=$1 and revision=$2`,
+    [previous.instanceId, previous.revision, value.revision, JSON.stringify(value)])
+    await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+      values(null,'system','harness.instance.installation.update',$1,'succeeded',$2::jsonb)`,
+    [`harness-instance:${value.instanceId}`, JSON.stringify({ previousRevision: previous.revision,
+      revision: value.revision, previousTarget: previous.target, target })])
     return value
   }
 }

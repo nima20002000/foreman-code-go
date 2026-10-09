@@ -2,7 +2,8 @@ import { readPublicRunStateLocked } from '../run-graph/publicRunState.js'
 import { publicAttentionTotals, readPublicAttentionCounts } from '../run-graph/currentAttention.js'
 import type pg from 'pg'
 import { AcceptedWorkflowRunV3Schema, canonicalGraphJson, type AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
-import { DurableInteractionSchema, type DurableInteraction, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
+import { DurableInteractionSchema, ExecutionResultSchema,
+  type DurableInteraction, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, poisonGraphTransaction, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { graphSourceDigest } from '../run-graph/publication.js'
@@ -293,16 +294,25 @@ export async function hasWorkDirectionWait(owner: RunOwnership): Promise<boolean
 /** A negative cleanup intent is not success/closure. It only fences new work.
  * Ownerless calls are restricted to an already authorized Stop or terminal Run;
  * active-run cancellation must use its actual existing owner. */
-export async function requestWorkflowCleanup(pool: pg.Pool, runId: string, owner?: RunOwnership): Promise<void> {
+export async function requestWorkflowCleanup(pool: pg.Pool, runId: string, owner?: RunOwnership,
+  failure?: ExecutionResult): Promise<void> {
   if (owner && owner.runId !== runId) return fail('RUN_OWNERSHIP_LOST')
+  const result = failure ? ExecutionResultSchema.parse(failure) : null
+  if (result && (!owner || result.outcome !== 'failed')) return fail('RUN_FAILURE_CAUSE_INVALID')
   const work = async (sql: GraphTransactionSql) => {
     const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, runId)
     if (owner) await retainOwner(sql, owner)
     else if (!snapshot.stopRequested && snapshot.run.executionState !== 'completed') return fail('RUN_OWNERSHIP_REQUIRED')
-    if (snapshot.cleanupPending) return
-    await lifecycleSource(publication, { kind: 'cleanup_requested', runId, at: new Date().toISOString() }, async () => {
-      await sql.query(`insert into run_cleanup_intents(run_id) values($1)
-        on conflict(run_id) do update set pending=true,updated_at=clock_timestamp()`, [runId])
+    const failureResult = snapshot.stopRequested || snapshot.run.executionState === 'completed' ? null : result
+    const prior = (await sql.query<{ failure_result: unknown }>(
+      'select failure_result from run_cleanup_intents where run_id=$1', [runId])).rows[0]
+    if (snapshot.cleanupPending && (!failureResult || prior?.failure_result)) return
+    await lifecycleSource(publication, { kind: 'cleanup_requested', runId, failure: failureResult,
+      at: new Date().toISOString() }, async () => {
+      await sql.query(`insert into run_cleanup_intents(run_id,failure_result) values($1,$2::jsonb)
+        on conflict(run_id) do update set pending=true,updated_at=clock_timestamp(),
+          failure_result=coalesce(run_cleanup_intents.failure_result,excluded.failure_result)`,
+      [runId, failureResult ? canonicalGraphJson(failureResult) : null])
     })
   }
   if (owner) await owner.oneShotConnection().transaction(work)
@@ -344,7 +354,11 @@ export async function settleWorkflowRun(owner: RunOwnership, interrupted = false
     const { run } = snapshot
     if (run.executionState === 'completed') return false
     if (!snapshot.cleanupPending && !snapshot.stopRequested) return fail('REPEAT_CLEANUP_PENDING')
-    const result: ExecutionResult = snapshot.stopRequested ? { outcome: 'canceled' } : { outcome: 'failed', error: {
+    const cleanup = (await sql.query<{ failure_result: unknown }>(
+      'select failure_result from run_cleanup_intents where run_id=$1', [run.id])).rows[0]
+    const failure = cleanup?.failure_result ? ExecutionResultSchema.parse(cleanup.failure_result) : undefined
+    if (failure && failure.outcome !== 'failed') return fail('RUN_FAILURE_CAUSE_INVALID')
+    const result: ExecutionResult = snapshot.stopRequested ? { outcome: 'canceled' } : failure ?? { outcome: 'failed', error: {
       code: interrupted ? 'EXECUTION_INTERRUPTED' : 'WORKFLOW_SELECTED_EXECUTION_FAILED',
       message: interrupted ? 'The owned execution was interrupted and physically settled; native work was not replayed.'
         : 'A selected execution did not complete successfully.', retryable: false,

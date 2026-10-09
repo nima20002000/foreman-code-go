@@ -10,6 +10,7 @@ import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { workflowSettlementFixture } from './helpers/workflowSettlementFixture.js'
 import { graphRpcValue } from './eng04-graph-composition-fixture.js'
+import { assertWorkflowFailureReadback } from './helpers/workflowFailureReadback.js'
 
 // Native terminals and physical closure are explicit test inputs. Authenticated
 // Save/MCP reads, canonical publication, SQL transactions and settlement execute.
@@ -294,10 +295,34 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement and e
       if (restart) await f.restart()
       const execute = runtime(f, async (execution) => { assert.equal(execution.state, 'completed') })
       await expect(execute()).rejects.toMatchObject({ code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED' })
-      expect(await f.readRun()).toMatchObject({ executionState: 'completed', outcome: 'failed' })
+      expect(await f.readRun()).toMatchObject({ executionState: 'completed', outcome: 'failed', result: {
+        outcome: 'failed', error: { code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED', retryable: false },
+      } })
       expect((await f.db.pool.query('select 1 from run_work_returns where run_id=$1', [f.run.id])).rowCount).toBe(0)
       expect((await f.db.pool.query('select 1 from run_work_activations where run_id=$1', [f.run.id])).rowCount).toBe(2)
       expect((await f.store.readExecution(reviewer.id)).execution.result).toEqual(reviewer.result)
+      await f.restart()
+      await assertWorkflowFailureReadback(f, 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED')
+    })
+  }, timeout)
+
+  it('retains the first specific failure across interrupted cleanup and owner restart', async () => {
+    await withFixture(handoffs(2), async f => {
+      const failure: ExecutionResult = { outcome: 'failed', error: {
+        code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED', message: 'The Run has no execution capacity for rework.', retryable: false,
+      } }
+      await f.lifecycle.requestCleanup(failure)
+      await f.lifecycle.requestCleanup({ outcome: 'failed', error: {
+        code: 'CLEANUP_RETRY', message: 'A later cleanup error.', retryable: false,
+      } })
+      expect(await f.readRun()).toMatchObject({ executionState: 'running', outcome: 'pending' })
+      await f.restart()
+      await f.lifecycle.settleRun(false, true)
+      await f.lifecycle.finishCleanup()
+      expect((await f.readRun()).result).toEqual(failure)
+      await assertWorkflowFailureReadback(f, 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED')
+      await f.lifecycle.settleRun(false, false)
+      expect((await f.readRun()).result).toEqual(failure)
     })
   }, timeout)
 

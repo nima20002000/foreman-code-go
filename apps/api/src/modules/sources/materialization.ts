@@ -7,6 +7,7 @@ import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type Fi
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest, sourceMaterializationParent, sourceMaterializationComponents, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
+import { sourceMaterializationBytes } from './footprint.js'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot,
   withPrivateDirectoryLock } from './privateFilesystem.js'
@@ -119,7 +120,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       }, { signal })
       // Reservation covers staging, activated copy and retained/reference space.
       const disk = await statfs(anchored(root), { bigint: true })
-      const required = BigInt(manifest.totalBytes * 3 + manifest.totalEntries * 8192 + 1024 * 1024)
+      const required = BigInt(sourceMaterializationBytes(manifest))
       if (disk.bavail * disk.bsize < required) throw new SourceError('SOURCE_DISK_CAPACITY', 'Insufficient reserved space for source staging and execution copies.')
       slotDirectory = quota ? await openChildDirectory(root, quota.namespace) : undefined
       const parent = slotDirectory ?? root

@@ -67,7 +67,8 @@ export class LocalWorkflowArtifactAuthority {
         || intent.bindingHash !== placement.bindingHash || placement.payload.kind !== 'agent'
         || !same(placement.payload.artifactOutputs, node.artifactOutputs)
         || placement.payload.agentConfigurationVersionId !== configuration.id) return denied()
-      await this.producer.assertPinsCurrent(sql, placement, principal, run.workspaceId)
+      await this.producer.assertPinsCurrent(sql, placement, principal, run.workspaceId,
+        execution.nativeSessionId ? { purpose: 'resident' } : undefined)
     } else if (intent || run.executionLocation?.runnerId !== 'runner-local') return denied()
     const attempt = ArtifactAttemptSchema.parse({ workspaceId: run.workspaceId, workflowId: run.workflowId,
       runId: run.id, nodeId: node.id, executionId, attemptId: intent?.attemptId ?? `local:${executionId}:${execution.attempt}`,

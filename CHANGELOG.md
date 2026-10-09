@@ -7,6 +7,53 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.56] - 2026-10-09
+
+Draft includes committed changes and the current lane work. Final repository, browser and cross-computer verification remains pending.
+
+### CI across computers
+
+- Automatically enroll saved workspace CI and Job profiles on connected, build-enabled computers, including Main, prepare their runtimes, and reuse enrollment after reconnecting. The Operator can read enrollment and enable or disable each workspace/computer pair through `ci_enrollment_get` and `ci_enrollment_update`; disabling new placement leaves accepted Jobs intact.
+- Prepare Main as a build computer through `build_computer_prepare`, with persisted preparation that resumes after Main's runtime refresh and restart.
+- Reuse verified CI images across source-only commits when dependency inputs, runtime controls and platform match, while capturing fresh source for qualification. Runtime status reports image reuse.
+- Qualify integration runtimes with a committed smoke subset covering PostgreSQL, migrations, MCP, sources and Jobs; ordinary integration CI still requests the full suite.
+- Queue Jobs as “Waiting for source capacity” when source slots or disk capacity are exhausted, with persisted retries up to one minute apart. Waiting does not consume the source preparation timeout; queue deadlines and cancellation still apply.
+- Retire unused runtime configurations, images and installer copies, and reclaim interrupted build inputs while protecting current profiles, accepted Jobs and pending qualifications. Image pruning checks installation ownership and preserves images with other tags or container references.
+- Keep seed and context receipts immutable across rebuilds, and retain receipts and qualification sources needed by installed configurations.
+- Isolated verification reports required native-containment, Docker Compose and installed-Worker suites as unavailable when their capabilities are absent. Required unit and integration coverage stays incomplete and returns a nonzero result until it runs on a capable host; published reports retain the missing-capability details.
+
+### Agents/workflows
+
+- Set each workflow's Agent active-time limit in Workflow settings or through Operator MCP, or clear it to inherit the server default. Runs use their saved WorkflowVersion's limit and retain existing approval-wait and recovery accounting.
+- Keep authorized Agent and CI source-root bindings available when a workspace moves to another computer and back, without rewriting saved roots, runtime profiles or Run history.
+- Keep Agent worktrees out of a computer's CI source-slot count, and preserve installed source-quota ownership when authorized snapshots or workspace bindings change.
+- Account for Agent attempts, Jobs and pending Job preparation together. Exhausted budgets and preparation timeouts enter terminal cleanup with their original failure reason preserved across restart; Job outputs remain available to downstream Agents and repeat blocks.
+
+### Harnesses
+
+- Detect installed Codex and Claude updates and automatically recheck previously qualified, enabled configurations before new launches. Main also requalifies a previously qualified Codex after restarting; pending checks and failures are visible through HTTP and Operator MCP. Existing sessions retain their accepted installation and profile facts.
+- Show installation status in the sidebar separately from sign-in and execution qualification, so an installed harness is not marked missing because a preset check fails.
+- Cache unchanged Codex and Claude payload fingerprints for passive inventory on Main and Workers, while keeping qualification and launch identity checks fresh.
+- Allow cold native version checks more time after installation hashing, and report `HARNESS_CHECK_TIMEOUT` instead of an internal error. MCP detection has a two-minute overall inspection budget with bounded individual commands and cancellation.
+- Repair the app-managed MCP launcher when its recorded Node interpreter has been removed, while preserving customized entries. Launcher lock waits now honor cancellation and deadlines.
+- Keep MCP settings reads fresh after writes, reject failed refreshes instead of serving stale success indefinitely, and validate the saved workspace directory before HTTP or Operator MCP diagnostics.
+- Fleet MCP sync warns about unsupported disabled definitions, tool restrictions and credential-reference settings, and preserves existing Worker entries for those skipped definitions instead of silently removing or changing them.
+- Preserve the original error when native diagnostic admission fails before reserving a launch, roll back failed reservation publication, and report full recovery storage as `HARNESS_RECOVERY_STORAGE_FULL` without inventing process-closure evidence.
+
+### Fixes
+
+- Runtime qualification retries reconcile the original operation after an uncertain result, expiry, profile edits or a confirmed reboot before launch. Older attempts cannot overwrite newer qualification results; HTTP and MCP readback distinguish operation history from current readiness and expose operations needing recovery.
+- Runtime readiness rechecks current root authorization, runtime configuration and mount-tool identity, and rejects stale Worker inspection responses. CI preparation rejects missing, changed or revoked computers and joins canceled preparation and cleanup during shutdown.
+- Recover owned containers interrupted before launch as preparation failures only after confirming cleanup, without fabricating an exit code or allowing a late start.
+- Report full CI storage with observed byte and inode usage and limits, or explicitly unavailable quota readback. Preserve known source cleanup and authorization error codes across the Worker channel while redacting private details.
+- Create project folders with an atomic move that preserves directory identity and refuses collisions or cross-filesystem copying, including on CI images without GNU `mv --no-copy`.
+- Make workspace location retries atomic with their receipts and audit records, protect folder validation against concurrent deletion, and prevent the legacy location setter from removing modern root evidence. Folder errors are actionable, the compact picker can reload stale saved locations, and reselecting a replaced folder repairs its identity.
+- Read approved remote and additional Main workspace folders through their saved host policies, and distinguish identical paths on different computers during cleanup. Close project-directory handles when runtime-root acquisition fails.
+- Preserve mounted pages and local drafts while the browser automatically reconnects after network errors or temporary server failures.
+- Bind Worker installations to their canonical state directory and serialize setup and Companion activation with updates. Artifacts use the product release version; recovery instructions require the retained release's matching Node runtime. An open Companion detects installation changes, and activation success requires a fresh active-service check.
+- Package the CI context builder and its dependencies inside the deployed API and Worker artifacts. Private preparation Git commands ignore inherited outer Git paths, fetch partial-clone objects before capture, and qualify the installed PostgreSQL binary and version.
+- Give nested verification commands separate report directories, support the offline production `pnpm deploy --prod --legacy` invocation, and preserve frozen dependency and release-age policies. Correct CI fixtures for isolated source trees, current enrollment and workflow contracts, and deterministic native chat-delivery faults.
+
 ## [0.0.55] - 2026-10-09
 
 Known issues: under heavy parallel load, Main can shut down before a completed remote Agent session has closed, leaving its Run for reconciliation (seen only in the computer-workflow-save test). A Worker's unit-test verification profile cannot qualify while its tests run inside an overlay-root container. A workspace located on another computer cannot start CI runs from that computer (RUNNER_UNSUPPORTED). The real-model remote CI acceptance (an Agent running CI on Dexter) currently fails with SOURCE_QUOTA_MISSING on the build computer and is being fixed.

@@ -191,7 +191,9 @@ export class PostgresRunRepository implements RunRepository {
   }
   async hasRequestedStop(runId: string, owner?: RunOwnership): Promise<boolean> { return (await this.getRepeatSnapshot(runId, owner)).stopRequested }
   async hasPendingCleanup(runId: string, owner?: RunOwnership): Promise<boolean> { return (await this.getRepeatSnapshot(runId, owner)).cleanupPending }
-  async requestCleanup(runId: string, owner?: RunOwnership): Promise<void> { await requestWorkflowCleanup(this.pool, runId, owner) }
+  async requestCleanup(runId: string, owner?: RunOwnership, failure?: ExecutionResult): Promise<void> {
+    await requestWorkflowCleanup(this.pool, runId, owner, failure)
+  }
   async finishCleanup(runId: string, failed: boolean, owner: RunOwnership): Promise<void> { await finishWorkflowCleanup(this.requireOwner(runId, owner), failed) }
   async settleOrphan(runId: string, owner: RunOwnership, canceled: boolean): Promise<boolean> {
     this.requireOwner(runId, owner)

@@ -47,6 +47,16 @@ describe('fleet source propagation', () => {
       .toHaveLength(1)
   })
 
+  it.each([
+    { enabled: false }, { enabled_tools: ['read'] }, { enabled_tools: [] }, { disabled_tools: ['write'] },
+    { env_vars: ['REMOTE_TOKEN'] },
+  ])('reports unsupported settings without copying a less restricted definition: %j', settings => {
+    const skipped: string[] = []
+    expect(syncableServers({ restricted: { command: 'server', ...settings } }, name => { skipped.push(name) }))
+      .toEqual([])
+    expect(skipped).toEqual(['restricted'])
+  })
+
   it.each(['codex', 'claude'] as const)('preserves %s MCP when its source is unreadable', async harness => {
     const computer = fakeComputer()
     const { fleet, sources } = fakeFleet(computer)
@@ -66,6 +76,42 @@ describe('fleet source propagation', () => {
     await settle(computer)
     expect([...computer.codexMcp]).toEqual([])
     expect([...computer.claudeMcp]).toEqual([])
+  })
+
+  it.each(['codex', 'claude'] as const)('preserves skipped %s definitions and still removes genuinely deleted servers', async harness => {
+    const computer = fakeComputer()
+    const { fleet, sources, requested } = fakeFleet(computer)
+    const source = `${harness}UserMcpServers` as const
+    sources.codexUserMcpServers = async () => ({})
+    sources.claudeUserMcpServers = async () => ({})
+    sources[source] = async () => ({ kept: { url: 'https://kept.example/mcp' }, deleted: { url: 'https://deleted.example/mcp' } })
+    await fleet.syncChangedSources()
+    await settle(computer)
+    for (const definition of [
+      { url: 'https://kept.example/mcp', env: { TOKEN: 'private-value' } },
+      { url: 'https://kept.example/mcp', http_headers: { Authorization: 'private-value' } },
+      { url: 'https://kept.example/mcp', enabled: false },
+      { url: 'https://kept.example/mcp', enabled_tools: ['read'] },
+      { url: 'https://kept.example/mcp', enabled_tools: [] },
+      { url: 'https://kept.example/mcp', disabled_tools: ['write'] },
+      { command: 'server', env_vars: ['REMOTE_TOKEN'] },
+    ]) {
+      sources[source] = async () => ({ kept: definition })
+      await fleet.syncChangedSources()
+      const status = await settle(computer)
+      expect(status.tasks.find(task => task.kind === 'sync-mcp')?.summary).toContain('kept')
+      const names = harness === 'codex' ? [...computer.codexMcp] : [...computer.claudeMcp.keys()]
+      expect(names).toEqual(['kept'])
+      const task = requested.filter(task => task.kind === 'sync-mcp').at(-1)!
+      expect(task).toMatchObject({ servers: { [harness]: [] }, skippedServers: { [harness]: ['kept'] } })
+      expect(JSON.stringify(task)).not.toContain('private-value')
+      computer.maintenance = new ComputerMaintenance(computer.ports)
+    }
+    expect(computer.calls.filter(call => call.args[1] === 'remove' && call.args.includes('kept'))).toEqual([])
+    sources[source] = async () => ({})
+    await fleet.syncChangedSources()
+    await settle(computer)
+    expect(harness === 'codex' ? [...computer.codexMcp] : [...computer.claudeMcp.keys()]).toEqual([])
   })
 
   it.each(['codex', 'claude'] as const)('preserves %s plugins when its source is unreadable', async harness => {

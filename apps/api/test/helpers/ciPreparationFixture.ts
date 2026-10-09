@@ -116,6 +116,15 @@ export async function ciPreparationFixture(options: {
   ])
   let disabled = options.disabled ?? false
   const query = async (text: string, values: unknown[] = []) => {
+    if (text.includes('from application_installation')) return { rows: [{ id: mainId }] }
+    if (text.includes('from device_registrations')) {
+      const deviceId = String(values[0])
+      const knownDevice = deviceId === dexter || deviceId === mana
+      return { rows: knownDevice && values[1] === mainId ? [{ record: {
+        mainId, deviceId, workerInstallationId: deviceId, publicKeyFingerprint: 'a'.repeat(64),
+        keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'],
+      } }] : [] }
+    }
     if (text.includes('from management_principals')) {
       const principal = principals.get(String(values[0]))
       return { rows: principal ? [{ id: principal.id, name: principal.name, audience: principal.audience,
@@ -330,6 +339,6 @@ export async function ciPreparationFixture(options: {
     throw new Error('Preparation did not settle.')
   }
   return { ...data, app, call, settle, calls, profiles, sources, profileService, pool, ciRuntime,
-    createProvisioner, memory, principals, commands, endpoint, disable: () => { disabled = true },
+    createProvisioner, memory, principals, commands, endpoint, main, disable: () => { disabled = true },
     workerState: () => worker.handle({ operation: 'status' }) }
 }

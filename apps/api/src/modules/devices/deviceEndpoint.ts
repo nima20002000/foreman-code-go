@@ -4,6 +4,7 @@ import type { DevicePrincipal, MainIdentityProofRequest, MainSignedIdentityProof
 import { randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, DeviceSessionBindingSchema, type DevicePresence, type DeviceSessionBinding, type DeviceWelcome } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
+import { workerClockReason } from './workerClock.js'
 
 export type AuthenticatedDevice = DevicePrincipal
 
@@ -114,6 +115,9 @@ export class DeviceEndpoint {
       if (first.done || !current()) throw new DeviceConnectionError('transport')
       const helloSeenAt = new Date().toISOString()
       const hello = readFrame(first.value)
+      const workerTime = typeof hello.observedAt === 'string' ? Date.parse(hello.observedAt) : NaN
+      const clockSkewMs = Number.isFinite(workerTime) ? workerTime - Date.parse(helloSeenAt) : null
+      const clockReason = workerClockReason(Number.isFinite(workerTime) ? workerTime : null, Date.parse(helloSeenAt))
       if (hello.protocolVersion !== DEVICE_PROTOCOL_VERSION) throw new DeviceConnectionError('incompatible-protocol')
       if (hello.type !== 'hello' || typeof hello.bootId !== 'string' || !hello.bootId || typeof hello.connectionEpoch !== 'string' || !hello.connectionEpoch || typeof hello.appVersion !== 'string' || !hello.appVersion || hello.appVersion.length > 128 || typeof hello.nonce !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(hello.nonce) || !Number.isSafeInteger(hello.connectionGeneration) || Number(hello.connectionGeneration) < 1) throw new DeviceConnectionError('malformed-frame')
       for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) if (hello[key] !== principal[key]) throw new DeviceConnectionError('authentication')
@@ -123,7 +127,9 @@ export class DeviceEndpoint {
         session.binding = binding
         const original = binding
         abort.signal.addEventListener('abort', () => this.bindingLost(original), { once: true })
-        session.presence = Object.freeze({ binding, phase: 'offline', dispatch: false, transfer: false, appVersion: hello.appVersion, protocolVersion: hello.protocolVersion, lastSeenAt: helloSeenAt })
+        session.presence = Object.freeze({ binding, phase: 'offline', dispatch: false, transfer: false,
+          appVersion: hello.appVersion, protocolVersion: hello.protocolVersion, lastSeenAt: helloSeenAt,
+          clockSkewMs, clockReason })
       }
       try { await withDeviceDeadline(this.track(this.options.auth.revalidateDevice(principal, 'heartbeat')), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { throw authorizationFailure(error) }
       if (!current()) throw new DeviceConnectionError('transport')
@@ -133,6 +139,7 @@ export class DeviceEndpoint {
       const mainIdentityProof = await withDeviceDeadline(this.track(this.options.signMainIdentityProof(proofRequest)), abort.signal, this.options.handshakeMs ?? 10_000)
       if (!current()) throw new DeviceConnectionError('transport')
       const welcome: DeviceWelcome = { ...binding, type: 'welcome', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, mainIdentityProof, capabilities: { heartbeat: true, dispatch: extensions.some((item) => ['execution-v1', 'job-v1'].includes(item.namespace) && item.mainCanRequest), transfer: extensions.some((item) => item.namespace === 'byte-transfer-v1' && (item.mainCanRequest || item.workerCanRequest)), extensions } }
+      welcome.observedAt = new Date().toISOString()
       sendFrame(socket, welcome)
       const acknowledged = await nextFrame(iterator, abort.signal, this.options.handshakeMs ?? 10_000)
       if (acknowledged.done || !current()) throw new DeviceConnectionError('transport')
@@ -142,7 +149,14 @@ export class DeviceEndpoint {
       try { await withDeviceDeadline(this.track(this.options.auth.revalidateDevice(principal, 'heartbeat')), abort.signal, this.options.handshakeMs ?? 10_000) } catch (error) { throw authorizationFailure(error) }
       if (!current()) throw new DeviceConnectionError('transport')
       if (session?.presence) session.presence = Object.freeze({ ...session.presence, lastSeenAt: readySeenAt })
-      const channel = new DeviceApplicationChannel({ side: 'main', binding, socket, signal: abort.signal, extensions, registrations: this.options.extensions ?? [], revalidate: async () => { try { await this.track(this.options.auth.revalidateDevice(principal, 'heartbeat')) } catch (error) { throw authorizationFailure(error) } }, onObservedFrame: (observedAt) => {
+      const channel = new DeviceApplicationChannel({ side: 'main', binding, socket, signal: abort.signal, extensions,
+        onPeerTime: (workerTime, mainTime) => {
+          if (!current() || !session?.presence) return
+          session.presence = Object.freeze({ ...session.presence,
+            clockSkewMs: workerTime === null ? null : workerTime - mainTime,
+            clockReason: workerClockReason(workerTime, mainTime) })
+        },
+        registrations: this.options.extensions ?? [], revalidate: async () => { try { await this.track(this.options.auth.revalidateDevice(principal, 'heartbeat')) } catch (error) { throw authorizationFailure(error) } }, onObservedFrame: (observedAt) => {
         if (!current() || !session?.presence) return
         session.presence = Object.freeze({ ...session.presence, lastSeenAt: observedAt })
         if (session.ready) this.options.presence(session.presence)
@@ -194,6 +208,11 @@ export class DeviceEndpoint {
     return channel.request(namespace, payload, options)
   }
   capabilities(deviceId: string) { return this.channels.get(deviceId)?.capabilities() ?? [] }
+  clockReason(deviceId: string): string | null {
+    const presence = this.sessions.get(deviceId)?.presence
+    return presence?.clockReason ?? (presence?.clockSkewMs !== undefined && presence.clockSkewMs !== null
+      ? null : workerClockReason(null, Date.now()))
+  }
   /** A committed revoke receipt fences its revision, including lost-response replay. */
   revoke(deviceId: string, authorizationRevision: number) {
     const revision = Math.max(this.revoked.get(deviceId) ?? 0, authorizationRevision)

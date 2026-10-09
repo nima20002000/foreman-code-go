@@ -17,10 +17,14 @@ import { canonical,type JobSql } from './repository.js'
 import { JobRuntimeProfiles } from './runtimeProfiles.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 import { createPhysicalJobRuntimeProducer,type QualificationNativeOwner } from './qualification.js'
-import { admitInstalledJobQualification,assertInstalledJobQualification,assertInstalledJobQualificationRead } from './runtimeQualificationAdmission.js'
+import { admitInstalledJobQualification,assertInstalledJobQualification,assertInstalledJobQualificationRead,
+  readInstalledJobQualificationAdmission } from './runtimeQualificationAdmission.js'
 /** Implemented by the existing installed HRT host. No public descriptor, caller
  * readiness flag, native exit claim or second runtime registry is admitted. */
 export interface InstalledJobRuntimeHost {
+  clockReason?(profile: JobRuntimeProfileRecord): string | null
+  reconcileQualification?(input: { approval: JobRuntimeApprovalRecord; nativeAdmission: JobRuntimeNativeAdmissionRecord;
+    assertAdmission(): Promise<void>; signal: AbortSignal }): Promise<JobRuntimeQualificationResult>
   capture?(profile:JobRuntimeProfileRecord):Promise<JobRuntimeFingerprintRecord>
   runAdmitted?(input:{approval:JobRuntimeApprovalRecord;profile:JobRuntimeProfileRecord;candidate:JobQualificationCandidateRecord;descriptor:ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>;nativeAdmission:JobRuntimeNativeAdmissionRecord;assertAdmission():Promise<void>;signal:AbortSignal;intent?:'execute'|'reconcile'}):Promise<JobRuntimeQualificationResult>
   descriptor(profile:JobRuntimeProfileRecord):Promise<ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>>
@@ -34,27 +38,39 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     try{await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}
     catch(error){await sql.query('rollback');throw error}finally{sql.release()}
   }
-  async function authorized(sql:JobSql,approval:JobRuntimeApprovalRecord) {
+  async function authorized(sql:JobSql,approval:JobRuntimeApprovalRecord,intent:'execute'|'reconcile'='execute') {
     const row=(await sql.query<{record:unknown;run_command_id:string|null;run_principal_id:string|null}>(`select record,run_command_id,run_principal_id from job_runtime_qualification_approvals where id=$1 and workspace_id=$2 for share`,[approval.id,approval.workspaceId])).rows[0]
     if(!row)throw new DomainError('JOB_RUNTIME_APPROVAL_NOT_FOUND','The original physical qualification authority is missing.',403)
     const current=JobRuntimeApprovalRecordSchema.parse(row.record)
-    if(current.status!=='qualifying'||current.fingerprintDigest!==approval.fingerprintDigest||canonical(current.fingerprint)!==canonical(approval.fingerprint)||current.qualificationId!==approval.qualificationId||!row.run_command_id||!row.run_principal_id||Date.parse(current.expiresAt)<=Date.now())throw new DomainError('JOB_RUNTIME_QUALIFICATION_OWNER_CHANGED','The original qualification owner or exact captured candidate is no longer active.',403)
+    const expiredEntry = intent === 'execute' && Date.parse(current.expiresAt) <= Date.now()
+    if (current.status !== 'qualifying' || current.fingerprintDigest !== approval.fingerprintDigest
+      || canonical(current.fingerprint) !== canonical(approval.fingerprint)
+      || current.qualificationId !== approval.qualificationId || !row.run_command_id || !row.run_principal_id
+      || expiredEntry) {
+      throw new DomainError('JOB_RUNTIME_QUALIFICATION_OWNER_CHANGED',
+        'The original qualification owner or captured candidate is no longer active.',403)
+    }
     requireAuthorization(await readLiveManagementPrincipal(sql,row.run_principal_id),'job_definitions:write',{workspaceId:approval.workspaceId})
     return current
   }
-  async function immutableProfile(approval:JobRuntimeApprovalRecord) {
+  async function immutableProfile(approval:JobRuntimeApprovalRecord,intent:'execute'|'reconcile'='execute') {
     return transaction(async sql=>{
-      await authorized(sql,approval)
-      const row=(await sql.query<{record:unknown}>(`select v.record from job_runtime_profile_versions v join job_runtime_profiles p on p.id=v.profile_id where p.workspace_id=$1 and v.profile_id=$2 and v.revision=$3 and p.revision=$3 and p.record->>'status'='qualifying' for share of p,v`,[approval.workspaceId,approval.profileId,approval.profileRevision])).rows[0]
+      await authorized(sql,approval,intent)
+      const currentProfile = intent === 'execute' ? "and p.revision=$3 and p.record->>'status'='qualifying'" : ''
+      const row = (await sql.query<{ record:unknown }>(`select v.record from job_runtime_profile_versions v
+        join job_runtime_profiles p on p.id=v.profile_id
+        where p.workspace_id=$1 and v.profile_id=$2 and v.revision=$3 ${currentProfile} for share of p,v`,
+      [approval.workspaceId,approval.profileId,approval.profileRevision])).rows[0]
       if(!row)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The original profile was edited or revoked.',409)
       const profile=JobRuntimeProfileRecordSchema.parse(row.record)
       if(profile.workspaceId!==approval.workspaceId||profile.specDigest!==approval.fingerprint.specDigest)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The original immutable profile differs from the approved fingerprint.',409)
       return profile
     })
   }
-  async function qualificationAuthority(approval:JobRuntimeApprovalRecord,profile:JobRuntimeProfileRecord) {
+  async function qualificationAuthority(approval:JobRuntimeApprovalRecord,profile:JobRuntimeProfileRecord,
+    intent:'execute'|'reconcile'='execute') {
       const claim=await transaction(async sql=>{
-        await authorized(sql,approval)
+        await authorized(sql,approval,intent)
         const row=(await sql.query<{run_command_id:string;run_principal_id:string}>('select run_command_id,run_principal_id from job_runtime_qualification_approvals where id=$1 for share',[approval.id])).rows[0]!
         return {runCommandId:row.run_command_id,runPrincipalId:row.run_principal_id}
       })
@@ -104,9 +120,36 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     admission: qualificationAuthority,
   })
   const run = async (approval:JobRuntimeApprovalRecord,signal:AbortSignal,intent:'execute'|'reconcile'):Promise<JobRuntimeQualificationResult>=>{
+    if (intent === 'execute') {
+      const profile = await immutableProfile(approval)
+      const reason = input.host.clockReason?.(profile)
+      if (reason) throw new DomainError('WORKER_CLOCK_UNTRUSTED', reason, 409)
+    }
+    if (intent === 'reconcile' && approval.fingerprint.hostRef.kind === 'main') {
+      if (!input.host.reconcileQualification) throw new DomainError('JOB_RUNTIME_RECOVERY_REQUIRED',
+        'The original local qualification owner is unavailable for reconciliation.',409)
+      const nativeAdmission = await transaction(async sql => {
+        await authorized(sql,approval,intent)
+        const row = (await sql.query<{ run_command_id: string; run_principal_id: string }>(
+          'select run_command_id,run_principal_id from job_runtime_qualification_approvals where id=$1 for share',
+          [approval.id])).rows[0]!
+        return readInstalledJobQualificationAdmission(sql,{ approval,runCommandId: row.run_command_id,
+          runPrincipalId: row.run_principal_id })
+      })
+      const assertAdmission = async () => {
+        const saved = await transaction(sql => readInstalledJobQualificationAdmission(sql,{ approval,
+          runCommandId: nativeAdmission.runCommandId,runPrincipalId: nativeAdmission.runPrincipalId }))
+        if (canonical(saved) !== canonical(nativeAdmission)) throw new DomainError(
+          'JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT','The original qualification admission changed.',409)
+      }
+      await assertAdmission()
+      const result = await input.host.reconcileQualification({ approval,nativeAdmission,assertAdmission,signal })
+      await assertAdmission()
+      return result
+    }
     if (approval.schemaVersion === 1 && approval.fingerprint.hostRef.kind === 'main') return localProducer.run(approval, signal)
     if(!input.host.capture||!input.host.runAdmitted)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed worker qualification carrier is unavailable.',503)
-    const profile=await immutableProfile(approval),fingerprint=await input.host.capture(profile),descriptor=await input.host.descriptor(profile)
+    const profile=await immutableProfile(approval,intent),fingerprint=await input.host.capture(profile),descriptor=await input.host.descriptor(profile)
     if(canonical(fingerprint)!==canonical(approval.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The installed worker fingerprint changed.',409)
     let backingBytes: number | null = jobRuntimeProfileLimits(profile).diskBytes
     let verification: { volumeCapacityBytes: number; profile: JobRuntimeProfileRecord; approvedAt: string | null } | undefined
@@ -124,7 +167,7 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
       ttlSeconds: fingerprint.schemaVersion === 3
         ? Math.max(1, Math.floor((Date.parse(approval.expiresAt) - Date.now()) / 1000)) : 3600,
     })
-    const authority=await qualificationAuthority(approval,profile),admitted=await authority.admitNative(candidate,intent)
+    const authority=await qualificationAuthority(approval,profile,intent),admitted=await authority.admitNative(candidate,intent)
     await admitted.assertAdmission()
     const result=await input.host.runAdmitted({approval,profile,candidate,descriptor,...admitted,signal,intent})
     await admitted.assertAdmission()
@@ -132,6 +175,8 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     }
   const producer={...localProducer,
     capture:async(profile:JobRuntimeProfileRecord)=>{
+      const reason = input.host.clockReason?.(profile)
+      if (reason) throw new DomainError('WORKER_CLOCK_UNTRUSTED', reason, 409)
       if (profile.schemaVersion === 1 && profile.root.selection.hostRef.kind === 'main') return localProducer.capture(profile)
       if(!input.host.capture)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed worker qualification capture is unavailable.',503)
       return JobRuntimeFingerprintRecordSchema.parse(await input.host.capture(profile))
@@ -139,10 +184,18 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     run: (approval: JobRuntimeApprovalRecord, signal: AbortSignal) => run(approval, signal, 'execute'),
     reconcile: (approval: JobRuntimeApprovalRecord, signal: AbortSignal) => run(approval, signal, 'reconcile'),
     revalidate: async (sql: JobSql, profile: JobRuntimeProfileRecord) => {
-      if (profile.schemaVersion === 1) return localProducer.revalidate(sql, profile)
+      const clockReason = input.host.clockReason?.(profile)
+      if (clockReason) return { ready: false, reasons: [clockReason] }
       const measurement = profile.measurement
       if (profile.status !== 'qualified' || !measurement) return { ready: false, reasons: ['unqualified'] }
       if (Date.parse(measurement.expiresAt) <= Date.now()) return { ready: false, reasons: ['expired'] }
+      const selection = profile.root.selection
+      const rootPolicy = (await sql.query(`select 1 from workspace_root_policies
+        where workspace_id=$1 and root_policy_id=$2 and root_policy_revision=$3
+        and revoked_at is null for share`,
+      [profile.workspaceId,selection.rootPolicyId,selection.rootPolicyRevision])).rows[0]
+      if (!rootPolicy) return { ready:false,reasons:['root_context_changed'] }
+      if (profile.schemaVersion === 1) return localProducer.revalidate(sql, profile)
       const current = await input.host.currentMetadata(sql, profile)
       if (!current || canonical(current) !== canonical(measurement.fingerprint)) {
         componentLogger('jobs').warn({ profileId: profile.id, currentAvailable: !!current,

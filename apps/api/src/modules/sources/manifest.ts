@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto'
+import { DomainError } from '../errors.js'
 import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '@foreman-code/contracts/source-materialization'
 
-export class SourceError extends Error {
-  constructor(readonly code: string, message: string, options?: ErrorOptions) {
-    super(message, options)
+export class SourceError extends DomainError {
+  constructor(code: string, message: string, options?: ErrorOptions) {
+    let status = 400
+    if (code === 'SOURCE_CAPACITY') status = 413
+    if (code === 'SOURCE_CAPTURE_TIMEOUT') status = 503
+    super(code, message, status)
+    if (options && 'cause' in options) this.cause = options.cause
     this.name = 'SourceError'
   }
 }

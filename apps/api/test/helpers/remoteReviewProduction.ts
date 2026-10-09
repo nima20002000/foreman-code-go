@@ -31,7 +31,8 @@ import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman
 import { InstalledWorkflowRecovery } from '../../src/modules/runs/remote/installedWorkflowRecovery.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { agent3Database, seedAgent3 } from './wave25Agent3.js'
-import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls } from './remoteReviewProvider.js'
+import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls,
+  createRemoteReviewClaudeInventory } from './remoteReviewProvider.js'
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
 
 const execute = promisify(execFile)
@@ -80,7 +81,8 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
 /** Fresh production instances share only persisted data; the Worker runs the
  * shipped installed domains in a separate process with its own native owners. */
 export async function remoteReviewProduction(options: {
-  workflow?: 'approval' | 'sequential'; modelCatalog?: 'empty-at-startup'
+  workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
+  claudeInventory?: boolean
 } = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
@@ -97,6 +99,8 @@ export async function remoteReviewProduction(options: {
     closes.push(() => rm(directory, { recursive: true, force: true }))
     const workerRelease = await buildRemoteReviewWorkerRelease(directory)
     const provider = await createRemoteReviewProvider(join(directory, 'provider'))
+    const claudeInventory = options.claudeInventory
+      ? await createRemoteReviewClaudeInventory(join(directory, 'claude-inventory')) : undefined
     if (options.modelCatalog) await provider.hideModels()
     const tls = await createRemoteReviewTls(join(directory, 'tls'))
     const certificate = await readFile(tls.certificateFile)
@@ -153,7 +157,8 @@ export async function remoteReviewProduction(options: {
     const infrastructure = { mode: 'native' as const,
       deviceListener: { ...tls, host: '127.0.0.1', port: devicePort, advertisedEndpoint: deviceEndpoint } }
     const mainConfiguration = join(directory, 'main-configuration.json')
-    await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure }), { mode: 0o600 })
+    await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure, claudeInventory: claudeInventory?.sdk }),
+      { mode: 0o600 })
     let main: ChildProcess | undefined
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
@@ -290,8 +295,18 @@ export async function remoteReviewProduction(options: {
     const paired = DevicePairingResultSchema.parse(await postDeviceJson(
       `https://127.0.0.1:${devicePort}/device/pair`, certificate, pairingRequest))
     let denyReservedResponse = false
+    let pausedDiscovery: { entered(): void; release(): void; waiting: Promise<void> } | undefined
+    const releaseWorkerDiscovery = async () => {
+      pausedDiscovery?.release()
+      pausedDiscovery = undefined
+    }
+    closes.push(releaseWorkerDiscovery)
     let deniedResponse: ReturnType<typeof RemoteOwnerControlSchema.parse> | undefined
     const transport = await createRemoteReviewTransport({ ...tls, endpoint: deviceEndpoint,
+      beforeDiscovery: async () => {
+        const paused = pausedDiscovery
+        if (paused) { paused.entered(); await paused.waiting }
+      },
       beforeAuthorization: async authorization => {
         if (!denyReservedResponse || authorization.action !== 'control') return
         const serialized = JSON.parse(await readFile(join(stateDirectory, 'workflow-operations.json'), 'utf8')) as {
@@ -374,11 +389,19 @@ export async function remoteReviewProduction(options: {
     // Main closes its native sessions while the Worker transport is still available.
     closes.splice(closes.indexOf(stopMain), 0, () => stopWorker())
     await startWorker()
+    const executionHostRef = options.executionHost === 'main' ? mainHost : hostRef
     const inventory = await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
-      await value('harness_registry_get', hostRef)), value => value.installations.some(
+      await value('harness_registry_get', executionHostRef)), value => value.installations.some(
       installation => installation.driverId === 'codex' && installation.installationFingerprint !== null), 'remote Codex inventory')
     const installation = inventory.installations.find(installation => installation.driverId === 'codex')!
-    const target = { hostRef, applicationInstallationId: identity.workerInstallationId,
+    if (options.executionHost === 'main') {
+      await value('harness_qualification_run', { harness: 'codex' })
+      await waitForRemoteReview(async () => (await db.pool.query<{ status: string }>(
+        'select status from harness_qualifications order by started_at desc limit 1')).rows[0]?.status,
+      status => status === 'passed', 'Main native qualification')
+    }
+    const target = { hostRef: executionHostRef,
+      applicationInstallationId: options.executionHost === 'main' ? mainId : identity.workerInstallationId,
       harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint! }
     const profiles = []
     for (const configuration of saved.configurations) {
@@ -392,20 +415,23 @@ export async function remoteReviewProduction(options: {
       if (!checked.proof.qualified) throw new Error(`Remote profile qualification failed: ${JSON.stringify(checked.proof)}`)
       profiles.push(checked.value)
     }
-    await value('workspace_root_configuration_adopt', {
-      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef,
-    })
-    const location = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
-      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef, allowedBaseId: roots.bases[0]!.baseId,
-      configurationRevision: roots.configurationRevision, relativePath: 'project', accessMode: 'read-only',
-      expectedLocationRevision: mainLocation.locationRevision, expectedRootPolicyRevision: 0,
-    })).value
+    let location = mainLocation
+    if (options.executionHost !== 'main') {
+      await value('workspace_root_configuration_adopt', {
+        workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef,
+      })
+      location = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
+        workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef, allowedBaseId: roots.bases[0]!.baseId,
+        configurationRevision: roots.configurationRevision, relativePath: 'project', accessMode: 'read-only',
+        expectedLocationRevision: mainLocation.locationRevision, expectedRootPolicyRevision: 0,
+      })).value
+    }
     if (location.evidence !== 'bound') throw new Error('Remote source requires a bound workspace root.')
     const source = { approvedSourceId: approved.manifest.approvedSourceId,
       snapshotId: approved.manifest.snapshotId, manifestDigest: approved.manifest.manifestDigest }
     const bound = SourceRootBindResultSchema.parse(await value('source_root_bind', {
       workspaceId: saved.scope.workspaceId, commandId: randomUUID(), source,
-      selection: { hostRef, rootPolicyId: location.binding.rootPolicyId,
+      selection: { hostRef: executionHostRef, rootPolicyId: location.binding.rootPolicyId,
         rootPolicyRevision: location.binding.rootPolicyRevision, locationRevision: location.binding.locationRevision },
       expectedBindingRevision: 0, accessMode: 'read-only',
     })).value
@@ -416,7 +442,7 @@ export async function remoteReviewProduction(options: {
       const node = graph.nodes[index]!
       if (node.kind === 'job') throw new Error('Expected an Agent fixture node.')
       const profile = profiles[index]!
-      node.placement = { schemaVersion: 1, hostRef, rootPolicyId: location.binding.rootPolicyId,
+      node.placement = { schemaVersion: 1, hostRef: executionHostRef, rootPolicyId: location.binding.rootPolicyId,
         rootPolicyRevision: location.binding.rootPolicyRevision, locationRevision: location.binding.locationRevision,
         projectRoot: location.binding.canonicalProjectRoot, cwdPolicy: 'project-root', relativeCwd: '',
         instanceId: profile.instanceId, instanceRevision: profile.instanceRevision,
@@ -485,13 +511,23 @@ export async function remoteReviewProduction(options: {
     }
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
     closes.push(() => stopMain())
-    return { db, directory, stateDirectory, provider, access, writer, hostRef, profiles, version, startupCatalog,
+    return { db, directory, stateDirectory, provider, claudeInventory, access, writer,
+      hostRef: executionHostRef, profiles, version, startupCatalog,
       start, call, value, details, reconcile, registry, close, origin: () => origin,
       failures: () => structuredClone(failures),
       entryCapture: (operationId: string) => new InstalledWorkflowRecovery(
         join(stateDirectory, 'workflow-recovery'), registry).readEntry(operationId),
       workerPid: () => worker?.pid,
-      inventory: () => value('harness_registry_get', hostRef).then(HarnessRegistryReadbackSchema.parse),
+      inventory: () => value('harness_registry_get', executionHostRef).then(HarnessRegistryReadbackSchema.parse),
+      blockWorkerDiscovery() {
+        let entered!: () => void
+        const discovering = new Promise<void>(resolve => { entered = resolve })
+        let release!: () => void
+        const waiting = new Promise<void>(resolve => { release = resolve })
+        pausedDiscovery = { entered, release, waiting }
+        return discovering
+      },
+      releaseWorkerDiscovery,
       denyNextReservedResponse: () => { denyReservedResponse = true },
       deniedResponse: () => deniedResponse,
       deliveryReads: transport.deliveryReads,

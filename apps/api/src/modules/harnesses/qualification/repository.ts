@@ -52,10 +52,10 @@ export class HarnessQualificationRepository {
       failure_reason=excluded.failure_reason, started_at=excluded.started_at, checked_at=excluded.checked_at
       returning evidence)
       insert into host_harness_measurements(identity_hash,harness,binary_sha256,suite_revision,qualification,evidence)
-      select encode(sha256(convert_to((evidence->'qualificationIdentity')::text,'utf8')),'hex'),
+      select encode(sha256(convert_to(jsonb_build_array(evidence->'qualificationIdentity',$12::jsonb)::text,'utf8')),'hex'),
         $1,$3,$4,$12::jsonb,evidence from saved
       where jsonb_typeof(evidence->'qualificationIdentity')='object'
-      on conflict(identity_hash) do update set qualification=excluded.qualification,evidence=excluded.evidence`, [
+      on conflict(identity_hash) do nothing`, [
       record.harness, record.version, record.binarySha256, record.suiteRevision, record.profile,
       record.status === 'qualified' ? 'passed' : record.status, JSON.stringify(record.checks), JSON.stringify(evidence),
       record.failureReason, record.startedAt, record.checkedAt, JSON.stringify(record),

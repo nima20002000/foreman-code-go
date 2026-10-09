@@ -38,6 +38,21 @@ it('rejects a stale or cross-workspace execution', async () => {
     .rejects.toMatchObject({ code: 'JOB_SELECTION_MISMATCH' })
 })
 
+it('filters workflow-wide queue reads and rejects tickets from a foreign workflow', async () => {
+  let seen: URL | undefined
+  const ticket = { ...queueTicket,
+    initiatingAgent: { workflowId: 'workflow-a', runId: 'run-a', agentId: 'agent-a', executionId: 'agent-exec-a' } }
+  server.use(http.get(`${root}/queue`, ({ request }) => {
+    seen = new URL(request.url)
+    return HttpResponse.json({ tickets: [ticket], nextHistoryCursor: null })
+  }))
+  expect(await jobsClient.queuePage(definition.workspaceId, { workflowId: 'workflow-a' }))
+    .toEqual({ tickets: [ticket], nextHistoryCursor: null })
+  expect(seen?.searchParams.get('workflowId')).toBe('workflow-a')
+  await expect(jobsClient.queuePage(definition.workspaceId, { workflowId: 'foreign' }))
+    .rejects.toMatchObject({ code: 'JOB_SELECTION_MISMATCH' })
+})
+
 it('enforces bounded cursor pages and rejects another attempt', async () => {
   let seen: Request | undefined
   server.use(http.get(`${root}/executions/:id/logs`, ({ request }) => {

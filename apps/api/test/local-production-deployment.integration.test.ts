@@ -124,6 +124,49 @@ it('loads the compiled API using only its deployed production dependencies', asy
       cwd: destination, env: process.env, timeout: 30_000, maxBuffer: 1024 * 1024,
     })
     expect(stdout.trim()).toBe('function')
+    const project = join(directory, 'ci-project')
+    const context = join(directory, 'ci-context')
+    await mkdir(project)
+    await writeFile(join(project, 'package.json'), '{"packageManager":"pnpm@11.27.0"}\n')
+    await writeFile(join(project, 'pnpm-lock.yaml'), 'lockfileVersion: 9\npackages: {}\n')
+    await writeFile(join(project, 'pnpm-workspace.yaml'), 'minimumReleaseAge: 2880\n')
+    const gitEnvironment = Object.fromEntries(Object.entries(process.env)
+      .filter(([key]) => !key.startsWith('GIT_')))
+    const git = (args: string[]) => execute('git', args, { cwd: project, env: gitEnvironment })
+    await git(['init', '-q'])
+    await git(['add', '.'])
+    await git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'])
+    const { stdout: captured } = await git(['rev-parse', 'HEAD'])
+    const { stdout: runtimeOutput } = await execute(process.execPath, ['--input-type=module', '-e', [
+      'import { readFile } from "node:fs/promises";',
+      'import { join } from "node:path";',
+      'import { pathToFileURL } from "node:url";',
+      'const runtime = await import(process.argv[1]);',
+      'const repository = process.argv[2];',
+      'const output = process.argv[3];',
+      'const commit = process.argv[4];',
+      'const digest = await runtime.ciRuntimeInputDigest({ repository, commit });',
+      'const receipt = await runtime.buildCiRuntimeContext({ repository, commit, output });',
+      'const verification = await import(pathToFileURL(join(output, "verification/verification-runner.mjs")).href);',
+      'console.log(JSON.stringify({ digest, sourceCommit: receipt.sourceCommit,',
+      'finalizeVerification: typeof verification.finalizeVerification,',
+      'lock: runtime.parseCiLock(await readFile(join(output, "source-lock/pnpm-lock.yaml"), "utf8")),',
+      'containerfile: (await readFile(join(output, "Containerfile"), "utf8")).length,',
+      'verification: (await readFile(join(output, "verification/verify-repository.mjs"), "utf8")).length }));',
+    ].join('\n'), pathToFileURL(join(destination, 'dist/modules/jobs/ciRuntimeContext.mjs')).href,
+    project, context, captured.trim()], {
+      cwd: destination, env: gitEnvironment, timeout: 30_000, maxBuffer: 1024 * 1024,
+    })
+    const runtimeResult = JSON.parse(runtimeOutput) as {
+      digest: string; sourceCommit: string; lock: unknown; containerfile: number; verification: number
+      finalizeVerification: string
+    }
+    expect(runtimeResult.digest).toMatch(/^[a-f0-9]{64}$/u)
+    expect(runtimeResult.sourceCommit).toBe(captured.trim())
+    expect(runtimeResult.lock).toEqual({ lockfileVersion: 9, packages: {} })
+    expect(runtimeResult.containerfile).toBeGreaterThan(0)
+    expect(runtimeResult.verification).toBeGreaterThan(0)
+    expect(runtimeResult.finalizeVerification).toBe('function')
   } finally {
     await removeFixtureDirectory(directory)
   }

@@ -5,13 +5,13 @@ import { resolve } from 'node:path'
 const help = `Usage: node scripts/ci-runtime-qualification.mjs --config FILE --evidence-dir DIRECTORY
 
 Orchestrator-only physical qualification through the authenticated main API.
-Uses an existing persisted human approval. Does not approve, install, pull an
+Uses an existing persisted captured candidate. Does not approve, install, pull an
 image, change settings, invoke a model or directly spawn a runtime.
 
 Config (outside source/build mounts): schemaVersion:1 (build) or 2 (verification), apiBaseUrl, workspaceId,
 approvalId, commandId (retain on retry), authorizationEnvironmentVariable,
 humanGates:{hostReady:true,runtimeInstallation:true,image:true,rootAndQuota:true}.
-The selected host/root/runtime/image fingerprint is read from saved approval.
+The selected host/root/runtime/image fingerprint is read from the saved candidate.
 Verification readback must include the separate version 2 measurement, all
 requested suites, their cold-cache byte/inode peaks and measured concurrency.
 This tool does not convert build qualification into verification qualification.
@@ -47,8 +47,14 @@ async function main() {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))
   }
   const before = await request('')
-  if (before.approval?.id !== config.approvalId || !['approved', 'qualifying', 'complete'].includes(before.approval.status) ||
-    !before.approval.approvedByPrincipalId || !before.approval.approvedAt || !Number.isFinite(Date.parse(before.approval.expiresAt)) || Date.parse(before.approval.expiresAt) <= Date.now()) throw new Error('Current persisted human approval is required; this command cannot grant it.')
+  const candidate = before.approval
+  const pendingEntry = ['captured','awaiting-approval','approved'].includes(candidate?.status)
+  if (candidate?.id !== config.approvalId
+    || !['captured','awaiting-approval','approved','qualifying','recovery-required','failed','complete'].includes(candidate.status)
+    || !Number.isFinite(Date.parse(candidate.expiresAt))
+    || pendingEntry && Date.parse(candidate.expiresAt) <= Date.now()) {
+    throw new Error('A persisted captured candidate or original recoverable operation is required.')
+  }
   const evidenceDir = resolve(argv[3])
   await mkdir(evidenceDir, { recursive: true, mode: 0o700 })
   const evidencePath = resolve(evidenceDir, `qualification-${config.approvalId}-${config.commandId}.json`)

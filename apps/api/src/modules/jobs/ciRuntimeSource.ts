@@ -16,6 +16,7 @@ type Selection = Pick<SourceRequest, 'transferId' | 'repository' | 'source' | 'b
 /** Bounded source packages use the existing authenticated CI channel, without caller-selected paths. */
 export class CiRuntimeSourceReceiver {
   private receiving = false
+  private cleanup: Promise<void> = Promise.resolve()
   private upload: { selection: Selection; directory: string; file: FileHandle; offset: number;
     completed: boolean; hash: ReturnType<typeof createHash>; timer: ReturnType<typeof setTimeout> } | undefined
 
@@ -118,12 +119,17 @@ export class CiRuntimeSourceReceiver {
     }
   }
 
-  private async close(): Promise<void> {
+  async close(): Promise<void> {
     const upload = this.upload
-    if (!upload) return
+    if (!upload) return this.cleanup
     this.upload = undefined
     clearTimeout(upload.timer)
-    await upload.file.close()
-    await rm(upload.directory, { recursive: true, force: true })
+    const previous = this.cleanup
+    this.cleanup = (async () => {
+      await previous
+      await upload.file.close()
+      await rm(upload.directory, { recursive: true, force: true })
+    })()
+    return this.cleanup
   }
 }

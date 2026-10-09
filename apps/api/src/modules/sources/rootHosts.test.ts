@@ -34,3 +34,21 @@ it('tells the operator a selected folder is missing on Main or on a laptop inste
     await expect(hosts.browse(root, 'not-created')).rejects.toMatchObject({ code: 'ROOT_DIRECTORY_MISSING', status: 409 })
   }
 })
+
+it('returns correctable domain failures for invalid relative paths on Main and Worker', async () => {
+  const mainId = randomUUID()
+  const main = await allowlist({ kind: 'main', mainId })
+  const device = await allowlist({ kind: 'device', mainId, deviceId: randomUUID() })
+  const worker = createWorkspaceRootWorkerHandler(async () => device, async () => {})
+  const hosts = new InstalledWorkspaceRootHosts(main, async () => null, {
+    request: async (_host, _registration, request) => {
+      try { return await worker(request) }
+      catch (error) { throw new DeviceApplicationError(deviceApplicationFailure(error).code) }
+    },
+  })
+  for (const root of [rootFor(main), rootFor(device)]) {
+    root.selection.relativePath = 'project/'
+    await expect(hosts.attest(root)).rejects.toMatchObject({ code: 'ROOT_RELATIVE_PATH_INVALID', status: 422 })
+    await expect(hosts.browse(root, 'project/')).rejects.toMatchObject({ code: 'ROOT_RELATIVE_PATH_INVALID', status: 422 })
+  }
+})

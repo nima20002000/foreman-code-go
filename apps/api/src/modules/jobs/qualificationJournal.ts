@@ -21,6 +21,7 @@ export const QualificationReceiptSchema = z.object({
   admission: JobRuntimeNativeAdmissionRecordSchema, candidate: JobQualificationCandidateRecordSchema,
   result: JobRuntimeQualificationResultRecordSchema.nullable(), sequence: z.number().int().positive(),
   phase: z.enum(['received', 'native_entry_attempted', 'closed', 'uncertain']),
+  finishedAt: z.string().datetime().optional(),
   quotaClaims: z.array(z.object({ path: z.string().startsWith('/'), namespace: z.string().startsWith('/'),
     device: z.number().int().nonnegative(), inode: z.number().int().positive() }).strict()).default([]),
   closedContainers: z.array(QualificationOCICertificateSchema).max(16).default([]),

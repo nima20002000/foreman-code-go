@@ -16,22 +16,24 @@ export function ciEnrollmentTemplateDigest(profile: JobRuntimeProfileRecord): st
     } : null })
 }
 
+export function requireCiEnrollmentStorage(template: JobRuntimeProfileRecord, storage: CiInstalledStorage): void {
+  const diskBytes = jobRuntimeProfileLimits(template).diskBytes
+  const needsMoreInodes = template.schemaVersion === 2
+    && template.spec.resources.mutableInodes > storage.mutableInodes
+  if (diskBytes > storage.diskBytes || needsMoreInodes) {
+    throw new DomainError('CI_ENROLLMENT_STORAGE_REQUIRED',
+      'The installed CI volume is too small for this template’s disk or inode budget.', 409)
+  }
+}
+
 export function ciEnrollmentProfileInput(template: JobRuntimeProfileRecord, root: SourceRootRecord,
   storage: CiInstalledStorage, commandId: string, previous?: JobRuntimeProfileRecord): JobRuntimeProfileSaveRecord {
-  const templateLimits = jobRuntimeProfileLimits(template)
-  const limits = { ...templateLimits, diskBytes: Math.min(templateLimits.diskBytes, storage.diskBytes) }
+  requireCiEnrollmentStorage(template, storage)
   let spec: JobRuntimeProfileSaveRecord['spec']
   if (template.schemaVersion === 2) {
-    const resources = { ...template.spec.resources, limits,
-      mutableInodes: Math.min(template.spec.resources.mutableInodes, storage.mutableInodes) }
-    const reserved = resources.controlTempBytes + resources.spoolBytes + resources.reportBytes
-    if (reserved >= limits.diskBytes) {
-      throw new DomainError('CI_ENROLLMENT_STORAGE_REQUIRED', 'The installed CI volume is too small for this profile.', 409)
-    }
-    resources.scratchBytes = Math.min(resources.scratchBytes, limits.diskBytes - reserved)
-    spec = { ...template.spec, resources, rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision }
+    spec = { ...template.spec, rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision }
   } else {
-    spec = { limits, policy: jobPolicyRequirementsRecord(template.policy),
+    spec = { limits: template.limits, policy: jobPolicyRequirementsRecord(template.policy),
       rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision }
   }
   return JobRuntimeProfileSaveRecordSchema.parse({ commandId, name: template.name, spec,

@@ -21,7 +21,8 @@ export function runtimeQualificationFacts(measurement: JobRuntimeMeasurementReco
   }
 }
 
-export function validateRuntimeQualification(approval: JobRuntimeApprovalRecord, measurement: JobRuntimeMeasurementRecord) {
+export function validateRuntimeQualification(approval: JobRuntimeApprovalRecord, measurement: JobRuntimeMeasurementRecord,
+  options: { allowExpired?: boolean } = {}) {
   const facts = runtimeQualificationFacts(measurement)
   if (facts.approvalId !== approval.id || facts.qualificationId !== approval.qualificationId
     || facts.fingerprintDigest !== approval.fingerprintDigest || facts.fingerprintDigest !== jobDigest(measurement.fingerprint)
@@ -31,7 +32,7 @@ export function validateRuntimeQualification(approval: JobRuntimeApprovalRecord,
     || canonical(facts.hostRef) !== canonical(approval.fingerprint.hostRef)
     || canonical(facts.registration) !== canonical(approval.fingerprint.registration)
     || Date.parse(measurement.expiresAt) > Date.parse(approval.expiresAt)
-    || Date.parse(measurement.expiresAt) <= Date.now()) {
+    || !options.allowExpired && Date.parse(measurement.expiresAt) <= Date.now()) {
     throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT',
       'Measured evidence changed the captured installed context or lifetime.', 409)
   }

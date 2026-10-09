@@ -16,17 +16,18 @@ import { markRepeatRunRunning } from '../../src/modules/runs/repeatLifecycle.js'
 import { repeatDigest, repeatId } from '../../src/modules/runs/repeatResolution.js'
 import { insertCurrentRunFixture } from './eng04CurrentRunFixture.js'
 import type { currentDatabase } from './eng04CurrentDatabase.js'
-import { writerFixture } from '../eng04-writer-fixtures.js'
+import { writerFixture, type WriterFixture } from '../eng04-writer-fixtures.js'
 import { graphHeaders } from '../eng04-graph-composition-fixture.js'
 
 /** Actual typed Save, canonical publication, owner, repository and completion
  * writer. The test supplies native terminals and doubles physical closure only. */
 export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof currentDatabase>>,
-  configure: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3, form: CurrentFixtureForm = 'sequential') {
+  configure: (graph: WorkflowDefinitionV3, writer: WriterFixture) => WorkflowDefinitionV3 | Promise<WorkflowDefinitionV3>,
+  form: CurrentFixtureForm = 'sequential') {
   const writer = await writerFixture(db, form)
   let owner: RunOwnership | undefined
   try {
-    const graph = configure(writer.input.graph)
+    const graph = await configure(writer.input.graph, writer)
     const configurations = writer.configurations.filter((configuration) =>
       graph.nodes.some((node) => node.kind !== 'job' && node.agentId === configuration.agentId))
     const pins = Object.fromEntries(configurations.map((configuration) => [configuration.agentId, configuration.id]))
@@ -72,7 +73,7 @@ export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof cu
       persistWait: async () => false,
       persistDirectionWait: () => persistWorkDirectionWait(owner!, locations),
       cancelNativeAndRequestCleanup: async () => true,
-      requestCleanup: () => requestWorkflowCleanup(db.pool, run.id, owner!),
+      requestCleanup: (failure) => requestWorkflowCleanup(db.pool, run.id, owner!, failure),
       settleRun: async (_stopped, interrupted) => {
         if (await settleWorkflowRun(owner!, interrupted)) failureSettlements++
       },
@@ -81,6 +82,8 @@ export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof cu
     }
     return { ...writer, run, version, scope, lifecycle, readRun,
       get store() { return store },
+      get owner() { return owner! },
+      host,
       get failureSettlements() { return failureSettlements },
       setProductionRetryPolicy() { retryPolicy = 'production' },
       async restart() {

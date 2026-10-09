@@ -33,7 +33,8 @@ export interface JobPreparationPort {
     options?: { requireQualification: boolean }):Promise<void>
   adoptFinalBinding(client:JobSql,principal:ManagementPrincipal,execution:JobExecutionRecord):Promise<void>
   choices(client: JobSql, principal: ManagementPrincipal, workspaceId: string): Promise<JobAuthoringChoicesRecord>
-  validate(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpecRecord): Promise<JobValidation>
+  validate(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: JobDefinitionSpecRecord,
+    options?: { queued?: boolean }): Promise<JobValidation>
   accept(client: JobSql, principal: ManagementPrincipal, workspaceId: string, spec: ResolvedJobDefinitionSpecRecord, identity:{executionId:string;attemptId:string;operationId:string}): Promise<PreparedJobSpecRecord>
 }
 /** Canonical W09 file revisions, never a job artifact byte store. */

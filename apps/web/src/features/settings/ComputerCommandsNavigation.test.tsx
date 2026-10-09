@@ -105,12 +105,11 @@ it.each(commands)('allows departure after a definitive initial $kind authorizati
   expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
 })
 
-it('releases an unknown revoke after a definitive revision conflict and uses the current revision for a new command', async () => {
-  const command = commands[1]
+it.each(commands)('releases an unknown $kind after the actual device revision conflict', async command => {
   const requests: Record<string, unknown>[] = []
   server.use(http.post(command.path, async ({ request }) => {
     requests.push(await request.json() as Record<string, unknown>)
-    return HttpResponse.json({ error: { code: requests.length === 1 ? 'INTERNAL' : 'REVISION_CONFLICT', message: 'Revision changed.' } }, { status: requests.length === 1 ? 503 : 409 })
+    return HttpResponse.json({ error: { code: requests.length === 1 ? 'INTERNAL' : 'conflict', message: 'Revision changed.' } }, { status: requests.length === 1 ? 503 : 403 })
   }))
   const { user, updateRegistration } = await mount(command)
   await user.click(screen.getByRole('button', { name: command.label }))
@@ -121,7 +120,7 @@ it('releases an unknown revoke after a definitive revision conflict and uses the
   await user.click(screen.getByRole('button', { name: command.label }))
   await waitFor(() => expect(requests).toHaveLength(3))
   expect(requests[1]).toEqual(requests[0])
-  expect(requests[2]?.expectedRevision).toBe(2)
+  if (command.kind === 'revoke') expect(requests[2]?.expectedRevision).toBe(2)
   expect(requests[2]?.commandId).not.toBe(requests[0]?.commandId)
   await screen.findByRole('button', { name: command.label })
   await user.click(screen.getByRole('link', { name: 'Settings' }))

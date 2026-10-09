@@ -65,13 +65,17 @@ it('discovers both computers when CI resolves their reviewed images at admission
     ...input, managedRuntimeRoot: '/ci', registration: profiles.find(profile => profile.root.binding.deviceId === input.hostRef.deviceId)!.root.registration,
   }) }
   const inventory = new CanonicalJobPreparationSources({
-    resolveApprovedSource: async () => ({ manifest: { git: { commit: request.source.commit }, totalBytes: 1, totalEntries: 1 } }),
+    resolveApprovedSource: async () => ({ manifest: {
+      git: { commit: request.source.commit, metadata: { byteSize: 4 * 1024 * 1024, sha256: 'a'.repeat(64) } },
+      totalBytes: 1, totalEntries: 1, entries: [{ path: 'source.ts' }],
+    } }),
     resolveRootBinding: async () => profiles[0]!.root,
   } as never, { choices: async () => [], revalidate }, { prepare: async () => {} },
   { validateDeclaredJobInputs: async () => {} }, roots as never)
-  expect((await inventory.candidates(sql, caller, 'workspace-fixture', request)).candidates
-    .map(candidate => [candidate.spec.target.hostRef, candidate.spec.policy.imageDigest]))
+  const candidates = (await inventory.candidates(sql, caller, 'workspace-fixture', request)).candidates
+  expect(candidates.map(candidate => [candidate.spec.target.hostRef, candidate.spec.policy.imageDigest]))
     .toEqual(profiles.map(profile => [profile.root.selection.hostRef, profile.spec.policy.imageDigest]))
+  expect(candidates.every(candidate => candidate.sourceReservation.reservedBytes > 4 * 1024 * 1024)).toBe(true)
   expect(revalidate).toHaveBeenCalledTimes(2)
   expect((await inventory.candidates(sql, caller, 'workspace-fixture',
     AutoVerificationJobSpecSchema.parse({ ...request, runtimeSelection: undefined }))).candidates).toHaveLength(1)

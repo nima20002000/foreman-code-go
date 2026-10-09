@@ -270,6 +270,7 @@ export const JobVerificationProfileSchema = z.object({
   specDigest: DeviceDigestSchema,
   approvalConfig: JobVerificationApprovalConfigSchema,
   status: JobRuntimeProfileSchema.shape.status,
+  activeQualificationId: JobRuntimeProfileSchema.shape.activeQualificationId,
   measurement: RecordedJobVerificationRuntimeMeasurementSchema.nullable(),
   createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict().superRefine((value, context) => {
@@ -543,10 +544,18 @@ export const JobRuntimeQualificationRpcResponseRecordSchema = z.union([
       }
     }),
 ])
+const qualificationDiscoveryFields = {
+  runCommandId: z.string().min(1).optional(),
+  runPrincipalId: z.string().min(1).optional(),
+}
+export const JobRuntimeQualificationSummarySchema = z.union([
+  JobRuntimeApprovalSchema.extend(qualificationDiscoveryFields),
+  JobVerificationRuntimeApprovalSchema.safeExtend(qualificationDiscoveryFields),
+])
 export const JobRuntimeProfileListRecordSchema = z.object({
   profiles: z.array(z.object({ profile: JobRuntimeProfileRecordSchema, ready: z.boolean(),
     reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()),
-  approvals: z.array(JobRuntimeApprovalRecordSchema),
+  approvals: z.array(JobRuntimeQualificationSummarySchema),
 }).strict()
 export const JobRuntimeQualificationReadRecordSchema = z.object({
   approval: JobRuntimeApprovalRecordSchema,

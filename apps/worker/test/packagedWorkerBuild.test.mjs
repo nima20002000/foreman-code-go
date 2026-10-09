@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -13,10 +13,13 @@ test('the committed worker package builds and loads its complete execution graph
   const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-build-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = join(directory, 'release');
-  execFileSync(process.execPath, ['scripts/build-worker-artifact.mjs',
+  execFileSync(process.execPath, [join(repository, 'scripts/build-worker-artifact.mjs'),
     'apps/worker/artifacts/ubuntu-26.04-x64-target.json', output,
     'apps/worker/artifacts/node-22.23.3-linux-x64.json'],
-  { cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  { cwd: join(repository, 'apps/worker'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const manifest = JSON.parse(await readFile(join(output, 'manifest.json'), 'utf8'));
+  const product = JSON.parse(await readFile(join(repository, 'package.json'), 'utf8'));
+  assert.equal(manifest.version, product.version);
   const { createWorkerConnection } = await import(pathToFileURL(join(output, 'src/worker.mjs')).href);
   const connection = createWorkerConnection({
     pairing: {

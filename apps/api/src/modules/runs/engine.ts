@@ -261,7 +261,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
             try { await this.nativeExecutions.cancelRun(runId, owner); return true } catch { return false }
           },
           settleRun: async () => { await this.cleanupOwned(owner) },
-          requestCleanup: () => this.runs.requestCleanup(runId, owner),
+          requestCleanup: (failure) => this.runs.requestCleanup(runId, owner, failure),
           finishNative: () => this.nativeExecutions.finishRun(runId),
           finishCleanup: () => this.runs.finishCleanup(runId, false, owner),
         },

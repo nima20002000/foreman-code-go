@@ -90,7 +90,7 @@ it('defers reservation cleanup without waiting on a Run that is preparing native
       try {
         await transaction.query('begin')
         await transaction.query('select id from runs where id=$1 for update', [runId])
-        const reclaim = vi.fn(async () => [])
+        const reclaim = vi.fn(async () => ({ closures: [] }))
         const cleanup = new MaterializationReservationCleanup(fixture.db.pool, reclaim)
         expect(await cleanup.reconcile()).toBe(0)
         expect(reclaim).not.toHaveBeenCalled()

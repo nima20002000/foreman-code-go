@@ -14,7 +14,7 @@ import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
 import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, pluginMarketplaces, systemMaintenancePorts } from './modules/computers/maintenance.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
-import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
+import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION } from '@foreman-code/contracts/computer-maintenance'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_SYNC_NAMESPACE, COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
 import { ComputerSyncService } from './modules/computers/sync.js'
 import { registerComputerSyncRoutes } from './routes/computerSync.js'
@@ -95,8 +95,8 @@ import { initializeNativeDefaults } from './modules/harnesses/initializeDefaults
 import { qualifyClaudeNativeProfile } from './modules/harnesses/claudeSdk/nativeProfileQualification.js'
 import { installedClaudeProfilePin } from './modules/harnesses/claudeSdk/installedProfilePin.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './modules/harnesses/claudeSdk/profileRevision.js'
-import { discoverLauncher } from './modules/harnesses/hostDiscovery.js'
-import { passiveDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
+import { discoverInventoryLauncher } from './modules/harnesses/hostDiscovery.js'
+import { inventoryDriverPayloads } from './modules/harnesses/payloadDiscovery.js'
 import { runCommand } from './modules/harnesses/process.js'
 import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harnesses/claudeSdk/production.js'
 import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/claudeSdk/productionCredentials.js'
@@ -208,7 +208,7 @@ import { HarnessQualificationRegistry } from './modules/harnesses/qualification/
 import { HarnessQualificationService } from './modules/harnesses/qualification/service.js'
 import type { QualificationSuite } from './modules/harnesses/qualification/types.js'
 import { withNativeQualificationOwnership } from './modules/harnesses/qualification/nativeOwnership.js'
-import { withQualificationIdentity } from './modules/harnesses/qualification/identity.js'
+import { qualificationIdentity, withQualificationIdentity } from './modules/harnesses/qualification/identity.js'
 import type { CompatibilityHarness } from '@foreman-code/contracts'
 import { NativeHarnessFactories } from './modules/harnesses/runtimeFactory.js'
 import type { ProductionHarnessInfrastructure } from './modules/harnesses/productionInfrastructure.js'
@@ -252,6 +252,7 @@ import { ProductionHostHarnessProfileQualifier } from './modules/harnesses/produ
 import { HarnessInstanceSettingsRepository } from './modules/harnesses/instanceSettings/repository.js'
 import { HostHarnessProfileEvidenceRepository } from './modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks } from './modules/harnesses/instanceSettings/profileChecks.js'
+import { HarnessInstallationMonitor } from './modules/harnesses/installationMonitor.js'
 import { createInstalledNativeQualificationRetention } from './modules/harnesses/installedNativeQualificationRetention.js'
 import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from './modules/harnesses/instanceSettings/service.js'
 import { commandInputHash } from './modules/commands/postgres.js'
@@ -395,7 +396,7 @@ export function buildProductionApp(
         infrastructure?.deviceDomains?.extensions.find(value => value.namespace === BYTE_TRANSFER_NAMESPACE),()=>jobRuntime?.outputs),
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
-      { namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: COMPUTER_MAINTENANCE_VERSION, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
       { namespace: COMPUTER_SYNC_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
@@ -441,11 +442,7 @@ export function buildProductionApp(
           keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision,
         }).catch(error => app.log.warn({ err: error, deviceId: binding.deviceId }, 'Shared file pairing is pending'))
       }
-      void hostProfileChecks.recheckWorker(binding, signal,
-        () => deviceRuntime.currentBinding(binding.deviceId)).catch(error => {
-        if (!signal.aborted) app.log.error({ err: error, deviceId: binding.deviceId },
-          'Automatic Worker harness profile checks failed')
-      })
+      installationMonitor.workerReady(binding, signal)
       try {
         const session = await remoteTelemetry.ready(binding, signal, endpoint)
         if (session) void session.completion.catch(error => {
@@ -583,7 +580,7 @@ export function buildProductionApp(
   const harnessRegistry = new ProductionHarnessRegistry(database.pool, mainBinaries,
     (client) => settings.getManagedHarnessDefaults(client), hostProfileEvidence,
     (deviceId) => { const view = deviceRuntime.presenceFor(deviceId); return view?.phase === 'ready' ? view.binding : null },
-    process.env, infrastructure?.inventoryDiscovery ?? { launcher: discoverLauncher, payloads: passiveDriverPayloads,
+    process.env, infrastructure?.inventoryDiscovery ?? { launcher: discoverInventoryLauncher, payloads: inventoryDriverPayloads,
       claude: claudeDiscovery.discover }, (deviceId) => deviceRuntime.currentBinding(deviceId),
     (deviceId) => deviceRuntime.presenceFor(deviceId))
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
@@ -620,6 +617,7 @@ export function buildProductionApp(
       if (harness !== 'codex') throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'Unsupported qualification driver.', 409)
       return harnessRegistry.refreshMain(signal)
     },
+    harness => commandInputHash(qualificationIdentity(harnessRegistry.pinDefault(harness), selectedSuites[harness].revision)),
   ) : undefined
   // Live qualification is an explicit authenticated operation; optional
   // compatibility diagnostics never start model turns during startup.
@@ -709,6 +707,7 @@ export function buildProductionApp(
         suiteRevision: `${value.driverId}-profile-check-v1` }
     },
     assertCurrent: binding => harnessRegistry.installations.assertCurrent(binding),
+    assertReady: host => hostProfileChecks.assertReady(host),
   }
   const selectedProfiles = new AcceptedHarnessProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
   const claudeProfiles = infrastructure?.claudeProfiles ?? new AcceptedClaudeProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
@@ -743,8 +742,9 @@ export function buildProductionApp(
     }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
     requireClaudeProductionCredentialDelivery(value.configuration)
-    const proof = await harnessRegistry.profileEvidence(value, client)
-    return proof ? { target: proof.target, configurationFingerprint: proof.configurationFingerprint, qualified: proof.qualified } : null
+    const proof = await harnessRegistry.profileEvidence(value, client, { includeFailed: true })
+    return proof ? { target: proof.target, configurationFingerprint: proof.configurationFingerprint,
+      qualified: proof.qualified, ...(proof.failure ? { failure: proof.failure } : {}) } : null
   }, hostProfileChecks, configuration => {
     const binding = harnessRegistry.pinAccepted({ id: `operator-default-profile:${commandInputHash(configuration)}`, agentId: 'operator-default-setup', harness: configuration })
     const hostRef = binding.selection.hostRef
@@ -752,6 +752,17 @@ export function buildProductionApp(
     return { hostRef, applicationInstallationId: hostRef.mainId, harnessInstallationId: binding.selection.harnessInstallationId,
       installationFingerprint: binding.installation.installationFingerprint }
   })
+  const installationMonitor = new HarnessInstallationMonitor(harnessRegistry, hostProfileChecks,
+    () => deviceRuntime.endpointForDomains(), async (binding, inventory) => {
+      if (selectedSuites) await retainInstalledHarnessInventory({ registry: harnessRegistry,
+        qualifications: qualificationRepository, binding, inventory, suiteRevision: selectedSuites.codex.revision })
+      else harnessRegistry.acceptRemoteSnapshot(binding, inventory)
+    }, async () => {
+      if (!harnessQualifications) return
+      const result = await harnessQualifications.verify('codex', { force: true })
+      if (result.status !== 'qualified') throw new DomainError('HARNESS_REQUALIFICATION_FAILED',
+        result.failureReason ?? 'The updated Codex installation failed its native checks.', 409)
+    }, error => app.log.error({ err: error }, 'Automatic harness installation checks failed'))
   const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
     processes: processRegistry, factories: nativeFactories, settings: hostSettings, defaults: () => settings.getHarnessDefaults(), current: claudeDiscovery.currentForConfiguration })
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, nativeFactories, claudeMetadata)
@@ -887,7 +898,10 @@ export function buildProductionApp(
       }
       const row = (await sql.query<{ principal_id: string; workspace_id: string }>("select record->>'authorizationPrincipalId' as principal_id,workspace_id from runs where id=$1", [binding.intent.runId])).rows[0]
       if (!row) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The current accepted placement authority is unavailable.', 503)
-      await agentPlacement.assertPinsCurrent(sql, binding.placement, await readLiveManagementPrincipal(sql, row.principal_id), row.workspace_id)
+      const current = await credentialAuthority(sql as GraphSqlClient, binding.intent.executionId, 'workflow')
+      await agentPlacement.assertPinsCurrent(sql, binding.placement,
+        await readLiveManagementPrincipal(sql, row.principal_id), row.workspace_id,
+        current.nativeSessionId ? { purpose: 'resident' } : undefined)
       signal?.throwIfAborted()
     },
   })
@@ -1439,7 +1453,11 @@ export function buildProductionApp(
       { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
       { name: 'device admission', run: () => deviceRuntime.stopAdmission() },
       { name: 'original rsync byte ownership', run: () => rsync.kind === 'configured' ? rsync.rsyncWriters.close() : undefined },
-      { name: 'canonical harness inventory and profile checks', run: async () => { harnessRegistry.stop(); await harnessInstances.closeChecks() } },
+      { name: 'canonical harness inventory and profile checks', run: async () => {
+        const inventoryClose = installationMonitor.close()
+        harnessRegistry.stop()
+        await Promise.all([inventoryClose, harnessInstances.closeChecks()])
+      } },
       { name: 'diagnostic and configuration qualification admission', run: async () => { nativeFactories.stopAuxiliaries() } },
       { name: 'live harness qualification admission', run: async () => { harnessQualifications?.stop() } },
       { name: 'harness compatibility diagnostics', run: () => harnessCompatibility.close() },
@@ -1631,7 +1649,8 @@ export function buildProductionApp(
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
           harnessRegistry, { codex: selectedSuites.codex.revision },
-          workerExecution, host => hostProfileChecks.assertReady(host))
+          workerExecution, host => hostProfileChecks.assertReady(host),
+          (hosts, signal) => installationMonitor.refreshHosts(hosts, signal))
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
       }
@@ -1680,6 +1699,7 @@ export function buildProductionApp(
       await bootstrapLocalMainWorkspaceRoot({ pool: database.pool, policies: jobRuntime.policies, mainId: machine.installationId,
         runtimeRoot: config.harnesses.workspaceRoot, appStorageRoot: projectRoot })
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
+      locations.setRootPolicies(jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
       runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
@@ -1820,6 +1840,7 @@ export function buildProductionApp(
       // Main's live harness evidence ends with its process; restore a Codex binary it had qualified before.
       if (harnessQualifications) void harnessQualifications.restore('codex').catch((error: unknown) =>
         app.log.warn({ err: error }, 'Main Codex requalification after restart failed'))
+      installationMonitor.start(machine.installationId)
     })
     // On failure the startup caller closes the app. Only the shared shutdown
     // barrier may release the owner, after any already-admitted work drains.

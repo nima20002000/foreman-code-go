@@ -1,7 +1,7 @@
 import type { SourceQuotaPool } from './materialization.js'
 /** Worker-safe actual source filesystem operations: Node/shared contracts only. */
 import { constants } from 'node:fs'
-import { measureRetainedMaterialization } from './retainedDirectoryUsage.js'
+import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsage.js'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -133,7 +133,7 @@ export class SourceOperationWorkerService {
         }
       }
       await verifyApprovedRootAllowlist(allowlist)
-      const closures = await reclaimSourceReservation(grant, {
+      const result = await reclaimSourceReservation(grant, {
         authorize: async () => {
           context.signal.throwIfAborted()
           await this.options.authenticate(context)
@@ -153,7 +153,7 @@ export class SourceOperationWorkerService {
       }, context.signal)
       return SourceReservationReclamationResponseSchema.parse({ version: 1, operation: 'sources.reclaim-reservation',
         reservationId: grant.reservationId, reclamationId: grant.reclamationId,
-        operationId: grant.operationId, reclaimed: true, closures })
+        operationId: grant.operationId, reclaimed: !result.retained, ...result })
     } finally { this.preparing.delete(grant.operationId) }
   }
   private async authority(request: SourceFilesystemOperation, context: SourceOperationWorkerContext) {
@@ -286,10 +286,10 @@ export class SourceOperationWorkerService {
       }, quotaPool, context.signal)
       await this.options.executionTransfersClosed?.(record, context.signal)
       await reauthorize()
-      const retainedBytes = await measureRetainedMaterialization(record.receipt)
+      const footprint = await measureRetainedMaterializationFootprint(record.receipt)
       await reauthorize()
       return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation,
-        materializationId: record.receipt.materializationId, operationId: record.operationId, released: true, retainedBytes })
+        materializationId: record.receipt.materializationId, operationId: record.operationId, released: true, ...footprint })
     } finally { if (preparation) this.preparing.delete(preparation); packageReader?.close(); this.active-- }
   }
 }

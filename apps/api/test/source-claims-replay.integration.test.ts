@@ -16,11 +16,14 @@ import type { WorkspaceLocationService } from '../src/modules/workspaces/locatio
 import type { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import type { RegisteredSourceRootPort } from '../src/modules/sources/admissionPorts.js'
 import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
+import { PostgresSourceReservations } from '../src/modules/sources/reservations.js'
 import { closeCompletedWorkflowSources } from '../src/modules/sources/workflowCleanup.js'
 
 // Owned closure-only SQL fixture. This exercises the unchanged confirmClosed
 // transaction and retention accounting; it does not qualify native closure proof.
-it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked worktrees after %s', async failure => {
+const closureCases = ['lost-acknowledgement', 'database-failure'].flatMap(failure =>
+  [0, 8 * 1024 * 1024].map(outputBytes => ({ failure, outputBytes })))
+it.each(closureCases)('closes linked worktrees after $failure with $outputBytes output bytes', async ({ failure, outputBytes }) => {
   const database = `source_claims_test_${randomUUID().replaceAll('-', '')}`
   const adminUrl = process.env.TEST_DATABASE_URL!
   const admin = new pg.Pool({ connectionString: adminUrl })
@@ -37,6 +40,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked wo
       create table execution_native_closures (execution_id text not null, generation bigint not null,
         closed_at timestamptz, detached_at timestamptz, expected_reference jsonb);
       create table source_preparation_reconciliations (operation_id text primary key, status text not null);
+      create table job_computer_selections (operation_id text, workspace_id text, spec jsonb, released_at timestamptz);
       create table source_storage_reservations (reservation_id uuid primary key, scope_id text not null, owner_kind text not null,
       owner_id text not null, state text not null, reserved_bytes bigint not null, record jsonb not null)`)
     const bytes = Buffer.from('retained original bytes\n')
@@ -50,6 +54,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked wo
     const attempt = { placementHash: 'a'.repeat(64), executionId: randomUUID(), attemptId: randomUUID(), keyRevision: null, authorizationRevision: null }
     const receipt = await new PrivateSourceMaterializer({ async read() { return bytes } }, async () => {}).prepare({ manifest, binding, attempt })
     const tree = join(root, receipt.materializationId, 'tree')
+    if (outputBytes) await writeFile(join(tree, 'output.bin'), Buffer.alloc(outputBytes, 7))
     const dependencies = join(root, 'dependency-cache')
     await mkdir(dependencies)
     const dependency = join(dependencies, 'package.js')
@@ -83,7 +88,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked wo
     const initial = makeService(async original => {
       await releaseMaterializationClaim(original.receipt, async () => 'released')
       if (failure === 'lost-acknowledgement') throw new Error('injected lost remote acknowledgement')
-      return measureRetainedSourceDirectory(root, receipt.materializationId, filesystem)
+      return { retainedBytes: await measureRetainedSourceDirectory(root, receipt.materializationId, filesystem) }
     })
     await expect(initial.confirmClosed(record)).rejects.toThrow('injected')
     expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('prepared')
@@ -95,7 +100,7 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked wo
       await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
         "import { releaseMaterializationClaim } from './src/modules/sources/materialization.ts'; await releaseMaterializationClaim(JSON.parse(process.argv[1]), async () => 'released');",
         JSON.stringify(original.receipt)])
-      return measureRetainedSourceDirectory(root, receipt.materializationId, filesystem)
+      return { retainedBytes: await measureRetainedSourceDirectory(root, receipt.materializationId, filesystem) }
     })
     const report = (error: unknown): never => { throw error }
     await closeCompletedWorkflowSources(pool, recovered, report)
@@ -113,7 +118,8 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked wo
     const claimBytes = Math.max(4096, releasedClaim.size, releasedClaim.blocks * 512)
     const parentGrowth = Math.max(4096, afterParent.blocks * 512) - Math.max(4096, beforeParent.blocks * 512)
     expect(retainedBytes).toBe(expectedBytes + claimBytes + parentGrowth + 16 * 1024)
-    expect(retainedBytes).toBeLessThan(reservation.reservedBytes)
+    if (outputBytes) expect(retainedBytes).toBeGreaterThan(reservation.reservedBytes)
+    else expect(retainedBytes).toBeLessThan(reservation.reservedBytes)
     expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0]).toEqual({ state: 'retained', reserved_bytes: String(retainedBytes) })
     expect(Number((await pool.query("select sum(reserved_bytes) as charged from source_storage_reservations where state<>'reclaimed'")).rows[0].charged)).toBe(retainedBytes)
     expect(await readFile(join(root, receipt.materializationId, 'tree/app.ts'))).toEqual(bytes)
@@ -123,6 +129,11 @@ it.each(['lost-acknowledgement', 'database-failure'] as const)('closes linked wo
     await closeCompletedWorkflowSources(pool, recovered, report)
     expect((await pool.query('select reserved_bytes from source_storage_reservations')).rows[0].reserved_bytes)
       .toBe(String(reservation.reservedBytes))
+    // Restore measured accounting before a subsequent admission.
+    await recovered.confirmClosed(record)
+    await expect(new PostgresSourceReservations().reserve(pool, { scopeId: reservation.scopeId,
+      ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }))
+      .resolves.toHaveProperty('reservationId')
   } finally {
     await pool.end(); await dropFixtureDatabase(admin, database); await admin.end(); await removeFixtureDirectory(root)
   }

@@ -12,7 +12,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { verificationJobsMcpFixture } from './helpers/verificationJobsMcpFixture.js'
 
-it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consistently through HTTP and MCP', async state => {
+it.each(['unavailable', 'changed','root-revoked'] as const)('reports %s runtime templates consistently through HTTP and MCP', async state => {
   const f = await verificationJobsMcpFixture()
   const workspaceId = f.retained.workspaceId
   const jobs = f.createJobs()
@@ -63,13 +63,17 @@ it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consi
     }
     expect(await choices()).toMatchObject({ ready: true })
     if (state === 'unavailable') f.runtimeMetadata.delete(profile.id)
+    else if (state === 'root-revoked') await f.database.pool.query(`update workspace_root_policies
+      set revoked_at=now() where workspace_id=$1 and root_policy_id=$2 and root_policy_revision=$3`,
+    [workspaceId,profile.root.selection.rootPolicyId,profile.root.selection.rootPolicyRevision])
     else f.runtimeMetadata.set(profile.id, { ...fingerprint, runtimeBinarySha256: 'b'.repeat(64) })
     expect(await choices()).toMatchObject({ ready: false })
     const read = await reader.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId } })
     expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
     expect(JobRuntimeProfileListRecordSchema.parse(read.structuredContent).profiles
       .find(value => value.profile.id === profile.id)).toEqual({
-      profile: qualified, ready: false, reasons: ['context_changed'], sideEffects: false,
+      profile: qualified, ready: false,
+      reasons:state === 'root-revoked' ? ['root_context_changed'] : ['context_changed'],sideEffects:false,
     })
     const denied = await f.access.issue({ name: 'Caller without job access', audience: 'operator',
       grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
@@ -80,6 +84,9 @@ it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consi
       headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
     expect(await snapshots()).toEqual(saved)
     f.runtimeMetadata.set(profile.id, fingerprint)
+    if (state === 'root-revoked') await f.database.pool.query(`update workspace_root_policies
+      set revoked_at=null where workspace_id=$1 and root_policy_id=$2 and root_policy_revision=$3`,
+    [workspaceId,profile.root.selection.rootPolicyId,profile.root.selection.rootPolicyRevision])
     expect(await choices()).toMatchObject({ ready: true })
     expect(await snapshots()).toEqual(saved)
   } finally {

@@ -304,14 +304,17 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
     private readonly ownership: (execution: Execution) => Promise<OCIContainerOwnership>, private readonly timing?: JobSupervisorDeadline,
     private readonly verification?: VerificationSupervisorValidation) {}
 
-  async reconcile(execution: Execution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; execError: boolean; timedOut: boolean; logGapPossible: true } | null> {
+  async reconcile(execution: Execution): Promise<{ containerId: string; stopped: boolean; exitCode: number | null; execError: boolean; timedOut: boolean; logGapPossible: true; neverStarted?: boolean } | null> {
     const reply = await this.commands.run(['container', 'inspect', jobSupervisorIdentity(execution)])
     if (reply.exitCode !== 0) return null // Missing is uncertainty, never permission to relaunch.
     const row = evidence(reply.stdout, execution)
     if (row.State.Running) await this.watch(execution, () => this.stopExecution(execution, execution.acceptedSpec.policy.cancellationGraceMs, row.Id))
-    const inspectStopped = !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
+    const neverStarted = row.State.Status === 'created' || row.State.Status === 'configured'
+    const inspectStopped = !row.State.Running && row.State.Pid === 0 && (row.State.Status === 'exited' || neverStarted)
     const stopped = inspectStopped && await this.stopExecution(execution, 0, row.Id)
-    return { containerId: row.Id, stopped, exitCode: stopped ? row.State.ExitCode : null, execError: Boolean(row.State.Error), timedOut: await this.timing?.isTimedOut() ?? false, logGapPossible: true }
+    return { containerId: row.Id, stopped, exitCode: stopped && !neverStarted ? row.State.ExitCode : null,
+      execError: Boolean(row.State.Error), timedOut: await this.timing?.isTimedOut() ?? false,
+      logGapPossible: true, neverStarted }
   }
 
   /** W08 recovery/control uses original execution scope, including after worker restart. */

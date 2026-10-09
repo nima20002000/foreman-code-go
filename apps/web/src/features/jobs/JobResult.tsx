@@ -1,5 +1,6 @@
 import type { JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
-import type { JobInitiatingAgent } from '@foreman-code/contracts/jobs'
+import type { JobArtifact, JobInitiatingAgent } from '@foreman-code/contracts/jobs'
+import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { Alert, Badge, Card, CardBody, PageHeader } from '../../shared/ui/nocturne'
 import { useJobArtifacts, useJobExecution } from './query'
 import { jobError, processLabel } from './model'
@@ -7,6 +8,20 @@ import { JobLogs } from './JobLogs'
 import { ArtifactDownload } from './ArtifactDownload'
 import { JobSpecFacts } from './JobSpecFacts'
 import { JobVerificationResult } from './JobVerificationResult'
+
+function outputStatus(execution: JobExecutionRecord, output: JobExecutionRecord['acceptedSpec']['outputs'][number],
+  artifact: JobArtifact | undefined,
+  artifacts: { isError: boolean; isPending: boolean }): string {
+  if (artifact) return artifact.state
+  if (artifacts.isError) return 'Artifact history unavailable'
+  if (execution.publication === 'failed') {
+    return execution.resultIssue
+      ? `Publication failed: ${execution.resultIssue.replaceAll('_', ' ')}.` : 'Publication failed.'
+  }
+  if (artifacts.isPending) return 'Loading publication…'
+  if (execution.publication === 'complete') return output.required ? 'Required artifact missing' : 'Optional output absent'
+  return 'Awaiting publication'
+}
 
 export function JobResult({ workspaceId, executionId, expectedWorkflow,
   expectedDefinitionVersionId, expectedInitiatingAgent }: {
@@ -65,7 +80,8 @@ export function JobResult({ workspaceId, executionId, expectedWorkflow,
     <section aria-label="Job artifacts"><h2>Artifacts</h2>{Boolean(artifacts.error) && <Alert title="Artifacts unavailable" tone="danger">{jobError(artifacts.error)}</Alert>}
       {execution.acceptedSpec.outputs.map(output => {
         const artifact = artifacts.data?.find(item => item.path === output.path)
-        return <Card key={output.path}><CardBody><strong className="job-wrap">{output.path}</strong><p>{artifact ? artifact.state : artifacts.isError ? 'Artifact history unavailable' : artifacts.isPending ? 'Loading publication…' : execution.publication === 'complete' ? output.required ? 'Required artifact missing' : 'Optional output absent' : 'Awaiting publication'}</p>
+        return <Card key={output.path}><CardBody><strong className="job-wrap">{output.path}</strong>
+          <p>{outputStatus(execution, output, artifact, artifacts)}</p>
           {artifact && <dl className="job-facts"><dt>File / revision</dt><dd>{artifact.fileId} / {artifact.revisionId}</dd><dt>Digest / size</dt><dd>{artifact.sha256} / {artifact.byteSize} bytes</dd></dl>}
           {artifact && <ArtifactDownload workspaceId={workspaceId} artifact={artifact} />}
         </CardBody></Card>

@@ -245,6 +245,9 @@ describe('CI over the authenticated unified MCP transport', () => {
     }
     try {
       await runGit(['init', '-q', '-b', 'main'])
+      await runGit(['config', 'user.name', 'fixture'])
+      await runGit(['config', 'user.email', 'fixture@example.invalid'])
+      await runGit(['config', 'commit.gpgsign', 'false'])
       await writeFile(join(root, 'app.ts'), 'base\n')
       await runGit(['add', '.'])
       await runGit(['commit', '-qm', 'base'])
@@ -252,9 +255,11 @@ describe('CI over the authenticated unified MCP transport', () => {
       await writeFile(join(root, 'app.ts'), 'uncommitted agent work\n')
       f.agentExecution.id = 'execution-agent'
       let date = '2000-01-01T00:00:00Z'
-      const snapshots = vi.fn(async () => snapshotAgentWorktree(systemGitWorktreePorts({
-        ...gitFixtureEnvironment(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date,
-      }), { path: root, baseCommit }, AbortSignal.timeout(30_000)))
+      const snapshots = vi.fn(async () => snapshotAgentWorktree({
+        git: (args, options) => git.git(args, { ...options, env: {
+          ...options.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date,
+        } }),
+      }, { path: root, baseCommit }, AbortSignal.timeout(30_000)))
       f.services.ci!.snapshots = snapshots
       vi.spyOn(f.jobs, 'choices').mockRejectedValueOnce(new Error('Preparation interrupted after source approval'))
       const input = { suite: 'unit', commandId: 'interrupted-ci' }

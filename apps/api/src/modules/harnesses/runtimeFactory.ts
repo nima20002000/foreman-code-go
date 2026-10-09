@@ -359,8 +359,8 @@ export class NativeHarnessFactories {
     const task = Promise.resolve().then(async () => {
       combined.throwIfAborted()
       await this.assertInstallationUnchanged(binding, combined)
-      owned.admitted = true
       this.config.admitRecovery!(recovery)
+      owned.admitted = true
       const environment: NodeJS.ProcessEnv = { PATH: binding.installation.launcher.environment.path }
       for (const name of ['LANG', 'LC_ALL', 'TMPDIR']) if (process.env[name] !== undefined) environment[name] = process.env[name]
       const observed = await this.config.claudeVersionCommand!(binding.installation.launcher.resolvedLauncher!, ['--version'], workingDirectory,
@@ -387,7 +387,7 @@ export class NativeHarnessFactories {
   private closeVersionDiagnostic(owned: CodexDiagnosticLifetime): Promise<void> {
     if (owned.cleanup) return owned.cleanup
     const cleanup = Promise.resolve().then(async () => {
-      if (owned.admitted) {
+      if (owned.admitted || owned.recovery.launchId !== undefined) {
         if (owned.recovery.launchId !== undefined) await this.config.abandonRecovery!(owned.recovery)
         await this.config.closeRecovery!(owned.recovery)
       }
@@ -413,9 +413,10 @@ export class NativeHarnessFactories {
     if (!owned) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'Only diagnostic and qualification owners use this admission boundary.', 403)
     if (owned.admissionError) throw owned.admissionError
     if (!owned.admitted) {
-      // Retain ownership even when write-ahead reservation fails partway through.
-      owned.admitted = true
-      try { if (owned.recovery && this.config.admitRecovery) this.config.admitRecovery(owned.recovery) }
+      try {
+        if (owned.recovery && this.config.admitRecovery) this.config.admitRecovery(owned.recovery)
+        owned.admitted = true
+      }
       catch (error) { owned.admissionError = error; throw error }
     }
   }
@@ -428,7 +429,8 @@ export class NativeHarnessFactories {
     if (owned.disposal) return owned.disposal
     const attempt = Promise.resolve().then(async () => {
       await manager.dispose!()
-      if (owned.admitted && owned.recovery && this.config.closeRecovery) {
+      const reservedDuringFailure = owned.admissionError !== undefined && owned.recovery?.launchId !== undefined
+      if ((owned.admitted || reservedDuringFailure) && owned.recovery && this.config.closeRecovery) {
         if (owned.recovery.launchId !== undefined) await this.config.abandonRecovery?.(owned.recovery)
         await this.config.closeRecovery(owned.recovery)
       }

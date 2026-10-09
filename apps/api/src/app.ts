@@ -170,7 +170,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator?.services.workflows?.schedules) registerWorkflowScheduleRoutes(app, options.operator.services.workflows.schedules)
   if (options.operator?.services.runGraph) registerRunGraphRoutes(app, options.operator.services.runGraph,
     (principalId, code, route) => options.operator!.services.commands.recordDenied(principalId, 'http', code, route))
-  if (options.operator && options.mcpDetection) registerMcpDetectionRoute(app, options.mcpDetection.pool, options.mcpDetection.service)
+  if (options.operator && options.mcpDetection) {
+    registerMcpDetectionRoute(app, options.operator.services.locations, options.mcpDetection.service)
+  }
   if (options.operator?.services.agentChat) registerAgentChatRoutes(app, options.operator.services.agentChat)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator), options.operator?.services)

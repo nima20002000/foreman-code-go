@@ -6,6 +6,8 @@ import { prepareCiRuntime } from './ciRuntimePrepare.js'
 import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurations,
   scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { CiRuntimeWorker } from './ciRuntimeWorker.js'
+import { retainMainJobSourceClosures } from './mainJobJournal.js'
+import type { JobSql } from './repository.js'
 
 /** The command that refreshes Main's protected runtime while Main is stopped: this same Node runtime and loader
  * flags (an environment file, a TypeScript loader) with the Main refresh entry beside this module. */
@@ -22,6 +24,7 @@ export function createMainCiRuntime(input: {
   runtimeRoot: string
   journal(): Promise<RemoteOperationJournal>
   signal: AbortSignal
+  sql: JobSql
 }): CiRuntimeWorker {
   const workDirectory = join(input.runtimeRoot, 'ci-runtime-refresh')
   return new CiRuntimeWorker(input.runtimeRoot, {
@@ -29,6 +32,7 @@ export function createMainCiRuntime(input: {
     managedRuntimeRoot: async () => input.runtimeRoot,
     prepare: async options => {
       const journal = await input.journal()
+      await retainMainJobSourceClosures(input.sql, journal)
       const used = [...options.keepImages ?? [],
         ...(await journal.jobOperations()).map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
         ...(await journal.pendingQualifications()).map(receipt => receipt.candidate.fingerprint.imageDigest)]

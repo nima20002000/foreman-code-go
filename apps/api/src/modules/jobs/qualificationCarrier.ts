@@ -26,6 +26,7 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
     response: Extract<ReturnType<typeof JobRuntimeQualificationRpcResponseRecordSchema.parse>, { operation: 'inspect' }>
     binding: NonNullable<ReturnType<DeviceEndpoint['currentBinding']>>
   }>()
+  const inspections = new Map<string, symbol>()
   const key = (profile: JobRuntimeProfileRecord) => `${profile.id}:${profile.revision}`
   const exchange = async (profile: JobRuntimeProfileRecord, payload: unknown, signal?: AbortSignal) => {
     const target = profile.root.selection.hostRef
@@ -49,7 +50,10 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
   }
   const inspect = async (profile: JobRuntimeProfileRecord) => {
     // A fresh inspection supersedes the cached snapshot, including when it fails.
-    snapshots.delete(key(profile))
+    const profileKey = key(profile)
+    const inspection = Symbol()
+    inspections.set(profileKey, inspection)
+    snapshots.delete(profileKey)
     const { response, binding } = await exchange(profile, { version: profile.schemaVersion === 2 ? 3 : 1, operation: 'inspect', profile })
     if (response.operation !== 'inspect' || response.fingerprint.profileId !== profile.id || response.fingerprint.profileRevision !== profile.revision
       || response.fingerprint.specDigest !== profile.specDigest || response.fingerprint.bootId !== binding.bootId
@@ -58,10 +62,17 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
       || !sameWorkflowValue(response.descriptor.target.hostRef, response.fingerprint.hostRef)
       || !sameWorkflowValue(response.descriptor.target.registration, response.fingerprint.registration)
       || response.descriptor.target.mainInstallationId !== binding.mainId) throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The actual installed worker returned another qualification context.', 409)
-    snapshots.set(key(profile), { response, binding })
+    if (inspections.get(profileKey) !== inspection) {
+      throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'A newer runtime inspection superseded this response.', 409)
+    }
+    snapshots.set(profileKey, { response, binding })
     return response
   }
   const host: InstalledJobRuntimeHost = {
+    clockReason: profile => profile.root.selection.hostRef.kind === 'device'
+      ? input.endpoint().clockReason(profile.root.selection.hostRef.deviceId) : null,
+    ...(input.local.reconcileQualification
+      ? { reconcileQualification: input.local.reconcileQualification.bind(input.local) } : {}),
     capture: async profile => {
       if (profile.root.selection.hostRef.kind !== 'main') return (await inspect(profile)).fingerprint
       if (input.local.capture) return input.local.capture(profile)
@@ -75,6 +86,7 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
       const target = profile.root.selection.hostRef
       if (target.kind === 'main') return null
       const binding = input.endpoint().currentBinding(target.deviceId)
+      if (input.endpoint().clockReason(target.deviceId)) return null
       const registration = await assertDeviceHostInstallation(sql, target, profile.root.registration?.workerInstallationId ?? '')
       if (!binding || !registration || !sameWorkflowValue({ workerInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }, profile.root.registration)
         || binding.mainId !== target.mainId || binding.workerInstallationId !== registration.workerInstallationId
@@ -102,7 +114,7 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
       let operation: 'start' | 'status' = 'status'
       let candidate = request.candidate
       let capturedCandidate = false
-      while (Date.now() < Date.parse(request.nativeAdmission.expiresAt)) {
+      while (request.intent === 'reconcile' || Date.now() < Date.parse(request.nativeAdmission.expiresAt)) {
         request.signal.throwIfAborted()
         const { response } = await exchange(request.profile, { version, operation,
           admission: request.nativeAdmission, candidate, intent: request.intent ?? 'execute' }, request.signal)
@@ -121,7 +133,10 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
           await request.assertAdmission()
           return response.result
         }
-        operation = ['not_started', 'received'].includes(response.phase) ? 'start' : 'status'
+        operation = 'status'
+        if (request.intent !== 'reconcile' && ['not_started', 'received'].includes(response.phase)) {
+          operation = 'start'
+        }
         await delay(1000, undefined, { signal: request.signal })
       }
       throw new DomainError('JOB_RUNTIME_APPROVAL_EXPIRED', 'The original qualification deadline expired.', 409)

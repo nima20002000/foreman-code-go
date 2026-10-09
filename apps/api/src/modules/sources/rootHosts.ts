@@ -15,13 +15,37 @@ export interface RootWorkerClient {
    * budgets are WORKSPACE_ROOT_EXTENSION, not a second connection system. */
   request(host: ApprovedRootAllowlist['hostRef'], registration: NonNullable<WorkspaceRootPolicy['registration']>, request: WorkspaceRootWorkerRequest): Promise<unknown>
 }
-/** A folder the operator can fix must reach them as its stable code, from either host. */
+const rootFailures: Record<string, { status: number; message: string }> = {
+  ROOT_DIRECTORY_MISSING: { status: 409, message: 'The selected folder does not exist on this computer.' },
+  ROOT_RELATIVE_PATH_INVALID: { status: 422, message: 'Choose an unambiguous folder relative to an approved base.' },
+  ROOT_ACCESS_DENIED: { status: 403, message: 'The selected folder or access mode is not approved on this computer.' },
+  ROOT_CONFIGURATION_CONFLICT: { status: 409, message: 'The approved computer folder configuration changed. Reload it.' },
+  ROOT_BASE_CHANGED: { status: 409, message: 'The approved base folder was replaced. Its owner must approve it again.' },
+  ROOT_DIRECTORY_CHANGED: { status: 409, message: 'The selected folder changed. Reload and select it again.' },
+  ROOT_RUNTIME_CHANGED: { status: 409, message: 'The app runtime folder changed. Restore its approved configuration.' },
+  ROOT_FILESYSTEM_UNSUPPORTED: { status: 422, message: 'The selected folder must be owned and protected on the approved filesystem.' },
+  ROOT_RUNTIME_OVERLAP: { status: 422, message: 'The project folder and app runtime folder must be separate.' },
+  SOURCE_ROOT_NOT_PRIVATE: { status: 422, message: 'The approved folder must be owned and protected on this computer.' },
+  SOURCE_ROOT_CHANGED: { status: 409, message: 'The approved folder changed during validation. Reload it.' },
+  SOURCE_FILESYSTEM_UNSUPPORTED: { status: 422, message: 'The approved folder requires a supported protected filesystem.' },
+  EACCES: { status: 422, message: 'The selected folder is not accessible on this computer.' },
+  EPERM: { status: 422, message: 'The selected folder is not accessible on this computer.' },
+  ELOOP: { status: 422, message: 'Choose a folder without symbolic links.' },
+  ENOENT: { status: 422, message: 'An approved project or runtime folder no longer exists on this computer.' },
+  ENOTDIR: { status: 422, message: 'Choose a directory on this computer.' },
+  unavailable: { status: 503, message: 'The selected computer is unavailable. Reconnect it and retry.' },
+  timeout: { status: 503, message: 'The selected computer did not respond. Reconnect it and retry.' },
+  transport: { status: 503, message: 'The connection to the selected computer was interrupted. Reconnect it and retry.' },
+}
 async function publicRootFailure<T>(work: () => Promise<T>): Promise<T> {
   try { return await work() }
   catch (error) {
-    if (error instanceof SourceError && error.code === 'ROOT_DIRECTORY_MISSING'
-      || error instanceof DeviceApplicationError && error.code === 'ROOT_DIRECTORY_MISSING') {
-      throw new DomainError('ROOT_DIRECTORY_MISSING', 'The selected folder does not exist on this computer.', 409)
+    if (error instanceof DomainError && !(error instanceof SourceError)) throw error
+    const code = error instanceof SourceError || error instanceof DeviceApplicationError
+      ? error.code : (error as NodeJS.ErrnoException | undefined)?.code
+    const failure = code && Object.hasOwn(rootFailures, code) ? rootFailures[code] : undefined
+    if (failure && code) {
+      throw new DomainError(code, failure.message, failure.status)
     }
     throw error
   }
@@ -65,10 +89,12 @@ export class InstalledWorkspaceRootHosts implements WorkspaceRootHostPort {
     if (policy.hostRef.kind === 'main') {
       if (policy.hostRef.mainId !== this.main.hostRef.mainId || policy.applicationInstallationId !== this.main.applicationInstallationId)
         throw new DomainError('ROOT_INSTALLATION_CONFLICT', 'Source namespace belongs to another main.', 409)
-      return attestSourceNamespace(this.main, policy)
+      return publicRootFailure(() => attestSourceNamespace(this.main, policy))
     }
     if (!policy.registration) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The selected device has no approved source namespace registration.', 409)
-    const value = await this.remote.request(policy.hostRef, policy.registration, { version: 1, operation: 'workspace-roots.source-namespace', policy })
+    const registration = policy.registration
+    const value = await publicRootFailure(() => this.remote.request(policy.hostRef, registration,
+      { version: 1, operation: 'workspace-roots.source-namespace', policy }))
     // The source binding service validates canonical path, filesystem and digest
     // through its strict persisted root schema after host authority fences.
     return value as Awaited<ReturnType<typeof attestSourceNamespace>>

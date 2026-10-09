@@ -25,6 +25,15 @@ boundary. No host Docker socket, privileges, or writable host cgroup mount is
 provided. The smoke controller reads the fixed Git mount for checkout identity
 and builds; application processes retain their isolated environment.
 
+The unit verification runner also reads this contract. Recovery-owned native
+outcome, launch abandonment, process runtime, recovery, idle recovery,
+qualification lifecycle and Codex protocol test files require
+`nativeCgroupDelegation`. Their required inventory is retained; unavailable files
+are recorded with the environment and missing capability in the portion report
+and logs archive, without fabricated test cases or skipped results. Unit execution
+returns nonzero and qualification remains incomplete. Other subprocess and mocked
+guardian tests continue to run. Full unit coverage requires a delegated host.
+
 The integration runner reads this contract before scheduling tests. Native
 local-human isolation and Operator file-delivery/management suites require
 `nativeCgroupDelegation`; the shared Compose database-startup test requires
@@ -90,3 +99,29 @@ Single-device physical qualification belongs to Phase 2. The two-computer
 Codex-to-Codex gate belongs to Phase 5. Claude two-computer cases remain
 untested. Provider credentials stay on their original computers; real Claude
 qualification or acceptance turns explicitly use `claude-haiku-4-5-20251001`.
+
+Runtime timing and retention follow these policies:
+
+- Main compares the authenticated Worker's clock with its own at connection and heartbeat.
+  An offset greater than two minutes blocks new qualification and readiness; the connection,
+  harness registry, runtime qualification, and build-computer readback expose the reason.
+  Worker qualification deadlines and measurement timestamps use Main's clock, advanced by
+  elapsed time between observations. Recovery may close already admitted operations while
+  new entry remains blocked.
+- Completed Jobs and qualifications leave the bounded Worker/Main journal after 30 days,
+  once native processes and containers are closed, logs are acknowledged, and source and quota
+  ownership are released. Retirement runs on journal open and mutations. Worker retirement
+  waits for a Main clock observation after startup or disconnection. Cold records retain
+  historical results and identity tombstones for duplicate commands and current runtime
+  references, without keeping their images in the pruning set. Existing qualifications without
+  a finish timestamp start their retention period when their completed state is first observed.
+- Both CI image-build stages have explicit CPU and memory limits of half the computer's
+  available CPUs and memory. Builds run one stage at a time; swap cannot enlarge the memory
+  budget. `build_computer_prepare_get` returns these values as `preparationLimits` and retains
+  them across Main restarts.
+- A queued ordinary Job keeps its captured commit, snapshot, and root binding when the root
+  head advances. Current authorization, registration, root policy, and runtime qualification
+  are still checked before materialization and admission.
+- Agent attempts with a committed native non-submission seal are refunded from the workflow
+  execution limit. Launched and uncertain attempts continue to count. Historical execution
+  records remain available after a refund.

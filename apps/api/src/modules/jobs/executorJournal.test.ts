@@ -16,10 +16,12 @@ import { createInstalledJobExecutionHost } from './executorInstalled.js'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 const roots: string[] = [], journals: RemoteOperationJournal[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(journals.splice(0).map(value => value.close())); await Promise.all(roots.splice(0).map(value => rm(value, { recursive: true, force: true }))) })
-async function fixture() {
+async function fixture(options: Parameters<typeof RemoteOperationJournal.open>[1] = {}) {
   const root = await privateFixtureDirectory('ci-job-owner-'); roots.push(root)
-  const path = join(root, 'job-runtime-operations.json'), journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal)
+  const path = join(root, 'job-runtime-operations.json'), journal = await RemoteOperationJournal.open(path,
+    { initializeNewInstallation: true, ...options }); journals.push(journal)
   const execution = jobExecution(); execution.acceptedSpec.target.mainInstallationId = execution.acceptedSpec.target.mainId
+  execution.operationId = randomUUID()
   const runtimeRoot = join(root, 'runtime')
   await mkdir(runtimeRoot, { mode: 0o700 })
   const { gitMounts } = await prepareJobRepositoryFixture(execution, root, runtimeRoot)
@@ -124,8 +126,8 @@ describe('original Job native journal, no live isolation claim', () => {
 })
 
 // Complete measured shape modeled in unit tests; no actual qualification claim.
-async function qualifiedFixture() {
-  const f = await fixture(), id = randomUUID(), digest = 'd'.repeat(64), bootId = f.connection.bootId
+async function qualifiedFixture(options: Parameters<typeof RemoteOperationJournal.open>[1] = {}) {
+  const f = await fixture(options), id = randomUUID(), digest = 'd'.repeat(64), bootId = f.connection.bootId
   const parent = await open(f.root, constants.O_RDONLY | constants.O_DIRECTORY), filesystem = await identity(parent); await parent.close()
   const root = { version: 1 as const, source: { approvedSourceId: id, snapshotId: id, manifestDigest: digest },
     selection: { hostRef: f.execution.acceptedSpec.target.hostRef, rootPolicyId: 'root', rootPolicyRevision: '1', locationRevision: '1' },
@@ -341,5 +343,89 @@ describe('installed actual Job factory with native/process doubles', () => {
       expect(spawned.filter(argv => argv.includes('create'))).toHaveLength(1)
       expect((await f.journal.jobNativeOwner(f.execution.operationId))?.qualificationOperationId).toBe(repeated.operationId)
     } finally { vi.restoreAllMocks() }
+  })
+})
+
+
+describe('completed runtime journal retention', () => {
+  const retention = 30 * 24 * 60 * 60 * 1000
+
+  it('archives a released Job at 30 days, admits new work and replays its terminal after reopening', async () => {
+    let now = Date.now()
+    let clockAvailable = true
+    const f = await fixture({ capacity: 1, now: () => now,
+      retentionNow: () => clockAvailable ? now : undefined })
+    const journal = f.journal
+    const path = f.path
+    await journal.jobTerminal(f.intent.operationId, { outcome: 'preparation_failed', exitCode: null,
+      signal: null, processStopped: true, finishedAt: new Date(now).toISOString(),
+      closureEvidenceDigest: 'a'.repeat(64), resultDigest: 'b'.repeat(64), logGapPossible: false,
+      logsTruncated: false, outputCollectionError: false, artifactDigests: [] })
+    await journal.jobPublication(f.intent.operationId, 'complete')
+    await journal.jobAppendLog(f.intent.operationId, { executionId: f.execution.id,
+      attemptId: f.execution.attemptId, sequence: 1, stream: 'stdout', text: 'done', byteSize: 4,
+      createdAt: new Date(now).toISOString() })
+    await journal.jobSourceReclaimed(f.intent.operationId, { version: 1, reconciliationId: randomUUID(),
+      operationId: f.intent.operationId, executionId: f.execution.id, attemptId: f.execution.attemptId,
+      rootId: randomUUID(), bindingRevision: 1, materializationId: f.execution.acceptedSpec.source.materializationId,
+      mainId: f.intent.mainId, deviceId: null, workerInstallationId: null, keyRevision: null,
+      authorizationRevision: null, filesystem: { device: '1', inode: '2', mountId: '3' },
+      admissionClosed: true, childrenClosed: true, claimReleased: true, evidencePreserved: true,
+      quotaReclaimed: true, observedAt: new Date(now).toISOString() })
+    const terminal = await journal.jobStatus(f.intent.operationId)
+    now += retention - 1
+    expect(await journal.jobOperations()).toHaveLength(1)
+    now++
+    // An unacknowledged log keeps its original owner recoverable.
+    expect(await journal.jobOperations()).toHaveLength(1)
+    clockAvailable = false
+    await journal.jobAcknowledgeLog(f.intent.operationId, 1)
+    expect(await journal.jobOperations()).toHaveLength(1)
+    clockAvailable = true
+    expect(await journal.jobOperations()).toEqual([])
+    expect(await journal.jobStatus(f.intent.operationId)).toEqual(terminal)
+    expect(await journal.jobAccept(f.intent, f.execution, f.connection, randomUUID()))
+      .toEqual(terminal.status === 'known' ? terminal.receipt : null)
+    expect((await journal.jobReserveEntry(f.intent.operationId)).reserved).toBe(false)
+    const next = { ...f.execution, id: randomUUID(), attemptId: randomUUID(), operationId: randomUUID() }
+    const intent = { ...f.intent, executionId: next.id, attemptId: next.attemptId, operationId: next.operationId,
+      subject: { kind: 'manual-job' as const, workspaceId: next.workspaceId,
+        jobExecutionId: next.id, definitionId: next.acceptedSpec.definitionId } }
+    await journal.jobAccept(intent, next, f.connection, randomUUID())
+    expect((await journal.jobOperations()).map(receipt => receipt.intent.operationId)).toEqual([next.operationId])
+    await journal.close()
+    const reopened = await RemoteOperationJournal.open(path, { capacity: 1, now: () => now })
+    journals.push(reopened)
+    expect(await reopened.jobStatus(f.intent.operationId)).toEqual(terminal)
+    expect((await reopened.jobReserveEntry(f.intent.operationId)).reserved).toBe(false)
+    await expect(reopened.jobAccept({ ...f.intent, operationId: randomUUID() }, f.execution, f.connection, randomUUID()))
+      .rejects.toThrow('already bound')
+  })
+
+  it('archives a closed qualification after 30 days without recreating diagnostic entry', async () => {
+    let now = Date.now()
+    const f = await qualifiedFixture({ now: () => now })
+    const original = await f.journal.qualificationStatus(f.candidate.operationId)
+    if (!original) throw new Error('Missing qualification fixture')
+    now += retention - 1
+    await f.journal.pruneFinishedRuntime()
+    expect(await f.journal.qualificationStatus(f.candidate.operationId)).toEqual(original)
+    now++
+    await f.journal.pruneFinishedRuntime()
+    expect(await f.journal.qualificationStatus(f.candidate.operationId)).toEqual(original)
+    await f.journal.close()
+    const reopened = await RemoteOperationJournal.open(f.path, { now: () => now })
+    journals.push(reopened)
+    expect(await reopened.qualificationAccept(original.admission, original.candidate)).toEqual(original)
+    expect((await reopened.qualificationReserveEntry(original.admission.operationId)).reserved).toBe(false)
+    await reopened.jobReserveEntry(f.execution.operationId)
+    await reopened.jobContainerIntent(f.execution.operationId, jobSupervisorIdentity(f.execution),
+      f.execution.acceptedSpec.specDigest, original.admission.operationId)
+    expect((await reopened.jobNativeOwner(f.execution.operationId))?.qualificationOperationId)
+      .toBe(original.admission.operationId)
+    const operationId = randomUUID()
+    await expect(reopened.qualificationAccept({ ...original.admission, operationId },
+      { ...original.candidate, operationId })).rejects.toThrow('identity already bound')
+    expect(await reopened.pendingQualifications()).toEqual([])
   })
 })

@@ -103,6 +103,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-mcp', servers: {
       codex: [{ transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: null }],
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] },
+      skippedServers: { codex: ['private'] },
       warnings: ['codex MCP server private is unsafe or invalid; skipped.'] })
     await operator.callTool({ name: 'computers_maintenance_start', arguments: { commandId: randomUUID(), task: { kind: 'sync-plugins' } } })
     expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-plugins', plugins: ['pdf@openai'],
@@ -143,8 +144,10 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
       && (args.includes('bad') || args.includes('bad@official')))
     let names = ['local', 'good', 'bad']
     let unreadable = false
+    let skippedDefinition: Record<string, unknown> | undefined
     const sourceServers = async () => {
       return { ...Object.fromEntries(names.map(name => [name, { url: `https://${name}.example/mcp` }])),
+        ...(skippedDefinition ? { good: skippedDefinition } : {}),
         query: { url: 'https://service.example/mcp?api_key=fixture-secret' },
         argument: { command: '/usr/bin/server', args: ['--api-key', 'fixture-secret'] } }
     }
@@ -158,7 +161,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
           return { payload: { operation: 'status', status: await computer.maintenance.status(AbortSignal.timeout(1000)) } }
         }
         starts.push(request.task)
-        return { payload: { operation: 'start', task: await computer.maintenance.start(request.task) } }
+        return { payload: { operation: 'start', task: await computer.maintenance.start(request.task, request.commandId) } }
       },
     }), commands, new ComputerMaintenance(computer.ports), {
       codexUserMcpServers: async () => {
@@ -215,6 +218,31 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(JSON.stringify(starts)).not.toContain('fixture-secret')
     expect(JSON.stringify(computer.calls)).not.toContain('fixture-secret')
     expect(computer.claudePlugins.get('local@official')).toBe(false)
+    names = ['local', 'good']
+    computer.fail(() => false)
+    for (const definition of [
+      { url: 'https://good.example/mcp', env: { TOKEN: 'fixture-secret' } },
+      { url: 'https://good.example/mcp', enabled: false },
+      { url: 'https://good.example/mcp', enabled_tools: ['read'] },
+      { url: 'https://good.example/mcp', disabled_tools: ['write'] },
+      { command: 'server', env_vars: ['REMOTE_TOKEN'] },
+    ]) {
+      skippedDefinition = definition
+      expect(await sync('sync-mcp')).toMatchObject({ state: 'succeeded', summary: expect.stringContaining('good') })
+      expect(computer.codexMcp.has('good')).toBe(true)
+      expect(computer.claudeMcp.has('good')).toBe(true)
+      expect(starts.at(-1)).toMatchObject({ skippedServers: {
+        codex: expect.arrayContaining(['good']), claude: expect.arrayContaining(['good']),
+      } })
+      computer.maintenance = new ComputerMaintenance(computer.ports)
+      const persisted = await computer.maintenance.status(AbortSignal.timeout(1000))
+      expect(persisted.tasks.find(task => task.kind === 'sync-mcp'))
+        .toMatchObject({ state: 'succeeded', summary: expect.stringContaining('good') })
+    }
+    expect(computer.calls.filter(call => call.args[1] === 'remove' && call.args.includes('good'))).toEqual([])
+    expect(JSON.stringify(starts)).not.toContain('fixture-secret')
+    expect(JSON.stringify(computer.calls)).not.toContain('fixture-secret')
+    skippedDefinition = undefined
     names = []
     computer.fail(() => false)
     unreadable = true

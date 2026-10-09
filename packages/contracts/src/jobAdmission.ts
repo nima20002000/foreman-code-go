@@ -184,6 +184,7 @@ export const JobQueueCancelSchema = z.object({
 }).strict()
 
 export const JobQueueListInputSchema = z.object({
+  workflowId: IdSchema.optional(),
   initiatingExecutionId: IdSchema.optional(),
   historyBeforeSequence: z.string().regex(/^[1-9][0-9]*$/).max(19)
     .refine(value => BigInt(value) <= 9223372036854775807n).optional(),

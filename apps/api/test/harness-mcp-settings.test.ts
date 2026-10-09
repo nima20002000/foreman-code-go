@@ -106,25 +106,55 @@ describe('native MCP settings reads', () => {
     } finally { await rm(directory, { recursive: true, force: true }) }
   })
 
-  it('serves an aged read of an unchanged config at once and refreshes it in the background', async () => {
+  it('waits for an expired unchanged config read and returns the refreshed settings', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'mcp-list-aged-'))
     try {
       const file = join(directory, 'config.toml')
       await writeFile(file, '')
       const snapshot: NativeMcpSnapshot = { harness: 'codex', revision: 'revision', effective: {}, user: {}, userConfig: {}, file, version: 'version' }
+      const refreshed = { ...snapshot, revision: 'refreshed', effective: { added: { command: 'added', enabled: true } } }
       let release!: () => void
       const read = vi.fn().mockResolvedValueOnce(snapshot)
-        .mockImplementationOnce(() => new Promise<NativeMcpSnapshot>((resolve) => { release = () => resolve(snapshot) }))
+        .mockImplementationOnce(() => new Promise<NativeMcpSnapshot>((resolve) => { release = () => resolve(refreshed) }))
       const adapter = { read, apply: vi.fn() }
       const service = new HarnessMcpSettingsService({} as never, {} as never, { codex: adapter }, () => undefined)
-      const first = await service.list(principal, 'codex')
+      await service.list(principal, 'codex')
       const now = Date.now()
       vi.spyOn(Date, 'now').mockReturnValue(now + 301_000)
-      expect(await service.list(principal, 'codex')).toEqual(first)
+      let finished = false
+      const refreshing = service.list(principal, 'codex').then(value => { finished = true; return value })
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+      expect(finished).toBe(false)
       expect(read).toHaveBeenCalledTimes(2)
       release()
+      expect(await refreshing).toMatchObject({ revision: 'refreshed', servers: [{ name: 'added' }] })
       await service.shutdown()
     } finally { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }) }
+  })
+
+  it('reports repeated expired inspection failures instead of serving the old settings', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'mcp-list-failed-refresh-'))
+    let service: HarnessMcpSettingsService | undefined
+    try {
+      const file = join(directory, 'config.toml')
+      await writeFile(file, '')
+      const snapshot: NativeMcpSnapshot = { harness: 'codex', revision: 'revision', effective: {}, user: {},
+        userConfig: {}, file, version: 'version' }
+      const read = vi.fn().mockResolvedValueOnce(snapshot).mockRejectedValue(new Error('Native inspection unavailable'))
+      service = new HarnessMcpSettingsService({} as never, {} as never, { codex: { read, apply: vi.fn() } }, () => {})
+      await service.list(principal, 'codex')
+      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 301_000)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(service.list(principal, 'codex')).rejects.toMatchObject({ code: 'HARNESS_QUALIFICATION_FAILED' })
+      }
+      read.mockResolvedValue(snapshot)
+      await expect(service.list(principal, 'codex')).resolves.toMatchObject({ revision: 'revision' })
+      expect(read).toHaveBeenCalledTimes(4)
+    } finally {
+      vi.restoreAllMocks()
+      await service?.shutdown()
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
   it('allows a fresh read after a failed check', async () => {

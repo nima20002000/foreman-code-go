@@ -41,6 +41,26 @@ export function createInstalledCodexQualificationReader(input: {
     return true
   }
   const originalIntent = structuredClone(input.intent), originalPlacement = structuredClone(input.placement)
+  let retainedInspection: InstalledHarnessInspection | undefined
+  const inspect = async (binding: Readonly<DeviceSessionBinding>): Promise<InstalledHarnessInspection> => {
+    const current = await input.inspect(binding, input.signal)
+    const payload = originalPlacement.payload
+    if (payload.kind !== 'agent' || current.currentTarget?.target.installationFingerprint === payload.installationFingerprint) {
+      return current
+    }
+    if (!retainedInspection || !input.assertResident || !originalBinding) return unavailable()
+    const old = retainedInspection.currentTarget
+    const updated = current.currentTarget
+    if (!old || !updated || old.installation.environmentGeneration !== updated.installation.environmentGeneration
+      || old.installation.driverRevision !== updated.installation.driverRevision
+      || old.installation.protocolRevision !== updated.installation.protocolRevision
+      || !same(old.target.hostRef, updated.target.hostRef)
+      || old.target.applicationInstallationId !== updated.target.applicationInstallationId) return unavailable()
+    await input.assertResident(originalBinding, binding)
+    const retained = structuredClone(retainedInspection)
+    if (!retained.currentTarget) return unavailable()
+    return { ...retained, currentTarget: { ...retained.currentTarget, binding: { ...binding } } }
+  }
   const capture = async () => {
     input.signal.throwIfAborted()
     const expectedIntent = structuredClone(input.trustedCurrentIntent?.() ?? originalIntent)
@@ -49,14 +69,14 @@ export function createInstalledCodexQualificationReader(input: {
     if (!live || !originalBinding) return unavailable()
     const binding = DeviceSessionBindingSchema.parse(live)
     const resident = await verifyBinding(binding)
-    const inspection = await input.inspect(binding, input.signal)
+    const inspection = await inspect(binding)
     const current = inspection.currentTarget
     if (!current || !same(current.binding, binding)) return unavailable()
     const facts = ExecutionFactsResultSchema.parse(await input.readFacts())
     input.signal.throwIfAborted()
     const afterBinding = input.trustedCurrentBinding()
     if (!afterBinding || !same(afterBinding, binding) || !same(facts.intent, expectedIntent) || !same(facts.placement, originalPlacement)) return unavailable()
-    const after = (await input.inspect(binding, input.signal)).currentTarget
+    const after = (await inspect(binding)).currentTarget
     input.signal.throwIfAborted()
     const finalBinding = input.trustedCurrentBinding()
     if (!finalBinding || !same(finalBinding, binding) || !after || !same(after.binding, binding)
@@ -109,6 +129,7 @@ export function createInstalledCodexQualificationReader(input: {
     await verifyBinding(binding)
     if (!same(input.trustedCurrentBinding(), binding)
       || !same(input.trustedCurrentIntent?.() ?? originalIntent, expectedIntent)) return unavailable()
+    retainedInspection ??= structuredClone(inspection)
     return Object.freeze({ binding: Object.freeze(binding), inspection, facts,
       qualification: HarnessQualificationSchema.parse(qualification) })
   }

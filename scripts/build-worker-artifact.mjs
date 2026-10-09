@@ -1,4 +1,5 @@
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import { inspectQuotaHelperAbi } from './quota-helper-abi.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -12,24 +13,24 @@ const { build } = require('esbuild');
 const { parse } = require('yaml');
 const { Unpackr } = require('msgpackr');
 const unpacker = new Unpackr({ useRecords: true, moreTypes: true });
-import { copySharpPackages, artifactFiles, assertWorkerDependency } from './worker-artifact-files.mjs';
+import { copySharpPackages, artifactFiles, assertWorkerDependency, committedWorkerInputPath, workerReleaseVersion, validateWorkerTarget } from './worker-artifact-files.mjs';
 import { DatabaseSync } from 'node:sqlite';
 const [targetFile, outputDirectory, runtimeFile] = process.argv.slice(2);
-if (!targetFile || !outputDirectory) throw new Error('Usage: build-worker-artifact.mjs /approved-target.json /new-output-directory [/reviewed-runtime.json]');
+if (!targetFile || !outputDirectory) throw new Error('Usage: build-worker-artifact.mjs apps/worker/artifacts/approved-target.json /new-output-directory [apps/worker/artifacts/reviewed-runtime.json]');
 const requestedCommit = readProductEnvironment(process.env, 'WORKER_BUILD_COMMIT');
 if (requestedCommit && !/^[a-f0-9]{40}$/.test(requestedCommit)) throw new Error('Invalid captured commit');
 const commit = execFileSync('git', ['rev-parse', requestedCommit ? `${requestedCommit}^{commit}` : 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const allowedApiModules = new Set(JSON.parse(execFileSync('git', ['show', `${commit}:scripts/worker-api-allowlist.json`], { cwd: root, encoding: 'utf8' })));
 const snapshot = new Map();
-const verificationScripts = ['scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs', 'scripts/integration-process.mjs'];
+const verificationScripts = ['scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs', 'scripts/integration-process.mjs', 'scripts/integration-capabilities.mjs'];
 const forbiddenApiModule = path => /^apps\/api\/src\/(?:server|app|production)\.ts$/.test(path) || /^apps\/api\/src\/(?:infrastructure\/(?:db|database)|(?:db|migrations|bootstrap)\/)/.test(path);
 if ([...allowedApiModules].some(path => !path.startsWith('apps/api/src/') || forbiddenApiModule(path))) throw new Error('Invalid worker API allowlist');
 function snapshotSource(path) {
   if (forbiddenApiModule(path) || path.startsWith('/') || path.split('/').some((part) => !part || part === '.' || part === '..') || /\.(?:test|spec)\.[cm]?[jt]s$/.test(path) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|(?:^|\/)(?:credentials|secrets)\.json$/.test(path)
     || !(allowedApiModules.has(path) || path.startsWith('apps/worker/src/') || path.startsWith('apps/worker/artifacts/') || path.startsWith('packages/contracts/src/')
       || verificationScripts.includes(path)
-      || ['apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'scripts/graphql-mcp.mjs', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
+      || ['apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/quota-helper-abi.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'scripts/graphql-mcp.mjs', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
   if (!snapshot.has(path)) {
     const bytes = execFileSync('git', ['show', `${commit}:${path}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
     const gitBlobSha1 = execFileSync('git', ['rev-parse', `${commit}:${path}`], { cwd: root, encoding: 'utf8' }).trim();
@@ -41,10 +42,23 @@ async function requirePinnedSource(path) {
   if (!snapshotSource(path).equals(await readFile(join(root, path)))) throw new Error(`Uncommitted build control input: ${path}`);
 }
 for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
-const target = JSON.parse(snapshotSource(relative(root, resolve(targetFile))).toString('utf8'));
-if (target.arch !== 'x64') throw new Error('Sharp assets are qualified only for linux-x64');
-if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease) || !['x64', 'arm64'].includes(target.arch) || !/^glibc-\d+\.\d+$/.test(target.libc) || !/^v22\.\d+\.\d+$/.test(target.node)) throw new Error('Unsupported build target');
-const runtime = runtimeFile ? JSON.parse(snapshotSource(relative(root, resolve(runtimeFile))).toString('utf8')) : null;
+await requirePinnedSource('scripts/quota-helper-abi.mjs');
+function reviewedInput(input) {
+  const path = committedWorkerInputPath(root, input);
+  let bytes;
+  try {
+    bytes = snapshotSource(path);
+  } catch (error) {
+    throw new Error(`Reviewed input ${path} must exist in captured commit ${commit}. Commit and review it before building.`,
+      { cause: error });
+  }
+  return { path, value: JSON.parse(bytes.toString('utf8')) };
+}
+const targetInput = reviewedInput(targetFile);
+const target = targetInput.value;
+validateWorkerTarget(target);
+const runtimeInput = runtimeFile ? reviewedInput(runtimeFile) : null;
+const runtime = runtimeInput?.value;
 if (runtime && (runtime.format !== 1 || runtime.runtime !== 'node' || runtime.platform !== 'linux' || runtime.arch !== target.arch || runtime.version !== target.node
   || !/^[a-f0-9]{64}$/.test(runtime.archive?.sha256) || !/^[a-f0-9]{64}$/.test(runtime.nodeExecutable?.sha256)
   || !/^[A-F0-9]{40}$/.test(runtime.trustedRelease?.primarySignerFingerprint))) throw new Error('Reviewed runtime does not match target');
@@ -87,8 +101,7 @@ const quotaQueryPath = join(output, 'artifacts/job-quota-query.c');
 await writeFile(quotaQueryPath, snapshotSource(quotaQuerySource), { mode: 0o600 });
 execFileSync('cc', ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', quotaQueryPath,
   '-o', join(output, 'artifacts/job-quota-query')], { stdio: ['ignore', 'pipe', 'pipe'] });
-const quotaBinary = await readFile(join(output, 'artifacts/job-quota-query'));
-if (quotaBinary.readUInt16LE(18) !== 62) throw new Error('Quota observer must match the approved Linux x64 target');
+await inspectQuotaHelperAbi(join(output, 'artifacts/job-quota-query'), target);
 
 await writeFile(join(output, 'artifacts/graphql.svg'), snapshotSource('apps/web/public/graphql.svg'), { mode: 0o600 });
 await writeFile(join(output, 'artifacts/graphql-mcp.mjs'), snapshotSource('scripts/graphql-mcp.mjs'), { mode: 0o600 });
@@ -107,9 +120,14 @@ if (verificationScripts.every(path => committedScripts.has(path))) {
   for (const path of verificationScripts) {
     await writeFile(join(output, 'artifacts/verification', path.slice('scripts/'.length)), snapshotSource(path), { mode: 0o600 });
   }
+  for (const path of ['apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs']) {
+    const destination = join(output, 'artifacts', path);
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(destination, snapshotSource(path), { mode: 0o600 });
+  }
 }
 await writeFile(join(output, 'install'), snapshotSource('apps/worker/artifacts/install.sh.in').toString('utf8').replaceAll('@NODE_VERSION@', target.node), { mode: 0o700 });
-if (runtime) await writeFile(join(output, 'artifacts/node-runtime.json'), snapshotSource(relative(root, resolve(runtimeFile))), { mode: 0o600 });
+if (runtime) await writeFile(join(output, 'artifacts/node-runtime.json'), snapshotSource(runtimeInput.path), { mode: 0o600 });
 const { storeDir: store } = parse(await readFile(join(root, 'node_modules/.modules.yaml'), 'utf8'));
 const database = new DatabaseSync(join(store, 'index.db'), { readOnly: true });
 let nativePackages;
@@ -119,8 +137,8 @@ try {
     decode: blob => unpacker.unpack(blob) });
 } finally { database.close(); }
 const files = await artifactFiles(output);
-const pkg = JSON.parse(snapshotSource('apps/worker/package.json').toString('utf8'));
-const manifest = { format: 1, version: pkg.version, commit, lockfileSha256: hash(snapshotSource('pnpm-lock.yaml')), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, nativePackages, workerApiModules: Object.keys(built.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), rsyncWriterApiModules: Object.keys(writer.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), sourceSnapshot: { commit, files: [...snapshot.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, { gitBlobSha1, sha256 }]) => ({ path, gitBlobSha1, sha256 })) },
+const releaseVersion = workerReleaseVersion(JSON.parse(snapshotSource('package.json').toString('utf8')));
+const manifest = { format: 1, version: releaseVersion, commit, lockfileSha256: hash(snapshotSource('pnpm-lock.yaml')), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, nativePackages, workerApiModules: Object.keys(built.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), rsyncWriterApiModules: Object.keys(writer.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), sourceSnapshot: { commit, files: [...snapshot.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, { gitBlobSha1, sha256 }]) => ({ path, gitBlobSha1, sha256 })) },
   ...(runtime ? { runtime: { metadataPath: 'artifacts/node-runtime.json', version: runtime.version, archiveSha256: runtime.archive.sha256, executableSha256: runtime.nodeExecutable.sha256, qualification: 'future installation requires actual target readback' } } : {}), files };
 await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-console.log(JSON.stringify({ manifestSha256: hash(await readFile(join(output, 'manifest.json'))), version: pkg.version, commit: manifest.commit, files: files.length }));
+console.log(JSON.stringify({ manifestSha256: hash(await readFile(join(output, 'manifest.json'))), version: releaseVersion, commit: manifest.commit, files: files.length }));

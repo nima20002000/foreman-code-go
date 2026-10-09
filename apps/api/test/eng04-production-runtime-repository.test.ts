@@ -46,9 +46,17 @@ test('cleanup uses current lifecycle writers and preserves owner scope', async (
   const f = await fixture()
   await f.repository.requestCleanup(f.f.run.id, f.owner)
   await f.repository.finishCleanup(f.f.run.id, false, f.owner)
-  assert.deepEqual(calls.cleanup, [[f.pool, f.f.run.id, f.owner]])
+  assert.deepEqual(calls.cleanup, [[f.pool, f.f.run.id, f.owner, undefined]])
   assert.deepEqual(calls.finished, [[f.owner, false]])
   await assert.rejects(f.repository.finishCleanup(f.f.run.id, false,
     { ...f.owner, runId: 'other-run' } as RunOwnership), { code: 'GRAPH_SCOPE_MISMATCH' })
   assert.equal(calls.finished.length, 1)
+})
+test('cleanup forwards the specific failure without dropping its Run owner', async () => {
+  const f = await fixture()
+  const failure = { outcome: 'failed' as const, error: {
+    code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED', message: 'No execution capacity remains.', retryable: false,
+  } }
+  await f.repository.requestCleanup(f.f.run.id, f.owner, failure)
+  assert.deepEqual(calls.cleanup, [[f.pool, f.f.run.id, f.owner, failure]])
 })

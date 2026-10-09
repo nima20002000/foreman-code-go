@@ -53,7 +53,8 @@ async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPor
     || configuration.agentId !== execution.agentId || configuration.workspaceId !== attempt.workspaceId) return denied()
   const principal = await readLiveManagementPrincipal(sql, row.authorization_principal_id)
   await ports.locations.revalidateRunAuthorization(principal.id, attempt.workspaceId, attempt.workflowId, sql, true)
-  await ports.producer.assertPinsCurrent(sql, placement, principal, attempt.workspaceId)
+  await ports.producer.assertPinsCurrent(sql, placement, principal, attempt.workspaceId,
+    execution.nativeSessionId ? { purpose: 'resident' } : undefined)
   const registration = await assertDeviceHostInstallation(sql, placement.hostRef, placement.registration?.workerInstallationId ?? placement.mainInstallationId)
   if (placement.registration && (!registration || registration.keyRevision !== placement.registration.keyRevision
     || registration.authorizationRevision !== placement.registration.authorizationRevision)) return denied()

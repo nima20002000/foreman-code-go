@@ -10,7 +10,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { loadOrCreateWorkerIdentity, loadWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { createWorkerConnection } from '../../../apps/api/src/modules/devices/workerConnection.ts';
 import { hostFacts, requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
-import { validateManifest } from './installation.mjs';
+import { validateManifest, requireReleaseState } from './installation.mjs';
 import { startWorker, acquireWorkerLock } from './runtime.mjs';
 import { approvedRootExtensions } from './rootExtension.mjs';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,7 @@ export async function prepareWorkerState(stateDirectory) {
   validateManifest(manifest, facts, { protocolVersion: 1, identityFormat: 1 });
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   await requirePrivateDirectory(stateDirectory);
+  await requireReleaseState({ directory: fileURLToPath(new URL('../', import.meta.url)), stateDirectory });
   return manifest;
 }
 

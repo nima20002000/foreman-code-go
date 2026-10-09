@@ -62,8 +62,10 @@ export async function attestWorkspaceRoot(raw: ApprovedRootAllowlist, input: Wor
   const baseHandle = await openPrivateRoot(base.canonicalPath, false)
   try { if (!isDeepStrictEqual(await identity(baseHandle), base.filesystem)) throw new SourceError('ROOT_BASE_CHANGED', 'The explicitly approved root base was replaced.') }
   finally { await baseHandle.close() }
-  const directory = await openRootDirectory(base.canonicalPath, selection.relativePath, base.filesystem), runtime = await openPrivateRoot(allowlist.managedRuntimeRoot)
+  const directory = await openRootDirectory(base.canonicalPath, selection.relativePath, base.filesystem)
+  let runtime: FileHandle | undefined
   try {
+    runtime = await openPrivateRoot(allowlist.managedRuntimeRoot)
     await access(anchored(directory), constants.R_OK | constants.X_OK | (selection.accessMode === 'read-write' ? constants.W_OK : 0))
     if (!isDeepStrictEqual(await identity(runtime), allowlist.runtimeFilesystem)) throw new SourceError('ROOT_RUNTIME_CHANGED', 'The app-owned runtime root changed.')
     const filesystem = await identity(directory), canonicalProjectRoot = join(base.canonicalPath, selection.relativePath)
@@ -77,7 +79,10 @@ export async function attestWorkspaceRoot(raw: ApprovedRootAllowlist, input: Wor
       relativePath: selection.relativePath, accessMode: selection.accessMode, canonicalProjectRoot, filesystem,
       directoryIdentityHash: sourceSha256(Buffer.from(JSON.stringify(filesystem))), managedRuntimeRoot: allowlist.managedRuntimeRoot, runtimeFilesystem: allowlist.runtimeFilesystem }
     return WorkspaceRootAttestationSchema.parse({ ...stamp, attestationDigest: rootAttestationDigest(stamp) })
-  } finally { await directory.close(); await runtime.close() }
+  } finally {
+    try { await runtime?.close() }
+    finally { await directory.close() }
+  }
 }
 export async function browseApprovedRoot(raw: ApprovedRootAllowlist, input: WorkspaceRootSelection, relativePath: string): Promise<WorkspaceRootBrowseResult> {
   const allowlist = ApprovedRootAllowlistSchema.parse(raw), selection = WorkspaceRootSelectionSchema.parse(input), base = selectBase(allowlist, selection)

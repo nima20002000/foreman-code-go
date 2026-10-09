@@ -22,9 +22,8 @@ function fixture() {
   const attestation: WorkspaceRootAttestation = { schemaVersion: 1, attestationId: randomUUID(), requestDigest: hash, hostRef: selection.hostRef,
     applicationInstallationId: installation, configurationRevision: '1', allowedBaseId: baseId, relativePath: 'project', accessMode: 'read-only',
     canonicalProjectRoot: '/approved/project', filesystem: fs, directoryIdentityHash: hash, managedRuntimeRoot: '/runtime', runtimeFilesystem: fs, attestationDigest: hash }
-  const journal: string[] = []; let revoked = false, receipt: unknown, location: unknown = null, revision = '1'
+  let revoked = false, receipt: unknown, location: unknown = null, revision = '1'
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
-    journal.push(sql)
     if (sql.startsWith('with recursive owners')) return { rows: [{ id: principal.id }], rowCount: 1 }
     if (sql.includes('from management_principals')) return { rows: [{ id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
       expires_at: new Date(principal.expiresAt), revoked_at: revoked ? new Date() : null, delegated_from: null }], rowCount: 1 }
@@ -38,7 +37,7 @@ function fixture() {
   let policy: WorkspaceRootPolicy | undefined
   const roots: WorkspaceRootPolicyPort = { list: vi.fn(async () => ({ workspaceId: 'workspace', policies: [], allowlists: [allowlist], readiness: 'metadata-only' as const })),
     authorize: vi.fn(async (_sql, _principal, selected) => ({ selection: selected, allowlist, ownerPrincipalId: principal.id, registration })),
-    attest: vi.fn(async () => attestation), browse: vi.fn(async () => ({ relativePath: 'project', directories: [], truncated: false })), fence: vi.fn(async () => {}),
+    attest: vi.fn(async () => attestation), inspect: vi.fn(async () => {}), browse: vi.fn(async () => ({ relativePath: 'project', directories: [], truncated: false })), fence: vi.fn(async () => {}),
     bind: vi.fn(async (_sql, _p, root, proof, next) => {
       policy = { schemaVersion: 1, rootPolicyId: randomUUID(), rootPolicyRevision: '1', workspaceId: root.selection.workspaceId, hostRef: proof.hostRef,
         applicationInstallationId: proof.applicationInstallationId, registration, locationRevision: String(next), ownerPrincipalId: principal.id,
@@ -48,7 +47,8 @@ function fixture() {
       return policy
     }), resolve: vi.fn(async () => { if (!policy) throw new Error('not bound'); return policy }), read: vi.fn(async () => policy ? [policy] : []) }
   const service = new WorkspaceBoundLocationService(pool, new PostgresCommandCoordinator(pool), roots)
-  return { service, roots, principal, selection, attestation, journal, revoke: () => { revoked = true }, query }
+  return { service, roots, principal, selection, attestation, revoke: () => { revoked = true },
+    restore: () => { revoked = false }, query }
 }
 describe('independent workspace root commands', () => {
   it('commits exact server-owned host/path and replays original receipt without another host probe', async () => {
@@ -64,19 +64,23 @@ describe('independent workspace root commands', () => {
     expect(await f.service.get(f.principal, { workspaceId: input.workspaceId })).toEqual(first.value)
     await expect(f.service.set(f.principal, 'http', { ...input, relativePath: 'other' })).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
   })
-  it('native attestation has no main SQL transaction open', async () => {
+  it('rejects a missing folder without changing the saved location', async () => {
     const f = fixture()
-    vi.mocked(f.roots.attest).mockImplementation(async () => {
-      expect(f.journal.at(-1)).toBe('commit'); return f.attestation
-    })
-    await f.service.set(f.principal, 'http', { ...f.selection, commandId: randomUUID() })
-    expect(f.roots.bind).toHaveBeenCalledTimes(1)
+    vi.mocked(f.roots.attest).mockRejectedValue(new DomainError('ROOT_DIRECTORY_MISSING', 'Folder missing.', 409))
+    await expect(f.service.set(f.principal, 'http', { ...f.selection, commandId: randomUUID() }))
+      .rejects.toMatchObject({ code: 'ROOT_DIRECTORY_MISSING' })
+    expect(await f.service.get(f.principal, { workspaceId: f.selection.workspaceId }))
+      .toMatchObject({ evidence: 'unconfigured', locationRevision: 1 })
+    expect(f.roots.bind).not.toHaveBeenCalled()
   })
   it('revocation during host I/O prevents binding and CAS', async () => {
     const f = fixture()
     vi.mocked(f.roots.attest).mockImplementation(async () => { f.revoke(); return f.attestation })
     await expect(f.service.set(f.principal, 'http', { ...f.selection, commandId: randomUUID() })).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-    expect(f.roots.bind).not.toHaveBeenCalled(); expect(f.journal.some(sql => sql.startsWith('update workspaces'))).toBe(false)
+    expect(f.roots.bind).not.toHaveBeenCalled()
+    f.restore()
+    expect(await f.service.get(f.principal, { workspaceId: f.selection.workspaceId }))
+      .toMatchObject({ evidence: 'unconfigured', locationRevision: 1 })
   })
   it('rejects wrong-host proof and stale root fence without saving a replacement target', async () => {
     const f = fixture()
@@ -84,7 +88,9 @@ describe('independent workspace root commands', () => {
     await expect(f.service.set(f.principal, 'http', { ...f.selection, commandId: randomUUID() })).rejects.toMatchObject({ code: 'WORKSPACE_ROOT_ATTESTATION_CONFLICT' })
     vi.mocked(f.roots.fence).mockRejectedValue(new DomainError('ROOT_REVISION_CONFLICT', 'Root changed.', 409))
     await expect(f.service.set(f.principal, 'http', { ...f.selection, commandId: randomUUID() })).rejects.toMatchObject({ code: 'ROOT_REVISION_CONFLICT' })
-    expect(f.roots.bind).not.toHaveBeenCalled(); expect(f.journal.some(sql => sql.startsWith('update workspaces'))).toBe(false)
+    expect(f.roots.bind).not.toHaveBeenCalled()
+    expect(await f.service.get(f.principal, { workspaceId: f.selection.workspaceId }))
+      .toMatchObject({ evidence: 'unconfigured', locationRevision: 1 })
   })
   it('denied caller cannot probe or list another workspace', async () => {
     const f = fixture()

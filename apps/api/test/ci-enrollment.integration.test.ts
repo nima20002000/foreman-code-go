@@ -4,6 +4,8 @@ import { BuildComputerPrepareStatusSchema, CiEnrollmentStateSchema, type BuildCo
   type BuildComputerPrepareStatus } from '@foreman-code/contracts'
 import { ApprovedSourceSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import { JobDefinitionSpecRecordSchema, ResolvedVerificationJobSpecSchema, jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
+import { JobVerificationProfileSchema, jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
 import { OperatorCapabilitiesSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
@@ -13,17 +15,20 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { CI_ENROLLMENT_ACTIONS, CiEnrollment } from '../src/modules/jobs/ciEnrollment.js'
 import type { CiEnrollmentInventory, CiEnrollmentTarget } from '../src/modules/jobs/ciEnrollmentInventory.js'
 import { ciEnrollmentProfileInput } from '../src/modules/jobs/ciEnrollmentProfiles.js'
+import { CiEnrollmentRepository } from '../src/modules/jobs/ciEnrollmentRepository.js'
 import { JobRuntimeProfiles } from '../src/modules/jobs/runtimeProfiles.js'
-import { JobComputerSelection } from '../src/modules/jobs/computerSelection.js'
+import { JobComputerSelection, type JobComputerCandidate } from '../src/modules/jobs/computerSelection.js'
+import { JobService } from '../src/modules/jobs/service.js'
 import { DomainError } from '../src/modules/errors.js'
 import { BuildComputerSettings, buildComputerKey } from '../src/modules/settings/buildComputers.js'
 import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 import { createSourceManifest } from '../src/modules/sources/manifest.js'
 import { createProductionSources } from '../src/modules/sources/production.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import { buildComputerFixture } from './helpers/buildComputerFixture.js'
+import { buildComputerFixture, buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { verificationCapacityFixture } from './helpers/verificationCapacityFixture.js'
+import { verificationFixture } from './helpers/jobVerificationFixture.js'
 
 // Persistence, authorization and MCP are real; source hosts and runtime preparation are bounded fixtures.
 async function fixture() {
@@ -43,7 +48,8 @@ async function fixture() {
     const workspaceId = randomUUID()
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
     const owner = await access.issue({ name: 'CI enrollment owner', audience: 'operator',
-      grants: [{ actions: [...CI_ENROLLMENT_ACTIONS, 'settings:read', 'settings:update', 'capabilities:read'], scope: {} }],
+      grants: [{ actions: [...CI_ENROLLMENT_ACTIONS, 'jobs:read', 'jobs:cancel',
+        'settings:read', 'settings:update', 'capabilities:read'], scope: {} }],
       expiresAt: new Date(Date.now() + 3_600_000) })
     await db.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
       [workspaceId, JSON.stringify({ id: workspaceId, name: 'CI enrollment' })])
@@ -127,12 +133,11 @@ async function fixture() {
       }),
     } satisfies ConstructorParameters<typeof CiEnrollment>[3]
     const resources = template.spec.resources
-    const reserved = resources.controlTempBytes + resources.spoolBytes + resources.reportBytes
     const inventory: CiEnrollmentInventory = {
       computers: async () => computers,
       storage: vi.fn(async (target: DeviceProvisioningTarget) => ({
         diskBytes: target.hostRef.kind === 'main' ? resources.limits.diskBytes
-        : reserved + resources.scratchBytes / 2, mutableInodes: resources.mutableInodes / 2 })),
+        : resources.limits.diskBytes * 2, mutableInodes: resources.mutableInodes * 2 })),
       root: vi.fn(async (_principal: ManagementPrincipal, _workspaceId: string, _template: SourceRootRecord,
         target: DeviceProvisioningTarget) => {
         const root = roots.find(row => buildComputerKey({ hostRef: row.selection.hostRef }) === buildComputerKey(target))
@@ -171,7 +176,165 @@ async function fixture() {
 }
 
 describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
-  it('enrolls existing profiles on Workers and Main with installed storage sizing and no repeated derivation', async () => {
+  it.each(['disk', 'inodes'] as const)('reports insufficient %s through MCP without shrinking a clone', async field => {
+    const f = await fixture()
+    try {
+      const storage = f.inventory.storage
+      const target = f.computers[1]!.target
+      if (f.stored.schemaVersion !== 2) throw new Error('Verification template required')
+      const resources = f.stored.spec.resources
+      f.inventory.storage = async computer => {
+        if (buildComputerKey(computer) !== buildComputerKey(target)) return storage(computer)
+        return { diskBytes: resources.limits.diskBytes - (field === 'disk' ? 1 : 0),
+          mutableInodes: resources.mutableInodes - (field === 'inodes' ? 1 : 0) }
+      }
+      await f.enrollment.reconcile()
+      const client = await f.connect()
+      const result = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+      const state = CiEnrollmentStateSchema.parse(result.structuredContent)
+      expect(state.computers[1]).toMatchObject({ target, state: 'storage-required', profileIds: [],
+        templates: [{ templateId: f.stored.id, profileId: null, state: 'storage-required',
+          message: 'The installed CI volume is too small for this template’s disk or inode budget.' }] })
+      expect(state.computers[0]!.state).toBe('preparing')
+      expect(state.computers[2]!.state).toBe('preparing')
+      const profiles = (await f.profiles.list(f.owner.principal, f.workspaceId)).profiles
+      expect(profiles).toHaveLength(2)
+      for (const { profile } of profiles) {
+        if (profile.schemaVersion !== 2) throw new Error('Verification profile required')
+        expect(profile.spec.resources).toEqual(resources)
+      }
+      expect(f.preparation.start).toHaveBeenCalledTimes(2)
+      expect((await f.db.pool.query('select state from ci_enrollment_computers where workspace_id=$1 and host_key=$2',
+        [f.workspaceId, buildComputerKey(target)])).rows[0]!.state).toEqual(state.computers[1])
+      await f.enrollment.reconcile()
+      expect((await f.profiles.list(f.owner.principal, f.workspaceId)).profiles).toEqual(profiles)
+      expect(f.preparation.start).toHaveBeenCalledTimes(2)
+    } finally { await f.close() }
+  })
+
+  it.each([true, false])('reports ordinary templates without automatic qualification with verification storage=%s',
+    async installed => {
+      const f = await fixture()
+      try {
+        const template = buildComputerFixture(f.roots[0]!.binding.mainId, f.workspaceId).candidate.profile
+        const ordinary = await f.profiles.save(f.owner.principal, 'mcp', f.workspaceId, {
+          commandId: randomUUID(), expectedRevision: null, name: 'Ordinary CI',
+          spec: { rootId: f.roots[0]!.binding.rootId, bindingRevision: 1, limits: template.limits,
+            policy: { ...jobPolicyRequirementsRecord(template.policy), maxWorkerSpoolBytes: 131072 } },
+        })
+        if (!installed) f.inventory.storage = async () => null
+        const qualification = vi.spyOn(f.profiles, 'requestQualification')
+        await f.enrollment.reconcile()
+        const reader = await f.access.issue({ name: 'Enrollment status reader', audience: 'operator',
+          grants: [{ actions: ['job_definitions:read'], scope: { workspaceIds: [f.workspaceId] } }],
+          expiresAt: new Date(Date.now() + 600_000) })
+        const client = await f.connect(reader.token)
+        const read = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
+        expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
+        const state = CiEnrollmentStateSchema.parse(read.structuredContent)
+        for (const computer of state.computers) {
+          expect(computer.state).toBe('partial')
+          expect(computer.templates).toContainEqual({ templateId: ordinary.id, profileId: null,
+            state: 'not-enrolled-automatically',
+            message: 'Ordinary Job templates are not enrolled automatically; configure and qualify their protected runtime explicitly.' })
+          expect(computer.templates).toContainEqual(expect.objectContaining({ templateId: f.stored.id,
+            state: installed ? 'preparing' : 'runtime-required' }))
+        }
+        expect(qualification).not.toHaveBeenCalled()
+        expect(f.preparation.start).toHaveBeenCalledTimes(installed ? 3 : 0)
+        expect((await f.profiles.list(f.owner.principal, f.workspaceId)).profiles).toHaveLength(installed ? 4 : 2)
+        const denied = await client.callTool({ name: 'ci_enrollment_update', arguments: {
+          workspaceId: f.workspaceId, target: f.computers[0]!.target, expectedRevision: 0,
+          enabled: false, commandId: randomUUID(),
+        } })
+        expect(denied.isError).toBe(true)
+        expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+        const forbiddenRead = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: randomUUID() } })
+        expect(forbiddenRead.isError).toBe(true)
+        expect(JSON.stringify(forbiddenRead.content)).toContain('ACCESS_DENIED')
+        const readback = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
+        expect(CiEnrollmentStateSchema.parse(readback.structuredContent)).toEqual(state)
+        const persisted = (await f.db.pool.query('select state from ci_enrollment_computers where workspace_id=$1',
+          [f.workspaceId])).rows.map(row => row.state)
+        expect(persisted).toEqual(expect.arrayContaining(state.computers))
+      } finally { await f.close() }
+    })
+
+  it('prepares a fitting template despite another template exceeding installed storage', async () => {
+    const f = await fixture()
+    try {
+      if (f.stored.schemaVersion !== 2) throw new Error('Verification template required')
+      const resources = f.stored.spec.resources
+      const oversized = await f.profiles.save(f.owner.principal, 'mcp', f.workspaceId, {
+        commandId: randomUUID(), expectedRevision: null, name: 'Large suite',
+        spec: { ...f.stored.spec, resources: { ...resources,
+          limits: { ...resources.limits, diskBytes: resources.limits.diskBytes * 2 } } },
+      })
+      f.inventory.storage = async () => ({ diskBytes: resources.limits.diskBytes, mutableInodes: resources.mutableInodes })
+      await f.enrollment.reconcile()
+      const client = await f.connect()
+      const read = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
+      expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
+      const state = CiEnrollmentStateSchema.parse(read.structuredContent)
+      for (const computer of state.computers) {
+        expect(computer.state).toBe('partial')
+        expect(computer.profileIds).toHaveLength(1)
+        expect(computer.templates).toContainEqual(expect.objectContaining({ templateId: oversized.id,
+          profileId: null, state: 'storage-required' }))
+        expect(computer.templates).toContainEqual({ templateId: f.stored.id,
+          profileId: computer.profileIds[0], state: 'preparing', message: null })
+        expect(computer.message).toContain('Large suite:')
+      }
+      expect(f.preparation.start).toHaveBeenCalledTimes(3)
+      const saved = (await f.profiles.list(f.owner.principal, f.workspaceId)).profiles
+      expect(saved).toHaveLength(4)
+      await f.enrollment.reconcile()
+      expect((await f.profiles.list(f.owner.principal, f.workspaceId)).profiles).toEqual(saved)
+      expect(f.preparation.start).toHaveBeenCalledTimes(3)
+      expect((await f.db.pool.query('select state from ci_enrollment_computers where workspace_id=$1',
+        [f.workspaceId])).rows.map(row => row.state.templates))
+        .toEqual(expect.arrayContaining(state.computers.map(computer => computer.templates)))
+    } finally { await f.close() }
+  })
+
+  it('continues preparation after one profile fails and persists the failed template through MCP', async () => {
+    const f = await fixture()
+    try {
+      if (f.stored.schemaVersion !== 2) throw new Error('Verification template required')
+      const failing = await f.profiles.save(f.owner.principal, 'mcp', f.workspaceId, {
+        commandId: randomUUID(), expectedRevision: null, name: 'Failing suite', spec: f.stored.spec,
+      })
+      const start = f.preparation.start.getMockImplementation()!
+      f.preparation.start.mockImplementation(async (...args) => {
+        const profile = (await f.profiles.list(f.owner.principal, f.workspaceId)).profiles
+          .find(row => row.profile.id === args[2].profileId)!.profile
+        if (profile.name === failing.name) {
+          throw new DomainError('CI_RUNTIME_PREPARATION_FAILED', 'Runtime preparation failed.', 409)
+        }
+        return start(...args)
+      })
+      await f.enrollment.reconcile()
+      const client = await f.connect()
+      const read = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
+      expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
+      const state = CiEnrollmentStateSchema.parse(read.structuredContent)
+      for (const computer of state.computers) {
+        expect(computer.state).toBe('partial')
+        const failure = computer.templates.find(result => result.templateId === failing.id)!
+        expect(failure).toMatchObject({ state: 'failed', message: 'Runtime preparation failed.' })
+        expect(failure.profileId).not.toBeNull()
+        expect(computer.templates).toContainEqual(expect.objectContaining({ templateId: f.stored.id, state: 'preparing' }))
+        expect(computer.message).toContain('Failing suite: Runtime preparation failed.')
+      }
+      expect(f.preparation.start).toHaveBeenCalledTimes(6)
+      expect(f.preparations.size).toBe(3)
+      expect((await f.db.pool.query('select state from ci_enrollment_computers where workspace_id=$1',
+        [f.workspaceId])).rows.map(row => row.state)).toEqual(expect.arrayContaining(state.computers))
+    } finally { await f.close() }
+  })
+
+  it('enrolls Workers and Main with the same template envelope despite different storage and no repeated derivation', async () => {
     const f = await fixture()
     try {
       await f.enrollment.reconcile()
@@ -180,12 +343,14 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       expect(state.computers.every(computer => computer.state === 'preparing')).toBe(true)
       expect(f.preparation.start).toHaveBeenCalledTimes(3)
       const saved = (await f.profiles.list(f.owner.principal, f.workspaceId)).profiles.map(row => row.profile)
-      expect(saved).toHaveLength(4)
+      expect(saved).toHaveLength(3)
       for (const computer of state.computers) {
         expect(computer.profileIds).toHaveLength(1)
         const profile = saved.find(row => row.id === computer.profileIds[0])!
         expect(profile.schemaVersion).toBe(2)
         if (profile.schemaVersion !== 2) throw new Error('Verification profile required')
+        if (f.stored.schemaVersion !== 2) throw new Error('Verification template required')
+        expect(profile.spec.resources).toEqual(f.stored.spec.resources)
         expect(profile.spec.suites).toEqual(['unit'])
         const storage = await f.inventory.storage(computer.target)
         expect(profile.spec.resources.limits.diskBytes).toBeLessThanOrEqual(storage!.diskBytes)
@@ -199,6 +364,121 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
         [f.workspaceId])).rows.map(row => row.state)
       const readback = await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId })
       expect(persisted).toEqual(expect.arrayContaining(readback.computers))
+    } finally { await f.close() }
+  })
+
+  it('places the same saved Auto verification request on an enrolled backup after its first computer disconnects', async () => {
+    const f = await fixture()
+    const sql = await f.db.pool.connect()
+    try {
+      const storage = f.inventory.storage
+      f.inventory.storage = async target => {
+        const capacity = await storage(target)
+        if (capacity && buildComputerKey(target) === buildComputerKey(f.computers[1]!.target)) {
+          return { diskBytes: capacity.diskBytes * 2, mutableInodes: capacity.mutableInodes * 2 }
+        }
+        return capacity
+      }
+      await f.enrollment.reconcile()
+      const state = await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId })
+      const saved = (await f.profiles.list(f.owner.principal, f.workspaceId)).profiles
+      const base = verificationFixture().spec
+      const measured = verificationCapacityFixture('device').measurement!
+      // Qualification and native metadata are boundary fixtures; save, envelope matching and claim persistence are real.
+      const candidates: JobComputerCandidate[] = state.computers.slice(0, 2).map(computer => {
+        const profile = saved.find(row => row.profile.id === computer.profileIds[0])!.profile
+        if (profile.schemaVersion !== 2) throw new Error('Verification profile required')
+        const root = profile.root
+        const spec = ResolvedVerificationJobSpecSchema.parse({
+          ...base, source: { ...root.source, commit: profile.sourceCommit! },
+          policy: jobRuntimeProfilePolicy(profile), verification: { ...base.verification, resources: profile.spec.resources },
+          target: { ...base.target, mainId: root.binding.mainId, mainInstallationId: root.binding.mainId,
+            hostRef: root.selection.hostRef, registration: root.registration,
+            destination: { ...base.target.destination, rootPolicyId: root.selection.rootPolicyId,
+              canonicalProjectRoot: root.binding.canonicalPath, canonicalCwd: root.binding.canonicalPath,
+              attestationId: root.attestationId, attestationHash: root.attestationDigest } } })
+        const qualified = JobVerificationProfileSchema.parse({ ...profile, status: 'qualified',
+          measurement: { ...measured,
+            identity: { ...measured.identity, profileId: profile.id, profileRevision: profile.revision,
+              rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision },
+            fingerprint: { ...measured.fingerprint, profileId: profile.id, profileRevision: profile.revision,
+              specDigest: profile.specDigest, root, hostRef: root.selection.hostRef, registration: root.registration,
+              mainInstallationId: root.binding.mainId, approvalConfig: profile.approvalConfig },
+          } })
+        return { spec, profile: qualified, ready: true, reasons: [],
+          sourceReservation: { scopeId: `${f.workspaceId}:${root.binding.rootId}`, reservedBytes: 1024 } }
+      })
+      const placement = new JobComputerSelection(f.settings, {
+        candidates: async () => ({ candidates: candidates.filter(candidate =>
+          f.computers.some(computer => computer.connected
+            && buildComputerKey(computer.target) === buildComputerKey({ hostRef: candidate.spec.target.hostRef }))),
+        diagnosticCodes: [] }),
+      }, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }), async () => 64 * 2 ** 30)
+      const unavailable = async (): Promise<never> => { throw new Error('This placement test does not launch a runtime') }
+      const jobs = new JobService(f.db.pool, f.commands, { placement,
+        preparation: { validate: (client, principal, workspaceId, spec) =>
+          placement.validateRequest(client, principal, workspaceId, spec),
+        choices: async () => ({ targets: [], sources: [], policies: [] }), accept: unavailable,
+        revalidateAccepted: unavailable, adoptFinalBinding: unavailable },
+        dispatch: { accept: unavailable, cancel: unavailable, cancelForRunCleanup: unavailable, wake: unavailable },
+        artifacts: { list: async () => [], read: unavailable } })
+      const first = candidates[0]!
+      const definition = await jobs.saveDefinition(f.owner.principal, 'mcp', f.workspaceId, {
+        commandId: randomUUID(), expectedRevision: null, name: 'Auto verification failover',
+        spec: JobDefinitionSpecRecordSchema.parse({ ...first.spec, target: { kind: 'auto' },
+          policy: jobPolicyRequirementsRecord(first.spec.policy),
+          limits: first.profile.schemaVersion === 2 ? first.profile.spec.resources.limits : first.profile.limits }),
+      })
+      f.computers[0]!.connected = false
+      const persisted = await jobs.getDefinition(f.owner.principal, f.workspaceId, definition.id)
+      expect(persisted).toEqual(definition)
+      await sql.query('begin')
+      const identity = { executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID() }
+      const claim = await placement.claim(sql, f.owner.principal, persisted, identity)
+      expect(claim.spec).toEqual(candidates[1]!.spec)
+      expect(claim.compatibleTargetCount).toBe(1)
+      await sql.query('commit')
+      expect((await f.db.pool.query('select spec,limits from job_computer_selections where execution_id=$1',
+        [identity.executionId])).rows[0]).toEqual({ spec: candidates[1]!.spec,
+        limits: first.profile.schemaVersion === 2 ? first.profile.spec.resources.limits : first.profile.limits })
+      expect(await jobs.getDefinitionVersion(f.owner.principal, f.workspaceId, definition.id, definition.versionId))
+        .toEqual(definition)
+    } finally {
+      await sql.query('rollback')
+      sql.release()
+      await f.close()
+    }
+  })
+
+  it('repairs a previously shrunk same-computer clone without losing its link or rewriting its saved version', async () => {
+    const f = await fixture()
+    try {
+      if (f.stored.schemaVersion !== 2) throw new Error('Verification template required')
+      const resources = f.stored.spec.resources
+      const smaller = await f.profiles.save(f.owner.principal, 'mcp', f.workspaceId, {
+        commandId: randomUUID(), expectedRevision: null, name: f.stored.name,
+        spec: { ...f.stored.spec, resources: { ...resources,
+          limits: { ...resources.limits, diskBytes: resources.limits.diskBytes / 2 } } },
+      })
+      await new CiEnrollmentRepository(f.db.pool).save(f.db.pool, f.workspaceId, {
+        state: { target: f.computers[0]!.target, revision: 0, enabled: true, state: 'pending',
+          profileIds: [smaller.id], templates: [], message: null, updatedAt: null },
+        profiles: { [f.stored.id]: { profileId: smaller.id, digest: 'previous-template-budget' } },
+      })
+      await f.enrollment.reconcile()
+      const state = await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId })
+      expect(state.computers[0]!.profileIds).toEqual([smaller.id])
+      const profiles = (await f.profiles.list(f.owner.principal, f.workspaceId)).profiles
+      expect(profiles).toHaveLength(4)
+      const repaired = profiles.find(row => row.profile.id === smaller.id)!.profile
+      expect(repaired).toMatchObject({ revision: smaller.revision + 1, spec: { resources } })
+      expect((await f.db.pool.query('select record from job_runtime_profile_versions where profile_id=$1 and revision=$2',
+        [smaller.id, smaller.revision])).rows[0]!.record).toEqual(smaller)
+      expect(profiles.find(row => row.profile.id === f.stored.id)!.profile).toEqual(f.stored)
+      await f.enrollment.reconcile()
+      expect((await f.profiles.list(f.owner.principal, f.workspaceId)).profiles).toEqual(profiles)
+      expect((await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId })).computers[0]!.profileIds)
+        .toEqual([smaller.id])
     } finally { await f.close() }
   })
 
@@ -259,6 +539,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
     const f = await fixture()
     try {
       const storage = f.inventory.storage
+      const root = f.inventory.root
       f.inventory.storage = async target => target.hostRef.kind === 'main' ? null : storage(target)
       f.inventory.root = async (_principal, _workspace, _template, target) => {
         if (buildComputerKey(target) === buildComputerKey(f.computers[1]!.target)) {
@@ -268,15 +549,27 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       }
       await f.enrollment.reconcile()
       const state = await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId })
-      expect(state.computers[1]).toMatchObject({ state: 'root-required', message: 'Approved writable root required.' })
+      expect(state.computers[1]).toMatchObject({ state: 'root-required',
+        templates: [{ templateId: f.stored.id, profileId: null, state: 'root-required',
+          message: 'Approved writable root required.' }] })
       expect(state.computers[2]!.state).toBe('runtime-required')
-      const id = state.computers[0]!.profileIds[0]!
+      f.inventory.storage = storage
+      f.inventory.root = async (...args) => {
+        if (buildComputerKey(args[3]) === buildComputerKey(f.computers[1]!.target)) {
+          throw new DomainError('CI_ENROLLMENT_ROOT_REQUIRED', 'Approved writable root required.', 409)
+        }
+        return root(...args)
+      }
+      await f.enrollment.reconcile()
+      const id = (await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId }))
+        .computers[2]!.profileIds[0]!
       await f.db.pool.query(`update job_runtime_profiles set record=jsonb_set(record,'{status}','"revoked"') where id=$1`, [id])
       await f.enrollment.reconcile()
-      expect((await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId })).computers[0])
-        .toMatchObject({ state: 'failed', message: 'The enrolled CI profile was revoked.' })
+      expect((await f.enrollment.read(f.owner.principal, { workspaceId: f.workspaceId })).computers[2])
+        .toMatchObject({ state: 'failed', profileIds: [], templates: [{ templateId: f.stored.id,
+          profileId: null, state: 'failed', message: 'The enrolled CI profile was revoked.' }] })
       expect((await f.profiles.list(f.owner.principal, f.workspaceId)).profiles).toHaveLength(2)
-      expect(f.preparation.start).toHaveBeenCalledTimes(1)
+      expect(f.preparation.start).toHaveBeenCalledTimes(2)
     } finally { await f.close() }
   })
 
@@ -300,6 +593,94 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       expect((await validate()).valid).toBe(true)
     } finally { await f.close() }
   })
+
+  it.each([false, true])('serializes MCP disable with a queued claim with persisted enrollment=%s', async persisted => {
+    const f = await fixture()
+    let queue: Awaited<ReturnType<typeof buildQueueFixture>> | undefined
+    let resume: (() => void) | undefined
+    let claiming: Promise<void> | undefined
+    let disabling: ReturnType<Client['callTool']> | undefined
+    try {
+      await f.enrollment.close()
+      queue = await buildQueueFixture(f.db.pool, f.owner.principal, { workspaceId: f.workspaceId })
+      const computer = queue.computers[0]!
+      f.computers.push({ target: computer.target, connected: true, buildEnabled: true })
+      const client = await f.connect()
+      if (persisted) {
+        const enabled = await client.callTool({ name: 'ci_enrollment_update', arguments: {
+          workspaceId: f.workspaceId, target: computer.target, expectedRevision: 0,
+          commandId: randomUUID(), enabled: true,
+        } })
+        expect(enabled.isError, JSON.stringify(enabled.content)).not.toBe(true)
+      } else {
+        expect((await f.db.pool.query('select 1 from ci_enrollment_computers where workspace_id=$1 and host_key=$2',
+          [f.workspaceId, buildComputerKey(computer.target)])).rowCount).toBe(0)
+      }
+      const definition = await queue.save()
+      const started = await queue.jobs.enqueue(f.owner.principal, 'mcp', f.workspaceId, {
+        commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision,
+      })
+      if (started.kind !== 'pending-admission') throw new Error('Offline computer must keep the Job queued')
+      await queue.jobs.wakeQueue()
+      let reached!: () => void
+      const entered = new Promise<void>(resolve => { reached = resolve })
+      const paused = new Promise<void>(resolve => { resume = resolve })
+      const requireEnabled = queue.settings.requireEnabled.bind(queue.settings)
+      vi.spyOn(queue.settings, 'requireEnabled').mockImplementationOnce(async (...args) => {
+        reached()
+        await paused
+        return requireEnabled(...args)
+      })
+      queue.online()
+      claiming = queue.jobs.wakeQueue()
+      await Promise.race([entered, claiming.then(() => { throw new Error('Claim did not reach the placement barrier') })])
+      let disableReturned = false
+      disabling = client.callTool({ name: 'ci_enrollment_update', arguments: {
+        workspaceId: f.workspaceId, target: computer.target, expectedRevision: persisted ? 1 : 0,
+        commandId: randomUUID(), enabled: false,
+      } }).then(async result => {
+        disableReturned = true
+        expect((await f.db.pool.query('select 1 from job_computer_selections where execution_id=$1',
+          [started.ticket.executionId])).rowCount).toBe(1)
+        return result
+      })
+      await vi.waitFor(async () => {
+        const waiting = (await f.db.pool.query<{ count: number }>(`select count(*)::int as count from pg_locks
+          where locktype='advisory' and not granted
+          and database=(select oid from pg_database where datname=current_database())
+          and objid=(hashtext($1)::bigint & 4294967295)`,
+        [`ci-enrollment:${f.workspaceId}:${buildComputerKey(computer.target)}`])).rows[0]!
+        expect(waiting.count).toBe(1)
+      }, { timeout: 2000 })
+      expect(disableReturned).toBe(false)
+      resume!()
+      const disabled = await disabling
+      expect(disabled.isError, JSON.stringify(disabled.content)).not.toBe(true)
+      await claiming
+      expect(await queue.jobs.getQueueTicket(f.owner.principal, f.workspaceId, started.ticket.id))
+        .toMatchObject({ state: 'accepted', executionId: started.ticket.executionId })
+      const readback = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
+      expect(CiEnrollmentStateSchema.parse(readback.structuredContent).computers
+        .find(value => buildComputerKey(value.target) === buildComputerKey(computer.target)))
+        .toMatchObject({ enabled: false, revision: persisted ? 2 : 1, state: 'disabled' })
+      const next = await queue.jobs.enqueue(f.owner.principal, 'mcp', f.workspaceId, {
+        commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision,
+      })
+      if (next.kind !== 'pending-admission') throw new Error('Disabled computer must keep the new Job queued')
+      await queue.jobs.wakeQueue()
+      expect(await queue.jobs.getQueueTicket(f.owner.principal, f.workspaceId, next.ticket.id))
+        .toMatchObject({ state: 'blocked', waitingReasons: ['disabled'] })
+      expect((await f.db.pool.query('select 1 from job_computer_selections where execution_id=$1',
+        [next.ticket.executionId])).rowCount).toBe(0)
+      expect((await f.db.pool.query('select spec from job_computer_selections where execution_id=$1',
+        [started.ticket.executionId])).rows[0]!.spec).toMatchObject({ target: computer.candidate.spec.target })
+    } finally {
+      resume?.()
+      await Promise.allSettled([claiming, disabling])
+      await queue?.jobs.closeQueue()
+      await f.close()
+    }
+  }, 30_000)
 
   it('stops automatic preparation when the enrollment owner is revoked', async () => {
     const f = await fixture()

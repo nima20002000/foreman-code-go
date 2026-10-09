@@ -5,16 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { setupCompanion } from '../src/setup.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.17.1', rootPersistent: true, homePersistent: true, storagePersistent: true };
-async function fixture(t) {
+async function fixture(t, artifactName = 'fixture') {
   const directory = await mkdtemp(join(tmpdir(), 'worker-setup-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const home = join(directory, 'home'), artifact = join(directory, 'artifact');
   await mkdir(home); await mkdir(join(artifact, 'src'), { recursive: true });
-  const content = 'console.log(JSON.stringify(process.argv.includes("capture-env") ? { path: process.env.PATH, node: process.execPath, nodeOptions: process.env.NODE_OPTIONS ?? null } : process.argv.slice(2)))';
+  const content = `console.log(JSON.stringify(process.argv.includes("capture-env") ? { artifact: ${JSON.stringify(artifactName)}, approvedNode: process.env.APPROVED_NODE_LABEL ?? null, path: process.env.PATH, node: process.execPath, nodeOptions: process.env.NODE_OPTIONS ?? null } : process.argv.slice(2)))`;
   await writeFile(join(artifact, 'src/cli.mjs'), content);
   await writeFile(join(artifact, 'src/companion.mjs'), content);
   await mkdir(join(artifact, 'artifacts'));
@@ -29,6 +31,56 @@ async function fixture(t) {
   const bytes = JSON.stringify(manifest); await writeFile(join(artifact, 'manifest.json'), bytes);
   return { home, artifact, node: process.execPath, facts, approvedManifestSha256: hash(bytes), serviceTemplate: await readFile(new URL('../artifacts/graphql-worker.service.in', import.meta.url), 'utf8') };
 }
+
+test('setup holds the installation lock until its launchers and proposed service are published', { timeout: 5000 }, async (t) => {
+  const first = await fixture(t, 'first');
+  const second = await fixture(t, 'second');
+  const node = join(second.home, 'node-22.23.3');
+  await writeFile(node, `#!/bin/sh\nexport APPROVED_NODE_LABEL=22.23.3\nexec '${process.execPath}' "$@"\n`, { mode: 0o700 });
+  second.home = first.home;
+  second.node = node;
+  second.facts = { ...facts, node: 'v22.23.3' };
+  const manifest = JSON.parse(await readFile(join(second.artifact, 'manifest.json'), 'utf8'));
+  manifest.version = '1.1.0';
+  manifest.target = second.facts;
+  const bytes = JSON.stringify(manifest);
+  await writeFile(join(second.artifact, 'manifest.json'), bytes);
+  second.approvedManifestSha256 = hash(bytes);
+  second.updatePolicy = async () => true;
+  const entered = Promise.withResolvers();
+  const resume = Promise.withResolvers();
+  const write = fs.writeFile;
+  let paused = false;
+  const mocked = t.mock.method(fs, 'writeFile', async (path, ...options) => {
+    if (!paused && String(path).startsWith(join(first.home, '.local/share/graphql/mcp/launcher.mjs.'))) {
+      paused = true;
+      entered.resolve();
+      await resume.promise;
+    }
+    return write(path, ...options);
+  });
+  syncBuiltinESMExports();
+  const pending = setupCompanion(first);
+  try {
+    await entered.promise;
+    await assert.rejects(setupCompanion(second), /install_busy/);
+  } finally {
+    resume.resolve();
+    await pending;
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
+  const installed = await setupCompanion(second);
+  const unit = await readFile(installed.proposedService, 'utf8');
+  const [, serviceNode, entrypoint] = unit.match(/^ExecStart=(\S+) (\S+)/m);
+  for (const [command, args] of [[installed.launcher, ['capture-env']], [serviceNode, [entrypoint, 'capture-env']]]) {
+    const child = spawnSync(command, args, { encoding: 'utf8', timeout: 2000 });
+    assert.equal(child.status, 0, child.stderr);
+    const report = JSON.parse(child.stdout);
+    assert.equal(report.approvedNode, '22.23.3');
+    assert.equal(report.artifact, 'second');
+  }
+});
 
 test('setup installs private repeatable launcher files and retains existing identity without activating a service', async (t) => {
   const f = await fixture(t), state = join(f.home, '.local/state/graphql-worker');

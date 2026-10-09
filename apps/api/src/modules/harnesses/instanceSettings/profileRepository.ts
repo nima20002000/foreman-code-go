@@ -18,4 +18,14 @@ export class HostHarnessProfileEvidenceRepository {
     await client.query(`insert into harness_instance_profile_evidence(check_id,instance_id,instance_revision,record)
       values($1,$2,$3,$4::jsonb)`, [checkId, value.instanceId, value.revision, JSON.stringify(proof)])
   }
+  async previouslyQualified(value: HostHarnessOverride): Promise<boolean> {
+    const result = await this.pool.query(`select 1 from harness_instance_profile_evidence evidence
+      join harness_instance_settings settings on settings.instance_id=evidence.instance_id
+        and settings.revision=evidence.instance_revision
+      where settings.instance_id=$1 and settings.record->>'instanceRevision'=$2
+        and settings.configuration_fingerprint=$3 and evidence.record->>'qualified'='true'
+        and evidence.record->>'authenticated'='true' and evidence.record->>'compatible'='true' limit 1`,
+    [value.instanceId, value.instanceRevision, value.configurationFingerprint])
+    return result.rows.length > 0
+  }
 }

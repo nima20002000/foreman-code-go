@@ -1,6 +1,6 @@
 import { cp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import ts from 'typescript'
 
 export async function compileApiFixture(directory: string): Promise<string> {
@@ -12,6 +12,9 @@ export async function compileApiFixture(directory: string): Promise<string> {
   await cp(join(api, 'package.json'), join(fixture, 'package.json'))
   await symlink(join(api, 'node_modules'), join(fixture, 'node_modules'), 'dir')
   await emitTypeScriptFixture(join(api, 'tsconfig.build.json'), output)
+  const runtimeScript = pathToFileURL(join(repository, 'scripts/copy-api-runtime.mjs')).href
+  const { copyApiRuntime } = await import(runtimeScript)
+  await copyApiRuntime(repository, output)
   return output
 }
 
@@ -24,7 +27,7 @@ export async function emitTypeScriptFixture(config: string, output: string): Pro
   }
   // Runtime fixtures need JavaScript, not a second copy of the repository's type graph.
   for (const file of parsed.fileNames) {
-    if (file.endsWith('.d.ts')) continue
+    if (file.endsWith('.d.ts') || file.endsWith('.d.mts')) continue
     const emitted = ts.transpileModule(await readFile(file, 'utf8'), {
       fileName: file,
       // The API package uses ESM; isolated transforms cannot infer its package.json mode.

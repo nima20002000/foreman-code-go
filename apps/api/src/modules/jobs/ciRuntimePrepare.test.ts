@@ -4,8 +4,10 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
-import { codexBinary, extractQualificationSource, prepareCiRuntime, pruneCiImages, reclaimInterruptedPreparation }
+import { codexBinary, extractQualificationSource, prepareCiRuntime, reclaimInterruptedPreparation }
   from './ciRuntimePrepare.js'
+import { pruneCiImages } from './ciRuntimeImages.js'
+import { ciPreparationLimits, ciPreparationResourceArgs } from './ciPreparationLimits.js'
 import { PreparedCiRuntimeSchema } from '@foreman-code/contracts'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 
@@ -109,6 +111,28 @@ describe('CI runtime preparation boundaries', () => {
       review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } })).rejects.toBe(failure)
   })
 
+  it('cleans up its named seed container when creation has an uncertain result', async () => {
+    const f = await repository()
+    await writeFile(join(f.source, 'package.json'), JSON.stringify({ packageManager: 'pnpm@11.27.0' }))
+    await writeFile(join(f.source, 'pnpm-lock.yaml'), 'lockfileVersion: 9\npackages: {}\n')
+    await writeFile(join(f.source, 'pnpm-workspace.yaml'), 'minimumReleaseAge: 2880\n')
+    const commit = f.save()
+    const installer = join(f.root, 'installer')
+    await mkdir(installer, { mode: 0o700 })
+    const failure = new Error('Container creation response was interrupted')
+    command.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('ps') || args.includes('images')) return '[]'
+      if (args.includes('create')) throw failure
+      return ''
+    })
+    await expect(prepareCiRuntime({ repository: f.source, commit, installer,
+      review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } })).rejects.toBe(failure)
+    const create = command.run.mock.calls.find(([, args]) => (args as string[]).includes('create'))![1] as string[]
+    const container = create[create.indexOf('--name') + 1]!
+    expect(command.run.mock.calls.some(([, args]) => (args as string[]).includes('rm')
+      && (args as string[]).at(-1) === container)).toBe(true)
+  })
+
   it('prepares another project from its own dependency seed without requiring the Foreman Codex package', async () => {
     const f = await repository()
     await writeFile(join(f.source, 'package.json'), JSON.stringify({ name: 'ordinary-project',
@@ -120,7 +144,7 @@ describe('CI runtime preparation boundaries', () => {
     const commit = f.save()
     const installer = join(f.root, 'installer')
     await mkdir(installer, { mode: 0o700 })
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
       name: 'fixture', time: { '1.0.0': '2025-01-01T00:00:00.000Z' },
       versions: { '1.0.0': { dist: { integrity: 'sha512-fixture' } } },
     })))
@@ -217,6 +241,35 @@ describe('CI runtime preparation boundaries', () => {
     expect(execFileSync('git', ['-C', f.source, 'worktree', 'list'], { encoding: 'utf8' })).not.toContain(source)
   })
 
+  it('reclaims interrupted seed containers only for the same installer', async () => {
+    const f = await repository()
+    f.save()
+    const installer = join(f.root, 'installer')
+    await mkdir(installer, { mode: 0o700 })
+    const installation = createHash('sha256').update(installer).digest('hex')
+    const containers = new Map<string, { Id: string; State: string; Labels: Record<string, string> }>([
+      ['original-seed', { Id: 'original-seed', State: 'created', Labels: {
+        'io.foreman-code.installation': installation, 'io.foreman-code.ci-preparation': 'seed',
+      } }],
+      ['foreign-seed', { Id: 'foreign-seed', State: 'created', Labels: {
+        'io.foreman-code.installation': 'another-installer', 'io.foreman-code.ci-preparation': 'seed',
+      } }],
+      ['job-container', { Id: 'job-container', State: 'running', Labels: {
+        'io.foreman-code.installation': installation, 'io.foreman-code.ci-preparation': 'job',
+      } }],
+      ['unlabelled-seed', { Id: 'unlabelled-seed', State: 'created', Labels: {} }],
+    ])
+    command.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('ps')) return JSON.stringify([...containers.values()])
+      if (args.includes('rm')) containers.delete(args.at(-1)!)
+      return ''
+    })
+    await reclaimInterruptedPreparation({ repository: f.source, installer, keepPaths: [], env: process.env })
+    expect([...containers.keys()]).toEqual(['foreign-seed', 'job-container', 'unlabelled-seed'])
+    await reclaimInterruptedPreparation({ repository: f.source, installer, keepPaths: [], env: process.env })
+    expect([...containers.keys()]).toEqual(['foreign-seed', 'job-container', 'unlabelled-seed'])
+  })
+
   it('extracts the locked Codex binary and reads its version without executing it on the host', async () => {
     const f = await repository()
     const marker = join(f.root, 'codex-host-marker')
@@ -234,7 +287,9 @@ describe('CI runtime preparation boundaries', () => {
     command.run.mockImplementation(async (file, args: string[]) => {
       if (file === 'corepack') return ''
       expect(args).toEqual(expect.arrayContaining(['run', '--network=none', '--read-only', '--cap-drop=all',
-        '--security-opt=no-new-privileges', '--memory=2g', '--pids-limit=256']))
+        '--security-opt=no-new-privileges', '--pids-limit=256',
+        ...ciPreparationResourceArgs({ cpuCount: Math.min(2, ciPreparationLimits().cpuCount),
+          memoryBytes: Math.min(2 * 2 ** 30, ciPreparationLimits().memoryBytes) })]))
       expect(args.some(arg => arg.startsWith('--volume') || arg.startsWith('--mount'))).toBe(false)
       return { stdout: bytes, stderr: JSON.stringify({ version: 'codex-cli-fixture' }) }
     })
@@ -253,19 +308,21 @@ describe('CI runtime preparation boundaries', () => {
       if (args[0] === 'ps') return JSON.stringify([{ Id: 'build', Names: ['image-working-container'] },
         { Id: 'recovery', Names: ['retained-job'] }])
       if (args[0] === 'images') return JSON.stringify([...images].map(Id => ({ Id,
-        Names: [`localhost/foreman-code-verification:${Id}`] })))
+        Names: [`localhost/foreman-code-verification:${createHash('sha256').update(Id).digest('hex').slice(0, 12)}`] })))
+      if (args[0] === 'image' && args[1] === 'inspect') return JSON.stringify([{ Id: args.at(-1),
+        Labels: { 'io.foreman-code.installation': createHash('sha256').update('/ci/installer').digest('hex') } }])
       if (args[0] === 'rm') containers.delete(args.at(-1)!)
       if (args[0] === 'rmi') {
         const id = args.at(-1)!
         if ([...containers.values()].includes(id)) {
-          if (!args.includes('-f')) throw new Error('Image is in use')
+          if (!args.includes('-f')) throw Object.assign(new Error('Image is in use'), { code: 2 })
           for (const [container, image] of containers) if (image === id) containers.delete(container)
         }
         images.delete(id)
       }
       return ''
     })
-    await pruneCiImages([], process.env)
+    await pruneCiImages({ keep: [], env: process.env, installer: '/ci/installer' })
     expect([...containers.keys()].sort()).toEqual(['build', 'recovery'])
     expect([...images].sort()).toEqual(['building', 'old'])
   })

@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
+import { inventoryPayloadFingerprints, type PayloadFingerprintCache } from './payloadFingerprintCache.js'
 
 // @openai/codex 0.154.0 bin/codex.js; only this measured launcher algorithm is supported.
 const codexNpmLauncher = { bytes: 8790, sha256: '61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70' }
@@ -10,7 +11,7 @@ const codexNpmLauncher = { bytes: 8790, sha256: '61b0194f3bb6534439c8d26a3ed57d0
 /** Resolve only a directly executable image or the repository's pinned Codex
  * npm launcher algorithm. Arbitrary scripts are visible but not payload-trusted. */
 export async function passiveDriverPayloads(driver: string, launcher: string,
-  platform: string = process.platform, architecture: string = process.arch): Promise<{ complete: boolean; paths: string[] }> {
+  platform: string = process.platform, architecture: string = process.arch, fingerprintCache?: PayloadFingerprintCache): Promise<{ complete: boolean; paths: string[] }> {
   const file = await open(launcher, 'r')
   const prefix = Buffer.alloc(4)
   try {
@@ -19,7 +20,9 @@ export async function passiveDriverPayloads(driver: string, launcher: string,
     if (image === '7f454c46' || image.startsWith('4d5a')
       || ['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe'].includes(image)) return { complete: true, paths: [] }
     if (driver !== 'codex' || (await file.stat()).size !== codexNpmLauncher.bytes) return { complete: false, paths: [] }
-    const digest = createHash('sha256').update(await file.readFile()).digest('hex')
+    const digest = fingerprintCache
+      ? await fingerprintCache.fingerprint(launcher)
+      : createHash('sha256').update(await file.readFile()).digest('hex')
     if (digest !== codexNpmLauncher.sha256) return { complete: false, paths: [] }
   } finally {
     await file.close()
@@ -43,3 +46,6 @@ export async function passiveDriverPayloads(driver: string, launcher: string,
   try { await access(payload, constants.X_OK); return { complete: true, paths: [await realpath(payload)] } }
   catch { return { complete: false, paths: [] } }
 }
+
+export const inventoryDriverPayloads: typeof passiveDriverPayloads = (driver, launcher, platform, architecture) =>
+  passiveDriverPayloads(driver, launcher, platform, architecture, inventoryPayloadFingerprints)

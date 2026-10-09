@@ -74,7 +74,13 @@ describe('production exact-host profile failure evidence', () => {
     const client = { query: vi.fn(async () => undefined) }
     const settings = { latest: async () => f.value, lockRevision: async () => undefined, list: async () => [f.value],
       readAuthorized: async (work: (client: unknown) => Promise<unknown>) => work(client) }
-    const proofs = { findCheck: async () => null, append: vi.fn(async (_client: unknown, _id: string, _value: HostHarnessOverride, proof: typeof latest) => { latest = proof }) }
+    const proofs = {
+      latest: async () => latest,
+      findCheck: async () => null,
+      append: vi.fn(async (_client: unknown, _id: string, _value: HostHarnessOverride, proof: typeof latest) => {
+        latest = proof
+      }),
+    }
     const commands = { execute: async (command: { authorize: (client: unknown) => Promise<void>; perform: (client: unknown) => Promise<unknown> }) => {
       await command.authorize(client); return { value: await command.perform(client), replayed: false }
     }, recordDenied: vi.fn(async () => undefined) }
@@ -90,7 +96,9 @@ describe('production exact-host profile failure evidence', () => {
     expect(result.proof).toMatchObject({ authenticated: null, compatible: null, qualified: false,
       failure: { code: 'CODEX_MODEL_UNAVAILABLE', message: 'The selected model is absent from the native Codex catalog. Refresh the catalog and review this selection.' } })
     expect(proofs.append).toHaveBeenCalledTimes(1)
-    expect((await service.list(principal, scope, 'mcp')).overrides[0]?.qualification).toBe('unqualified')
+    expect((await service.list(principal, scope, 'mcp')).overrides[0]).toMatchObject({
+      qualification: 'unqualified', qualificationFailure: result.proof.failure,
+    })
     await expect(service.check({ ...principal, grants: [{ actions: ['harnesses:read'], scope: {} }] }, 'mcp',
       { commandId: f.value.instanceId, instanceId: f.value.instanceId, expectedRevision: f.value.revision, target: f.value.target })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     expect(proofs.append).toHaveBeenCalledTimes(1)
@@ -125,13 +133,19 @@ it('accepts the current Worker Claude qualification revision and rejects older p
     driverId: 'claude', suiteRevision: CLAUDE_PROFILE_CHECK_REVISION, authenticated: true, compatible: true,
     qualified: true, checkedAt: new Date().toISOString() }
   const registry = { pinOverride: () => ({ installation }), installations: { assertCurrent: f.current } }
-  const endpoint = { capabilities: () => [{ namespace: 'host-harness-check-v1', mainCanRequest: true }],
+  let clockReason: string | null = null
+  const endpoint = { clockReason: () => clockReason,
+    capabilities: () => [{ namespace: 'host-harness-check-v1', mainCanRequest: true }],
     request: vi.fn(async () => ({ payload: proof })) }
   const qualifier = new ProductionHostHarnessProfileQualifier(registry as never, {} as never,
     () => endpoint as never, '/recorded-workspace', undefined,
     new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
   const input = { checkId: f.value.instanceId, signal: f.signal.signal }
   expect(await qualifier.qualify(value, input)).toEqual(proof)
+  clockReason = 'Worker clock differs from Main by more than 2 minutes.'
+  await expect(qualifier.qualify(value, input)).rejects.toMatchObject({ code: 'WORKER_CLOCK_UNTRUSTED' })
+  expect(endpoint.request).toHaveBeenCalledTimes(1)
+  clockReason = null
   for (const revision of ['claude-profile-check-v1', 'claude-profile-check-v2']) {
     proof.suiteRevision = revision
     await expect(qualifier.qualify(value, input)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_EVIDENCE_MISMATCH' })

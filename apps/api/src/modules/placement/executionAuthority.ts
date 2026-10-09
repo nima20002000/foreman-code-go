@@ -57,15 +57,16 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   const changedBoot = connection.bootId !== authenticated.bootId
   const reconnected = !changedBoot
     && connection.connectionGeneration !== authenticated.connectionGeneration
-  let resident = false
-  if (reconnected || changedBoot) {
+  let resident: boolean
+  {
     const stored = (await sql.query<{ receipt: unknown }>(
       'select receipt from remote_execution_receipts where operation_id=$1 for share', [current!.operationId])).rows[0]
     const receipt = RemoteOperationReceiptSchema.safeParse(stored?.receipt)
     if (stored && (!receipt.success || !sameWorkflowValue(receipt.data.intent, current)
       || !sameWorkflowValue(receipt.data.connection, connection))) denied()
     resident = receipt.success && receipt.data.native !== undefined
-    if (input.action === 'start' || !['read', 'stop'].includes(input.action) && !resident) denied()
+    if ((reconnected || changedBoot)
+      && (input.action === 'start' || !['read', 'stop'].includes(input.action) && !resident)) denied()
   }
   // Cleanup observes and cancels the admitted owner even when it can no longer launch.
   if (!cleanup) {
@@ -74,7 +75,7 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     // A restarted OS can read the admitted owner's closure; it cannot qualify that process to continue.
     if (!changedBoot && (!reconnected || resident)) {
       await producer.assertPinsCurrent(sql, pin, await readLiveManagementPrincipal(sql, row!.authorization_principal_id),
-        row!.workspace_id, reconnected ? { purpose: 'resident' } : undefined)
+        row!.workspace_id, resident ? { purpose: 'resident' } : undefined)
     }
   }
   if (input.action === 'start') {
@@ -113,13 +114,11 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
           'select connection from remote_dispatch_origins where operation_id=$1 for share',
           [input.intent.operationId])).rows[0]
         const originalConnection = DeviceConnectionIdentitySchema.parse(origin?.connection)
-        const reconnected = originalConnection.bootId === context.binding.bootId
-          && originalConnection.connectionGeneration !== context.binding.connectionGeneration
-        const stored = reconnected ? (await sql.query<{ receipt: unknown }>(
+        const stored = (await sql.query<{ receipt: unknown }>(
           'select receipt from remote_execution_receipts where operation_id=$1 for share',
-          [input.intent.operationId])).rows[0] : undefined
+          [input.intent.operationId])).rows[0]
         const receipt = stored && RemoteOperationReceiptSchema.parse(stored.receipt)
-        const resident = reconnected && receipt?.native !== undefined
+        const resident = originalConnection.bootId === context.binding.bootId && receipt?.native !== undefined
         const harness = await producer.harnessFacts(sql, placement!, resident ? { purpose: 'resident' } : undefined)
         return { payload: ExecutionFactsResultSchema.parse({ version: 1, intent: input.intent, placement, executionPlacement: native, configuration, harness }) }
       }

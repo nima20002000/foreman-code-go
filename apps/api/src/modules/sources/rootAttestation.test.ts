@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rm, symlink, rename, chmod } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, symlink, rename, chmod, readdir, readlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { qualifyApprovedRootAllowlist, verifyApprovedRootAllowlist, attestWorkspaceRoot, browseApprovedRoot, createWorkspaceRootWorkerHandler } from './rootAttestation.js'
@@ -61,4 +61,27 @@ it('reports a missing selected folder by its stable code on Main and through a W
   await expect(browseApprovedRoot(f.allowlist, f.selection, 'missing')).rejects.toMatchObject({ code: 'ROOT_DIRECTORY_MISSING' })
   const handler = createWorkspaceRootWorkerHandler(async () => f.allowlist, async () => {})
   await expect(handler({ version: 1, operation: 'workspace-roots.attest', selection: missing })).rejects.toMatchObject({ code: 'ROOT_DIRECTORY_MISSING' })
+})
+
+it('closes the project directory when acquiring the runtime directory fails', async () => {
+  const f = await fixture()
+  const project = join(f.base, 'project')
+  const openProjectHandles = async () => {
+    const targets = await Promise.all((await readdir('/proc/self/fd')).map(async descriptor => {
+      try { return await readlink(`/proc/self/fd/${descriptor}`) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw error
+      }
+    }))
+    return targets.filter(target => target === project).length
+  }
+  const before = await openProjectHandles()
+  await rename(f.runtime, `${f.runtime}-saved`)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await expect(attestWorkspaceRoot(f.allowlist, f.selection)).rejects.toMatchObject({ code: 'ENOENT' })
+  }
+  expect(await openProjectHandles()).toBe(before)
+  await rename(`${f.runtime}-saved`, f.runtime)
+  expect((await attestWorkspaceRoot(f.allowlist, f.selection)).canonicalProjectRoot).toBe(project)
 })

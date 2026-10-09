@@ -3,7 +3,8 @@ import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { HarnessMcpArgumentSchema, HarnessMcpEndpointSchema } from './management/harnessSettings.js'
 
 /** Device channel namespace: Main asks a paired computer for maintenance status and starts maintenance tasks. */
-export const COMPUTER_MAINTENANCE_NAMESPACE = 'computer-maintenance-v1'
+export const COMPUTER_MAINTENANCE_NAMESPACE = 'computer-maintenance-v2'
+export const COMPUTER_MAINTENANCE_VERSION = 2
 
 /** Harnesses kept installed and current on every computer: Codex and Claude. */
 export const MaintainedHarnessSchema = z.enum(['codex', 'claude'])
@@ -15,7 +16,9 @@ export type MaintenanceTaskKind = z.infer<typeof MaintenanceTaskKindSchema>
 /** A user-level MCP server definition. Secret values are never copied: only environment variable names and URLs. */
 export const SyncedMcpServerSchema = z.discriminatedUnion('transport', [
   z.object({ transport: z.literal('stdio'), name: z.string().min(1).max(100), command: z.string().min(1).max(4096),
-    args: z.array(HarnessMcpArgumentSchema).max(100), envVars: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)).max(100) }).strict(),
+    args: z.array(HarnessMcpArgumentSchema).max(100),
+    // The native add commands used by fleet sync cannot restore environment-name references.
+    envVars: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)).max(0) }).strict(),
   z.object({ transport: z.literal('http'), name: z.string().min(1).max(100), url: HarnessMcpEndpointSchema,
     bearerTokenEnvVar: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u).nullable() }).strict(),
 ])
@@ -32,6 +35,9 @@ export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('sync-mcp'), servers: z.object({ codex: z.array(SyncedMcpServerSchema).max(100).optional(),
     claude: z.array(SyncedMcpServerSchema).max(100).optional() }).strict()
     .refine(servers => servers.codex !== undefined || servers.claude !== undefined, 'Include an available MCP catalog.'),
+    /** Definitions still present on Main but unsupported for copying; preserve their existing Worker entries. */
+    skippedServers: z.object({ codex: z.array(z.string().min(1).max(100)).max(100).optional(),
+      claude: z.array(z.string().min(1).max(100)).max(100).optional() }).strict().optional(),
     warnings: z.array(z.string().max(300)).max(202).optional() }).strict(),
   z.object({ kind: z.literal('sync-plugins'), plugins: z.array(z.string().regex(/^[^\s@]+@[^\s@]+$/u)).max(200).optional(),
     /** Main's Git plugin marketplaces; a computer adds the ones it lacks before installing plugins from them. */
@@ -48,7 +54,7 @@ export type MaintenanceTaskStart = z.infer<typeof MaintenanceTaskStartSchema>
 
 export const MaintenanceRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
-  z.object({ operation: z.literal('start'), task: MaintenanceTaskStartSchema }).strict(),
+  z.object({ operation: z.literal('start'), commandId: z.uuid(), task: MaintenanceTaskStartSchema }).strict(),
 ])
 export type MaintenanceRequest = z.infer<typeof MaintenanceRequestSchema>
 
@@ -66,6 +72,18 @@ export const MaintenanceTaskSchema = z.object({
   outputTail: z.string().max(8000),
 }).strict()
 export type MaintenanceTask = z.infer<typeof MaintenanceTaskSchema>
+
+/** Receiver receipt kept separately from the bounded recent-task list. */
+export const MaintenanceCommandRecordSchema = z.object({
+  requestHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  task: MaintenanceTaskSchema,
+}).strict()
+
+/** Main saves the selected computers and source catalogs before dispatching a command. */
+export const ComputerMaintenanceDispatchSchema = z.object({
+  targets: z.array(DeviceProvisioningTargetSchema).max(101),
+  task: MaintenanceTaskStartSchema,
+}).strict()
 
 export const HarnessVersionSchema = z.object({
   harness: MaintainedHarnessSchema,

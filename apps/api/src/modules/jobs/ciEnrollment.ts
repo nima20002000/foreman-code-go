@@ -1,8 +1,8 @@
 import type pg from 'pg'
 import { CiEnrollmentReadSchema, CiEnrollmentUpdateSchema, type CiEnrollmentComputer,
-  type CiEnrollmentState, type CiInstalledStorage } from '@foreman-code/contracts'
+  type CiEnrollmentState, type CiEnrollmentTemplate, type CiInstalledStorage } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
-import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
+import type { JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { intersectGrants } from '../access/operatorDelegation.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
@@ -15,15 +15,15 @@ import type { CiRuntimeProvisioner } from './ciRuntimeProvisioner.js'
 import type { JobRuntimeProfiles } from './runtimeProfiles.js'
 import { CiEnrollmentRepository, type CiEnrollmentRecord } from './ciEnrollmentRepository.js'
 import type { CiEnrollmentInventory, CiEnrollmentTarget } from './ciEnrollmentInventory.js'
-import { ciEnrollmentDisabled } from './ciEnrollmentInventory.js'
-import { ciEnrollmentProfileInput, ciEnrollmentTemplateDigest } from './ciEnrollmentProfiles.js'
+import { ciEnrollmentDisabled, lockCiEnrollment } from './ciEnrollmentInventory.js'
+import { ciEnrollmentProfileInput, ciEnrollmentTemplateDigest, requireCiEnrollmentStorage } from './ciEnrollmentProfiles.js'
 import { JobOwnership } from './ownership.js'
 import { jobDigest } from './digest.js'
 import type { JobSql } from './repository.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 
 export const CI_ENROLLMENT_ACTIONS: ManagementAction[] = [...CI_PREPARATION_ACTIONS]
-type Profiles = Pick<JobRuntimeProfiles, 'list' | 'save' | 'requestQualification' | 'qualify'>
+type Profiles = Pick<JobRuntimeProfiles, 'list' | 'save'>
 type Preparation = Pick<CiRuntimeProvisioner, 'start' | 'get'>
 
 export class CiEnrollment {
@@ -110,7 +110,7 @@ export class CiEnrollment {
       },
       perform: async sql => {
         const key = buildComputerKey(input.target)
-        await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`ci-enrollment:${input.workspaceId}:${key}`])
+        await lockCiEnrollment(sql, input.workspaceId, input.target)
         const row = (await sql.query<{ revision: string }>(
           'select revision from ci_enrollment_computers where workspace_id=$1 and host_key=$2 for update',
           [input.workspaceId, key])).rows[0]
@@ -118,7 +118,7 @@ export class CiEnrollment {
           throw new DomainError('REVISION_CONFLICT', 'CI enrollment changed. Refresh before saving again.', 409)
         }
         const state: CiEnrollmentComputer = { target: input.target, revision: input.expectedRevision + 1,
-          enabled: input.enabled, state: input.enabled ? 'pending' : 'disabled', profileIds: [], message: null,
+          enabled: input.enabled, state: input.enabled ? 'pending' : 'disabled', profileIds: [], templates: [], message: null,
           updatedAt: new Date().toISOString() }
         await sql.query(`insert into ci_enrollment_computers(workspace_id,host_key,revision,enabled,state)
           values($1,$2,$3,$4,$5::jsonb) on conflict(workspace_id,host_key) do update
@@ -176,7 +176,7 @@ export class CiEnrollment {
   }
 
   private initial(computer: CiEnrollmentTarget): CiEnrollmentComputer {
-    return { target: computer.target, revision: 0, enabled: true, state: 'pending', profileIds: [],
+    return { target: computer.target, revision: 0, enabled: true, state: 'pending', profileIds: [], templates: [],
       message: null, updatedAt: null }
   }
 
@@ -190,50 +190,102 @@ export class CiEnrollment {
     templates: JobRuntimeProfileRecord[], record: CiEnrollmentRecord): Promise<void> {
     record.state = { ...record.state, target: computer.target, message: null, state: 'pending',
       ...this.availability(computer, record.state.enabled), updatedAt: new Date().toISOString() }
-    const activeProfileIds = () => templates.flatMap(template => {
-      const link = record.profiles[template.id]
-      return link ? [link.profileId] : []
-    })
-    record.state.profileIds = [...new Set(activeProfileIds())]
+    if (record.state.state !== 'pending') {
+      await this.repository.save(this.pool, workspaceId, record)
+      return
+    }
+    record.state.profileIds = []
+    record.state.templates = templates.map<CiEnrollmentTemplate>(template => ({
+      templateId: template.id, profileId: null,
+      state: template.schemaVersion === 1 ? 'not-enrolled-automatically' : 'pending',
+      message: template.schemaVersion === 1
+        ? 'Ordinary Job templates are not enrolled automatically; configure and qualify their protected runtime explicitly.'
+        : null,
+    }))
     try {
-      if (record.state.state === 'pending') {
-        const storage = await this.inventory.storage(computer.target)
-        if (!storage) record.state.state = 'runtime-required'
-        else {
-          for (const template of templates) {
-            if (await ciEnrollmentDisabled(this.pool, workspaceId, computer.target)) return
-            record.profiles[template.id] = await this.enrollProfile(principal, workspaceId, computer,
-              template, storage, record.profiles[template.id])
-            record.state.profileIds = [...new Set(activeProfileIds())]
-            await this.repository.save(this.pool, workspaceId, record)
-          }
-          await this.prepare(principal, workspaceId, record)
+      const verification = templates.filter(template => template.schemaVersion === 2)
+      const storage = verification.length ? await this.inventory.storage(computer.target) : null
+      for (const template of verification) {
+        if (await ciEnrollmentDisabled(this.pool, workspaceId, computer.target)) return
+        const result = record.state.templates.find(value => value.templateId === template.id)!
+        if (!storage) {
+          result.state = 'runtime-required'
+          result.message = 'An installed verification runtime is required for automatic enrollment.'
+          continue
+        }
+        try {
+          const link = await this.enrollProfile(principal, workspaceId, computer,
+            template, storage, record.profiles[template.id])
+          record.profiles[template.id] = link
+          result.profileId = link.profileId
+          record.state.profileIds = [...new Set([...record.state.profileIds, link.profileId])]
+          await this.repository.save(this.pool, workspaceId, record)
+          result.state = await this.prepareProfile(principal, workspaceId, link.profileId, record.state)
+        } catch (error) {
+          if (this.scopeFailure(error)) throw error
+          result.state = this.failureState(error)
+          result.message = (error instanceof Error ? error.message : 'CI profile enrollment failed.').slice(0, 2000)
+          componentLogger('jobs').warn({ err: error, workspaceId, templateId: template.id,
+            host: buildComputerKey(computer.target) }, 'CI profile enrollment is pending')
         }
       }
+      this.summarize(templates, record.state)
     } catch (error) {
-      record.state.state = error instanceof DomainError && error.code === 'CI_ENROLLMENT_ROOT_REQUIRED'
-        ? 'root-required' : 'failed'
+      const failure = this.failureState(error)
+      record.state.state = failure
       record.state.message = (error instanceof Error ? error.message : 'CI enrollment failed.').slice(0, 2000)
+      for (const result of record.state.templates.filter(value => value.state === 'pending')) {
+        result.state = failure
+        result.message = record.state.message
+      }
       componentLogger('jobs').warn({ err: error, workspaceId, host: buildComputerKey(computer.target) },
         'CI computer enrollment is pending')
     }
     await this.repository.save(this.pool, workspaceId, record)
   }
 
+  private scopeFailure(error: unknown): boolean {
+    return error instanceof DomainError && (error.status === 403
+      || ['CI_ENROLLMENT_OFFLINE', 'BUILD_COMPUTER_IDENTITY_CHANGED', 'WORKER_EXECUTION_DISABLED'].includes(error.code))
+  }
+
+  private failureState(error: unknown): CiEnrollmentTemplate['state'] {
+    if (error instanceof DomainError) {
+      if (error.code === 'CI_ENROLLMENT_ROOT_REQUIRED') return 'root-required'
+      if (error.code === 'CI_ENROLLMENT_STORAGE_REQUIRED') return 'storage-required'
+      if (error.code === 'CI_RUNTIME_BUSY') return 'pending'
+    }
+    return 'failed'
+  }
+
+  private summarize(templates: JobRuntimeProfileRecord[], state: CiEnrollmentComputer): void {
+    const statuses = new Set(state.templates.map(result => result.state))
+    if (!statuses.size) state.state = 'pending'
+    else if (statuses.size === 1) state.state = state.templates[0]!.state
+    else if ([...statuses].some(status => !['pending', 'preparing', 'ready'].includes(status))) state.state = 'partial'
+    else state.state = statuses.has('preparing') ? 'preparing' : 'pending'
+    const messages = state.templates.filter(result => result.message).map(result => {
+      const template = templates.find(value => value.id === result.templateId)!
+      return `${template.name}: ${result.message}`
+    })
+    state.message = messages.length ? messages.join('\n').slice(0, 2000) : null
+  }
+
   private async enrollProfile(principal: ManagementPrincipal, workspaceId: string, computer: CiEnrollmentTarget,
     template: JobRuntimeProfileRecord, storage: CiInstalledStorage,
     link: CiEnrollmentRecord['profiles'][string] | undefined): Promise<{ profileId: string; digest: string }> {
     const current = await this.profiles.list(principal, workspaceId)
-    const digest = jobDigest({ template: ciEnrollmentTemplateDigest(template), storage, installation: computer.target })
+    requireCiEnrollmentStorage(template, storage)
+    const templateDigest = ciEnrollmentTemplateDigest(template)
+    const digest = jobDigest({ template: templateDigest, installation: computer.target })
     let profile = current.profiles.find(row => row.profile.id === link?.profileId)?.profile
     if (profile?.status === 'revoked') {
       throw new DomainError('JOB_RUNTIME_PROFILE_REVOKED', 'The enrolled CI profile was revoked.', 409)
     }
     const sameHost = buildComputerKey({ hostRef: template.root.selection.hostRef }) === buildComputerKey(computer.target)
-    const fitsStorage = jobRuntimeProfileLimits(template).diskBytes <= storage.diskBytes
-      && (template.schemaVersion === 1 || template.spec.resources.mutableInodes <= storage.mutableInodes)
-    if (sameHost && fitsStorage) return { profileId: template.id, digest }
-    if (profile && link?.digest === digest && profile.id !== template.id) return { profileId: profile.id, digest }
+    if (sameHost && (!profile || profile.id === template.id)) return { profileId: template.id, digest }
+    if (profile && link?.digest === digest && profile.id !== template.id
+      && ciEnrollmentTemplateDigest(profile) === templateDigest) return { profileId: profile.id, digest }
     const root = sameHost ? template.root
       : await this.inventory.root(principal, workspaceId, template.root, computer.target)
     const previous = profile?.id === template.id ? undefined : profile
@@ -245,31 +297,25 @@ export class CiEnrollment {
     return { profileId: profile.id, digest }
   }
 
-  private async prepare(principal: ManagementPrincipal, workspaceId: string, record: CiEnrollmentRecord): Promise<void> {
-    const profiles = (await this.profiles.list(principal, workspaceId)).profiles
-      .filter(row => record.state.profileIds.includes(row.profile.id))
-    record.state.state = profiles.length && profiles.every(row => row.ready) ? 'ready' : 'pending'
-    for (const { profile, ready } of profiles) {
-      if (ready || profile.status === 'revoked') continue
-      if (await ciEnrollmentDisabled(this.pool, workspaceId, record.state.target)) return
-      if (profile.schemaVersion === 1) {
-        const commandId = `enroll-qualify-${jobDigest({ workspaceId, id: profile.id, revision: profile.revision,
-          measurement: profile.measurement, enrollmentRevision: record.state.revision })}`
-        const approval = await this.profiles.requestQualification(principal, 'mcp', workspaceId,
-          { profileId: profile.id, expectedRevision: profile.revision, commandId })
-        await this.profiles.qualify(principal, 'mcp', workspaceId, `${commandId}:run`, approval.id)
-      } else {
-        const progress = await this.preparation.get(principal, { workspaceId, profileId: profile.id })
-        if (['idle', 'qualified', 'failed'].includes(progress.state)) {
-          const commandId = `enroll-prepare-${jobDigest({ workspaceId, id: profile.id, revision: profile.revision,
-            measurement: profile.measurement, enrollmentRevision: record.state.revision,
-            previousPreparation: progress.startedAt })}`
-          await this.preparation.start(principal, 'mcp', { workspaceId, profileId: profile.id, commandId,
-            ...(profile.sourceCommit ? { commit: profile.sourceCommit } : {}) })
-        }
-        record.state.state = 'preparing'
-        return
-      }
+  private async prepareProfile(principal: ManagementPrincipal, workspaceId: string, profileId: string,
+    enrollment: Pick<CiEnrollmentComputer, 'target' | 'revision'>): Promise<CiEnrollmentTemplate['state']> {
+    const { profile, ready } = (await this.profiles.list(principal, workspaceId)).profiles
+      .find(row => row.profile.id === profileId)!
+    if (profile.schemaVersion !== 2 || profile.status === 'revoked') {
+      throw new DomainError('JOB_RUNTIME_PROFILE_REVOKED', 'The enrolled CI profile is unavailable.', 409)
     }
+    if (ready) return 'ready'
+    if (await ciEnrollmentDisabled(this.pool, workspaceId, enrollment.target)) return 'pending'
+    const progress = await this.preparation.get(principal, { workspaceId, profileId })
+    if (['idle', 'qualified', 'failed'].includes(progress.state)) {
+      const commandId = `enroll-prepare-${jobDigest({ workspaceId, id: profile.id, revision: profile.revision,
+        measurement: profile.measurement, enrollmentRevision: enrollment.revision,
+        previousPreparation: progress.startedAt })}`
+      await this.preparation.start(principal, 'mcp', { workspaceId, profileId, commandId,
+        ...(profile.sourceCommit ? { commit: profile.sourceCommit } : {}) })
+      return 'preparing'
+    }
+    return progress.profileId === profileId || progress.profiles.some(value => value.profileId === profileId)
+      ? 'preparing' : 'pending'
   }
 }

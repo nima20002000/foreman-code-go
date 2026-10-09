@@ -5,8 +5,16 @@ import { createDatabase } from '../../src/infrastructure/database.ts'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.ts'
 import { buildProductionApp } from '../../src/production.ts'
 import { codexQualificationSuite } from '../../src/modules/harnesses/qualification/cliEntry.ts'
+import { discoverInventoryLauncher } from '../../src/modules/harnesses/hostDiscovery.ts'
+import { inventoryDriverPayloads } from '../../src/modules/harnesses/payloadDiscovery.ts'
+import { discoverInstalledClaudeSdk } from '../../src/modules/harnesses/claudeSdk/currentPin.ts'
 
-const { config, infrastructure } = JSON.parse(await readFile(process.argv[2], 'utf8'))
+const { config, infrastructure, claudeInventory } = JSON.parse(await readFile(process.argv[2], 'utf8'))
+if (claudeInventory) infrastructure.inventoryDiscovery = {
+  launcher: discoverInventoryLauncher, payloads: inventoryDriverPayloads,
+  claude: (_host, environment, signal) => discoverInstalledClaudeSdk(claudeInventory,
+    { harnessInstallationId: 'fixture-claude-sdk', environment }, signal),
+}
 const database = createDatabase(config.database)
 const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
 const production = buildProductionApp(config, database, checkpoints, false,

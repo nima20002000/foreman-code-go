@@ -9,6 +9,7 @@ import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../harnesses/instanceRegistry.js'
 import { qualificationIdentity } from '../harnesses/qualification/identity.js'
 import { readPlacementHarnessFacts } from './harnessFacts.js'
+import { placementDigest } from './binding.js'
 
 function fixture(driver: 'codex' | 'claude' = 'codex') {
   const hostRef = { kind: 'main' as const, mainId: randomUUID() }
@@ -47,9 +48,16 @@ function fixture(driver: 'codex' | 'claude' = 'codex') {
   const records = [{ harness: 'codex', version: '0.154.0', binary_sha256: fingerprint, suite_revision: suiteRevision,
     profile: 'codex-0.156', checks: [{ id: 'native-fixture-check', passed: true, detail: null }], failure_reason: null,
     started_at: new Date(), checked_at: new Date(), evidence }]
-  const query = vi.fn(async (sql: string) => {
-    if (sql.includes('from harness_instance_settings')) return { rows: [{ record: override }] }
-    if (sql.includes('from harness_instance_profile_evidence')) return { rows: [{ record: proof }] }
+  const settingsRecords = [override]
+  const proofRecords = new Map<number, HostHarnessProfileEvidence[]>([[1, [proof]]])
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
+    if (sql.includes('from harness_instance_settings')) {
+      const selected = [...settingsRecords].sort((left, right) => right.revision - left.revision)
+      return { rows: (sql.includes('limit 1') ? selected.slice(0, 1) : selected).map(record => ({ record })) }
+    }
+    if (sql.includes('from harness_instance_profile_evidence')) {
+      return { rows: (proofRecords.get(Number(values?.[1])) ?? []).map(record => ({ record })) }
+    }
     if (sql.includes('from host_harness_measurements')) return { rows: records.map(row => ({
       evidence: row.evidence, qualification: { harness: row.harness, version: row.version, binarySha256: row.binary_sha256,
         suiteRevision: row.suite_revision, profile: row.profile, status: 'qualified', checks: row.checks,
@@ -64,7 +72,7 @@ function fixture(driver: 'codex' | 'claude' = 'codex') {
   } }
   const read = (options?: { purpose: 'resident' }) => readPlacementHarnessFacts(
     { query } as unknown as GraphSqlClient, placement, installations, { codex: suiteRevision }, options)
-  return { read, installations, records, proof, evidence, override, placement, query }
+  return { read, installations, records, proof, evidence, override, placement, query, settingsRecords, proofRecords }
 }
 
 it('admits passive inventory only with its exact measured binary and qualified profile', async () => {
@@ -111,16 +119,92 @@ it('retains original qualification for a surviving process across transport reco
   expect(facts.qualification?.status).toBe('qualified')
 })
 
-it.each(['environment', 'installation', 'payload', 'disabled'])('keeps %s checks for an existing process', async defect => {
+it('keeps the qualified installed payload for a resident process while new admission requires the updated payload', async () => {
+  const f = fixture()
+  const original = f.installations.list()[0]!
+  const fingerprint = 'b'.repeat(64)
+  f.installations.refresh([{ ...original, installationFingerprint: fingerprint,
+    launcher: { ...original.launcher, fingerprint,
+      payloadFingerprints: [{ path: '/installed/codex', fingerprint }] } }])
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+  const resident = await f.read({ purpose: 'resident' })
+  expect(resident.installation.installationFingerprint).toBe(original.installationFingerprint)
+  expect(resident.profileProof).toEqual(f.proof)
+  expect(resident.qualification?.status).toBe('qualified')
+  expect(f.installations.list()[0]!.installationFingerprint).toBe(fingerprint)
+})
+
+it.each(['environment', 'unknown-installation', 'payload', 'disabled'])('keeps %s checks for an existing process', async defect => {
   const f = fixture()
   const installation = { ...f.installations.list()[0]!, connectionGeneration: 'replacement-channel' }
   if (defect === 'environment') installation.environmentGeneration = 'changed'
-  if (defect === 'installation') installation.installationFingerprint = 'changed'
+  if (defect === 'unknown-installation' && f.placement.payload.kind === 'agent') {
+    f.placement.payload.installationFingerprint = 'unknown'
+  }
   if (defect === 'payload') installation.launcher = { ...installation.launcher,
     payloadFingerprints: [{ path: '/installed/codex', fingerprint: 'b'.repeat(64) }] }
   if (defect === 'disabled') f.override.enabled = false
   f.installations.refresh([installation])
   await expect(f.read({ purpose: 'resident' })).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+})
+
+it.each(['missing', 'unreadable', 'incomplete'] as const)(
+  'retains the admitted installation through %s replacement inventory and the completed update', async state => {
+    const f = fixture()
+    const original = f.installations.list()[0]!
+    const accepted = await f.read()
+    if (f.placement.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
+    f.placement.payload.profileProofDigest = placementDigest(accepted.profileProof)
+    f.placement.payload.qualificationDigest = placementDigest(accepted.qualification)
+    f.installations.refresh([{ ...original, installed: state !== 'missing', installationFingerprint: null,
+      launcher: { ...original.launcher, status: state === 'incomplete' ? 'installed' : state, fingerprint: null } }])
+    await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+    expect((await f.read({ purpose: 'resident' })).qualification).toEqual(accepted.qualification)
+    const fingerprint = 'b'.repeat(64)
+    f.installations.refresh([{ ...original, installationFingerprint: fingerprint,
+      launcher: { ...original.launcher, fingerprint,
+        payloadFingerprints: [{ path: '/installed/codex', fingerprint }] } }])
+    await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+    const resident = await f.read({ purpose: 'resident' })
+    expect(resident.installation).toEqual(accepted.installation)
+    expect(resident.profileProof).toEqual(accepted.profileProof)
+    expect(resident.qualification).toEqual(accepted.qualification)
+  },
+)
+
+it('selects the pinned Main measurement after the same installation is qualified again', async () => {
+  const f = fixture()
+  const original = await f.read()
+  if (f.placement.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
+  f.placement.payload.profileProofDigest = placementDigest(original.profileProof)
+  f.placement.payload.qualificationDigest = placementDigest(original.qualification)
+  const newer = structuredClone(f.records[0]!)
+  newer.checked_at = new Date(newer.checked_at.getTime() + 1_000)
+  f.records.push(newer)
+  const resident = await f.read({ purpose: 'resident' })
+  expect(resident.qualification).toEqual(original.qualification)
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
+    details: { reason: 'accepted_qualification_changed' } })
+})
+
+it('resolves a resident proof across historical settings revisions after a payload rollback', async () => {
+  const f = fixture()
+  const original = await f.read()
+  if (f.placement.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
+  f.placement.payload.profileProofDigest = placementDigest(original.profileProof)
+  f.placement.payload.qualificationDigest = placementDigest(original.qualification)
+  const returned = { ...f.override, revision: 3 }
+  const newerProof = { ...f.proof, checkedAt: new Date(Date.parse(f.proof.checkedAt) + 1_000).toISOString() }
+  f.settingsRecords.push(returned)
+  f.proofRecords.set(3, [newerProof])
+  const resident = await f.read({ purpose: 'resident' })
+  expect(resident.override.revision).toBe(1)
+  expect(resident.profileProof).toEqual(original.profileProof)
+  delete f.placement.payload.profileProofDigest
+  delete f.placement.payload.qualificationDigest
+  const next = await f.read()
+  expect(next.override.revision).toBe(3)
+  expect(next.profileProof).toEqual(newerProof)
 })
 
 it.each([true, false])('uses the latest measurement after a native instance revision changes, passed=%s', async passed => {

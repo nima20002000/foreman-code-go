@@ -1,10 +1,33 @@
-import { act, screen } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { HarnessStatusMenu } from './HarnessStatusMenu'
 import { useNavigationUiStore } from '../workspaces/navigationUiStore'
-import { getMockAgentDefaults } from '../../shared/mocks/scenarios'
+import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
+import { computerSettingsKeys } from '../../shared/api/computerSettings'
+import { HarnessRegistryReadbackSchema } from '@foreman-code/contracts/harness-registry'
+
+const mainId = mockRuntimeIdentity.installationId
+const host = { kind: 'main', mainId } as const
+const inventoryKey = () => computerSettingsKeys.inventory(host, mainId)
+function inventory(installed = true) {
+  return HarnessRegistryReadbackSchema.parse({
+    instances: [],
+    installations: ['codex', 'claude'].map(driverId => ({
+      hostRef: host, driverId, driverRevision: '1', protocolRevision: 'native',
+      harnessInstallationId: `${driverId}-installation`, installationFingerprint: 'payload',
+      environmentGeneration: 'environment', connectionGeneration: 'connection',
+      observedVersion: null, installed, authenticated: null, compatible: null, qualified: null,
+      launcher: { requested: driverId, resolvedLauncher: installed ? `/recorded/${driverId}` : null,
+        fingerprint: 'payload', status: installed ? 'installed' : 'missing', interpreter: null, diagnostics: [],
+        environment: { generation: 'environment', provenance: 'terminal', cwd: '/recorded', path: '/recorded' },
+        checkedAt: '2026-10-09T00:00:00.000Z' },
+    })),
+    hostMetadata: { hostRef: host, applicationInstallationId: mainId, connection: null,
+      platform: null, workspaceRoots: null },
+  })
+}
 
 const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate')
 
@@ -26,61 +49,105 @@ describe('HarnessStatusMenu', () => {
     else Reflect.deleteProperty(HTMLElement.prototype, 'animate')
   })
   it.each([
-    ['eligible', 'Available'], ['blocked', 'Unavailable'], ['unverified', 'Unverified'],
-  ])('shows %s as an accessible status with the matching light', async (status, label) => {
-    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
-      harness: params.harness, scope: new URL(request.url).searchParams.get('scope'), status, rolloutEnabled: true,
-      defaultsRevision: 1, checkedAt: new Date().toISOString(), reason: null, limitation: 'Saved defaults only.',
-    })))
+    [true, 'Installed', 'installed'], [false, 'Not installed', 'missing'],
+  ] as const)('shows installed=%s from inventory with an accessible status and matching light', async (installed, label, state) => {
+    server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json(inventory(installed))))
     renderWithRouter(<HarnessStatusMenu />)
     for (const name of ['Codex', 'Claude']) {
       const link = await screen.findByRole('link', { name: `${name}: ${label}` })
       expect(link).toHaveAttribute('href', expect.stringContaining(`/settings/harnesses?harness=${name.toLowerCase()}`))
-      expect(link.querySelector('.harness-status-light')).toHaveClass(`harness-status-light--${status}`)
+      expect(link.querySelector('.harness-status-light')).toHaveClass(`harness-status-light--${state}`)
+      expect(link).toHaveAttribute('title', expect.stringContaining('profile qualification are checked separately'))
     }
   })
 
-  it('shows an unverified status when checking fails', async () => {
-    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', () => HttpResponse.error()))
+  it('recognizes installed harnesses without slow or failed preset and Operator profile checks', async () => {
+    const inspect = vi.fn(() => HttpResponse.json({ error: { code: 'HARNESS_CHECK_TIMEOUT', message: 'Timed out.' } }, { status: 503 }))
+    server.use(
+      http.get('/api/management/harnesses/registry', () => HttpResponse.json(inventory())),
+      http.get('/api/management/harnesses/:harness/execution-readiness', inspect),
+      http.get('/api/management/settings/agents', inspect),
+      http.get('/api/management/harnesses', inspect),
+    )
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('link', { name: 'Codex: Unverified' })).toHaveAttribute('title', expect.stringContaining('Could not check'))
+    expect(await screen.findByRole('link', { name: 'Codex: Installed' })).toBeVisible()
+    expect(await screen.findByRole('link', { name: 'Claude: Installed' })).toBeVisible()
+    expect(inspect).not.toHaveBeenCalled()
   })
 
-  it('checks the selected Claude Operator profile separately from the workflow preset', async () => {
-    const defaults = getMockAgentDefaults()
-    const requests: string[] = []
-    server.use(http.get('/api/management/settings/agents', () => HttpResponse.json({ ...defaults, revision: 4,
-      value: { ...defaults.value, operator: { ...defaults.value.operator, harness: { harness: 'claude', model: 'native-model', effort: 'medium',
-        authMode: 'subscription', configDirectory: '/unit/profile', permissionMode: 'default', sandbox: 'danger-full-access',
-        tools: [], permissionRules: [], instructions: '', mcpServers: {} } } } })),
-    http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => {
-      const scope = new URL(request.url).searchParams.get('scope')!
-      requests.push(`${params.harness}:${scope}`)
-      return HttpResponse.json({ harness: params.harness, scope, status: 'eligible', rolloutEnabled: true,
-        defaultsRevision: 4, checkedAt: new Date().toISOString(), reason: null, limitation: 'Exact current profile.' })
-    }))
+  it('shows an unverified status when inventory cannot be read', async () => {
+    server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.error()))
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('link', { name: 'Claude: Available' })).toHaveAttribute('title', expect.stringContaining('Operator default'))
-    expect(await screen.findByRole('link', { name: 'Codex: Available' })).toHaveAttribute('title', expect.stringContaining('Workflow preset'))
-    expect(requests).toContain('claude:operator-configuration')
-    expect(requests).not.toContain('claude:saved-harness-defaults')
+    expect(await screen.findByRole('link', { name: 'Codex: Unverified' }))
+      .toHaveAttribute('title', expect.stringContaining('Could not read installation status'))
   })
 
-  it.each([
-    ['HARNESS_PROFILE_REQUIRED', 'Setup required'],
-    ['CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE', 'Not qualified'],
-  ])('explains the blocked Claude reason %s without implying installation is missing', async (code, label) => {
-    server.use(http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
-      harness: params.harness, scope: new URL(request.url).searchParams.get('scope'), status: params.harness === 'claude' ? 'blocked' : 'eligible', rolloutEnabled: true,
-      defaultsRevision: code === 'HARNESS_PROFILE_REQUIRED' ? null : 1, checkedAt: new Date().toISOString(),
-      reason: params.harness === 'claude' ? { code, message: 'Claude needs the exact saved profile and native proof.' } : null,
-      limitation: 'Saved defaults only.',
-    })))
+  it('keeps absent observations unverified instead of assuming a harness is missing', async () => {
+    server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json({ instances: [], installations: [] })))
     renderWithRouter(<HarnessStatusMenu />)
-    const link = await screen.findByRole('link', { name: `Claude: ${label}` })
-    expect(link).toHaveAttribute('title', expect.stringContaining('exact saved profile'))
-    expect(link.querySelector('.harness-status-light')).toHaveClass('harness-status-light--blocked')
-    expect(await screen.findByRole('link', { name: 'Codex: Available' })).toBeVisible()
+    expect(await screen.findByRole('link', { name: 'Claude: Unverified' }))
+      .toHaveAttribute('title', expect.stringContaining('No installation inventory'))
+  })
+
+  it('does not display another Main computer inventory', async () => {
+    const wrong = inventory()
+    wrong.installations[0]!.hostRef.mainId = '11111111-1111-4111-8111-111111111111'
+    server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json(wrong)))
+    renderWithRouter(<HarnessStatusMenu />)
+    expect(await screen.findByRole('link', { name: 'Codex: Unverified' })).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Codex: Installed' })).not.toBeInTheDocument()
+  })
+
+  it('reuses the shared inspection while a background refresh runs and displays a confirmed removal', async () => {
+    let finish!: () => void
+    const gate = new Promise<void>(resolve => { finish = resolve })
+    const read = vi.fn(async () => {
+      await gate
+      return HttpResponse.json(inventory(false))
+    })
+    server.use(http.get('/api/management/harnesses/registry', read))
+    const { queryClient } = renderWithRouter(<HarnessStatusMenu />)
+    queryClient.setQueryData(inventoryKey(), inventory())
+    expect(await screen.findByRole('link', { name: 'Codex: Installed' })).toBeVisible()
+    expect(read).not.toHaveBeenCalled()
+    let refresh!: Promise<void>
+    act(() => { refresh = queryClient.invalidateQueries({ queryKey: inventoryKey() }) })
+    await waitFor(() => expect(read).toHaveBeenCalledOnce())
+    expect(screen.getByRole('link', { name: 'Codex: Installed' })).toBeVisible()
+    await act(async () => { finish(); await refresh })
+    expect(await screen.findByRole('link', { name: 'Codex: Not installed' })).toBeVisible()
+    expect(await screen.findByRole('link', { name: 'Claude: Not installed' })).toBeVisible()
+  })
+
+  it('retains the last installed observation when refreshing fails, without calling it missing', async () => {
+    server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.error()))
+    const { queryClient } = renderWithRouter(<HarnessStatusMenu />)
+    queryClient.setQueryData(inventoryKey(), inventory())
+    await screen.findByRole('link', { name: 'Codex: Installed' })
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: inventoryKey() }) })
+    expect(await screen.findByRole('link', { name: 'Codex: Unverified' }))
+      .toHaveAttribute('title', expect.stringContaining('Last inventory confirmed installation'))
+    expect(screen.queryByRole('link', { name: 'Codex: Not installed' })).not.toBeInTheDocument()
+  })
+
+  it('refreshes changed inventory automatically while the sidebar stays mounted', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    let installed = true
+    const read = vi.fn(() => HttpResponse.json(inventory(installed)))
+    server.use(http.get('/api/management/harnesses/registry', read))
+    const { queryClient, unmount } = renderWithRouter(<HarnessStatusMenu />)
+    try {
+      await screen.findByRole('link', { name: 'Codex: Installed' })
+      expect(read).toHaveBeenCalledOnce()
+      installed = false
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      expect(await screen.findByRole('link', { name: 'Codex: Not installed' })).toBeVisible()
+      expect(read).toHaveBeenCalledTimes(2)
+    } finally {
+      unmount()
+      queryClient.clear()
+      vi.useRealTimers()
+    }
   })
 
   it('animates manual relocation with transform/opacity and cancels it for instant keyboard changes', async () => {

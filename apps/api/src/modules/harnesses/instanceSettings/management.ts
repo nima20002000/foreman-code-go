@@ -51,7 +51,7 @@ export function registerHostHarnessOverrideTools(server: McpServer, service: Hos
     }
   }
   if (hostHarnessToolAvailable(service, principal, 'harness_instances_list')) server.registerTool('harness_instances_list', {
-    description: 'Read persisted host-instance overrides separately from global defaults. Qualification matches the current target installation, profile and connection generation. Previously qualified enabled Worker profiles are checked automatically after reconnect; failed checks remain unqualified. Listing never starts discovery or qualification.',
+    description: 'Read persisted host-instance overrides separately from global defaults. Main and Workers automatically check previously qualified profiles after installation updates or reconnects. Installation-only revisions preserve the configuration revision and history. Qualification is qualifying while checks run; new Run starts report HARNESS_PROFILE_CHECK_PENDING and can be retried. Failed checks remain unqualified with qualificationFailure. Listing never starts discovery or qualification.',
     inputSchema: HostHarnessOverrideListInputSchema, outputSchema: HostHarnessOverrideListSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke('harness_instances_list', () => service.list(principal, input, 'mcp')))

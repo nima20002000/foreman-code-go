@@ -280,7 +280,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
         || !isDeepStrictEqual(endpoint.currentBinding(root.binding.deviceId), channel!.binding)) {
         throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The original Worker cleanup reply changed.', 409)
       }
-      return result.closures
+      return { closures: result.closures, ...(result.retained ? { retained: result.retained } : {}) }
     }
     return reclaimSourceReservation(grant, { authorize,
       operationClosed: async () => { await authorize(); return true },

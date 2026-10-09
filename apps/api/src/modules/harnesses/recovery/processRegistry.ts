@@ -8,6 +8,7 @@ import { constants } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger } from '../../diagnostics/logger.js'
+import { DomainError } from '../../errors.js'
 import { bootIdentity, identityAlive, processIdentity, sessionAlive, type LinuxProcessIdentity } from './linuxIdentity.js'
 import { cgroupBoundary, cgroupPopulated, cgroupRemoved, killCgroup, retireCgroup,
   type NativeCgroupBoundary } from './cgroupBoundary.js'
@@ -290,7 +291,17 @@ export class NativeProcessRegistry {
   reserveLaunch(owner: string): NativeProcessRecovery {
     const scope = this.scope(owner)
     if (process.platform !== 'linux') return scope
-    return { ...scope, launchId: reserveProcess(scope).id }
+    try {
+      return { ...scope, launchId: reserveProcess(scope).id }
+    } catch (error) {
+      const storageError = error as NodeJS.ErrnoException
+      if (storageError.code !== 'ENOSPC' && storageError.code !== 'EDQUOT'
+        && storageError.errno !== -constants.errno.ENOSPC! && storageError.errno !== -constants.errno.EDQUOT!) throw error
+      const failure = new DomainError('HARNESS_RECOVERY_STORAGE_FULL',
+        'Native harness storage is full on this computer. Free space in its configured managed storage and retry.', 503)
+      failure.cause = error
+      throw failure
+    }
   }
   /** The original live parent may abandon an exact, never-dispatched reservation
    * only after its caller revokes future IO and joins admitted tasks. Publication
@@ -495,10 +506,26 @@ function reserveProcess(scope: NativeProcessRecovery): LaunchRecord {
   const id = randomUUID()
   const launch: LaunchRecord = { format: 1, id, owner: scope.owner, boot: bootIdentity(), parent,
     controlKey: randomBytes(32).toString('hex') }
-  const temporary = privateDirectory(join(ownerDirectory, `.pending-${id}`))
-  writeRecord(join(temporary, 'intent.json'), launch, true)
-  renameSync(temporary, join(ownerDirectory, id))
-  syncDirectory(ownerDirectory)
+  const temporary = join(ownerDirectory, `.pending-${id}`)
+  const directory = join(ownerDirectory, id)
+  let published = false
+  try {
+    privateDirectory(temporary)
+    writeRecord(join(temporary, 'intent.json'), launch, true)
+    renameSync(temporary, directory)
+    published = true
+    syncDirectory(ownerDirectory)
+  } catch (error) {
+    // No guardian can dispatch until this synchronous reservation returns.
+    try {
+      rmSync(published ? directory : temporary, { recursive: true, force: true })
+      syncDirectory(ownerDirectory)
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Native launch reservation publication and rollback failed.',
+        { cause: cleanupError })
+    }
+    throw error
+  }
   publishObservation(scope.root)
   return launch
 }

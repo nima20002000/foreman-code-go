@@ -1,9 +1,64 @@
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import type { PodmanCommandRunner } from './executorPodman.js'
 import { OwnedOCIContainer, parseOCIProcessStat, type OCIContainerOwnership } from './executorContainerOwner.js'
 
 const boot = '00000000-0000-4000-8000-000000000001'
 describe('original OCI owner identity checks, no container or PID signals', () => {
+  it.each(['created', 'configured'])('removes an owned %s container only after helpers close, including retries', async status => {
+    const containerId = 'd'.repeat(64)
+    let present = true
+    const ownership = { assertCurrent: vi.fn(), bindContainer: vi.fn(), readCertificate: async () => null,
+      closeHelpers: vi.fn(async () => true), confirmUnreleasedClosure: vi.fn(async () => true),
+    } as unknown as OCIContainerOwnership
+    const commands = { run: vi.fn(async (argv: string[]) => {
+      if (argv[0] === 'rm') {
+        present = false
+        return { exitCode: 0, stdout: containerId }
+      }
+      if (argv[1] === 'exists' || !present) return { exitCode: present ? 0 : 1, stdout: '' }
+      return { exitCode: 0, stdout: JSON.stringify([{ Id: containerId,
+        Config: { Labels: { owner: 'original' } }, State: { Running: false, Pid: 0, Status: status } }]) }
+    }) }
+    const restore = () => new OwnedOCIContainer({ identity: 'original', labels: { owner: 'original' },
+      originalContainerId: containerId }, commands, ownership)
+    await restore().remove()
+    await restore().remove()
+    expect(present).toBe(false)
+    expect(commands.run.mock.calls.filter(([argv]) => argv[0] === 'rm')).toHaveLength(1)
+    expect(ownership.closeHelpers).toHaveBeenCalled()
+    expect(ownership.confirmUnreleasedClosure).toHaveBeenCalledWith(containerId)
+    expect(commands.run.mock.calls.some(([argv]) => ['start', 'stop', 'kill'].includes(argv[0]!))).toBe(false)
+  })
+
+  it.each([false, true])('keeps a never-started container when helper closure is %s and release proof fails', async helpersClosed => {
+    const containerId = 'd'.repeat(64)
+    const ownership = { assertCurrent: vi.fn(), readCertificate: async () => null,
+      closeHelpers: async () => helpersClosed, confirmUnreleasedClosure: async () => false,
+    } as unknown as OCIContainerOwnership
+    const commands = { run: vi.fn<PodmanCommandRunner['run']>(async () => ({ exitCode: 0, stdout: JSON.stringify([{ Id: containerId,
+      Config: { Labels: { owner: 'original' } }, State: { Running: false, Pid: 0, Status: 'created' } }]) })) }
+    const owner = new OwnedOCIContainer({ identity: 'original', labels: { owner: 'original' },
+      originalContainerId: containerId }, commands, ownership)
+    await expect(owner.remove()).rejects.toThrow('closure is unconfirmed')
+    expect(commands.run.mock.calls.some(([argv]) => argv[0] === 'rm')).toBe(false)
+  })
+
+  it('rechecks a never-started container after helper closure before confirming removal', async () => {
+    const containerId = 'd'.repeat(64)
+    let running = false
+    const ownership = { assertCurrent: vi.fn(), readCertificate: async () => null,
+      closeHelpers: async () => { running = true; return true }, confirmUnreleasedClosure: vi.fn(async () => true),
+    } as unknown as OCIContainerOwnership
+    const commands = { run: vi.fn<PodmanCommandRunner['run']>(async () => ({ exitCode: 0, stdout: JSON.stringify([{ Id: containerId,
+      Config: { Labels: { owner: 'original' } },
+      State: { Running: running, Pid: running ? 42 : 0, Status: running ? 'running' : 'created' } }]) })) }
+    const owner = new OwnedOCIContainer({ identity: 'original', labels: { owner: 'original' },
+      originalContainerId: containerId }, commands, ownership)
+    expect(await owner.close(0)).toBe(false)
+    expect(ownership.confirmUnreleasedClosure).not.toHaveBeenCalled()
+  })
+
   it.each([1, 0, 125])('closes a failed unentered creation only with absent storage and the original native failure (exists %s)', async existsCode => {
     const confirmFailedCreation = vi.fn(async () => true)
     const ownership = { assertCurrent: vi.fn(), confirmFailedCreation } as unknown as OCIContainerOwnership

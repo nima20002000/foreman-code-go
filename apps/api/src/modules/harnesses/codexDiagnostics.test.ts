@@ -86,3 +86,27 @@ it('closes an admitted diagnostic owner that has no reserved launch', async () =
     expect(f.close).toHaveBeenCalledExactlyOnceWith(f.recovery)
   } finally { await f.diagnostics.dispose() }
 })
+
+it('returns failed reservation admission without starting IO or requesting nonexistent closure', async () => {
+  const f = fixture()
+  const failure = new Error('Reservation storage is full.')
+  f.admit.mockImplementation(() => { throw failure })
+  f.close.mockImplementation(async () => { throw new Error('No process closure exists.') })
+  const work = vi.fn(async (io: CodexDiagnosticOperations) => io.qualify(f.pin.binary, f.pin.cwd, {}, true))
+  await expect(f.diagnostics.run(f.pin, work, f.writer)).rejects.toBe(failure)
+  await f.diagnostics.dispose()
+  expect(work).not.toHaveBeenCalled()
+  expect(f.qualify).not.toHaveBeenCalled()
+  expect(f.abandon).not.toHaveBeenCalled()
+  expect(f.close).not.toHaveBeenCalled()
+})
+
+it('still closes a reservation assigned before diagnostic admission throws', async () => {
+  const f = fixture()
+  const failure = new Error('Admission failed after reserving.')
+  f.admit.mockImplementation(scope => { scope.launchId = 'recorded-launch'; throw failure })
+  await expect(f.diagnostics.run(f.pin, async () => 'unused', f.writer)).rejects.toBe(failure)
+  expect(f.abandon).toHaveBeenCalledExactlyOnceWith(f.recovery)
+  expect(f.close).toHaveBeenCalledExactlyOnceWith(f.recovery)
+  await f.diagnostics.dispose()
+})

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { stopGroup } from './integration-process.mjs'
 import { completeTestResourceCleanup, provisionTestResources, registerTestResourceCleanup } from './test-resources.mjs'
@@ -22,7 +23,13 @@ const onSigterm = () => interrupt('SIGTERM')
 process.on('SIGINT', onSigint)
 process.on('SIGTERM', onSigterm)
 try {
-  child = spawn(command, args, { env: resources.environment, stdio: 'inherit', detached: true })
+  const verificationRoot = resources.environment.FOREMAN_CODE_VERIFICATION_ROOT
+  const reported = command === 'vitest' && verificationRoot
+  const launch = reported
+    ? [process.execPath, fileURLToPath(new URL('./verification-reports.mjs', import.meta.url)), '__command',
+      verificationRoot, process.cwd(), process.env.npm_lifecycle_event, command, ...args]
+    : [command, ...args]
+  child = spawn(launch[0], launch.slice(1), { env: resources.environment, stdio: 'inherit', detached: true })
   process.exitCode = await Promise.race([
     new Promise((resolve, reject) => {
       child.once('error', reject)

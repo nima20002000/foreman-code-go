@@ -82,7 +82,7 @@ it('reclaims source and releases computer capacity after a disconnect outlasts t
       {} as PrivateSourceSnapshotStore, binding.mainId, {} as RegisteredSourceRootPort,
       { releaseClaim: async (original, options) => {
         await releaseMaterializationClaim(original.receipt, async () => 'released', undefined, options?.signal)
-        return measureRetainedMaterialization(original.receipt)
+        return { retainedBytes: await measureRetainedMaterialization(original.receipt) }
       } } as SourceExecutionHostPort,
       { confirmedClosed: async original => closed && original.receipt.executionId === execution.id })
     expect(jobLifecycleSignal(execution, 'cleanup').aborted).toBe(true)

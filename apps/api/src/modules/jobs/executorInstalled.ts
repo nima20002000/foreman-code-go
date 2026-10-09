@@ -327,10 +327,12 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
         || retained.container.certificate || retained.launches.some(launch => !launch.closed)) return false
       // The command gate is released only after a durable certificate and an
       // explicitly journaled exec. A stopped bootstrap never ran user argv.
-      return !retained.launches.some(launch => {
+      if (retained.launches.some(launch => {
         const argv = launch.argv[0] === '--remote=false' ? launch.argv.slice(1) : launch.argv
         return argv[0] === 'exec'
-      })
+      })) return false
+      await input.journal.jobConfirmUnreleasedClosure(execution.operationId, containerId)
+      return true
     },
     async confirmFailedCreation(identity) {
       const retained = await input.journal.jobNativeOwner(execution.operationId)

@@ -37,7 +37,7 @@ export interface JobComputerDiscovery {
 }
 export interface JobComputerInventory {
   candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
-    spec: JobDefinitionSpecRecord, placement?: JobPlacementIntent): Promise<JobComputerDiscovery>
+    spec: JobDefinitionSpecRecord, placement?: JobPlacementIntent, options?: { queued?: boolean }): Promise<JobComputerDiscovery>
 }
 type EnrolledCandidate = JobComputerCandidate & { preference: BuildComputerPreference }
 export interface JobComputerClaim {
@@ -199,6 +199,7 @@ export class JobComputerSelection {
       excludedHosts?: ReadonlySet<string>
       placementOverride?: JobPlacementIntent | null
       limits?: JobRuntimeProfile['limits']
+      queued?: boolean
     } = {}): Promise<JobComputerClaim> {
     const prior = (await sql.query('select 1 from job_computer_selections where execution_id=$1', [identity.executionId])).rowCount
     if (prior) {
@@ -208,7 +209,7 @@ export class JobComputerSelection {
     }
     const request = jobPlacementRequest(definition.spec, options)
     const { enrolled, placementCandidates, reasons } = await this.candidates(sql, principal, definition.workspaceId,
-      request, options.placementOverride)
+      request, options.placementOverride, { queued: options.queued ?? false, lockEnrollment: true })
     const compatibleTargetCount = new Set(enrolled.map(candidate => buildComputerKey(candidate.preference.target))).size
     const exceedsMaximum = this.exceedsMaximum(enrolled)
     const waitingHosts: string[] = []
@@ -260,12 +261,17 @@ export class JobComputerSelection {
       selectedHost: null, exceedsMaximum, reasons: [...new Set(normalized)] }
   }
   private async candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
-    request: JobDefinitionSpecRecord, placementOverride?: JobPlacementIntent | null) {
+    request: JobDefinitionSpecRecord, placementOverride?: JobPlacementIntent | null,
+    options: { queued?: boolean; lockEnrollment?: boolean } = {}) {
     const discovery = await this.inventory.candidates(sql, principal, workspaceId, request,
-      placementOverride ?? undefined)
+      placementOverride ?? undefined, options)
     const enrolled: EnrolledCandidate[] = []
     const reasons: string[] = [...discovery.diagnosticCodes]
-    for (const candidate of discovery.candidates) {
+    // Claim enrollment locks in host order, after build order and before capacity/source locks.
+    const candidates = options.lockEnrollment ? [...discovery.candidates].sort((left, right) =>
+      buildComputerKey(buildComputerTarget(left.spec.target)).localeCompare(
+        buildComputerKey(buildComputerTarget(right.spec.target)))) : discovery.candidates
+    for (const candidate of candidates) {
       if (!compatibleJobComputer(candidate, request)
         || (placementOverride?.kind === 'explicit'
           && canonical(placedRoot(candidate.spec.target)) !== canonical(placedRoot(placementOverride.target)))) {
@@ -273,7 +279,7 @@ export class JobComputerSelection {
         continue
       }
       const preference = await this.settings.preference(sql, buildComputerTarget(candidate.spec.target))
-      if (await ciEnrollmentDisabled(sql, workspaceId, preference.target)) {
+      if (await ciEnrollmentDisabled(sql, workspaceId, preference.target, { lock: options.lockEnrollment ?? false })) {
         reasons.push('disabled')
         continue
       }
@@ -330,10 +336,12 @@ export class JobComputerSelection {
       .every(field => jobRuntimeProfileLimits(candidate.profile)[field] <= capacity[field])
   }
   private async fits(sql: JobSql, candidate: EnrolledCandidate): Promise<JobComputerCapacityDecision> {
-    const storage = (await sql.query<{ bytes: string; verification_bytes: string; materializations: string }>(`select
+    const storage = (await sql.query<{ bytes: string; verification_bytes: string; materializations: string;
+      verification_materializations: string }>(`select
       coalesce(sum(bytes) filter(where not verification),0)::text as bytes,
       coalesce(sum(bytes) filter(where verification),0)::text as verification_bytes,
-      coalesce(sum(materializations),0)::text as materializations from (
+      coalesce(sum(materializations) filter(where not verification),0)::text as materializations,
+      coalesce(sum(materializations) filter(where verification),0)::text as verification_materializations from (
         select r.reserved_bytes as bytes,case when r.owner_kind='materialization' and r.state in ('preparing','owned','uncertain')
           then 1 else 0 end as materializations,exists(select 1 from job_computer_selections owner
             where r.owner_kind='materialization' and owner.operation_id=r.owner_id and owner.spec ? 'verification') as verification
@@ -350,8 +358,10 @@ export class JobComputerSelection {
     const sourceBytes = candidate.profile.schemaVersion === 2
       ? verificationSourceStorageBytes(candidate.profile) : SOURCE_AGGREGATE_LIMITS.bytes
     const usedBytes = candidate.profile.schemaVersion === 2 ? Number(storage.verification_bytes) : Number(storage.bytes)
+    const usedSlots = candidate.profile.schemaVersion === 2
+      ? Number(storage.verification_materializations) : Number(storage.materializations)
     if (usedBytes + candidate.sourceReservation.reservedBytes > sourceBytes
-      || Number(storage.materializations) >= sourceSlots) return { fits: false, reason: 'busy' }
+      || usedSlots >= sourceSlots) return { fits: false, reason: 'busy' }
     return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory,
       candidate.preference.buildAllowancePercent)
   }

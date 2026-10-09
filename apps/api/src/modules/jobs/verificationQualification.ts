@@ -76,14 +76,16 @@ export async function qualifyVerificationRuntime(input: {
   authority: JobQualificationAuthority
   signal: AbortSignal
   publishReport?: QualificationReportPublisher | undefined
+  now?: () => number
 }) {
+  const now = input.now ?? Date.now
   const candidate = JobVerificationQualificationCandidateSchema.parse(input.candidate)
   if (!input.publishReport) throw new Error('Canonical qualification Job publication is unavailable.')
   const fingerprint = candidate.fingerprint
   const configuration = await readInstalledVerificationConfiguration(input.configuration, candidate.profile)
   const approval = await input.authority.readApproval(candidate.approvalId)
   if (!approval || approval.status !== 'approved' || approval.fingerprint !== jobQualificationFingerprint(candidate)
-    || Date.parse(approval.expiresAt) <= Date.now()) {
+    || Date.parse(approval.expiresAt) <= now()) {
     return { outcome: 'denied' as const, closure: 'not_started' as const, reasons: ['approval_denied_or_expired'] }
   }
   const pool = fingerprint.quotaPool
@@ -200,7 +202,7 @@ export async function qualifyVerificationRuntime(input: {
     }
     const quotaResult = JSON.parse(await checked(['exec', containerId, 'node', '-e', quotaProbe,
       JSON.stringify({ phase: 'bytes', bytes: pool.slots[0]!.hardLimitBytes })],
-    Math.min(600000, Date.parse(approval.expiresAt) - Date.now())))
+    Math.min(600000, Date.parse(approval.expiresAt) - now())))
     if (!isKernelQuotaDenial(quotaResult.byteErrno)) {
       throw new Error(`Per-Job byte pressure did not report quota denial: ${JSON.stringify(quotaResult)}`)
     }
@@ -212,14 +214,14 @@ export async function qualifyVerificationRuntime(input: {
     }
     const quotaInodes = JSON.parse(await checked(['exec', containerId, 'node', '-e', quotaProbe,
       JSON.stringify({ phase: 'inodes', inodes: pool.slots[0]!.hardInodes })],
-    Math.min(600000, Date.parse(approval.expiresAt) - Date.now())))
+    Math.min(600000, Date.parse(approval.expiresAt) - now())))
     if (!isKernelQuotaDenial(quotaInodes.inodeErrno)) {
       throw new Error(`Per-Job inode pressure did not report quota denial: ${JSON.stringify(quotaInodes)}`)
     }
     const seedBytes = await readProtectedRuntimeFile({ path: configuration.seedReceiptPath,
       ownerUid: input.configuration!.ownerUid }, 16 * 1024 * 1024)
     const seed = JobVerificationOfflineSeedReceiptSchema.parse(JSON.parse(seedBytes.toString('utf8')))
-    const checkedAt = new Date().toISOString()
+    const checkedAt = new Date(now()).toISOString()
     const expiresAt = new Date(Math.min(Date.parse(approval.expiresAt),
       Date.parse(checkedAt) + candidate.ttlSeconds * 1000)).toISOString()
     const profileIdentity = { profileId: fingerprint.profileId, profileRevision: fingerprint.profileRevision,
@@ -302,7 +304,7 @@ export async function qualifyVerificationRuntime(input: {
       if (suites.length) containerId = await createContainer()
       const verified = await restore()
       target.destination.directoryIdentityHash = jobDigest(verified.filesystem)
-      const startedAt = new Date().toISOString()
+      const startedAt = new Date(now()).toISOString()
       const before = await statfs(namespace)
       const bytesBefore = (before.blocks - before.bfree) * before.bsize
       const inodesBefore = before.files - before.ffree
@@ -339,7 +341,7 @@ export async function qualifyVerificationRuntime(input: {
         '--context', `/workspace/${JOB_INPUT_DIRECTORY}/qualification-context.json`],
       context.executionTimeoutMs + context.cancellationTimeoutMs + candidate.profile.spec.policy.publicationTimeoutMs)
       const terminal = { outcome: execution.exitCode === 0 ? 'succeeded' as const : 'build_failed' as const,
-        exitCode: execution.exitCode, signal: null, finishedAt: new Date().toISOString() }
+        exitCode: execution.exitCode, signal: null, finishedAt: new Date(now()).toISOString() }
       const publishOrdinaryReport = async () => {
         const report = await publish(context, startedAt, terminal, reserve, materialization)
         pendingReport = undefined
@@ -377,7 +379,7 @@ export async function qualifyVerificationRuntime(input: {
       await resetVerificationQualificationWorkload(source.sourceRoot, scratch, configuration.qualificationSource.manifest.entries.map(file => file.path))
       const verified = await restore()
       target.destination.directoryIdentityHash = jobDigest(verified.filesystem)
-      const startedAt = new Date().toISOString()
+      const startedAt = new Date(now()).toISOString()
       const context = JobVerificationRepositoryContextSchema.parse({ ...failureContext,
         identity: { ...failureContext.identity, executionId: `${candidate.operationId}:${outcome}`,
           definitionVersionId: `${fingerprint.profileId}:${fingerprint.profileRevision}:${candidate.qualificationId}:${outcome}`,

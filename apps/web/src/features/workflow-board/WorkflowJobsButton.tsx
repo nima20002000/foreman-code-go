@@ -1,11 +1,13 @@
 import { useRef, useState } from 'react'
 import { createStore, useStore } from 'zustand'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
+import { jobQueueHasExecution } from '@foreman-code/contracts/job-admission'
 import { Button, Drawer, Icon, type IconName } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { JobResult } from '../jobs/JobResult'
+import { JobQueueFacts } from '../jobs/JobSpecFacts'
 import { jobError } from '../jobs/model'
-import { useWorkflowJobHistory } from '../jobs/query'
+import { useWorkflowJobHistory, useWorkflowJobQueue } from '../jobs/query'
 import { formatDuration } from '../resource-telemetry/telemetryView'
 import './workflowJobs.css'
 
@@ -32,6 +34,8 @@ function JobsPanel({ workspaceId, workflowId }: { workspaceId: string; workflowI
   const selectedId = useStore(store, state => state.selectedId)
   const trigger = useRef<HTMLButtonElement>(null)
   const history = useWorkflowJobHistory(workspaceId, workflowId, open)
+  const queue = useWorkflowJobQueue(workspaceId, workflowId, open)
+  const requests = queue.tickets.filter(ticket => !jobQueueHasExecution(ticket))
   const selected = history.items.find(item => item.execution.id === selectedId)
   return <>
     <Button ref={trigger} size="sm" variant="ghost" aria-haspopup="dialog" aria-expanded={open}
@@ -48,8 +52,22 @@ function JobsPanel({ workspaceId, workflowId }: { workspaceId: string; workflowI
               expectedDefinitionVersionId={selected.execution.acceptedSpec.definitionVersionId}
               {...(selected.execution.initiatingAgent ? { expectedInitiatingAgent: selected.execution.initiatingAgent } : {})} />
           </> : <>
-            {history.isPending ? <p role="status">Loading jobs…</p> : null}
-            {!history.isPending && !history.items.length ? <p>No jobs yet.</p> : null}
+            {queue.isError ? <p role="alert">Job requests unavailable. {jobError(queue.error)}
+              <Button size="sm" variant="ghost" onClick={() => void queue.refetch()}>Retry requests</Button>
+            </p> : null}
+            {history.isPending || queue.isPending ? <p role="status">Loading jobs…</p> : null}
+            {!history.isPending && !queue.isPending && !queue.isError
+              && !history.items.length && !queue.tickets.length ? <p>No jobs yet.</p> : null}
+            {requests.length > 0 && <section aria-label="Job requests"><h3>Job requests</h3>
+              {requests.map(ticket => <section key={ticket.id} aria-label={`Job request ${ticket.id}`}>
+                <h4>{ticket.definition.name}</h4>
+                {ticket.initiatingAgent && <p>Agent: {ticket.initiatingAgent.agentId} · Run: {ticket.initiatingAgent.runId}</p>}
+                <JobQueueFacts ticket={ticket} />
+              </section>)}
+            </section>}
+            {queue.hasNextPage ? <Button size="sm" variant="ghost" disabled={queue.isFetchingNextPage}
+              onClick={() => void queue.fetchNextPage()}>Older requests</Button> : null}
+            {history.items.length > 0 && <h3>Accepted executions</h3>}
             <ul className="board-job-list" aria-label="Workflow jobs">
               {history.items.map(item => <li key={item.execution.id}>
                 <JobRow name={item.name} execution={item.execution}
@@ -67,7 +85,15 @@ function JobsPanel({ workspaceId, workflowId }: { workspaceId: string; workflowI
 
 function jobStatus(execution: JobExecutionRecord): { label: string; icon: IconName; tone: string } {
   const { outcome, phase } = execution.process
-  if (outcome === 'succeeded') return { label: 'Succeeded', icon: 'check', tone: 'success' }
+  if (outcome === 'succeeded') {
+    if (execution.publication === 'failed' || execution.resultIssue) {
+      return { label: 'Process succeeded · results incomplete', icon: 'close', tone: 'danger' }
+    }
+    if (execution.publication !== 'complete') {
+      return { label: 'Process succeeded · publishing results', icon: 'clock', tone: 'neutral' }
+    }
+    return { label: 'Process succeeded · publication complete', icon: 'check', tone: 'neutral' }
+  }
   if (outcome === 'cancelled') return { label: 'Canceled', icon: 'stop', tone: 'neutral' }
   if (outcome) return { label: 'Failed', icon: 'close', tone: 'danger' }
   if (phase === 'running') return { label: 'Running', icon: 'play', tone: 'neutral' }

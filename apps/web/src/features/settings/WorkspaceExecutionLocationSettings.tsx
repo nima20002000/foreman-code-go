@@ -101,17 +101,22 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
     browse.reset(); validate.reset()
   }
   const reload = async () => {
-    if (operation.attempt.unresolved) return
+    if (operation.attempt.unresolved) return false
     const version = picker.editVersion
     const [location, roots] = await Promise.all([saved.refetch(), choices.refetch()])
-    if (location.isError || roots.isError || !location.data || !roots.data) { update(scope, previous => ({ ...previous, notice: 'Saved location could not be reloaded. Your candidate was preserved.' })); return }
+    if (location.isError || roots.isError || !location.data || !roots.data) {
+      update(scope, previous => ({ ...previous, notice: 'Saved location could not be reloaded. Your candidate was preserved.' }))
+      return false
+    }
     update(scope, previous => {
       if (previous.editVersion !== version) return { ...previous, notice: 'Saved location reloaded. Your newer candidate was preserved.' }
       return { ...empty(), open: previous.open, editVersion: previous.editVersion + 1, notice: 'Saved location and root policies reloaded. Select the intended computer again.' }
     })
+    return true
   }
   const submit = async (throwFailure = false) => {
-    if (busy || (!operation.attempt.unresolved && (archived || !selection || !chosen || conflict || !WorkspaceRootSelectionSchema.safeParse(selection).success))) return
+    if (busy || validate.isPending || browse.isPending
+      || (!operation.attempt.unresolved && (archived || !selection || !chosen || conflict || !WorkspaceRootSelectionSchema.safeParse(selection).success))) return
     const hadUnknownOutcome = operation.uncertain
     const latest = usePickers.getState().pickers[scope] ?? picker
     const submittedVersion = latest.editVersion
@@ -121,18 +126,22 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
     const submitted: WorkspaceRootSelection | undefined = record && draft ? { workspaceId, hostRef: record.host.hostRef,
       allowedBaseId: record.base.baseId, configurationRevision: record.host.configurationRevision, relativePath: draft.relativePath,
       accessMode: draft.accessMode, expectedLocationRevision: draft.locationRevision, expectedRootPolicyRevision: draft.rootPolicyRevision } : undefined
-    // Re-selecting the exact saved binding is not a change: no command, no revision bump.
     const readback = saved.isSuccess && saved.data.evidence === 'bound' ? saved.data : undefined
     const binding = readback?.binding
-    if (!operation.attempt.unresolved && submitted && record && readback && binding && sameHost(binding.hostRef, submitted.hostRef)
-      && binding.applicationInstallationId === record.host.applicationInstallationId && binding.allowedBaseId === submitted.allowedBaseId
-      && binding.configurationRevision === submitted.configurationRevision && binding.relativePath === submitted.relativePath
-      && binding.accessMode === submitted.accessMode && readback.locationRevision === submitted.expectedLocationRevision) {
-      update(scope, previous => ({ ...previous, open: false, notice: undefined })); return
-    }
-    operation.original ??= submitted && record ? { selection: submitted, host: record.host } : undefined
-    if (!operation.original) return
     try {
+      if (!operation.attempt.unresolved && submitted && record && readback && binding && sameHost(binding.hostRef, submitted.hostRef)
+        && binding.applicationInstallationId === record.host.applicationInstallationId && binding.allowedBaseId === submitted.allowedBaseId
+        && binding.configurationRevision === submitted.configurationRevision && binding.relativePath === submitted.relativePath
+        && binding.accessMode === submitted.accessMode && readback.locationRevision === submitted.expectedLocationRevision) {
+        const checked = await validate.mutateAsync({ input: submitted, expectedHost: record.host })
+        if (!active.current || epoch !== sessionGeneration()) return
+        if (checked.attestation.directoryIdentityHash === binding.directoryIdentityHash) {
+          update(scope, previous => ({ ...previous, open: false, notice: undefined }))
+          return
+        }
+      }
+      operation.original ??= submitted && record ? { selection: submitted, host: record.host } : undefined
+      if (!operation.original) return
       const request = operation.attempt.input(operation.original)
       const result = await save.mutateAsync({ input: { ...request.selection, commandId: request.commandId }, expectedHost: request.host })
       operation.attempt.succeeded(); operation.original = undefined; operation.uncertain = false
@@ -176,6 +185,7 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
       {guard}{recovery}
       <WorkspaceFolderPicker value={savedPath} label="Execution location" presentation="compact" triggerRef={triggerRef}
         directoryBinding={{ input: selection, expectedHost: chosen.host }} disabled={archived || busy}
+        onReloadSavedLocation={reload}
         selectionUnconfirmed={operation.attempt.unresolved} onSelect={async (path) => {
           const basePath = chosen.base.canonicalPath.replace(/\/$/, '') || '/'
           const prefix = basePath === '/' ? '/' : `${basePath}/`
@@ -219,7 +229,8 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
     <Dialog open={picker.open} onOpenChange={open => { if (open || !locked) update(scope, previous => ({ ...previous, open })) }} title="Execution folder" busy={locked}
       description="Browsing and validation run on the selected computer. The workspace changes only when the save is confirmed." footer={<>
         <Button disabled={locked} onClick={() => update(scope, previous => ({ ...previous, open: false }))}>Cancel</Button>
-        <Button disabled={archived || busy || (!operation.attempt.unresolved && (!selection || conflict))} onClick={() => void submit()}>
+        <Button disabled={archived || busy || validate.isPending || browse.isPending
+          || (!operation.attempt.unresolved && (!selection || conflict))} onClick={() => void submit()}>
           {busy ? 'Saving…' : operation.attempt.unresolved ? 'Reconcile original selection' : 'Select location'}
         </Button></>}>
       <Select label="Computer and approved base folder" value={picker.selected ?? ''} disabled={locked || archived}

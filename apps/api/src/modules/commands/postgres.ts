@@ -37,6 +37,8 @@ export class PostgresCommandCoordinator {
     prepare?(): Promise<void>
     /** Explicit compatibility boundary for historical receipts, never new commands. */
     replayResult?(result: unknown): T
+    /** Resume an unfinished external operation under its original command lock. */
+    shouldResumeReceipt?(client: pg.PoolClient): Promise<boolean>
   }): Promise<{ value: T; replayed: boolean }> {
     const inputHash = commandInputHash(input.payload)
     const dedicatedConnection = input.dedicatedConnection || input.prepare !== undefined
@@ -68,14 +70,18 @@ export class PostgresCommandCoordinator {
         [input.principal.id, input.operation, input.commandId],
       )
       const receipt = existing.rows[0]
+      let resumingReceipt = false
       if (receipt) {
         if (receipt.input_hash !== inputHash || receipt.target_key !== input.targetKey) {
           throw new DomainError('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.', 409)
         }
-        const value = input.replayResult ? input.replayResult(receipt.result) : receipt.result as T
-        await client.query('commit')
-        inTransaction = false
-        return { value, replayed: true }
+        resumingReceipt = await input.shouldResumeReceipt?.(client) ?? false
+        if (!resumingReceipt) {
+          const value = input.replayResult ? input.replayResult(receipt.result) : receipt.result as T
+          await client.query('commit')
+          inTransaction = false
+          return { value, replayed: true }
+        }
       }
 
       // A lifecycle callback can wait for runtime cleanup and database work.
@@ -97,12 +103,20 @@ export class PostgresCommandCoordinator {
         await client.query('begin')
         inTransaction = true
       }
-      await client.query(
-        `insert into management_command_receipts
+      if (resumingReceipt) {
+        await client.query(
+          `update management_command_receipts set result=$4::jsonb
+           where principal_id=$1 and operation=$2 and command_id=$3`,
+          [input.principal.id, input.operation, input.commandId, JSON.stringify(value)],
+        )
+      } else {
+        await client.query(
+          `insert into management_command_receipts
           (principal_id, operation, command_id, target_key, input_hash, result)
          values ($1, $2, $3, $4, $5, $6::jsonb)`,
-        [input.principal.id, input.operation, input.commandId, input.targetKey, inputHash, JSON.stringify(value)],
-      )
+          [input.principal.id, input.operation, input.commandId, input.targetKey, inputHash, JSON.stringify(value)],
+        )
+      }
       await client.query(
         `insert into management_audit (principal_id, source, action, target_key, outcome, details)
          values ($1, $2, $3, $4, 'succeeded', $5::jsonb)`,

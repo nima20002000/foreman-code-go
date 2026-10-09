@@ -1,3 +1,4 @@
+import type { PayloadFingerprintCache } from './payloadFingerprintCache.js'
 import { isAbsolute } from 'node:path'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -35,6 +36,7 @@ export async function inspectInstalledCodex(input: {
   environment: NodeJS.ProcessEnv
   cwd: string
   signal: AbortSignal
+  fingerprintCache?: PayloadFingerprintCache
 }): Promise<InstalledHarnessInspection> {
   input.signal.throwIfAborted()
   if (!isAbsolute(input.cwd)) unavailable('worker_environment_invalid')
@@ -52,15 +54,16 @@ export async function inspectInstalledCodex(input: {
     platform: process.platform, architecture: process.arch, nodeOptions: input.environment.NODE_OPTIONS ?? '' })
   const environment: TargetEnvironment = { path: input.environment.PATH ?? '', cwd: input.cwd, provenance: 'worker',
     generation: generation() }
-  let launcher = await discoverLauncher(selection.binary, environment, [], input.signal)
+  let launcher = await discoverLauncher(selection.binary, environment, [], input.signal, input.fingerprintCache)
   let complete = false
   if (launcher.status === 'installed' && launcher.resolvedLauncher) {
     // A standalone worker may not contain this application's bundled npm launcher.
-    const payload = await passiveDriverPayloads('codex', launcher.resolvedLauncher).catch(() => ({ complete: false, paths: [] }))
+    const payload = await passiveDriverPayloads('codex', launcher.resolvedLauncher,
+      process.platform, process.arch, input.fingerprintCache).catch(() => ({ complete: false, paths: [] }))
     complete = payload.complete
     const paths = [...new Set([...selection.payloadPaths, ...payload.paths, ...(launcher.interpreter ? [launcher.interpreter] : [])])]
-    launcher = await discoverLauncher(selection.binary, environment, paths, input.signal)
-    const checked = await discoverLauncher(selection.binary, environment, paths, input.signal)
+    launcher = await discoverLauncher(selection.binary, environment, paths, input.signal, input.fingerprintCache)
+    const checked = await discoverLauncher(selection.binary, environment, paths, input.signal, input.fingerprintCache)
     if (launcher.status !== checked.status || launcher.resolvedLauncher !== checked.resolvedLauncher || launcher.fingerprint !== checked.fingerprint) unavailable('launcher_changed')
     if (!complete) launcher.diagnostics.push('The configured launcher payload is not passively trusted; qualification remains unavailable.')
   }

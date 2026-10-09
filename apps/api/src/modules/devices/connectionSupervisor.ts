@@ -38,6 +38,7 @@ export class DeviceConnectionSupervisor {
     try { return this.channel.currentBinding() } catch { return undefined }
   }
   capabilities() { return this.channel?.capabilities() ?? [] }
+  mainNow(): number | undefined { return this.channel?.mainNow() }
   start(): void {
     if (this.task) return
     this.abort = new AbortController(); this.state.desired = true
@@ -67,6 +68,7 @@ export class DeviceConnectionSupervisor {
         this.socket = socket
         this.update('authenticating')
         const hello: DeviceHello = { ...this.options.identity, connectionEpoch: randomUUID(), type: 'hello', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, nonce: randomBytes(32).toString('base64url'), connectionGeneration: this.state.generation, extensions: extensionDescriptors(this.options.extensions ?? []) }
+        hello.observedAt = new Date().toISOString()
         sendFrame(socket, hello); this.update('negotiating')
         const iterator = socket.messages[Symbol.asyncIterator]()
         const next = await nextFrame(iterator, attempt.signal, this.options.handshakeMs ?? 10_000)
@@ -96,7 +98,9 @@ export class DeviceConnectionSupervisor {
         this.update('synchronizing'); await withDeviceDeadline(this.options.reconcile(binding, attempt.signal), attempt.signal, this.options.handshakeMs ?? 10_000)
         if (attempt.signal.aborted) break
         sendFrame(socket, { type: 'ready', connectionEpoch: binding.connectionEpoch })
-        this.channel = new DeviceApplicationChannel({ side: 'worker', binding, socket, signal: attempt.signal, extensions, registrations: this.options.extensions ?? [] })
+        this.channel = new DeviceApplicationChannel({ side: 'worker', binding, socket, signal: attempt.signal, extensions,
+          ...(typeof frame.observedAt === 'string' && Number.isFinite(Date.parse(frame.observedAt))
+            ? { mainTime: Date.parse(frame.observedAt) } : {}), registrations: this.options.extensions ?? [] })
         this.update('ready'); failures = 0
         await this.channel.run(iterator, this.options.heartbeatMs ?? 15_000)
       } catch (error) {

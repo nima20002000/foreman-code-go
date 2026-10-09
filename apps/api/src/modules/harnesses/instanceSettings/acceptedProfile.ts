@@ -39,6 +39,7 @@ export interface AcceptedProfileAuthority<Owner> {
     pin?: ClaudeQualificationPin
   }>
   assertCurrent(binding: RegistryHarnessSelection): void
+  assertReady?(host: HostHarnessOverride['target']['hostRef']): void
 }
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object') {
@@ -70,10 +71,20 @@ export class AcceptedHarnessProfileAdmission<Owner> {
       await this.authority.authorize(owner, selected, client)
       await this.settings.lockRevision(client, selected.instanceId)
       const value = options.purpose === 'observation'
-        ? await this.settings.savedRevision(client, selected.instanceId, selected.instanceRevision)
+        ? await this.settings.savedRevision(client, selected.instanceId, selected.instanceRevision, { target: selected.target })
         : await this.settings.latest(client, selected.instanceId)
       if (!value || (options.purpose === 'execution' && !value.enabled) || value.driverId !== value.configuration.harness
-        || value.instanceRevision !== selected.instanceRevision || !isDeepStrictEqual(value.target, selected.target)) return unavailable()
+        || value.instanceRevision !== selected.instanceRevision) return unavailable()
+      if (!isDeepStrictEqual(value.target, selected.target)) {
+        const original = await this.settings.savedRevision(client, selected.instanceId, selected.instanceRevision,
+          { target: selected.target })
+        if (!original || !isDeepStrictEqual(original.target, selected.target)
+          || original.configurationFingerprint !== value.configurationFingerprint
+          || !isDeepStrictEqual(original.target.hostRef, value.target.hostRef)
+          || original.target.applicationInstallationId !== value.target.applicationInstallationId
+          || original.driverId !== value.driverId) return unavailable()
+      }
+      if (options.purpose === 'execution') this.authority.assertReady?.(value.target.hostRef)
       const proof = await this.proofs.latest(value.instanceId, value.revision, client)
       if (!proof || !proof.qualified || proof.authenticated !== true || proof.compatible !== true ) return unavailable()
       const current = await this.authority.current(owner, value, client)

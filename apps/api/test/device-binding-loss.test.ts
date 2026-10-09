@@ -57,7 +57,8 @@ describe('Main original binding-loss callback', () => {
       expect(resident.socket.closed).toBe(false)
       resident.socket.frame({ type: 'ping', connectionEpoch: original.connectionEpoch })
       await flush()
-      expect(resident.socket.sent.at(-1)).toEqual({ type: 'pong', connectionEpoch: original.connectionEpoch })
+      expect(resident.socket.sent.at(-1)).toEqual({ type: 'pong', connectionEpoch: original.connectionEpoch,
+        observedAt: expect.any(String) })
       expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(original)
       expect(lost).not.toHaveBeenCalled()
     } finally {

@@ -29,10 +29,12 @@ export function useRegisteredComputersQuery(mainId: string | undefined) {
       return result
     } })
 }
-export function useHostHarnessRegistryQuery(host: CanonicalMachineReference | undefined, applicationInstallationId?: string) {
+export function useHostHarnessRegistryQuery(host: CanonicalMachineReference | undefined, applicationInstallationId?: string,
+  options?: { refetchInterval?: number }) {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: host ? computerSettingsKeys.inventory(host, applicationInstallationId) : [...computerSettingsKeys.root, sessionGeneration(), 'unselected'],
-    enabled: Boolean(host) && !sessionIsSwitching(), retry: false,
+    enabled: Boolean(host) && !sessionIsSwitching(), retry: false, staleTime: 30_000,
+    refetchInterval: options?.refetchInterval ?? false,
     queryFn: async ({ signal }) => {
       const value = HarnessHostReferenceSchema.parse(host)
       const query = new URLSearchParams({ kind: value.kind, mainId: value.mainId, ...(value.kind === 'device' ? { deviceId: value.deviceId } : {}) })

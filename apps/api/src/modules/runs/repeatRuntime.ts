@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import { interrupt, isGraphInterrupt } from '@langchain/langgraph'
-import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, CurrentRunVersionSnapshotSchema,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
@@ -310,7 +310,7 @@ export interface RepeatRuntimeLifecycle {
   cancelNativeAndRequestCleanup(): Promise<boolean>
   settleRun(stopped: boolean, interrupted: boolean): Promise<void>
   /** These are the existing post-terminal cleanup/finalization paths, not fake ack. */
-  requestCleanup(): Promise<void>
+  requestCleanup(failure?: ExecutionResult): Promise<void>
   finishNative(): Promise<void>
   finishCleanup(): Promise<void>
 }
@@ -344,6 +344,7 @@ export async function executeRepeatRuntime(input: {
     const code = String(error.code)
     return code.startsWith('REPEAT_') || code.startsWith('AUTH_') || [
       'WORKFLOW_SELECTED_EXECUTION_FAILED', 'WORKFLOW_UNRESOLVED', 'WORKFLOW_RESULT_TOO_LARGE', 'EXECUTION_OCCURRENCE_CONFLICT',
+      'WORKFLOW_EXECUTION_BUDGET_EXHAUSTED', 'JOB_PREPARATION_TIMEOUT',
       'RUN_PIN_CONFLICT', 'ACCESS_DENIED', 'GRAPH_SECURITY_UNQUALIFIED', 'GRAPH_STOP_CONFLICT', 'GRAPH_TERMINAL_CONFLICT',
       // Launch preflight refusals happen before any native session exists.
       'APP_MCP_PREFLIGHT_FAILED', 'APP_MCP_PREFLIGHT_TIMEOUT',
@@ -367,6 +368,12 @@ export async function executeRepeatRuntime(input: {
       'WORKFLOW_NATIVE_APPROVAL_UNHANDLED',
       'WORK_CHECKPOINT_ACTIVATION_MISSING', 'WORK_SUCCESSOR_DUPLICATE', 'WORK_HANDOFF_DELIVERY_TOO_LARGE',
     ].includes(code)
+  }
+  const failureResult = (error: unknown): ExecutionResult | undefined => {
+    if (!(error instanceof DomainError)) return undefined
+    if (!['WORKFLOW_EXECUTION_BUDGET_EXHAUSTED', 'JOB_PREPARATION_TIMEOUT',
+      'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED'].includes(error.code)) return undefined
+    return { outcome: 'failed', error: { code: error.code, message: error.message, retryable: false } }
   }
   const cancel = () => cancellation ??= input.lifecycle.cancelNativeAndRequestCleanup()
   const drain = async (cleanup = false) => {
@@ -392,7 +399,7 @@ export async function executeRepeatRuntime(input: {
         tasks.delete(task)
         if (!(input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART') && definitive(error)) {
           firstFailure ??= error
-          const cleanup = input.lifecycle.requestCleanup().then(() => {
+          const cleanup = input.lifecycle.requestCleanup(failureResult(firstFailure)).then(() => {
             failed.abort(error)
             return cancel()
           })
@@ -505,7 +512,7 @@ export async function executeRepeatRuntime(input: {
       // The owning engine may retry the same checkpoint, never initial state.
       throw error
     }
-    await input.lifecycle.requestCleanup()
+    await input.lifecycle.requestCleanup(failureResult(firstFailure ?? error))
     failed.abort(error)
     const closing = cancel()
     let drained = false

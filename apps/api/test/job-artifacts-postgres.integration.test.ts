@@ -1,5 +1,5 @@
 import { logArchive } from '../../../scripts/verification-reports.mjs'
-import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities }
+import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities, partitionUnitCapabilities }
   from '../../../scripts/integration-capabilities.mjs'
 import { integrationReport } from '../../../scripts/test-integration.mjs'
 import { AutoJobDefinitionSpecSchema, JobArtifactReadOutputSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
@@ -316,6 +316,8 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     const parts = join(root, `capability-reports-${job.id}`)
     await mkdir(parts)
     await writeFile(join(parts, 'summary.json'), JSON.stringify(diagnostics))
+    const unit = partitionUnitCapabilities(['apps/api/test/native-guardian-outcome.test.ts'], environment)
+    await writeFile(join(parts, 'unit.json'), JSON.stringify({ environment, ...unit }))
     const archive = logArchive(parts, output.maxBytes)
     const original = data
     data = archive
@@ -353,6 +355,15 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       input: bytes, encoding: 'utf8', timeout: 5000, maxBuffer: 65536,
     }))
     expect(summary).toEqual(diagnostics)
+    const retainedUnit = JSON.parse(execFileSync('tar', ['-xzOf', '-', 'logs/1-unit.json'], {
+      input: bytes, encoding: 'utf8', timeout: 5000, maxBuffer: 65536,
+    }))
+    expect(retainedUnit).toEqual({ environment, ...unit })
+    expect(retainedUnit.unavailable).toEqual([{
+      file: 'apps/api/test/native-guardian-outcome.test.ts', code: null, complete: false,
+      requiredCapabilities: ['nativeCgroupDelegation'],
+      reason: 'Runtime lacks required capabilities: nativeCgroupDelegation',
+    }])
     expect(summary).toMatchObject({ environment: { runtime: 'isolated-job',
       capabilities: { nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false } },
       outcome: 'incomplete', completeness: 'partial', expectedPortions: 6, completedPortions: 0,

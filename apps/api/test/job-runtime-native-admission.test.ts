@@ -1,6 +1,6 @@
 import { describe,expect,it,vi } from 'vitest'
 import type pg from 'pg'
-import { createJobRuntimeProfileService } from '../src/modules/jobs/runtimeProfileFactory.js'
+import { createJobRuntimeProfileService,type InstalledJobRuntimeHost } from '../src/modules/jobs/runtimeProfileFactory.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { PostgresSourceService } from '../src/modules/sources/service.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -28,6 +28,7 @@ function setup() {
     else if(text.includes('select archived_at'))rows=[{archived_at:null}]
     else if(text.includes('from management_command_receipts'))rows=state.receipt?[{result:state.receipt}]:[]
     else if(text.includes('from job_runtime_profile_versions'))rows=[{record:state.profile}]
+    else if(text.includes('from job_runtime_profiles'))rows=[{record:state.profile}]
     else if(text.includes('from application_installation'))rows=[{id:uuid}]
     else if(text.includes('from source_root_catalog'))rows=[{exists:1}]
     else if(text.startsWith('update job_runtime_qualification_approvals set native_admission'))state.nativeAdmission=JSON.parse(args![1] as string)
@@ -74,12 +75,57 @@ describe('Main persisted qualification admission (no native IO)',()=>{
     await expect(assertInstalledJobQualificationRead(f.sql, f.input, original)).rejects.toThrow()
     expect(f.state.nativeAdmission).toEqual(original)
   })
+  it('reads original cleanup authority after expiry and a profile edit without issuing another lease', async () => {
+    const f = setup()
+    const startedAt = Date.now()
+    f.state.approval.expiresAt = new Date(startedAt + 60_000).toISOString()
+    const original = await admitInstalledJobQualification(f.sql,f.input)
+    const now = vi.spyOn(Date,'now').mockReturnValue(startedAt + 120_000)
+    try {
+      f.state.profile = { ...f.state.profile,revision:2,specDigest:'2'.repeat(64) }
+      await expect(assertInstalledJobQualificationRead(f.sql,f.input,original)).resolves.toBeUndefined()
+      await expect(assertInstalledJobQualification(f.sql,f.input,original)).rejects.toThrow()
+      expect(f.state.nativeAdmission).toEqual(original)
+      expect(f.input.readCurrent).toHaveBeenCalledOnce()
+      f.state.revoked = true
+      await expect(assertInstalledJobQualificationRead(f.sql,f.input,original)).rejects.toThrow()
+    } finally { now.mockRestore() }
+  })
   it('retained lease cannot survive changed current context or be replaced',async()=>{
     const f=setup(),first=await admitInstalledJobQualification(f.sql,f.input)
     await expect(assertInstalledJobQualification(f.sql,f.input,{...first,leaseId:'22222222-2222-4222-8222-222222222222'})).rejects.toThrow()
     f.state.revoked=true
     await expect(admitInstalledJobQualification(f.sql,f.input)).rejects.toThrow()
     expect(f.state.nativeAdmission).toEqual(first)
+  })
+  it('uses the original local recovery owner after expiry and a profile edit without inspecting or launching', async () => {
+    const f = setup()
+    const startedAt = Date.now()
+    f.state.approval.expiresAt = new Date(startedAt + 60_000).toISOString()
+    const original = await admitInstalledJobQualification(f.sql,f.input)
+    f.state.profile = { ...f.state.profile,revision:2,specDigest:'2'.repeat(64) }
+    const nativeWork = vi.fn(async () => { throw new Error('Recovery attempted a new qualification') })
+    const reconcile = vi.fn<NonNullable<InstalledJobRuntimeHost['reconcileQualification']>>(async input => {
+      expect(input.nativeAdmission).toEqual(original)
+      await input.assertAdmission()
+      return { outcome:'denied' as const,closure:'confirmed' as const,reasons:['Original owner closed'] }
+    })
+    const commands = { execute:async (input: { prepare():Promise<void>; perform(sql:JobSql):Promise<unknown> }) => {
+      await input.prepare()
+      return { value:await input.perform(f.sql),replayed:false }
+    } } as unknown as PostgresCommandCoordinator
+    const service = createJobRuntimeProfileService({ commands,sources:{} as PostgresSourceService,
+      pool:{ connect:async () => ({ query:f.query,release:vi.fn() }) } as unknown as pg.Pool,
+      host:{ reconcileQualification:reconcile,capture:nativeWork,descriptor:nativeWork,
+        currentMetadata:nativeWork,currentConnection:nativeWork,reserveQualification:nativeWork } })
+    const now = vi.spyOn(Date,'now').mockReturnValue(startedAt + 120_000)
+    try {
+      const result = await service.qualify(principal,'mcp',profile.workspaceId,'actual-command',approval.id)
+      expect(result).toEqual(f.state.profile)
+      expect(reconcile).toHaveBeenCalledOnce()
+      expect(nativeWork).not.toHaveBeenCalled()
+      expect(f.state.nativeAdmission).toEqual(original)
+    } finally { now.mockRestore() }
   })
 })
 

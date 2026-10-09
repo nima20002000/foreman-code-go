@@ -8,9 +8,11 @@ import { isDeepStrictEqual } from 'node:util'
 import { DomainError } from '../errors.js'
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { SourceOperationOwner, SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
+import { RetainedSourceFootprintSchema, type RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
 
 export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number;
-  preparation?: SourceOperationOwner; reclamation?: SourceReservationReclamation }
+  preparation?: SourceOperationOwner; reclamation?: SourceReservationReclamation;
+  retainedSharedTree?: { id: string; bytes: number } }
 export async function requireUnreclaimedSourceOperation(sql: GraphSqlClient, operationId: string): Promise<void> {
   const fenced = await sql.query(`select 1 from source_storage_reservations
     where owner_kind='materialization' and owner_id=$1 and (record ? 'reclamation' or state='reclaimed')`, [operationId])
@@ -77,8 +79,8 @@ export class PostgresSourceReservations {
       if (existing.record.reclamation) {
         throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original source reservation is being reclaimed.', 409)
       }
-      const { preparation: existingPreparation, ...existingRequest } = existing.record
-      const { preparation: requestedPreparation, ...requested } = request
+      const { preparation: existingPreparation, retainedSharedTree: _retainedSharedTree, ...existingRequest } = existing.record
+      const { preparation: requestedPreparation, retainedSharedTree: _requestedTree, ...requested } = request
       if (!isDeepStrictEqual({ ...existingRequest, reservationId: undefined }, { ...requested, reservationId: undefined })
         || existingPreparation && requestedPreparation && !isDeepStrictEqual(
           { ...existingPreparation, identity: { ...existingPreparation.identity, expiresAt: null } },
@@ -117,10 +119,30 @@ export class PostgresSourceReservations {
     return reservation
   }
   async retain(sql: GraphSqlClient, reservation: SourceReservation, state: 'retained' | 'owned' | 'uncertain', accountedBytes = reservation.reservedBytes): Promise<void> {
-    if (!Number.isSafeInteger(accountedBytes) || accountedBytes < 0 || accountedBytes > reservation.reservedBytes) throw new DomainError('SOURCE_CAPACITY', 'Invalid verified source footprint.', 409)
+    if (!Number.isSafeInteger(accountedBytes) || accountedBytes < 0) throw new DomainError('SOURCE_CAPACITY', 'Invalid verified source footprint.', 409)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${reservation.scopeId}`])
     const result = await sql.query(`update source_storage_reservations set state=$2,reserved_bytes=$3 where reservation_id=$1 and state<>'reclaimed'`, [reservation.reservationId, state, accountedBytes])
     if (result.rowCount !== 1) throw new DomainError('SOURCE_RESERVATION_CONFLICT', 'Source reservation is not retained.', 409)
+  }
+  async retainMaterialization(sql: GraphSqlClient, reservation: SourceReservation,
+    rawFootprint: RetainedSourceFootprint): Promise<void> {
+    const footprint = RetainedSourceFootprintSchema.parse(rawFootprint)
+    await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${reservation.scopeId}`])
+    if (footprint.sharedTree) {
+      // The latest closed execution owns the shared directory's entire current charge.
+      await sql.query(`update source_storage_reservations
+        set reserved_bytes=reserved_bytes-(record#>>'{retainedSharedTree,bytes}')::bigint,
+          record=record-'retainedSharedTree'
+        where scope_id=$1 and reservation_id<>$2 and state='retained'
+          and record#>>'{retainedSharedTree,id}'=$3`,
+      [reservation.scopeId, reservation.reservationId, footprint.sharedTree.id])
+    }
+    await this.retain(sql, reservation, 'retained', footprint.retainedBytes)
+    const record = { ...reservation }
+    delete record.retainedSharedTree
+    if (footprint.sharedTree) record.retainedSharedTree = footprint.sharedTree
+    await sql.query('update source_storage_reservations set record=$2::jsonb where reservation_id=$1',
+      [reservation.reservationId, JSON.stringify(record)])
   }
   /** Authoritative physical deletion AND execution closure must precede this.
    * No automatic timer or client input can provide that proof. */

@@ -30,6 +30,7 @@ import type { JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 import type { JobComputerCandidate, JobComputerDiscovery } from './computerSelection.js'
 import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
 import type { PostgresSourceService } from '../sources/service.js'
+import { sourceMaterializationBytes } from '../sources/footprint.js'
 import { sourceBindingHash, sourceMaterializationDigest } from '../sources/bindingHash.js'
 import { sourceSha256 } from '../sources/manifest.js'
 import { verifiedSourceWorkingTree } from '../sources/nativeStamp.js'
@@ -107,16 +108,20 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     return { valid: true, reasons: [], sideEffects: false as const, source }
   }
   async candidates(sql: JobSql, principal: ManagementPrincipal, workspaceId: string,
-    spec: JobDefinitionSpecRecord, placement?: JobPlacementIntent): Promise<JobComputerDiscovery> {
+    spec: JobDefinitionSpecRecord, placement?: JobPlacementIntent,
+    options: { queued?: boolean } = {}): Promise<JobComputerDiscovery> {
     const { source } = await this.validateAuto(sql, principal, workspaceId, spec)
-    const roots = (await sql.query<{ record: unknown }>('verification' in spec
-      // Verification Jobs keep their exact binding while later CI commits rebind the same root.
+    const historical = options.queued || 'verification' in spec
+    const roots = (await sql.query<{ record: unknown }>(historical
+      // Queued Jobs keep their captured source when later commits rebind the same root.
       ? `select distinct on (b.root_id) b.record from source_root_bindings b where b.workspace_id=$1 and b.snapshot_id=$2
+          and ($3::text is null or b.record->>'attestationId'=$3)
           order by b.root_id,b.binding_revision desc limit 100`
       : `select b.record from source_root_catalog c join source_root_bindings b
           on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
           where c.workspace_id=$1 order by c.root_id limit 100`,
-    'verification' in spec ? [workspaceId, spec.source.snapshotId] : [workspaceId]))
+    historical ? [workspaceId, spec.source.snapshotId,
+      isAutoJobSpecRecord(spec) ? null : spec.target.destination.attestationId] : [workspaceId]))
       .rows.map(row => SourceRootRecordSchema.parse(row.record))
     const profiles = isAutoJobSpecRecord(spec) ? (await sql.query<{ record: unknown }>(
       'select record from job_runtime_profiles where workspace_id=$1 order by id limit 100', [workspaceId],
@@ -176,8 +181,7 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
         const binding = root.binding
         const scopeId = `${binding.mainId}:${binding.deviceId ?? 'original-main'}:${binding.workerInstallationId ?? binding.mainId}:${binding.filesystem.device}:${binding.filesystem.mountId}`
         const candidate: JobComputerCandidate = { spec: resolved, profile, ready: true, reasons: [],
-          sourceReservation: { scopeId, reservedBytes: source.manifest.totalBytes * 3
-            + source.manifest.totalEntries * 8192 + 2 * 1024 * 1024 } }
+          sourceReservation: { scopeId, reservedBytes: sourceMaterializationBytes(source.manifest) } }
         if (profile.status !== 'qualified' || !profile.measurement || Date.parse(profile.measurement.expiresAt) <= Date.now()) {
           candidate.ready = false
           if (profile.status === 'revoked') candidate.reasons = ['authorization_revoked']
@@ -209,13 +213,14 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
       destination:{canonicalProjectRoot:root.binding.canonicalPath,canonicalCwd:root.binding.canonicalPath,managedRuntimeRoot:policy.managedRuntimeRoot,
         directoryIdentityHash:sourceSha256(Buffer.from(JSON.stringify(root.binding.filesystem))),rootPolicyId:root.selection.rootPolicyId,rootPolicyRevision:root.selection.rootPolicyRevision,locationRevision:root.selection.locationRevision,attestationId:root.attestationId,attestationHash:root.attestationDigest}})
   }
-  private async root(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord) {
-    const row=(await sql.query<{record:unknown}>('verification' in spec
+  private async root(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord,
+    options: { queued?: boolean } = {}) {
+    const row=(await sql.query<{record:unknown}>(options.queued || 'verification' in spec
       ? `select b.record from source_root_bindings b where b.workspace_id=$1 and b.record->>'attestationId'=$2 for share of b`
       : `select b.record from source_root_catalog c join source_root_bindings b
           on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
           where c.workspace_id=$1 and b.record->>'attestationId'=$2 for share of b,c`,[workspaceId,spec.target.destination.attestationId])).rows
-    if(row.length!==1)throw new DomainError('JOB_ROOT_PIN_CONFLICT','The exact current job root attestation is unavailable.',409)
+    if(row.length!==1)throw new DomainError('JOB_ROOT_PIN_CONFLICT','The captured job root attestation is unavailable.',409)
     const root=SourceRootRecordSchema.parse(row[0]!.record)
     if(root.binding.accessMode!=='exclusive-write'||canonical(await this.target(sql,principal,root))!==canonical(spec.target))throw new DomainError('JOB_ROOT_PIN_CONFLICT','The saved target is not the current exclusive job source root.',409)
     if(canonical(root.source)!==canonical({approvedSourceId:spec.source.approvedSourceId,snapshotId:spec.source.snapshotId,manifestDigest:spec.source.manifestDigest}))throw new DomainError('JOB_SOURCE_PIN_CONFLICT','The target root is bound to a different exact approved snapshot.',409)
@@ -225,10 +230,14 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     await this.runtime.revalidate(sql,principal,root,spec)
     return root
   }
-  async validateSelection(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord) {await this.inputs.validateDeclaredJobInputs(sql,principal,workspaceId,spec.inputs);await this.root(sql,principal,workspaceId,spec)}
+  async validateSelection(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord,
+    options: { queued?: boolean } = {}) {
+    await this.inputs.validateDeclaredJobInputs(sql,principal,workspaceId,spec.inputs)
+    await this.root(sql,principal,workspaceId,spec,options)
+  }
   async materialize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord,identity:{executionId:string;attemptId:string;operationId:string}) {
     await this.inputs.validateDeclaredJobInputs(sql,principal,workspaceId,spec.inputs)
-    const root=await this.root(sql,principal,workspaceId,spec)
+    const root=await this.root(sql,principal,workspaceId,spec,{ queued: true })
     const attempt={executionId:identity.executionId,attemptId:identity.attemptId,keyRevision:root.registration?.keyRevision??null,authorizationRevision:root.registration?.authorizationRevision??null}
     const record=await this.sources.prepareExecution({principal,workspaceId,rootId:root.binding.rootId,bindingRevision:root.binding.bindingRevision,source:root.source,operationId:identity.operationId,attempt:{...attempt,placementHash:sourceBindingHash(root,attempt,identity.operationId)}})
     await this.repositories.prepare(principal,record)
@@ -261,13 +270,19 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
 /** Includes the source/root pairing check before Save as well as native preparation. */
 export class CanonicalJobPreparationService extends JobPreparationService {
   constructor(private readonly canonicalSources:CanonicalJobPreparationSources) {super(canonicalSources)}
-  override async validate(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpecRecord) {
+  override async accept(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,
+    spec:ResolvedJobDefinitionSpecRecord,identity:{executionId:string;attemptId:string;operationId:string}) {
+    return PreparedJobSpecRecordSchema.parse(
+      await this.canonicalSources.materialize(sql,principal,workspaceId,spec,identity))
+  }
+  override async validate(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpecRecord,
+    options: { queued?: boolean } = {}) {
     if (isAutoJobSpecRecord(spec)) {
       const { valid, reasons, sideEffects } = await this.canonicalSources.validateAuto(sql, principal, workspaceId, spec)
       return { valid, reasons, sideEffects }
     }
     try {
-      await this.canonicalSources.validateSelection(sql,principal,workspaceId,spec)
+      await this.canonicalSources.validateSelection(sql,principal,workspaceId,spec,options)
       return { valid: true, reasons: [], sideEffects: false as const }
     } catch (error) {
       if (!(error instanceof DomainError) || error.status !== 409) throw error

@@ -29,7 +29,7 @@ function fixture(){
     if(text.includes('r.record as run,v.record as version'))rows=[{run,version:savedVersion,stopped:state.stopped,cleanup:false,state:run.executionState,now:template.createdAt}]
     else if(text.startsWith('select preparation'))rows=state.preparation?[{preparation:state.preparation,bindings:state.bindings}]:[]
     else if(text.startsWith('select payload_digest'))rows=effects.has(`${values![1]}:${values![2]}`)?[{payload_digest:effects.get(`${values![1]}:${values![2]}`)}]:[]
-    else if(text.startsWith('select (select count'))rows=[{count:state.slot?'1':'0'}]
+    else if(text.startsWith('select ('))rows=[{total:state.slot?'1':'0'}]
     else if(text.startsWith('select execution_id from run_repeat_executions'))rows=state.slot?.identity?[{execution_id:state.slot.execution_id}]:[]
     else if(text.startsWith('select x.execution_id'))rows=state.slot?.identity?[state.slot]:[]
     else if(text.startsWith('select record from run_repeat_resolutions'))rows=state.resolution?[{record:state.resolution}]:[]

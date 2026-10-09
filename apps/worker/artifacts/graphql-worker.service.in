@@ -5,7 +5,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=@NODE@ @APP@/current/src/cli.mjs run --state @STATE@
+ExecStart=@NODE@ @CLI@ run --state @STATE@
 Environment=HOME=@HOME@
 Environment=PATH=@PATH@
 UnsetEnvironment=NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED

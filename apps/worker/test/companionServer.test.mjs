@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
@@ -102,6 +102,7 @@ test('legacy session header authorizes identity, pairing and status requests', a
   assert.equal(statusResponse.status, 200);
   const status = await statusResponse.json();
   assert.equal(status.service.active, false);
+  assert.equal(status.serviceControl, 'human-only-confirmation');
   assert.equal((await f.post('/api/service', { enabled: true })).status, 404);
   assert.equal((await f.post('/api/pair', { enrollmentCode: 'x'.repeat(8193) })).status, 400);
   assert.equal((await f.post('/api/pair', { enrollmentCode: 'x'.repeat(17000) })).status, 413);
@@ -142,4 +143,46 @@ test('read-only preview cannot create identity, pair or change a service', async
   const status = await (await f.post('/api/status')).json();
   assert.equal(status.readOnly, true);
   assert.equal(status.compatibility.supported, false);
+});
+
+test('a session spanning an installed target change reports the new target and denies installation actions', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-update-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'app');
+  const first = join(root, 'release-a');
+  const second = join(root, 'release-b');
+  await mkdir(first, { recursive: true, mode: 0o700 });
+  await mkdir(second, { mode: 0o700 });
+  const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2' };
+  await writeFile(join(first, 'manifest.json'), JSON.stringify({ target }));
+  const nextTarget = { ...target, node: 'v22.23.3' };
+  await writeFile(join(second, 'manifest.json'), JSON.stringify({ target: nextTarget }));
+  await symlink('release-a', join(root, 'current'));
+  const commands = [];
+  const f = await fixture(t, {
+    manifestFile: join(first, 'manifest.json'),
+    installationRoot: root,
+    runCli: async (command) => {
+      commands.push(command);
+      return JSON.stringify({ versions: target, pairing: 'paired', service: { active: false } });
+    },
+    serviceController: {
+      plan: async () => { throw new Error('stale session must not plan'); },
+      enable: async () => { throw new Error('stale session must not enable'); },
+    },
+  });
+  const initial = await (await f.post('/api/status')).json();
+  assert.equal(initial.compatibility.supported, true);
+  await symlink('release-b', join(root, '.next'));
+  await rename(join(root, '.next'), join(root, 'current'));
+  const status = await (await f.post('/api/status')).json();
+  assert.equal(status.installationChanged, true);
+  assert.equal(status.compatibility.supported, false);
+  assert.deepEqual(status.compatibility.required, nextTarget);
+  for (const path of ['/api/identity-request', '/api/pair', '/api/service-plan', '/api/service-enable']) {
+    const response = await f.post(path, { enrollmentCode: 'GQLWE1.private', confirm: true, planSha256: 'a'.repeat(64) });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'companion_installation_changed' });
+  }
+  assert.deepEqual(commands, ['doctor', 'doctor']);
 });

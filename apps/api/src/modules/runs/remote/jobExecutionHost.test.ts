@@ -90,6 +90,68 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     holdExecution(gate: Promise<void>) { executionGate = gate } }
 }
 describe('actual OCI job adapter with command doubles, no installed runtime claim',()=>{
+  it('recovers a closed never-started container without inventing a command exit result', async () => {
+    const f = await fixture()
+    await f.journal.jobAccept(f.intent, f.execution, { kind: 'main', mainId: f.intent.mainId,
+      mainInstallationId: f.execution.acceptedSpec.target.mainInstallationId, bootId: randomUUID() }, randomUUID())
+    await f.journal.jobReserveEntry(f.intent.operationId)
+    const reconcile = vi.spyOn(f.supervisor, 'reconcile').mockResolvedValue({
+      containerId: 'c'.repeat(64), stopped: true, neverStarted: true,
+      exitCode: null, execError: false, timedOut: false, logGapPossible: true,
+    })
+    const remove = vi.spyOn(f.supervisor, 'removeExecution').mockResolvedValue()
+    const launch = vi.spyOn(f.supervisor, 'launch')
+    await f.host.handle({ method: 'job-status', intent: f.intent })
+    expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      terminal: { outcome: 'preparation_failed', exitCode: null, processStopped: true }, publication: 'complete',
+    } })
+    expect(remove).toHaveBeenCalledWith(f.execution, 'c'.repeat(64))
+    expect(launch).not.toHaveBeenCalled()
+    await f.host.deliver(f.intent, f.execution)
+    expect(reconcile).toHaveBeenCalledOnce()
+    expect(launch).not.toHaveBeenCalled()
+  })
+
+  it('persists never-started closure, rejects a late start and removes its retained ID on recovery', async () => {
+    const f = await fixture()
+    const containerId = 'c'.repeat(64)
+    await f.journal.jobAccept(f.intent, f.execution, { kind: 'main', mainId: f.intent.mainId,
+      mainInstallationId: f.execution.acceptedSpec.target.mainInstallationId, bootId: randomUUID() }, randomUUID())
+    await f.journal.jobReserveEntry(f.intent.operationId)
+    const identity = jobSupervisorIdentity(f.execution)
+    await f.journal.jobContainerIntent(f.intent.operationId, identity, f.execution.acceptedSpec.specDigest)
+    await f.journal.jobBindContainer(f.intent.operationId, identity, containerId)
+    const launchId = randomUUID()
+    await f.journal.jobReserveProcess(f.intent.operationId, {
+      launchId, binary: '/usr/bin/podman', argv: ['--remote=false', 'create', '--name', identity],
+    })
+    await expect(f.journal.jobConfirmUnreleasedClosure(f.intent.operationId, containerId))
+      .rejects.toThrow('closure is unconfirmed')
+    await f.journal.jobProcessClosed(f.intent.operationId, launchId, { exitCode: 0, signal: null })
+    await f.journal.jobConfirmUnreleasedClosure(f.intent.operationId, containerId)
+    await f.journal.close()
+    const recovered = await RemoteOperationJournal.open(join(f.root, 'journal'))
+    journals.push(recovered)
+    expect(await recovered.jobNativeOwner(f.intent.operationId)).toMatchObject({ nonEntryConfirmed: true,
+      container: { containerId, unreleasedClosureConfirmed: true } })
+    await expect(recovered.jobReserveProcess(f.intent.operationId, { launchId: randomUUID(),
+      binary: '/usr/bin/podman', argv: ['--remote=false', 'start', containerId] }))
+      .rejects.toThrow('cannot start a native process')
+    const remove = vi.fn(async () => {})
+    const host = new RemoteJobExecutionHost({ journal: recovered,
+      connection: { kind: 'main', mainId: f.intent.mainId,
+        mainInstallationId: f.execution.acceptedSpec.target.mainInstallationId, bootId: randomUUID() },
+      incarnationId: randomUUID(), supervisor: { removeExecution: remove } as never,
+      authorize: async () => {}, observeReceipt: async () => {}, appendLog: async () => {},
+      source: {} as never, inputs: {} as never, collectOutputs: async () => {},
+    })
+    await host.handle({ method: 'job-status', intent: f.intent })
+    expect(await recovered.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      native: { containerId }, terminal: { outcome: 'preparation_failed', exitCode: null }, publication: 'complete',
+    } })
+    expect(remove).toHaveBeenCalledWith(f.execution, containerId)
+  })
+
   it('stops new admissions and lets an active Job finish with its original outcome during runtime drain', async () => {
     const f = await fixture()
     let finish!: () => void

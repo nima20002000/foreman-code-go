@@ -82,7 +82,8 @@ describe.skipIf(!postgresEnabled)('build readiness matches admission through HTT
       values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, workspaceId, root.source.snapshotId, JSON.stringify(root)])
     await database.pool.query(`insert into job_runtime_profiles(id,workspace_id,revision,root_id,binding_revision,record)
       values($1,$2,1,$3,1,$4::jsonb)`, [profile.id, workspaceId, root.binding.rootId, JSON.stringify(profile)])
-    const endpoint = { currentBinding: () => ({ workerInstallationId: target.applicationInstallationId,
+    let clockReason: string | null = null
+    const endpoint = { clockReason: () => clockReason, currentBinding: () => ({ workerInstallationId: target.applicationInstallationId,
       keyRevision: target.keyRevision, authorizationRevision: target.authorizationRevision }),
     captureRequest: () => ({}) } as unknown as DeviceEndpoint
     let memory: number | null = 14 * 2 ** 30
@@ -119,6 +120,12 @@ describe.skipIf(!postgresEnabled)('build readiness matches admission through HTT
       return mcp
     }
     expect(await readback()).toEqual(saved)
+    clockReason = 'Worker clock differs from Main by more than 2 minutes. Synchronize the Worker clock.'
+    expect(await readback()).toMatchObject({ state: 'setup-required', reasons: [clockReason],
+      preference: saved.preference })
+    const clockReadDenied = await connect(denied.token)
+    expect((await clockReadDenied.callTool({ name: 'build_computer_get', arguments: { target } })).isError).toBe(true)
+    clockReason = null
     memory = null
     expect(await readback()).toMatchObject({ state: 'setup-required', reasons: ['Available memory could not be read.'] })
     expect(await jobComputerCapacityDecision(database.pool, { mainId, hostRef: target.hostRef },

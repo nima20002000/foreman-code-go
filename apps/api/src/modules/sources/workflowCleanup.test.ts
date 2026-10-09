@@ -122,7 +122,7 @@ it('reports closure uncertainty when no verified retained reviewer owns the sour
 
 it('reproduces unconfirmed physical closure and defers the actual source service only for verified retention', async () => {
   const f = remoteSourceFixture()
-  const releaseClaim = vi.fn(async () => 0)
+  const releaseClaim = vi.fn(async () => ({ retainedBytes: 0 }))
   const dependencies = [f.pool, {}, {}, {}, f.record.receipt.binding.mainId, {}, { releaseClaim },
     { confirmedClosed: async () => false }] as unknown as ConstructorParameters<typeof PostgresSourceService>
   const sources = new PostgresSourceService(...dependencies)

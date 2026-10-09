@@ -44,6 +44,30 @@ describe('exact accepted Claude profile admission', () => {
     await expect(f.admission.admit('denied', f.selector)).rejects.toThrow('revoked owner')
     expect(f.settings.latest).not.toHaveBeenCalled()
   })
+  it('uses the requalified installation for a saved selector while retaining the configuration revision', async () => {
+    const f = fixture()
+    const original = structuredClone(f.value)
+    f.value.revision = 2
+    f.value.target = { ...f.value.target, installationFingerprint: 'updated' }
+    f.proof.target = f.value.target
+    Object.assign(f.registry, { selection: { ...f.registry.selection, installationFingerprint: 'updated' } })
+    f.settings.savedRevision.mockResolvedValue(original)
+    const accepted = await f.admission.admit('owner', f.selector)
+    expect(accepted.override.revision).toBe(2)
+    expect(accepted.override.instanceRevision).toBe(original.instanceRevision)
+    expect(accepted.override.target.installationFingerprint).toBe('updated')
+    expect(f.settings.savedRevision).toHaveBeenCalledWith(f.client, original.instanceId,
+      original.instanceRevision, { target: original.target })
+    f.settings.savedRevision.mockResolvedValue({ ...original, configurationFingerprint: 'another-config' })
+    await expect(f.admission.admit('owner', f.selector)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+  })
+  it('reports the pending automatic check before trying to consume old native proof', async () => {
+    const f = fixture()
+    f.authority.assertReady = () => { throw Object.assign(new Error('Harness profile checks are pending'),
+      { code: 'HARNESS_PROFILE_CHECK_PENDING' }) }
+    await expect(f.admission.admit('owner', f.selector)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_CHECK_PENDING' })
+    expect(f.proofs.latest).not.toHaveBeenCalled()
+  })
   it.each(['instanceRevision', 'configurationFingerprint', 'driverRevision', 'protocolRevision', 'suiteRevision', 'environmentGeneration', 'connectionGeneration'] as const)('rejects stale %s proof', async key => {
     const f = fixture(); f.proof[key] = 'stale'
     await expect(f.admission.admit('owner', f.selector)).rejects.toThrow('stale')

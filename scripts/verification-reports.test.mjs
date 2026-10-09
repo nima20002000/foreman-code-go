@@ -1,3 +1,4 @@
+import { integrationEnvironmentCapabilities, partitionUnitCapabilities } from './integration-capabilities.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -341,5 +342,104 @@ test('complete Node reports reconcile case totals and preserve nested names', ()
     events.at(-1).counts = { ...counts, failed: 1 }
     writeFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n')
     assert.equal(read().complete, false)
+  } finally { f.close() }
+})
+
+for (const name of ['native-guardian-outcome', 'native-launch-abandonment', 'pr17-native-process-runtime',
+  'pr17-recovery', 'codex-idle-recovery', 'native-qualification-command-lifecycle', 'codex-protocol']) {
+  test(`unit capability scheduling retains required ${name} coverage`, async () => {
+    const file = `apps/api/test/${name}.test.ts`
+    const environment = await integrationEnvironmentCapabilities({
+      FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+    })
+    const partition = partitionUnitCapabilities([file, 'apps/api/test/native-command-guardian-memory.test.ts'], environment)
+    assert.deepEqual(partition.runnable, ['apps/api/test/native-command-guardian-memory.test.ts'])
+    assert.deepEqual(partition.unavailable.map(entry => entry.file), [file])
+    assert.deepEqual(partition.unavailable[0].requiredCapabilities, ['nativeCgroupDelegation'])
+    assert.equal(partition.unavailable[0].complete, false)
+    assert.equal(partition.unavailable[0].code, null)
+    assert.deepEqual(partitionUnitCapabilities([file], {
+      ...environment, capabilities: { ...environment.capabilities, nativeCgroupDelegation: true },
+    }), { runnable: [file], unavailable: [] })
+  })
+}
+
+test('explicit unavailable unit selection returns nonzero and retains incomplete diagnostics without cases', async () => {
+  const f = fixture()
+  try {
+    const key = 'apps/api:test'
+    const cwd = join(f.root, 'apps/api')
+    mkdirSync(cwd, { recursive: true })
+    const bin = join(f.root, 'bin')
+    mkdirSync(bin)
+    const file = 'apps/api/test/native-guardian-outcome.test.ts'
+    writeFileSync(join(bin, 'vitest'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] !== 'list') throw new Error('Unavailable native test must not launch');
+fs.writeFileSync(args.find(arg => arg.startsWith('--json=')).slice(7), JSON.stringify([{file: ${JSON.stringify(join(f.root, file))}}]));
+`, { mode: 0o755 })
+    const code = await runVerificationCommand(['vitest', 'run', 'test/native-guardian-outcome.test.ts'], {
+      root: f.root, cwd, script: 'test', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+        FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory,
+        FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192', FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '1048576' },
+    })
+    assert.equal(code, 1)
+    assert.deepEqual(JSON.parse(readFileSync(portionPath(f.directory, key, 'inventory.json'))), [file])
+    const configuration = context()
+    configuration.requiredPortions = [{ key, kind: 'vitest', files: [file] }]
+    const portions = collectPortions(f.directory, f.root, configuration.requiredPortions, configuration.limits)
+    assert.equal(portions[0].unavailable[0].file, file)
+    assert.deepEqual(portions[0].totals, { total: 0, passed: 0, failed: 0, skipped: 0 })
+    const summary = finalizeVerification(configuration, { root: f.root, directory: f.directory,
+      state: { startedAt: new Date().toISOString() }, terminalOutcome: 'failed', processStopped: true })
+    assert.equal(summary.outcome, 'incomplete')
+    assert.equal(summary.completeness, 'partial')
+    const details = JSON.parse(readFileSync(join(f.directory, 'parts/portions.json')))
+    assert.equal(details.portions[0].unavailable[0].file, file)
+  } finally { f.close() }
+})
+
+test('unit runner executes available files while retaining unavailable coverage and observed totals', async () => {
+  const f = fixture()
+  try {
+    const key = 'apps/api:test'
+    const cwd = join(f.root, 'apps/api')
+    mkdirSync(cwd, { recursive: true })
+    const bin = join(f.root, 'bin')
+    mkdirSync(bin)
+    const unavailable = 'apps/api/test/native-guardian-outcome.test.ts'
+    const available = 'apps/api/test/native-command-guardian-memory.test.ts'
+    writeFileSync(join(bin, 'vitest'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const args = process.argv.slice(2);
+if (args[0] === 'list') {
+  fs.writeFileSync(args.find(arg => arg.startsWith('--json=')).slice(7), JSON.stringify(
+    ${JSON.stringify([join(f.root, unavailable), join(f.root, available)])}.map(file => ({file}))));
+} else {
+  assert.equal(args[args.indexOf('--exclude') + 1], 'test/native-guardian-outcome.test.ts');
+  fs.writeFileSync(args.find(arg => arg.startsWith('--outputFile.json=')).slice(18), JSON.stringify({
+    success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0,
+    numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0,
+    testResults: [{name: ${JSON.stringify(join(f.root, available))}, status: 'passed', startTime: 1, endTime: 2,
+      assertionResults: [{fullName: 'mock guardian succeeds', status: 'passed', duration: 1, failureMessages: []}]}]
+  }));
+}
+`, { mode: 0o755 })
+    const code = await runVerificationCommand(['vitest', 'run'], {
+      root: f.root, cwd, script: 'test', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+        FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory,
+        FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192', FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '1048576' },
+    })
+    assert.equal(code, 1)
+    const [portion] = collectPortions(f.directory, f.root,
+      [{ key, kind: 'vitest', files: [unavailable, available] }], context().limits)
+    assert.equal(portion.complete, false)
+    assert.deepEqual(portion.totals, { total: 1, passed: 1, failed: 0, skipped: 0 })
+    assert.deepEqual(portion.missing, [unavailable])
+    assert.equal(portion.unavailable[0].file, unavailable)
   } finally { f.close() }
 })

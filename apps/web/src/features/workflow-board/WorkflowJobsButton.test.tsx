@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
-import { expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 import type { JobExecutionRecord, WorkflowJobPage } from '@foreman-code/contracts/job-verification'
+import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { server } from '../../mocks/server'
-import { execution, logPage } from '../jobs/fixtures'
+import { execution, logPage, queueTicket, verificationExecution } from '../jobs/fixtures'
 import { BoardNavigationControls } from './BoardNavigationControls'
 
 vi.mock('../runs-selector', () => ({ RunsSelector: () => <button>Runs</button> }))
@@ -16,6 +17,9 @@ const workspaceId = execution.workspaceId
 const workflowId = 'workflow-a'
 const root = '*/api/management/workspaces/:workspaceId/jobs'
 const historyPath = `${root}/workflows/:workflowId/executions`
+beforeEach(() => {
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [], nextHistoryCursor: null })))
+})
 const nodeJob = { ...execution, workflow: { workflowId, runId: 'run-a', nodeId: 'node-a', nodeExecutionId: 'node-exec-a' } }
 function page(items: WorkflowJobPage['items'] = [{ name: 'Web build', execution: nodeJob }]): WorkflowJobPage {
   return { workspaceId, workflowId, items, nextCursor: null }
@@ -57,12 +61,12 @@ it('opens workflow history beside Runs, showing a compact row and a read-only re
 })
 
 it.each([
-  { outcome: 'succeeded', phase: 'terminal', exitCode: 0, stopped: true, label: 'Succeeded' },
+  { outcome: 'succeeded', phase: 'terminal', exitCode: 0, stopped: true, label: 'Process succeeded · publication complete' },
   { outcome: 'cancelled', phase: 'terminal', exitCode: null, stopped: true, label: 'Canceled' },
   { outcome: null, phase: 'running', exitCode: null, stopped: false, label: 'Running' },
   { outcome: null, phase: 'preparing', exitCode: null, stopped: false, label: 'Preparing' },
 ] as const)('shows $label and Agent CI provenance', async ({ outcome, phase, exitCode, stopped, label }) => {
-  const value: JobExecutionRecord = { ...execution,
+  const value: JobExecutionRecord = { ...execution, resultIssue: null,
     initiatingAgent: { workflowId, runId: 'run-a', agentId: 'agent-a', executionId: 'agent-exec-a' },
     process: { phase, outcome, exitCode, signal: null, processStopped: stopped } }
   responses(page([{ name: 'unit', execution: value }]))
@@ -70,6 +74,131 @@ it.each([
   await open()
   const row = await screen.findByRole('button', { name: /CI: unit/ })
   expect(within(row).getByLabelText(label)).toBeInTheDocument()
+})
+
+it.each([
+  { publication: 'pending', resultIssue: null, label: 'Process succeeded · publishing results' },
+  { publication: 'collecting', resultIssue: null, label: 'Process succeeded · publishing results' },
+  { publication: 'failed', resultIssue: null, label: 'Process succeeded · results incomplete' },
+  { publication: 'complete', resultIssue: 'missing_output', label: 'Process succeeded · results incomplete' },
+  { publication: 'complete', resultIssue: null, label: 'Process succeeded · publication complete' },
+] as const)('qualifies process success when publication is $publication and issue is $resultIssue',
+  async ({ publication, resultIssue, label }) => {
+    responses(page([{ name: 'unit', execution: { ...verificationExecution, publication, resultIssue,
+      initiatingAgent: { workflowId, runId: 'run-a', agentId: 'agent-a', executionId: 'agent-exec-a' } } }]))
+    mount()
+    await open()
+    const row = await screen.findByRole('button', { name: /CI: unit/ })
+    expect(within(row).getByLabelText(label)).toBeInTheDocument()
+    expect(within(row).queryByLabelText('Succeeded')).toBeNull()
+    expect(within(row).queryByLabelText('Verification: passed')).toBeNull()
+  })
+
+function request(index: number): JobQueueTicket {
+  return { ...queueTicket, id: `11111111-1111-4111-8111-${String(index).padStart(12, '0')}`,
+    executionId: `not-accepted-${index}`, enqueueSequence: String(index), queuePosition: index,
+    definition: { ...queueTicket.definition, name: `CI: agent ${index}` },
+    initiatingAgent: { workflowId, runId: 'run-a', agentId: `agent-${index}`, executionId: `agent-exec-${index}` } }
+}
+
+it('shows requests across Agents and retains preacceptance cancellation and timeout without fetching an execution', async () => {
+  responses(page([]))
+  const executionRead = vi.fn()
+  let tickets = [request(1), request(2)]
+  let filter: string | null = null
+  server.use(http.get(`${root}/queue`, ({ request }) => {
+    filter = new URL(request.url).searchParams.get('workflowId')
+    return HttpResponse.json({ tickets, nextHistoryCursor: null })
+  }), http.get(`${root}/executions/:id`, () => {
+    executionRead()
+    return HttpResponse.json({ error: { code: 'NOT_FOUND', message: 'No execution' } }, { status: 404 })
+  }))
+  const { client } = mount()
+  await open()
+  expect(await screen.findByRole('heading', { name: 'CI: agent 1' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'CI: agent 2' })).toBeInTheDocument()
+  expect(filter).toBe(workflowId)
+  expect(screen.queryByText('No jobs yet.')).toBeNull()
+  const first = screen.getByRole('region', { name: `Job request ${tickets[0]!.id}` })
+  expect(within(first).getByText('offline')).toBeInTheDocument()
+  expect(within(first).getByText(queueTicket.deadlineAt)).toBeInTheDocument()
+  expect(within(first).getByText('Workspace queue position').nextElementSibling).toHaveTextContent('1')
+  tickets = tickets.map((ticket, index) => ({ ...ticket, state: 'terminal', revision: 2,
+    terminalReason: index ? 'timed_out' : 'cancelled', finishedAt: ticket.deadlineAt,
+    cancelRequestedAt: index ? null : ticket.enqueuedAt, queuePosition: null, waitingReasons: [] }))
+  await client.invalidateQueries({ queryKey: ['jobs', workspaceId, 'workflow-queue', workflowId] })
+  expect(await screen.findByText('cancelled')).toBeInTheDocument()
+  expect(screen.getByText('timed out')).toBeInTheDocument()
+  expect(executionRead).not.toHaveBeenCalled()
+})
+
+it('reads older request outcomes without duplicating active requests', async () => {
+  responses(page([]))
+  const active = request(3)
+  const completed: JobQueueTicket = { ...request(2), state: 'terminal', terminalReason: 'timed_out',
+    finishedAt: queueTicket.deadlineAt, queuePosition: null }
+  const older: JobQueueTicket = { ...completed, ...request(1), state: 'terminal', terminalReason: 'timed_out',
+    finishedAt: queueTicket.deadlineAt, queuePosition: null }
+  const cursors: (string | null)[] = []
+  server.use(http.get(`${root}/queue`, ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('historyBeforeSequence')
+    cursors.push(cursor)
+    return HttpResponse.json({ tickets: cursor ? [active, older] : [active, completed],
+      nextHistoryCursor: cursor ? null : '2' })
+  }))
+  mount()
+  await open()
+  fireEvent.click(await screen.findByRole('button', { name: 'Older requests' }))
+  expect(await screen.findByRole('heading', { name: 'CI: agent 1' })).toBeInTheDocument()
+  expect(screen.getAllByRole('heading', { name: 'CI: agent 3' })).toHaveLength(1)
+  expect(cursors).toEqual([null, '2'])
+})
+
+it('rejects a request from another workflow', async () => {
+  responses(page([]))
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [{ ...request(1),
+    initiatingAgent: { workflowId: 'foreign', runId: 'other-run', agentId: 'other', executionId: 'other' } }],
+    nextHistoryCursor: null })))
+  mount()
+  await open()
+  expect(await screen.findByRole('alert')).toHaveTextContent('another job or workspace')
+  expect(screen.queryByRole('heading', { name: 'CI: agent 1' })).toBeNull()
+  expect(screen.queryByText('No jobs yet.')).toBeNull()
+})
+
+it('keeps process success qualified when published verification artifacts have expired', async () => {
+  const value: JobExecutionRecord = { ...verificationExecution,
+    initiatingAgent: { workflowId, runId: 'run-a', agentId: 'agent-a', executionId: 'agent-exec-a' } }
+  responses(page([{ name: 'unit', execution: value }]))
+  const summary = value.acceptedSpec.outputs.find(output => 'kind' in output && output.kind === 'suite-summary')!
+  server.use(http.get(`${root}/executions/:id`, () => HttpResponse.json({ execution: value })),
+    http.get(`${root}/executions/:id/artifacts`, () => HttpResponse.json({ artifacts: [{
+      executionId: value.id, fileId: 'summary', revisionId: 'revision', publicationId: 'publication',
+      path: summary.path, mediaType: summary.mediaType, sha256: 'a'.repeat(64), byteSize: 1,
+      state: 'expired', expiresAt: '2026-10-02T00:00:00Z',
+    }] })))
+  mount()
+  await open()
+  const row = await screen.findByRole('button', { name: /CI: unit/ })
+  expect(within(row).getByLabelText('Process succeeded · publication complete')).toBeInTheDocument()
+  expect(within(row).queryByLabelText('Succeeded')).toBeNull()
+  fireEvent.click(row)
+  expect(await screen.findByText('The verification summary has expired.')).toBeInTheDocument()
+  expect(screen.queryByText('Verification: passed')).toBeNull()
+})
+
+it('removes cached requests after a denied queue readback', async () => {
+  responses(page([]))
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ tickets: [request(1)], nextHistoryCursor: null })))
+  const { client } = mount()
+  await open()
+  expect(await screen.findByRole('heading', { name: 'CI: agent 1' })).toBeInTheDocument()
+  server.use(http.get(`${root}/queue`, () => HttpResponse.json({ error: {
+    code: 'ACCESS_DENIED', message: 'Denied',
+  } }, { status: 403 })))
+  await client.invalidateQueries({ queryKey: ['jobs', workspaceId, 'workflow-queue', workflowId] })
+  expect(await screen.findByRole('alert')).toHaveTextContent('permission lost')
+  expect(screen.queryByRole('heading', { name: 'CI: agent 1' })).toBeNull()
 })
 
 it('retains the short CI suite name without repeating its prefix', async () => {

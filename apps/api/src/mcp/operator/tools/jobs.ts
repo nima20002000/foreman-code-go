@@ -45,6 +45,8 @@ export const JOB_QUEUE_CAPABILITY_DETAIL = 'Standalone build Jobs require owner-
   + 'job_launch_validate checks the saved revision and override with jobs:start authority; canQueue is separate from current readiness. '
   + 'Agent-triggered CI records initiatingAgent separately from workflow-node membership; reads retain this provenance. '
   + 'Execution, log and artifact reads enforce workspace, workflow and Run grants using the persisted origin. '
+  + 'Queue lists accept workflowId for workflow-wide requests or initiatingExecutionId for one Agent execution; '
+  + 'Agent-filtered queue reads and workflow Job references authorize the persisted workflow and Run. '
   + 'Workflow-node queuing and start estimates are not implemented. '
   + 'Queue reads require jobs:read and have no side effects; enqueue requires jobs:start and cancellation requires jobs:cancel. '
   + 'Live grants, saved revisions, command retries and original execution identities remain enforced.'
@@ -84,7 +86,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
       + 'at Start. Each template ready flag reflects its current runtime readiness. No installation or provider login.',
     inputSchema: scope, outputSchema: JobAuthoringChoicesRecordSchema, annotations: read,
   }, input => invoke(context, 'job_choices_get', () => service.choices(context.principal, input.workspaceId, 'mcp')))
-  if(jobToolAvailable(context,'job_workflow_execution_get')) server.registerTool('job_workflow_execution_get',{description:'Read the authoritative persisted relationship from an exact Run node execution to its JobExecutionRecord. IDs are never inferred or borrowed from another Run.',inputSchema:scope.extend({runId:z.string().min(1),nodeExecutionId:z.string().min(1)}),outputSchema:z.object({reference:JobWorkflowExecutionReferenceSchema}),annotations:read},input=>invoke(context,'job_workflow_execution_get',async()=>({reference:await service.getWorkflowExecutionReference(context.principal,input.workspaceId,input.runId,input.nodeExecutionId,'mcp')})))
+  if(jobToolAvailable(context,'job_workflow_execution_get')) server.registerTool('job_workflow_execution_get',{description:'Read the persisted relationship from a Run node execution to its JobExecutionRecord. Requires jobs:read for its persisted workspace, workflow and Run. IDs are never inferred or borrowed from another Run.',inputSchema:scope.extend({runId:z.string().min(1),nodeExecutionId:z.string().min(1)}),outputSchema:z.object({reference:JobWorkflowExecutionReferenceSchema}),annotations:read},input=>invoke(context,'job_workflow_execution_get',async()=>({reference:await service.getWorkflowExecutionReference(context.principal,input.workspaceId,input.runId,input.nodeExecutionId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_list')) server.registerTool('job_definition_list',{description:'List workspace job definitions.',inputSchema:scope,outputSchema:z.object({definitions:z.array(JobDefinitionRecordSchema)}),annotations:read},input=>invoke(context,'job_definition_list',async()=>({definitions:await service.listDefinitions(context.principal,input.workspaceId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_get')) server.registerTool('job_definition_get',{description:'Read an exact workspace job definition and revision.',inputSchema:scope.extend({definitionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionRecordSchema}),annotations:read},input=>invoke(context,'job_definition_get',async()=>({definition:await service.getDefinition(context.principal,input.workspaceId,input.definitionId,'mcp')})))
   if(jobToolAvailable(context,'job_definition_version_get')) server.registerTool('job_definition_version_get',{description:'Read one exact immutable saved job version. Current definition edits never substitute its source, target, command or policy.',inputSchema:scope.extend({definitionId:z.string().min(1),versionId:z.string().min(1)}),outputSchema:z.object({definition:JobDefinitionRecordSchema}),annotations:read},input=>invoke(context,'job_definition_version_get',async()=>({definition:await service.getDefinitionVersion(context.principal,input.workspaceId,input.definitionId,input.versionId,'mcp')})))
@@ -116,6 +118,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   }))
   if (jobToolAvailable(context, 'job_start')) server.registerTool('job_start', {
     description: JOB_QUEUE_CAPABILITY_DETAIL + ' Persist a request using the saved definition revision. '
+      + 'The Job runs the source commit captured by that queued request, even when the source-root head advances. '
       + 'The admission result is pending with a ticket or accepted with the original executionId. Retrying a retained pre-queue command returns its original execution without creating a ticket. '
       + 'Retry the same commandId and payload after an unknown acknowledgment; read job_queue_get for waiting or claim state and job_get after acceptance. '
       + 'Claimed cancellation and disconnected execution do not prove process closure or released capacity.',
@@ -126,7 +129,8 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
     return { admission: await service.enqueue(context.principal, 'mcp', workspaceId, body) }
   }))
   if (jobToolAvailable(context, 'job_queue_get')) server.registerTool('job_queue_get', {
-    description: 'Read one workspace-scoped build queue ticket, original enqueue/deadline, state, waiting reasons, compatible-target count and workspace queue position. '
+    description: 'Read one build queue ticket with jobs:read for its persisted workspace, workflow and Run. '
+      + 'Includes original enqueue/deadline, state, waiting reasons, compatible-target count and workspace queue position. '
       + 'Claimed tickets expose the persisted selected computer, root binding and runtime profile; cleanup status shows retained capacity after cancellation or terminal execution. '
       + 'Source capacity waits retain the reservation and expose sourceCapacityWait with bounded retryAt and attempts. '
       + 'Accepted tickets reference the original executionId. Start estimates are unknown. No selection or launch.',
@@ -138,7 +142,8 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
   if (jobToolAvailable(context, 'job_queue_list')) server.registerTool('job_queue_list', {
     description: 'Read every active workspace-scoped build request plus a page of completed request history. '
       + 'Use nextHistoryCursor as historyBeforeSequence to read older history; active requests appear on every page. '
-      + 'Optionally filter by initiatingExecutionId to inspect an Agent execution’s CI requests. '
+      + 'Filter by workflowId for all requests in one workflow, or initiatingExecutionId for one Agent execution’s CI requests. '
+      + 'Requires jobs:read for the selected workflow and, for an Agent filter, its persisted Run. '
       + 'historyLimit bounds history only. Queue positions describe this workspace. Reading never starts work.',
     inputSchema: scope.extend(JobQueueListInputSchema.shape), outputSchema: JobQueuePageSchema, annotations: read,
   }, input => invoke(context, 'job_queue_list', () => {

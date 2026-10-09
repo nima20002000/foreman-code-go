@@ -31,8 +31,11 @@ export const jobsClient = {
     const query = new URLSearchParams({ historyLimit: String(input.historyLimit) })
     if (input.historyBeforeSequence) query.set('historyBeforeSequence', input.historyBeforeSequence)
     if (input.initiatingExecutionId) query.set('initiatingExecutionId', input.initiatingExecutionId)
+    if (input.workflowId) query.set('workflowId', input.workflowId)
     const page = await apiClient.request(`${root(workspaceId)}/queue?${query}`, JobQueuePageSchema, options)
     if (page.tickets.some(ticket => ticket.workspaceId !== workspaceId
+      || input.workflowId && ticket.workflow?.workflowId !== input.workflowId
+        && ticket.initiatingAgent?.workflowId !== input.workflowId
       || input.initiatingExecutionId && ticket.initiatingAgent?.executionId !== input.initiatingExecutionId)) mismatch()
     return page
   },

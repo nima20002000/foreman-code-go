@@ -30,7 +30,7 @@ describe('actual installed worker mount availability, no physical acceptance', (
     let scheduled = false
     const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal, active: () => [],
       drainJobs: async () => { await job; jobOutcome = 'succeeded' },
-      drainQualifications: async () => {}, quiescent: async () => !agentOpen })
+      drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => !agentOpen })
     const refresh = drain.run().then(() => { scheduled = true })
     expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).toThrow('waiting for active work')
     expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.open' })).toThrow()
@@ -92,7 +92,7 @@ describe('actual installed worker mount availability, no physical acceptance', (
       keyRevision: 1, authorizationRevision: 1, bootId: bootIdentity(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
     const mounted = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId: binding.bootId,
       configuration: null, approvedRoots: async () => approved, codexSuiteRevision: 'fixture-suite',
-      connection: () => ({ currentBinding: () => binding, captureRequest: () => ({ binding,
+      connection: () => ({ mainNow: () => Date.now(), currentBinding: () => binding, captureRequest: () => ({ binding,
         request: async () => ({ payload: { version: 1, operation: 'sources.reclamation-authorize', grant } }) }) }) })
     try {
       const extension = mounted.extensions.find(value => value.namespace === 'source-operations-v1')!
@@ -148,7 +148,7 @@ describe('actual installed worker mount availability, no physical acceptance', (
     expect(mounted.rsyncAvailable).toBe(false)
     expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
     expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual([
-      'agent-snapshot-v1', 'computer-accounts-v1', 'computer-github-v1', 'computer-maintenance-v1', 'computer-sync-v1', 'harness-discovery-v1',
+      'agent-snapshot-v1', 'computer-accounts-v1', 'computer-github-v1', 'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1',
     ])
     await mounted.close(); await mounted.close()
   })
@@ -169,7 +169,7 @@ describe('actual installed worker mount availability, no physical acceptance', (
     const binding = { mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
       keyRevision: 1, authorizationRevision: 1, bootId, connectionEpoch: randomUUID(), connectionGeneration: 1 }
     const input={stateDirectory,pairing,bootId,configuration:null,approvedRoots:async()=>approved,
-      connection:()=>({ currentBinding:()=>binding, captureRequest:()=>undefined }),codexSuiteRevision:'source-test-current-suite'}
+      connection:()=>({ mainNow:()=>Date.now(), currentBinding:()=>binding, captureRequest:()=>undefined }),codexSuiteRevision:'source-test-current-suite'}
     const absent=await createInstalledWorkerDomains(input)
     expect(absent.extensions.some(value=>value.namespace==='job-inputs-v1')).toBe(false)
     expect(extensionDescriptors(absent.extensions).filter(value => value.namespace === 'byte-transfer-v1'))

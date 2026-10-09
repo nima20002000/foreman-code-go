@@ -1,3 +1,4 @@
+import { integrationEnvironmentCapabilities, partitionUnitCapabilities } from './integration-capabilities.mjs'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
@@ -300,6 +301,7 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
   // An independent suite must use its requested reporters, not its parent's test IPC channel.
   if (nodeTests) delete commandEnvironment.NODE_TEST_CONTEXT
   const options = { cwd, env: commandEnvironment, key, directory, logBytes }
+  let unavailable = []
   if (command[0] === 'vitest') {
     const inventory = portionPath(directory, key, 'inventory.json')
     const args = command.slice(1).filter((value) => value !== 'run')
@@ -309,6 +311,17 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
     const files = JSON.parse(readReport(inventory, Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES)))
       .map((entry) => repositoryFile(root, entry.file))
     writeReport(inventory, files, Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES))
+    const environment = await integrationEnvironmentCapabilities(env)
+    const partition = partitionUnitCapabilities(files, environment)
+    unavailable = partition.unavailable
+    writeReport(portionPath(directory, key, 'capabilities.json'), { environment, unavailable },
+      Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES))
+    if (unavailable.length) {
+      console.error(`[verification] ${key}: ${unavailable.length} required files unavailable`)
+      if (!partition.runnable.length) return 1
+      command = [...command, ...unavailable.flatMap(({ file }) =>
+        ['--exclude', relative(cwd, join(root, file)).split(sep).join('/')])]
+    }
     command = [...command, '--reporter=default', '--reporter=json',
       `--outputFile.json=${portionPath(directory, key, 'vitest.json')}`]
   }
@@ -323,7 +336,8 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
       '--test-reporter-destination=stdout',
       `--test-reporter-destination=${portionPath(directory, key, 'node.ndjson')}`, ...command.slice(1)]
   }
-  return reportedCommand(command, options)
+  const code = await reportedCommand(command, options)
+  return unavailable.length ? (code || 1) : code
 }
 
 export default async function* nodeReporter(source) {

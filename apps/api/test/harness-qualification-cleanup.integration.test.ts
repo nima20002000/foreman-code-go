@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
@@ -13,6 +16,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { DomainError } from '../src/modules/errors.js'
 import { authorizeDeviceHost } from '../src/modules/devices/hostAuthorization.js'
 import { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
 import { HostHarnessInstanceProfileChecks } from '../src/modules/harnesses/instanceSettings/profileChecks.js'
@@ -21,6 +25,7 @@ import { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/i
 import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
 import type { HostHarnessOverrideAuthority } from '../src/modules/harnesses/instanceSettings/service.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 
@@ -37,16 +42,20 @@ afterAll(async () => {
   try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }
 }, 60_000)
 
-it('checks a Main profile through authenticated MCP after unreserved auxiliary cleanup and persists readback', async () => {
+it('reports failed Main reservation through authenticated MCP, then checks and persists a profile after owned cleanup', async () => {
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
   const settings = new HarnessInstanceSettingsRepository(pool)
   const proofs = new HostHarnessProfileEvidenceRepository(pool)
-  const recovery = { root: '/recorded-registry', owner: 'qualification:recorded' }
-  const admit = vi.fn()
-  const abandon = vi.fn(async () => { throw new Error('Invalid native launch abandonment scope.') })
-  const close = vi.fn(async () => undefined)
-  // Recorded native ports exercise the real factory cleanup without qualifying an installed CLI.
+  const root = await mkdtemp(join(tmpdir(), 'mcp-qualification-cleanup-'))
+  const registry = new NativeProcessRegistry(root)
+  const recovery = registry.scope('qualification:recorded')
+  const admit = vi.fn(() => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) })
+  const abandon = vi.fn(async () => { await registry.abandonReservedLaunch(recovery) })
+  const close = vi.fn(async () => {
+    if (!await registry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
+  })
+  // Native protocol ports are recorded; reservation and closure use the Linux registry.
   const factories = new NativeHarnessFactories({ codexBinary: '/recorded/codex',
     auxiliaryRecovery: () => recovery, admitRecovery: admit, abandonRecovery: abandon, closeRecovery: close,
   }, { mode: 'native', codex: {
@@ -122,15 +131,29 @@ it('checks a Main profile through authenticated MCP after unreserved auxiliary c
       where principal_id=$1 and source='mcp'`, [reader.principal.id])).rows).toEqual([{
       action: 'harness_instance_check', target_key: `harness-instance:${saved.value.instanceId}`, outcome: 'denied',
     }])
+    admit.mockImplementationOnce(() => {
+      throw new DomainError('HARNESS_RECOVERY_STORAGE_FULL', 'Native harness storage is full on this computer.', 503)
+    })
+    const failed = await writer.callTool({ name: 'harness_instance_check',
+      arguments: { ...checkInput, commandId: randomUUID() } })
+    expect(failed.isError).toBe(true)
+    expect(JSON.stringify(failed.content)).toContain('HARNESS_RECOVERY_STORAGE_FULL')
+    expect(JSON.stringify(failed.content)).not.toContain('INTERNAL_ERROR')
+    expect(await proofs.latest(saved.value.instanceId, saved.value.revision)).toBeNull()
+    expect(close).not.toHaveBeenCalled()
+    expect(abandon).not.toHaveBeenCalled()
+    expect(registry.snapshot().launches).toEqual([])
     const checked = HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({
       name: 'harness_instance_check', arguments: checkInput,
     })).structuredContent)
     expect(checked.value.qualification).toBe('qualified')
     expect(checked.proof).toMatchObject({ authenticated: true, compatible: true, qualified: true })
     expect(checked.replayed).toBe(false)
-    expect(admit).toHaveBeenCalledExactlyOnceWith(recovery)
-    expect(abandon).not.toHaveBeenCalled()
+    expect(admit).toHaveBeenCalledTimes(2)
+    expect(admit).toHaveBeenLastCalledWith(recovery)
+    expect(abandon).toHaveBeenCalledExactlyOnceWith(recovery)
     expect(close).toHaveBeenCalledExactlyOnceWith(recovery)
+    expect(await registry.closeOwner(recovery.owner)).toBe(true)
     expect(await proofs.latest(saved.value.instanceId, saved.value.revision)).toEqual(checked.proof)
     const readback = HostHarnessOverrideListSchema.parse((await denied.callTool({
       name: 'harness_instances_list', arguments: { hostRef: target.hostRef, applicationInstallationId: mainId },
@@ -141,10 +164,10 @@ it('checks a Main profile through authenticated MCP after unreserved auxiliary c
     })).structuredContent)
     expect(replay.replayed).toBe(true)
     expect(replay.proof).toEqual(checked.proof)
-    expect(qualifier.qualify).toHaveBeenCalledOnce()
+    expect(qualifier.qualify).toHaveBeenCalledTimes(2)
     expect(close).toHaveBeenCalledOnce()
   } finally {
     await Promise.all(clients.map(client => client.close()))
-    await app.close()
+    try { await app.close() } finally { await rm(root, { recursive: true, force: true }) }
   }
 }, 60_000)

@@ -52,6 +52,10 @@ const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 const AbsolutePathSchema = z.string().min(2).max(4096).startsWith('/')
 /** Build computers prepare their own CI runtime for a commit: offline seed, image and qualification source. */
 export const CI_RUNTIME_NAMESPACE = 'ci-runtime-v1'
+export const CiPreparationLimitsSchema = z.object({
+  cpuCount: z.number().positive(), memoryBytes: z.number().int().positive(),
+}).strict()
+export type CiPreparationLimits = z.infer<typeof CiPreparationLimitsSchema>
 export const PreparedCiRuntimeSchema = z.object({
   commit: CommitSchema, imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/), imageManifestDigest: z.string().min(1).max(200),
   seedReceiptPath: AbsolutePathSchema, contextReceiptPath: AbsolutePathSchema, qualificationSource: AbsolutePathSchema,
@@ -73,6 +77,7 @@ export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
     resources: JobResourceRequestSchema }).strict(),
 ])
 export const CiRuntimeWorkerStateSchema = z.object({
+  preparationLimits: CiPreparationLimitsSchema.optional(),
   installedStorage: CiInstalledStorageSchema.nullable().optional(),
   operationId: z.uuid().nullable(),
   state: z.enum(['idle', 'preparing', 'prepared', 'failed', 'refreshing']),
@@ -83,6 +88,7 @@ export const BuildComputerPrepareInputSchema = z.object({ workspaceId: IdSchema,
   commit: CommitSchema.optional(), commandId: IdSchema }).strict()
 export const BuildComputerPrepareGetInputSchema = z.object({ workspaceId: IdSchema, profileId: IdSchema }).strict()
 export const BuildComputerPrepareStatusSchema = z.object({
+  preparationLimits: CiPreparationLimitsSchema.optional(),
   profileId: IdSchema, deviceId: IdSchema.nullable(),
   state: z.enum(['idle', 'approving', 'preparing', 'binding', 'refreshing', 'qualifying', 'qualified', 'failed']),
   commit: CommitSchema.nullable(), stage: z.string().max(80).nullable(), message: z.string().max(2000).nullable(),

@@ -69,8 +69,9 @@ prove descendant closure, then the actual owner must close. Unknown closure
 retains the original operation for recovery. Approval/context changes or
 expiry reject publication; GET performs no native probe.
 
-Only after H2 installation/root/image approval and persisted product human
-approval does the orchestrator run the authenticated product diagnostic:
+After installation/root/image approval and product candidate capture, the
+orchestrator runs the authenticated product diagnostic. Paired, authorized
+computers qualify the captured candidate directly, without another human approval:
 
 ```sh
 node scripts/ci-runtime-qualification.mjs \

@@ -6,7 +6,7 @@ import type { PostgresSourceService } from '../sources/service.js'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 import { createJobRuntimeProfileService } from './runtimeProfileFactory.js'
 
-it.each(['ready', 'unavailable', 'changed'] as const)('reads the complete %s verification profile status', async state => {
+it.each(['ready', 'unavailable', 'changed','root-revoked'] as const)('reads the complete %s verification profile status', async state => {
   const profile = verificationCapacityFixture('main')
   const saved = structuredClone(profile)
   const principal: ManagementPrincipal = { id: 'profile-reader', name: 'Reader', audience: 'operator',
@@ -16,6 +16,7 @@ it.each(['ready', 'unavailable', 'changed'] as const)('reads the complete %s ver
     if (text.includes('from management_principals')) return { rows: [{ ...principal,
       expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] }
     if (text.includes('from job_runtime_profiles')) return { rows: [{ record: profile }] }
+    if (text.includes('from workspace_root_policies')) return { rows:state === 'root-revoked' ? [] : [{ allowed:true }] }
     return { rows: [] }
   })
   const pool = { connect: async () => ({ query, release: vi.fn() }) } as unknown as pg.Pool
@@ -28,8 +29,11 @@ it.each(['ready', 'unavailable', 'changed'] as const)('reads the complete %s ver
       capture: nativeWork, descriptor: nativeWork, reserveQualification: nativeWork,
       currentConnection: async () => null, currentMetadata: async () => current,
     } })
+  let reasons: string[] = ['context_changed']
+  if (state === 'ready') reasons = []
+  if (state === 'root-revoked') reasons = ['root_context_changed']
   expect(await service.list(principal, profile.workspaceId)).toEqual({ approvals: [], profiles: [{
-    profile: saved, ready: state === 'ready', reasons: state === 'ready' ? [] : ['context_changed'],
+    profile: saved, ready: state === 'ready', reasons,
     sideEffects: false,
   }] })
   expect(profile).toEqual(saved)

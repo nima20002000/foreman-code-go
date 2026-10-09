@@ -7,6 +7,7 @@ import { ensureCommit, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { prepareCiRuntime } from './ciRuntimePrepare.js'
 import { lastCiRuntimeRefresh, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { readCiInstalledStorage } from './ciInstalledStorage.js'
+import { ciPreparationLimits } from './ciPreparationLimits.js'
 
 export interface CiRuntimeWorkerPorts {
   git: GitWorktreePorts
@@ -24,6 +25,7 @@ export interface CiRuntimeWorkerPorts {
 export class CiRuntimeWorker {
   private readonly sources: CiRuntimeSourceReceiver
   private state: CiRuntimeWorkerState | undefined
+  private preparation: Promise<void> | undefined
   /** `lifetime` is the Worker's, not a request's: preparation outlives the call that started it. */
   constructor(private readonly stateDirectory: string, private readonly ports: CiRuntimeWorkerPorts,
     private readonly lifetime: AbortSignal) {
@@ -35,6 +37,7 @@ export class CiRuntimeWorker {
     if (request.operation === 'status') {
       return { ...await this.status(), installedStorage: await readCiInstalledStorage(this.stateDirectory) }
     }
+    this.lifetime.throwIfAborted()
     if (request.operation === 'source') {
       if (this.state?.state === 'preparing' || this.state?.state === 'refreshing') {
         throw new DomainError('CI_RUNTIME_BUSY', 'This computer is already preparing its CI runtime.', 409)
@@ -66,22 +69,37 @@ export class CiRuntimeWorker {
     if (this.state?.state === 'prepared' && this.state.operationId === request.operationId
       && this.state.commit === request.commit) return this.state
     const state = this.set({ operationId: request.operationId, state: 'preparing', commit: request.commit,
-      stage: 'fetch-source', prepared: null, message: null })
-    void (async () => {
+      stage: 'fetch-source', prepared: null, message: null, preparationLimits: ciPreparationLimits() })
+    this.preparation = (async () => {
       await this.sources.releaseCompleted()
       const repository = await ensureCommit(this.ports.git, request.repository, request.commit, this.lifetime)
+      this.lifetime.throwIfAborted()
+      const installer = join(await this.ports.managedRuntimeRoot(), 'installer')
+      const keepPaths = await this.ports.currentRuntimePaths(this.stateDirectory)
+      this.lifetime.throwIfAborted()
       const prepared = await this.ports.prepare({ repository, commit: request.commit,
-        installer: join(await this.ports.managedRuntimeRoot(), 'installer'), review: request.review, keepImages: request.keepImages,
-        keepPaths: await this.ports.currentRuntimePaths(this.stateDirectory),
-        log: stage => { if (this.state?.commit === request.commit) this.set({ ...this.state, stage }) } })
+        installer, review: request.review, keepImages: request.keepImages, keepPaths,
+        signal: this.lifetime,
+        log: stage => {
+          this.lifetime.throwIfAborted()
+          if (this.state?.commit === request.commit) this.set({ ...this.state, stage })
+        } })
+      this.lifetime.throwIfAborted()
       this.set({ operationId: request.operationId, state: 'prepared', commit: request.commit,
-        stage: null, prepared: PreparedCiRuntimeSchema.parse(prepared), message: null })
+        stage: null, prepared: PreparedCiRuntimeSchema.parse(prepared), message: null,
+        preparationLimits: state.preparationLimits! })
     })().catch(error => {
       this.set({ operationId: request.operationId, state: 'failed', commit: request.commit,
         stage: this.state?.stage ?? null, prepared: null,
+        preparationLimits: state.preparationLimits!,
         message: (error instanceof Error ? error.message : String(error)).slice(-2000) })
     })
     return state
+  }
+
+  async close(): Promise<void> {
+    await this.preparation
+    await this.sources.close()
   }
 
   private async refresh(request: Extract<CiRuntimeRequest, { operation: 'refresh' }>) {

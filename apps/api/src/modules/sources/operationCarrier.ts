@@ -1,3 +1,4 @@
+import type { RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
 import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
@@ -119,11 +120,13 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
       throw new DomainError('SOURCE_PIN_CONFLICT', 'Repository belongs to another exact source snapshot.', 409)
     return response.repository
   }
-  async releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number> {
+  async releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<RetainedSourceFootprint> {
     const root = await this.rootFor(record, 'sources.release'), response = await this.call(root, { version: 1, operation: 'sources.release', record }, options?.signal)
-    if (response.operation !== 'sources.release' || response.materializationId !== record.receipt.materializationId || response.operationId !== record.operationId)
+    if (response.operation !== 'sources.release' || response.materializationId !== record.receipt.materializationId
+      || response.operationId !== record.operationId || response.sharedTree?.id !== record.receipt.sharedTree?.id)
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Closure acknowledgment belongs to another original materialization.', 409)
-    return response.retainedBytes
+    return { retainedBytes: response.retainedBytes,
+      ...(response.sharedTree ? { sharedTree: response.sharedTree } : {}) }
   }
 }
 /** Main accepts only owner lookup from the authenticated worker. */

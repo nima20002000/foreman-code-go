@@ -9,15 +9,14 @@ import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { authorizeSource } from '../sources/authority.js'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
+import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from '../workspaces/projectFolderCleanup.js'
 import type { AuthorizedWorkspaceRoot, WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
 
 type Sql = Pick<pg.PoolClient, 'query'>
 interface LocationRow { execution_location: unknown; location_revision: string; archived_at: Date | null }
-/** Main-only command composition. The generic W09 port owns root policy data;
- * native attestation/browse occur outside transaction locks. */
+/** Main-only commands around the shared root policy services. */
 export class WorkspaceBoundLocationService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly roots: WorkspaceRootPolicyPort, private readonly localRunnerId = 'runner-local') {}
@@ -65,6 +64,10 @@ export class WorkspaceBoundLocationService {
   }
   private async prepare(principal: ManagementPrincipal, selection: WorkspaceRootSelection, action: ManagementAction) {
     const root = await this.read(principal, action, selection.workspaceId, (sql, live) => this.roots.authorize(sql, live, selection))
+    this.assertRoot(root, selection)
+    return root
+  }
+  private assertRoot(root: AuthorizedWorkspaceRoot, selection: WorkspaceRootSelection) {
     if (!sameWorkflowValue(root.selection, selection) || !sameWorkflowValue(root.allowlist.hostRef, selection.hostRef)
       || root.allowlist.configurationRevision !== selection.configurationRevision
       || !root.allowlist.bases.some(base => base.baseId === selection.allowedBaseId && base.accessModes.includes(selection.accessMode))
@@ -72,7 +75,6 @@ export class WorkspaceBoundLocationService {
         : root.registration?.workerInstallationId !== root.allowlist.applicationInstallationId)) {
       throw new DomainError('WORKSPACE_ROOT_BINDING_CONFLICT', 'Root authorization returned another target.', 409)
     }
-    return root
   }
   private assertAttestation(root: AuthorizedWorkspaceRoot, attestation: ReturnType<typeof WorkspaceRootAttestationSchema.parse>) {
     const selection = root.selection
@@ -139,23 +141,9 @@ export class WorkspaceBoundLocationService {
     }
     return value
   }
-  private async replay(principal: ManagementPrincipal, input: WorkspaceBoundLocationSetInput) {
-    return this.read(principal, 'workspace_locations:update', input.workspaceId, async sql => {
-      const row = (await sql.query<{ input_hash: string; target_key: string; result: unknown }>(`select input_hash,target_key,result from management_command_receipts
-        where principal_id=$1 and operation='workspace.location.set' and command_id=$2`, [principal.id, input.commandId])).rows[0]
-      if (!row) return undefined
-      if (row.input_hash !== commandInputHash(input) || row.target_key !== `workspace:${input.workspaceId}:location`) throw new DomainError('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.', 409)
-      return this.acceptedReceipt(row.result, input)
-    })
-  }
   async set(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown) {
     const input = WorkspaceBoundLocationSetInputSchema.parse(raw)
-    const replay = await this.replay(principal, input)
-    if (replay) return { value: replay, replayed: true }
     const { commandId, ...selection } = input
-    const root: AuthorizedWorkspaceRoot = await this.prepare(principal, selection, 'workspace_locations:update')
-    const attestation = WorkspaceRootAttestationSchema.parse(await this.roots.attest(root))
-    this.assertAttestation(root, attestation)
     return this.commands.execute({ principal, source, operation: 'workspace.location.set', commandId,
       targetKey: `workspace:${input.workspaceId}:location`, payload: input,
       authorize: sql => this.authorize(sql, principal, 'workspace_locations:update', input.workspaceId).then(() => undefined),
@@ -167,7 +155,14 @@ export class WorkspaceBoundLocationService {
         if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', 'Workspace not found.', 404)
         if (row.archived_at) throw new DomainError('WORKSPACE_ARCHIVED', 'Archived workspaces cannot change execution location.', 409)
         if (row.location_revision !== String(input.expectedLocationRevision)) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed since it was read.', 409, { currentLocationRevision: Number(row.location_revision) })
+        const live = await this.authorize(sql, principal, 'workspace_locations:update', input.workspaceId)
+        const root = await this.roots.authorize(sql, live, selection)
+        this.assertRoot(root, selection)
         await this.roots.fence(sql, root)
+        // Folder cleanup shares this lock, so it cannot delete a directory between attestation and binding.
+        const attestation = WorkspaceRootAttestationSchema.parse(await this.roots.attest(root))
+        this.assertAttestation(root, attestation)
+        await this.authorize(sql, principal, 'workspace_locations:update', input.workspaceId)
         const nextRevision = input.expectedLocationRevision + 1
         const executionLocation = ExecutionLocationSchema.parse({ runnerId: selection.hostRef.kind === 'main' ? this.localRunnerId : root.allowlist.applicationInstallationId, rootPath: attestation.canonicalProjectRoot })
         const updated = await sql.query(`update workspaces set execution_location=$2::jsonb,execution_location_identity=$3::jsonb,location_revision=$4 where id=$1 and location_revision=$5`,

@@ -20,6 +20,7 @@ import type { JobRuntimeInventory } from './sourcePreparation.js'
 import type { JobRuntimeQualificationProducer, JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 import { JobVerificationProfileSchema, JobVerificationRuntimeFingerprintSchema, JobVerificationRuntimeMeasurementSchema,
   JobRuntimeProfileRecordSchema, JobRuntimeProfileSaveRecordSchema, JobRuntimeApprovalRecordSchema,
+  JobRuntimeQualificationSummarySchema,
   JobRuntimeFingerprintRecordSchema, JobRuntimeMeasurementRecordSchema, JobRuntimeNativeAdmissionRecordSchema,
   jobRuntimeProfilePolicy, jobRuntimeProfileLimits, type JobRuntimeApprovalRecord,
   type JobRuntimeProfileRecord, type JobRuntimeProfileSaveRecord }
@@ -72,7 +73,16 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         else readiness=profile.status==='qualified'&&profile.measurement&&Date.parse(profile.measurement.expiresAt)>Date.now()?await this.producer.revalidate(sql,profile):{ready:false,reasons:[`RUNTIME_${profile.status.toUpperCase().replaceAll('-','_')}`]}
         return {profile,...readiness,sideEffects:false as const}
       }))
-      const approvals=(await sql.query<{record:unknown}>(`select record from job_runtime_qualification_approvals where workspace_id=$1 and record->>'status' in ('captured','awaiting-approval','approved') order by id limit 100`,[workspaceId])).rows.map(row=>JobRuntimeApprovalRecordSchema.parse(row.record))
+      const approvals = (await sql.query<{
+        record: unknown; run_command_id: string | null; run_principal_id: string | null
+      }>(`select record,run_command_id,run_principal_id from job_runtime_qualification_approvals
+        where workspace_id=$1 and record->>'status' in
+        ('captured','awaiting-approval','approved','qualifying','recovery-required') order by id limit 100`,
+      [workspaceId])).rows.map(row => JobRuntimeQualificationSummarySchema.parse({
+        ...JobRuntimeApprovalRecordSchema.parse(row.record),
+        ...(row.run_command_id ? { runCommandId: row.run_command_id } : {}),
+        ...(row.run_principal_id ? { runPrincipalId: row.run_principal_id } : {}),
+      }))
       await this.authorize(sql,principal,workspaceId);return {profiles,approvals}
     })
   }
@@ -153,58 +163,86 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
           ...(profile.schemaVersion === 2 ? { requestedAt } : {}),
           expiresAt:new Date(Date.parse(requestedAt)+lifetime).toISOString()})
         await sql.query('insert into job_runtime_qualification_approvals(id,qualification_id,profile_id,profile_revision,workspace_id,record,requested_by) values($1,$2,$3,$4,$5,$6::jsonb,$7)',[approval.id,approval.qualificationId,profile.id,profile.revision,workspaceId,JSON.stringify(approval),principal.id])
-        await this.put(sql,{...profile,status:'captured',updatedAt:new Date().toISOString()});return approval
+        if (!profile.measurement && !profile.activeQualificationId) {
+          await this.put(sql,{...profile,status:'captured',updatedAt:new Date().toISOString()})
+        }
+        return approval
       }})
     this.changed?.()
     return result.value
   }
-  async qualify(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,commandId:string,approvalId:string) {
+  async qualify(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,commandId:string,approvalId:string,
+    options: { signal?: AbortSignal } = {}) {
     let measurement:ReturnType<typeof JobRuntimeMeasurementRecordSchema.parse>|undefined
     let result:JobRuntimeQualificationResult|undefined
     let claimed=false
     let reconcile=false
+    let recovering = false
     try {
       const outcome = await this.commands.execute({principal,source,operation:'job.runtime-profile.qualify',commandId,targetKey:workspaceId,payload:{approvalId},dedicatedConnection:true,
+      shouldResumeReceipt: async sql => {
+        const saved = await this.approval(sql, workspaceId, approvalId)
+        return saved.status === 'recovery-required'
+      },
       authorize:sql=>this.authorize(sql,principal,workspaceId,true).then(()=>undefined),prepare:async()=>{
         const approval=await this.transaction(async sql=>{
           await this.authorize(sql,principal,workspaceId,true)
           const value=await this.approval(sql,workspaceId,approvalId,true),profile=await this.record(sql,workspaceId,value.profileId,true)
-          // A paired, authorized computer qualifies its exact captured candidate directly; there is no approval step.
-          if(profile.schemaVersion!==value.schemaVersion||!['captured','awaiting-approval','approved','qualifying','failed','recovery-required'].includes(value.status)||Date.parse(value.expiresAt)<=Date.now()||profile.revision!==value.profileRevision||profile.specDigest!==value.fingerprint.specDigest)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','Capture the current installed candidate before qualifying it.',409)
-          if (profile.schemaVersion === 2) {
+          const owner=(await sql.query<{run_command_id:string|null;run_principal_id:string|null;measurement:unknown;run_result:JobRuntimeQualificationResult|null}>('select run_command_id,run_principal_id,measurement,run_result from job_runtime_qualification_approvals where id=$1 for update',[approvalId])).rows[0]!
+          if(owner.run_command_id&&(owner.run_command_id!==commandId||owner.run_principal_id!==principal.id))throw new DomainError('JOB_RUNTIME_QUALIFICATION_IN_PROGRESS','Reconcile the original qualification command.',409)
+          recovering = owner.run_command_id !== null
+          const matchesProfile = profile.schemaVersion === value.schemaVersion
+            && profile.revision === value.profileRevision && profile.specDigest === value.fingerprint.specDigest
+          const currentCandidate = matchesProfile && Date.parse(value.expiresAt) > Date.now()
+          if (!['captured','awaiting-approval','approved','qualifying','failed','recovery-required'].includes(value.status)
+            || !recovering && !currentCandidate) {
+            throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'Capture the current installed candidate before qualifying it.', 409)
+          }
+          if (value.schemaVersion === 2) {
             const live = await readLiveManagementPrincipal(sql, principal.id)
             requireAuthorization(live, 'jobs:start', { workspaceId })
             requireAuthorization(live, 'job_artifacts:read', { workspaceId })
             JobVerificationRuntimeFingerprintSchema.parse(value.fingerprint)
           }
-          const owner=(await sql.query<{run_command_id:string|null;run_principal_id:string|null;measurement:unknown;run_result:JobRuntimeQualificationResult|null}>('select run_command_id,run_principal_id,measurement,run_result from job_runtime_qualification_approvals where id=$1 for update',[approvalId])).rows[0]!
-          if(owner.run_command_id&&(owner.run_command_id!==commandId||owner.run_principal_id!==principal.id))throw new DomainError('JOB_RUNTIME_QUALIFICATION_IN_PROGRESS','Reconcile the original qualification command.',409)
           if(owner.measurement)measurement=JobRuntimeMeasurementRecordSchema.parse(owner.measurement)
           if(owner.run_result)result=owner.run_result
-          if(owner.run_command_id&&!result&&!measurement) {
+          const unresolved = !result && !measurement
+            || result?.outcome === 'denied' && result.closure === 'unconfirmed'
+          if(owner.run_command_id && unresolved) {
             if (!this.producer.reconcile) throw new DomainError('JOB_RUNTIME_RECOVERY_REQUIRED',
               'The original physical qualification requires owner reconciliation before another probe.',409)
             reconcile = true
+            result = undefined
+            measurement = undefined
           }
           await sql.query('update job_runtime_qualification_approvals set run_command_id=$2,run_principal_id=$3 where id=$1',[approvalId,commandId,principal.id])
-          const next={...value,status:'qualifying' as const};await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',[approvalId,JSON.stringify(next)]);await this.put(sql,{...profile,status:'qualifying'});return next
+          const next={...value,status:'qualifying' as const}
+          await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',
+            [approvalId,JSON.stringify(next)])
+          const claimProfile = !recovering || !profile.activeQualificationId && !profile.measurement
+          if (matchesProfile && claimProfile) await this.put(sql,{...profile,status:'qualifying',
+            activeQualificationId:value.qualificationId})
+          return next
         })
         claimed=true
-        const profile = await this.transaction(async sql => { await this.authorize(sql,principal,workspaceId,true); return this.record(sql,workspaceId,approval.profileId) })
         if (!result) {
-          const timeoutMs = reconcile ? Math.max(1, Date.parse(approval.expiresAt) - Date.now())
-            : qualificationTimeoutMs(profile,approval)
+          const timeoutMs = reconcile ? 240_000 : await this.transaction(async sql => {
+            await this.authorize(sql,principal,workspaceId,true)
+            return qualificationTimeoutMs(await this.record(sql,workspaceId,approval.profileId),approval)
+          })
           const deadline = qualificationDeadline(timeoutMs)
+          const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal
           try {
-            result = reconcile ? await this.producer.reconcile!(approval,deadline.signal)
-              : await this.producer.run(approval,deadline.signal)
+            signal.throwIfAborted()
+            result = reconcile ? await this.producer.reconcile!(approval,signal)
+              : await this.producer.run(approval,signal)
           }
           finally { deadline.dispose() }
         }
         if(result.outcome==='qualified') {
           measurement=JobRuntimeMeasurementRecordSchema.parse(result.measurement)
           if (measurement.schemaVersion === 2) JobVerificationRuntimeMeasurementSchema.parse(measurement)
-          validateRuntimeQualification(approval,measurement)
+          validateRuntimeQualification(approval,measurement,{ allowExpired: recovering })
         }
         await this.transaction(async sql=>{await this.authorize(sql,principal,workspaceId,true);await sql.query('update job_runtime_qualification_approvals set measurement=$2::jsonb,run_result=$5::jsonb where id=$1 and run_command_id=$3 and run_principal_id=$4',[approvalId,measurement?JSON.stringify(measurement):null,commandId,principal.id,JSON.stringify(result)])})
       },perform:async sql=>{
@@ -213,13 +251,37 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
         if(result.outcome==='denied') {
           const status=result.closure==='unconfirmed'?'recovery-required' as const:'failed' as const
           const denied={...profile,status,measurement:null,updatedAt:new Date().toISOString()}
-          if(profile.revision===approval.profileRevision&&profile.specDigest===approval.fingerprint.specDigest)await this.put(sql,denied)
-          await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',[approvalId,JSON.stringify({...approval,status})]);return profile.revision===approval.profileRevision?denied:profile
+          if (result.closure === 'confirmed') delete denied.activeQualificationId
+          const updateProfile = profile.revision === approval.profileRevision
+            && profile.specDigest === approval.fingerprint.specDigest
+            && profile.activeQualificationId === approval.qualificationId
+          if (updateProfile) await this.put(sql, denied)
+          await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',
+            [approvalId,JSON.stringify({...approval,status})])
+          return updateProfile ? denied : profile
         }
         if(!measurement)throw new DomainError('JOB_RUNTIME_EVIDENCE_MISSING','Actual measured evidence is missing.',409)
         const facts = runtimeQualificationFacts(measurement)
-        if(approval.status!=='qualifying'||profile.revision!==facts.profileRevision||profile.specDigest!==facts.specDigest||Date.parse(approval.expiresAt)<=Date.now()||Date.parse(measurement.expiresAt)<=Date.now())throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT','Qualification context changed before publication.',409)
+        if (approval.status !== 'qualifying') throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT',
+          'Qualification context changed before publication.',409)
+        const currentCandidate = profile.revision === facts.profileRevision && profile.specDigest === facts.specDigest
+        const expired = Date.parse(approval.expiresAt) <= Date.now() || Date.parse(measurement.expiresAt) <= Date.now()
+        const ownsProfile = profile.activeQualificationId === approval.qualificationId
+        if (!ownsProfile || recovering && (!currentCandidate || expired)) {
+          await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',
+            [approvalId,JSON.stringify({...approval,status:'complete'})])
+          if (ownsProfile && currentCandidate && !profile.measurement) {
+            const unqualified = { ...profile,status:'unqualified' as const,updatedAt:new Date().toISOString() }
+            delete unqualified.activeQualificationId
+            await this.put(sql,unqualified)
+            return unqualified
+          }
+          return profile
+        }
+        if (!currentCandidate || expired) throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT',
+          'Qualification context changed before publication.',409)
         const qualified=JobRuntimeProfileRecordSchema.parse({...profile,status:'qualified',measurement,updatedAt:new Date().toISOString()})
+        delete qualified.activeQualificationId
         const current=await this.producer.revalidate(sql,qualified)
         if(!current.ready)throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The actual captured host/root/runtime fingerprint changed.',409,{reasons:current.reasons})
         await this.put(sql,qualified);await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb,measurement=$3::jsonb where id=$1',[approvalId,JSON.stringify({...approval,status:'complete'}),JSON.stringify(measurement)]);return qualified
@@ -237,7 +299,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
           if(!owner.run_result&&!owner.measurement)await sql.query('update job_runtime_qualification_approvals set run_result=$2::jsonb where id=$1',[approvalId,JSON.stringify({outcome:'denied',closure:'unconfirmed',reasons:['JOB_RUNTIME_QUALIFICATION_FAILED']})])
           await sql.query('update job_runtime_qualification_approvals set record=$2::jsonb where id=$1',[approvalId,JSON.stringify({...approval,status:'recovery-required'})])
           const profile=await this.record(sql,workspaceId,approval.profileId,true)
-          if(profile.status==='qualifying'&&profile.revision===approval.profileRevision&&profile.specDigest===approval.fingerprint.specDigest)await this.put(sql,{...profile,status:'recovery-required',measurement:null,updatedAt:new Date().toISOString()})
+          if(profile.activeQualificationId===approval.qualificationId&&profile.status==='qualifying'&&profile.revision===approval.profileRevision&&profile.specDigest===approval.fingerprint.specDigest)await this.put(sql,{...profile,status:'recovery-required',measurement:null,updatedAt:new Date().toISOString()})
         })
         this.changed?.()
         } catch(settlementError) {throw new AggregateError([error,settlementError],'Qualification failed and its recovery state could not be persisted.',{cause:settlementError})}
@@ -252,11 +314,11 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       const row=(await sql.query<{measurement:unknown;run_result:JobRuntimeQualificationResult|null;native_admission:unknown}>('select measurement,run_result,native_admission from job_runtime_qualification_approvals where id=$1',[id])).rows[0]!
       const measurement=row.measurement?JobRuntimeMeasurementRecordSchema.parse(row.measurement):null
       let readiness: { ready: boolean; reasons: string[] }
-      if (usesRetiredHarness(profile)
-        || measurement?.schemaVersion === 2 && measurement.fingerprint.tools.some(tool => tool.kind === 'opencode')) {
+      if (usesRetiredHarness(profile)) {
         readiness = { ready: false, reasons: ['HARNESS_RETIRED'] }
       }
-      else if (profile.status === 'qualified' && measurement && Date.parse(measurement.expiresAt) > Date.now()) {
+      else if (profile.status === 'qualified' && profile.measurement
+        && Date.parse(profile.measurement.expiresAt) > Date.now()) {
         readiness = await this.producer.revalidate(sql, profile)
       } else {
         const reasons = row.run_result?.outcome === 'denied' ? row.run_result.reasons

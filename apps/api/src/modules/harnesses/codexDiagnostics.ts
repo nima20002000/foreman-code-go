@@ -104,8 +104,8 @@ export class CodexDiagnostics {
     let failure: unknown
     const task = Promise.resolve().then(async () => {
       guard()
-      owned.admitted = true
       this.config.admitRecovery!(recovery)
+      owned.admitted = true
       timer = schedule(() => owned.controller.abort(new Error('Native diagnostic deadline exceeded.')), 60_000)
       timer.unref()
       return await run(io)
@@ -132,7 +132,7 @@ export class CodexDiagnostics {
   private closeLifetime(owned: CodexDiagnosticLifetime): Promise<void> {
     if (owned.cleanup) return owned.cleanup
     const attempt = Promise.resolve().then(async () => {
-      if (owned.admitted) {
+      if (owned.admitted || owned.recovery.launchId !== undefined) {
         if (owned.recovery.launchId !== undefined) await this.config.abandonRecovery!(owned.recovery)
         await this.config.closeRecovery!(owned.recovery)
       }

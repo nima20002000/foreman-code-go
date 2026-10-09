@@ -11,6 +11,7 @@ export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
   const [accepted, setAccepted] = useState<string>()
   const [storageFailed, setStorageFailed] = useState(false)
   const reloading = useRef(false)
+  const reconnecting = identity.failureCount > 0 && !identity.isError
   useEffect(() => {
     if (!current || identity.isError || reloading.current || storageFailed) return
     try {
@@ -26,6 +27,13 @@ export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
       : 'The app connection could not be verified. Your saved drafts have not been changed.'}</p>
     <Button variant="primary" onClick={() => { setStorageFailed(false); void identity.refetch() }}>Try again</Button>
   </section></main>
-  if (!current || current !== accepted || reloading.current) return <main className="runtime-screen" role="status">Connecting to this app…</main>
-  return children
+  if (!current || current !== accepted || reloading.current) {
+    return <main className="runtime-screen" role="status">
+      {reconnecting ? 'Reconnecting…' : 'Connecting to this app…'}
+    </main>
+  }
+  return <>
+    {reconnecting && <div className="runtime-reconnecting" role="status">Reconnecting…</div>}
+    {children}
+  </>
 }

@@ -125,6 +125,10 @@ footer p { margin: 0; font-size: .8125rem; }
   const state = $('state'), code = $('code'), request = $('request');
   let busy = false, closed = false, paired = false, plan = null, blocked = false;
   const errors = { preview_read_only: 'This is a read-only preview. Open the installed companion to pair or start the service.',
+    companion_installation_changed: 'The installation changed while this page was open. Reopen the companion from the installed launcher.',
+    installation_state_mismatch: 'This installation uses a different state folder. Reopen its approved launcher.',
+    installation_state_unbound: 'This installation needs its app and state folders reviewed before updating. See the installation guide.',
+    install_busy: 'An installation or service change is in progress. Wait for it to finish and review the plan again.',
     target_runtime_mismatch: 'This computer does not match the supported OS or Node version for this release. Use a supported computer.', service_plan_changed: 'The installed service changed since you reviewed it. Review the plan again.', pairing_required: 'Pair this computer before starting the background service.',
     service_confirmation_required: 'Confirm the reviewed plan to continue.', installation_invalid: 'The installation is not complete or is not in the expected location. Reinstall from the approved package.',
     private_directory_required: 'A required folder is not private to this user. Fix its permissions and retry.', companion_command_failed: 'The companion could not complete that. Retry, or reopen it from the installed launcher.',
@@ -177,11 +181,14 @@ footer p { margin: 0; font-size: .8125rem; }
       const link = connection[report.connection] || 'offline';
       const compat = report.compatibility || {};
       const unsupported = compat.supported !== true;
-      blocked = report.readOnly === true || unsupported;
+      blocked = report.readOnly === true || unsupported || report.installationChanged === true;
       lock(busy); $('show').disabled = blocked; $('code').disabled = blocked;
       const label = (value) => value ? `${value.os || '?'} ${value.osRelease || '?'}, Node ${value.node || '?'}` : '?';
+      let compatibilityNotice = '';
+      if (report.installationChanged === true) compatibilityNotice = errors.companion_installation_changed;
+      else if (unsupported) compatibilityNotice = `Unsupported on this computer. Required: ${label(compat.required)}. Actual: ${label(compat.actual)}.`;
       const notes = [report.readOnly === true ? 'Read-only preview. Pairing and service actions are disabled.' : '',
-        unsupported ? `Unsupported on this computer. Required: ${label(compat.required)}. Actual: ${label(compat.actual)}.` : ''].filter(Boolean);
+        compatibilityNotice].filter(Boolean);
       $('notice').hidden = !notes.length; $('notice').textContent = notes.join(' '); $('notice').dataset.tone = unsupported ? 'bad' : 'warn';
       if (unsupported && !paired) badge('Unsupported', 'bad');
       else if (paired) badge(`Paired · ${link}`, report.connection === 'connected' ? 'ok' : 'warn');
@@ -192,13 +199,18 @@ footer p { margin: 0; font-size: .8125rem; }
       const service = report.service || {};
       $('step4').hidden = !paired; $('step4').dataset.done = String(paired && service.active === true);
       $('enable').textContent = service.active ? 'Confirm background service configuration' : 'Confirm and start background service';
-      $('next').textContent = !paired ? ''
-        : service.active ? 'The background service is running. Pairing and the service do not by themselves confirm that workflows or harnesses are ready. You can close this page; the worker keeps running.'
-        : service.userManagerAvailable ? 'Paired. The background service is not running. Use "Run in background" above if you want it to keep running.'
-        : 'Paired, but no user service manager was found, so the background service cannot be started from here.';
+      let nextStep = '';
+      if (paired && service.active) {
+        nextStep = 'The background service is running. Pairing and the service do not by themselves confirm that workflows or harnesses are ready. You can close this page; the worker keeps running.';
+      } else if (paired && service.userManagerAvailable) {
+        nextStep = 'Paired. The background service is not running. Use "Run in background" above if you want it to keep running.';
+      } else if (paired) {
+        nextStep = 'Paired, but no user service manager was found, so the background service cannot be started from here.';
+      }
+      $('next').textContent = nextStep;
       if (Array.isArray(report.errors) && report.errors.length) say('m3', `Diagnostics: ${report.errors.join(', ')}`, 'bad');
-      return true;
-    } catch (error) { badge('Unavailable', 'bad'); say('m1', error.message, 'bad'); return false; }
+      return report;
+    } catch (error) { badge('Unavailable', 'bad'); say('m1', error.message, 'bad'); return null; }
   }
 
   $('make').addEventListener('click', async () => {
@@ -276,9 +288,18 @@ footer p { margin: 0; font-size: .8125rem; }
       if (!result || result.enabled !== true) throw new Error('The service start was not confirmed. Check status and retry.');
       plan = null; $('planBox').hidden = true;
       say('m4', 'Checking the background service…');
-      const ok = await refresh();
-      say('m4', ok ? 'The background service was installed and started for your account. Check the status badge for its connection.' : 'Started, but status could not be read. Retry the status check.', ok ? 'ok' : 'bad');
-      if (!ok) $('retry4').hidden = false;
+      const report = await refresh();
+      if (!report) {
+        say('m4', 'The start command completed, but status could not be read. Check status and review the plan again.', 'bad');
+      } else if (report.service?.active !== true || blocked) {
+        say('m4', 'The start command completed, but a running background service was not confirmed. Check diagnostics and review the plan again.', 'bad');
+      } else {
+        say('m4', 'The background service is running for your account. Check the status badge for its connection.', 'ok');
+      }
+      if (!report || report.service?.active !== true || blocked) {
+        $('retry4').hidden = false;
+        $('retry4').textContent = 'Review plan again';
+      }
     } catch (error) { say('m4', error.message, 'bad'); $('retry4').hidden = false; $('retry4').textContent = 'Review plan again'; }
     finally { lock(false); }
   });

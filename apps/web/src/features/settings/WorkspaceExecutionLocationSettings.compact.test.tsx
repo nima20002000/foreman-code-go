@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import type { WorkspaceRootSelection } from '@foreman-code/contracts/workspace-r
 import type { WorkspaceBoundLocationReadback } from '@foreman-code/contracts/workspace-bound-location'
 import { server } from '../../mocks/server'
 import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
+import { boundLocationKeys } from '../../shared/api/workspaceBoundLocation'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
 import { mainRoot, rootMainId, boundRootReadback } from './workspaceBoundLocation.fixtures'
@@ -54,6 +55,40 @@ beforeEach(() => {
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()) })
 
 describe('compact Main folder browser', () => {
+  it('reloads a changed location revision from inside the folder picker before browsing and saving again', async () => {
+    const requests: WorkspaceRootSelection[] = []
+    server.use(http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
+      workspaceId: 'workspace-1', readiness: 'metadata-only',
+      policies: saved.evidence === 'bound' ? [saved.binding] : [], allowlists: [mainRoot],
+    })), http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection
+      requests.push(input)
+      if (input.expectedLocationRevision !== saved.locationRevision) return HttpResponse.json({
+        error: { code: 'LOCATION_REVISION_CONFLICT', message: 'The saved location changed.' },
+      }, { status: 409 })
+      return HttpResponse.json({ workspaceId: input.workspaceId, selection: input, browse: {
+        relativePath: input.relativePath,
+        directories: input.relativePath ? [] : folders.map(name => ({ name, relativePath: name })), truncated: false,
+      } })
+    }))
+    mount()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Execution location' }))
+    await screen.findByRole('button', { name: 'target' })
+    saved = boundRootReadback({ workspaceId: 'workspace-1', hostRef: mainRoot.hostRef,
+      allowedBaseId: mainRoot.bases[0]!.baseId, configurationRevision: '1', relativePath: 'existing',
+      accessMode: 'read-write', expectedLocationRevision: 0, expectedRootPolicyRevision: 0 }, mainRoot)
+    await act(async () => { await clients.at(-1)!.invalidateQueries({ queryKey: boundLocationKeys.read('workspace-1') }) })
+    await user.click(screen.getByRole('button', { name: 'Reload saved location' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'Execution location' }))
+    await user.click(await screen.findByRole('button', { name: 'target' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
+    expect(requests.at(-1)).toMatchObject({ expectedLocationRevision: 1, expectedRootPolicyRevision: 1 })
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await waitFor(() => expect(writes).toHaveLength(1))
+    expect(writes[0]).toMatchObject({ relativePath: 'target', expectedLocationRevision: 1, expectedRootPolicyRevision: 1 })
+  })
   it('recognizes authoritative Main, navigates with one click and saves the exact approved binding', async () => {
     mount(); const user = userEvent.setup()
     const trigger = await screen.findByRole('button', { name: 'Execution location' })

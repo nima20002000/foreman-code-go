@@ -31,6 +31,33 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()) })
 describe('authenticated target-local execution folder', () => {
+  it('lets an invalid native folder selection be corrected after a definitive rejection', async () => {
+    const writes: WorkspaceRootSelection[] = []
+    server.use(http.put('/api/management/workspaces/workspace-1/root-location', async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection
+      writes.push(input)
+      if (input.relativePath === 'project/') return HttpResponse.json({
+        error: { code: 'ROOT_RELATIVE_PATH_INVALID', message: 'Choose an unambiguous folder relative to an approved base.' },
+      }, { status: 422 })
+      saved = boundRootReadback(input, mainRoot)
+      return HttpResponse.json({ value: saved, replayed: false })
+    }))
+    mount()
+    const user = userEvent.setup()
+    await choose(user, false)
+    const field = screen.getByRole('textbox', { name: 'Relative folder on this computer' })
+    await user.type(field, 'project/')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await waitFor(() => expect(screen.getAllByText('Choose an unambiguous folder relative to an approved base.').length)
+      .toBeGreaterThan(0))
+    expect(field).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Reconcile original selection' })).not.toBeInTheDocument()
+    await user.clear(field)
+    await user.type(field, 'project')
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(writes.map(write => write.relativePath)).toEqual(['project/', 'project'])
+  })
   it('browses and validates on the selected worker, then saves exact binding without a browser runner ID', async () => {
     const writes: WorkspaceRootSelection[] = []
     server.use(http.put('/api/management/workspaces/workspace-1/root-location', async ({ request }) => {

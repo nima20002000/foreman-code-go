@@ -13,6 +13,7 @@ import { assertChange, assertManagedChange, expectedMcpUserFingerprint, managedC
 import { NativeMcpNotSubmittedError } from './nativeMcpDelivery.js'
 import { qualificationError } from './qualificationErrors.js'
 import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
+import { MCP_INSPECTION_TIMEOUT_MS } from './mcpDetection.js'
 
 type Harness = 'codex'
 type RecordedMcpHarness = Harness | 'opencode'
@@ -53,8 +54,7 @@ function acceptedPlanMessage(error: unknown): string {
 export class HarnessMcpSettingsService {
   private readonly stopping = new AbortController()
   private readonly pending = new Set<Promise<unknown>>()
-  // Opening Connections spawns the native CLI. Reuse the last read while its user config file is
-  // unchanged (5 min at most); this service's own writes clear it, so changes are visible at once.
+  // Reuse unchanged user config for at most five minutes; expired reads must finish before serving settings.
   private readonly lists = new Map<Harness, { list: McpList; file: string; stamp: string; readAt: number }>()
   private readonly reads = new Map<Harness, Promise<McpList>>()
   private listGeneration = 0
@@ -71,7 +71,7 @@ export class HarnessMcpSettingsService {
   private async work<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.stopping.signal.aborted) throw new DomainError('HARNESS_SETTINGS_CLOSING', 'Harness settings are shutting down.', 503)
     if (this.pending.size >= 8) throw new DomainError('MCP_SETTINGS_BUSY', 'Native settings are busy. Try again after the current operation finishes.', 503)
-    const signal = AbortSignal.any([this.stopping.signal, AbortSignal.timeout(60_000)])
+    const signal = AbortSignal.any([this.stopping.signal, AbortSignal.timeout(MCP_INSPECTION_TIMEOUT_MS)])
     const task = Promise.resolve().then(() => run(signal))
     this.pending.add(task)
     try { return await task } finally { this.pending.delete(task) }
@@ -110,8 +110,6 @@ export class HarnessMcpSettingsService {
       const clear = () => { if (this.reads.get(harness) === reading) this.reads.delete(harness) }
       void reading.then(clear, clear)
     }
-    // An older read of an unchanged file is shown while the refresh runs; layers outside the user file still refresh.
-    if (known && unchanged) { void reading.catch(() => undefined); return structuredClone(known.list) }
     return reading
   }
   private readList(harness: Harness) {

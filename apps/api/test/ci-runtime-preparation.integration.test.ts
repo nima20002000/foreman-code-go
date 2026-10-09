@@ -1,18 +1,20 @@
 import Fastify from 'fastify'
 import pg from 'pg'
 import { randomUUID } from 'node:crypto'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
 import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { PostgresDeviceAccessService } from '../src/modules/devices/access.js'
 import { CiRuntimeProvisioner } from '../src/modules/jobs/ciRuntimeProvisioner.js'
 import { buildComputerTarget, buildComputerKey } from '../src/modules/settings/buildComputers.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { ciPreparationFixture, qualifiedPreparationProfile, commit, dexter, mainId } from './helpers/ciPreparationFixture.js'
 import type { AppInteractionService } from '../src/modules/interactions/app.js'
+import { ciPreparationLimits } from '../src/modules/jobs/ciPreparationLimits.js'
 
 describe.skipIf(!postgresEnabled)('persisted runtime preparation over authenticated MCP', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -30,6 +32,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
 
   async function setup(options: Parameters<typeof ciPreparationFixture>[0] = {}) {
     fixture = await ciPreparationFixture(options)
+    await database.pool.query('update application_installation set id=$1 where singleton=true', [mainId])
     const access = new PostgresAccessService(database.pool)
     const writer = await access.issue({ name: 'Runtime author', audience: 'operator',
       expiresAt: new Date(Date.now() + 3_600_000), grants: [{ actions: [...ManagementActionSchema.options], scope: {} }] })
@@ -66,15 +69,19 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       canRespond: async () => false } as unknown as AppInteractionService
     registerGraphqlMcp(app, { access, operator: services, interactions })
     const url = await app.listen({ port: 0, host: '127.0.0.1' })
-    const call = async (name: string, input: unknown, bearer = writer.token) => {
+    const rpc = async (method: string, params: unknown, bearer = writer.token) => {
       const response = await fetch(`${url}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${bearer}`,
         'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })
       const body = await response.text()
-      return JSON.parse(body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? body).result as {
+      return JSON.parse(body.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? body).result
+    }
+    const call = async (name: string, input: unknown, bearer = writer.token) =>
+      await rpc('tools/call', { name, arguments: input }, bearer) as {
         isError?: boolean; structuredContent?: unknown
       }
-    }
+    const listTools = async (bearer = writer.token) =>
+      await rpc('tools/list', {}, bearer) as { tools: { name: string; description: string }[] }
     const settle = async (service: CiRuntimeProvisioner) => {
       for (let attempt = 0; attempt < 1000; attempt++) {
         const status = await service.get(writer.principal, { workspaceId: fixture.workspaceId, profileId: 'p-unit' })
@@ -83,8 +90,27 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       }
       throw new Error('Preparation did not settle')
     }
-    return { service, create, call, settle, writer, reader, services, access }
+    return { service, create, call, listTools, settle, writer, reader, services, access }
   }
+
+  it('discovers scoped runtime refresh without advertising write access to a reader', async () => {
+    const f = await setup()
+    const writerTools = (await f.listTools()).tools
+    const readerTools = (await f.listTools(f.reader.token)).tools
+    for (const tools of [writerTools, readerTools]) {
+      const profiles = tools.find(tool => tool.name === 'job_runtime_profile_list')!
+      expect(profiles.description).toContain('Authorized writers can use build_computer_prepare')
+      expect(profiles.description).toContain('arbitrary installer paths are unavailable')
+    }
+    expect(writerTools.some(tool => tool.name === 'build_computer_prepare')).toBe(true)
+    expect(readerTools.some(tool => tool.name === 'build_computer_prepare')).toBe(false)
+    expect((await f.call('build_computer_prepare', { workspaceId: fixture.workspaceId,
+      profileId: 'p-unit', commit, commandId: randomUUID() }, f.reader.token)).isError).toBe(true)
+    expect((await f.call('build_computer_prepare_get', {
+      workspaceId: fixture.workspaceId, profileId: 'p-unit',
+    }, f.reader.token)).structuredContent).toMatchObject({ state: 'idle' })
+    expect(fixture.calls.prepare).toEqual([])
+  })
 
   it('denies a reader, recovers a saved profile command after Main restarts and reads the completed command again', async () => {
     let reached!: () => void
@@ -133,6 +159,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       await recovered.recover()
       const done = await f.settle(recovered)
       expect(done.state).toBe('qualified')
+      expect(done.preparationLimits).toEqual(ciPreparationLimits())
       const retry = await f.call('build_computer_prepare', input)
       expect(BuildComputerPrepareStatusSchema.parse(retry.structuredContent)).toEqual(done)
       const read = await f.call('build_computer_prepare_get', { workspaceId: fixture.workspaceId, profileId: 'p-unit' }, f.reader.token)
@@ -190,5 +217,172 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       await service.close()
       await pool.end()
     }
+  })
+
+  it.each(['missing', 'revoked', 'registration changed', 'wrong Main'] as const)(
+    'rejects a new preparation for a computer whose identity is %s through MCP', async condition => {
+      const f = await setup()
+      const input = { workspaceId: fixture.workspaceId, profileId: 'p-unit', commit, commandId: randomUUID() }
+      const devices = new PostgresDeviceAccessService(database.pool, mainId)
+      if (condition === 'revoked') {
+        await devices.revoke(f.writer.principal, dexter, 1, randomUUID(), 'mcp')
+      } else if (condition === 'missing') {
+        await database.pool.query('delete from device_registrations where id=$1', [dexter])
+      } else if (condition === 'registration changed') {
+        await database.pool.query(`update device_registrations
+          set record=jsonb_set(record,'{authorizationRevision}','2'::jsonb) where id=$1`, [dexter])
+      } else {
+        await database.pool.query('update application_installation set id=$1 where singleton=true', [randomUUID()])
+      }
+      expect((await f.call('build_computer_prepare', input, f.reader.token)).isError).toBe(true)
+      const result = await f.call('build_computer_prepare', input)
+      expect(result.isError).toBe(true)
+      expect(fixture.calls.prepare).toEqual([])
+      expect((await database.pool.query('select id from ci_runtime_preparations')).rows).toEqual([])
+      expect((await database.pool.query(`select command_id from management_command_receipts
+        where principal_id=$1 and operation='build_computer_prepare'`, [f.writer.principal.id])).rows).toEqual([])
+      const read = await f.call('build_computer_prepare_get', {
+        workspaceId: fixture.workspaceId, profileId: 'p-unit',
+      }, f.reader.token)
+      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent).state).toBe('idle')
+    })
+
+  it.each(['continuation', 'recovery'] as const)(
+    'retains failed preparation history when a device is revoked before %s', async phase => {
+      let reached!: () => void
+      const atSource = new Promise<void>(resolve => { reached = resolve })
+      let release!: () => void
+      const paused = new Promise<void>(resolve => { release = resolve })
+      let stopped = false
+      const f = await setup({ pause: async stage => {
+        if (stage === 'source' && !stopped) {
+          reached()
+          await paused
+        }
+      } })
+      const input = { workspaceId: fixture.workspaceId, profileId: 'p-unit', commit, commandId: randomUUID() }
+      try {
+        expect((await f.call('build_computer_prepare', input, f.reader.token)).isError).toBe(true)
+        expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
+        await atSource
+        const original = (await database.pool.query<{ id: string }>('select id from ci_runtime_preparations')).rows[0]!
+        const devices = new PostgresDeviceAccessService(database.pool, mainId)
+        await devices.revoke(f.writer.principal, dexter, 1, randomUUID(), 'mcp')
+        let service = f.service
+        if (phase === 'recovery') {
+          stopped = true
+          const closing = service.close()
+          release()
+          await closing
+          service = f.create()
+          f.services.ciRuntime = service
+          await service.recover()
+        } else {
+          release()
+        }
+        const done = await f.settle(service)
+        expect(done).toMatchObject({ state: 'failed', message: 'Device access rejected: revoked' })
+        expect(fixture.calls.prepare).toEqual([])
+        expect(fixture.calls.refresh).toEqual([])
+        expect(fixture.calls.qualified).toEqual([])
+        expect((await database.pool.query('select id,device_id,active from ci_runtime_preparations')).rows)
+          .toEqual([{ id: original.id, device_id: dexter, active: false }])
+        const read = await f.call('build_computer_prepare_get', {
+          workspaceId: fixture.workspaceId, profileId: 'p-unit',
+        }, f.reader.token)
+        expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toEqual(done)
+        expect((await f.call('build_computer_prepare', { ...input, commandId: randomUUID() })).isError).toBe(true)
+        expect((await database.pool.query('select id from ci_runtime_preparations')).rows).toEqual([original])
+      } finally {
+        stopped = true
+        release()
+      }
+    })
+
+  it('closes an active qualification and resumes the same persisted preparation through MCP', async () => {
+    const f = await setup()
+    const originalQualify = fixture.profileService.qualify
+    let reached!: () => void
+    const qualifying = new Promise<void>(resolve => { reached = resolve })
+    let cancelProbe!: () => void
+    fixture.profileService.qualify = async (principal, source, workspaceId, commandId, approvalId,
+      options: { signal?: AbortSignal } = {}) => {
+      reached()
+      await new Promise<void>((_resolve, reject) => {
+        cancelProbe = () => reject(new Error('Qualification interrupted'))
+        options.signal?.throwIfAborted()
+        options.signal?.addEventListener('abort', cancelProbe, { once: true })
+      })
+      return originalQualify(principal, source, workspaceId, commandId, approvalId)
+    }
+    const input = { workspaceId: fixture.workspaceId, profileId: 'p-unit', commit, commandId: randomUUID() }
+    let closing: Promise<void> | undefined
+    let closed = false
+    try {
+      expect((await f.call('build_computer_prepare', input, f.reader.token)).isError).toBe(true)
+      expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
+      await qualifying
+      closing = f.service.close().then(() => { closed = true })
+      await vi.waitFor(() => { expect(closed).toBe(true) }, { timeout: 1_000 })
+      expect(fixture.calls.qualified).toEqual([])
+      const interrupted = (await database.pool.query('select id,active from ci_runtime_preparations')).rows[0]!
+      expect(interrupted.active).toBe(true)
+      const pending = await f.call('build_computer_prepare_get', {
+        workspaceId: fixture.workspaceId, profileId: 'p-unit',
+      }, f.reader.token)
+      expect(BuildComputerPrepareStatusSchema.parse(pending.structuredContent).state).toBe('qualifying')
+      fixture.profileService.qualify = originalQualify
+      const recovered = f.create()
+      f.services.ciRuntime = recovered
+      await recovered.recover()
+      const done = await f.settle(recovered)
+      expect(done.state).toBe('qualified')
+      const read = await f.call('build_computer_prepare_get', {
+        workspaceId: fixture.workspaceId, profileId: 'p-unit',
+      }, f.reader.token)
+      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toEqual(done)
+      expect((await database.pool.query('select id,active from ci_runtime_preparations')).rows)
+        .toEqual([{ id: interrupted.id, active: false }])
+      expect(fixture.calls.refresh).toHaveLength(1)
+    } finally {
+      fixture.profileService.qualify = originalQualify
+      cancelProbe?.()
+      await closing
+    }
+  })
+
+  it('persists preparation failure over authenticated MCP and replays it after service replacement without refresh', async () => {
+    const f = await setup({ prepareFails: true })
+    const input = { workspaceId: fixture.workspaceId, profileId: 'p-unit', commit, commandId: randomUUID() }
+    const denied = await f.call('build_computer_prepare', input, f.reader.token)
+    expect(denied.isError).toBe(true)
+    expect((await database.pool.query('select id from ci_runtime_preparations')).rows).toEqual([])
+    expect((await database.pool.query(
+      'select outcome from management_audit where principal_id=$1 and action=$2',
+      [f.reader.principal.id, 'build_computer_prepare'],
+    )).rows).toEqual([{ outcome: 'denied' }])
+    expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
+    const failed = await f.settle(f.service)
+    expect(failed).toMatchObject({ state: 'failed', message: 'podman build failed: no space left on device' })
+    expect(fixture.calls.prepare).toHaveLength(1)
+    expect(fixture.calls.refresh).toEqual([])
+    expect(fixture.calls.qualified).toEqual([])
+    const saved = (await database.pool.query('select id,active,record from ci_runtime_preparations')).rows[0]!
+    expect(saved.active).toBe(false)
+    expect(saved.record.status).toEqual(failed)
+    await f.service.close()
+    const replacement = f.create()
+    f.services.ciRuntime = replacement
+    await replacement.recover()
+    const read = await f.call('build_computer_prepare_get', {
+      workspaceId: fixture.workspaceId, profileId: 'p-unit',
+    }, f.reader.token)
+    expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toEqual(failed)
+    const replay = await f.call('build_computer_prepare', input)
+    expect(BuildComputerPrepareStatusSchema.parse(replay.structuredContent)).toEqual(failed)
+    expect((await database.pool.query('select id,active from ci_runtime_preparations')).rows)
+      .toEqual([{ id: saved.id, active: false }])
+    expect(fixture.calls.prepare).toHaveLength(1)
+    expect(fixture.calls.refresh).toEqual([])
   })
 })

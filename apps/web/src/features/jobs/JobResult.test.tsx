@@ -87,3 +87,19 @@ it('a denied artifact read is unavailable history, not proof the required output
   expect(await screen.findByText('Artifact history unavailable')).toBeInTheDocument()
   expect(screen.queryByText('Required artifact missing')).toBeNull()
 })
+
+it.each(['missing_output', null] as const)('shows failed publication with its retained issue %s', async resultIssue => {
+  responses({ ...execution, publication: 'failed', resultIssue })
+  mount()
+  expect(await screen.findByText(resultIssue ? 'Publication failed: missing output.' : 'Publication failed.'))
+    .toBeInTheDocument()
+  expect(screen.queryByText('Awaiting publication')).toBeNull()
+  expect(screen.queryByText('Loading publication…')).toBeNull()
+})
+
+it.each(['pending', 'collecting'] as const)('continues waiting for artifacts while publication is %s', async publication => {
+  responses({ ...execution, publication, resultIssue: null })
+  mount()
+  expect(await screen.findByText('Awaiting publication')).toBeInTheDocument()
+  expect(screen.queryByText(/Publication failed/)).toBeNull()
+})

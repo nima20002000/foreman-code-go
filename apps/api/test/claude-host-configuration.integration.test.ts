@@ -3,7 +3,7 @@ import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts'
-import { HarnessDefaultsUpdateResultSchema, type ManagementAction, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { HarnessCatalogEntrySchema, HarnessDefaultsUpdateResultSchema, type ManagementAction, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { HarnessRegistryReadbackSchema, HostHarnessOverrideSaveResultSchema,
   HostHarnessInstanceCheckResultSchema, HostHarnessOverrideListSchema,
   type HostHarnessOverride, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
@@ -24,6 +24,7 @@ import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSet
 import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { DomainError } from '../src/modules/errors.js'
 
 it('discovers a saved Claude preset and configures and checks its host profile through authenticated HTTP and MCP', async () => {
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
@@ -79,7 +80,10 @@ it('discovers a saved Claude preset and configures and checks its host profile t
     service = new HostHarnessOverrideService(instances, commands, authority,
       (value, client) => registry!.profileEvidence(value, client),
       new HostHarnessInstanceProfileChecks(instances, profiles, commands, authority, { qualify }))
-    catalog = new HarnessCatalogService({ qualify: async () => { throw new Error('No model-free qualification.') } },
+    const inspectConfiguration = vi.fn(async () => {
+      throw new DomainError('HARNESS_CHECK_TIMEOUT', 'The native check timed out.', 503)
+    })
+    catalog = new HarnessCatalogService({ qualify: inspectConfiguration },
       settings, commands, '/recorded/checks')
     app = buildApp({ logger: false,
       readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -159,6 +163,20 @@ it('discovers a saved Claude preset and configures and checks its host profile t
       name: 'harness_instances_list', arguments: readInput })).structuredContent)
     expect(persisted.overrides).toEqual([checked.value])
     expect((await settings.getManagedHarnessDefaults()).defaults.claude).toEqual(configuration)
+    const failedInspection = HarnessCatalogEntrySchema.parse((await reader.client.callTool({
+      name: 'harness_get', arguments: { harness: 'claude' },
+    })).structuredContent)
+    expect(failedInspection.discoveryError).toMatchObject({ code: 'HARNESS_CHECK_TIMEOUT' })
+    expect(inspectConfiguration).toHaveBeenCalledOnce()
+    const afterFailure = HarnessRegistryReadbackSchema.parse((await reader.client.callTool({
+      name: 'harness_registry_get', arguments: hostRef,
+    })).structuredContent)
+    expect(afterFailure.installations).toEqual(inventory.installations)
+    expect(await httpInventory()).toEqual(afterFailure)
+    expect(discovery.claude).toHaveBeenCalledOnce()
+    expect(HostHarnessOverrideListSchema.parse((await reader.client.callTool({
+      name: 'harness_instances_list', arguments: readInput,
+    })).structuredContent).overrides).toEqual([checked.value])
     const audit = await pool.query('select action,outcome from management_audit where source=$1', ['mcp'])
     expect(audit.rows).toEqual(expect.arrayContaining([
       { action: 'harness_instance_save', outcome: 'denied' },

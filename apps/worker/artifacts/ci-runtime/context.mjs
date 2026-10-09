@@ -21,8 +21,11 @@ async function installedRuntimeFiles(offlineSeed) {
   const controlNames = ['Containerfile', 'corepack'];
   if (offlineSeed) controlNames.push('seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs');
   const entries = controlNames.map(name => ({ root: controls, name, destination: name }));
-  for (const name of ['verification-runner.mjs', 'verify-repository.mjs', 'verification-reports.mjs', 'integration-process.mjs']) {
+  for (const name of ['verification-runner.mjs', 'verify-repository.mjs', 'verification-reports.mjs', 'integration-process.mjs', 'integration-capabilities.mjs']) {
     entries.push({ root: scripts, name, destination: `verification/${name}` });
+  }
+  for (const path of ['apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs']) {
+    entries.push({ root: join(scripts, '..', dirname(path)), name: basename(path), destination: path });
   }
   return Promise.all(entries.map(async entry => ({ ...entry,
     bytes: await readSeedFile(entry.root, entry.name, 1024 * 1024) })));
@@ -109,6 +112,7 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
   }
   await mkdir(join(output, 'verification'), { mode: 0o755 });
   for (const { destination, bytes } of runtimeFiles) {
+    await mkdir(dirname(join(output, destination)), { recursive: true, mode: 0o755 });
     await writeFile(join(output, destination), bytes, { mode: destination === 'corepack' ? 0o755 : 0o644, flag: 'wx' });
   }
   const receipt = { sourceCommit: captured,

@@ -83,6 +83,7 @@ async function fixture() {
   const approved = new Map<string, ApprovedSource>()
   vi.spyOn(service, 'approve').mockImplementation(async (_principal, _transport, raw) => {
     const input = SourceApproveInputSchema.parse(raw)
+    if (!input.approvedPaths) throw new Error('This fixture expects explicit path approval.')
     let source = approved.get(input.commandId)
     if (!source) {
       const manifest = createSourceManifest({ version: 1, approvedSourceId: randomUUID(), snapshotId: randomUUID(),

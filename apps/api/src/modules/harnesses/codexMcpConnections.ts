@@ -74,9 +74,10 @@ export class CodexMcpConnections implements NativeMcpAdapter {
         const source = await readNativeUserFile(current.file, { whenMissing: '', requireDirectory: true })
         await backupNativeUserFile(current.file, source)
         signal.throwIfAborted()
-        // Exactly one irreversible native operation. A later error is uncertain.
+        if (managed?.preset === 'graphql' && change.kind === 'add') await installAppLauncher(signal)
+        signal.throwIfAborted()
+        // A later error cannot establish whether the native write was delivered.
         writing()
-        if (managed?.preset === 'graphql' && change.kind === 'add') await installAppLauncher()
         await transport.request('config/batchWrite', { edits: edits.map((edit) => ({ keyPath: `mcp_servers.${edit.name}`, value: edit.value ?? null, mergeStrategy: 'replace' })),
           expectedVersion: current.version, filePath: current.file, reloadUserConfig: true }, signal)
         const after = await this.inspect(transport, binary, environment, signal)

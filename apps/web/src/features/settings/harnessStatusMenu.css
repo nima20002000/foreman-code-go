@@ -5,8 +5,8 @@
 .harness-status-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .harness-status-initial { display: none; }
 .harness-status-light { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--n-warning); }
-.harness-status-light--eligible { background: var(--n-success); }
-.harness-status-light--blocked { background: var(--n-danger); }
+.harness-status-light--installed { background: var(--n-success); }
+.harness-status-light--missing { background: var(--n-danger); }
 .workspace-shell-navigation-collapsed .harness-status-name { display: none; }
 .workspace-shell-navigation-collapsed .harness-status-initial { display: inline; font-size: 10px; }
 .workspace-shell-navigation-collapsed .harness-status-link { justify-content: center; padding-inline: 4px; }

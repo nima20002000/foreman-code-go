@@ -273,6 +273,7 @@ export async function runQualificationCommand(
         else resolve({ exitCode: native.exitCode, stdout: output, stderr: diagnostics })
       }, reject)
     })
+    if (signal.aborted) abort()
   })
   void completed.catch(() => {})
   return completed
@@ -459,15 +460,16 @@ export function qualificationMountId(path: string, mountInfo: string): string {
 }
 
 /** Executes only after persisted exact human approval and existing native admission. */
-export async function qualifyJobRuntime(raw: JobQualificationCandidate, authority: JobQualificationAuthority, callerSignal: AbortSignal): Promise<JobQualificationRecord> {
+export async function qualifyJobRuntime(raw: JobQualificationCandidate, authority: JobQualificationAuthority,
+  callerSignal: AbortSignal, { now = Date.now }: { now?: () => number } = {}): Promise<JobQualificationRecord> {
   const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(120000)])
   const candidate = JobQualificationCandidateSchema.parse(raw)
   const fingerprint = jobQualificationFingerprint(candidate)
-  const checkedAt = new Date().toISOString()
+  const checkedAt = new Date(now()).toISOString()
   const record: JobQualificationRecord = { suite: CI_QUALIFICATION_SUITE, candidate, fingerprint, measuredFingerprint: null,
     outcome: 'denied', closure: 'not_started', reasons: [], checkedAt, expiresAt: new Date(Date.parse(checkedAt) + candidate.ttlSeconds * 1000).toISOString(), measurements: null, profile: null }
   const approval = await authority.readApproval(candidate.approvalId)
-  if (!approval || approval.status !== 'approved' || approval.fingerprint !== fingerprint || !Number.isFinite(Date.parse(approval.expiresAt)) || Date.parse(approval.expiresAt) <= Date.now()) {
+  if (!approval || approval.status !== 'approved' || approval.fingerprint !== fingerprint || !Number.isFinite(Date.parse(approval.expiresAt)) || Date.parse(approval.expiresAt) <= now()) {
     return { ...record, reasons: ['approval_denied_or_expired'] }
   }
   record.expiresAt = new Date(Math.min(Date.parse(record.expiresAt), Date.parse(approval.expiresAt))).toISOString()
@@ -554,7 +556,7 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
     if (!physicallyClosed) throw new Error('Native ownership physical closure incomplete.')
     await authority.assertCurrent(candidate)
     const finalApproval = await authority.readApproval(candidate.approvalId)
-    if (!finalApproval || finalApproval.status !== 'approved' || finalApproval.fingerprint !== fingerprint || !Number.isFinite(Date.parse(finalApproval.expiresAt)) || Date.parse(finalApproval.expiresAt) <= Date.now()) throw new Error('Human approval changed during qualification.')
+    if (!finalApproval || finalApproval.status !== 'approved' || finalApproval.fingerprint !== fingerprint || !Number.isFinite(Date.parse(finalApproval.expiresAt)) || Date.parse(finalApproval.expiresAt) <= now()) throw new Error('Human approval changed during qualification.')
     const toolchainDigest = hash(measurement.toolchain)
     if (toolchainDigest !== candidate.fingerprint.toolchainDigest) throw new Error('Approved toolchain fingerprint changed.')
     const profile: QualifiedJobProfile = {

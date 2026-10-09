@@ -18,7 +18,7 @@ import * as processes from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { JobQualificationCandidateSchema, jobQualificationFingerprint } from './qualification.js'
 import { reserveInstalledJobQualification, runInstalledJobRuntimeQualification,
-  reconcileInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
+  reconcileInstalledJobRuntimeQualification, recoverInstalledJobRuntimeQualifications } from './installedRuntimeQualification.js'
 import * as installedHost from './installedRuntimeHost.js'
 import { JobVerificationQualificationCandidateSchema, JobRuntimeNativeAdmissionRecordSchema }
   from '@foreman-code/contracts/job-verification-runtime'
@@ -236,6 +236,28 @@ describe('actual qualification reservation seams with mocked native entry only',
     expect(f.registry.closeOwner).not.toHaveBeenCalled()
     expect(f.registry.reserveLaunch).not.toHaveBeenCalled()
   })
+  it('recovers previous-boot non-entry on the same installation without native work', async () => {
+    const f = await fixture()
+    await f.journal.qualificationAccept(f.admission,f.candidate)
+    const previousBoot = randomUUID()
+    const recoveredHost = { ...f.host,bootId:previousBoot }
+    await recoverInstalledJobRuntimeQualifications({ journal:f.journal,registry:f.registry,host:recoveredHost })
+    expect(await f.journal.qualificationStatus(id)).toMatchObject({ phase:'closed',launches:[],quotaClaims:[],
+      admission:f.admission,result:{ outcome:'denied',closure:'confirmed' } })
+    expect(f.registry.reserveLaunch).not.toHaveBeenCalled()
+    expect(f.registry.closeOwner).not.toHaveBeenCalled()
+  })
+  it('rejects a previous-boot entered operation and a different installation', async () => {
+    const f = await fixture()
+    await f.journal.qualificationAccept(f.admission,f.candidate)
+    await expect(recoverInstalledJobRuntimeQualifications({ journal:f.journal,registry:f.registry,
+      host:{ ...f.host,mainInstallationId:randomUUID(),bootId:randomUUID() } })).rejects.toThrow('Original qualification installation')
+    await f.journal.qualificationReserveEntry(id)
+    await expect(recoverInstalledJobRuntimeQualifications({ journal:f.journal,registry:f.registry,
+      host:{ ...f.host,bootId:randomUUID() } })).rejects.toThrow('Original qualification installation')
+    expect(await f.journal.qualificationStatus(id)).toMatchObject({ phase:'native_entry_attempted',result:null })
+    expect(f.registry.reserveLaunch).not.toHaveBeenCalled()
+  })
   it('reopens a closed verification diagnostic and returns its original result without another reservation', async () => {
     const f = await verificationReservationFixture()
     const { input, candidate } = f
@@ -321,7 +343,7 @@ describe('actual qualification reservation seams with mocked native entry only',
     expect((await reopened.qualificationStatus(id))?.quotaClaims).toEqual([])
   })
 
-  it('reconciles qualification longer than the channel maximum through bounded start and status calls', async () => {
+  it.each(['execute','reconcile'] as const)('uses bounded carrier calls for %s while retaining original ownership', async intent => {
     const f = await verificationReservationFixture()
     const deviceId = randomUUID()
     const registration = { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 }
@@ -339,16 +361,19 @@ describe('actual qualification reservation seams with mocked native entry only',
     const admission = JobRuntimeNativeAdmissionRecordSchema.parse({ ...f.admission, hostRef, registration,
       connection: binding, fingerprintDigest: jobQualificationFingerprint(candidate) })
     let now = Date.now()
+    if (intent === 'reconcile') now = Date.parse(admission.expiresAt) + 1
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const result = { outcome: 'denied' as const, closure: 'confirmed' as const, reasons: ['measured suite failed'] }
     const request = vi.fn(async (payload: unknown, options: { timeoutMs?: number }) => {
       expect(options.timeoutMs).toBe(30000)
       const operation = (payload as { operation: string }).operation
-      const missing = request.mock.calls.length === 1
-      const complete = operation === 'status' && !missing
+      const first = request.mock.calls.length === 1
+      const missing = first && intent === 'execute'
+      const complete = operation === 'status' && !first
       if (operation === 'start') now += 16 * 60 * 1000
       let phase = 'running'
       if (missing) phase = 'not_started'
+      if (first && intent === 'reconcile') phase = 'received'
       if (complete) phase = 'complete'
       return { payload: { version: 3, operation, admission, candidate, phase, result: complete ? result : null } }
     })
@@ -358,8 +383,9 @@ describe('actual qualification reservation seams with mocked native entry only',
       workerExecution: new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }) })
     const assertAdmission = vi.fn(async () => undefined)
     expect(await carrier.host.runAdmitted!({ profile: candidate.profile, candidate, nativeAdmission: admission,
-      assertAdmission, signal: new AbortController().signal, approval: {} as never, descriptor: {} as never })).toEqual(result)
-    expect(request.mock.calls.map(([payload]) => (payload as { operation: string }).operation)).toEqual(['status', 'start', 'status'])
+      assertAdmission, signal: new AbortController().signal, approval: {} as never, descriptor: {} as never,intent })).toEqual(result)
+    const operations = intent === 'execute' ? ['status','start','status'] : ['status','status']
+    expect(request.mock.calls.map(([payload]) => (payload as { operation: string }).operation)).toEqual(operations)
     expect(request.mock.calls.every(([payload]) =>
       (payload as { admission: { expiresAt: string } }).admission.expiresAt === admission.expiresAt)).toBe(true)
     expect(assertAdmission).toHaveBeenCalledTimes(2)

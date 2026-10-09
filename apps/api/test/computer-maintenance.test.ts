@@ -172,20 +172,24 @@ describe('computer maintenance', () => {
     const maintenance = new ComputerMaintenance(fake.value)
     const first = await maintenance.start({ kind: 'restart' })
     expect((await maintenance.start({ kind: 'restart' })).id).toBe(first.id)
-    await settle(maintenance)
+    await expect.poll(() => fake.later.length).toBe(1)
+    expect((await maintenance.status(AbortSignal.timeout(1000))).tasks[0]?.state).toBe('running')
     expect(fake.runs.some(run => run.args.includes('reboot'))).toBe(false)
     fake.later.forEach(run => run())
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded',
+      summary: 'Restart command accepted. Waiting for this computer to reconnect.' })
     expect(fake.runs).toContainEqual({ binary: 'sudo', args: ['-n', 'systemctl', 'reboot'] })
   })
 
-  it('adds only missing MCP servers and plugins and skips a harness that is not installed', async () => {
+  it('adds only missing MCP servers and plugins and leaves an absent harness pending', async () => {
     const fake = ports({ versions: { claude: null }, codexMcp: ['docs'], plugins: ['pdf@openai'] })
     const maintenance = new ComputerMaintenance(fake.value)
     await maintenance.start({ kind: 'sync-mcp', servers: {
       codex: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null },
         { transport: 'stdio', name: 'search', command: 'npx', args: ['search-mcp'], envVars: [] }],
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
-    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Added search · Claude: not installed, skipped' })
+    expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
+      summary: 'Codex: Added search · Claude is not installed; MCP sync remains pending.' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['mcp', 'add', 'search', '--', 'npx', 'search-mcp'] })
     await maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Installed documents@openai · Claude: Nothing to sync' })

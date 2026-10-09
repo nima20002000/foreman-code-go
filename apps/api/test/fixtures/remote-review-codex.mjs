@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline'
 // pinned schema, native manager, credentials and physical process owner.
 const root = process.argv[2]
 const args = process.argv.slice(3)
+const executableSha256 = createHash('sha256').update(readFileSync(join(root, 'codex'))).digest('hex')
 const settings = JSON.parse(readFileSync(join(root, 'settings.json'), 'utf8'))
 const log = value => appendFileSync(join(root, 'calls.jsonl'), `${JSON.stringify(value)}\n`)
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -97,6 +98,8 @@ const tool = (turn, name, arguments_) => request('item/tool/call', {
 })
 
 async function qualificationFiles(turn, prompt) {
+  log({ qualificationSuite: { pid: process.pid, binarySha256: executableSha256 } })
+  while (existsSync(join(root, 'block-qualification'))) await new Promise(resolve => setTimeout(resolve, 20))
   const fileId = /fileId (\S+)/.exec(prompt)[1]
   const revisionId = /revisionId (\S+)/.exec(prompt)[1]
   const response = await tool(turn, 'files_read', { fileId, revisionId, offset: 0, length: 65536 })
@@ -161,6 +164,13 @@ async function review(turn, prompt) {
 async function started(turn, prompt) {
   if (prompt.startsWith('Call files_read with fileId ')) return qualificationFiles(turn, prompt)
   if (String(turn.items[0].id).startsWith('review-')) return review(turn, prompt)
+  if (thread.instructions.includes('fixture-reviewer')) {
+    log({ workflowTurn: { pid: process.pid, sessionId: thread.id, turnId: turn.id } })
+    while (existsSync(join(root, 'block-workflow-turns'))) await new Promise(resolve => setTimeout(resolve, 20))
+    complete(turn)
+    log({ workflowCompleted: { pid: process.pid, sessionId: thread.id, turnId: turn.id } })
+    return
+  }
   if (prompt.includes('fixture-requester') || thread.instructions.includes('fixture-requester')) {
     const item = { type: 'commandExecution', id: `command-${turn.id}`, command: 'printf harmless',
       commandActions: [], cwd: thread.settings.cwd, status: 'inProgress', aggregatedOutput: '', exitCode: null }

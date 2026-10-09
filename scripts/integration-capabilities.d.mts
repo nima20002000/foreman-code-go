@@ -22,3 +22,8 @@ export function partitionIntegrationCapabilities(files: string[], environment: V
   runnable: string[]
   unavailable: UnavailableIntegrationFile[]
 }
+
+export function partitionUnitCapabilities(files: string[], environment: VerificationEnvironment): {
+  runnable: string[]
+  unavailable: UnavailableIntegrationFile[]
+}

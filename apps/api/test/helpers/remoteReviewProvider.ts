@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -48,11 +48,31 @@ int main(int argc, char **argv) {
   const payloadPaths = [script, settings, process.execPath,
     join(directory, 'stable', 'codex_app_server_protocol.schemas.json'),
     join(directory, 'experimental', 'codex_app_server_protocol.schemas.json')]
+  const originalBinary = await readFile(binary)
+  const originalScript = await readFile(script, 'utf8')
   return { directory, binary, payloadPaths,
+    removePayload: () => rename(binary, join(directory, 'codex-unavailable')),
+    async restorePayload() {
+      const replacement = join(directory, 'codex-restored')
+      await writeFile(replacement, originalBinary, { mode: 0o700 })
+      await rename(replacement, binary)
+      await writeFile(script, originalScript)
+    },
+    async updatePayload() {
+      const sourceText = await readFile(source, 'utf8')
+      await writeFile(source, sourceText.replace('if (!args) return 127;', 'if (!args) return 126;'))
+      const replacement = join(directory, 'codex-updated')
+      await execute('cc', ['-O2', source, '-o', replacement])
+      await rename(replacement, binary)
+      const scriptText = await readFile(script, 'utf8')
+      await writeFile(script, scriptText.replaceAll('codex-cli 0.154.0', 'codex-cli 0.156.1'))
+    },
     hideModels: () => writeFile(join(directory, 'hide-models'), '', { mode: 0o600 }),
     showModels: () => rm(join(directory, 'hide-models')),
     blockModels: () => writeFile(join(directory, 'block-models'), '', { mode: 0o600 }),
     releaseModels: () => rm(join(directory, 'block-models')),
+    blockQualification: () => writeFile(join(directory, 'block-qualification'), '', { mode: 0o600 }),
+    releaseQualification: () => rm(join(directory, 'block-qualification')),
     async calls(): Promise<Array<Record<string, unknown>>> {
       try {
         const contents = await readFile(join(directory, 'calls.jsonl'), 'utf8')
@@ -63,9 +83,28 @@ int main(int argc, char **argv) {
       }
     },
     releaseReview: () => writeFile(join(directory, 'release-review'), '', { mode: 0o600 }),
+    blockWorkflowTurns: () => writeFile(join(directory, 'block-workflow-turns'), '', { mode: 0o600 }),
+    releaseWorkflowTurns: () => rm(join(directory, 'block-workflow-turns')),
     retryReview: () => writeFile(join(directory, 'retry-review'), '', { mode: 0o600 }),
     blockRequesterSession: () => writeFile(join(directory, 'block-requester-session'), '', { mode: 0o600 }),
   }
+}
+
+export async function createRemoteReviewClaudeInventory(directory: string) {
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const entrypoint = join(directory, 'sdk.mjs')
+  const selectedExecutable = join(directory, 'claude')
+  const installedLockPath = join(directory, 'pnpm-lock.yaml')
+  await writeFile(entrypoint, 'export const inventoryRevision = 1\n', { mode: 0o600 })
+  await writeFile(selectedExecutable, '#!/bin/sh\nprintf "2.1.5\\n"\n', { mode: 0o700 })
+  await writeFile(join(directory, 'package.json'), JSON.stringify({
+    name: '@anthropic-ai/claude-agent-sdk', version: '0.3.284',
+  }), { mode: 0o600 })
+  await writeFile(installedLockPath,
+    'packages:\n  @anthropic-ai/claude-agent-sdk@0.3.284:\n    resolution: {integrity: sha512-Zml4dHVyZQ==}\n',
+    { mode: 0o600 })
+  return { sdk: { entrypoint, selectedExecutable, installedLockPath },
+    updatePayload: () => writeFile(entrypoint, 'export const inventoryRevision = 2\n', { mode: 0o600 }) }
 }
 
 export async function createRemoteReviewTls(directory: string) {

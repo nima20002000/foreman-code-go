@@ -133,15 +133,24 @@ export async function inspectInstalledVerificationRuntime(input: {
     || recorded.seedReceiptSha256 !== configuration.seedReceiptSha256) {
     throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'Protected verification installation differs from this profile.', 409)
   }
-  const [runtime, oci, root] = await Promise.all([
+  const [runtime, oci, findmnt, root] = await Promise.all([
     fingerprintQualificationPath(descriptor.runtimeExecutable, true),
     fingerprintQualificationPath(descriptor.ociExecutable, true),
+    fingerprintQualificationPath(descriptor.findmntExecutable, true),
     fingerprintQualificationPath(profile.root.binding.canonicalPath),
   ])
   if (runtime.sha256 !== recorded.runtimeBinarySha256 || oci.sha256 !== recorded.ociBinarySha256
+    || findmnt.sha256 !== descriptor.findmntBinarySha256
     || root.device !== profile.root.binding.filesystem.device || root.inode !== profile.root.binding.filesystem.inode
     || qualificationMountId(root.path, await readFile('/proc/self/mountinfo', 'utf8')) !== profile.root.binding.filesystem.mountId) {
     throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'Verification binary or source namespace changed.', 409)
+  }
+  const configurationDigest = hash(await captureJobRuntimeConfiguration(descriptor.runtimeRoot,
+    descriptor.controllerEnvironment, { findmntBinary: descriptor.findmntExecutable,
+      findmntBinarySha256: findmnt.sha256!, backingFile: descriptor.backingFile,
+      backingBytes: descriptor.backingFile === null ? null : descriptor.volumeCapacityBytes }))
+  if (configurationDigest !== recorded.configurationDigest) {
+    throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'Verification runtime configuration changed.', 409)
   }
   const fingerprint = JobVerificationRuntimeFingerprintSchema.parse({ ...recorded,
     schemaVersion: 3, profileId: profile.id, profileRevision: profile.revision, specDigest: profile.specDigest,

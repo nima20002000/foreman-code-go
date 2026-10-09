@@ -28,7 +28,7 @@ export class HarnessQualificationService {
   private readonly probes = new Set<CompatibilityProbe>()
   private readonly directories = new Set<string>()
   private joining: Promise<void> | undefined
-  private readonly flights = new Map<CompatibilityHarness, Promise<void>>()
+  private readonly flights = new Map<CompatibilityHarness, { identity: string; task: Promise<void> }>()
   constructor(private readonly repository: HarnessQualificationRepository, private readonly registry: HarnessQualificationRegistry,
     private readonly suites: Record<CompatibilityHarness, QualificationSuite>, private readonly binaries: Record<CompatibilityHarness, string>,
     private readonly commands: PostgresCommandCoordinator,
@@ -36,7 +36,8 @@ export class HarnessQualificationService {
     private readonly staticCheck?: (harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt?: number) => Promise<string>,
     private readonly onFinished?: (harness: CompatibilityHarness) => void,
     private readonly probeFactory?: (harness: CompatibilityHarness, binary: string, timeoutMs: number) => CompatibilityProbe,
-    private readonly refreshInstalled?: (harness: CompatibilityHarness, signal: AbortSignal) => Promise<void>) {}
+    private readonly refreshInstalled?: (harness: CompatibilityHarness, signal: AbortSignal) => Promise<void>,
+    private readonly installationIdentity?: (harness: CompatibilityHarness) => string) {}
 
   async list(principal: ManagementPrincipal): Promise<{ qualifications: HarnessQualification[] }> {
     requireAuthorization(principal, 'harnesses:read')
@@ -79,9 +80,9 @@ export class HarnessQualificationService {
     }))
   }
 
-  async verify(harness: CompatibilityHarness): Promise<HarnessQualification> {
-    const state = await this.begin(harness)
-    await this.flights.get(harness)
+  async verify(harness: CompatibilityHarness, options?: { force: true }): Promise<HarnessQualification> {
+    const state = await this.begin(harness, options?.force)
+    await this.flights.get(harness)?.task
     if (!state.binarySha256 || !state.suiteRevision) return state
     return await this.repository.find(harness, state.version, state.binarySha256, state.suiteRevision) ?? state
   }
@@ -152,6 +153,7 @@ export class HarnessQualificationService {
     await this.refreshInstalled?.(harness, this.cancellation.signal)
     this.assertRunning(harness)
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
+    const installationIdentity = this.installationIdentity?.(harness)
     this.assertRunning()
     const probe = this.probeFactory?.(harness, binary, 30_000)
       ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, 30_000)
@@ -160,16 +162,24 @@ export class HarnessQualificationService {
     // The probe bounds the CLI command; installation checks and closure have separate ownership.
     try { version = (await probe.inspect(harness, this.cancellation.signal)).version }
     finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
+    const identity = JSON.stringify([binary, sha256, version, suite.revision, installationIdentity])
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()
     this.assertRunning(harness)
+    const flight = this.flights.get(harness)
+    if (flight && flight.identity !== identity) {
+      await flight.task
+      this.assertRunning(harness)
+      return onlyQualified ? this.prepare(harness, force, true) : this.prepare(harness, force)
+    }
     if (onlyQualified && previous?.status !== 'qualified') return null
     if (!force && (previous?.status === 'qualified' || previous?.status === 'failed')) return previous
     if (!this.flights.has(harness)) {
       const task = this.track(Promise.resolve().then(() => this.execute(harness, suite, binary, sha256, version)), true)
-      this.flights.set(harness, task)
+      const entry = { identity, task }
+      this.flights.set(harness, entry)
       void task.finally(() => {
-        if (this.flights.get(harness) === task) this.flights.delete(harness)
+        if (this.flights.get(harness) === entry) this.flights.delete(harness)
         this.onFinished?.(harness)
       }).catch(() => undefined)
     }

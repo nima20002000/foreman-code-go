@@ -36,7 +36,14 @@ export async function readNativeUserFile(file: string, options: {
 }
 export async function backupNativeUserFile(file: string, source: string): Promise<void> {
   const handle = await open(`${file}.graphql-mcp-${randomUUID()}.bak`, 'wx', 0o600)
-  try { await handle.writeFile(source); await handle.sync() } finally { await handle.close() }
+  try {
+    await handle.writeFile(source)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  // The backup name must survive a crash before the native writer replaces the config.
+  await syncNativeConfigDirectory(file)
 }
 export async function syncNativeConfigDirectory(file: string): Promise<void> {
   const directory = await open(dirname(file), constants.O_RDONLY | constants.O_DIRECTORY)

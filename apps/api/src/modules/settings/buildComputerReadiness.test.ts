@@ -17,7 +17,7 @@ function fixture(host: 'main' | 'device', memory: number | null = 14 * 2 ** 30, 
     registration: profile.root.registration, mainInstallationId: profile.root.binding.mainId })
   const endpoint = { currentBinding: () => ({ workerInstallationId: target.applicationInstallationId,
     keyRevision: target.keyRevision, authorizationRevision: target.authorizationRevision }),
-  captureRequest: () => ({}) } as unknown as DeviceEndpoint
+  captureRequest: () => ({}), clockReason: () => null } as unknown as DeviceEndpoint
   const sql = { query: async (text: string) => ({ rows: text.includes('select record from job_runtime_profiles')
     ? [{ record: profile }] : Array.from({ length: computing }, () => ({
       limits: profile.spec.resources.limits, compute_closed: false,
@@ -29,6 +29,13 @@ function fixture(host: 'main' | 'device', memory: number | null = 14 * 2 ** 30, 
 }
 
 describe('build computer readiness', () => {
+  it('reports an untrusted Worker clock before considering runtime or capacity', async () => {
+    const f = fixture('device')
+    f.input.endpoint().clockReason = () => 'Worker clock differs from Main by more than 2 minutes.'
+    expect(await buildComputerReadiness(f.input)(f.sql, f.target, 100)).toMatchObject({
+      state: 'setup-required', reasons: ['Worker clock differs from Main by more than 2 minutes.'],
+    })
+  })
   it('derives settings readback from the persisted build allowance', async () => {
     const f = fixture('main')
     f.profile.measurement!.fingerprint.deviceLimits!.cpuLimit = 4

@@ -7,7 +7,9 @@ import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 /** The existing disposable loopback test gate, without importing retired
  * execution seeders. No DATABASE_URL fallback or live/shared data cleanup. */
-export async function currentDatabase(options: { beforeMigration?: number; databaseUrl?: string } = {}) {
+export async function currentDatabase(options: {
+  beforeMigration?: number; deferMigration?: number; databaseUrl?: string
+} = {}) {
   const url = options.databaseUrl ?? process.env.TEST_DATABASE_URL
   if (!url) throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const parsed = new URL(url)
@@ -21,15 +23,19 @@ export async function currentDatabase(options: { beforeMigration?: number; datab
     options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const directory = await privateFixtureDirectory('eng04-b-')
   try {
-    if (options.beforeMigration === undefined) {
+    const pendingMigration = options.beforeMigration ?? options.deferMigration
+    if (pendingMigration === undefined) {
       await applyApplicationMigrations(pool)
     } else {
-      const index = migrations.findIndex((migration) => migration.version === options.beforeMigration)
+      const index = migrations.findIndex((migration) => migration.version === pendingMigration)
       if (index < 0) throw new Error('The requested migration is not registered')
+      const fixtureMigrations = options.beforeMigration === undefined
+        ? migrations.filter((migration) => migration.version !== options.deferMigration)
+        : migrations.slice(0, index)
       const client = await pool.connect()
       try {
         await client.query('begin')
-        for (const migration of migrations.slice(0, index)) {
+        for (const migration of fixtureMigrations) {
           await client.query(migration.sql)
           await client.query('insert into application_migrations(version) values($1)', [migration.version])
         }

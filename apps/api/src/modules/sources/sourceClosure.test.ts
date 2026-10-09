@@ -47,7 +47,7 @@ async function fixture() {
     return { rows: [], rowCount: 1 }
   }
   const pool = { query, connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
-  const releaseClaim = vi.fn(async () => 0)
+  const releaseClaim = vi.fn(async () => ({ retainedBytes: 0 }))
   const executions = { releaseClaim } as unknown as SourceExecutionHostPort
   const sources = new PostgresSourceService(pool, {} as never, {} as never, store, binding.mainId,
     {} as never, executions, { confirmedClosed: async () => true })

@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import { PayloadFingerprintCache } from '../payloadFingerprintCache.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createClaudeCurrentPinResolver, discoverInstalledClaudeSdk, installedClaudeSdkEntrypoint,
   type ClaudeCurrentPinContext } from './currentPin.js'
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs')>()
+  return { ...original, createReadStream: vi.fn(original.createReadStream) }
+})
+
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 async function fixture() {
@@ -20,6 +27,23 @@ async function fixture() {
   return { directory, launcher, sdk, context }
 }
 describe('current installed Claude qualification pin', () => {
+  it('caches passive SDK inventory and leaves current pin verification uncached', async () => {
+    const value = await fixture()
+    const cache = new PayloadFingerprintCache()
+    const signal = new AbortController().signal
+    vi.mocked(fs.createReadStream).mockClear()
+    const first = await discoverInstalledClaudeSdk(value.sdk, value.context, signal, cache)
+    const second = await discoverInstalledClaudeSdk(value.sdk, value.context, signal, cache)
+    expect(second.launcher.fingerprint).toBe(first.launcher.fingerprint)
+    expect(fs.createReadStream).toHaveBeenCalledTimes(4)
+    const verified = await discoverInstalledClaudeSdk(value.sdk, value.context)
+    expect(verified.launcher.fingerprint).toBe(first.launcher.fingerprint)
+    expect(fs.createReadStream).toHaveBeenCalledTimes(8)
+    await writeFile(join(value.directory, 'core.mjs'), 'changed SDK dependency')
+    const changed = await discoverInstalledClaudeSdk(value.sdk, value.context, signal, cache)
+    expect(changed.launcher.fingerprint).not.toBe(first.launcher.fingerprint)
+    expect(fs.createReadStream).toHaveBeenCalledTimes(9)
+  })
   it('discovers the installer-selected SDK and lock without resolving relative to the caller bundle', async () => {
     const value = await fixture()
     const selected = installedClaudeSdkEntrypoint(value.sdk.installedLockPath, value.launcher, value.sdk.entrypoint)

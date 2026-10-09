@@ -49,8 +49,7 @@ export async function resolveLocalMainPlacement(input: {
   const compatible = profiles.rows.map(row => HostHarnessOverrideSchema.parse(row.record)).filter(profile =>
     profile.enabled
     && sameWorkflowValue(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration.harness))
-    && (!requested || profile.instanceId === requested.instanceId && profile.instanceRevision === requested.instanceRevision
-      && sameWorkflowValue(profile.target, requested.target))
+    && (!requested || profile.instanceId === requested.instanceId && profile.instanceRevision === requested.instanceRevision)
     && installed.some(item => item.installed && sameWorkflowValue(item.hostRef, hostRef)
       && item.harnessInstallationId === profile.target.harnessInstallationId
       && item.installationFingerprint === profile.target.installationFingerprint))

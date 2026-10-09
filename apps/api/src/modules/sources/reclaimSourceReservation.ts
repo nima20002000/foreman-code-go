@@ -13,6 +13,52 @@ import { preparationChildrenClosed, reconcileSourcePreparation, type SourceQuota
 import { removeSourceDirectory } from './quotaReclamation.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
 import { SourceError } from './manifest.js'
+import { measureRetainedMaterializationFootprint, measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
+import type { RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
+
+export type SourceReclamationResult = {
+  closures: SourcePreparationClosure[]
+  retained?: RetainedSourceFootprint
+}
+
+async function retainedWorkingTree(directory: FileHandle, root: SourceRootRecord,
+  owner: SourceOperationOwner, materializationId: string, signal: AbortSignal): Promise<RetainedSourceFootprint | null> {
+  let receipt = owner.record?.receipt
+  let copy: FileHandle
+  try {
+    copy = await openChildDirectory(directory, materializationId)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return receipt?.sharedTree ? measureRetainedMaterializationFootprint(receipt) : null
+  }
+  try {
+    const raw = await readCleanupRecord(copy, 'receipt.json', signal, 2 * 1024 * 1024)
+    if (raw) receipt = z.object({ receipt: MaterializationReceiptSchema }).parse(raw).receipt
+  } finally { await copy.close() }
+  if (receipt) {
+    if (receipt.materializationId !== materializationId || receipt.executionId !== owner.attempt.executionId
+      || receipt.attemptId !== owner.attempt.attemptId || receipt.placementHash !== owner.attempt.placementHash
+      || receipt.keyRevision !== owner.attempt.keyRevision
+      || receipt.authorizationRevision !== owner.attempt.authorizationRevision
+      || !isDeepStrictEqual(receipt.binding, root.binding)) {
+      throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Retained working tree belongs to another preparation.')
+    }
+    return receipt.sharedTree ? measureRetainedMaterializationFootprint(receipt) : null
+  }
+  // A worktree marker can commit before its materialization receipt.
+  const markerSchema = z.object({ id: z.uuid(), executionId: z.string(), binding: RootBindingSchema })
+  for (const name of (await readdir(anchored(directory))).filter(name => /^worktree-.*\.json$/.test(name))) {
+    const raw = await readCleanupRecord(directory, name, signal)
+    if (!raw) continue
+    const marker = markerSchema.parse(raw)
+    if (marker.executionId !== owner.attempt.executionId || !isDeepStrictEqual(marker.binding, root.binding)) continue
+    const bytes = await measureRetainedSourceDirectory(root.binding.canonicalPath, marker.id, root.binding.filesystem)
+    const reference = await measureRetainedSourceDirectory(root.binding.canonicalPath, materializationId,
+      root.binding.filesystem)
+    return { retainedBytes: reference + bytes, sharedTree: { id: marker.id, bytes } }
+  }
+  return null
+}
 
 const ClaimSchema = z.object({ version: z.literal(1), materializationId: z.uuid(), binding: RootBindingSchema,
   attempt: SourceOperationAttemptSchema, quota: SourceProjectQuotaSlotSchema.optional() }).strict()
@@ -116,10 +162,11 @@ export async function reclaimSourceReservation(grant: SourceReservationReclamati
   nativeClosed(owner: SourceOperationOwner): Promise<boolean>
   quotaPoolFor?(owner: SourceOperationOwner): Promise<SourceQuotaPool | undefined>
   closed?(closure: SourcePreparationClosure): Promise<void>
-}, signal: AbortSignal): Promise<SourcePreparationClosure[]> {
+}, signal: AbortSignal): Promise<SourceReclamationResult> {
   let foundOwner = false
   const closures: SourcePreparationClosure[] = []
   const unmatchedRoots: SourceRootRecord[] = []
+  let retained: RetainedSourceFootprint | undefined
   for (const root of grant.roots) {
     signal.throwIfAborted()
     await ports.authorize()
@@ -139,7 +186,13 @@ export async function reclaimSourceReservation(grant: SourceReservationReclamati
           if (!isDeepStrictEqual(await identity(directory), root.binding.filesystem)) {
             throw new SourceError('SOURCE_ROOT_CHANGED', 'The original source cleanup root changed.')
           }
-          await removeSourceDirectory(directory, closure.materializationId, { binding: root.binding }, signal)
+          const footprint = await retainedWorkingTree(directory, root, owner, closure.materializationId, signal)
+          if (footprint) {
+            if (retained) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Multiple retained working trees need reconciliation.')
+            retained = footprint
+          } else {
+            await removeSourceDirectory(directory, closure.materializationId, { binding: root.binding }, signal)
+          }
         } finally { await directory.close() }
       }
       await ports.authorize()
@@ -153,5 +206,5 @@ export async function reclaimSourceReservation(grant: SourceReservationReclamati
     }
   }
   await ports.authorize()
-  return closures
+  return { closures, ...(retained ? { retained } : {}) }
 }

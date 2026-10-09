@@ -68,6 +68,7 @@ export async function captureInstalledRuntimeConfigurationRecord(
 }
 export interface InstalledRuntimeConfigurationLocation { path: string; ownerUid: number }
 export interface InstalledRuntimeHostDependencies {
+  reconcileQualification?: NonNullable<InstalledJobRuntimeHost['reconcileQualification']>
   publishReport?: import('./qualificationReports.js').QualificationReportPublisher
   /** Existing application-installation/device authority, no provider inventory. */
   identity: JobSql
@@ -274,6 +275,7 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
     return snapshot
   }
   return {
+    ...(dependencies.reconcileQualification ? { reconcileQualification: dependencies.reconcileQualification } : {}),
     async inspect(profile) { const { descriptor, fingerprint } = await current(dependencies.identity, profile); return { descriptor, fingerprint } },
     async descriptor(profile) { return (await current(dependencies.identity, profile)).descriptor },
     async currentConnection(sql, profile) {

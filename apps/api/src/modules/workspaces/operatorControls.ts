@@ -28,17 +28,8 @@ export class OperatorWorkspaceControls {
     requireAuthorization(principal,'workspace_locations:read',{workspaceId:input.workspaceId})
     if (input.harness === 'claude') throw new DomainError('CLAUDE_PROFILE_SELECTION_REQUIRED',
       'Workspace MCP diagnostics require an exact Claude host profile selection; this diagnostics request does not carry one.',409)
-    const client=await this.pool.connect()
-    let snapshot
-    try {
-      await client.query('begin')
-      const row=await client.query<{location_revision:string}>('select location_revision from workspaces where id=$1 for update',[input.workspaceId])
-      if (!row.rows[0]) throw new DomainError('WORKSPACE_NOT_FOUND','The workspace was not found.',404)
-      snapshot=await this.locations.snapshot(client,input.workspaceId,Number(row.rows[0].location_revision),'read-only')
-      await client.query('commit')
-    } catch(error) {await client.query('rollback');throw error} finally {client.release()}
     const signal=AbortSignal.timeout(60_000)
-    await this.locations.revalidateSnapshot(input.workspaceId,snapshot,'read-only',signal)
+    const snapshot = await this.locations.inspectionSnapshot(input.workspaceId, signal)
     return this.detection.inspect({harness:input.harness,runnerId:snapshot.runnerId,workingDirectory:snapshot.rootPath,signal})
   }
   clear(principal:ManagementPrincipal,input:{workspaceId:string;commandId:string;expectedLocationRevision:number}) {

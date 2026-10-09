@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createStore } from 'zustand/vanilla'
-import { GraphEditReadResultV3Schema,
+import { CURRENT_WORKFLOW_CAPABILITIES, GraphEditReadResultV3Schema,
   type GraphEditReadResultV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
 import { protectedKey } from '../../../shared/api/protectedChatStorage'
@@ -31,7 +31,7 @@ vi.mock('../../workflow-board/startPreflight', async (original) => ({
   useBoardStartPreflight: (draft: ReturnType<typeof repairFixture>['draft']) => ({ data: {
     workflow: { workflow: draft.graph, revision: draft.revision, currentVersionId: draft.baseWorkflowVersionId },
     workspace: { locationRevision: 1, locationValidation: { status: 'ready' } },
-    capabilities: { runtimeAdmission: true, persistedReadback: true },
+    capabilities: { ...CURRENT_WORKFLOW_CAPABILITIES, runtimeAdmission: true, persistedReadback: true },
     version: { id: draft.baseWorkflowVersionId, definition: draft.graph,
       agentConfigurationVersionIds: Object.fromEntries(draft.graph.nodes.map(nativeNode).map(({ agentId }) => [agentId, `configuration-${agentId}`])) },
   } }),

@@ -122,3 +122,19 @@ it.each(['expired', 'tombstoned'] as const)('withdraws a cached report when its 
     ? 'The verification summary has expired.' : 'The verification summary is unavailable.', {}, { timeout: 3000 })
   expect(screen.queryByText('8 passed · 0 failed · 0 skipped · 8 total')).toBeNull()
 }, 10000)
+
+it.each(['pending', 'collecting', 'failed'] as const)('explains a missing summary when publication is %s', async publication => {
+  await responses(verificationReport, { ...verificationExecution, publication,
+    resultIssue: publication === 'failed' ? 'missing_output' : null })
+  server.use(http.get(`${root}/artifacts`, () => HttpResponse.json({ artifacts: [] })))
+  mount()
+  const message = publication === 'failed'
+    ? 'Verification summary unavailable. Publication failed: missing output.'
+    : 'Waiting for the verification summary. Process exit alone does not confirm a suite pass.'
+  expect(await screen.findByText(message)).toBeInTheDocument()
+  if (publication === 'failed') {
+    expect(screen.queryByText(/Waiting for the verification summary/)).toBeNull()
+    expect(screen.queryAllByText('Awaiting publication')).toHaveLength(0)
+  }
+  expect(screen.queryByText('Verification: passed')).toBeNull()
+})

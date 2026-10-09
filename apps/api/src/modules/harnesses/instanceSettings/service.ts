@@ -21,6 +21,7 @@ export interface HostHarnessOverrideEvidence {
   target: HostHarnessOverride['target']
   configurationFingerprint: string
   qualified: boolean
+  failure?: HostHarnessOverride['qualificationFailure']
 }
 
 /** Shared HTTP/MCP domain authority. No watcher, native spawn or credential storage. */
@@ -49,6 +50,7 @@ export class HostHarnessOverrideService {
       ...value, qualification: 'retired', retirementMessage: RETIRED_OPENCODE_MESSAGE,
     }
     if (!value.enabled) return { ...value, qualification: 'disabled' }
+    if (this.profileChecks?.pending(value.target.hostRef)) return { ...value, qualification: 'qualifying' }
     // Missing/remote failed evidence remains unavailable, never substitutes local discovery.
     const evidence = await this.evidence(value, client).catch(() => null)
     const qualification = !evidence ? 'unqualified' : harnessHostKey(evidence.target.hostRef) !== harnessHostKey(value.target.hostRef)
@@ -56,7 +58,8 @@ export class HostHarnessOverrideService {
       || evidence.target.harnessInstallationId !== value.target.harnessInstallationId
       || evidence.target.installationFingerprint !== value.target.installationFingerprint
       ? 'installation-changed' : evidence.configurationFingerprint === value.configurationFingerprint && evidence.qualified ? 'qualified' : 'unqualified'
-    return { ...value, qualification }
+    const failure = evidence?.failure ?? await this.profileChecks?.failure(value, client)
+    return { ...value, qualification, ...(failure ? { qualificationFailure: failure } : {}) }
   }
   async list(principal: ManagementPrincipal, raw: HostHarnessOverrideListInput, source: 'http' | 'mcp' = 'http'): Promise<{ overrides: HostHarnessOverride[] }> {
     try { return await this.read(principal, raw) } catch (error) {

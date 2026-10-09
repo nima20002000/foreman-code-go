@@ -231,6 +231,13 @@ export const handlers: RequestHandler[] = [
   ...agentChatHandlers,
   currentAuthoringHandler,
   http.get('/api/runtime/identity', () => HttpResponse.json(mockRuntimeIdentity)),
+  http.get('/api/management/harnesses/registry', () => readFailure() ?? HttpResponse.json({
+    instances: [], installations: [], hostMetadata: {
+      hostRef: { kind: 'main', mainId: mockRuntimeIdentity.installationId },
+      applicationInstallationId: mockRuntimeIdentity.installationId,
+      connection: null, platform: null, workspaceRoots: null,
+    },
+  })),
   ...settingsExperienceHandlers,
   ...skillsHandlers,
   http.get('/api/operator/setup', () => HttpResponse.json({ harness: getMockAgentDefaults().value.operator.harness.harness,

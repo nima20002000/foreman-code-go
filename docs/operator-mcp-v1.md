@@ -37,6 +37,26 @@ corepack pnpm dev
 
 ## Client configuration
 
+`ci_enrollment_get` returns persisted enrollment controls and per-template results for each build computer.
+Verification clones keep the template's resource envelope, including disk, scratch and inode budgets.
+A computer that cannot fit that envelope reports `storage-required` for the template instead of a smaller clone.
+Other templates continue enrollment and preparation; mixed results use computer state `partial`.
+
+Ordinary Job templates report `not-enrolled-automatically`. Their protected runtime configuration uses a different
+installed format from verification runtimes, and automatic enrollment does not select or prepare that configuration.
+Use the existing explicit protected runtime setup and qualification workflow for ordinary Jobs.
+`ci_enrollment_update` retains its preparation grants, revision checks and idempotent commands; disable serializes
+with new placement while preserving selections already accepted. Enrollment reads require `job_definitions:read`.
+
+`source_approve` accepts either `approvedPaths` listing every file in the pinned Git commit,
+or `approveTrackedTree: true` with `approvedPaths` omitted. The latter explicitly approves
+the commit's complete tracked tree; it does not include later commits, index changes, or
+untracked files. Both modes retain sensitive-path and private-key rejection, executable
+policy, source size and entry limits, and manifest verification. The original request and
+resolved tracked inventory are retained with the approval command and its audit record.
+Read back the retained manifest with `source_get`. Source validation failures return their
+public `SOURCE_*` code and message through MCP and the corresponding status through HTTP.
+
 Use an environment variable for the token; do not place a literal credential in a checked-in file.
 
 The managed **Add Foreman Code MCP** preset in Harness Settings is the normal setup. For a fixed manual entry, Codex CLI `0.154.0` supports Streamable HTTP and an environment-backed bearer token:
@@ -54,6 +74,36 @@ Full access profile, and save through Harness Settings or the shared Operator
 MCP services. Credentials are issued for the accepted native process.
 
 ## Tool catalog
+
+`computers_maintenance_start` with `sync-mcp` uses the same fleet service as
+Settings and requires global `settings:update`. It copies supported user-level
+definitions without inline secrets. Disabled servers, native tool allow/deny
+lists, and stdio environment-name references are unsupported because this sync
+path does not restore those settings. Such definitions are skipped with a task
+warning; their existing Worker entries are preserved. Configure these settings
+on each computer separately. Only fleet-managed entries genuinely absent from
+an available Main catalog are removed. Read persisted task outcomes through
+`computers_maintenance_status` with global `settings:read`.
+
+Maintenance uses device namespace `computer-maintenance-v2`, version 2. Main
+refuses requests to a computer advertising only the previous namespace before
+dispatching native work. An unresolved maintenance request must reuse its
+original `commandId` and input: Main retains its target selection and source
+catalogs before dispatch, and each receiver saves the command before native
+work. Interrupted work is reported rather than automatically repeated. The
+receiver retains command receipts separately from its 20 recent tasks.
+Equivalent requests share only the latest queued task. Worker CI refresh waits
+for accepted maintenance and rejects new maintenance starts while draining;
+status remains readable. A nonempty MCP catalog cannot be marked delivered
+while its harness is absent. A restart task remains running during the delay;
+success means the reboot command was accepted, and reconnection must still be
+checked in computer status.
+
+Native MCP settings reads reuse unchanged user configuration for at most five
+minutes. Expired reads wait for inspection and return its failure if it cannot
+complete; Settings shows the error and disables writes until a successful read.
+HTTP workspace diagnostics and `harness_mcp_detection_get` both validate the
+saved directory identity before inspecting native configuration.
 
 - Context: `operator_get_capabilities`
 - Harnesses: `harness_list`, `harness_get`, `harness_defaults_update`
@@ -81,7 +131,7 @@ Workspace and workflow navigation and directory lists show 5 items initially; ea
 
 `workflow_batch_archive` accepts `{ workspaceId, commandId, workflows: [{ workflowId, expectedRevision }] }` for 1–100 unique workflows. It requires `workflows:archive` for every selected workflow and removes the whole selection atomically. Missing workflows, stale revisions, or active runs reject the entire batch. Reuse the same command ID and input after an uncertain response; read back with `workflow_get` or `workflow_list`. The UI labels this operation “Delete selected” and explains history retention in its confirmation. The HTTP equivalent is `POST /api/management/workspaces/:workspaceId/workflows/batch-archive`.
 
-`workspace_batch_archive` accepts `{ commandId, workspaces: [{ workspaceId, expectedRevision }] }` for 1–100 unique workspaces. It requires `workspaces:archive` for every selection, locks workspace admission in stable order, and checks all revisions and active runs before one atomic update. It retains workflows, history and project folders. The UI uses the same selection and confirmation flow, with uncertain retries preserving the command ID. Read back with `workspace_get` or `workspace_list`. The HTTP equivalent is `POST /api/management/workspaces/batch-archive`.
+`workspace_batch_archive` accepts `{ commandId, workspaces: [{ workspaceId, expectedRevision }] }` for 1–100 unique workspaces. It requires `workspaces:archive` for every selection, locks workspace admission in stable order, and checks all revisions and active runs before one atomic update. It retains workflows and history, then removes app-created project folders with `workspace_locations:provision`; externally selected folders remain. Cleanup protects accepted Run directories and pending cleanup even after a workspace changes location. A cleanup failure retains folder ownership for retry with the same command ID and input; the archive may already be committed. The UI uses the same selection and confirmation flow. Read back with `workspace_get` or `workspace_list`. The HTTP equivalent is `POST /api/management/workspaces/batch-archive`.
 
 Archive retains versions, configurations, runs, results, and activity. Active work blocks archive; archive never silently cancels work. Stop reports `accepted`, `already_terminal`, or `not_owner`; an accepted request does not claim that the child process has already exited.
 

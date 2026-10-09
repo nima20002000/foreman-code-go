@@ -6,9 +6,9 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { installVersion, rollbackVersion } from '../src/installation.mjs';
+import { installVersion, rollbackVersion, requireReleaseState } from '../src/installation.mjs';
 import { doctorReport, persistentFilesystems } from '../src/diagnostics.mjs';
-import { startWorker, readWorkerStatus } from '../src/runtime.mjs';
+import { startWorker, readWorkerStatus, acquireWorkerLock } from '../src/runtime.mjs';
 import { renderUserService } from '../src/service.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -17,14 +17,86 @@ const expected = { protocolVersion: 1, identityFormat: 1 };
 async function fixture(t, version = '1.0.0') {
   const dir = await mkdtemp(join(tmpdir(), 'worker-unit-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
+  const stateDirectory = join(dir, 'installation-state');
+  await mkdir(stateDirectory, { mode: 0o700 });
   const artifact = join(dir, 'artifact'); await mkdir(join(artifact, 'src'), { recursive: true });
   const content = 'export const workerOnly = true;\n';
   await writeFile(join(artifact, 'src/cli.mjs'), content);
   const manifest = { format: 1, version, protocolVersion: 1, identityFormat: 1, commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64), packageManager: 'pnpm@11.27.0', target: facts, files: [{ path: 'src/cli.mjs', size: Buffer.byteLength(content), sha256: hash(content) }] };
   const save = async () => { const bytes = JSON.stringify(manifest); await writeFile(join(artifact, 'manifest.json'), bytes); return hash(bytes); };
   const approvedManifestSha256 = await save();
-  return { root: join(dir, 'app'), artifact, facts, expected, approvedManifestSha256, manifest, save, dir };
+  return { root: join(dir, 'app'), stateDirectory, artifact, facts, expected, approvedManifestSha256, manifest, save, dir };
 }
+
+test('updates reject another state directory while the installed worker remains running', async (t) => {
+  const f = await fixture(t);
+  await installVersion(f);
+  const current = await readlink(join(f.root, 'current'));
+  const otherState = join(f.dir, 'other-state');
+  await mkdir(otherState, { mode: 0o700 });
+  await requireReleaseState({ directory: join(f.root, 'current'), stateDirectory: f.stateDirectory });
+  await assert.rejects(requireReleaseState({ directory: join(f.root, 'current'), stateDirectory: otherState }),
+    /installation_state_mismatch/);
+  const unlock = await acquireWorkerLock(f.stateDirectory);
+  try {
+    f.manifest.version = '1.1.0';
+    f.approvedManifestSha256 = await f.save();
+    await assert.rejects(installVersion({ ...f, stateDirectory: otherState, updatePolicy: async () => true }),
+      /installation_state_mismatch/);
+    await assert.rejects(installVersion({ ...f, updatePolicy: async () => true }), /worker_already_running/);
+    assert.equal(await readlink(join(f.root, 'current')), current);
+    assert.equal((await readWorkerStatus(f.stateDirectory)).active, true);
+  } finally {
+    await unlock();
+  }
+});
+
+test('an installed root without a recorded state binding fails closed', async (t) => {
+  const f = await fixture(t);
+  await installVersion(f);
+  const current = await readlink(join(f.root, 'current'));
+  await rm(join(f.root, 'state-directory.json'));
+  await assert.rejects(installVersion({ ...f, updatePolicy: async () => true }), /installation_state_unbound/);
+  assert.equal(await readlink(join(f.root, 'current')), current);
+});
+
+test('different source commits with an unchanged package version cannot silently replace a release', async (t) => {
+  const f = await fixture(t, '0.1.0');
+  await installVersion(f);
+  const current = await readlink(join(f.root, 'current'));
+  f.manifest.commit = 'c'.repeat(40);
+  f.approvedManifestSha256 = await f.save();
+  await assert.rejects(installVersion({ ...f, updatePolicy: async () => true }), /release_order_unknown/);
+  assert.equal(await readlink(join(f.root, 'current')), current);
+});
+
+test('product releases reject an older update', async (t) => {
+  const f = await fixture(t, '0.0.55');
+  await installVersion(f);
+  const current = await readlink(join(f.root, 'current'));
+  f.manifest.version = '0.0.54';
+  f.manifest.commit = 'c'.repeat(40);
+  f.approvedManifestSha256 = await f.save();
+  await assert.rejects(installVersion({ ...f, updatePolicy: async () => true }), /downgrade_refused/);
+  assert.equal(await readlink(join(f.root, 'current')), current);
+});
+
+test('rollback requires the retained target runtime and leaves the current link intact on mismatch', async (t) => {
+  const f = await fixture(t);
+  await installVersion(f);
+  const first = await readlink(join(f.root, 'current'));
+  const nextFacts = { ...facts, node: 'v22.23.3' };
+  f.manifest.version = '1.1.0';
+  f.manifest.target = nextFacts;
+  f.approvedManifestSha256 = await f.save();
+  await installVersion({ ...f, facts: nextFacts, updatePolicy: async () => true });
+  const current = await readlink(join(f.root, 'current'));
+  const rollback = { root: f.root, stateDirectory: f.stateDirectory, expected, approveStop: async () => true };
+  await assert.rejects(rollbackVersion({ ...rollback, facts: nextFacts }), /target_runtime_mismatch/);
+  assert.equal(await readlink(join(f.root, 'current')), current);
+  await rollbackVersion({ ...rollback, facts });
+  assert.equal(await readlink(join(f.root, 'current')), first);
+});
 
 test('verified update and rollback preserve identity outside versions; repeated install is idempotent', async (t) => {
   const f = await fixture(t); await mkdir(f.root, { mode: 0o700 });
@@ -35,7 +107,7 @@ test('verified update and rollback preserve identity outside versions; repeated 
   await assert.rejects(installVersion(f), /update_not_approved/);
   await installVersion({ ...f, updatePolicy: async () => true });
   assert.notEqual(await readlink(join(f.root, 'current')), first);
-  await rollbackVersion({ root: f.root, approveStop: async () => true, facts, expected });
+  await rollbackVersion({ root: f.root, stateDirectory: f.stateDirectory, approveStop: async () => true, facts, expected });
   assert.equal(await readlink(join(f.root, 'current')), first);
   assert.equal(await readFile(join(f.root, 'identity.json'), 'utf8'), 'unchanged');
 });
@@ -92,7 +164,7 @@ test('killed updater leaves current intact and blocks retry until explicit owned
   const first = await readlink(join(f.root, 'current'));
   f.manifest.version = '1.1.0'; f.approvedManifestSha256 = await f.save();
   const source = new URL('../src/installation.mjs', import.meta.url).href;
-  const options = { root: f.root, artifact: f.artifact, facts, expected, approvedManifestSha256: f.approvedManifestSha256 };
+  const options = { root: f.root, stateDirectory: f.stateDirectory, artifact: f.artifact, facts, expected, approvedManifestSha256: f.approvedManifestSha256 };
   const code = `import {installVersion} from ${JSON.stringify(source)};
     await installVersion({...${JSON.stringify(options)},updatePolicy:()=>{process.stdout.write('locked');return new Promise(()=>setInterval(()=>{},1000))}});`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -121,7 +193,7 @@ test('rollback verifies retained bytes and cannot reactivate tampered code', asy
   await installVersion({ ...f, updatePolicy: async () => true });
   const current = await readlink(join(f.root, 'current'));
   await writeFile(join(f.root, first, 'src/cli.mjs'), 'tampered');
-  await assert.rejects(rollbackVersion({ root: f.root, approveStop: async () => true, facts, expected }), /artifact_checksum_mismatch/);
+  await assert.rejects(rollbackVersion({ root: f.root, stateDirectory: f.stateDirectory, approveStop: async () => true, facts, expected }), /artifact_checksum_mismatch/);
   assert.equal(await readlink(join(f.root, 'current')), current);
 });
 

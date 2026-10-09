@@ -179,6 +179,34 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
       throw new DomainError('ROOT_POLICY_CONFLICT', 'The accepted root no longer has current host/configuration authority.', 409)
     return policy // Exact history, independent of mutable current workspace selection.
   }
+  async inspect(sql: Sql, principal: ManagementPrincipal, policy: WorkspaceRootPolicy): Promise<void> {
+    const accepted = await this.resolve(sql, principal, policy)
+    const allowlist = await this.configuration(sql, accepted.hostRef)
+    const root: AuthorizedWorkspaceRoot = {
+      selection: {
+        workspaceId: accepted.workspaceId,
+        hostRef: accepted.hostRef,
+        allowedBaseId: accepted.allowedBaseId,
+        configurationRevision: accepted.configurationRevision,
+        relativePath: accepted.relativePath,
+        accessMode: accepted.accessMode,
+        expectedLocationRevision: Number(accepted.locationRevision),
+        expectedRootPolicyRevision: Number(accepted.rootPolicyRevision),
+      },
+      allowlist,
+      ownerPrincipalId: accepted.ownerPrincipalId,
+      registration: accepted.registration,
+    }
+    this.actors.set(root, structuredClone(principal))
+    const attestation = await this.attest(root)
+    if (attestation.canonicalProjectRoot !== accepted.canonicalProjectRoot
+      || !isDeepStrictEqual(attestation.filesystem, accepted.filesystem)
+      || attestation.directoryIdentityHash !== accepted.directoryIdentityHash
+      || !isDeepStrictEqual(attestation.runtimeFilesystem, accepted.runtimeFilesystem)) {
+      throw new DomainError('ROOT_DIRECTORY_CHANGED', 'The saved folder changed. Select it again to save its new identity.', 409)
+    }
+    await this.resolve(sql, principal, accepted)
+  }
   async read(sql: Sql, principal: ManagementPrincipal, workspaceId: string): Promise<WorkspaceRootPolicy[]> {
     await this.authorizeWorkspace(sql, principal, workspaceId)
     const rows = await sql.query<{ record: unknown }>(`select p.record from workspace_root_policy_heads h join workspace_root_policies p

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -15,6 +15,20 @@ import type { HostHarnessOverrideAuthority } from './service.js'
 import { harnessHostKey, type HarnessInstanceSettingsRepository } from './repository.js'
 import type { NativeQualificationRetention } from '../installedNativeQualificationRetention.js'
 import type { HostHarnessProfileEvidenceRepository } from './profileRepository.js'
+import type { HarnessInstallationRecord } from '../installationRegistry.js'
+import { qualificationError } from '../qualificationErrors.js'
+import { CLAUDE_PROFILE_CHECK_REVISION } from '../claudeSdk/profileRevision.js'
+
+export interface AutomaticHostProfileCheck {
+  host: CanonicalMachineReference
+  driverId: string
+  applicationInstallationId: string
+  generation: string
+  signal: AbortSignal
+  authorize(client: pg.PoolClient): Promise<void>
+  installation(value: HostHarnessOverride): HarnessInstallationRecord | undefined
+  beforeChecks?: () => Promise<void>
+}
 
 export interface HostHarnessProfileQualifier {
   /** Actual admitted factory/worker implementation; includes current driver suite and model/profile qualification. */
@@ -33,6 +47,9 @@ export class HostHarnessInstanceProfileChecks {
   private readonly stopping = new AbortController()
   private readonly flights = new Set<Promise<unknown>>()
   private readonly reconnects = new Map<string, { generation: string; task: Promise<void> }>()
+  private readonly updates = new Map<string, {
+    hostKey: string; generation: string; abort: AbortController; task: Promise<void>
+  }>()
   constructor(private readonly settings: HarnessInstanceSettingsRepository, private readonly proofs: HostHarnessProfileEvidenceRepository,
     private readonly commands: PostgresCommandCoordinator, private readonly authority: HostHarnessOverrideAuthority,
     private readonly qualifier: HostHarnessProfileQualifier, private readonly nativeRetention?: NativeQualificationRetention) {}
@@ -71,11 +88,116 @@ export class HostHarnessInstanceProfileChecks {
     return task
   }
   assertReady(host: CanonicalMachineReference): void {
-    if (this.reconnects.has(harnessHostKey(host))) {
+    if (this.pending(host)) {
       throw new DomainError('HARNESS_PROFILE_CHECK_PENDING',
-        'This computer is checking its harness profiles after reconnecting. Retry Run start shortly.',
+        'This computer is checking its harness profiles after an installation or connection change. Retry Run start shortly.',
         503, { reason: 'automatic_profile_check_pending', retryable: true })
     }
+  }
+  pending(host: CanonicalMachineReference): boolean {
+    const key = harnessHostKey(host)
+    return this.reconnects.has(key) || [...this.updates.values()].some(update => update.hostKey === key)
+  }
+  async failure(value: HostHarnessOverride, client?: pg.PoolClient) {
+    return (await this.proofs.latest(value.instanceId, value.revision, client))?.failure
+  }
+  recheckInstallation(input: AutomaticHostProfileCheck): Promise<void> {
+    const hostKey = harnessHostKey(input.host)
+    const key = `${hostKey}:${input.driverId}`
+    const previous = this.updates.get(key)
+    if (previous?.generation === input.generation) return previous.task
+    const abort = new AbortController()
+    previous?.abort.abort(new DomainError('HARNESS_INVENTORY_STALE', 'The harness installation changed again.', 409))
+    const signal = AbortSignal.any([input.signal, abort.signal, this.stopping.signal])
+    const task = Promise.resolve().then(async () => {
+      if (previous) await Promise.allSettled([previous.task])
+      signal.throwIfAborted()
+      await this.recheckInstalledProfiles({ ...input, signal })
+    })
+    const entry = { hostKey, generation: input.generation, abort, task }
+    this.updates.set(key, entry)
+    this.flights.add(task)
+    const cleanup = () => {
+      this.flights.delete(task)
+      if (this.updates.get(key) === entry) this.updates.delete(key)
+    }
+    void task.then(cleanup, cleanup)
+    return task
+  }
+  private async recheckInstalledProfiles(input: AutomaticHostProfileCheck): Promise<void> {
+    const profiles = await this.settings.list(input.host, input.applicationInstallationId)
+    const qualified: HostHarnessOverride[] = []
+    for (const value of profiles) {
+      input.signal.throwIfAborted()
+      if (!value.enabled || value.driverId !== input.driverId
+        || value.driverId === 'opencode' || value.configuration.harness === 'opencode') continue
+      if (await this.proofs.previouslyQualified(value)) qualified.push(value)
+    }
+    if (!qualified.length) return
+    let preparationFailure: unknown
+    try {
+      if (qualified.some(value => value.driverId === 'codex')) await input.beforeChecks?.()
+    } catch (error) { preparationFailure = error }
+    const failures: unknown[] = []
+    for (const saved of qualified) {
+      input.signal.throwIfAborted()
+      const installation = input.installation(saved)
+      const checkId = randomUUID()
+      let value = saved
+      try {
+        if (!installation?.installed || !installation.installationFingerprint) throw new DomainError(
+          'HARNESS_INSTALLATION_UNAVAILABLE', 'The updated harness installation is unavailable.', 409)
+        const target = { ...saved.target, harnessInstallationId: installation.harnessInstallationId,
+          installationFingerprint: installation.installationFingerprint }
+        if (!sameTarget(target, saved.target)) {
+          value = await this.settings.readAuthorized(async client => {
+            await input.authorize(client)
+            input.signal.throwIfAborted()
+            return this.settings.replaceInstallation(client, saved, target)
+          })
+        }
+        if (preparationFailure && value.driverId === 'codex') throw preparationFailure
+        const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
+        const request = { commandId: checkId, instanceId: value.instanceId,
+          expectedRevision: value.revision, target: value.target }
+        const result = await this.settings.withProfileConnection(client =>
+          this.qualifyProfile(client, request, checkId, input.authorize, bounded, 'system'))
+        if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
+      } catch (error) {
+        input.signal.throwIfAborted()
+        const failure = qualificationError(error)
+        await this.settings.readAuthorized(async client => {
+          await input.authorize(client)
+          await this.settings.lockRevision(client, value.instanceId)
+          const current = await this.settings.latest(client, value.instanceId)
+          if (current?.revision !== value.revision) return
+          if (installation && sameTarget(value.target, { ...value.target,
+            harnessInstallationId: installation.harnessInstallationId,
+            installationFingerprint: installation.installationFingerprint ?? value.target.installationFingerprint })) {
+            const proof = HostHarnessProfileEvidenceSchema.parse({ target: value.target,
+              instanceRevision: value.instanceRevision, configurationFingerprint: value.configurationFingerprint,
+              driverId: value.driverId, driverRevision: installation.driverRevision,
+              protocolRevision: installation.protocolRevision,
+              suiteRevision: value.driverId === 'claude' ? CLAUDE_PROFILE_CHECK_REVISION : `${value.driverId}-profile-check-v1`,
+              environmentGeneration: installation.environmentGeneration, connectionGeneration: installation.connectionGeneration,
+              authenticated: null, compatible: null, qualified: false,
+              failure: { code: failure.code, message: failure.message.slice(0, 500) }, checkedAt: new Date().toISOString() })
+            const completed = await this.proofs.findCheck(checkId, value.instanceId, value.revision, client)
+            await this.proofs.append(client, completed ? randomUUID() : checkId, value, proof)
+          } else {
+            const previous = await this.proofs.latest(value.instanceId, value.revision, client)
+            if (previous) await this.proofs.append(client, checkId, value, { ...previous,
+              qualified: false, authenticated: null, compatible: null,
+              failure: { code: failure.code, message: failure.message.slice(0, 500) }, checkedAt: new Date().toISOString() })
+          }
+          await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+            values(null,'system','harness.instance.check',$1,'failed',$2::jsonb)`,
+          [`harness-instance:${value.instanceId}`, JSON.stringify({ checkId, code: failure.code })])
+        })
+        failures.push(error)
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, 'Automatic harness profile checks failed.')
   }
   private async recheckProfiles(host: CanonicalMachineReference, binding: Readonly<DeviceSessionBinding>,
     signal: AbortSignal, currentBinding: () => Readonly<DeviceSessionBinding> | null): Promise<void> {

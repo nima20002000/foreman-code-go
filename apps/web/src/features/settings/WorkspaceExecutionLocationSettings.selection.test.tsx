@@ -12,7 +12,7 @@ import { queryKeys } from '../../shared/api/query'
 import { boundLocationKeys } from '../../shared/api/workspaceBoundLocation'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
-import { boundRootReadback, mainRoot, workerRoot, rootBinding } from './workspaceBoundLocation.fixtures'
+import { boundRootReadback, mainRoot, workerRoot, rootBinding, rootAttestation } from './workspaceBoundLocation.fixtures'
 
 const checkedAt = '2026-09-19T00:00:00Z'
 const workspaceId = 'workspace-select'
@@ -53,6 +53,11 @@ beforeEach(() => {
     http.get(`/api/management/workspaces/${workspaceId}`, () => HttpResponse.json(managed)),
     http.get(`/api/management/workspaces/${workspaceId}/root-location`, () => HttpResponse.json(readback)),
     http.get(`/api/management/workspaces/${workspaceId}/root-policies`, () => HttpResponse.json({ workspaceId, readiness: 'metadata-only', policies, allowlists: [mainRoot, workerRoot] })),
+    http.post(`/api/management/workspaces/${workspaceId}/root-location/validate`, async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection
+      return HttpResponse.json({ workspaceId, selection: input, checkedAt,
+        attestation: rootAttestation(input, input.hostRef.kind === 'main' ? mainRoot : workerRoot) })
+    }),
   )
 })
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
@@ -170,5 +175,44 @@ describe('destination confirmation owns persistence', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(writes).toBe(0)
     expect(field).toHaveFocus()
+  })
+
+  it('reselects a replaced folder by validating and saving its changed identity', async () => {
+    readback = boundRootReadback(mainSelection(), mainRoot)
+    policies = [rootBinding(mainSelection(), mainRoot)]
+    const original = structuredClone(readback)
+    const writes: WorkspaceRootSelection[] = []
+    const replacementHash = 'b'.repeat(64)
+    server.use(
+      http.post(`/api/management/workspaces/${workspaceId}/root-location/validate`, async ({ request }) => {
+        const input = await request.json() as WorkspaceRootSelection
+        return HttpResponse.json({ workspaceId, selection: input, checkedAt, attestation: {
+          ...rootAttestation(input, mainRoot), filesystem: { device: '1', inode: '4', mountId: '3' },
+          directoryIdentityHash: replacementHash,
+        } })
+      }),
+      http.put(`/api/management/workspaces/${workspaceId}/root-location`, async ({ request }) => {
+        const input = await request.json() as WorkspaceRootSelection
+        writes.push(input)
+        const result = boundRootReadback(input, mainRoot)
+        if (result.evidence !== 'bound') throw new Error('Expected a bound fixture')
+        result.binding.directoryIdentityHash = replacementHash
+        result.binding.filesystem.inode = '4'
+        readback = result
+        return HttpResponse.json({ value: result, replayed: false })
+      }),
+    )
+    mount()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Project folder' }))
+    const select = await screen.findByRole('combobox', { name: 'Computer and approved base folder' })
+    await user.selectOptions(select, select.querySelectorAll('option')[1]!.value)
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toMatchObject({ relativePath: '', expectedLocationRevision: original.locationRevision })
+    expect(readback).toMatchObject({ locationRevision: original.locationRevision + 1,
+      binding: { directoryIdentityHash: replacementHash } })
+    expect(original).toMatchObject({ binding: { directoryIdentityHash: 'a'.repeat(64) } })
   })
 })

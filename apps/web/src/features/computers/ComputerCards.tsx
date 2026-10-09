@@ -11,6 +11,7 @@ import { useComputerAccounts } from '../../shared/api/computerAccounts'
 import { useComputerMaintenance, useStartMaintenance } from '../../shared/api/computerMaintenance'
 import type { ComputerMaintenanceStartInput, MaintenanceStatus } from '@foreman-code/contracts/computer-maintenance'
 import { Badge, Button, IconButton } from '../../shared/ui/nocturne'
+import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { askOperator } from '../operator-chat/operatorChatStore'
 import { MainRuntimeSetup } from '../runtime-qualification/MainRuntimeSetup'
 import { ComputerUtilization } from './ComputerUtilization'
@@ -47,15 +48,21 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
       || computerKey(a.target).localeCompare(computerKey(b.target)))
   const builders = cards.filter(card => card.build?.preference.buildEnabled)
   return <>
+    <UnsavedEditorGuard editor={{ label: 'computer maintenance request', dirty: start.unresolved,
+      busy: start.isPending, uncertain: start.unresolved, save: start.reconcile,
+      discard: () => { if (!start.unresolved) start.reset() }, error: start.error?.message }} />
     {only ? null : <div className="computer-fleet-actions" role="group" aria-label="All computers">
-      <Button size="sm" disabled={start.isPending} onClick={() => {
+      <Button size="sm" disabled={start.isPending || start.unresolved} onClick={() => {
         start.mutate([{ task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } },
           { task: { kind: 'update-system' } }])
       }}>Update computers</Button>
-      <Button size="sm" variant="ghost" disabled={start.isPending} onClick={() => {
+      <Button size="sm" variant="ghost" disabled={start.isPending || start.unresolved} onClick={() => {
         start.mutate([{ task: { kind: 'sync-mcp' } }, { task: { kind: 'sync-plugins' } }])
       }}>Sync MCP servers and plugins</Button>
     </div>}
+    {start.unresolved ? <Button size="sm" disabled={start.isPending} onClick={start.retryOriginal}>
+      {start.isPending ? 'Reconciling…' : 'Retry original maintenance request'}
+    </Button> : null}
     {start.isError ? <small role="alert">{start.error.message}</small> : null}
     {start.data?.flatMap(result => result.computers).filter(computer => computer.error).map((computer, index) =>
       <small role="alert" key={`${computerKey(computer.target)}:${index}`}>
@@ -69,7 +76,7 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
         const upkeep = maintenance.data?.computers.find(computer => sameDeviceProvisioningTarget(computer.target, card.target))?.status
         return <li key={computerKey(card.target)}>
           <ComputerCard card={card} observed={observed} fresh={fresh} accounts={entry?.accounts} maintenance={upkeep}
-            onMaintain={task => start.mutate({ task, targets: [card.target] })} maintaining={start.isPending}
+            onMaintain={task => start.mutate({ task, targets: [card.target] })} maintaining={start.isPending || start.unresolved}
             buildPosition={builders.indexOf(card) + 1} buildCount={builders.length}
             onOpen={card.target.hostRef.kind === 'device' && onSelectComputer
               ? () => { if (card.target.hostRef.kind === 'device') onSelectComputer(card.target.hostRef.deviceId) } : undefined} />

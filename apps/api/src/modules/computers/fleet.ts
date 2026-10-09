@@ -1,8 +1,9 @@
 import type pg from 'pg'
+import { randomUUID } from 'node:crypto'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import {
   COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema,
-  ComputerMaintenanceStartResultSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
+  ComputerMaintenanceStartResultSchema, ComputerMaintenanceDispatchSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
   type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
 } from '@foreman-code/contracts/computer-maintenance'
@@ -35,11 +36,24 @@ const RUNNING_CACHE_MS = 3_000
 const RETIRED_APP_SERVERS = ['graphql-app', 'graphql-operator', 'graphql-worker']
 
 /** Server definitions safe to copy: no inline secret values. Servers needing a login are set up per computer later. */
-export function syncableServers(entries: Record<string, unknown>, skipped?: (name: string) => void): SyncedMcpServer[] {
+export function syncableServers(
+  entries: Record<string, unknown>, skipped?: (name: string, reason?: string) => void,
+): SyncedMcpServer[] {
   const servers: SyncedMcpServer[] = []
   for (const [name, raw] of Object.entries(entries)) {
-    if ([...APP_MCP_SERVER_NAMES, ...RETIRED_APP_SERVERS].includes(name as never) || !raw || typeof raw !== 'object') continue
+    if ([...APP_MCP_SERVER_NAMES, ...RETIRED_APP_SERVERS].includes(name as never)) continue
+    if (!raw || typeof raw !== 'object') {
+      skipped?.(name)
+      continue
+    }
     const entry = raw as Record<string, unknown>
+    const unsupported = (entry.enabled !== undefined && entry.enabled !== true)
+      || Object.hasOwn(entry, 'enabled_tools') || Object.hasOwn(entry, 'disabled_tools')
+      || (entry.env_vars !== undefined && (!Array.isArray(entry.env_vars) || entry.env_vars.length > 0))
+    if (unsupported) {
+      skipped?.(name, 'has unsupported native policy or environment references')
+      continue
+    }
     const hasSecrets = ['env', 'headers', 'http_headers', 'env_http_headers'].some(key =>
       entry[key] && typeof entry[key] === 'object' && Object.keys(entry[key] as object).length > 0)
     if (hasSecrets) {
@@ -93,22 +107,31 @@ export class FleetMaintenanceService {
     if (input.task.kind === 'restart' && !input.targets) {
       throw new DomainError('COMPUTER_RESTART_TARGET_REQUIRED', 'Choose the computers to restart.', 400)
     }
+    let dispatch: ReturnType<typeof ComputerMaintenanceDispatchSchema.parse> | undefined
     const result = await this.commands.execute({ principal, source, operation: 'computers.maintenance.start', commandId: input.commandId,
       targetKey: `computers-maintenance:${this.mainId}`, payload: input,
+      prepare: async () => {
+        const planned = await this.commands.execute({ principal, source, operation: 'computers.maintenance.plan',
+          commandId: input.commandId, targetKey: `computers-maintenance:${this.mainId}`, payload: input,
+          authorize: async sql => { requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update') },
+          perform: async () => {
+            const selected = input.targets ?? await this.targets(principal, 'settings:update')
+            const targets = ['sync-mcp', 'sync-plugins'].includes(input.task.kind)
+              ? selected.filter(target => target.hostRef.kind !== 'main') : selected
+            return ComputerMaintenanceDispatchSchema.parse({ targets, task: await this.taskFor(input.task) })
+          },
+        })
+        dispatch = ComputerMaintenanceDispatchSchema.parse(planned.value)
+      },
       authorize: async sql => { requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update') },
       perform: async () => {
         const known = await this.targets(principal, 'settings:update')
-        const selected = input.targets
-          ? input.targets.map(target => known.find(value => sameDeviceProvisioningTarget(value, target)) ?? target)
-          : known
-        // Main is the source of MCP servers and plugins; sync brings the other computers to it.
-        const targets = ['sync-mcp', 'sync-plugins'].includes(input.task.kind) ? selected.filter(target => target.hostRef.kind !== 'main') : selected
-        const task = await this.taskFor(input.task)
+        const { targets, task } = dispatch!
         const computers = await Promise.all(targets.map(async target => {
           if (!known.some(value => sameDeviceProvisioningTarget(value, target))) {
             return { target, task: null, error: 'This computer is not paired with this Main.' }
           }
-          try { return { target, task: await this.startOn(target, task), error: null } }
+          try { return { target, task: await this.startOn(target, task, input.commandId), error: null } }
           catch (error) { return { target, task: null, error: error instanceof Error ? error.message : 'The computer did not answer.' } }
         }))
         for (const target of targets) this.cache.delete(this.key(target))
@@ -207,17 +230,26 @@ export class FleetMaintenanceService {
         this.sources.codexUserMcpServers(), this.sources.claudeUserMcpServers(),
       ])
       const servers: Extract<MaintenanceTaskStart, { kind: 'sync-mcp' }>['servers'] = {}
+      const skippedServers: NonNullable<Extract<MaintenanceTaskStart, { kind: 'sync-mcp' }>['skippedServers']> = {}
       const warnings: string[] = []
       for (const [index, harness] of (['codex', 'claude'] as const).entries()) {
         const catalog = catalogs[index]!
         if (catalog.status === 'rejected') warnings.push(`${harness} MCP catalog could not be read; skipped.`)
-        else servers[harness] = syncableServers(catalog.value,
-          name => { warnings.push(`${harness} MCP server ${name.slice(0, 100)} is unsafe or invalid; skipped.`) })
+        else {
+          const skipped: string[] = []
+          servers[harness] = syncableServers(catalog.value, (name, reason = 'is unsafe or invalid') => {
+            if (name.length > 0 && name.length <= 100) skipped.push(name)
+            warnings.push(`${harness} MCP server ${name.slice(0, 100)} ${reason}; skipped.`)
+          })
+          if (skipped.length) skippedServers[harness] = skipped
+        }
       }
       if (servers.codex === undefined && servers.claude === undefined) {
         throw new Error('Main\'s MCP catalogs could not be read.')
       }
-      return { kind: 'sync-mcp', servers, ...(warnings.length ? { warnings } : {}) }
+      return { kind: 'sync-mcp', servers,
+        ...(Object.keys(skippedServers).length ? { skippedServers } : {}),
+        ...(warnings.length ? { warnings } : {}) }
     }
     if (task.kind === 'sync-plugins') {
       const [codex, claude] = await Promise.allSettled([
@@ -244,9 +276,11 @@ export class FleetMaintenanceService {
     return task
   }
 
-  private async startOn(target: DeviceProvisioningTarget, task: MaintenanceTaskStart): Promise<MaintenanceTask> {
-    if (target.hostRef.kind === 'main') return this.local.start(task)
-    const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId, { operation: 'start', task })).payload)
+  private async startOn(target: DeviceProvisioningTarget, task: MaintenanceTaskStart,
+    commandId: string = randomUUID()): Promise<MaintenanceTask> {
+    if (target.hostRef.kind === 'main') return this.local.start(task, commandId)
+    const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId,
+      { operation: 'start', commandId, task })).payload)
     if (reply.operation !== 'start') throw new DomainError('COMPUTER_MAINTENANCE_INVALID', 'The computer returned an unexpected reply.', 502)
     return reply.task
   }

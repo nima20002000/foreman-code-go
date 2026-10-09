@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
+import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { SourceMaterializationRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
@@ -24,13 +25,21 @@ function fixture() {
     verifiedManifestDigest: intent.manifestDigest, verifiedEntries: 1, verifiedBytes: 4, verifiedAt: new Date().toISOString(), localTreeIdentity: filesystem },
     rootPolicyId: randomUUID(), rootPolicyRevision: '1', operationId: intent.operationId, reservationId: randomUUID(),
     sourceBindingHash: intent.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
+  const root: SourceRootRecord = { version: 1, binding: record.receipt.binding,
+    source: { approvedSourceId: randomUUID(), snapshotId: record.receipt.binding.snapshotId,
+      manifestDigest: record.receipt.verifiedManifestDigest },
+    selection: { hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+      rootPolicyId: record.rootPolicyId, rootPolicyRevision: '1', locationRevision: '1' },
+    registration: { workerInstallationId: binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', attestationId: randomUUID(),
+    attestationDigest: 'd'.repeat(64), boundAt: new Date().toISOString() }
   // Original SQL authority is a contract double, not a persisted/physical claim.
   const lifecycle = { status: vi.fn(async () => ({ intent, record })) }
   const owners = { resolve: vi.fn(async () => { throw new Error('No filesystem owner lookup in status fixture') }) }
   const transfers = { intent: vi.fn(async () => intent) }
   const extension = createMainSourceOperationExtension(owners, transfers, lifecycle)
   const context = { binding, signal: new AbortController().signal }
-  return { binding, intent, record, lifecycle, owners, transfers, extension, context }
+  return { binding, intent, record, root, lifecycle, owners, transfers, extension, context }
 }
 
 describe('original Main committed source-status carrier', () => {
@@ -55,11 +64,7 @@ describe('original Main committed source-status carrier', () => {
 
 it.each(['timeout', 'source-repository-timeout'])('maps %s from the exact repository request to a sanitized retryable domain error', async code => {
   const f = fixture(), request = vi.fn(async () => { throw new DeviceApplicationError(code) })
-  const root: SourceRootRecord = { version: 1, binding: f.record.receipt.binding,
-    source: { approvedSourceId: randomUUID(), snapshotId: f.record.receipt.binding.snapshotId, manifestDigest: f.record.receipt.verifiedManifestDigest },
-    selection: { hostRef: { kind: 'device', mainId: f.binding.mainId, deviceId: f.binding.deviceId }, rootPolicyId: f.record.rootPolicyId, rootPolicyRevision: '1', locationRevision: '1' },
-    registration: { workerInstallationId: f.binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
-    ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', attestationId: randomUUID(), attestationDigest: 'd'.repeat(64), boundAt: new Date().toISOString() }
+  const root = f.root
   const { connectionEpoch: _epoch, ...identity } = f.binding
   void _epoch
   const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity, request }) },
@@ -71,11 +76,7 @@ it.each(['timeout', 'source-repository-timeout'])('maps %s from the exact reposi
 
 it('waits out the Worker preparation budget instead of cancelling an activation midway', async () => {
   const f = fixture()
-  const root: SourceRootRecord = { version: 1, binding: f.record.receipt.binding,
-    source: { approvedSourceId: randomUUID(), snapshotId: f.record.receipt.binding.snapshotId, manifestDigest: f.record.receipt.verifiedManifestDigest },
-    selection: { hostRef: { kind: 'device', mainId: f.binding.mainId, deviceId: f.binding.deviceId }, rootPolicyId: f.record.rootPolicyId, rootPolicyRevision: '1', locationRevision: '1' },
-    registration: { workerInstallationId: f.binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
-    ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner', attestationId: randomUUID(), attestationDigest: 'd'.repeat(64), boundAt: new Date().toISOString() }
+  const root = f.root
   const { connectionEpoch: _epoch, ...identity } = f.binding
   void _epoch
   const request = vi.fn<(namespace: string, payload: unknown, options?: { timeoutMs?: number }) => Promise<{ payload: unknown }>>(
@@ -89,4 +90,24 @@ it('waits out the Worker preparation budget instead of cancelling an activation 
   await expect(host.prepare(manifest, root, attempt)).resolves.toEqual(f.record.receipt)
   // The Worker's own preparation budget is five minutes; a shorter Main deadline would cancel a slow activation.
   expect(request.mock.calls[0]![2]!.timeoutMs).toBeGreaterThan(300_000)
+})
+
+
+it('keeps a Worker retained-tree measurement bound to the original materialization', async () => {
+  const f = fixture()
+  const treeId = randomUUID()
+  const record = SourceMaterializationRecordSchema.parse({ ...f.record,
+    receipt: { ...f.record.receipt, sharedTree: { id: treeId, referenceIdentity: f.record.receipt.binding.filesystem } } })
+  const payload = { version: 1, operation: 'sources.release', materializationId: record.receipt.materializationId,
+    operationId: record.operationId, released: true, retainedBytes: 2 * 1024 * 1024 * 1024,
+    sharedTree: { id: treeId, bytes: 4096 } }
+  const identity: DeviceConnectionIdentity & { connectionEpoch?: string } = { ...f.binding }
+  delete identity.connectionEpoch
+  const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity,
+    request: async () => ({ payload }) }) },
+  { prepareIdentity: async () => { throw new Error('No preparation') }, resolve: async () => ({ root: f.root }) as never },
+  { send: async () => { throw new Error('No transfer') } })
+  expect(await host.releaseClaim(record)).toEqual({ retainedBytes: payload.retainedBytes, sharedTree: payload.sharedTree })
+  payload.sharedTree.id = randomUUID()
+  await expect(host.releaseClaim(record)).rejects.toMatchObject({ code: 'SOURCE_RESPONSE_INVALID' })
 })

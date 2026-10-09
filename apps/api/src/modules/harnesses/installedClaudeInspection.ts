@@ -1,3 +1,4 @@
+import type { PayloadFingerprintCache } from './payloadFingerprintCache.js'
 import { isAbsolute } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -25,6 +26,7 @@ export async function inspectInstalledClaude(input: {
   environment: NodeJS.ProcessEnv
   cwd: string
   signal: AbortSignal
+  fingerprintCache?: PayloadFingerprintCache
 }) {
   input.signal.throwIfAborted()
   if (!isAbsolute(input.cwd)) throw new DomainError('HARNESS_INVENTORY_STALE', 'Worker directory is invalid.', 409)
@@ -44,8 +46,8 @@ export async function inspectInstalledClaude(input: {
     configuration.claude.sdkEntrypoint)
   const harnessInstallationId = commandInputHash({ hostRef, driverId: 'claude', launcher: configuration.claude.binary })
   const context = { harnessInstallationId, environment }
-  const before = await discoverInstalledClaudeSdk(sdk, context, input.signal)
-  const after = await discoverInstalledClaudeSdk(sdk, context, input.signal)
+  const before = await discoverInstalledClaudeSdk(sdk, context, input.signal, input.fingerprintCache)
+  const after = await discoverInstalledClaudeSdk(sdk, context, input.signal, input.fingerprintCache)
   const current = await readInstalledWorkflowConfiguration(input.configuration)
   input.signal.throwIfAborted()
   if (before.launcher.fingerprint !== after.launcher.fingerprint || before.sdkVersion !== after.sdkVersion

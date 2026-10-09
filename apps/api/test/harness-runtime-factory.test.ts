@@ -3,6 +3,7 @@ import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { NativeHarnessFactories, type NativeFactoryInfrastructure } from '../src/modules/harnesses/runtimeFactory.js'
 import type { CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
+import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { APP_MCP_SERVER_NAME, appLauncherConnection } from '../src/modules/harnesses/appMcpLauncher.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
@@ -186,9 +187,12 @@ describe('native runtime construction', () => {
   })
 
   it('retains a partially failed reservation and fences native work until cleanup succeeds', async () => {
-    const recovery = { root: '/unused-registry', owner: 'diagnostics:partial' }
-    const admitRecovery = vi.fn(() => { throw new Error('Reservation failed partway through.') })
-    const abandonRecovery = vi.fn(async () => { throw new Error('Invalid native launch abandonment scope.') })
+    const recovery: NativeProcessRecovery = { root: '/unused-registry', owner: 'diagnostics:partial' }
+    const admitRecovery = vi.fn(() => {
+      recovery.launchId = 'recorded-launch'
+      throw new Error('Reservation failed partway through.')
+    })
+    const abandonRecovery = vi.fn(async () => undefined)
     const closeRecovery = vi.fn<(scope: typeof recovery) => Promise<void>>().mockResolvedValue(undefined)
     const factories = new NativeHarnessFactories({ codexBinary: 'unused',
       auxiliaryRecovery: () => recovery, admitRecovery, abandonRecovery, closeRecovery })
@@ -198,10 +202,28 @@ describe('native runtime construction', () => {
     expect(() => factories.admitAuxiliary(allocation.manager)).toThrow('Reservation failed')
     expect(admitRecovery).toHaveBeenCalledTimes(1)
     await factories.disposeAuxiliary(allocation.manager)
-    expect(abandonRecovery).not.toHaveBeenCalled()
+    expect(abandonRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
     expect(closeRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
     await factories.disposeAuxiliary(allocation.manager)
     expect(closeRecovery).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves failed admission before a reservation exists and never retries native work through that owner', async () => {
+    const recovery = { root: '/unused-registry', owner: 'qualification:failed-admission' }
+    const failure = new Error('Reservation storage is full.')
+    const admitRecovery = vi.fn(() => { throw failure })
+    const closeRecovery = vi.fn(async () => { throw new Error('No process closure exists.') })
+    const factories = new NativeHarnessFactories({ codexBinary: 'unused',
+      auxiliaryRecovery: () => recovery, admitRecovery, closeRecovery })
+    const allocation = factories.allocate({ harness: 'codex', role: 'qualification',
+      ownerAgentId: 'qualification', workingDirectory: '/project', appMcpAccess: 'none' })
+    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow(failure)
+    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow(failure)
+    await factories.disposeAuxiliary(allocation.manager)
+    expect(admitRecovery).toHaveBeenCalledOnce()
+    expect(closeRecovery).not.toHaveBeenCalled()
+    await expect(allocation.manager.capabilities()).rejects.toThrow('shutting down')
+    await factories.disposeAuxiliaries()
   })
 
   it.each(['diagnostics', 'qualification'] as const)(

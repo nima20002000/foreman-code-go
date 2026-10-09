@@ -9,6 +9,7 @@ import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnes
 import { HostHarnessInstanceProfileChecks, nativeProfileCheckId } from '../src/modules/harnesses/instanceSettings/profileChecks.js'
 import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
+import type { HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
 
 vi.mock('../src/modules/devices/hostAuthorization.js', () => ({ assertDeviceHostInstallation: vi.fn() }))
 
@@ -26,7 +27,9 @@ function fixture() {
   const stored = new Map<string, HostHarnessProfileEvidence>()
   const append = vi.fn(async (_client: pg.PoolClient, checkId: string, _value: HostHarnessOverride, proof: HostHarnessProfileEvidence) => { stored.set(checkId, proof) })
   const proofs = { findCheck: async (id: string) => stored.get(id) ?? null,
-    latest: async () => [...stored.values()].at(-1) ?? null, append } as unknown as HostHarnessProfileEvidenceRepository
+    latest: async () => [...stored.values()].at(-1) ?? null,
+    previouslyQualified: async () => [...stored.values()].some(value => value.qualified),
+    append } as unknown as HostHarnessProfileEvidenceRepository
   const commands = { execute: vi.fn(async (command: { authorize: (client: pg.PoolClient) => Promise<void>; perform: (client: pg.PoolClient) => Promise<unknown> }) => {
     await command.authorize(client); return { value: await command.perform(client), replayed: false }
   }) } as unknown as PostgresCommandCoordinator
@@ -100,6 +103,94 @@ function workerFixture() {
     connectionGeneration: harnessConnectionGeneration(binding) }))
   return { ...f, binding, host, override }
 }
+
+describe('automatic installation profile checks', () => {
+  function updatedFixture() {
+    const f = fixture()
+    const saved = { instanceId: f.input.instanceId, revision: 1, instanceRevision: '1', target: f.input.target,
+      presetId: 'local-default:codex', driverId: 'codex', enabled: true, qualification: 'unqualified' as const,
+      configuration: { harness: 'codex' as const, model: 'test', reasoningEffort: 'high' as const,
+        sandbox: 'read-only' as const, serviceTier: 'standard' as const }, configurationFingerprint: 'profile-sha' }
+    f.seed(f.proof(saved))
+    const installation: HarnessInstallationRecord = { hostRef: saved.target.hostRef,
+      harnessInstallationId: saved.target.harnessInstallationId, installationFingerprint: 'updated-fingerprint',
+      driverId: 'codex', driverRevision: '1', protocolRevision: 'codex-native-adapter-v1',
+      environmentGeneration: 'env', connectionGeneration: 'local', observedVersion: null,
+      installed: true, authenticated: null, compatible: null, qualified: null,
+      launcher: { requested: '/installed/codex', resolvedLauncher: '/installed/codex',
+        fingerprint: 'updated-fingerprint', status: 'installed', interpreter: null, diagnostics: [],
+        checkedAt: new Date().toISOString(),
+        environment: { generation: 'env', provenance: 'terminal', cwd: '/workspace', path: '/usr/bin' } } }
+    f.settings.replaceInstallation = vi.fn(async (_client, previous, target) => {
+      const value = { ...previous, target, revision: previous.revision + 1 }
+      f.setOverride(value)
+      return value
+    })
+    const authorize = vi.fn(async () => {})
+    const request = { host: saved.target.hostRef, driverId: 'codex', applicationInstallationId: mainId,
+      generation: 'updated-generation', signal: new AbortController().signal, authorize,
+      installation: () => installation }
+    return { ...f, saved, installation, request }
+  }
+  it('leaves qualified Codex profiles and their proofs unchanged after a Claude installation update', async () => {
+    const f = updatedFixture()
+    const beforeChecks = vi.fn(async () => {})
+    await f.service.recheckInstallation({ ...f.request, driverId: 'claude', beforeChecks })
+    expect(beforeChecks).not.toHaveBeenCalled()
+    expect(f.qualify).not.toHaveBeenCalled()
+    expect(f.settings.replaceInstallation).not.toHaveBeenCalled()
+    expect(f.append).not.toHaveBeenCalled()
+    await f.service.close()
+  })
+  it('deduplicates an update and reports pending until the replacement profile is persisted', async () => {
+    const f = updatedFixture()
+    let release!: () => void
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    let started!: () => void
+    const entered = new Promise<void>(resolve => { started = resolve })
+    f.qualify.mockImplementationOnce(async selected => {
+      started()
+      await waiting
+      return f.proof(selected)
+    })
+    const task = f.service.recheckInstallation(f.request)
+    expect(f.service.recheckInstallation(f.request)).toBe(task)
+    await entered
+    expect(() => f.service.assertReady(f.request.host)).toThrow(expect.objectContaining({ code: 'HARNESS_PROFILE_CHECK_PENDING' }))
+    release()
+    await task
+    expect(() => f.service.assertReady(f.request.host)).not.toThrow()
+    const selected = f.qualify.mock.calls[0]![0]
+    expect(selected.instanceRevision).toBe(f.saved.instanceRevision)
+    expect(selected.revision).toBe(2)
+    expect(selected.configuration).toEqual(f.saved.configuration)
+    expect(selected.target.installationFingerprint).toBe(f.installation.installationFingerprint)
+    expect(f.append).toHaveBeenCalledTimes(1)
+    await f.service.close()
+  })
+  it('persists a thrown qualification failure with a reason on the updated profile', async () => {
+    const f = updatedFixture()
+    f.qualify.mockRejectedValueOnce(new Error('Native check failed'))
+    await expect(f.service.recheckInstallation(f.request)).rejects.toThrow('Automatic harness profile checks failed')
+    const proof = f.append.mock.calls[0]![3]
+    expect(proof.qualified).toBe(false)
+    expect(proof.target.installationFingerprint).toBe(f.installation.installationFingerprint)
+    expect(proof.failure).toMatchObject({ code: 'HARNESS_QUALIFICATION_FAILED' })
+    expect(proof.failure!.message).not.toContain('Native check failed')
+    expect(f.service.pending(f.request.host)).toBe(false)
+    await f.service.close()
+  })
+  it('refuses to retain success when the host authority changes during the native check', async () => {
+    const f = updatedFixture()
+    f.qualify.mockImplementationOnce(async selected => {
+      f.request.authorize.mockRejectedValue(new Error('Host registration changed'))
+      return f.proof(selected)
+    })
+    await expect(f.service.recheckInstallation(f.request)).rejects.toThrow('Host registration changed')
+    expect(f.append).not.toHaveBeenCalled()
+    await f.service.close()
+  })
+})
 
 describe('Worker reconnect profile checks', () => {
   it('checks an enabled qualified profile once per connection and refuses Start while it runs', async () => {

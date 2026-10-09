@@ -1,3 +1,4 @@
+import type { RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
 import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { SourceQuotaPool } from './materialization.js'
@@ -6,7 +7,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
-import { measureRetainedMaterialization } from './retainedDirectoryUsage.js'
+import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsage.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
 import { verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import { createPrivateSourceRepository } from './repository.js'
@@ -47,7 +48,7 @@ export interface RemoteSourceMaterializationHost {
     options?: { sharedWritableTree?: true; worktree?: SourceWorktreeRequest }): Promise<SourceMaterializationRecord['receipt']>
   verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
   verify(record: SourceMaterializationRecord): Promise<string>
-  releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number>
+  releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<RetainedSourceFootprint>
   privateRepository(record: SourceMaterializationRecord, manifest: SourceManifest): Promise<{ workTree: string; gitDirectory: string; generatedCommit: string; sourceCommit: string | null }>
   reconcilePreparation?(reconciliationId: string, owner: SourceOperationOwner): Promise<SourcePreparationClosure>
 }
@@ -104,14 +105,14 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
     return verifyMaterializedWorkingDirectory(record, relativeCwd, () => this.authority.revalidateMaterialization(record), capture ?? undefined)
   }
   /** Main service calls only after exact original physical closure proof. */
-  async releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<number> {
+  async releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<RetainedSourceFootprint> {
     if (record.receipt.binding.deviceId !== null) return this.remote.releaseClaim(record, options)
     const receipt = record.receipt
     const attempt = { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId,
       keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }
     await releaseMaterializationClaim(receipt, async () => 'released',
       await this.quotaPoolFor?.(receipt.binding, attempt), options?.signal)
-    return measureRetainedMaterialization(record.receipt)
+    return measureRetainedMaterializationFootprint(record.receipt)
   }
   /** CI-only explicit detached write copy; read-only references cannot acquire
    * write authority or Git working metadata through this helper. */

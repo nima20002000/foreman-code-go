@@ -2,6 +2,7 @@ import { lstat, open, readdir, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { SourceManifestSchema, type RootBinding, type MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
 import { anchored, directoryFlags, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+import type { RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
 import { SOURCE_LIMITS, SourceError } from './manifest.js'
 
 /** Measures retained bytes only after the caller has confirmed the original writer is closed. */
@@ -78,17 +79,23 @@ async function measureSourceDirectory(
   }
 }
 
-export async function measureRetainedMaterialization(receipt: MaterializationReceipt): Promise<number> {
-  // Quota-owned Job trees are reclaimed with their project quota, not retained.
-  if (receipt.quota) return 0
+export async function measureRetainedMaterializationFootprint(
+  receipt: MaterializationReceipt,
+): Promise<RetainedSourceFootprint> {
+  if (receipt.quota) return { retainedBytes: 0 }
   const binding = receipt.binding
   const countedInodes = new Set<string>()
+  // Charge cross-tree hard links to the shared tree so its other references can release their own copies.
+  const working = receipt.sharedTree ? await measureSourceDirectory(
+    binding.canonicalPath, receipt.sharedTree.id, binding.filesystem, countedInodes,
+  ) : 0
   const reference = await measureSourceDirectory(
     binding.canonicalPath, receipt.materializationId, binding.filesystem, countedInodes,
   )
-  if (!receipt.sharedTree) return reference
-  const working = await measureSourceDirectory(
-    binding.canonicalPath, receipt.sharedTree.id, binding.filesystem, countedInodes,
-  )
-  return reference + working
+  return { retainedBytes: reference + working,
+    ...(receipt.sharedTree ? { sharedTree: { id: receipt.sharedTree.id, bytes: working } } : {}) }
+}
+
+export async function measureRetainedMaterialization(receipt: MaterializationReceipt): Promise<number> {
+  return (await measureRetainedMaterializationFootprint(receipt)).retainedBytes
 }

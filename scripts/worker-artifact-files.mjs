@@ -1,6 +1,27 @@
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, mkdir, writeFile, realpath } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, relative } from 'node:path';
+
+export function committedWorkerInputPath(root, input) {
+  const path = relative(root, resolve(root, input));
+  if (!path.startsWith('apps/worker/artifacts/') || !safePath(path) || !path.endsWith('.json')) {
+    throw new Error('Reviewed target/runtime JSON must be a committed repository file under apps/worker/artifacts/');
+  }
+  return path;
+}
+
+export function workerReleaseVersion(product) {
+  if (!/^\d+\.\d+\.\d+$/.test(product.version)) throw new Error('Product release version is invalid');
+  return product.version;
+}
+
+export function validateWorkerTarget(target) {
+  if (target.arch !== 'x64') throw new Error('Sharp assets are qualified only for linux-x64');
+  if (target.os !== 'ubuntu' || !/^\d+\.\d+$/.test(target.osRelease)
+    || !/^glibc-\d+\.\d+$/.test(target.libc) || !/^v22\.\d+\.\d+$/.test(target.node)) {
+    throw new Error('Unsupported build target');
+  }
+}
 
 export const sharpPackages = Object.freeze({
   sharp: '0.35.4', '@img/colour': '1.1.0', 'detect-libc': '2.1.2', semver: '7.8.5',

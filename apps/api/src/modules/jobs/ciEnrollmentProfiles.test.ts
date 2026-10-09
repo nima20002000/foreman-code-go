@@ -4,12 +4,11 @@ import { verificationCapacityFixture } from '../../../test/helpers/verificationC
 import { ciEnrollmentProfileInput, ciEnrollmentTemplateDigest } from './ciEnrollmentProfiles.js'
 import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture.js'
 
-describe('CI enrollment profile sizing', () => {
-  it('preserves policy and suites while fitting scratch and inode reservations to installed storage', () => {
+describe('CI enrollment resource envelopes', () => {
+  it('preserves the template envelope, policy and suites on another approved root', () => {
     const template = verificationCapacityFixture('device')
-    const resources = template.spec.resources
-    const reserved = resources.controlTempBytes + resources.reportBytes + resources.spoolBytes
-    const storage = { diskBytes: reserved + 1024, mutableInodes: 100 }
+    const resources = structuredClone(template.spec.resources)
+    const storage = { diskBytes: resources.limits.diskBytes, mutableInodes: resources.mutableInodes }
     const root = structuredClone(template.root)
     root.binding.rootId = randomUUID()
     root.binding.bindingRevision = 4
@@ -17,8 +16,7 @@ describe('CI enrollment profile sizing', () => {
     expect(input.expectedRevision).toBeNull()
     expect(input.spec).toMatchObject({ rootId: root.binding.rootId, bindingRevision: 4,
       policy: template.spec.policy, suites: template.spec.suites,
-      resources: { limits: { ...resources.limits, diskBytes: storage.diskBytes },
-        scratchBytes: 1024, mutableInodes: 100, reportBytes: resources.reportBytes, spoolBytes: resources.spoolBytes } })
+      resources })
     expect(template.spec.resources).toEqual(resources)
   })
 
@@ -36,6 +34,17 @@ describe('CI enrollment profile sizing', () => {
       { diskBytes: 1, mutableInodes: 100 }, 'enroll')).toThrow('too small')
   })
 
+  it.each(['disk', 'inodes'] as const)('rejects insufficient %s even when output reservations fit', field => {
+    const template = verificationCapacityFixture('device')
+    const resources = template.spec.resources
+    const storage = { diskBytes: resources.limits.diskBytes, mutableInodes: resources.mutableInodes }
+    if (field === 'disk') storage.diskBytes--
+    else storage.mutableInodes--
+    expect(() => ciEnrollmentProfileInput(template, template.root, storage, 'enroll'))
+      .toThrow('too small')
+    expect(template.spec.resources).toEqual(resources)
+  })
+
   it('does not clone again after qualification or an image refresh, but notices policy changes', () => {
     const profile = verificationCapacityFixture('device')
     const digest = ciEnrollmentTemplateDigest(profile)
@@ -47,17 +56,17 @@ describe('CI enrollment profile sizing', () => {
     expect(ciEnrollmentTemplateDigest(refreshed)).not.toBe(digest)
   })
 
-  it('sizes ordinary job profiles without changing their runtime policy requirements', () => {
+  it('preserves ordinary job budgets and runtime policy requirements', () => {
     const template = buildComputerFixture(randomUUID(), randomUUID()).candidate.profile
     template.policy.maxOutputBytes = 1024
     template.policy.maxWorkerSpoolBytes = 131072
     const input = ciEnrollmentProfileInput(template, template.root,
-      { diskBytes: template.limits.diskBytes / 2, mutableInodes: 100 }, 'enroll')
+      { diskBytes: template.limits.diskBytes * 2, mutableInodes: 100 }, 'enroll')
     const { isolationPolicyId, isolationPolicyRevision, ...policy } = template.policy
     expect(isolationPolicyId).toBe(template.id)
     expect(isolationPolicyRevision).toBe(template.revision)
     expect(input.spec).toEqual({ rootId: template.root.binding.rootId,
       bindingRevision: template.root.binding.bindingRevision, policy,
-      limits: { ...template.limits, diskBytes: template.limits.diskBytes / 2 } })
+      limits: template.limits })
   })
 })

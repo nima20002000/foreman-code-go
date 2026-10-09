@@ -1,3 +1,4 @@
+import type { PayloadFingerprintCache } from '../payloadFingerprintCache.js'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join } from 'node:path'
 import { readFile, readdir, realpath, stat } from 'node:fs/promises'
@@ -31,7 +32,7 @@ export type ClaudeCurrentPinResult = { status: 'available'; pin: ClaudeQualifica
   declaration: ReturnType<typeof claudeDiscoveryDeclaration> } | { status: 'unavailable'; reason: string }
 
 /** Passive declaration uses installed files; a selected override is never replaced by another launcher. */
-export async function discoverInstalledClaudeSdk(input: ClaudeSdkEntrypoint, context: Pick<ClaudeCurrentPinContext, 'harnessInstallationId' | 'environment'>, signal?: AbortSignal) {
+export async function discoverInstalledClaudeSdk(input: ClaudeSdkEntrypoint, context: Pick<ClaudeCurrentPinContext, 'harnessInstallationId' | 'environment'>, signal?: AbortSignal, fingerprintCache?: PayloadFingerprintCache) {
   signal?.throwIfAborted()
   const entrypoint = await realpath(input.entrypoint)
   const directory = dirname(entrypoint)
@@ -53,9 +54,9 @@ export async function discoverInstalledClaudeSdk(input: ClaudeSdkEntrypoint, con
   for (const path of [selected, ...payloadPaths]) {
     if ((await stat(path)).size > 512 * 1024 * 1024) throw new Error('Selected launcher or SDK payload exceeds bounded inventory size.')
   }
-  let launcher = await discoverLauncher(selected, context.environment, payloadPaths, signal)
+  let launcher = await discoverLauncher(selected, context.environment, payloadPaths, signal, fingerprintCache)
   if (launcher.status === 'installed' && launcher.interpreter)
-    launcher = await discoverLauncher(selected, context.environment, [...payloadPaths, launcher.interpreter], signal)
+    launcher = await discoverLauncher(selected, context.environment, [...payloadPaths, launcher.interpreter], signal, fingerprintCache)
   if (launcher.status !== 'installed' || !launcher.resolvedLauncher || !launcher.fingerprint) throw new Error('Selected Claude SDK launcher or payload is unavailable.')
   return { sdkVersion: manifest.version, sdkIntegrity: integrity, launcher,
     declaration: claudeDiscoveryDeclaration({ harnessInstallationId: context.harnessInstallationId,

@@ -12,6 +12,7 @@ import { ExecutionAuthorityRequestSchema, EXECUTION_AUTHORITY_EXTENSION } from '
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 import { DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
+import { MainClock } from './workerClock.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; connectionSignal?: AbortSignal; bytes?: Uint8Array }
@@ -41,6 +42,8 @@ export function deviceNegotiationHash(extensions: DeviceNegotiatedExtension[]) {
 }
 /** One reader per authenticated epoch. Chunk ACKs attest receipt only, never task acceptance. */
 export class DeviceApplicationChannel {
+  private readonly mainClock = new MainClock()
+  mainNow(): number | undefined { return this.mainClock.observed ? this.mainClock.now() : undefined }
   private readonly abort = new AbortController()
   private readonly tasks = new Set<Promise<unknown>>()
   private readonly extensions: DeviceNegotiatedExtension[]
@@ -64,7 +67,10 @@ export class DeviceApplicationChannel {
     /** Main live device authorization, separate from the handler's operation authority. */
     revalidate?(): Promise<void>
     onObservedFrame?(observedAt: string): void
+    onPeerTime?(peerTime: number | null, mainTime: number): void
+    mainTime?: number
   }) {
+    if (options.mainTime !== undefined) this.mainClock.observe(options.mainTime)
     this.extensions = options.extensions.map((item) => Object.freeze({ ...item }))
     this.registrations = options.registrations.map((item) => Object.freeze({ ...item }))
     this.binding = Object.freeze({ ...options.binding })
@@ -376,7 +382,9 @@ export class DeviceApplicationChannel {
     let lastHeartbeat = Date.now(), timer: ReturnType<typeof setInterval> | undefined
     const worker = this.options.side === 'worker'
     if (worker) {
-      const ping = () => { try { this.current(); sendFrame(this.options.socket, { type: 'ping', connectionEpoch: this.binding.connectionEpoch }) } catch (error) { this.close(error as Error) } }
+      const ping = () => { try { this.current(); sendFrame(this.options.socket, {
+        type: 'ping', connectionEpoch: this.binding.connectionEpoch, observedAt: new Date().toISOString(),
+      }) } catch (error) { this.close(error as Error) } }
       ping(); timer = setInterval(ping, heartbeatMs)
     }
     try {
@@ -388,7 +396,13 @@ export class DeviceApplicationChannel {
         if (frame.type === (worker ? 'pong' : 'ping')) {
           if (frame.connectionEpoch !== this.binding.connectionEpoch) throw new DeviceConnectionError('malformed-frame')
           await this.authorized(); lastHeartbeat = Date.now()
-          if (!worker) sendFrame(this.options.socket, { type: 'pong', connectionEpoch: this.binding.connectionEpoch })
+          const peerTime = typeof frame.observedAt === 'string' ? Date.parse(frame.observedAt) : NaN
+          if (worker && Number.isFinite(peerTime)) this.mainClock.observe(peerTime)
+          if (!worker) {
+            this.options.onPeerTime?.(Number.isFinite(peerTime) ? peerTime : null, lastHeartbeat)
+            sendFrame(this.options.socket, { type: 'pong', connectionEpoch: this.binding.connectionEpoch,
+              observedAt: new Date(lastHeartbeat).toISOString() })
+          }
         } else if (frame.type === 'blocked') throw new DeviceConnectionError(classify(frame.code))
         else this.receive(frame)
         this.current(); this.options.onObservedFrame?.(observedAt)

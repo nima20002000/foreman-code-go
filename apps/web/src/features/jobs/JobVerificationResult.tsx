@@ -42,6 +42,11 @@ export function JobVerificationResult({ execution, artifacts, artifactsUnavailab
   </Alert>
   if (!query.data || summary?.state !== 'available') {
     let message = 'Waiting for the verification summary. Process exit alone does not confirm a suite pass.'
+    if (execution.publication === 'failed') {
+      message = execution.resultIssue
+        ? `Verification summary unavailable. Publication failed: ${execution.resultIssue.replaceAll('_', ' ')}.`
+        : 'Verification summary unavailable. Publication failed.'
+    }
     if (summary?.state === 'expired') message = 'The verification summary has expired.'
     if (summary?.state === 'tombstoned') message = 'The verification summary is unavailable.'
     if (execution.publication === 'complete' && !summary) message = 'The required verification summary is missing.'

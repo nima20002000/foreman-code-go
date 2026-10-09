@@ -34,13 +34,33 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
       // contain that parent or any other workspace's execution location.
       const otherWorkspaces = await client.query<{ path: string }>(
         `select execution_location->>'rootPath' as path from workspaces where not (id = any($1::text[]))
-         and archived_at is null and execution_location is not null
+         and archived_at is null and execution_location->>'runnerId'=$2
          union all select created_project_folder->>'rootPath' as path from workspaces
-         where not (id = any($1::text[])) and created_project_folder is not null`, [ids],
+         where not (id = any($1::text[])) and created_project_folder->>'runnerId'=$2`, [ids, runnerId],
+      )
+      const runDirectories = await client.query<{ path: string }>(
+        `with continuing_runs as (
+           select r.id, r.runner_id, r.working_directory, r.workflow_version_id from runs r
+           where r.execution_state in ('queued', 'running', 'waiting')
+             or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
+         )
+         select r.working_directory as path from continuing_runs r
+         join workflow_versions v on v.id=r.workflow_version_id
+         where r.runner_id=$1 and exists(
+           select 1 from jsonb_array_elements(v.record->'definition'->'nodes') node
+           where node->>'kind'='job' or not exists(
+             select 1 from run_node_placements p where p.run_id=r.id and p.node_id=node->>'id'))
+         union all
+         select p.record#>>'{destination,canonicalProjectRoot}' as path
+         from continuing_runs r join run_node_placements p on p.run_id=r.id
+         where p.record#>>'{hostRef,kind}'='main'`, [runnerId],
       )
       const contains = (path: string) => { const suffix = relative(folder.rootPath, path); return !isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith('..' + sep) }
       if (references.rows.some(({ path }) => contains(path)) || otherWorkspaces.rows.some(({ path }) => pathsOverlap(folder.rootPath, path))) {
         throw new Error('The project folder is still used by another workspace or workspace defaults.')
+      }
+      if (runDirectories.rows.some(({ path }) => pathsOverlap(folder.rootPath, path))) {
+        throw new Error('The project folder is still required by an accepted Run or its pending cleanup.')
       }
       let details
       try { details = await lstat(folder.rootPath, { bigint: true }) }

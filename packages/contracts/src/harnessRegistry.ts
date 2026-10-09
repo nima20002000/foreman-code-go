@@ -91,7 +91,8 @@ export const HostHarnessOverrideSchema = z.object({
   instanceId: z.uuid(), revision: z.number().int().positive(), instanceRevision: Identity,
   target: HostHarnessOverrideTargetSchema, presetId: Identity, enabled: z.boolean(), driverId: Identity,
   configuration: z.lazy(() => HarnessConfigurationSchema), configurationFingerprint: Identity,
-  qualification: z.enum(['unqualified', 'qualified', 'installation-changed', 'disabled', 'retired']),
+  qualification: z.enum(['unqualified', 'qualifying', 'qualified', 'installation-changed', 'disabled', 'retired']),
+  qualificationFailure: z.object({ code: Identity, message: z.string().min(1).max(500) }).strict().optional(),
   retirementMessage: z.string().optional(),
 }).strict()
 export type HostHarnessOverride = z.infer<typeof HostHarnessOverrideSchema>

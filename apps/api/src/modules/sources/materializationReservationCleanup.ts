@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { SourceMaterializationRecordSchema, SourceRootRecordSchema,
-  type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
+import { SourceMaterializationRecordSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { SourceOperationOwnerSchema, SourceReservationReclamationSchema,
   type SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { admissionClosed, loadSourcePreparation, validateSourcePreparationClosure } from './preparationReconciliation.js'
+import type { SourceReclamationResult } from './reclaimSourceReservation.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 
 async function admissionInactive(sql: GraphSqlClient, operationId: string): Promise<boolean> {
@@ -66,7 +66,7 @@ async function admissionInactive(sql: GraphSqlClient, operationId: string): Prom
 
 export class MaterializationReservationCleanup {
   constructor(private readonly pool: pg.Pool,
-    private readonly reclaim: (grant: SourceReservationReclamation) => Promise<SourcePreparationClosure[]>) {}
+    private readonly reclaim: (grant: SourceReservationReclamation) => Promise<SourceReclamationResult>) {}
 
   private async transaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     const sql = await this.pool.connect()
@@ -113,18 +113,23 @@ export class MaterializationReservationCleanup {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${reservation.ownerId}`])
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${reservation.scopeId}`])
       if (!await admissionInactive(sql, reservation.ownerId)) return null
-      const rows = await sql.query<{ record: unknown }>(`select b.record from source_root_bindings b
-        join application_installation a on a.singleton and a.id::text=(b.record#>>'{binding,mainId}')
-        where concat(b.record#>>'{binding,mainId}',':',coalesce(b.record#>>'{binding,deviceId}','original-main'),':',
-          coalesce(b.record#>>'{binding,workerInstallationId}',b.record#>>'{binding,mainId}'),':',
-          b.record#>>'{binding,filesystem,device}',':',b.record#>>'{binding,filesystem,mountId}')=$1`, [reservation.scopeId])
-      const roots = rows.rows.map(row => SourceRootRecordSchema.parse(row.record))
-      if (!roots.length) return null
       const materialization = (await sql.query<{ record: unknown }>(
         'select record from source_execution_materializations where operation_id=$1', [reservation.ownerId])).rows[0]
       const reconciliation = (await sql.query<{ reconciliation_id: string; owner: unknown }>(`select reconciliation_id,owner
         from source_preparation_reconciliations where operation_id=$1 and status='reconciling'`, [reservation.ownerId])).rows[0]
       let owner = reservation.preparation ?? (reconciliation ? SourceOperationOwnerSchema.parse(reconciliation.owner) : null)
+      const binding = materialization ? SourceMaterializationRecordSchema.parse(materialization.record).receipt.binding
+        : owner?.root.binding
+      if (!binding) return null
+      const rows = await sql.query<{ record: unknown }>(`select b.record from source_root_bindings b
+        join application_installation a on a.singleton and a.id::text=(b.record#>>'{binding,mainId}')
+        where concat(b.record#>>'{binding,mainId}',':',coalesce(b.record#>>'{binding,deviceId}','original-main'),':',
+          coalesce(b.record#>>'{binding,workerInstallationId}',b.record#>>'{binding,mainId}'),':',
+          b.record#>>'{binding,filesystem,device}',':',b.record#>>'{binding,filesystem,mountId}')=$1
+          and b.root_id=$2 and b.binding_revision=$3`,
+      [reservation.scopeId, binding.rootId, binding.bindingRevision])
+      const roots = rows.rows.map(row => SourceRootRecordSchema.parse(row.record))
+      if (!roots.length) return null
       if (materialization) {
         const record = SourceMaterializationRecordSchema.parse(materialization.record)
         const root = roots.find(root => root.binding.rootId === record.receipt.binding.rootId
@@ -152,17 +157,25 @@ export class MaterializationReservationCleanup {
   async reconcile(report?: (error: unknown) => void): Promise<number> {
     const candidates = await this.pool.query<{ reservation_id: string }>(`select reservation_id
       from source_storage_reservations where owner_kind='materialization' and state in ('preparing','owned','uncertain')`)
-    let reclaimed = 0
+    let reconciled = 0
     for (const candidate of candidates.rows) {
       try {
         const grant = await this.fence(candidate.reservation_id)
         if (!grant) continue
-        const closures = await this.reclaim(grant)
+        const result = await this.reclaim(grant)
         await this.transaction(async sql => {
+          await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${grant.operationId}`])
+          await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${grant.scopeId}`])
           await this.authorize(sql, grant.reservationId, grant.reclamationId)
           const reservation = (await sql.query<{ record: SourceReservation }>(
             'select record from source_storage_reservations where reservation_id=$1 for update', [grant.reservationId])).rows[0]!.record
-          await new PostgresSourceReservations().reclaimed(sql, reservation, async () => true)
+          const reservations = new PostgresSourceReservations()
+          if (result.retained) {
+            await reservations.retainMaterialization(sql, reservation,
+              { ...result.retained, retainedBytes: result.retained.retainedBytes + 16 * 1024 })
+          } else {
+            await reservations.reclaimed(sql, reservation, async () => true)
+          }
           await sql.query("update source_execution_materializations set state='closed' where operation_id=$1", [grant.operationId])
           await sql.query('update job_computer_selections set released_at=clock_timestamp() where operation_id=$1 and released_at is null',
             [grant.operationId])
@@ -171,7 +184,7 @@ export class MaterializationReservationCleanup {
           [grant.operationId])).rows[0]
           if (pending) {
             const owner = SourceOperationOwnerSchema.parse(pending.owner)
-            const raw = closures.find(closure => closure.executionId === owner.attempt.executionId
+            const raw = result.closures.find(closure => closure.executionId === owner.attempt.executionId
               && closure.rootId === owner.root.binding.rootId && closure.bindingRevision === owner.root.binding.bindingRevision)
             const closure = validateSourcePreparationClosure(pending.reconciliation_id, owner, raw)
             await sql.query("update source_preparation_reconciliations set status='closed',closure=$2::jsonb where operation_id=$1",
@@ -183,12 +196,12 @@ export class MaterializationReservationCleanup {
             JSON.stringify({ reservationId: grant.reservationId, operationId: grant.operationId,
               reclamationId: grant.reclamationId, scopeId: grant.scopeId })])
         })
-        reclaimed++
+        reconciled++
       } catch (error) {
         if (!report) throw error
         report(error)
       }
     }
-    return reclaimed
+    return reconciled
   }
 }

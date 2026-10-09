@@ -8,6 +8,7 @@ import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { PostgresSourceService } from '../src/modules/sources/service.js'
 import { JobRuntimeProfiles } from '../src/modules/jobs/runtimeProfiles.js'
+import type { JobRuntimeQualificationProducer } from '../src/modules/jobs/runtimeProfilePorts.js'
 import { jobSpec } from './helpers/jobFixture.js'
 const uuid='11111111-1111-4111-8111-111111111111',digest='1'.repeat(64)
 const principal:ManagementPrincipal={id:'runtime-reader',name:'Runtime reader',audience:'operator',grants:[{actions:['job_definitions:read','job_definitions:write'],scope:{workspaceIds:['workspace-fixture']}}],expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null}
@@ -16,15 +17,31 @@ const profile=JobRuntimeProfileSchema.parse({schemaVersion:1,id:'runtime-profile
 const fingerprint=JobRuntimeFingerprintSchema.parse({schemaVersion:1,profileId:profile.id,profileRevision:1,specDigest:digest,hostRef:root.selection.hostRef,registration:null,mainInstallationId:'main-installation',bootId:uuid,root,runtimeExecutable:'/usr/bin/podman',runtimeBinarySha256:digest,ociExecutable:'/usr/bin/crun',ociBinarySha256:digest,configurationDigest:digest,imageDigest:profile.policy.imageDigest,toolchainDigest:digest,limits:profile.limits})
 const approval=JobRuntimeApprovalSchema.parse({schemaVersion:1,id:uuid,qualificationId:uuid,workspaceId:profile.workspaceId,profileId:profile.id,profileRevision:1,fingerprint,fingerprintDigest:digest,requestedByPrincipalId:principal.id,status:'captured',expiresAt:'2099-01-01T00:00:00.000Z'})
 function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.status;runCommand?:string;runResult?:unknown}={}) {
-  const state={profile:{...profile},approval:{...approval,status:options.approvalStatus??approval.status},runResult:options.runResult??null}
+  const state = {
+    profile: { ...profile },
+    approval: { ...approval, status: options.approvalStatus ?? approval.status },
+    runResult: options.runResult ?? null,
+    runCommand: options.runCommand ?? null,
+    runPrincipal: options.runCommand ? principal.id : null,
+  }
   const query=vi.fn(async(text:string,values?:unknown[])=>{
     let rows:unknown[]=[]
     if(text.includes('select id,name,audience,grants'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:options.revoked?new Date():null,delegated_from:null}]
     else if(text.includes('select archived_at'))rows=[{archived_at:null}]
     else if(text.startsWith('select record from job_runtime_profiles'))rows=[{record:state.profile}]
     else if(text.startsWith('select record from job_runtime_qualification_approvals'))rows=[{record:state.approval}]
+    else if(text.startsWith('select record,run_command_id,run_principal_id'))rows=[{
+      record:state.approval,run_command_id:state.runCommand,run_principal_id:state.runPrincipal,
+    }]
     else if(text.startsWith('select measurement,run_result'))rows=[{measurement:null,run_result:state.runResult}]
-    else if(text.startsWith('select run_command_id'))rows=[{run_command_id:options.runCommand??null,run_principal_id:options.runCommand?principal.id:null,measurement:null,run_result:state.runResult}]
+    else if(text.startsWith('select run_command_id'))rows=[{
+      run_command_id: state.runCommand, run_principal_id: state.runPrincipal,
+      measurement: null, run_result: state.runResult,
+    }]
+    else if(text.startsWith('update job_runtime_qualification_approvals set run_command_id')) {
+      state.runCommand = String(values![1])
+      state.runPrincipal = String(values![2])
+    }
     else if(text.startsWith('update job_runtime_profiles'))state.profile=JSON.parse(values![2] as string)
     else if(text.startsWith('update job_runtime_qualification_approvals set record'))state.approval=JSON.parse(values![1] as string)
     else if(text.startsWith('update job_runtime_qualification_approvals set measurement'))state.runResult=JSON.parse(values![4] as string)
@@ -32,7 +49,13 @@ function fixture(options:{revoked?:boolean;approvalStatus?:typeof approval.statu
     return {rows,rowCount:rows.length,command:'SELECT',oid:0,fields:[]}
   })
   const pool={query,connect:async()=>({query,release:vi.fn()})} as unknown as pg.Pool
-  const producer={capture:vi.fn(async()=>fingerprint),run:vi.fn(async()=>({outcome:'denied' as const,closure:'unconfirmed' as const,reasons:['DESCENDANT_CLOSURE_UNCONFIRMED']})),revalidate:vi.fn(async()=>({ready:false,reasons:['UNQUALIFIED']}))}
+  const producer = {
+    capture: vi.fn(async () => fingerprint),
+    run: vi.fn<JobRuntimeQualificationProducer['run']>(async () => ({
+      outcome: 'denied', closure: 'unconfirmed', reasons: ['DESCENDANT_CLOSURE_UNCONFIRMED'],
+    })),
+    revalidate: vi.fn(async () => ({ ready: false, reasons: ['UNQUALIFIED'] })),
+  }
   const commands={execute:async(input:{authorize:(sql:unknown)=>Promise<void>;prepare?:()=>Promise<void>;perform:(sql:unknown)=>Promise<unknown>})=>{await input.authorize({query});await input.prepare?.();return {value:await input.perform({query}),replayed:false}}} as unknown as PostgresCommandCoordinator
   const changed = vi.fn(() => state.profile.status)
   return {state,producer,changed,query,service:new JobRuntimeProfiles(pool,commands,{} as PostgresSourceService,producer,changed)}
@@ -94,6 +117,38 @@ describe('CI runtime metadata authority and original qualification ownership',()
     expect(reconcile).toHaveBeenCalledOnce()
     expect(f.producer.run).not.toHaveBeenCalled()
     expect(f.state.runResult).toMatchObject({ closure: 'confirmed' })
+  })
+  it.each(['execute', 'reconcile'] as const)('cancels %s through the producer and retains recovery state', async intent => {
+    const f = fixture(intent === 'reconcile'
+      ? { approvalStatus: 'qualifying', runCommand: 'original-command' } : {})
+    const controller = new AbortController()
+    let reached!: () => void
+    const running = new Promise<void>(resolve => { reached = resolve })
+    const probe = vi.fn<JobRuntimeQualificationProducer['run']>(async (_approval, signal) => {
+      reached()
+      await new Promise<void>((_resolve, reject) => {
+        signal.throwIfAborted()
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+      throw new Error('Interrupted qualification cannot complete')
+    })
+    if (intent === 'reconcile') Object.assign(f.producer, { reconcile: probe })
+    else f.producer.run.mockImplementation(probe)
+    const qualification = f.service.qualify(principal, 'mcp', profile.workspaceId,
+      'original-command', approval.id, { signal: controller.signal })
+    const rejected = expect(qualification).rejects.toThrow('Main is stopping')
+    try {
+      await running
+      controller.abort(new Error('Main is stopping'))
+      await rejected
+      expect(probe).toHaveBeenCalledOnce()
+      expect(f.state.profile.status).toBe('recovery-required')
+      expect(f.state.approval.status).toBe('recovery-required')
+      expect(f.state.approval.qualificationId).toBe(approval.qualificationId)
+    } finally {
+      controller.abort(new Error('Main is stopping'))
+      await rejected
+    }
   })
   it('exposes no approval route for CI qualification',async()=>{
     const app=Fastify(),f=fixture()

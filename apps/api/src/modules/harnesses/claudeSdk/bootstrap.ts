@@ -1,3 +1,4 @@
+import { inventoryPayloadFingerprints } from '../payloadFingerprintCache.js'
 import { createRequire } from 'node:module'
 import { realpath } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -53,7 +54,7 @@ export function createClaudeProductionDiscovery(input: {
       const sdk = installedSdk(), selectedExecutable = await sdkNativeExecutable(sdk.entrypoint)
       if (!selectedExecutable) return null
       const harnessInstallationId = commandInputHash({ hostRef: host, driverId: 'claude', launcher: selectedExecutable })
-      return await discoverInstalledClaudeSdk({ ...sdk, selectedExecutable }, { harnessInstallationId, environment }, signal)
+      return await discoverInstalledClaudeSdk({ ...sdk, selectedExecutable }, { harnessInstallationId, environment }, signal, inventoryPayloadFingerprints)
     } catch { signal?.throwIfAborted(); return null }
   }
   const currentForConfiguration = async (value: Parameters<AcceptedProfileAuthority<ClaudeProfileOwner>['current']>[1], signal?: AbortSignal) => {

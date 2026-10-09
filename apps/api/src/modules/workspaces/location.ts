@@ -1,6 +1,7 @@
 export { requiredLocationAccess } from './locationAccess.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { constants } from 'node:fs'
 import { access, mkdir, realpath, rmdir, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
@@ -28,6 +29,7 @@ import { DomainError } from '../errors.js'
 import { requireWorkspaceStoragePath } from './storage.js'
 import { canonicalRuntimePath, pathsOverlap, withFilesystemDeadline } from './filesystem.js'
 import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
+import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
 
 export const LOCAL_RUNNER_ID = 'runner-local'
 
@@ -54,6 +56,7 @@ function locationError(error: unknown, rootPath: string): DomainError {
 
 export class WorkspaceLocationService {
   private readonly managedRuntimeRoot: string | undefined
+  private rootPolicies: WorkspaceRootPolicyPort | undefined
 
   constructor(
     private readonly pool: pg.Pool,
@@ -63,6 +66,10 @@ export class WorkspaceLocationService {
     private readonly projectRoot?: string,
   ) {
     this.managedRuntimeRoot = managedRuntimeRoot ? resolve(managedRuntimeRoot) : undefined
+  }
+
+  setRootPolicies(policies: WorkspaceRootPolicyPort): void {
+    this.rootPolicies = policies
   }
 
   async createProjectFolder(principal: ManagementPrincipal, workspaceId: string, parentPath: string, name: string,
@@ -199,6 +206,13 @@ export class WorkspaceLocationService {
         if (revision !== input.expectedLocationRevision) {
           throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed since it was read.', 409, { currentLocationRevision: revision })
         }
+        const modern = await client.query(
+          'select 1 from workspace_root_policy_heads where workspace_id=$1 limit 1', [input.workspaceId],
+        )
+        if (modern.rows.length) {
+          throw new DomainError('WORKSPACE_ROOT_BINDING_REQUIRED',
+            'This workspace uses approved computer roots. Change its folder through the root location settings.', 409)
+        }
         let folderPath: string
         try { folderPath = await withFilesystemDeadline((check) => check(() => realpath(input.rootPath))) }
         catch (error) { throw locationError(error, input.rootPath) }
@@ -232,6 +246,28 @@ export class WorkspaceLocationService {
     )
     if (result.rowCount !== 1) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed during provisioning.', 409)
     return {workspaceId: input.workspaceId, executionLocation: accepted.validation.location, locationRevision: input.expectedLocationRevision + 1}
+  }
+
+  async inspectionSnapshot(workspaceId: string, signal?: AbortSignal): Promise<RunExecutionLocation> {
+    signal?.throwIfAborted()
+    const client = await this.pool.connect()
+    let snapshot: RunExecutionLocation
+    try {
+      await client.query('begin')
+      const rows = await client.query<{ location_revision: string }>(
+        'select location_revision from workspaces where id=$1 for update', [workspaceId],
+      )
+      if (!rows.rows[0]) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
+      snapshot = await this.snapshot(client, workspaceId, Number(rows.rows[0].location_revision), 'read-only', signal)
+      await client.query('commit')
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+    await this.revalidateSnapshot(workspaceId, snapshot, 'read-only', signal)
+    return snapshot
   }
 
   async snapshot(
@@ -315,7 +351,7 @@ export class WorkspaceLocationService {
     )
     const row = result.rows[0]
     if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', `Workspace '${workspaceId}' was not found.`, 404)
-    return this.inspectRow(workspaceId, row)
+    return this.inspectRow(principal, workspaceId, row, client)
   }
 
   async inspectMany(principal: ManagementPrincipal, workspaceIds: string[]) {
@@ -324,10 +360,11 @@ export class WorkspaceLocationService {
       `select id, execution_location, execution_location_identity, location_revision, archived_at
        from workspaces where id = any($1::text[])`, [workspaceIds],
     )
-    return new Map(await Promise.all(result.rows.map(async (row) => [row.id, await this.inspectRow(row.id, row)] as const)))
+    return new Map(await Promise.all(result.rows.map(async (row) =>
+      [row.id, await this.inspectRow(principal, row.id, row, this.pool)] as const)))
   }
 
-  private async inspectRow(workspaceId: string, row: LocationRow) {
+  private async inspectRow(principal: ManagementPrincipal, workspaceId: string, row: LocationRow, sql: GraphSqlClient) {
     const locationRevision = Number(row.location_revision)
     if (!row.execution_location) return { executionLocation: null, locationRevision, locationValidation: { status: 'unconfigured' as const } }
     const executionLocation = ExecutionLocationSchema.parse(row.execution_location)
@@ -341,11 +378,29 @@ export class WorkspaceLocationService {
       }
     }
     try {
-      await this.revalidateSnapshot(workspaceId, RunExecutionLocationSchema.parse({
-        ...executionLocation,
-        locationRevision,
-        identityHash: identityHash(row.execution_location_identity as LocationIdentity),
-      }), 'read-only')
+      const modern = WorkspaceLocationIdentitySchema.safeParse(row.execution_location_identity)
+      if (modern.success && 'hostRef' in modern.data) {
+        if (!this.rootPolicies) throw new DomainError('ROOT_CONFIGURATION_UNAVAILABLE', 'Computer root inspection is unavailable.', 503)
+        const policies = await this.rootPolicies.read(sql, principal, workspaceId)
+        const current = policies.filter(policy => policy.locationRevision === String(locationRevision))
+        const policy = current[0]
+        if (current.length !== 1 || !policy || policy.canonicalProjectRoot !== executionLocation.rootPath
+          || (policy.hostRef.kind === 'main' ? this.runnerId : policy.applicationInstallationId) !== executionLocation.runnerId
+          || policy.directoryIdentityHash !== modern.data.directoryIdentityHash
+          || !isDeepStrictEqual(policy.hostRef, modern.data.hostRef)
+          || policy.applicationInstallationId !== modern.data.applicationInstallationId
+          || policy.filesystem.device !== modern.data.device || policy.filesystem.inode !== modern.data.inode
+          || policy.filesystem.mountId !== modern.data.mountId) {
+          throw new DomainError('WORKSPACE_ROOT_BINDING_CONFLICT', 'Saved location and computer root binding disagree.', 409)
+        }
+        await this.rootPolicies.inspect(sql, principal, policy)
+      } else {
+        await this.revalidateSnapshot(workspaceId, RunExecutionLocationSchema.parse({
+          ...executionLocation,
+          locationRevision,
+          identityHash: identityHash(row.execution_location_identity as LocationIdentity),
+        }), 'read-only')
+      }
       return { executionLocation, locationRevision, locationValidation: { status: 'ready' as const, checkedAt: new Date().toISOString() } }
     } catch (error) {
       const domain = locationError(error, executionLocation.rootPath)

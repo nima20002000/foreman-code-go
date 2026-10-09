@@ -14,7 +14,8 @@ import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
-import { reserveInstalledJobQualification, recoverInstalledJobRuntimeQualifications } from './installedRuntimeQualification.js'
+import { reserveInstalledJobQualification, recoverInstalledJobRuntimeQualifications,
+  reconcileInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
 import { createJobQualificationCarrier } from './qualificationCarrier.js'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -200,10 +201,29 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const mainCiLifetime = new AbortController()
   // Main prepares its own CI runtime once it has an installed one, like a paired build computer.
   const mainCiRuntime = installedConfiguration && !input.infrastructure?.installedConfiguration
-    ? createMainCiRuntime({ runtimeRoot: input.runtimeRoot, journal: getMainJournal, signal: mainCiLifetime.signal })
+    ? createMainCiRuntime({ runtimeRoot: input.runtimeRoot, journal: getMainJournal, signal: mainCiLifetime.signal,
+      sql: input.pool })
     : undefined
   const publishQualificationReport = createQualificationReportPublisher({ pool: input.pool, storageRoot: input.storageRoot })
   const localHost = createInstalledJobRuntimeHost({ identity: input.pool,
+    reconcileQualification: async original => {
+      if (!input.nativeRegistry || original.nativeAdmission.hostRef.kind !== 'main') {
+        throw new DomainError('JOB_RUNTIME_OWNER_UNAVAILABLE','The original local qualification owner is unavailable.',409)
+      }
+      await original.assertAdmission()
+      const journal = await getMainJournal()
+      const receipt = await journal.qualificationStatus(original.nativeAdmission.operationId)
+      if (!receipt || !sameWorkflowValue(receipt.admission,original.nativeAdmission)) {
+        throw new DomainError('JOB_RUNTIME_RECOVERY_REQUIRED','The original qualification receipt is missing.',409)
+      }
+      const unavailable = async () => { throw new Error('Reconciliation cannot authorize a new qualification.') }
+      return reconcileInstalledJobRuntimeQualification({ candidate: receipt.candidate,admission: receipt.admission,
+        journal,registry: input.nativeRegistry,signal: original.signal,
+        host: { hostRef: { kind:'main',mainId:input.mainId },registration:null,
+          mainInstallationId:input.mainId,bootId:bootIdentity(),connection:null },
+        assertAdmission: () => original.assertAdmission(),
+        authority: { readApproval: unavailable,assertCurrent: unavailable,reserve: unavailable } })
+    },
     publishReport: async (candidate, report, bytes) => {
       const journal = await getMainJournal()
       const assertClosed = async () => {
@@ -377,7 +397,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
     async close() {
       mainCiLifetime.abort()
       const failures: unknown[] = []
-      const resources = [() => jobs.closeQueue(), () => metadataRecovery.close(),
+      const resources = [async () => { await mainCiRuntime?.close() }, () => jobs.closeQueue(), () => metadataRecovery.close(),
         async () => { await localExecution?.shutdown() }, () => dispatch.close(), () => outputs.close(), () => localHost.shutdown(),
         async () => { if (qualificationJournal) await (await qualificationJournal).close() }]
       for (const close of resources) {

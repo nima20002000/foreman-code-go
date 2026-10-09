@@ -16,7 +16,24 @@ const requirements = new Map([
   ['apps/api/test/remote-review-production.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/worker-profile-requalification.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/job-qualification-native-faults.integration.test.ts', ['nativeCgroupDelegation']],
 ])
+
+const nativeUnitFiles = new Set([
+  'apps/api/test/native-guardian-outcome.test.ts',
+  'apps/api/test/native-launch-abandonment.test.ts',
+  'apps/api/test/pr17-native-process-runtime.test.ts',
+  'apps/api/test/pr17-recovery.test.ts',
+  'apps/api/test/codex-idle-recovery.test.ts',
+  'apps/api/test/native-qualification-command-lifecycle.test.ts',
+  'apps/api/test/codex-protocol.test.ts',
+])
+
+export function partitionUnitCapabilities(files, environment) {
+  const requirements = new Map([...nativeUnitFiles].map(file => [file, ['nativeCgroupDelegation']]))
+  return partitionCapabilities(files, environment, requirements)
+}
 
 /** Matches the installer persistence checks and the fixture's approved packaging targets. */
 export function supportsInstalledWorkerHost(facts, targets) {
@@ -84,6 +101,10 @@ export async function integrationEnvironmentCapabilities(environment = process.e
 
 /** Unsupported files remain required, with a reason in the report; they are never passing or skipped tests. */
 export function partitionIntegrationCapabilities(files, environment) {
+  return partitionCapabilities(files, environment, requirements)
+}
+
+function partitionCapabilities(files, environment, requirements) {
   const runnable = []
   const unavailable = []
   for (const file of files) {

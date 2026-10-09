@@ -1,33 +1,38 @@
 import { Link } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
 import { useLayoutEffect, useRef } from 'react'
 import { AgentHarnessSchema, type AgentHarness } from '@foreman-code/contracts'
+import type { HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
 import { harnessNames } from './settingsPresentation'
-import { getExecutionReadiness } from '../operator-chat/executionReadiness'
-import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
-import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
+import { useHostHarnessRegistryQuery } from '../../shared/api/computerSettings'
+import { useRuntimeIdentityQuery } from '../../shared/api/runtimeIdentity'
 import { useNavigationUiStore } from '../workspaces/navigationUiStore'
-import { useAgentDefaultsQuery } from '../../shared/api/query'
-import type { ExecutionReadiness } from '@foreman-code/contracts/management'
 import './harnessStatusMenu.css'
 
-function HarnessStatus({ harness, scope, revision, enabled }: { harness: AgentHarness; scope: ExecutionReadiness['scope']; revision?: number; enabled: boolean }) {
-  const epoch = useHarnessSessionEpoch()
-  const query = useQuery({
-    queryKey: ['workbench', 'management', 'harness-readiness', epoch, harness, scope, revision],
-    queryFn: ({ signal }) => getExecutionReadiness(harness, signal, scope),
-    enabled: enabled && !sessionIsSwitching(), retry: false, staleTime: 30_000, refetchInterval: 30_000,
-  })
+function installationStatus(installation: HostHarnessInstallationDto | undefined,
+  read: { failed: boolean; pending: boolean }) {
+  const { failed, pending } = read
+  if (failed) {
+    return { state: 'unverified', label: 'Unverified', detail: installation?.installed
+      ? `Last inventory confirmed installation at ${installation.launcher.checkedAt}. Could not refresh installation status.`
+      : 'Could not read installation status.' }
+  }
+  if (installation) {
+    return { state: installation.installed ? 'installed' : 'missing',
+      label: installation.installed ? 'Installed' : 'Not installed',
+      detail: `Main computer inventory checked at ${installation.launcher.checkedAt}.` }
+  }
+  if (pending) return { state: 'checking', label: 'Checking', detail: 'Reading Main computer inventory.' }
+  return { state: 'unverified', label: 'Unverified', detail: 'No installation inventory has been reported.' }
+}
+
+function HarnessStatus({ harness, installation, failed, pending }: {
+  harness: AgentHarness; installation: HostHarnessInstallationDto | undefined; failed: boolean; pending: boolean
+}) {
   const name = harnessNames[harness]
-  const state = query.isError || query.isPaused ? 'unverified' : query.data?.status ?? 'checking'
-  const label = state === 'eligible' ? 'Available' : state === 'blocked'
-    ? query.data?.reason?.code === 'HARNESS_PROFILE_REQUIRED' ? 'Setup required'
-      : query.data?.reason?.code === 'CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE' ? 'Not qualified' : 'Unavailable'
-    : state === 'checking' ? 'Checking' : 'Unverified'
-  const context = scope === 'operator-configuration' ? 'Operator default' : 'Workflow preset'
-  const detail = query.isError ? 'Could not check harness availability.' : `${context}. ${query.data?.reason?.message ?? 'Current saved configuration is available. Workspace checks run when execution starts.'}`
+  const { state, label, detail } = installationStatus(installation, { failed, pending })
+  const title = `${name}: ${label}. ${detail} Sign-in and profile qualification are checked separately before execution.`
   return <Link to="/settings/harnesses" search={{ harness, section: 'model' }} className="harness-status-link"
-    aria-label={`${name}: ${label}`} title={`${name}: ${label}. ${detail}`}>
+    aria-label={`${name}: ${label}`} title={title}>
     <span className={`harness-status-light harness-status-light--${state}`} aria-hidden="true" />
     <span className="harness-status-initial" aria-hidden="true">{harness === 'codex' ? 'CX' : 'CL'}</span>
     <span className="harness-status-name">{name}</span>
@@ -40,7 +45,12 @@ export function HarnessStatusMenu() {
   const collapsed = useNavigationUiStore((state) => state.collapsed)
   const width = useNavigationUiStore((state) => state.width)
   const motion = useNavigationUiStore((state) => state.motion)
-  const defaults = useAgentDefaultsQuery(!sessionIsSwitching())
+  const identity = useRuntimeIdentityQuery()
+  const mainId = identity.data?.installationId
+  const inventory = useHostHarnessRegistryQuery(mainId ? { kind: 'main', mainId } : undefined, mainId,
+    { refetchInterval: 30_000 })
+  const failed = identity.isError || identity.isPaused || inventory.isError || inventory.isPaused
+  const pending = identity.isPending || inventory.isPending
 
   useLayoutEffect(() => {
     const links = Array.from(menuRef.current?.querySelectorAll<HTMLAnchorElement>('.harness-status-link') ?? [])
@@ -66,7 +76,7 @@ export function HarnessStatusMenu() {
 
   return <nav ref={menuRef} className="harness-status-menu" aria-label="Harness availability">
     {AgentHarnessSchema.options.map((harness) => <HarnessStatus key={harness} harness={harness}
-      scope={defaults.data?.value.operator.harness.harness === harness ? 'operator-configuration' : 'saved-harness-defaults'}
-      revision={defaults.data?.revision} enabled={!defaults.isPending} />)}
+      installation={inventory.data?.installations.find(value => value.driverId === harness)}
+      failed={failed} pending={pending} />)}
   </nav>
 }

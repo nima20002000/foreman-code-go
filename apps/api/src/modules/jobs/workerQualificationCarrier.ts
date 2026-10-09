@@ -19,6 +19,7 @@ export function createWorkerQualificationExtension(input: {
   configuration: InstalledRuntimeConfigurationLocation
   pairing: WorkerPairingConfiguration; bootId: string
   currentBinding(): Readonly<DeviceSessionBinding>
+  now(): number
   request(namespace: string, payload: unknown, options?: { signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number }): Promise<{ payload: unknown; bytes?: Uint8Array }>
   journal(): Promise<RemoteOperationJournal>; registry: NativeProcessRegistry
   signal: AbortSignal
@@ -97,9 +98,12 @@ export function createWorkerQualificationExtension(input: {
       }
       throw new Error('Canonical diagnostic publication did not return its retained artifact.')
     }
-    const reservation = { publishReport, configuration: input.configuration, admission: request.admission,
+    const recovering = (request.operation === 'start' || request.operation === 'status')
+      && request.intent === 'reconcile'
+    const timeoutMs = recovering ? 240_000 : Math.max(1, Date.parse(request.admission.expiresAt) - input.now())
+    const reservation = { publishReport, now: input.now, configuration: input.configuration, admission: request.admission,
       candidate, host: { ...host, connection: request.admission.connection }, journal, registry: input.registry,
-      signal: AbortSignal.any([input.signal, context.connectionSignal ?? input.signal, AbortSignal.timeout(Math.max(1, Date.parse(request.admission.expiresAt) - Date.now()))]),
+      signal: AbortSignal.any([input.signal, context.connectionSignal ?? input.signal, AbortSignal.timeout(timeoutMs)]),
       assertAdmission: (admission: JobRuntimeNativeAdmissionRecord) => assertAdmission(admission).then(() => undefined),
       authority: {
         readApproval: async (id: string) => id === request.admission.approvalId ? assertAdmission(request.admission) : null,

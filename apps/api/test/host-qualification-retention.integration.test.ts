@@ -7,13 +7,14 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { HarnessInstallationRegistry } from '../src/modules/harnesses/installationRegistry.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { readPlacementHarnessFacts } from '../src/modules/placement/harnessFacts.js'
+import { placementDigest } from '../src/modules/placement/binding.js'
 import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 import { HarnessQualificationRepository, readHostHarnessMeasurements } from '../src/modules/harnesses/qualification/repository.js'
 import { hostHarnessMeasurementsMigration } from '../src/infrastructure/hostHarnessMeasurementsMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
 
-it('keeps a Main measurement when a Worker qualifies the same native binary', async () => {
+it('keeps Main and pinned Run measurements when a Worker or a later Main check qualifies the same binary', async () => {
   const db = await agent3Database()
   try {
     const repository = new HarnessQualificationRepository(db.pool)
@@ -63,17 +64,30 @@ it('keeps a Main measurement when a Worker qualifies the same native binary', as
       { codex: record.suiteRevision })
     await repository.save(record, { qualificationIdentity: identity })
     expect((await read()).qualification).toEqual(record)
+    const pinned = structuredClone(placement)
+    if (pinned.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
+    pinned.payload.profileProofDigest = placementDigest(proof)
+    pinned.payload.qualificationDigest = placementDigest(record)
+    const readResident = () => readPlacementHarnessFacts(db.pool, pinned, installations,
+      { codex: record.suiteRevision }, { purpose: 'resident' })
+    const repeated = { ...record, startedAt: '2026-10-05T00:00:01.100Z', checkedAt: '2026-10-05T00:00:01.500Z' }
+    await repository.save(repeated, { qualificationIdentity: identity })
+    expect((await read()).qualification).toEqual(repeated)
+    expect((await readResident()).qualification).toEqual(record)
+    const measured = await readHostHarnessMeasurements(db.pool, 'codex', record.binarySha256!, record.suiteRevision)
+    expect(measured.map(value => value.qualification)).toEqual(expect.arrayContaining([record, repeated]))
     const workerRecord = { ...record, checkedAt: '2026-10-05T00:00:02.000Z' }
     await repository.save(workerRecord, { purpose: 'explicit-host-qualification', target: { deviceId: 'worker' } })
-    expect((await read()).qualification).toEqual(record)
+    expect((await read()).qualification).toEqual(repeated)
     expect(await repository.find('codex', record.version, record.binarySha256!, record.suiteRevision)).toEqual(workerRecord)
     const replacement = { ...record, status: 'failed' as const, failureReason: 'Native check failed',
       checks: [{ id: 'native-turn', passed: false, detail: null }], checkedAt: '2026-10-05T00:00:03.000Z' }
     await repository.save(replacement, { purpose: 'explicit-host-qualification', target: { deviceId: 'worker' } })
-    expect((await read()).qualification).toEqual(record)
+    expect((await read()).qualification).toEqual(repeated)
     await repository.save(replacement, { qualificationIdentity: identity })
     await expect(read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
       details: { reason: 'main_qualification_identity_missing' } })
+    expect((await readResident()).qualification).toEqual(record)
   } finally { await db.close() }
 }, 30_000)
 

@@ -1,6 +1,7 @@
 import { readHostHarnessMeasurements } from '../harnesses/qualification/repository.js'
 import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema, HostHarnessInstallationSchema,
-  PinnedHarnessSelectionSchema, type HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
+  PinnedHarnessSelectionSchema, type HostHarnessInstallationDto, type HostHarnessOverride,
+  type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import { z } from 'zod'
 import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
@@ -45,16 +46,32 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   }
   if (placement.payload.kind !== 'agent') unavailable('unsupported_payload')
   const payload = placement.payload as Extract<typeof placement.payload, { kind: 'agent' }>
+  const residentProof = options?.purpose === 'resident' && payload.profileProofDigest
   const values = await sql.query<{ record: unknown }>(`select record from harness_instance_settings
-    where instance_id=$1 and record->>'instanceRevision'=$2 for share`, [payload.instanceId, payload.instanceRevision])
-  if (values.rows.length !== 1) unavailable('profile_revision_missing')
-  const override = HostHarnessOverrideSchema.parse(values.rows[0]?.record)
-  const evidence = await sql.query<{ record: unknown }>(`select record from harness_instance_profile_evidence
-    where instance_id=$1 and instance_revision=$2 order by created_at desc,check_id desc limit 1024 for share`, [override.instanceId, override.revision])
-  const proofRecords = evidence.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record))
-  const selectedProof = payload.profileProofDigest ? proofRecords.find(proof => placementDigest(proof) === payload.profileProofDigest) : proofRecords[0]
-  const profileProof = selectedProof ?? unavailable('profile_check_missing')
-  const installed = installations.list().find(record => record.harnessInstallationId === payload.harnessInstallationId && sameWorkflowValue(record.hostRef, placement.hostRef))
+    where instance_id=$1 and record->>'instanceRevision'=$2
+      and record#>>'{target,harnessInstallationId}'=$3 and record#>>'{target,installationFingerprint}'=$4
+    order by revision desc ${residentProof ? '' : 'limit 1'} for share`,
+  [payload.instanceId, payload.instanceRevision, payload.harnessInstallationId, payload.installationFingerprint])
+  if (!values.rows.length) unavailable('profile_revision_missing')
+  const candidates = values.rows.map(row => HostHarnessOverrideSchema.parse(row.record))
+  let selected: { override: HostHarnessOverride; profileProof: HostHarnessProfileEvidence } | undefined
+  for (const override of candidates) {
+    const evidence = await sql.query<{ record: unknown }>(`select record from harness_instance_profile_evidence
+      where instance_id=$1 and instance_revision=$2 order by created_at desc,check_id desc for share`,
+    [override.instanceId, override.revision])
+    const proofs = evidence.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record))
+    const profileProof = payload.profileProofDigest
+      ? proofs.find(proof => placementDigest(proof) === payload.profileProofDigest) : proofs[0]
+    if (profileProof) {
+      selected = { override, profileProof }
+      break
+    }
+  }
+  const { override, profileProof } = selected ?? unavailable('profile_check_missing')
+  const installed = options?.purpose === 'resident'
+    ? installations.residentInstallation(placement.hostRef, payload.harnessInstallationId, payload.installationFingerprint)
+    : installations.list().find(record => record.harnessInstallationId === payload.harnessInstallationId
+      && sameWorkflowValue(record.hostRef, placement.hostRef))
   if (!installed) unavailable('host_inventory_missing')
   const installation = HostHarnessInstallationSchema.parse(installed)
   // An authenticated surviving process keeps its original qualification across transport reconnection.
@@ -77,7 +94,8 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   const binarySha256 = installation.launcher.payloadFingerprints?.find(item => item.path === installation.launcher.resolvedLauncher)?.fingerprint
   if (!binarySha256 || !suites[harness]) return unavailable('binary_identity_missing')
   let measuredQualification: unknown
-  if (!installation.observedVersion) {
+  if (!installation.observedVersion
+    || installation.hostRef.kind === 'main' && options?.purpose === 'resident' && payload.qualificationDigest) {
     if (installation.hostRef.kind !== 'main' && options?.purpose !== 'resident') unavailable('worker_qualification_missing')
     // Passive discovery does not run --version. Use the completed native measurement
     // only when its full installation and live context still match.
@@ -85,7 +103,9 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     const matching = measured.filter(row => measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
       .sort((left, right) => Date.parse(right.qualification.checkedAt ?? right.qualification.startedAt ?? '1970-01-01T00:00:00Z')
         - Date.parse(left.qualification.checkedAt ?? left.qualification.startedAt ?? '1970-01-01T00:00:00Z'))
-    const latest = matching[0]?.qualification
+    const latest = options?.purpose === 'resident' && payload.qualificationDigest
+      ? matching.find(row => placementDigest(row.qualification) === payload.qualificationDigest)?.qualification
+      : matching[0]?.qualification
     if (!latest || latest.status !== 'qualified') return unavailable('main_qualification_identity_missing')
     installation.observedVersion = latest.version
     measuredQualification = latest

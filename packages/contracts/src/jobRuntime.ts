@@ -145,6 +145,7 @@ export const JobRuntimeProfileSchema=z.object({schemaVersion:z.literal(1),id:IdS
   root:SourceRootRecordSchema,policy:JobPolicySchema,limits:JobRuntimeLimitsSchema,specDigest:Digest,
   status:z.enum(['unqualified','captured','awaiting-approval','qualifying','qualified','failed','revoked','recovery-required']),
   measurement:JobRuntimeMeasurementSchema.nullable(),createdAt:TimestampSchema,updatedAt:TimestampSchema,
+  activeQualificationId:z.uuid().optional(),
 }).strict()
 /** Scoped metadata read; listing pending approvals performs no qualification or repair. */
 export const JobRuntimeProfileListSchema = z.object({

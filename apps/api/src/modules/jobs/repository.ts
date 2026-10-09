@@ -16,6 +16,32 @@ import { JobQueueTicketSchema, type JobQueueTicket } from '@foreman-code/contrac
 export type JobSql = GraphSqlClient
 
 export class JobRepository {
+  async runScope(sql: JobSql, workspaceId: string, runId: string) {
+    const row = (await sql.query<{ workflow_id: string }>(
+      'select workflow_id from runs where workspace_id=$1 and id=$2', [workspaceId, runId])).rows[0]
+    return row ? { workflowId: row.workflow_id, runId } : {}
+  }
+  async initiatingExecutionScope(sql: JobSql, workspaceId: string, executionId: string) {
+    const row = (await sql.query<{ workflow_id: string; run_id: string }>(`select r.workflow_id,e.run_id
+      from harness_executions e join runs r on r.id=e.run_id
+      where r.workspace_id=$1 and e.id=$2`, [workspaceId, executionId])).rows[0]
+    return row ? { workflowId: row.workflow_id, runId: row.run_id } : {}
+  }
+  async queueTicketScope(sql: JobSql, workspaceId: string, id: string) {
+    const row = (await sql.query<{ record: unknown }>(
+      'select record from job_admission_queue where workspace_id=$1 and id=$2', [workspaceId, id])).rows[0]
+    if (!row) return {}
+    const ticket = JobQueueTicketSchema.parse(row.record)
+    if (ticket.id !== id || ticket.workspaceId !== workspaceId) {
+      throw new DomainError('JOB_SCOPE_CONFLICT', 'The queued Job scope conflicts with persistence.', 409)
+    }
+    for (const origin of [ticket.workflow, ticket.initiatingAgent]) {
+      if (!origin) continue
+      const scope = await this.runScope(sql, workspaceId, origin.runId)
+      if (scope.workflowId === origin.workflowId) return scope
+    }
+    return {}
+  }
   async queueTicket(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobQueueTicket> {
     const row = (await sql.query<{ record: unknown }>(
       `select record from job_admission_queue where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`,

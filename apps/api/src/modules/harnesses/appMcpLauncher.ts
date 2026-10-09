@@ -119,15 +119,18 @@ export function isStaleAppLauncher(entry: Record<string, unknown>): boolean {
     || existsSync(entry.command)) return false
   return isAppLauncher({ ...entry, command: process.execPath })
 }
-export async function installAppLauncher(): Promise<void> {
-  await installManagedLauncher(new URL('../../../../../scripts/graphql-mcp.mjs', import.meta.url), appLauncherPath())
+export async function installAppLauncher(signal?: AbortSignal): Promise<void> {
+  await installManagedLauncher(new URL('../../../../../scripts/graphql-mcp.mjs', import.meta.url), appLauncherPath(), signal)
 }
-export async function installManagedLauncher(sourceUrl: URL, destination: string): Promise<void> {
+export async function installManagedLauncher(sourceUrl: URL, destination: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
   const source = await readFile(sourceUrl, 'utf8')
-  await withLauncherLock(destination, async () => {
+  await withLauncherLock(destination, async (installationSignal) => {
     const temporary = `${destination}.${randomUUID()}.tmp`
     try {
+      installationSignal.throwIfAborted()
       await writeFile(temporary, source, { mode: 0o600, flag: 'wx' })
+      installationSignal.throwIfAborted()
       await rename(temporary, destination)
     } finally {
       await rm(temporary, { force: true })
@@ -135,36 +138,62 @@ export async function installManagedLauncher(sourceUrl: URL, destination: string
     await saveLauncherInstallation(destination, {
       version: 1,
       executables: [{ path: process.execPath, realpath: realpathSync(process.execPath) }],
-    })
-  })
+    }, installationSignal)
+  }, signal)
 }
-export async function writeLauncherInstallation(destination: string, installation: LauncherInstallation): Promise<void> {
-  await withLauncherLock(destination, () => saveLauncherInstallation(destination, installation))
+export async function writeLauncherInstallation(
+  destination: string, installation: LauncherInstallation, signal?: AbortSignal,
+): Promise<void> {
+  await withLauncherLock(destination, (installationSignal) =>
+    saveLauncherInstallation(destination, installation, installationSignal), signal)
 }
-async function withLauncherLock<T>(destination: string, action: () => Promise<T>): Promise<T> {
+async function withLauncherLock<T>(
+  destination: string, action: (signal: AbortSignal) => Promise<T>, callerSignal?: AbortSignal,
+): Promise<T> {
+  const deadline = AbortSignal.timeout(60_000)
+  const signal = callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline
+  signal.throwIfAborted()
   await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
   const directory = await open(dirname(destination), 'r')
   try {
+    signal.throwIfAborted()
     // Directory aliases share the same inode; the kernel releases the lock on process exit.
     await new Promise<void>((resolve, reject) => {
       const child = spawn('/usr/bin/flock', ['--exclusive', '3'], {
         stdio: ['ignore', 'ignore', 'ignore', directory.fd],
       })
-      child.once('error', reject)
-      child.once('close', code => code === 0 ? resolve() : reject(new Error('MCP launcher installation lock failed.')))
+      let processError: Error | undefined
+      const abort = () => { child.kill('SIGKILL') }
+      signal.addEventListener('abort', abort, { once: true })
+      child.once('error', error => { processError = error })
+      child.once('close', code => {
+        signal.removeEventListener('abort', abort)
+        if (signal.aborted) reject(signal.reason)
+        else if (processError) reject(processError)
+        else if (code === 0) resolve()
+        else reject(new Error('MCP launcher installation lock failed.'))
+      })
+      if (signal.aborted) abort()
     })
-    return await action()
+    signal.throwIfAborted()
+    return await action(signal)
   } finally {
     await directory.close()
   }
 }
-async function saveLauncherInstallation(destination: string, installation: LauncherInstallation): Promise<void> {
+async function saveLauncherInstallation(
+  destination: string, installation: LauncherInstallation, signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted()
   const merged = mergeInstallations(readLauncherInstallation(destination), installation)
   // Older APIs replace installation.json without preserving aliases or concurrent registrations.
-  await writeInstallationRecord(registrationPath(destination), merged)
-  await writeInstallationRecord(installationPath(destination), merged)
+  await writeInstallationRecord(registrationPath(destination), merged, signal)
+  await writeInstallationRecord(installationPath(destination), merged, signal)
 }
-async function writeInstallationRecord(metadata: string, installation: LauncherInstallation): Promise<void> {
+async function writeInstallationRecord(
+  metadata: string, installation: LauncherInstallation, signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted()
   const pending = `${metadata}.${randomUUID()}.tmp`
   try {
     const file = await open(pending, 'wx', 0o600)
@@ -174,6 +203,7 @@ async function writeInstallationRecord(metadata: string, installation: LauncherI
     } finally {
       await file.close()
     }
+    signal.throwIfAborted()
     await rename(pending, metadata)
     const directory = await open(dirname(metadata), 'r')
     try {

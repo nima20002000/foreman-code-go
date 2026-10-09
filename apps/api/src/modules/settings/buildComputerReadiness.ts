@@ -27,6 +27,8 @@ export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; prof
         return result('offline', ['Computer is offline.'])
       }
       if (!remoteExecutionEnabled) return result('setup-required', ['Remote execution disabled on Main.'])
+      const clockReason = input.endpoint().clockReason(target.hostRef.deviceId)
+      if (clockReason) return result('setup-required', [clockReason])
       if (!input.endpoint().captureRequest(target.hostRef.deviceId, 'execution-v1')) {
         return result('setup-required', ['Job execution is unavailable on this connection.'])
       }

@@ -60,6 +60,7 @@ import {
   type RepeatNodeInput,
 } from '../runs/repeatResolution.js'
 import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
+import { hasWorkflowExecutionCapacityLocked } from '../runs/workflowExecutionBudget.js'
 import { visitRepeatNativeAttemptsLocked } from '../runs/repeatNativeAttempts.js'
 import { settleRepeatNativeExecutionLocked } from '../interactions/repeatNativeSettlement.js'
 import { readRepeatRunStateLocked } from '../run-graph/repeatProjectionRows.js'
@@ -69,6 +70,7 @@ import { WorkflowJobPreparationSchema,type WorkflowJobPreparation } from './work
 import type { WorkflowJobNodeStore } from './workflowNode.js'
 import type { WorkflowJobAdmission,WorkflowJobLockedPort } from './workflowRuntimePorts.js'
 import { workflowJobIdentity,workflowJobResult,workflowJobRepeatDecision } from './workflowResult.js'
+import { readWorkflowJobSourceLocked } from './workflowSource.js'
 
 const Source=z.object({relationshipId:GraphIdSchema,execution:GraphExecutionIdentitySchema,occurrence:RepeatOccurrenceIdentityV1Schema.nullable(),acceptedResultDigest:GraphDigestSchema,acceptedResult:AcceptedCurrentNodeResultSchema}).strict()
 const Entry=z.object({runInput:z.unknown(),external:z.array(Source).max(8000),carry:z.object({decisionId:GraphIdSchema,execution:RepeatExecutionIdentityV1Schema,acceptedResultDigest:GraphDigestSchema,acceptedResult:AcceptedCurrentNodeResultSchema}).strict().nullable()}).strict()
@@ -142,15 +144,12 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
   private async acceptedSource(context:Context,resolution:RepeatResolution,relationshipId:string):Promise<RepeatSource>{
     const identity=resolution.value.execution
     if(!identity||resolution.value.resolution!=='succeeded'||!resolution.value.acceptedResultDigest)repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
-    let result:unknown
     if(identity.kind==='job'){
       const job=await this.jobs.read(context.sql,identity.executionId);this.assertExecution(context,resolution.ref,job)
       await this.jobs.verifyResult(context.sql,job)
-      const row=(await context.sql.query<{result_json:string;result_digest:string;occurrence_id:string|null}>('select result_json,result_digest,occurrence_id from run_repeat_results where execution_id=$1 and run_id=$2',[job.id,context.scope.runId])).rows[0]
-      const accepted=(await context.sql.query<{accepted:boolean}>('select accepted from workflow_job_executions where run_id=$1 and job_execution_id=$2',[context.scope.runId,job.id])).rows[0]
-      if(!row||!accepted?.accepted||row.result_digest!==resolution.value.acceptedResultDigest||row.occurrence_id!==(resolution.ref.occurrence?.occurrenceId??null))repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
-      result=JSON.parse(row.result_json)
-    }else result=await readRepeatAcceptedResultLocked(context.sql,await readAcceptedRepeatRunLocked(context.sql,context.scope.runId),identity.executionId)
+      return readWorkflowJobSourceLocked(context.sql, context.scope, context.version, resolution, relationshipId)
+    }
+    const result=await readRepeatAcceptedResultLocked(context.sql,await readAcceptedRepeatRunLocked(context.sql,context.scope.runId),identity.executionId)
     const acceptedResult=AcceptedCurrentNodeResultSchema.parse(result)
     if(acceptedResult.outcome!=='succeeded'||repeatDigest(acceptedResult,64*1024)!==resolution.value.acceptedResultDigest)repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
     await this.recorded(context,'terminal.accept',identity.executionId)
@@ -183,8 +182,9 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
     const slotId=repeatSlotId(context.scope.runId,ref),existing=(await context.sql.query<{preparation:unknown;bindings:unknown}>('select preparation,bindings from workflow_job_preparations where slot_id=$1 and run_id=$2',[slotId,context.scope.runId])).rows[0]
     if(existing){const preparation=WorkflowJobPreparationSchema.parse(existing.preparation);if(preparation.nodeId!==ref.nodeId||preparation.runId!==context.scope.runId||preparation.workflowVersionId!==context.version.id||preparation.inputDigest!==repeatDigest(preparation.input,4*1024*1024))repeatConflict('JOB_PREPARATION_PIN_CONFLICT');await this.recorded(context,'input.bind',repeatId('job-preparation',preparation.executionId));const row=(await context.sql.query<{execution_id:string}>('select execution_id from run_repeat_executions where slot_id=$1 order by technical_attempt desc limit 1',[slotId])).rows[0];if(row){await this.slot(context,ref,row.execution_id);const execution=await this.jobs.read(context.sql,row.execution_id);this.assertExecution(context,ref,execution,preparation);await this.recorded(context,'input.bind',execution.id);return {kind:'admitted',execution}}return {kind:'preparation',preparation,ref}}
     if(occurrence&&(await context.sql.query('select 1 from run_repeat_decisions where occurrence_id=$1',[occurrence.occurrence.identity.occurrenceId])).rows.length)repeatConflict('REPEAT_OCCURRENCE_CLOSED')
-    const count=(await context.sql.query<{count:string}>(`select (select count(*) from run_repeat_executions where run_id=$1)+(select count(*) from workflow_job_preparations p where p.run_id=$1 and not exists(select 1 from run_repeat_executions x where x.slot_id=p.slot_id)) as count`,[context.scope.runId])).rows[0]
-    if(!count||Number(count.count)>=context.version.definition.executionPolicy!.maxNodeExecutions)repeatConflict('WORKFLOW_EXECUTION_BUDGET_EXHAUSTED')
+    if (!await hasWorkflowExecutionCapacityLocked(context.sql, context.scope.runId, context.version)) {
+      repeatConflict('WORKFLOW_EXECUTION_BUDGET_EXHAUSTED')
+    }
     const id=randomUUID(),sources:RepeatSource[]=[];for(const edge of admission.selected)sources.push(await this.acceptedSource(context,resolutions.get(edge.source)!,edge.id))
     const bound=this.bind(context,ref,occurrence,id,sources),preparation=WorkflowJobPreparationSchema.parse({executionId:id,attemptId:randomUUID(),operationId:randomUUID(),workspaceId:context.scope.workspaceId,workflowId:context.scope.workflowId,workflowVersionId:context.scope.workflowVersionId,runId:context.scope.runId,nodeId:ref.nodeId,input:bound.input,inputDigest:bound.digest})
     await this.effect(context,'input.bind',repeatId('job-preparation',id),{preparation,bindings:bound.bindings},async()=>{

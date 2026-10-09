@@ -31,6 +31,8 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       ? CLAUDE_PROFILE_CHECK_REVISION : `${value.driverId}-profile-check-v1`
     if (value.target.hostRef.kind === 'device') {
       const endpoint = this.endpoint()
+      const clockReason = endpoint.clockReason(value.target.hostRef.deviceId)
+      if (clockReason) throw new DomainError('WORKER_CLOCK_UNTRUSTED', clockReason, 409)
       if (!endpoint.capabilities(value.target.hostRef.deviceId).some((item) => item.namespace === 'host-harness-check-v1' && item.mainCanRequest)) {
         throw new DomainError('HARNESS_REMOTE_CHECK_UNAVAILABLE', 'The authenticated worker has no real host profile check handler.', 409)
       }
@@ -88,6 +90,8 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
     } finally { await this.factories.disposeAuxiliary(allocation.manager) }
     input.signal.throwIfAborted()
     this.registry.installations.assertCurrent(binding)
+    if (!qualified && !failure) failure = { code: 'HARNESS_PROFILE_UNQUALIFIED',
+      message: 'The harness did not pass authentication, protocol, model or configuration checks.' }
     return HostHarnessProfileEvidenceSchema.parse({ target: value.target, instanceRevision: value.instanceRevision,
       configurationFingerprint: value.configurationFingerprint, driverId: value.driverId,
       driverRevision: binding.installation.driverRevision, protocolRevision: binding.installation.protocolRevision,

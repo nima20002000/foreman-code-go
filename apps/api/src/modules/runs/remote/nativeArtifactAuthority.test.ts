@@ -141,7 +141,8 @@ describe('original accepted artifact authority', () => {
     const conversation = t.state.queries.find(q => q.text.includes('native_session_id=$6'))!
     expect(conversation.text).toContain("record #>> '{origin,sourceNativeSessionId}'=$6")
     expect(conversation.args).toContain('/original/worktree'); expect(conversation.args).toContain('/original/runtime')
-    expect(t.ports.producer.assertPinsCurrent).toHaveBeenCalledWith(t.sql, t.placement, expect.objectContaining({ id: 'run-owner' }), 'workspace')
+    expect(t.ports.producer.assertPinsCurrent).toHaveBeenCalledWith(t.sql, t.placement,
+      expect.objectContaining({ id: 'run-owner' }), 'workspace', { purpose: 'resident' })
     expect(t.state.queries.some(q => /insert|update operator_conversations/i.test(q.text))).toBe(false)
   })
   it.each([0, 2])('reports missing/ambiguous persisted workflow conversation (%i) without inventing one', async count => {

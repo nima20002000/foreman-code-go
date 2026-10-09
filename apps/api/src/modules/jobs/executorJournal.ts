@@ -21,7 +21,7 @@ export const JobNativeOwnerSchema = z.object({
   sourceReclamation: SourcePreparationClosureSchema.optional(),
   launches: z.array(z.object({ launchId: z.uuid(), processOwner: z.string().min(1).optional(), binary: z.string().startsWith('/'), argv: z.array(z.string()).max(256),
     exit: z.object({ exitCode: z.number().int().nullable(), signal: z.string().nullable() }).strict().nullable(), closed: z.boolean() }).strict()).max(512),
-  container: z.object({ identity: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/), containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), deadlineAt: z.string().datetime().nullable().default(null), certificate: JobOCICertificateSchema.nullable() }).strict().nullable(),
+  container: z.object({ identity: z.string().min(1), fingerprint: z.string().regex(/^[a-f0-9]{64}$/), containerId: z.string().regex(/^[a-f0-9]{64}$/).nullable(), deadlineAt: z.string().datetime().nullable().default(null), certificate: JobOCICertificateSchema.nullable(), unreleasedClosureConfirmed: z.boolean().optional() }).strict().nullable(),
   verification: z.object({ context: JobVerificationRepositoryContextSchema,
     contextPin: z.object({ relativePath: z.literal('verification.json'), sha256: z.string().regex(/^[a-f0-9]{64}$/),
       byteSize: z.number().int().positive().max(1024*1024) }).strict(),
@@ -33,7 +33,11 @@ export type JobNativeOwner = z.infer<typeof JobNativeOwnerSchema>
 
 export function jobContainerNonEntryObserved(owner: JobNativeOwner): boolean {
   const container = owner.container
-  if (!container || container.containerId || container.certificate || !owner.launches.length) return false
+  if (!container || container.certificate || !owner.launches.length) return false
+  if (container.containerId) {
+    return container.unreleasedClosureConfirmed === true && owner.launches.every(launch => launch.closed)
+      && !owner.launches.some(launch => (launch.argv[0] === '--remote=false' ? launch.argv[1] : launch.argv[0]) === 'exec')
+  }
   const exact = (argv: string[], operation: string) => isDeepStrictEqual(argv,
     ['--remote=false', 'container', operation, container.identity])
   return owner.launches.every(launch => launch.closed && (exact(launch.argv, 'inspect') || exact(launch.argv, 'exists')))

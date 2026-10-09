@@ -235,11 +235,21 @@ export function collectPortions(directory, root, expected, limits) {
       }
       const options = { root, expectedFiles, maxBytes: limits.vitestBytes }
       if (kind === 'integration') return collectIntegrationPortion(directory, key, receipt, options)
+      const capabilityPath = portionPath(directory, key, 'capabilities.json')
+      const capabilities = kind === 'vitest' && existsSync(capabilityPath)
+        ? JSON.parse(readReport(capabilityPath, limits.vitestBytes)) : undefined
+      const unavailable = capabilities?.unavailable ?? []
+      if (unavailable.length === expectedFiles.length
+        && expectedFiles.every(file => unavailable.some(entry => entry.file === file))) {
+        return { key, complete: false, failed: false, totals: emptyCounts(), files: [],
+          missing: expectedFiles, environment: capabilities.environment, unavailable }
+      }
       const report = kind === 'node'
         ? readNodeReport(portionPath(directory, key, 'node.ndjson'), options)
         : readVitestReport(portionPath(directory, key, 'vitest.json'), options)
-      return { key, ...report, complete: report.complete && Boolean(receipt),
-        failed: report.failed || Boolean(receipt && receipt.code !== 0), error: receiptError }
+      return { key, ...report, complete: report.complete && Boolean(receipt) && unavailable.length === 0,
+        failed: report.failed || Boolean(receipt && receipt.code !== 0), error: receiptError,
+        ...(capabilities ? { environment: capabilities.environment, unavailable } : {}) }
     } catch (error) {
       return { key, complete: false, failed: Boolean(receipt && receipt.code !== 0), totals: emptyCounts(), files: [], error: error.message }
     }
@@ -349,8 +359,8 @@ export function finalizeVerification(context, { root, directory, state, terminal
   const summary = suiteSummary(context.identity, portions, { startedAt: state.startedAt,
     finishedAt, terminalOutcome, processStopped })
   const files = portions.flatMap((portion) => portion.files)
-  const details = { portions: portions.map(({ key, complete, failed, totals, missing, error }) =>
-    ({ key, complete, failed, totals, missing, error })), terminalOutcome, processStopped }
+  const details = { portions: portions.map(({ key, complete, failed, totals, missing, error, environment, unavailable }) =>
+    ({ key, complete, failed, totals, missing, error, environment, unavailable })), terminalOutcome, processStopped }
   try {
     checkpoint()
     writeReport(join(directory, 'parts', 'portions.json'), details, context.limits.vitestBytes)

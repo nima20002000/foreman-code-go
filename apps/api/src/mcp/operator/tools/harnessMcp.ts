@@ -25,7 +25,7 @@ export function registerHarnessMcpTools(server: McpServer, context: OperatorRequ
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input, extra) => invokeOperatorTool(context, 'codex_plugin_get', () => context.services.harnessSettings!.plugins!.get(context.principal, input.pluginId, extra.mcpReq.signal)))
   if (operatorToolAvailable(context, 'harness_mcp_servers_list')) server.registerTool('harness_mcp_servers_list', {
-    description: 'List native user/inherited MCP connections for Codex. Returns no tokens or secret arguments. Configuration evidence is not live connection health.',
+    description: 'List native user/inherited MCP connections for Codex. Unchanged user configuration is cached for at most five minutes; expired reads wait for inspection and report failures. Returns no tokens or secret arguments. Configuration evidence is not live connection health.',
     inputSchema: HarnessMcpListInputSchema, outputSchema: HarnessMcpListResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input) => invokeOperatorTool(context, 'harness_mcp_servers_list', () => service.list(context.principal, input.harness)))

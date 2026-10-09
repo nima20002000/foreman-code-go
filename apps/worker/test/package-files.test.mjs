@@ -6,10 +6,33 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { regularFiles, verifyPackage, artifactFiles, copySharpPackages, sharpPackages, assertWorkerDependency } from '../../../scripts/worker-artifact-files.mjs';
 import { validateManifest } from '../src/installation.mjs';
+import { committedWorkerInputPath, workerReleaseVersion, validateWorkerTarget } from '../../../scripts/worker-artifact-files.mjs';
 
 const { Packr, Unpackr } = createRequire(import.meta.url)('msgpackr');
 const packer = new Packr({ useRecords: true, moreTypes: true });
 const unpacker = new Unpackr({ useRecords: true, moreTypes: true });
+
+test('artifact versions follow product releases rather than a shared worker package version', () => {
+  assert.equal(workerReleaseVersion({ version: '0.0.55' }), '0.0.55');
+  assert.equal(workerReleaseVersion({ version: '0.0.54' }), '0.0.54');
+  assert.throws(() => workerReleaseVersion({ version: 'unreleased' }), /release version/);
+});
+
+test('reviewed build inputs must identify repository artifact JSON rather than an external file', () => {
+  const target = 'apps/worker/artifacts/ubuntu-24.04-x64-target.json';
+  assert.equal(committedWorkerInputPath('/repo', target), target);
+  assert.equal(committedWorkerInputPath('/repo', `/repo/${target}`), target);
+  for (const input of ['/approved-target.json', '../target.json', 'apps/worker/src/target.json', 'apps/worker/artifacts/target.txt']) {
+    assert.throws(() => committedWorkerInputPath('/repo', input), /committed repository file/);
+  }
+});
+
+test('packaging accepts Ubuntu x64 and rejects unqualified arm64 targets', () => {
+  const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' };
+  validateWorkerTarget(target);
+  assert.throws(() => validateWorkerTarget({ ...target, arch: 'arm64' }), /qualified only for linux-x64/);
+  assert.throws(() => validateWorkerTarget({ ...target, node: 'v24.0.0' }), /Unsupported build target/);
+});
 
 function fixture() {
   const files = new Map([['package.json', Buffer.from('{"name":"sharp","version":"0.35.4"}')], ['LICENSE', Buffer.from('license')], ['lib/index.js', Buffer.from('module.exports = {}')]]);

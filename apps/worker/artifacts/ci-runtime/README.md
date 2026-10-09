@@ -18,9 +18,12 @@ recipe does not authorize that process's network access or choose destinations.
 
 ```sh
 node scripts/build-ci-runtime-context.mjs /new/private/context /private/offline-seed-config.json
-podman build --network=none --pull=never --target verification \
+podman build --network=none --pull=never --memory=2g --target verification \
   --file /new/private/context/Containerfile --tag localhost/foreman-code-verification:reviewed /new/private/context
 ```
+
+The verification policy requires a finite build-container memory limit, including
+the toolchain version check. The automatic preparer uses the same 2 GiB limit.
 
 The private config contains absolute `directory` and `receiptPath` values. The
 receipt must be a private, regular, singly linked owner file. Its version 1 shape

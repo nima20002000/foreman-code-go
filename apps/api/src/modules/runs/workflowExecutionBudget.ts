@@ -9,7 +9,13 @@ export async function hasWorkflowExecutionCapacityLocked(sql: GraphTransactionSq
   assertGraphTransaction(sql)
   const maximum = version.definition.executionPolicy!.maxNodeExecutions
   const row = (await sql.query<{ total: string }>(`select (
-    (select count(*) from harness_executions where run_id=$1)
+    (select count(*) from harness_executions e where e.run_id=$1
+      and not exists (select 1 from workflow_native_entries n
+        where n.execution_id=e.id and n.run_id=e.run_id and n.phase='not_submitted'))
+    + (select count(*) from run_repeat_executions where run_id=$1 and identity->>'kind'='job')
+    + (select count(*) from workflow_job_preparations p where p.run_id=$1
+      and not exists (select 1 from run_repeat_executions e
+        where e.run_id=p.run_id and e.slot_id=p.slot_id))
     + (select count(*) from run_work_activations a where a.run_id=$1
       and a.state in ('queued','waiting','running')
       and ($2::text is null or a.activation_id<>$2)

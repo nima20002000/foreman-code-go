@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { WorkflowJobPageSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
-import { JobAdmissionResultSchema } from '@foreman-code/contracts/job-admission'
+import type { HarnessExecution } from '@foreman-code/contracts'
+import { WorkflowJobPageSchema, type JobDefinitionRecord, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
+import { JobAdmissionResultSchema, JobQueuePageSchema, JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
+import { JobWorkflowExecutionReferenceSchema, type JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -23,6 +25,10 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
   let writer: Awaited<ReturnType<PostgresAccessService['issue']>>
   let denied: Awaited<ReturnType<PostgresAccessService['issue']>>
   let executions: JobExecutionRecord[]
+  let agentExecution: HarnessExecution
+  let queuedDefinition: JobDefinitionRecord
+  let jobReference: JobWorkflowExecutionReference
+  let queueNow: Date
   const clients: Client[] = []
   const path = () => `/api/management/workspaces/${workflow.run.workspaceId}/jobs/workflows/${workflow.run.workflowId}/executions`
   const headers = () => ({ authorization: `Bearer ${reader.token}` })
@@ -37,18 +43,23 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
   const input = () => ({ workspaceId: workflow.run.workspaceId, workflowId: workflow.run.workflowId })
   beforeAll(async () => {
     database = await agent3Database()
-    workflow = await workHandoffFixture(database.pool, randomUUID(), version => version)
+    workflow = await workHandoffFixture(database.pool, randomUUID(), version => ({ ...version,
+      definition: { ...version.definition, handoffs: { contractVersion: 1 } } }))
+    agentExecution = (await workflow.queue(await workflow.store.ensureWorkEntry())).execution
     access = new PostgresAccessService(database.pool)
     writer = await access.issue({ name: 'Job author', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {},
-        actions: ['job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:read', 'settings:read', 'settings:update'] }] })
+        actions: ['job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:read', 'jobs:cancel', 'settings:read', 'settings:update'] }] })
     reader = await access.issue({ name: 'Workflow history reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['jobs:read', 'job_logs:read', 'job_artifacts:read', 'capabilities:read'],
         scope: { workspaceIds: [workflow.run.workspaceId], workflowIds: [workflow.run.workflowId] } }] })
     denied = await access.issue({ name: 'Other workflow reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['jobs:read', 'job_logs:read', 'job_artifacts:read', 'capabilities:read'],
         scope: { workspaceIds: [workflow.run.workspaceId], workflowIds: ['foreign'] } }] })
-    queue = await buildQueueFixture(database.pool, writer.principal, { workspaceId: workflow.run.workspaceId })
+    queueNow = new Date()
+    queue = await buildQueueFixture(database.pool, writer.principal, {
+      workspaceId: workflow.run.workspaceId, clock: () => queueNow,
+    })
     queue.online()
     const definition = await queue.save(queue.computers[0]!.candidate.spec)
     const admission = JobAdmissionResultSchema.parse(await queue.jobs.enqueue(writer.principal, 'http',
@@ -83,7 +94,15 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
         value.acceptedSpec.definitionVersionId, value.operationId, value.attemptId, JSON.stringify(value),
         JSON.stringify(value.acceptedSpec), writer.principal.id])
     }
-    await queue.jobs.saveDefinition(writer.principal, 'http', workflow.run.workspaceId, {
+    const nodeJob = executions[0]!
+    jobReference = JobWorkflowExecutionReferenceSchema.parse({ kind: 'job', ...input(),
+      runId: workflow.run.id, workflowVersionId: workflow.run.workflowVersionId,
+      nodeId: nodeJob.workflow!.nodeId, nodeExecutionId: nodeJob.workflow!.nodeExecutionId,
+      jobExecutionId: nodeJob.id, occurrenceId: null, occurrenceIndex: 0 })
+    await database.pool.query(`insert into workflow_job_executions
+      (run_id,node_execution_id,job_execution_id,reference,input_json) values($1,$2,$3,$4::jsonb,'null')`,
+    [workflow.run.id, jobReference.nodeExecutionId, nodeJob.id, JSON.stringify(jobReference)])
+    queuedDefinition = await queue.jobs.saveDefinition(writer.principal, 'http', workflow.run.workspaceId, {
       commandId: randomUUID(), id: definition.id, expectedRevision: 1,
       name: 'Renamed after execution', spec: definition.spec,
     })
@@ -186,6 +205,147 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
     const audits = await database.pool.query('select source from management_audit where principal_id=$1 and outcome=$2',
       [denied.principal.id, 'denied'])
+    expect(audits.rows.map(row => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
+  })
+
+  it('reads workflow-wide queued CI and retained preacceptance outcomes with scoped HTTP and MCP', async () => {
+    queue.computers[0]!.candidate.ready = false
+    queue.computers[0]!.candidate.reasons = ['offline']
+    const origin = { workflowId: workflow.run.workflowId, runId: workflow.run.id,
+      agentId: agentExecution.agentId, executionId: agentExecution.id }
+    async function enqueue(initiatingAgent = origin) {
+      const admission = await queue.jobs.enqueue(writer.principal, 'http', workflow.run.workspaceId,
+        { commandId: randomUUID(), definitionId: queuedDefinition.id, expectedRevision: queuedDefinition.revision },
+        { initiatingAgent })
+      if (admission.kind === 'retained-execution') throw new Error('Fresh command reused an execution')
+      const id = admission.kind === 'accepted' ? admission.ticketId : admission.ticket.id
+      return queue.jobs.getQueueTicket(writer.principal, workflow.run.workspaceId, id)
+    }
+    const first = await enqueue()
+    const second = await enqueue()
+    const foreign = await enqueue({ ...origin, workflowId: 'foreign' })
+    await queue.jobs.wakeQueue()
+    const root = `/api/management/workspaces/${workflow.run.workspaceId}/jobs/queue`
+    const client = await connect(reader.token)
+    const tools = await client.listTools()
+    expect(tools.tools.find(tool => tool.name === 'job_queue_list')?.inputSchema.properties)
+      .toHaveProperty('workflowId')
+    const waitingHttp = await app.inject({ method: 'GET', url: `${root}?workflowId=${workflow.run.workflowId}`,
+      headers: headers() })
+    expect(waitingHttp.statusCode).toBe(200)
+    const waiting = JobQueuePageSchema.parse(waitingHttp.json())
+    expect(waiting.tickets.map(ticket => ticket.id)).toEqual([first.id, second.id])
+    expect(waiting.tickets.every(ticket => ticket.state === 'waiting')).toBe(true)
+    expect(waiting.tickets.some(ticket => ticket.id === foreign.id)).toBe(false)
+    const waitingMcp = await client.callTool({ name: 'job_queue_list', arguments: input() })
+    expect(waitingMcp.isError).not.toBe(true)
+    expect(waitingMcp.structuredContent).toEqual(waiting)
+    const writerClient = await connect(writer.token)
+    const cancelled = await writerClient.callTool({ name: 'job_queue_cancel', arguments: {
+      workspaceId: workflow.run.workspaceId, ticketId: first.id, expectedRevision: waiting.tickets[0]!.revision,
+      commandId: randomUUID(),
+    } })
+    expect(cancelled.isError).not.toBe(true)
+    queueNow = new Date(Date.parse(second.deadlineAt) + 1)
+    await queue.jobs.wakeQueue()
+    const retained = await client.callTool({ name: 'job_queue_list', arguments: input() })
+    expect(retained.isError).not.toBe(true)
+    const page = JobQueuePageSchema.parse(retained.structuredContent)
+    expect(page.tickets.map(ticket => ticket.id)).toEqual([second.id, first.id])
+    expect(page.tickets.map(ticket => ticket.terminalReason)).toEqual(['timed_out', 'cancelled'])
+    for (const ticket of page.tickets) {
+      const persisted = await queue.jobs.repository.queueTicket(database.pool, workflow.run.workspaceId, ticket.id)
+      expect(ticket).toMatchObject(persisted)
+      const http = await app.inject({ method: 'GET', url: `${root}/${ticket.id}`, headers: headers() })
+      expect(http.statusCode).toBe(200)
+      const read = await client.callTool({ name: 'job_queue_get', arguments: {
+        workspaceId: workflow.run.workspaceId, ticketId: ticket.id,
+      } })
+      expect(read.isError).not.toBe(true)
+      expect(JobQueueTicketSchema.parse((read.structuredContent as { ticket: unknown }).ticket)).toEqual(ticket)
+      expect(read.structuredContent).toEqual(http.json())
+    }
+    const deniedClient = await connect(denied.token)
+    expect((await app.inject({ method: 'GET', url: `${root}?workflowId=${workflow.run.workflowId}`,
+      headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+    const deniedRead = await deniedClient.callTool({ name: 'job_queue_list', arguments: input() })
+    expect(deniedRead.isError).toBe(true)
+    expect(JSON.stringify(deniedRead.content)).toContain('ACCESS_DENIED')
+    const deniedCancel = await client.callTool({ name: 'job_queue_cancel', arguments: {
+      workspaceId: workflow.run.workspaceId, ticketId: first.id, expectedRevision: first.revision,
+      commandId: randomUUID(),
+    } })
+    expect(deniedCancel.isError).toBe(true)
+    expect(JSON.stringify(deniedCancel.content)).toContain('ACCESS_DENIED')
+  })
+
+  it('authorizes Agent tickets and Job references by their persisted workflow and Run over HTTP and MCP', async () => {
+    queue.computers[0]!.candidate.ready = false
+    queue.computers[0]!.candidate.reasons = ['offline']
+    const admission = await queue.jobs.enqueue(writer.principal, 'http', workflow.run.workspaceId,
+      { commandId: randomUUID(), definitionId: queuedDefinition.id, expectedRevision: queuedDefinition.revision },
+      { initiatingAgent: { workflowId: workflow.run.workflowId, runId: workflow.run.id,
+        agentId: agentExecution.agentId, executionId: agentExecution.id } })
+    if (admission.kind === 'retained-execution') throw new Error('Fresh command reused an execution')
+    const ticketId = admission.kind === 'accepted' ? admission.ticketId : admission.ticket.id
+    await queue.jobs.wakeQueue()
+    const runReader = await access.issue({ name: 'One Run reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['jobs:read', 'capabilities:read'],
+        scope: { workspaceIds: [workflow.run.workspaceId], runIds: [workflow.run.id] } }] })
+    const otherRun = await access.issue({ name: 'Other Run reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['jobs:read', 'capabilities:read'],
+        scope: { workspaceIds: [workflow.run.workspaceId], workflowIds: [workflow.run.workflowId],
+          runIds: ['other-run'] } }] })
+    const queueInput = { workspaceId: workflow.run.workspaceId, initiatingExecutionId: agentExecution.id }
+    const referenceInput = { workspaceId: workflow.run.workspaceId, runId: workflow.run.id,
+      nodeExecutionId: jobReference.nodeExecutionId }
+    const root = `/api/management/workspaces/${workflow.run.workspaceId}/jobs`
+    const referencePath = `${root}/workflow-executions/${workflow.run.id}/${jobReference.nodeExecutionId}`
+    for (const token of [reader.token, runReader.token]) {
+      const client = await connect(token)
+      const headers = { authorization: `Bearer ${token}` }
+      const queueHttp = await app.inject({ method: 'GET',
+        url: `${root}/queue?initiatingExecutionId=${agentExecution.id}`, headers })
+      expect(queueHttp.statusCode).toBe(200)
+      const listed = await client.callTool({ name: 'job_queue_list', arguments: queueInput })
+      expect(listed.isError).not.toBe(true)
+      expect(listed.structuredContent).toEqual(queueHttp.json())
+      const page = JobQueuePageSchema.parse(listed.structuredContent)
+      expect(page.tickets.some(ticket => ticket.id === ticketId)).toBe(true)
+      for (const ticket of page.tickets) {
+        const read = await client.callTool({ name: 'job_queue_get', arguments: {
+          workspaceId: workflow.run.workspaceId, ticketId: ticket.id,
+        } })
+        expect(read.isError).not.toBe(true)
+        expect((read.structuredContent as { ticket: unknown }).ticket).toEqual(ticket)
+      }
+      const referenceHttp = await app.inject({ method: 'GET', url: referencePath, headers })
+      expect(referenceHttp.statusCode).toBe(200)
+      const reference = await client.callTool({ name: 'job_workflow_execution_get', arguments: referenceInput })
+      expect(reference.isError).not.toBe(true)
+      expect(reference.structuredContent).toEqual({ reference: jobReference })
+      expect(reference.structuredContent).toEqual(referenceHttp.json())
+      const persisted = await database.pool.query<{ reference: unknown }>(
+        'select reference from workflow_job_executions where run_id=$1 and node_execution_id=$2',
+        [workflow.run.id, jobReference.nodeExecutionId])
+      expect(reference.structuredContent).toEqual({ reference: persisted.rows[0]!.reference })
+    }
+    for (const token of [denied.token, otherRun.token]) {
+      const client = await connect(token)
+      const headers = { authorization: `Bearer ${token}` }
+      for (const [tool, arguments_, url] of [
+        ['job_queue_list', queueInput, `${root}/queue?initiatingExecutionId=${agentExecution.id}`],
+        ['job_queue_get', { workspaceId: workflow.run.workspaceId, ticketId }, `${root}/queue/${ticketId}`],
+        ['job_workflow_execution_get', referenceInput, referencePath],
+      ] as const) {
+        expect((await app.inject({ method: 'GET', url, headers })).statusCode).toBe(403)
+        const blocked = await client.callTool({ name: tool, arguments: arguments_ })
+        expect(blocked.isError).toBe(true)
+        expect(JSON.stringify(blocked.content)).toContain('ACCESS_DENIED')
+      }
+    }
+    const audits = await database.pool.query('select source from management_audit where principal_id=$1 and outcome=$2',
+      [otherRun.principal.id, 'denied'])
     expect(audits.rows.map(row => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
   })
 

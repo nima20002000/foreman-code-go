@@ -103,7 +103,10 @@ function fixture(options: {
     executionPlacement: { version: 1, acceptedBindingHash: hash, runId: 'run', nodeId: 'node', executionId: 'execution', attemptId: 'attempt', operationId: 'operation',
       materialization, workingTree: { materializationId: placement.source.materializationId, materializationDigest: hash, canonicalProjectRoot: '/project',
         canonicalCwd: '/project', directoryIdentityHash: hash, filesystem, accessMode: 'read-only', privateGit: null }, bindingHash: hash } })
-  const inspection: InstalledCodexInspection = { inventory: { instances: [], installations: [{ ...facts.harness.installation, observedVersion: null, qualified: false }] },
+  const inspection: {
+    inventory: InstalledCodexInspection['inventory']
+    currentTarget: InstalledCodexInspection['currentTarget']
+  } = { inventory: { instances: [], installations: [{ ...facts.harness.installation, observedVersion: null, qualified: false }] },
     currentTarget: { binding, target, installation: { ...facts.harness.installation, observedVersion: null, qualified: false }, binarySha256: sha, expectedVersion: version } }
   let live: typeof binding | null = binding
   const inspect = vi.fn(async () => structuredClone(inspection)), readFacts = vi.fn(async () => structuredClone(facts))
@@ -168,6 +171,25 @@ describe('actual Main and installed Codex qualification read capability', () => 
     expect(f.inspect).toHaveBeenCalledTimes(6)
     f.facts.harness.qualification.status = 'unqualified'
     await expect(f.reader.repository.list()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+  })
+  it('retains the measured payload after an update only when the original process owner is verified', async () => {
+    const assertResident = vi.fn(async () => {})
+    const f = fixture({ assertResident })
+    const original = await f.reader.capture()
+    f.inspection.currentTarget = { ...f.inspection.currentTarget!,
+      target: { ...f.inspection.currentTarget!.target, installationFingerprint: 'updated-payload' },
+      binarySha256: 'b'.repeat(64) }
+    const retained = await f.reader.capture()
+    expect(retained.qualification).toEqual(original.qualification)
+    expect(retained.inspection.currentTarget!.target).toEqual(original.inspection.currentTarget!.target)
+    expect(assertResident).toHaveBeenCalledWith(f.binding, f.binding)
+    assertResident.mockRejectedValue(new Error('Original process closed'))
+    await expect(f.reader.capture()).rejects.toThrow('Original process closed')
+  })
+  it('requires fresh qualification for a cold allocation after the payload changes', async () => {
+    const f = fixture({ assertResident: vi.fn(async () => {}) })
+    f.inspection.currentTarget!.target.installationFingerprint = 'updated-payload'
+    await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
   })
   it.each(['proof-absent', 'wrong-sha', 'wrong-suite', 'wrong-profile', 'failed-check', 'stale-profile', 'different-operation', 'foreign-host', 'wrong-configuration'] as const)('denies %s without using a baseline or config trust flag', async kind => {
     const f = fixture()

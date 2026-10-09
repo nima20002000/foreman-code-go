@@ -23,6 +23,7 @@ import { PostgresWorkspaceRootPolicies } from '../src/modules/sources/rootPolici
 import type { WorkspaceRootHostPort } from '../src/modules/sources/rootPolicyPorts.js'
 import { rootAttestationDigest, rootSelectionDigest } from '../src/modules/sources/rootAttestation.js'
 import { WorkspaceBoundLocationService } from '../src/modules/workspace-roots/service.js'
+import { DomainError } from '../src/modules/errors.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './helpers/mixedComputerPlacement.js'
 import { verificationCapacityFixture } from './helpers/verificationCapacityFixture.js'
@@ -46,8 +47,15 @@ async function fixture() {
       'select record from workspace_root_host_configurations',
     )).rows.map(row => ApprovedRootAllowlistSchema.parse(row.record))
     const unused = async (): Promise<never> => { throw new Error('No native execution in location regression') }
+    let disconnected = false
     const hosts: WorkspaceRootHostPort = {
       ...placement.hosts,
+      authorize: async (...args) => {
+        if (disconnected && args[2].kind === 'device') {
+          throw new DomainError('ROOT_HOST_UNAVAILABLE', 'The selected computer is disconnected.', 503)
+        }
+        return placement.hosts.authorize(...args)
+      },
       configurations: async () => allowlists,
       browse: unused,
       sourceNamespace: unused,
@@ -65,6 +73,7 @@ async function fixture() {
       },
     }
     const policies = new PostgresWorkspaceRootPolicies(placement.local.hostRef.mainId, hosts)
+    base.locations.setRootPolicies(policies)
     const createLocations = () => new WorkspaceBoundLocationService(base.db.pool, base.commands, policies)
     const createChoices = () => new NodePlacementChoicesService(base.db.pool,
       new ProductionPlacementChoiceDiscovery(base.db.pool, () => ({ roots: policies, sources: placement.sources,
@@ -151,7 +160,8 @@ async function fixture() {
     const input = { workspaceId, workflowId: base.f.scope.workflowId, nodeId: base.f.version.definition.nodes[0]!.id,
       agentConfigurationVersionId: base.f.configurations[0]!.id }
     return { base, placement, workspaceId, roots, savedProfiles, jobs, originalPolicies, input,
-      client, connect, createLocations, createChoices, createProfiles,
+      client, connect, createLocations, createChoices, createProfiles, app,
+      disconnect: (value: boolean) => { disconnected = value },
       async close() {
         await Promise.allSettled(clients.map(client => client.close()))
         await app!.close()
@@ -221,6 +231,32 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
           workspaceId: f.workspaceId,
         }))
         expect(read).toEqual(saved.value)
+        expect(await call('workspace_get', { workspaceId: f.workspaceId })).toMatchObject({
+          executionLocation: read.executionLocation, locationRevision: read.locationRevision,
+          locationValidation: { status: 'ready' },
+        })
+        const genericHttp = await f.app.inject({ method: 'GET',
+          url: `/api/management/workspaces/${f.workspaceId}`,
+          headers: { authorization: `Bearer ${f.base.writer.token}` },
+        })
+        expect(genericHttp.statusCode).toBe(200)
+        expect(genericHttp.json()).toMatchObject({ executionLocation: read.executionLocation,
+          locationValidation: { status: 'ready' } })
+        if (host === 'device') {
+          f.disconnect(true)
+          expect(await call('workspace_get', { workspaceId: f.workspaceId })).toMatchObject({
+            executionLocation: read.executionLocation,
+            locationValidation: { status: 'unavailable', error: { code: 'ROOT_HOST_UNAVAILABLE' } },
+          })
+          f.disconnect(false)
+          expect(await call('workspace_get', { workspaceId: f.workspaceId }))
+            .toMatchObject({ locationValidation: { status: 'ready' } })
+        }
+        const genericList = await call('workspace_list', { limit: 100 }) as { items: unknown[] }
+        expect(genericList.items).toContainEqual(expect.objectContaining({
+          workspace: expect.objectContaining({ id: f.workspaceId }),
+          executionLocation: read.executionLocation, locationValidation: { status: 'ready' },
+        }))
         expect(await f.createLocations().get(f.base.writer.principal, { workspaceId: f.workspaceId })).toEqual(read)
         expect(await f.createChoices().get(f.base.writer.principal, f.input)).toEqual(before)
         expect(await f.createProfiles().list(f.base.writer.principal, f.workspaceId)).toEqual(profiles)
@@ -231,9 +267,11 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         expect(main).toEqual(f.placement.local)
       }
       const reader = await f.base.access.issue({ name: 'Read-only location caller', audience: 'operator',
-        expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['workspace_locations:read', 'source_roots:read'],
+        expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['workspaces:read', 'workspace_locations:read', 'source_roots:read'],
           scope: { workspaceIds: [f.workspaceId] } }] })
       const denied = await f.connect(reader.token)
+      expect((await denied.callTool({ name: 'workspace_get', arguments: { workspaceId: f.workspaceId } })).structuredContent)
+        .toMatchObject({ locationRevision: revision, locationValidation: { status: 'ready' } })
       const policy = f.originalPolicies.find(policy => policy.hostRef.kind === 'main')!
       const forbidden = await denied.callTool({ name: 'workspace_root_location_set', arguments: {
         workspaceId: f.workspaceId, commandId: randomUUID(), hostRef: policy.hostRef,
@@ -259,6 +297,9 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
       expect(deniedAudit.rows[0]!.count).toBeGreaterThan(0)
       await f.base.db.pool.query(`update workspace_root_policies set revoked_at=now()
         where root_policy_id=$1 and root_policy_revision=$2`, [policy.rootPolicyId, policy.rootPolicyRevision])
+      expect(await call('workspace_get', { workspaceId: f.workspaceId })).toMatchObject({
+        locationRevision: revision, locationValidation: { status: 'unavailable' },
+      })
       const remaining = await choices()
       expect(remaining.choices).toHaveLength(1)
       expect(remaining.choices[0]!.placement.hostRef.kind).toBe('device')

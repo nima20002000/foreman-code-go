@@ -47,12 +47,16 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), restart (sudo reboot; targets are required), sync-mcp (add Main\'s user-level Codex and Claude MCP '
       + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
       + 'sync-plugins (install Main\'s Codex and Claude plugins that other computers lack, adding Main\'s Git marketplaces first and matching enabled state for fleet-managed Claude plugins). '
-      + 'Sync preserves pre-existing computer-owned entries and removes only fleet-managed entries absent from an available Main catalog. Unsafe MCP definitions and unreadable catalogs are skipped and reported in the task summary. '
-      + 'Tasks run in the background; read their outcome with computers_maintenance_status. Equivalent running requests share a task; different requests of the same kind queue. '
+      + 'Sync preserves pre-existing computer-owned entries and removes only fleet-managed entries absent from an available Main catalog. '
+      + 'Unsafe or unsupported MCP definitions and unreadable catalogs are skipped and reported; existing Worker entries for skipped definitions are preserved. '
+      + 'Disabled servers, native tool allow/deny lists and stdio environment-name references cannot be copied by this sync path. '
+      + 'Tasks run in the background; read their outcome with computers_maintenance_status. Equivalent requests share only the latest queued task; different requests of the same kind queue. '
       + 'Task status survives application restarts; unfinished tasks report interruption. Check every returned computer error; '
       + 'unavailable targets are not updated. Harness updates verify the selected runtime version against the latest published '
       + 'version; Main and Workers select the installed Codex update and retain qualification checks. Requires global '
-      + 'settings:update. Reuse commandId to read back the same tasks without starting work twice.',
+      + 'settings:update. Reuse commandId with the original input to recover the saved targets, source catalogs and receiver tasks, including after Main stops before recording its result. '
+      + 'Receivers require maintenance protocol 2. Restart stays running until the reboot command returns; success reports command acceptance, not confirmed reconnection. '
+      + 'A missing harness leaves nonempty MCP sync pending for a later retry.',
     inputSchema: ComputerMaintenanceStartInputSchema, outputSchema: ComputerMaintenanceStartResultSchema,
     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
   }, input => invokeOperatorTool(context, 'computers_maintenance_start', () => maintenance.start(context.principal, 'mcp', input)))

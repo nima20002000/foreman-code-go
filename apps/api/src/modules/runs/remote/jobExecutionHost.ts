@@ -15,6 +15,16 @@ import { jobContainerNonEntryObserved } from '../../jobs/executorJournal.js'
 const digest = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 type RuntimeSupervisor = JobSupervisor<JobExecutionRecord>
   & Pick<PodmanJobSupervisor<JobExecutionRecord>, 'reconcile' | 'stopExecution' | 'removeExecution'>
+type ReconciledJob = NonNullable<Awaited<ReturnType<RuntimeSupervisor['reconcile']>>>
+
+function recoveredOutcome(receipt: RemoteJobOperationReceiptRecord, observed: ReconciledJob,
+  options: { interrupted?: boolean } = {}): NonNullable<JobExecutorResult['outcome']> {
+  if (observed.neverStarted) return 'preparation_failed'
+  if (options.interrupted || receipt.stopFence) return 'cancelled'
+  if (observed.timedOut) return 'timed_out'
+  if (observed.execError) return 'spawn_failed'
+  return observed.exitCode === 0 ? 'succeeded' : 'build_failed'
+}
 export interface RemoteJobExecutionHostPorts {
   journal: RemoteOperationJournal
   connection: RemoteJobConnectionIdentity
@@ -77,12 +87,14 @@ export class RemoteJobExecutionHost {
         if (!await supervisor.stopExecution(receipt.execution, receipt.execution.acceptedSpec.policy.cancellationGraceMs, observed!.containerId)) throw new Error('Original Job shutdown closure remains unconfirmed')
         observed = await supervisor.reconcile(receipt.execution)
       }
-      if (!observed?.stopped || observed.exitCode === null) throw new Error('Original Job shutdown closure remains unconfirmed')
+      if (!observed?.stopped || observed.exitCode === null && !observed.neverStarted) {
+        throw new Error('Original Job shutdown closure remains unconfirmed')
+      }
       if (!receipt.native) await this.ports.journal.jobAcknowledgeLaunch(receipt.intent.operationId, { containerId: observed.containerId,
         supervisorIdentity: jobSupervisorIdentity(receipt.execution), processIdentityDigest: digest({ executionId: receipt.execution.id,
           attemptId: receipt.execution.attemptId, operationId: receipt.execution.operationId, containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution) }) })
-      await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({ outcome: interrupted || receipt.stopFence ? 'cancelled' :
-        observed.timedOut ? 'timed_out' : observed.execError ? 'spawn_failed' : observed.exitCode === 0 ? 'succeeded' : 'build_failed', exitCode: observed.exitCode,
+      await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({
+        outcome: recoveredOutcome(receipt, observed, { interrupted: Boolean(interrupted) }), exitCode: observed.exitCode,
         signal: null, processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId: observed.containerId,
         recoveryRequired: false, logError: true, logsTruncated: false, outputCollectionError: false }, true))
     }
@@ -181,6 +193,10 @@ export class RemoteJobExecutionHost {
   }
   /** Each transition is fsynced before transport IO. Lost ACKs resume the same output commands. */
   private async publish(original: RemoteJobOperationReceiptRecord) {
+    if (await this.ports.journal.isJobRetired(original.intent.operationId)) {
+      await this.ports.observeReceipt(original)
+      return
+    }
     let receipt = original
     if (receipt.native && receipt.terminal?.processStopped) {
       await (await this.supervisor(receipt.execution)).removeExecution(receipt.execution, receipt.native.containerId)
@@ -255,8 +271,11 @@ export class RemoteJobExecutionHost {
     }
     if (!receipt.native) await this.ports.journal.jobAcknowledgeLaunch(receipt.intent.operationId, { containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution), processIdentityDigest: digest({ executionId: receipt.execution.id, attemptId: receipt.execution.attemptId, operationId: receipt.execution.operationId, containerId: observed.containerId, supervisorIdentity: jobSupervisorIdentity(receipt.execution) }) })
     // Recovered absence of logs is explicit; stopped without exact exit outcome remains uncertain.
-    if (!observed.stopped || observed.exitCode === null) return this.ports.journal.jobStatus(receipt.intent.operationId)
-    const evidence = this.terminalEvidence({ outcome: receipt.stopFence ? 'cancelled' : observed.timedOut ? 'timed_out' : observed.execError ? 'spawn_failed' : observed.exitCode === 0 ? 'succeeded' : 'build_failed', exitCode: observed.exitCode, signal: null, processStopped: true,
+    if (!observed.stopped || observed.exitCode === null && !observed.neverStarted) {
+      return this.ports.journal.jobStatus(receipt.intent.operationId)
+    }
+    const evidence = this.terminalEvidence({ outcome: recoveredOutcome(receipt, observed),
+      exitCode: observed.exitCode, signal: null, processStopped: true,
       supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId: observed.containerId, recoveryRequired: false, logError: true, logsTruncated: false, outputCollectionError: false }, true)
     await this.publish(await this.ports.journal.jobTerminal(receipt.intent.operationId, evidence))
     return this.ports.journal.jobStatus(receipt.intent.operationId)
@@ -264,9 +283,16 @@ export class RemoteJobExecutionHost {
   private async retainConfirmedNonEntry(receipt: RemoteJobOperationReceiptRecord): Promise<boolean> {
     const retained = await this.ports.journal.jobNativeOwner(receipt.intent.operationId)
     if (receipt.native || !retained?.nonEntryConfirmed || !jobContainerNonEntryObserved(retained)) return false
+    const containerId = retained.container?.containerId ?? null
+    if (containerId) {
+      const supervisorIdentity = jobSupervisorIdentity(receipt.execution)
+      await this.ports.journal.jobAcknowledgeLaunch(receipt.intent.operationId, { containerId, supervisorIdentity,
+        processIdentityDigest: digest({ executionId: receipt.execution.id, attemptId: receipt.execution.attemptId,
+          operationId: receipt.execution.operationId, containerId, supervisorIdentity }) })
+    }
     await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({
       outcome: receipt.stopFence ? 'cancelled' : 'preparation_failed', exitCode: null, signal: null,
-      processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId: null,
+      processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution), containerId,
       recoveryRequired: false, logError: true, logsTruncated: false,
       outputCollectionError: false }, true))
     return true

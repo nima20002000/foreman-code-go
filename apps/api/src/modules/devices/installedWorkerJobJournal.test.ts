@@ -51,7 +51,8 @@ it('recovers the original Job host before routing an authenticated Job frame, wi
   ports.qualification.mockReturnValue({ namespace: 'job-runtime-qualification-v1', version: 1, role: 'duplex', maxJsonBytes: 1, maxBinaryBytes: 0, drain: async () => {} })
   const mounted = await createInstalledWorkerDomains({ stateDirectory: '/original-worker-state', pairing, bootId: binding.bootId, configuration: null,
     jobConfiguration: { path: '/original-worker-state/job-runtime.json', ownerUid: 1000 }, approvedRoots: async () => ({} as ApprovedRootAllowlist),
-    connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined }), codexSuiteRevision: 'unit-suite' })
+    connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined, mainNow: Date.now }),
+    codexSuiteRevision: 'unit-suite' })
   expect(ports.jobs).not.toHaveBeenCalled()
   const job = jobExecution()
   const request = RemoteJobExecutionRpcRequestRecordSchema.parse({ method: 'job-status', intent: {

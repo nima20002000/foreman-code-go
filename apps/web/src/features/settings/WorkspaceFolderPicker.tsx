@@ -9,11 +9,11 @@ import { ActionMenu, Alert, Button, Dialog, Icon, LoadingState, TextField } from
 import './workspaceLocation.css'
 
 type Props = { disabled: boolean; onSelect(path: string): void | Promise<void>; value?: string; label?: string; selectionUnconfirmed?: boolean; copyValue?: string; description?: string;
-  directoryBinding?: BoundFolderBrowser; presentation?: 'card' | 'compact'; triggerRef?: RefObject<HTMLButtonElement | null> }
+  directoryBinding?: BoundFolderBrowser; onReloadSavedLocation?(): Promise<boolean>; presentation?: 'card' | 'compact'; triggerRef?: RefObject<HTMLButtonElement | null> }
 type Location = Parameters<typeof useHarnessDirectories>[0]
 type HistoryEntry = { location: Location; selectedPath?: string; locationsOpen: boolean }
 
-function FolderPicker({ disabled, onSelect, value, label = 'Project folder', selectionUnconfirmed = false, copyValue, description, directoryBinding, presentation, triggerRef }: Props) {
+function FolderPicker({ disabled, onSelect, value, label = 'Project folder', selectionUnconfirmed = false, copyValue, description, directoryBinding, onReloadSavedLocation, presentation, triggerRef }: Props) {
   const [open, setOpen] = useState(false)
   const toasts = useContext(ToastContext)
   const id = useId()
@@ -318,6 +318,16 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
           Next folders
         </Button> : null}
         {directoryBinding && boundQuery.data?.truncated && !data?.nextCursor ? <p role="status">This folder has more entries than can be shown. Browse a more specific folder.</p> : null}
+        {onReloadSavedLocation ? <Button disabled={locked || disabled || creating} onClick={async () => {
+          setSelecting(true)
+          try {
+            if (!await onReloadSavedLocation()) return
+            setLocation({})
+            setHistory([])
+            setSelectedPath(undefined)
+            setSelectionError(undefined)
+          } finally { setSelecting(false) }
+        }}>Reload saved location</Button> : null}
       </div>
     </Dialog>
   </>

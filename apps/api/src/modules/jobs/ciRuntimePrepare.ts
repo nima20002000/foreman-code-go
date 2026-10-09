@@ -1,11 +1,10 @@
-import { createHash } from 'node:crypto'
-import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
 import { pipeline } from 'node:stream/promises'
-import { buildCiRuntimeContext, ciRuntimeInputDigest, parseCiLock } from '../../../../worker/artifacts/ci-runtime/context.mjs'
+import { buildCiRuntimeContext, ciRuntimeInputDigest, parseCiLock } from './ciRuntimeContext.mjs'
 import { expectedPortions } from '../../../../../scripts/verification-runner.mjs'
 import type { PreparedCiRuntime } from '@foreman-code/contracts'
 import { JobVerificationQuotaPoolSchema } from '@foreman-code/contracts/job-verification-runtime'
@@ -14,8 +13,10 @@ import { pruneCiRuntimeCache, readCiRuntimeCache, writeCiRuntimeCache } from './
 import { readJobProjectQuota } from './quotaOwnership.js'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile } from './installedRuntimeHost.js'
 import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
+import { closeCiRuntimeCommand, runCiRuntimeCommand } from './ciRuntimeCommands.js'
+import { pruneCiImages } from './ciRuntimeImages.js'
+import { ciPreparationBuildArgs, ciPreparationLimits, ciPreparationResourceArgs } from './ciPreparationLimits.js'
 
-const run = promisify(execFile)
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const COMMIT = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u
 
@@ -57,35 +58,44 @@ export async function prepareCiRuntime({ stateDirectory, ...input }: Parameters<
  * image built without network, and the qualification source tree. Returns the facts Main
  * needs to capture and qualify the new runtime. Everything stays inside `installer`. */
 export interface CiRuntimeReview { reviewedByPrincipalId: string; decisionDigest: string }
-async function prepareRuntime({ repository, commit, installer, review, keepImages = [], keepPaths = [], environment = process.env, log = () => {} }: {
+async function prepareRuntime({ repository, commit, installer, review, keepImages = [], keepPaths = [],
+  environment = process.env, signal, log = () => {} }: {
   repository: string; commit: string; installer: string; review: CiRuntimeReview
   /** Image ids referenced by protected configurations and retained execution records. */
   keepImages?: readonly string[]
   /** Installer paths the current protected runtime still uses (its qualification source). */
   keepPaths?: readonly string[]
   environment?: NodeJS.ProcessEnv; log?: (stage: string) => void
+  signal?: AbortSignal
 }): Promise<PreparedCiRuntime> {
+  signal?.throwIfAborted()
+  const stage = (name: string) => {
+    signal?.throwIfAborted()
+    log(name)
+  }
   if (!COMMIT.test(commit)) throw new Error('A full commit id is required.')
   if (!review?.reviewedByPrincipalId || !/^[a-f0-9]{64}$/u.test(review.decisionDigest ?? '')) throw new Error('Owner decision is required.')
   const short = commit.slice(0, 12)
+  const buildLimits = ciPreparationBuildArgs(ciPreparationLimits())
   const env = {
     ...Object.fromEntries(Object.entries(environment).filter(([key]) => !key.startsWith('GIT_'))),
     GIT_TERMINAL_PROMPT: '0',
   }
   const sh = async (file: string, args: string[], options: { cwd?: string } = {}) => {
-    const result = await run(file, args, { env, maxBuffer: 64 * 1024 * 1024, ...options })
+    const result = await runCiRuntimeCommand(file, args, { env, signal, ...options })
     return result.stdout
   }
-  if ((await run('git', ['-C', repository, 'cat-file', '-e', `${commit}^{commit}`], { env }).then(() => true, () => false)) === false) {
+  if ((await runCiRuntimeCommand('git', ['-C', repository, 'cat-file', '-e', `${commit}^{commit}`],
+    { env, signal }).then(() => true, () => false)) === false) {
     await sh('git', ['-C', repository, 'fetch', '--no-tags', 'origin', commit])
   }
-  log('reclaim-interrupted-preparation')
-  await reclaimInterruptedPreparation({ repository, installer, keepPaths, env })
-  log('checking-runtime-cache')
+  stage('reclaim-interrupted-preparation')
+  await reclaimInterruptedPreparation({ repository, installer, keepPaths, env, signal })
+  stage('checking-runtime-cache')
   const inputDigest = await ciRuntimeInputDigest({ repository, commit })
   const imageExists = async (imageId: string) => {
     try {
-      await podman(['image', 'exists', imageId], env)
+      await podman(['image', 'exists', imageId], env, signal)
       return true
     } catch (error) {
       if ((error as { code?: unknown }).code === 1) return false
@@ -94,51 +104,57 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   }
   const cached = await readCiRuntimeCache({ installer, inputDigest, imageExists })
   if (cached) {
-    log('reusing-runtime-image')
+    stage('reusing-runtime-image')
     const qualificationSource = await extractQualificationSource(repository, commit,
-      join(installer, `qualification-source-${short}`), env)
+      join(installer, `qualification-source-${short}`), env, signal)
     return { ...cached, commit, qualificationSource, reusedImage: true }
   }
   const source = join(installer, `source-${short}`)
   if (!await exists(source)) {
-    log('checkout')
+    stage('checkout')
     await sh('git', ['-C', repository, 'worktree', 'add', '--detach', source, commit])
   }
   const head = (await sh('git', ['-C', source, 'rev-parse', 'HEAD'])).trim()
   if (head !== commit) throw new Error('The prepared checkout is not at the requested commit.')
 
-  log('prune-images')
+  stage('prune-images')
   // Other preparations and recovery records may still own older installer files.
-  await pruneCiImages(keepImages, env)
+  await pruneCiImages({ keep: keepImages, env, installer, signal })
   await pruneCiRuntimeCache({ installer, imageExists, keepPaths })
   // 1. The build stage fetches the frozen lockfile's packages with network into its own store.
   const buildContext = join(installer, `build-context-${short}`)
   await rm(buildContext, { recursive: true, force: true })
   await buildCiRuntimeContext({ repository: source, commit, output: buildContext })
   const buildTag = `localhost/foreman-code-ci-build:${short}`
-  log('fetch-packages')
+  stage('fetch-packages')
   // Host networking needs no rootless network helper; only this package-fetch stage has network.
-  await podman(['build', '--pull=missing', '--network=host', '--target', 'build', '--layers=true', '--force-rm', '-t', buildTag, buildContext], env)
+  await podman(['build', ...buildLimits, '--pull=missing', '--network=host', '--target', 'build', '--layers=true', '--force-rm',
+    '--label', `io.foreman-code.installation=${hash(installer)}`, '-t', buildTag, buildContext], env, signal)
   const seedRoot = join(installer, `seed-${short}`)
   const seed = join(seedRoot, 'seed')
   await rm(seedRoot, { recursive: true, force: true })
   await mkdir(seed, { recursive: true, mode: 0o700 })
-  const container = (await podmanOut(['create', buildTag, 'true'], env)).trim()
+  const container = `foreman-ci-seed-${randomUUID()}`
   try {
+    await podman(['create', '--name', container,
+      '--label', `io.foreman-code.installation=${hash(installer)}`,
+      '--label', 'io.foreman-code.ci-preparation=seed', buildTag, 'true'], env, signal)
     for (const name of ['pnpm-store', 'corepack-cache']) {
-      await podman(['cp', `${container}:/opt/graphql-ci/${name}`, join(seed, name)], env)
+      await podman(['cp', `${container}:/opt/graphql-ci/${name}`, join(seed, name)], env, signal)
     }
-  } finally { await podman(['rm', '-f', container], env).catch(() => {}); }
+  } finally {
+    await podman(['rm', '--force', '--ignore', container], env, AbortSignal.timeout(30_000))
+  }
 
   // 2. Registry release evidence for the strict 48-hour policy, and the Codex binary the unit suite needs.
-  log('seed-receipt')
+  stage('seed-receipt')
   const needsCodex = expectedPortions(source, 'unit').some(portion => portion.key === 'root:worker-artifact')
-  const unitCodex = needsCodex ? await codexBinary(buildTag, seedRoot, env) : undefined
+  const unitCodex = needsCodex ? await codexBinary(buildTag, seedRoot, env, signal) : undefined
   // pnpm records each project that installed from the store as a symlink; they are not package content.
   for (const version of await readdir(join(seed, 'pnpm-store'))) {
     await rm(join(seed, 'pnpm-store', version, 'projects'), { recursive: true, force: true })
   }
-  const receipt = await createSeedReceipt({ repository: source, seed, review })
+  const receipt = await createSeedReceipt({ repository: source, seed, review, signal })
   const receiptPath = join(seedRoot, 'seed-receipt.json')
   await writeFile(receiptPath, JSON.stringify(receipt), { mode: 0o600 })
   const offlineSeed: NonNullable<Parameters<typeof buildCiRuntimeContext>[0]['offlineSeed']> = { directory: seed, receiptPath }
@@ -154,17 +170,19 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   // The verified build context now owns the seed copy needed by the image.
   await rm(seed, { recursive: true, force: true })
   const tag = `localhost/foreman-code-verification:${short}`
-  log('build-image')
+  stage('build-image')
   // The image's own pnpm check runs through the verification policy, which needs a finite memory reservation.
   // Its toolchain layer (with PostgreSQL) is the one the networked package build just cached.
-  await podman(['build', '--pull=never', '--network=none', '--memory=2g', '--target', 'verification', '--layers=true', '--force-rm',
-    '--label', 'io.foreman-code.installation=ci-verification', '-t', tag, context], env)
-  const image = (JSON.parse(await podmanOut(['image', 'inspect', tag], env)) as { Id: string; Digest: string }[])[0]!
-  await podman(['rmi', buildTag], env).catch(() => undefined)
+  await podman(['build', ...buildLimits, '--pull=never', '--network=none', '--target', 'verification', '--layers=true', '--force-rm',
+    '--label', `io.foreman-code.installation=${hash(installer)}`, '-t', tag, context], env, signal)
+  const image = (JSON.parse(await podmanOut(['image', 'inspect', tag], env, signal)) as { Id: string; Digest: string }[])[0]!
+  await podman(['rmi', '--no-prune', buildTag], env, signal).catch(error => {
+    if (error.code !== 2) throw error
+  })
 
   // 4. The exact tracked tree Main approved for this commit, which qualification verifies byte for byte.
   const qualificationSource = await extractQualificationSource(repository, commit,
-    join(installer, `qualification-source-${short}`), env)
+    join(installer, `qualification-source-${short}`), env, signal)
   // The image holds the seed and context; keep only their receipts and drop the multi-gigabyte build inputs.
   const seedReceiptPath = await writeRuntimeReceipt(installer, 'seed', await readFile(join(context, 'seed-receipt.json')))
   const contextReceiptPath = await writeRuntimeReceipt(installer, 'context', await readFile(join(context, 'context-receipt.json')))
@@ -174,7 +192,7 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   for (const path of [context, buildContext, seedRoot]) {
     if (!keepPaths.includes(path)) await rm(path, { recursive: true, force: true })
   }
-  await run('git', ['-C', repository, 'worktree', 'remove', '--force', source], { env }).catch(() => undefined)
+  await runCiRuntimeCommand('git', ['-C', repository, 'worktree', 'remove', '--force', source], { env, signal })
   const prepared: PreparedCiRuntime = {
     commit, imageId: `sha256:${image.Id.replace(/^sha256:/u, '')}`, imageManifestDigest: image.Digest,
     seedReceiptPath, contextReceiptPath, qualificationSource,
@@ -183,6 +201,7 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
     prepared.unitCodex = { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: codex,
       version: unitCodex.version, binarySha256: unitCodex.sha256 }
   }
+  signal?.throwIfAborted()
   await writeCiRuntimeCache({ installer, inputDigest, prepared })
   return prepared
 }
@@ -200,7 +219,8 @@ async function writeRuntimeReceipt(installer: string, kind: 'seed' | 'context', 
   return path
 }
 
-export async function codexBinary(image: string, output: string, env: NodeJS.ProcessEnv) {
+export async function codexBinary(image: string, output: string, env: NodeJS.ProcessEnv, signal?: AbortSignal) {
+  signal?.throwIfAborted()
   // No host paths or credentials are mounted into the package/tool execution boundary.
   const script = `
     const { cpSync, readFileSync } = require('node:fs');
@@ -226,12 +246,26 @@ export async function codexBinary(image: string, output: string, env: NodeJS.Pro
   // The binary (hundreds of MB) streams raw to the file; its version arrives on stderr.
   const path = join(output, 'unit-codex')
   await rm(path, { force: true })
-  const child = spawn('podman', ['--remote=false', 'run', '--rm', '--pull=never', '--network=none', '--read-only',
-    '--cap-drop=all', '--security-opt=no-new-privileges', '--cpus=2', '--memory=2g', '--pids-limit=256',
+  const container = `foreman-ci-codex-${randomUUID()}`
+  const limits = ciPreparationLimits()
+  const captureLimits = ciPreparationResourceArgs({ cpuCount: Math.min(2, limits.cpuCount),
+    memoryBytes: Math.min(2 * 2 ** 30, limits.memoryBytes) })
+  const child = spawn('podman', ['--remote=false', 'run', '--name', container, '--rm', '--pull=never', '--network=none', '--read-only',
+    '--cap-drop=all', '--security-opt=no-new-privileges', ...captureLimits, '--pids-limit=256',
     '--tmpfs=/tmp:rw,exec,nosuid,nodev,size=8g', '--entrypoint=node', image, '-e', script], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   let diagnostics = ''
   child.stderr!.on('data', (chunk: Buffer) => { diagnostics = `${diagnostics}${chunk.toString('utf8')}`.slice(-65_536) })
-  await Promise.all([pipeline(child.stdout!, createWriteStream(path, { mode: 0o700, flags: 'wx' })), closed(child, 'Codex capture')])
+  const tasks = [pipeline(child.stdout!, createWriteStream(path, { mode: 0o700, flags: 'wx' })),
+    closeCiRuntimeCommand(child, 'Codex capture', signal)]
+  try {
+    await Promise.all(tasks)
+  } catch (error) {
+    child.kill('SIGKILL')
+    await Promise.allSettled(tasks)
+    await podman(['rm', '--force', '--ignore', container], env, AbortSignal.timeout(30_000))
+    await rm(path, { force: true })
+    throw error
+  }
   const version = (() => { try { return (JSON.parse(diagnostics.slice(diagnostics.lastIndexOf('{'))) as { version?: unknown }).version } catch { return undefined } })()
   const bytes = await readFile(path)
   if (typeof version !== 'string' || !version || !bytes.length) throw new Error('The isolated Codex capture is incomplete.')
@@ -239,7 +273,10 @@ export async function codexBinary(image: string, output: string, env: NodeJS.Pro
 }
 
 /** Same receipt the CI image policy verifies: every locked release with its registry publish time. */
-export async function createSeedReceipt({ repository, seed, review }: { repository: string; seed: string; review: CiRuntimeReview }) {
+export async function createSeedReceipt({ repository, seed, review, signal }: {
+  repository: string; seed: string; review: CiRuntimeReview; signal?: AbortSignal | undefined
+}) {
+  signal?.throwIfAborted()
   const lock = parseCiLock(await readFile(join(repository, 'pnpm-lock.yaml'), 'utf8'))
   const packages = Object.entries(lock.packages ?? {}).map(([key, value]) => {
     const at = key.lastIndexOf('@')
@@ -251,9 +288,11 @@ export async function createSeedReceipt({ repository, seed, review }: { reposito
   let cursor = 0
   const capture = async () => {
     while (cursor < names.length) {
+      signal?.throwIfAborted()
       const name = names[cursor++]!
       const metadataPath = `metadata/${encodeURIComponent(name)}.json`
-      const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(30_000) })
+      const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
+        signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]) })
       if (!response.ok) throw new Error(`Registry returned ${response.status} for ${name}`)
       const metadata = await response.json() as { versions?: Record<string, { dist?: { integrity?: string } }>; time?: Record<string, string>; modified?: string }
       const selected = { name, time: {} as Record<string, string>, versions: {} as Record<string, unknown> }
@@ -274,8 +313,12 @@ export async function createSeedReceipt({ repository, seed, review }: { reposito
       captured.set(name, { metadataPath, metadata: selected })
     }
   }
-  await Promise.all(Array.from({ length: 4 }, capture))
-  const tracked = (await run('git', ['-C', repository, 'ls-tree', '-r', '--name-only', 'HEAD'], { maxBuffer: 64 * 1024 * 1024 })).stdout
+  const captures = await Promise.allSettled(Array.from({ length: 4 }, capture))
+  const failed = captures.find(result => result.status === 'rejected')
+  if (failed?.status === 'rejected') throw failed.reason
+  signal?.throwIfAborted()
+  const tracked = (await runCiRuntimeCommand('git', ['-C', repository, 'ls-tree', '-r', '--name-only', 'HEAD'],
+    { env: process.env, signal })).stdout
   const inputPaths = tracked.trim().split('\n').filter(path => ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].includes(path)
     || /^(?:apps|packages)\/[^/]+\/package\.json$/u.test(path)).sort()
   const dependencyInputs = await Promise.all(inputPaths.map(async path => ({ path, sha256: hash(await readFile(join(repository, path))) })))
@@ -304,25 +347,29 @@ export async function createSeedReceipt({ repository, seed, review }: { reposito
     review: { ...review, reviewedAt: capturedAt }, maxBytes: 20 * 2 ** 30, maxInodes: 1_000_000, dependencyInputs, files, packages: releases }
 }
 
-const podman = (args: string[], env: NodeJS.ProcessEnv) => run('podman', ['--remote=false', ...args], { env, maxBuffer: 256 * 1024 * 1024 })
-const podmanOut = async (args: string[], env: NodeJS.ProcessEnv) => (await podman(args, env)).stdout
+const podman = (args: string[], env: NodeJS.ProcessEnv, signal?: AbortSignal) =>
+  runCiRuntimeCommand('podman', ['--remote=false', ...args], { env, signal })
+const podmanOut = async (args: string[], env: NodeJS.ProcessEnv, signal?: AbortSignal) =>
+  (await podman(args, env, signal)).stdout
 const exists = (path: string) => stat(path).then(() => true, () => false)
-const closed = (child: ChildProcess, name: string) => new Promise<void>((resolve, reject) => {
-  child.once('error', reject)
-  child.once('close', code => code === 0 ? resolve() : reject(new Error(`${name} exited ${code}`)))
-})
 
 /** Preparations run one at a time per computer and this installation's container store is theirs alone, so
  * Buildah working containers and build inputs present when one starts were left by an earlier preparation
  * that a Worker restart or an exhausted quota interrupted. Qualification sources still used stay in `keepPaths`. */
-export async function reclaimInterruptedPreparation({ repository, installer, keepPaths, env }: {
-  repository: string; installer: string; keepPaths: readonly string[]; env: NodeJS.ProcessEnv
+export async function reclaimInterruptedPreparation({ repository, installer, keepPaths, env, signal }: {
+  repository: string; installer: string; keepPaths: readonly string[]; env: NodeJS.ProcessEnv; signal?: AbortSignal | undefined
 }) {
-  const containers = JSON.parse(await podmanOut(['ps', '--all', '--external', '--format', 'json'], env) || '[]') as
-    { Id: string; State?: string; Command?: string[] | null }[]
+  const containers = JSON.parse(await podmanOut(['ps', '--all', '--external', '--format', 'json'], env, signal) || '[]') as
+    { Id: string; State?: string; Command?: string[] | null; Labels?: Record<string, string> }[]
+  const installation = hash(installer)
   for (const container of containers) {
     // Libpod Job containers are not external; Buildah's are reported in storage state only.
-    if (container.State === 'storage' && container.Command?.[0] === 'buildah') await podman(['rm', '--force', container.Id], env)
+    if (container.State === 'storage' && container.Command?.[0] === 'buildah') {
+      await podman(['rm', '--force', container.Id], env, signal)
+    } else if (container.Labels?.['io.foreman-code.installation'] === installation
+      && container.Labels['io.foreman-code.ci-preparation'] === 'seed') {
+      await podman(['rm', '--force', container.Id], env, signal)
+    }
   }
   const kept = new Set(keepPaths)
   const names = await readdir(installer).catch((error: NodeJS.ErrnoException) => {
@@ -330,33 +377,27 @@ export async function reclaimInterruptedPreparation({ repository, installer, kee
     throw error
   })
   for (const name of names) {
+    signal?.throwIfAborted()
     const path = join(installer, name)
     if (kept.has(path)) continue
     if (/^source-[a-f0-9]{12}$/u.test(name)) {
       // Another workspace's clone may own the worktree; its own next preparation prunes that record.
-      await run('git', ['-C', repository, 'worktree', 'remove', '--force', path], { env }).catch(() => undefined)
+      await runCiRuntimeCommand('git', ['-C', repository, 'worktree', 'remove', '--force', path], { env, signal })
+        .catch(error => {
+          signal?.throwIfAborted()
+          if (!/is not a working tree/iu.test(String(error.stderr))) throw error
+        })
       await rm(path, { recursive: true, force: true })
     } else if (/^(?:build-context|context|seed)-[a-f0-9]{12}$|^qualification-source-[a-f0-9]{12}(?:-[A-Za-z0-9]{6})?$/u.test(name)) {
       await rm(path, { recursive: true, force: true })
     }
   }
-  await run('git', ['-C', repository, 'worktree', 'prune'], { env }).catch(() => undefined)
+  await runCiRuntimeCommand('git', ['-C', repository, 'worktree', 'prune'], { env, signal })
 }
 
-export async function pruneCiImages(keep: readonly string[], env: NodeJS.ProcessEnv) {
-  const kept = new Set(keep.map(id => id.replace(/^sha256:/u, '')))
-  const listed = JSON.parse(await podmanOut(['images', '--format', 'json'], env)) as { Id: string; Names?: string[] }[]
-  for (const image of listed) {
-    if (kept.has(image.Id.replace(/^sha256:/u, ''))) continue
-    if (!(image.Names ?? []).some(name => /foreman-code-(?:verification|ci-build)/u.test(name))) continue
-    // Podman refuses removal while any execution or Buildah container references the image.
-    await podman(['rmi', image.Id], env).catch(error => {
-      if (!/in use|used by|associated|container|multiple tags/iu.test(String(error.stderr ?? error.message))) throw error
-    })
-  }
-}
-
-export async function extractQualificationSource(repository: string, commit: string, qualificationSource: string, env: NodeJS.ProcessEnv) {
+export async function extractQualificationSource(repository: string, commit: string, qualificationSource: string,
+  env: NodeJS.ProcessEnv, signal?: AbortSignal) {
+  signal?.throwIfAborted()
   const directory = await mkdtemp(`${qualificationSource}-`)
   const archive = spawn('git', ['-C', repository, 'archive', '--format=tar', commit], { env })
   const extract = spawn('/bin/sh', ['-c', 'umask 077 && exec tar -x -C "$1"', 'sh', directory], { env })
@@ -365,13 +406,14 @@ export async function extractQualificationSource(repository: string, commit: str
   const copy = pipeline(archive.stdout, extract.stdin).catch((error: unknown) => {
     if ((error as { code?: unknown } | null)?.code !== 'ERR_STREAM_PREMATURE_CLOSE') throw error
   })
-  const tasks = [copy, closed(archive, 'git archive'), closed(extract, 'tar')]
+  const tasks = [copy, closeCiRuntimeCommand(archive, 'git archive', signal),
+    closeCiRuntimeCommand(extract, 'tar', signal)]
   try {
     await Promise.all(tasks)
     return directory
   } catch (error) {
-    archive.kill()
-    extract.kill()
+    archive.kill('SIGKILL')
+    extract.kill('SIGKILL')
     await Promise.allSettled(tasks)
     await rm(directory, { recursive: true, force: true })
     throw error

@@ -12,8 +12,8 @@ import { commandInputHash } from '../commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './claudeSdk/profileRevision.js'
-import { discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'
-import { passiveDriverPayloads } from './payloadDiscovery.js'
+import { discoverInventoryLauncher, type discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'
+import { inventoryDriverPayloads, type passiveDriverPayloads } from './payloadDiscovery.js'
 import { HarnessInstanceRegistry, localHarnessDrivers, localDefaultInstances, type ConfiguredHarnessInstance } from './instanceRegistry.js'
 import { HarnessInstallationRegistry, type HarnessInstallationRecord, type RegistryHarnessSelection } from './installationRegistry.js'
 import { projectHarnessRegistry, projectHarnessInstance } from './registryProjection.js'
@@ -38,6 +38,13 @@ export class ProductionHarnessRegistry {
   private refreshGeneration = 0
   private refreshTask: Promise<void> | undefined
   private inventoryIdentity = ''
+  private inventoryListener: ((host: CanonicalMachineReference, applicationInstallationId: string) => void) | undefined
+  observeInstallations(listener: ((host: CanonicalMachineReference,
+    applicationInstallationId: string) => void) | undefined): void { this.inventoryListener = listener }
+  currentInstallation(value: HostHarnessOverride): HarnessInstallationRecord | undefined {
+    return this.installations.list().find(record => harnessHostKey(record.hostRef) === harnessHostKey(value.target.hostRef)
+      && record.driverId === value.driverId)
+  }
   constructor(private readonly pool: pg.Pool, private readonly binaries: { codexBinary: string },
     private readonly managedDefaults: (client?: pg.ClientBase) => Promise<{ revision: number; defaults: HarnessDefaults; retiredDefaults?: ConfiguredHarnessInstance[] }>,
     private readonly profiles: HostHarnessProfileEvidenceRepository,
@@ -45,7 +52,7 @@ export class ProductionHarnessRegistry {
     private readonly environment: NodeJS.ProcessEnv = process.env,
     private readonly discovery: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads;
       claude?: (host: Extract<CanonicalMachineReference, { kind: 'main' }>, environment: TargetEnvironment, signal?: AbortSignal) => Promise<Awaited<ReturnType<typeof discoverInstalledClaudeSdk>> | null> }
-      = { launcher: discoverLauncher, payloads: passiveDriverPayloads },
+      = { launcher: discoverInventoryLauncher, payloads: inventoryDriverPayloads },
     private readonly collectingBinding: (deviceId: string) => DeviceSessionBinding | null = currentRemoteBinding,
     private readonly connection: (deviceId: string) => DevicePresence | null = () => null) {}
 
@@ -135,6 +142,7 @@ export class ProductionHarnessRegistry {
     this.snapshots.set(harnessHostKey(hostRef), { value: HarnessRegistryReadbackSchema.parse(view),
       connectionGeneration: this.mainGeneration, environmentGeneration: environment.generation })
     this.reloadInstallations()
+    this.inventoryListener?.(hostRef, hostRef.mainId)
   }
   private reloadInstances(): void { this.instances.reload([...this.defaults, ...this.accepted.values()]) }
   private reloadInstallations(): void {
@@ -220,6 +228,7 @@ export class ProductionHarnessRegistry {
     this.snapshots.set(harnessHostKey(hostRef), { value: structuredClone(view),
       connectionGeneration: harnessConnectionGeneration(binding), environmentGeneration: null })
     this.reloadInstallations()
+    this.inventoryListener?.(hostRef, binding.workerInstallationId)
   }
   async get(principal: ManagementPrincipal, raw: CanonicalMachineReference): Promise<HarnessRegistryReadback> {
     this.assertOpen()
@@ -258,8 +267,10 @@ export class ProductionHarnessRegistry {
     const binding = this.currentRemoteBinding(deviceId)
     return binding ? harnessConnectionGeneration(binding) : ''
   }
-  async profileEvidence(value: HostHarnessOverride, client?: pg.PoolClient): Promise<HostHarnessProfileEvidence | null> {
+  async profileEvidence(value: HostHarnessOverride, client?: pg.PoolClient,
+    options?: { includeFailed: true }): Promise<HostHarnessProfileEvidence | null> {
     if (value.target.hostRef.kind === 'device') {
+      if (!options?.includeFailed && this.connection(value.target.hostRef.deviceId)?.clockReason) return null
       const binding = this.currentRemoteBinding(value.target.hostRef.deviceId)
       if (!binding) return null
       const registration = await assertDeviceHostInstallation(client ?? this.pool, value.target.hostRef, value.target.applicationInstallationId)
@@ -279,7 +290,7 @@ export class ProductionHarnessRegistry {
       || proof.driverId !== value.driverId || proof.driverRevision !== installation.driverRevision
       || proof.protocolRevision !== installation.protocolRevision || proof.suiteRevision !== suiteRevision
       || proof.environmentGeneration !== installation.environmentGeneration || proof.connectionGeneration !== connectionGeneration
-      || !proof.authenticated || !proof.compatible || !proof.qualified) return null
+      || (!options?.includeFailed && (!proof.authenticated || !proof.compatible || !proof.qualified))) return null
     return proof
   }
 }

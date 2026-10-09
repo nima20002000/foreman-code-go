@@ -1,4 +1,5 @@
 import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
+import { readWorkflowJobSourceLocked } from '../jobs/workflowSource.js'
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
   type HarnessExecution, type HarnessExecutionContext } from '@foreman-code/contracts'
@@ -445,6 +446,9 @@ export class RepeatRunRepository {
   private async acceptedSource(context: Context, row: RepeatResolution, relationshipId: string): Promise<RepeatSource> {
     const identity = row.value.execution
     if (!identity || row.value.resolution !== 'succeeded' || !row.value.acceptedResultDigest) return repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
+    if (identity.kind === 'job') {
+      return readWorkflowJobSourceLocked(context.sql, context.scope, context.version, row, relationshipId)
+    }
     const stored = await this.execution(context, identity.executionId)
     const result = await context.sql.query<{ result_json: string; result_digest: string }>(
       'select result_json,result_digest from run_repeat_results where execution_id=$1 and run_id=$2', [identity.executionId, context.scope.runId])

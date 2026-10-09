@@ -85,7 +85,7 @@ export class JobService {
         prepare: (principal, definition, ticket) => this.prepareDefinition(pool, principal, definition, ticket),
         admit: async (sql, principal, definition, prepared, ticket) => {
           const ready = await ports.preparation.validate(sql, principal, definition.workspaceId,
-            await this.resolvedDefinition(sql, definition, ticket))
+            await this.resolvedDefinition(sql, definition, ticket), { queued: true })
           if (!ready.valid) throw new DomainError('JOB_NOT_READY', 'Job authority changed during preparation.',
             409, { reasons: ready.reasons })
           return this.admitPrepared(sql, principal, definition, null, null, prepared, ticket)
@@ -209,18 +209,36 @@ export class JobService {
   getDefinitionVersion(principal:ManagementPrincipal,workspaceId:string,definitionId:string,versionId:string,source:'http'|'mcp'='http') {
     return this.read(principal,workspaceId,'job_definitions:read',sql=>this.repository.version(sql,workspaceId,versionId,definitionId),source)
   }
-  getWorkflowExecutionReference(principal:ManagementPrincipal,workspaceId:string,runId:string,nodeExecutionId:string,source:'http'|'mcp'='http') {
-    return this.read(principal,workspaceId,'jobs:read',async sql=>{
-      const row=(await sql.query<{reference:unknown;job_execution_id:string}>('select reference,job_execution_id from workflow_job_executions where run_id=$1 and node_execution_id=$2 for share',[runId,nodeExecutionId])).rows[0]
-      if(!row)throw new DomainError('JOB_WORKFLOW_REFERENCE_NOT_FOUND','The exact persisted Run job relationship is missing.',404)
-      const reference=JobWorkflowExecutionReferenceSchema.parse(row.reference)
-      const runRow=(await sql.query<{record:unknown}>('select record from runs where id=$1 and workspace_id=$2 for share',[runId,workspaceId])).rows[0]
-      const run=AcceptedWorkflowRunV3Schema.parse(runRow?.record)
-      const execution=await this.repository.execution(sql,workspaceId,row.job_execution_id)
-      if(reference.workspaceId!==workspaceId||reference.runId!==runId||reference.nodeExecutionId!==nodeExecutionId||reference.jobExecutionId!==execution.id||reference.workflowId!==run.workflowId||reference.workflowVersionId!==run.workflowVersionId
-        ||execution.workflow?.runId!==runId||execution.workflow.nodeId!==reference.nodeId||execution.workflow.nodeExecutionId!==nodeExecutionId||execution.workflow.workflowId!==reference.workflowId)throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT','The persisted job relationship differs from its actual Run and execution.',409)
+  async getWorkflowExecutionReference(principal: ManagementPrincipal, workspaceId: string, runId: string,
+    nodeExecutionId: string, source: 'http' | 'mcp' = 'http') {
+    const scope = await this.repository.runScope(this.pool, workspaceId, runId)
+    return this.read(principal, workspaceId, 'jobs:read', async sql => {
+      const persistedScope = await this.repository.runScope(sql, workspaceId, runId)
+      if (canonical(scope) !== canonical(persistedScope)) {
+        throw new DomainError('JOB_SCOPE_CONFLICT', 'The job Run relationship changed during the read.', 409)
+      }
+      const row = (await sql.query<{ reference: unknown; job_execution_id: string }>(
+        `select reference,job_execution_id from workflow_job_executions
+          where run_id=$1 and node_execution_id=$2 for share`, [runId, nodeExecutionId])).rows[0]
+      if (!row) {
+        throw new DomainError('JOB_WORKFLOW_REFERENCE_NOT_FOUND', 'The persisted Run job relationship is missing.', 404)
+      }
+      const reference = JobWorkflowExecutionReferenceSchema.parse(row.reference)
+      const runRow = (await sql.query<{ record: unknown }>(
+        'select record from runs where id=$1 and workspace_id=$2 for share', [runId, workspaceId])).rows[0]
+      const run = AcceptedWorkflowRunV3Schema.parse(runRow?.record)
+      const execution = await this.repository.execution(sql, workspaceId, row.job_execution_id)
+      const runMatches = run.id === runId && run.workspaceId === workspaceId && run.workflowId === scope.workflowId
+      const referenceMatches = reference.workspaceId === workspaceId && reference.runId === runId
+        && reference.nodeExecutionId === nodeExecutionId && reference.jobExecutionId === execution.id
+        && reference.workflowId === run.workflowId && reference.workflowVersionId === run.workflowVersionId
+      const executionMatches = execution.workflow?.runId === runId && execution.workflow.nodeId === reference.nodeId
+        && execution.workflow.nodeExecutionId === nodeExecutionId && execution.workflow.workflowId === reference.workflowId
+      if (!runMatches || !referenceMatches || !executionMatches) {
+        throw new DomainError('JOB_WORKFLOW_PIN_CONFLICT', 'The persisted job relationship differs from its Run and execution.', 409)
+      }
       return reference
-    },source)
+    }, source, scope)
   }
   async saveDefinition(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,raw:JobDefinitionSaveRecord) {
     const input = parse(JobDefinitionSaveRecordSchema,raw)
@@ -358,15 +376,18 @@ export class JobService {
     return this.read(principal, workspaceId, 'jobs:start', async sql => this.admissionResult(
       await this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, result.ticketId))), source)
   }
-  getQueueTicket(principal: ManagementPrincipal, workspaceId: string, id: string, source: 'http' | 'mcp' = 'http') {
-    return this.read(principal, workspaceId, 'jobs:read', async sql =>
-      this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, id)), source)
-  }
-  getAdmission(principal: ManagementPrincipal, workspaceId: string, id: string, source: 'http' | 'mcp' = 'http') {
+  async getQueueTicket(principal: ManagementPrincipal, workspaceId: string, id: string, source: 'http' | 'mcp' = 'http') {
+    const scope = await this.repository.queueTicketScope(this.pool, workspaceId, id)
     return this.read(principal, workspaceId, 'jobs:read', async sql => {
-      const ticket = await this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, id))
-      return this.admissionResult(ticket)
-    }, source)
+      const persistedScope = await this.repository.queueTicketScope(sql, workspaceId, id)
+      if (canonical(scope) !== canonical(persistedScope)) {
+        throw new DomainError('JOB_SCOPE_CONFLICT', 'The queued Job relationship changed during the read.', 409)
+      }
+      return this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, id))
+    }, source, scope)
+  }
+  async getAdmission(principal: ManagementPrincipal, workspaceId: string, id: string, source: 'http' | 'mcp' = 'http') {
+    return this.admissionResult(await this.getQueueTicket(principal, workspaceId, id, source))
   }
   private admissionResult(ticket: JobQueueTicket) {
     if (jobQueueHasExecution(ticket)) return JobAdmissionResultSchema.parse({ kind: 'accepted',
@@ -376,10 +397,36 @@ export class JobService {
   listQueue(principal: ManagementPrincipal, workspaceId: string, source: 'http' | 'mcp' = 'http') {
     return this.listQueuePage(principal, workspaceId, {}, source).then(page => page.tickets)
   }
-  listQueuePage(principal: ManagementPrincipal, workspaceId: string, raw: unknown,
+  async listQueuePage(principal: ManagementPrincipal, workspaceId: string, raw: unknown,
     source: 'http' | 'mcp' = 'http') {
     const input = parse(JobQueueListInputSchema, raw)
+    const originScope = input.initiatingExecutionId
+      ? await this.repository.initiatingExecutionScope(this.pool, workspaceId, input.initiatingExecutionId) : {}
+    const scope = input.workflowId ? { ...originScope, workflowId: input.workflowId } : originScope
     return this.read(principal, workspaceId, 'jobs:read', async sql => {
+      if (input.initiatingExecutionId) {
+        const persistedScope = await this.repository.initiatingExecutionScope(sql, workspaceId,
+          input.initiatingExecutionId)
+        if (canonical(originScope) !== canonical(persistedScope)) {
+          throw new DomainError('JOB_SCOPE_CONFLICT', 'The initiating Agent relationship changed during the read.', 409)
+        }
+        if (input.workflowId && originScope.workflowId && input.workflowId !== originScope.workflowId) {
+          throw new DomainError('JOB_SCOPE_CONFLICT', 'The initiating Agent belongs to another workflow.', 409)
+        }
+      }
+      if (input.workflowId) {
+        const workflow = await sql.query('select id from workflows where workspace_id=$1 and id=$2',
+          [workspaceId, input.workflowId])
+        if (!workflow.rows.length) throw new DomainError('WORKFLOW_NOT_FOUND', 'Workflow not found.', 404)
+      }
+      const originFilter = `($2::text is null or q.record #>> '{initiatingAgent,executionId}'=$2)
+        and ($3::text is null or exists(select 1 from runs r where r.workspace_id=q.workspace_id
+          and r.workflow_id=$3 and ($4::text is null or r.id=$4)
+          and ((r.id=q.record #>> '{workflow,runId}' and r.workflow_id=q.record #>> '{workflow,workflowId}')
+            or (r.id=q.record #>> '{initiatingAgent,runId}'
+              and r.workflow_id=q.record #>> '{initiatingAgent,workflowId}'))))`
+      const filters = [workspaceId, input.initiatingExecutionId ?? null, scope.workflowId ?? null,
+        originScope.runId ?? null]
       const active = `(q.record->>'state' in ('waiting','blocked','claimed') or
         (q.record->>'state'='accepted' and exists(select 1 from job_executions e where e.id=q.execution_id
           and (e.record #>> '{process,phase}'<>'terminal'
@@ -398,14 +445,14 @@ export class JobService {
         or exists(select 1 from source_preparation_reconciliations c where c.operation_id=q.record->>'operationId'
           and c.workspace_id=q.workspace_id and c.status<>'closed'))`
       const rows = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
-        where q.workspace_id=$1 and ($2::text is null or q.record #>> '{initiatingAgent,executionId}'=$2)
-          and ${active} order by q.enqueue_sequence`, [workspaceId, input.initiatingExecutionId ?? null])).rows
+        where q.workspace_id=$1 and ${originFilter}
+          and ${active} order by q.enqueue_sequence`, filters)).rows
       const history = (await sql.query<{ record: unknown }>(`select q.record from job_admission_queue q
-        where q.workspace_id=$1 and ($4::text is null or q.record #>> '{initiatingAgent,executionId}'=$4)
+        where q.workspace_id=$1 and ${originFilter}
           and not ${active}
-          and ($2::bigint is null or q.enqueue_sequence<$2::bigint)
-        order by q.enqueue_sequence desc limit $3`,
-      [workspaceId, input.historyBeforeSequence ?? null, input.historyLimit + 1, input.initiatingExecutionId ?? null])).rows
+          and ($5::bigint is null or q.enqueue_sequence<$5::bigint)
+        order by q.enqueue_sequence desc limit $6`,
+      [...filters, input.historyBeforeSequence ?? null, input.historyLimit + 1])).rows
       const hasMore = history.length > input.historyLimit
       const historyTickets = history.slice(0, input.historyLimit).map(row => JobQueueTicketSchema.parse(row.record))
       const tickets: JobQueueTicket[] = []
@@ -413,7 +460,7 @@ export class JobService {
       for (const ticket of historyTickets) tickets.push(await this.repository.queuePosition(sql, ticket))
       return JobQueuePageSchema.parse({ tickets,
         nextHistoryCursor: hasMore ? historyTickets.at(-1)!.enqueueSequence : null })
-    }, source)
+    }, source, scope)
   }
   async cancelQueued(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string, raw: unknown) {
     const input = parse(JobQueueCancelSchema, raw)

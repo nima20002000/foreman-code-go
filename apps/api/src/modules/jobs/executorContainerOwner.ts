@@ -155,6 +155,11 @@ export class OwnedOCIContainer {
         return this.creationAbsent
       }
       const retained = await this.ownership.readCertificate(this.containerId)
+      if (!retained && this.ownership.confirmUnreleasedClosure) {
+        const absent = await this.commands.run(['container', 'exists', this.containerId])
+        return absent.exitCode === 1 && (await this.ownership.closeHelpers?.() ?? false)
+          && await this.ownership.confirmUnreleasedClosure(this.containerId)
+      }
       if (!retained || retained.lifecycle !== 'closed' || retained.containerId !== this.containerId
         || retained.process.bootId !== this.ownership.scope.bootId
         || canonicalGraphJson(retained.scope) !== canonicalGraphJson(this.ownership.scope)) return false
@@ -176,8 +181,15 @@ export class OwnedOCIContainer {
       row = await this.inspect(row.Id)
       if (row?.State.Running) { await this.commands.run(['kill', '--signal', 'KILL', row.Id]); row = await this.inspect(row.Id) }
     }
-    const helpersClosed = row && !row.State.Running && row.State.Pid === 0 ? await this.ownership.closeHelpers?.() ?? true : false
-    const stopped = helpersClosed && !!row && !row.State.Running && row.State.Pid === 0 && row.State.Status === 'exited'
+    let helpersClosed = false
+    if (row && !row.State.Running && row.State.Pid === 0) {
+      const requiresHelpers = row.State.Status === 'created' || row.State.Status === 'configured'
+      helpersClosed = await this.ownership.closeHelpers?.() ?? !requiresHelpers
+    }
+    if (helpersClosed && row) row = await this.inspect(row.Id)
+    const neverStarted = !this.certificate && (row?.State.Status === 'created' || row?.State.Status === 'configured')
+    const stopped = helpersClosed && !!row && !row.State.Running && row.State.Pid === 0
+      && (row.State.Status === 'exited' || neverStarted)
     const closed = stopped && (this.certificate
       ? await proveOCIBoundaryEmpty(this.certificate.boundary) && (await Promise.all(this.certificate.helpers.map(helper =>
         helper.boundary ? proveOCIBoundaryEmpty(helper.boundary) : Promise.resolve(false)))).every(Boolean)

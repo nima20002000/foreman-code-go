@@ -5,6 +5,11 @@ import { execFileSync } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
+import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
+import { SourceReservationReclamationSchema } from '@foreman-code/contracts/source-operations'
+import { sourceBindingHash } from './bindingHash.js'
+import { reclaimSourceReservation } from './reclaimSourceReservation.js'
+import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsage.js'
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import { captureGitSource } from './capture.js'
 import { PrivateSourceSnapshotStore } from './store.js'
@@ -140,3 +145,40 @@ it('prepares an approved unpublished commit on a fresh worker using the transfer
   expect((await f.ports.git(['cat-file', '-e', ancestor],
     { cwd: f.ports.cloneDirectory('octo/site'), signal })).code).not.toBe(0)
 })
+
+
+it('preserves a closed Agent Git worktree and reports its retained bytes during reservation cleanup', async () => {
+  const f = await fixture()
+  const root = SourceRootRecordSchema.parse({ version: 1, binding: f.binding,
+    source: { approvedSourceId: f.manifest.approvedSourceId, snapshotId: f.manifest.snapshotId,
+      manifestDigest: f.manifest.manifestDigest },
+    selection: { hostRef: { kind: 'main', mainId: f.binding.mainId }, rootPolicyId: randomUUID(),
+      rootPolicyRevision: '1', locationRevision: '1' },
+    ownerPrincipalId: 'worktree-owner', authorizedByPrincipalId: 'worktree-owner', registration: null,
+    attestationId: randomUUID(), attestationDigest: 'b'.repeat(64), boundAt: new Date().toISOString() })
+  const operationId = randomUUID()
+  const attempt = f.attempt()
+  attempt.placementHash = sourceBindingHash(root, attempt, operationId)
+  const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt,
+    sharedWritableTree: true, worktree: { repository: 'octo/site', branch: 'foreman/worktree-retention' } })
+  const output = join(sourceWorkingTreePath(receipt), 'unintegrated.txt')
+  await writeFile(output, 'Keep the Agent changes')
+  const reservationId = randomUUID()
+  const record = SourceMaterializationRecordSchema.parse({ receipt, operationId, reservationId,
+    rootPolicyId: root.selection.rootPolicyId, rootPolicyRevision: '1', sourceBindingHash: attempt.placementHash,
+    finalDispatchBindingHash: null, state: 'prepared' })
+  const grant = SourceReservationReclamationSchema.parse({ operationId, reservationId, reclamationId: randomUUID(),
+    scopeId: 'worktree-filesystem', expiresAt: new Date(Date.now() + 60_000).toISOString(), roots: [root],
+    owner: { identity: { operationId, ownerPrincipalId: root.ownerPrincipalId,
+      expiresAt: new Date(Date.now() + 60_000).toISOString() }, root, source: root.source,
+      attempt, record, physicalClosureConfirmed: false } })
+  const ports = { authorize: async () => {}, operationClosed: async () => true, nativeClosed: async () => true }
+  for (let replay = 0; replay < 2; replay++) {
+    const result = await reclaimSourceReservation(grant, ports, AbortSignal.timeout(60_000))
+    expect(result.retained).toEqual(await measureRetainedMaterializationFootprint(receipt))
+    expect(result.retained!.retainedBytes).toBeGreaterThan(0)
+    expect(result.closures).toMatchObject([{ materializationId: receipt.materializationId, claimReleased: true }])
+    expect(await readFile(output, 'utf8')).toBe('Keep the Agent changes')
+    expect(git(sourceWorkingTreePath(receipt), 'branch', '--show-current')).toBe(receipt.worktree!.branch)
+  }
+}, 60_000)

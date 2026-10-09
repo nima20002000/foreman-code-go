@@ -22,6 +22,21 @@ export async function qualifiedGit(root: string, args: string[], maxBuffer = 2 *
   })
   return result.stdout
 }
+/** Inventory the pinned commit, never the index or working tree. Capture verifies its objects separately. */
+export async function approvedGitTreePaths(root: string, commit: string): Promise<string[]> {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) {
+    throw new SourceError('SOURCE_GIT_REF_INVALID', 'An exact Git commit object is required; branch names are not source pins.')
+  }
+  const names = await qualifiedGit(root, ['ls-tree', '-rz', '--name-only', '--full-tree', commit], 8 * 1024 * 1024)
+  const paths = names.toString('utf8').split('\0').filter(Boolean)
+  if (!Buffer.from(names.toString('utf8')).equals(names)) {
+    throw new SourceError('SOURCE_GIT_TREE_UNSUPPORTED', 'Unsupported Git path encoding.')
+  }
+  if (paths.length > SOURCE_LIMITS.entries) {
+    throw new SourceError('SOURCE_CAPACITY', 'Tracked source inventory exceeds the supported source limits.')
+  }
+  return paths.map(sourcePath)
+}
 /** One bounded process verifies every exact commit/tree/blob in the capture. */
 function gitObjectReader(root: string, objectFormat: string, signal: AbortSignal) {
   const child = spawn('/usr/bin/git', ['--no-replace-objects', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', root, 'cat-file', '--batch'],

@@ -68,11 +68,21 @@ or temporary HOME blocks stable identity. Do not reinstall or wipe the OS.
 
 An approved target JSON contains `os`, `osRelease`, `arch`, `libc`, `node`, for
 example `ubuntu`, `24.04`, `x64`, `glibc-2.39`, `v22.23.2`. These example values
-are not qualification of the laptop. Supported packaging targets are Ubuntu
-x64/arm64 with glibc and an explicitly qualified Node 22 runtime.
+are not qualification of the laptop. Packaging is qualified only for Ubuntu x64
+with glibc and an explicitly qualified Node 22 runtime. ARM64 packaging is not
+supported; its Sharp assets and quota helper have not been qualified.
+
+The target and optional runtime metadata must be committed JSON files under
+`apps/worker/artifacts/`. Review the bytes at the captured source commit, for
+example with `git show HEAD:apps/worker/artifacts/ubuntu-24.04-x64-target.json`.
+External files and uncommitted new files cannot be build inputs. Working-copy
+edits to an existing target are not selected: the builder reads the committed
+bytes. Commit and review the target first, then build that revision. By default
+the captured revision is HEAD; `WORKER_BUILD_COMMIT` selects a reviewed full
+commit SHA. Build-control files must also match that revision.
 
 ```
-corepack pnpm --filter @foreman-code/worker build:artifact /approved-target.json /new/artifact-directory
+corepack pnpm --filter @foreman-code/worker build:artifact apps/worker/artifacts/ubuntu-24.04-x64-target.json /new/artifact-directory
 ```
 
 The fresh output includes the built worker, installer, service template and a
@@ -82,6 +92,13 @@ control-plane imports and external non-Node runtime imports. Review and approve
 the manifest SHA-256 through a trusted channel before transferring the artifact.
 An accompanying untrusted checksum file is insufficient.
 
+The manifest version is the captured product release version from the root
+package, so releases can be ordered even when the worker package version stays
+the same. An update with a different source commit and an unchanged release
+version is rejected because its release order is unknown. Existing artifacts
+that used the worker package version do not establish product release order;
+their version fields are not rewritten or treated as proof of a newer release.
+
 ## Human installation gate
 
 Approve exact OS user, Node path, app directory, state directory, artifact hash,
@@ -89,6 +106,18 @@ service configuration and selected-main TLS/listener trust before installation.
 App versions and state must use separate private 0700 directories. State holds
 0600 local identity and pairing; it survives restart/update/rollback. Do not copy
 owner sessions, DB secrets, provider login files or MCP credentials.
+
+Node executable provenance is a human installation gate. Reconcile the approved
+path and executable digest with the reviewed runtime metadata before running
+the installer. The installer checks the reported OS, architecture, libc and Node
+version; it does not authenticate the executable's provenance or silently
+install a runtime.
+
+Installation, local pairing and OS user-service activation are human-only
+because they select private filesystem paths, credentials and the user's service
+manager. Operator MCP cannot approve those machine-local changes or select a Node
+executable. Its existing CI policy, qualification and execution tools continue
+to use explicit grants; Companion's session confirmation is not an MCP grant.
 
 ```
 /absolute/node /approved/artifact/src/install-cli.mjs install --root /private/app --state /private/state --artifact /approved/artifact --manifest-sha256 APPROVED_SHA256
@@ -139,21 +168,54 @@ abstract socket rejects duplicate start and active-worker updates without using
 stale PID files or broad process-name kills. Missing runtime/OS/arch/libc or
 unknown protocol/identity formats are rejected. Silent downgrades are rejected.
 
+New installations record the canonical state directory in private
+`state-directory.json` under the app root. Every update, rollback and Companion
+service plan must use that same state directory. An existing root without this
+record fails with `installation_state_unbound`: supplying another unlocked state
+directory cannot authorize replacement. Such installations require a human to
+review the original service's app/state paths and drain/stop it, then retain the
+old app directory and perform a fresh approved installation into an empty app
+root with the original state. Do not fabricate the binding or delete state to
+get past the check.
+
 The installer serializes with an app-owned lock directory, verifies the approved
-manifest and all copied bytes, fsyncs staged files, and atomically changes
+manifest and all copied bytes, fsyncs staged files and every containing directory
+from children to parents, persists newly created installation-root ancestors,
+and atomically changes
 `current`. `previous` retains the last version. Full disk/read-only errors before
 publication leave `current` intact. A process killed during staging can leave an
 app-owned `.stage-*` and `.install-lock`; after confirming no installer is active,
 a human may remove only that identified staging/lock. There is no unsafe automatic
 stale-PID cleanup. Retry of the same installed manifest is idempotent.
 
+Setup retains the installation and worker-state locks while publishing the MCP
+bridge, Companion launcher, desktop files and proposed service. Companion service
+activation shares that installation lock through user-manager commands. Generated
+launchers and service units reference the reviewed immutable release directory.
+If an open Companion's installed manifest changes, it disables its actions and
+asks the user to reopen the installed launcher.
+
+For the default Companion directories, update with the incoming approved
+artifact's `setup` command and `--approve-stopped-update yes`, using its approved
+Node runtime. The lower-level `install` command updates the release tree only;
+after using it, rerun `setup` from that artifact to refresh the launcher and
+proposed service before reopening Companion.
+
 ```
-/absolute/node /approved/artifact/src/install-cli.mjs rollback --root /private/app --state /private/state --approve-stopped-update yes
+APPROVED_RETAINED_NODE /private/app/current/src/install-cli.mjs rollback --root /private/app --state /private/state --approve-stopped-update yes
 /absolute/node /private/app/current/src/cli.mjs doctor --state /private/state
 ```
 
 Rollback verifies retained manifest/files before switching and preserves state;
-it does not downgrade identity format. Doctor is read-only and emits only OS,
+it does not downgrade identity format. Before running the example, inspect the
+retained manifest in `/private/app/previous/manifest.json` and replace
+`APPROVED_RETAINED_NODE` with a separately approved executable matching its
+`target.node`. A target update does not imply that the current Node can run the
+previous release. No Node is automatically selected or installed. After rollback,
+rerun the retained release's approved setup with that runtime to republish its
+launcher and proposed service, then review and confirm the service plan before
+starting it. For a custom app root, render and review its service with the retained
+runtime instead. Doctor is read-only and emits only OS,
 arch/libc/Node, persistence checks, executable availability, service/user-manager
 liveness, public selected-main/installation identity, pairing/connection status
 and classified errors. It never prints env/auth files, keys, DSNs, process args,

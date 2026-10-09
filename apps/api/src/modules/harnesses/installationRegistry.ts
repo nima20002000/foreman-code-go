@@ -40,12 +40,16 @@ export interface RegistryHarnessSelection {
 const hostKey = (host: CanonicalMachineReference) => host.kind === 'main' ? `main:${host.mainId}` : `device:${host.mainId}:${host.deviceId}`
 const installationIdentity = (record: HarnessInstallationRecord) => ({ ...record,
   launcher: { ...record.launcher, checkedAt: undefined, diagnostics: undefined } })
+const usableInstallation = (record: HarnessInstallationRecord) => record.installed
+  && record.launcher.status === 'installed' && Boolean(record.installationFingerprint)
+  && record.installationFingerprint === record.launcher.fingerprint
 
 /** A projection of canonical authorized-host inventory; no native managers or IO. */
 export class HarnessInstallationRegistry {
   private readonly installations = new Map<string, HarnessInstallationRecord>()
   private readonly revisions = new Map<string, number>()
   private readonly cache = new Map<string, { value: Promise<unknown> }>()
+  private readonly retained = new Map<string, HarnessInstallationRecord>()
   private epoch = 0
   constructor(private readonly instances: HarnessInstanceRegistry) {}
   refresh(records: readonly HarnessInstallationRecord[]): void {
@@ -57,14 +61,32 @@ export class HarnessInstallationRegistry {
     }
     for (const [key, record] of next) {
       const prior = this.installations.get(key)
+      if (prior && usableInstallation(prior)
+        && (prior.installationFingerprint !== record.installationFingerprint || !usableInstallation(record))) {
+        this.retained.set(`${key}:${prior.installationFingerprint}`, structuredClone(prior))
+      }
       if (!prior || !isDeepStrictEqual(installationIdentity(prior), installationIdentity(record))) this.revisions.set(key, ++this.epoch)
     }
-    for (const key of this.revisions.keys()) if (!next.has(key)) this.revisions.delete(key)
+    for (const key of this.revisions.keys()) if (!next.has(key)) {
+      const previous = this.installations.get(key)
+      if (previous && usableInstallation(previous)) {
+        this.retained.set(`${key}:${previous.installationFingerprint}`, structuredClone(previous))
+      }
+      this.revisions.delete(key)
+    }
     this.installations.clear()
     for (const [key, record] of next) this.installations.set(key, record)
     this.cache.clear()
   }
   list(): readonly HarnessInstallationRecord[] { return [...this.installations.values()].map((record) => structuredClone(record)) }
+  residentInstallation(host: CanonicalMachineReference, installationId: string,
+    fingerprint: string): HarnessInstallationRecord | undefined {
+    const key = `${hostKey(host)}:${installationId}`
+    const current = this.installations.get(key)
+    const record = current && usableInstallation(current) && current.installationFingerprint === fingerprint
+      ? current : this.retained.get(`${key}:${fingerprint}`)
+    return record ? structuredClone(record) : undefined
+  }
   invalidate(): void {
     this.epoch++
     for (const key of this.revisions.keys()) this.revisions.set(key, this.epoch)

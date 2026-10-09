@@ -1,3 +1,5 @@
+import * as fs from 'node:fs'
+import { PayloadFingerprintCache } from '../src/modules/harnesses/payloadFingerprintCache.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,6 +14,11 @@ import { inspectInstalledCodex, readInstalledCodexQualification, retainInstalled
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 
 import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
+
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs')>()
+  return { ...original, createReadStream: vi.fn(original.createReadStream) }
+})
 
 async function fixture(version = '0.132.0') {
   const root = await mkdtemp(join(tmpdir(), 'installed-codex-inspection-'))
@@ -34,6 +41,26 @@ function proof(target: NonNullable<Awaited<ReturnType<typeof inspectInstalledCod
 
 describe('passive installed worker Codex evidence producer', () => {
 
+  it('reuses worker inventory hashes while qualification inspection rereads bytes', async () => {
+    const f = await fixture()
+    try {
+      vi.mocked(fs.createReadStream).mockClear()
+      const input = { ...f.input, fingerprintCache: new PayloadFingerprintCache() }
+      const first = await inspectInstalledCodex(input)
+      expect(first.currentTarget).not.toBeNull()
+      const second = await inspectInstalledCodex(input)
+      expect(second.currentTarget?.binarySha256).toBe(first.currentTarget?.binarySha256)
+      expect(fs.createReadStream).toHaveBeenCalledTimes(1)
+      await inspectInstalledCodex(f.input)
+      expect(fs.createReadStream).toHaveBeenCalledTimes(4)
+      await writeFile(f.binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('changed-image')]))
+      expect((await inspectInstalledCodex(input)).currentTarget?.binarySha256)
+        .not.toBe(first.currentTarget?.binarySha256)
+      expect(fs.createReadStream).toHaveBeenCalledTimes(5)
+    } finally {
+      await rm(f.root, { recursive: true, force: true })
+    }
+  })
   it('derives installed metadata and the exact W07 tuple without promoting 0.132 selection or login to trust', async () => {
     const f = await fixture()
     try {

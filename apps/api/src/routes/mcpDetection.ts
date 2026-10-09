@@ -1,16 +1,15 @@
-import { AgentHarnessSchema, ExecutionLocationSchema, ScopedMcpDetectionSchema } from '@foreman-code/contracts'
+import { AgentHarnessSchema, ScopedMcpDetectionSchema } from '@foreman-code/contracts'
 import type { FastifyInstance } from 'fastify'
-import type pg from 'pg'
 import { z } from 'zod'
 
 import { requirePrincipal } from '../modules/access/http.js'
 import { requireAuthorization } from '../modules/access/policy.js'
-import { DomainError } from '../modules/errors.js'
 import type { McpDetectionService } from '../modules/harnesses/mcpDetection.js'
+import type { WorkspaceLocationService } from '../modules/workspaces/location.js'
 
 export function registerMcpDetectionRoute(
   app: FastifyInstance,
-  pool: pg.Pool,
+  locations: WorkspaceLocationService,
   detection: McpDetectionService,
 ): void {
   app.get<{ Params: { workspaceId: string; harness: string } }>(
@@ -29,12 +28,7 @@ export function registerMcpDetectionRoute(
       try {
         if (request.raw.aborted || reply.raw.destroyed) abandoned()
         controller.signal.throwIfAborted()
-        const result = await pool.query<{ execution_location: unknown }>(
-          'select execution_location from workspaces where id=$1 and archived_at is null', [params.workspaceId],
-        )
-        const raw = result.rows[0]?.execution_location
-        if (!raw) throw new DomainError('WORKSPACE_LOCATION_UNCONFIGURED', 'The workspace has no configured execution location.', 409)
-        const location = ExecutionLocationSchema.parse(raw)
+        const location = await locations.inspectionSnapshot(params.workspaceId, controller.signal)
         return ScopedMcpDetectionSchema.parse(await detection.inspect({
           harness: params.harness, runnerId: location.runnerId, workingDirectory: location.rootPath,
           signal: controller.signal, phase: 'configuration',

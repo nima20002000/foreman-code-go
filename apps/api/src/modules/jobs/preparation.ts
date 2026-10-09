@@ -203,7 +203,8 @@ export class JobQueuePreparation {
     let claim
     try {
       claim = await this.ports.placement.claim(sql, principal, JobDefinitionRecordSchema.parse(ticket.definition), ticket,
-        { excludedHosts: excluded, placementOverride: ticket.placementOverride, limits: ticket.resources.limits })
+        { excludedHosts: excluded, placementOverride: ticket.placementOverride, limits: ticket.resources.limits,
+          queued: true })
     } catch (error) {
       if (!(error instanceof DomainError)) throw error
       const reason = jobEligibilityReason(error.code)

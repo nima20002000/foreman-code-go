@@ -1,19 +1,23 @@
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { HarnessMcpListResultSchema, HarnessMcpPlanSchema } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
+import { installManagedLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
+import { withNativeMcpDelivery } from '../src/modules/harnesses/nativeMcpDelivery.js'
 import { applyMcpEdits, fingerprint, mcpEdits, type NativeMcpAdapter, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { heldLauncher } from './helpers/launcherLock.js'
 
 const connectionString = process.env.TEST_DATABASE_URL!
 const clients: Client[] = []
@@ -31,12 +35,24 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
   const snapshots = Object.fromEntries((['codex'] as const).map((harness) => [harness,
     { harness, revision: fingerprint({}), effective: {}, user: {}, userConfig: {}, file, version: '1' }])) as Record<'codex', NativeMcpSnapshot>
   let reads = 0
+  let inspectionFails = false
+  let held: Awaited<ReturnType<typeof heldLauncher>> | undefined
+  let installLauncher: (() => void) | undefined
   const adapter = (harness: 'codex'): NativeMcpAdapter => ({
     read: async () => {
       reads++
+      if (inspectionFails) throw new Error('Native inspection unavailable')
       return structuredClone(snapshots[harness])
     },
-    apply: async (snapshot, change, _signal, managed) => {
+    apply: async (snapshot, change, signal, managed) => {
+      if (held && installLauncher) {
+        await withNativeMcpDelivery(async writing => {
+          installLauncher!()
+          await installManagedLauncher(held!.source, held!.launcher, signal)
+          signal.throwIfAborted()
+          writing()
+        })
+      }
       const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
       snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
         }
@@ -52,14 +68,14 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
   try {
     await applyApplicationMigrations(pool)
     const owner = await access.issue({ name: 'MCP owner', audience: 'operator', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
-      expiresAt: new Date(Date.now() + 120_000) })
+      expiresAt: new Date(Date.now() + 3600_000) })
     const delegated = await access.issue({ name: 'MCP requester', audience: 'operator', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }],
-      expiresAt: new Date(Date.now() + 120_000) })
+      expiresAt: new Date(Date.now() + 3600_000) })
     await pool.query('update management_principals set delegated_from=$2 where id=$1', [delegated.principal.id, owner.principal.id])
     const reader = await access.issue({ name: 'MCP reader', audience: 'operator', grants: [{ actions: ['harnesses:read'], scope: {} }],
-      expiresAt: new Date(Date.now() + 120_000) })
+      expiresAt: new Date(Date.now() + 3600_000) })
     const writer = await access.issue({ name: 'MCP writer without read access', audience: 'operator',
-      grants: [{ actions: ['harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
+      grants: [{ actions: ['harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 3600_000) })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'managed-mcp-test', version: '1' }); clients.push(client)
@@ -148,11 +164,66 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       expect(renamed.servers.map(server => server.name)).toEqual(['foreman-code'])
       expect(snapshots[harness].user['foreman-code']).toMatchObject({ enabled: false, disabled_tools: ['interaction_respond'] })
     }
+    inspectionFails = true
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now + 301_000)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const failed = await client.callTool({ name: 'harness_mcp_servers_list', arguments: { harness: 'codex' } })
+      expect(failed.isError).toBe(true)
+      expect(JSON.stringify(failed.content)).toContain('HARNESS_QUALIFICATION_FAILED')
+    }
+    const httpRefresh = await app.inject({ url: '/api/management/harnesses/codex/mcp',
+      headers: { authorization: `Bearer ${owner.token}` } })
+    expect(httpRefresh.statusCode).toBe(503)
+    expect(httpRefresh.json()).toMatchObject({ code: 'HARNESS_QUALIFICATION_FAILED' })
+    const beforeDenied = reads
+    expect((await deniedReader.callTool({ name: 'harness_mcp_servers_list', arguments: { harness: 'codex' } })).isError)
+      .toBe(true)
+    expect(reads).toBe(beforeDenied)
+    inspectionFails = false
+    const recovered = HarnessMcpListResultSchema.parse((await client.callTool({
+      name: 'harness_mcp_servers_list', arguments: { harness: 'codex' },
+    })).structuredContent)
+    expect(recovered.servers.map(server => server.name)).toEqual(['foreman-code'])
+    expect(recovered.servers[0]?.enabled).toBe(false)
     const audits = await pool.query<{ principal_id: string; source: string }>("select principal_id,source from management_audit where action='harness.mcp.apply'")
     expect(audits.rows.length).toBeGreaterThan(0)
     expect(new Set(audits.rows.map((row) => `${row.principal_id}:${row.source}`))).toEqual(new Set([`${delegated.principal.id}:mcp`]))
+    vi.restoreAllMocks()
+    const removal = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
+      harness: 'codex', preset: 'graphql', installed: false, expectedRevision: recovered.revision, commandId: randomUUID(),
+    } })).structuredContent)
+    expect(removal.status).toBe('applied')
+    const missing = await listed('codex')
+    held = await heldLauncher()
+    const installing = new Promise<void>(resolve => { installLauncher = resolve })
+    const installingArgs = { harness: 'codex', preset: 'graphql', installed: true,
+      expectedRevision: missing.revision, commandId: randomUUID() }
+    expect((await denied.callTool({ name: 'harness_mcp_managed_request', arguments: installingArgs })).isError).toBe(true)
+    const pending = client.callTool({ name: 'harness_mcp_managed_request', arguments: installingArgs })
+    await installing
+    expect(await Promise.race([pending.then(() => 'finished'), delay(30, 'waiting')])).toBe('waiting')
+    await mcp.shutdown()
+    const canceled = HarnessMcpPlanSchema.parse((await pending).structuredContent)
+    expect(canceled).toMatchObject({ status: 'pending', managedPreset: 'graphql' })
+    const persisted = HarnessMcpPlanSchema.parse((await client.callTool({
+      name: 'harness_mcp_change_get', arguments: { planId: canceled.id },
+    })).structuredContent)
+    expect(persisted).toEqual(canceled)
+    expect(persisted.error).toContain('not attempted')
+    expect(snapshots.codex.user).toEqual({})
+    const delivery = await pool.query<{ details: { delivery: string } }>(
+      "select details from management_audit where action='harness.mcp.delivery_recorded' and details->>'planId'=$1", [canceled.id],
+    )
+    expect(delivery.rows).toEqual([{ details: expect.objectContaining({ delivery: 'not_submitted' }) }])
+    await held.release()
+    await delay(30)
+    expect(await readFile(held.launcher, 'utf8')).toBe('original launcher')
   } finally {
-    await mcp.shutdown(); await app.close(); await pool.end()
+    vi.restoreAllMocks()
+    const stopping = mcp.shutdown()
+    await held?.close()
+    await stopping; await app.close(); await pool.end()
     await dropFixtureSchema(admin, schema); await admin.end()
     await rm(directory, { recursive: true, force: true })
   }

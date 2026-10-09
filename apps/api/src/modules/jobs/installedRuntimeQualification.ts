@@ -104,6 +104,7 @@ export async function measureVerificationResourceUsage(input: {
 }
 
 export interface InstalledJobQualificationReservation {
+  now?: () => number
   admission: JobRuntimeNativeAdmissionRecord
   candidate: JobQualificationCandidateRecord
   /** Current protected installation and actual authenticated connection, not copied caller authority. */
@@ -160,7 +161,8 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
     return result
   }
   const { JobQualificationCandidateSchema } = await import('@foreman-code/contracts/job-runtime')
-  const record = await qualifyJobRuntime(JobQualificationCandidateSchema.parse(candidate), authority, input.signal)
+  const record = await qualifyJobRuntime(JobQualificationCandidateSchema.parse(candidate), authority, input.signal,
+    { now: input.now ?? Date.now })
   const result: JobRuntimeQualificationResult = record.outcome === 'qualified' ? { outcome: 'qualified', measurement: jobRuntimeMeasurement(record) }
     : { outcome: 'denied', closure: record.closure, reasons: record.reasons.map(reason => reason.slice(0, 500)) }
   if (await input.journal.qualificationStatus(input.admission.operationId)) await input.journal.qualificationResult(input.admission.operationId, result)
@@ -172,6 +174,7 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
 export async function reserveInstalledJobQualification(input: InstalledJobQualificationReservation): Promise<Awaited<ReturnType<InstalledRuntimeHostDependencies['reserve']>>> {
   const admission = JobRuntimeNativeAdmissionRecordSchema.parse(input.admission), candidate = JobQualificationCandidateRecordSchema.parse(input.candidate)
   const { authority, journal, registry, signal } = input
+  const now = input.now ?? Date.now
   const operationId = admission.operationId
   const host = { hostRef: admission.hostRef, registration: admission.registration, mainInstallationId: admission.mainInstallationId,
     bootId: admission.bootId, connection: admission.connection }
@@ -183,11 +186,11 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     admission.bootId !== candidate.fingerprint.bootId) throw new Error('Original installed qualification admission context changed.')
   const assertCurrent = async () => {
     signal.throwIfAborted()
-    if (bootIdentity() !== admission.bootId || Date.parse(admission.expiresAt) <= Date.now()) throw new Error('Original installed qualification admission expired or boot changed.')
+    if (bootIdentity() !== admission.bootId || Date.parse(admission.expiresAt) <= now()) throw new Error('Original installed qualification admission expired or boot changed.')
     await input.assertAdmission(admission)
     await authority.assertCurrent(candidate)
     const approval = await authority.readApproval(admission.approvalId)
-    if (!approval || approval.status !== 'approved' || approval.fingerprint !== admission.fingerprintDigest || Date.parse(approval.expiresAt) <= Date.now() ||
+    if (!approval || approval.status !== 'approved' || approval.fingerprint !== admission.fingerprintDigest || Date.parse(approval.expiresAt) <= now() ||
       Date.parse(admission.expiresAt) > Date.parse(approval.expiresAt)) throw new Error('Original human qualification approval changed.')
   }
   const assertClosure = async () => {
@@ -350,7 +353,7 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     },
     spawnProcess(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
       signal.throwIfAborted()
-      if (recovering || Date.parse(admission.expiresAt) <= Date.now()) throw new Error('Original qualification cannot launch work.')
+      if (recovering || Date.parse(admission.expiresAt) <= now()) throw new Error('Original qualification cannot launch work.')
       return spawnReserved(id, binary, argv, options)
     },
     async readNativeExit(id: string, child: ChildProcess) {
@@ -476,7 +479,8 @@ export async function recoverInstalledJobRuntimeQualifications(input: {
     const admission = receipt.admission
     if (!same(admission.hostRef, input.host.hostRef)
       || admission.registration?.workerInstallationId !== input.host.registration?.workerInstallationId
-      || admission.mainInstallationId !== input.host.mainInstallationId || admission.bootId !== input.host.bootId) {
+      || admission.mainInstallationId !== input.host.mainInstallationId
+      || receipt.phase !== 'received' && admission.bootId !== input.host.bootId) {
       throw new Error('Original qualification installation required for restart reconciliation.')
     }
     const unavailable = async () => { throw new Error('Restart reconciliation cannot authorize fresh qualification work.') }

@@ -58,7 +58,9 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
       await approval.mutateAsync(request)
       attempt.succeeded(); original.current = undefined
     } catch (error) {
-      if (!(hadUnknownOutcome && error instanceof ApiError && (error.status === 401 || error.status === 403))) attempt.failed(error)
+      const reconciliationDenied = hadUnknownOutcome && error instanceof ApiError
+        && (error.status === 401 || error.status === 403) && error.code !== 'conflict'
+      if (!reconciliationDenied) attempt.failed(error)
       if (!attempt.unresolved) original.current = undefined
     }
   }

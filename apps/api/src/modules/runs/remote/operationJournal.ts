@@ -35,6 +35,7 @@ import { QualificationReceiptSchema, QualificationOCICertificateSchema, qualific
   type QualificationReceipt } from '../../jobs/qualificationJournal.js'
 import { acquireJournalOwner } from './journalOwner.js'
 import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
+import { RuntimeJournalArchive, RUNTIME_JOURNAL_RETENTION_MS } from './runtimeJournalArchive.js'
 
 const ControlDeliverySchema = z.object({
   operationId: z.string(), commandId: z.string(), phase: z.enum(['reserved', 'entered', 'acknowledged']),
@@ -50,6 +51,7 @@ const JournalSchema = z.object({
   archivedWorkflows: z.array(ArchivedWorkflowSchema).default([]),
   controlDeliveries: z.array(ControlDeliverySchema).default([]),
   jobOwners: z.array(JobNativeOwnerSchema).max(1000).default([]),
+  jobSourceClosures: z.array(SourcePreparationClosureSchema).max(1000).default([]),
   qualificationReceipts: z.array(QualificationReceiptSchema).max(1000).default([]),
   receipts: z.array(z.union([RemoteOperationReceiptSchema, RemoteJobOperationReceiptRecordSchema])),
   reconciliations: z.array(RemoteOwnerReconciliationSchema).max(128),
@@ -77,13 +79,17 @@ export class RemoteOperationJournal {
   private faulted = false
   private tail: Promise<unknown> = Promise.resolve()
   readonly conversations: WorkerConversationJournal
+  private readonly runtimeArchive: RuntimeJournalArchive
   private constructor(
     private readonly path: string,
     private data: z.infer<typeof JournalSchema>,
     private readonly capacity: number,
     private readonly byteLimit: number,
     private readonly lock: Awaited<ReturnType<typeof acquireJournalOwner>>,
+    private readonly now: () => number,
+    private readonly retentionNow: () => number | undefined,
   ) {
+    this.runtimeArchive = new RuntimeJournalArchive(path, (path, value) => this.writeSnapshot(path, value))
     this.conversations = new WorkerConversationJournal({
       read: async () => {
         await this.tail
@@ -94,7 +100,8 @@ export class RemoteOperationJournal {
     }, capacity)
   }
   static async open(path: string,
-    options: { initializeNewInstallation?: boolean; capacity?: number; byteLimit?: number;
+    options: { initializeNewInstallation?: boolean; capacity?: number; byteLimit?: number; now?: () => number;
+      retentionNow?: () => number | undefined;
       /** The packaged Worker's exclusive state socket must still be held. */
       assertExclusiveOwner?: () => void } = {}) {
     const capacity = options.capacity ?? 1000
@@ -118,12 +125,14 @@ export class RemoteOperationJournal {
           throw new Error('Journal unavailable: recovery required', { cause: error })
         }
         data = { schemaVersion: 1, conversations: [], nativeControls: [], archivedWorkflows: [], controlDeliveries: [], receipts: [],
-          qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [] }
+          qualificationReceipts: [], reconciliations: [], jobOutputs: [], jobLogs: [], jobOwners: [], jobSourceClosures: [] }
       }
       if (data.receipts.length + data.qualificationReceipts.length + data.conversations.length > capacity) throw new Error('Journal exceeds capacity')
-      const journal = new RemoteOperationJournal(path, data, capacity, byteLimit, lock)
+      const now = options.now ?? Date.now
+      const journal = new RemoteOperationJournal(path, data, capacity, byteLimit, lock, now, options.retentionNow ?? now)
       await journal.persist(journal.serialize(data, { skipControlReserve: true }))
       await journal.compactReviewResults()
+      await journal.pruneFinishedRuntime()
       return journal
     } catch (error) { await lock.close(); throw error }
   }
@@ -317,6 +326,7 @@ export class RemoteOperationJournal {
     const task = this.tail.then(async () => {
       if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
       const next = structuredClone(this.data)
+      await this.pruneRuntimeRecords(next)
       const result = await apply(next)
       if (next.receipts.length + next.qualificationReceipts.length + next.conversations.length > this.capacity) {
         throw new Error('Journal full: explicit retention disposition required')
@@ -335,6 +345,48 @@ export class RemoteOperationJournal {
     if (!receipt) throw new Error('Unknown operation: recovery required')
     return receipt
   }
+  pruneFinishedRuntime(): Promise<void> {
+    return this.change(() => undefined)
+  }
+  private async pruneRuntimeRecords(data: z.infer<typeof JournalSchema>): Promise<void> {
+    const now = this.retentionNow()
+    if (now === undefined) return
+    const cutoff = now - RUNTIME_JOURNAL_RETENTION_MS
+    for (const receipt of [...data.receipts]) {
+      if (!('kind' in receipt) || !receipt.terminal?.processStopped
+        || Date.parse(receipt.terminal.finishedAt) > cutoff || !['complete', 'failed'].includes(receipt.publication)) continue
+      const operationId = receipt.intent.operationId
+      const owner = data.jobOwners.find(value => value.operationId === operationId)
+      const logs = data.jobLogs.find(value => value.operationId === operationId)
+      if (logs?.chunks.some(chunk => chunk.sequence > logs.acknowledgedSequence)
+        || owner && (owner.launches.some(launch => !launch.closed)
+          || owner.container && owner.container.certificate?.lifecycle !== 'closed'
+            && !(owner.nonEntryConfirmed && jobContainerNonEntryObserved(owner))
+          || owner.verification && !owner.verification.finalizedAt && !owner.sourceReclamation)
+        || !data.jobSourceClosures.some(closure => closure.operationId === operationId)
+          && !owner?.sourceReclamation) continue
+      await this.runtimeArchive.save({ kind: 'job', receipt, owner: owner ?? null, logs: logs ?? null,
+        outputs: data.jobOutputs.filter(value => value.operationId === operationId),
+        sourceClosure: data.jobSourceClosures.find(value => value.operationId === operationId)
+          ?? owner?.sourceReclamation ?? null })
+      data.receipts = data.receipts.filter(value => value.intent.operationId !== operationId)
+      data.jobOwners = data.jobOwners.filter(value => value.operationId !== operationId)
+      data.jobLogs = data.jobLogs.filter(value => value.operationId !== operationId)
+      data.jobOutputs = data.jobOutputs.filter(value => value.operationId !== operationId)
+      data.jobSourceClosures = data.jobSourceClosures.filter(value => value.operationId !== operationId)
+      data.controlDeliveries = data.controlDeliveries.filter(value => value.operationId !== operationId)
+    }
+    for (const receipt of [...data.qualificationReceipts]) {
+      if (receipt.phase !== 'closed' || !receipt.result || receipt.quotaClaims.length
+        || receipt.result.outcome === 'denied' && receipt.result.closure === 'unconfirmed') continue
+      // Older snapshots have no finish time; start their retention period at the first observed closure.
+      receipt.finishedAt ??= new Date(now).toISOString()
+      if (Date.parse(receipt.finishedAt) > cutoff || receipt.launches.some(launch => !launch.closed)
+        || data.jobOwners.some(owner => owner.qualificationOperationId === receipt.admission.operationId)) continue
+      await this.runtimeArchive.save({ kind: 'qualification', receipt })
+      data.qualificationReceipts = data.qualificationReceipts.filter(value => value !== receipt)
+    }
+  }
   async status(operationId: string): Promise<RemoteOperationStatus> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
@@ -345,6 +397,9 @@ export class RemoteOperationJournal {
   accept(intent: DispatchIntent, connection: DeviceConnectionIdentity, workerIncarnationId: string) {
     return this.change(async data => {
       intent = DispatchIntentSchema.parse(intent)
+      for (const identity of [`operation:${intent.operationId}`, `execution:${intent.executionId}`, `attempt:${intent.attemptId}`]) {
+        if (await this.runtimeArchive.read(identity)) throw new Error('Operation identity already retired')
+      }
       const archived = await this.archivedReceipt(data, intent.operationId)
       if (archived) {
         if (!same(archived.intent, intent)) throw new Error('Operation binding conflict')
@@ -711,12 +766,24 @@ export class RemoteOperationJournal {
   async qualificationStatus(operationId: string): Promise<QualificationReceipt | null> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
-    return structuredClone(this.data.qualificationReceipts.find(value => value.admission.operationId === operationId) ?? null)
+    const receipt = this.data.qualificationReceipts.find(value => value.admission.operationId === operationId)
+    if (receipt) return structuredClone(receipt)
+    const archived = await this.runtimeArchive.read(`operation:${operationId}`)
+    return archived?.kind === 'qualification' ? archived.receipt : null
   }
   qualificationAccept(raw: JobRuntimeNativeAdmissionRecord, rawCandidate: JobQualificationCandidateRecord) {
-    return this.change(data => {
+    return this.change(async data => {
       const admission = JobRuntimeNativeAdmissionRecordSchema.parse(raw)
       const candidate = JobQualificationCandidateRecordSchema.parse(rawCandidate)
+      const archived = await this.runtimeArchive.read(`operation:${admission.operationId}`)
+      if (archived) {
+        if (archived.kind !== 'qualification' || !same(archived.receipt.admission, admission)
+          || !same(archived.receipt.candidate, candidate)) throw new Error('Qualification admission conflict')
+        return archived.receipt
+      }
+      for (const identity of [`approval:${admission.approvalId}`, `lease:${admission.leaseId}`]) {
+        if (await this.runtimeArchive.read(identity)) throw new Error('Original qualification identity already bound')
+      }
       if (candidate.operationId !== admission.operationId || candidate.approvalId !== admission.approvalId || candidate.qualificationId !== admission.qualificationId) throw new Error('Qualification candidate subject changed')
       const existing = data.qualificationReceipts.find(value => value.admission.operationId === admission.operationId)
       if (existing) { if (!same(existing.admission, admission) || !same(existing.candidate, candidate)) throw new Error('Qualification admission conflict'); return existing }
@@ -724,20 +791,24 @@ export class RemoteOperationJournal {
         || data.receipts.some(value => value.intent.operationId === admission.operationId) || data.qualificationReceipts.some(value =>
         value.admission.approvalId === admission.approvalId || value.admission.leaseId === admission.leaseId)) throw new Error('Original qualification identity already bound')
       if (data.qualificationReceipts.length >= 1000 || data.receipts.length + data.qualificationReceipts.length >= this.capacity) throw new Error('Journal full: explicit retention disposition required')
-      if (Date.parse(admission.expiresAt) <= Date.now()) throw new Error('Qualification admission expired')
+      if (Date.parse(admission.expiresAt) <= this.now()) throw new Error('Qualification admission expired')
       const receipt = QualificationReceiptSchema.parse({ admission, candidate, result: null, sequence: 1, phase: 'received', launches: [], container: null, quotaClaims: [] })
       data.qualificationReceipts.push(receipt); return receipt
     })
   }
   qualificationReserveEntry(operationId: string) {
-    return this.change(data => {
+    return this.change(async data => {
+      const archived = await this.runtimeArchive.read(`operation:${operationId}`)
+      if (archived?.kind === 'qualification') return { reserved: false, receipt: archived.receipt }
       const receipt = this.qualificationReceipt(data, operationId)
-      if (receipt.phase !== 'received' || Date.parse(receipt.admission.expiresAt) <= Date.now()) return { reserved: false, receipt }
+      if (receipt.phase !== 'received' || Date.parse(receipt.admission.expiresAt) <= this.now()) return { reserved: false, receipt }
       receipt.phase = 'native_entry_attempted'; receipt.sequence++; return { reserved: true, receipt }
     })
   }
   qualificationReleaseQuotaClaims(operationId: string) {
-    return this.change(data => {
+    return this.change(async data => {
+      const archived = await this.runtimeArchive.read(`operation:${operationId}`)
+      if (archived?.kind === 'qualification') return archived.receipt
       const receipt = this.qualificationReceipt(data, operationId)
       if (receipt.phase !== 'closed') throw new Error('Positive closure required before releasing quota ownership')
       receipt.quotaClaims = []
@@ -864,6 +935,7 @@ export class RemoteOperationJournal {
         if (receipt.launches.some(value => !value.closed) || receipt.container && receipt.container.certificate?.lifecycle !== 'closed'
           && !(receipt.creationAbsent && qualificationCreationStopped(receipt))) throw new Error('Original physical qualification closure unconfirmed')
         receipt.phase = 'closed'; receipt.sequence++
+        receipt.finishedAt = new Date(this.now()).toISOString()
       }
       return receipt
     })
@@ -890,6 +962,7 @@ export class RemoteOperationJournal {
         throw new Error('Qualification native non-entry is unconfirmed')
       }
       receipt.phase = 'closed'
+      receipt.finishedAt = new Date(this.now()).toISOString()
       receipt.sequence++
       return receipt
     })
@@ -901,7 +974,12 @@ export class RemoteOperationJournal {
         const reconciled = receipt.phase === 'closed' && receipt.result.outcome === 'denied'
           && receipt.result.closure === 'unconfirmed' && result.outcome === 'denied' && result.closure === 'confirmed'
           && same({ ...receipt.result, closure: 'confirmed' }, result)
-        if (reconciled) { receipt.result = result; receipt.sequence++; return receipt }
+        if (reconciled) {
+          receipt.result = result
+          receipt.finishedAt = new Date(this.now()).toISOString()
+          receipt.sequence++
+          return receipt
+        }
         if (!same(receipt.result, result)) throw new Error('Original qualification result changed')
         return receipt
       }
@@ -917,7 +995,10 @@ export class RemoteOperationJournal {
       }
       if (result.outcome === 'denied' && result.closure === 'confirmed' && receipt.phase !== 'closed') throw new Error('Original physical qualification closure unconfirmed')
       if (result.outcome === 'denied' && result.closure === 'unconfirmed') receipt.phase = 'uncertain'
-      receipt.result = result; receipt.sequence++; return receipt
+      receipt.result = result
+      if (receipt.phase === 'closed') receipt.finishedAt = new Date(this.now()).toISOString()
+      receipt.sequence++
+      return receipt
     })
   }
 
@@ -930,9 +1011,19 @@ export class RemoteOperationJournal {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     const receipt = this.data.receipts.find((value): value is RemoteJobOperationReceiptRecord => 'kind' in value && value.intent.operationId === operationId)
-    return receipt ? { status: 'known', receipt: structuredClone(receipt) } : { status: 'unknown', reason: 'journal_absence_requires_reconciliation' }
+    const archived = receipt ? null : await this.runtimeArchive.read(`operation:${operationId}`)
+    const retained = receipt ?? (archived?.kind === 'job' ? archived.receipt : null)
+    return retained ? { status: 'known', receipt: structuredClone(retained) }
+      : { status: 'unknown', reason: 'journal_absence_requires_reconciliation' }
+  }
+  async isJobRetired(operationId: string): Promise<boolean> {
+    await this.tail
+    if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
+    return (await this.runtimeArchive.read(`operation:${operationId}`))?.kind === 'job'
+      && !this.data.receipts.some(receipt => receipt.intent.operationId === operationId)
   }
   async jobOperations(): Promise<RemoteJobOperationReceiptRecord[]> {
+    await this.pruneFinishedRuntime()
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     return structuredClone(this.data.receipts.filter((receipt): receipt is RemoteJobOperationReceiptRecord => 'kind' in receipt))
@@ -945,8 +1036,14 @@ export class RemoteOperationJournal {
       if (!('kind' in existing)) throw new Error('Job operation binding conflict')
       return structuredClone(existing.connection)
     }
+    const archived = await this.runtimeArchive.read(`operation:${execution.operationId}`)
+    if (archived?.kind === 'job') {
+      if (archived.receipt.execution.id !== execution.id || archived.receipt.execution.attemptId !== execution.attemptId
+        || !same(archived.receipt.execution.acceptedSpec, execution.acceptedSpec)) throw new Error('Job operation binding conflict')
+      return archived.receipt.connection
+    }
     const spec = execution.acceptedSpec
-    const matches = this.data.qualificationReceipts.filter(receipt => {
+    const matchesExecution = (receipt: QualificationReceipt) => {
       if (receipt.phase !== 'closed' || receipt.result?.outcome !== 'qualified' || !receipt.admission.connection) return false
       const measurement = receipt.result.measurement
       const fingerprint = measurement.fingerprint
@@ -962,13 +1059,19 @@ export class RemoteOperationJournal {
         && fingerprint.root.binding.workspaceId === execution.workspaceId
         && fingerprint.root.selection.rootPolicyId === spec.target.destination.rootPolicyId
         && fingerprint.root.selection.rootPolicyRevision === spec.target.destination.rootPolicyRevision
-    })
+    }
+    const matches = this.data.qualificationReceipts.filter(matchesExecution)
+    for await (const receipt of this.runtimeArchive.qualifications()) {
+      if (!this.data.qualificationReceipts.some(value => value.admission.operationId === receipt.admission.operationId)
+        && matchesExecution(receipt)) matches.push(receipt)
+      if (matches.length > 1) break
+    }
     if (matches.length !== 1) throw new Error('Original Job connection missing or ambiguous')
     return structuredClone(matches[0]!.admission.connection!)
   }
   jobCancelBeforeEntry(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord, connection: RemoteJobConnectionIdentity,
     workerIncarnationId: string, command: RemoteJobOwnerControl, rawTerminal: RemoteJobTerminalEvidence) {
-    return this.change(data => {
+    return this.change(async data => {
       const execution = JobExecutionRecordSchema.parse(raw)
       const terminal = RemoteJobTerminalEvidenceSchema.parse(rawTerminal)
       if (terminal.outcome !== 'cancelled' || terminal.exitCode !== null || terminal.signal !== null
@@ -982,7 +1085,7 @@ export class RemoteOperationJournal {
       if (owner && (!isPreparatoryVerificationOwner(owner, execution) || !same(owner.connection, connection))) {
         throw new Error('Original Job native entry owner requires physical reconciliation')
       }
-      const receipt = this.acceptJob(data, intent, execution, connection, workerIncarnationId)
+      const receipt = await this.acceptJob(data, intent, execution, connection, workerIncarnationId)
       if (receipt.entryAttempted || receipt.native || (receipt.terminal && receipt.terminal.outcome !== 'cancelled')) {
         throw new Error('Original Job entry requires physical reconciliation')
       }
@@ -1003,9 +1106,17 @@ export class RemoteOperationJournal {
   jobAccept(raw: RemoteJobDispatchIntent, execution: JobExecutionRecord, connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
     return this.change(data => this.acceptJob(data, raw, execution, connection, workerIncarnationId))
   }
-  private acceptJob(data: z.infer<typeof JournalSchema>, raw: RemoteJobDispatchIntent, execution: JobExecutionRecord,
+  private async acceptJob(data: z.infer<typeof JournalSchema>, raw: RemoteJobDispatchIntent, execution: JobExecutionRecord,
     connection: RemoteJobConnectionIdentity, workerIncarnationId: string) {
       const intent = RemoteJobDispatchIntentSchema.parse(raw)
+      const archived = await this.runtimeArchive.read(`operation:${intent.operationId}`)
+      if (archived) {
+        if (archived.kind !== 'job' || !same(archived.receipt.intent, intent)) throw new Error('Job operation binding conflict')
+        return archived.receipt
+      }
+      for (const identity of [`execution:${intent.executionId}`, `attempt:${intent.attemptId}`]) {
+        if (await this.runtimeArchive.read(identity)) throw new Error('Execution attempt already bound to another operation')
+      }
       if (data.archivedWorkflows.some(value => value.operationId === intent.operationId)) throw new Error('Operation subject conflict')
       const existing = data.receipts.find(value => value.intent.operationId === intent.operationId)
       if (existing) {
@@ -1022,7 +1133,9 @@ export class RemoteOperationJournal {
       data.receipts.push(receipt); return receipt
   }
   jobReserveEntry(operationId: string) {
-    return this.change(data => {
+    return this.change(async data => {
+      const archived = await this.runtimeArchive.read(`operation:${operationId}`)
+      if (archived?.kind === 'job') return { reserved: false, receipt: archived.receipt }
       const receipt = this.jobReceipt(data, operationId)
       if (receipt.stopFence || receipt.phase !== 'received') return { reserved: false, receipt }
       receipt.entryAttempted = true; receipt.phase = 'native_entry_attempted'; receipt.sequence++; receipt.observedAt = new Date().toISOString()
@@ -1053,7 +1166,14 @@ export class RemoteOperationJournal {
       receipt.sequence++; receipt.observedAt = new Date().toISOString(); return { dispatch: receipt.native !== undefined && !receipt.terminal, receipt }
   }
   jobTerminal(operationId: string, raw: RemoteJobTerminalEvidence) {
-    return this.change(data => {
+    return this.change(async data => {
+      const archived = await this.runtimeArchive.read(`operation:${operationId}`)
+      if (archived?.kind === 'job') {
+        if (!same(archived.receipt.terminal, RemoteJobTerminalEvidenceSchema.parse(raw))) {
+          throw new Error('Job terminal evidence conflict')
+        }
+        return archived.receipt
+      }
       const receipt = this.jobReceipt(data, operationId), evidence = RemoteJobTerminalEvidenceSchema.parse(raw)
       if (receipt.terminal) { if (!same(receipt.terminal, evidence)) throw new Error('Job terminal evidence conflict'); return receipt }
       const owner = data.jobOwners.find(value => value.operationId === operationId)
@@ -1074,8 +1194,23 @@ export class RemoteOperationJournal {
       owner.nonEntryConfirmed = true; receipt.sequence++; return owner
     })
   }
-  jobPublication(operationId: string, phase: RemoteJobOperationReceiptRecord['publication']) {
+  jobConfirmUnreleasedClosure(operationId: string, containerId: string) {
     return this.change(data => {
+      const owner = this.jobOwner(data, operationId)
+      if (!owner.container || owner.container.containerId !== containerId || owner.container.certificate
+        || !owner.launches.length
+        || owner.launches.some(launch => !launch.closed
+          || (launch.argv[0] === '--remote=false' ? launch.argv[1] : launch.argv[0]) === 'exec')) {
+        throw new Error('Original unreleased container closure is unconfirmed')
+      }
+      owner.container.unreleasedClosureConfirmed = true
+      owner.nonEntryConfirmed = true
+    })
+  }
+  jobPublication(operationId: string, phase: RemoteJobOperationReceiptRecord['publication']) {
+    return this.change(async data => {
+      const archived = await this.runtimeArchive.read(`operation:${operationId}`)
+      if (archived?.kind === 'job') return archived.receipt
       const receipt = this.jobReceipt(data, operationId)
       if (!receipt.terminal) throw new Error('Physical job closure required before publication')
       if (receipt.publication === phase || receipt.publication === 'complete' || receipt.publication === 'failed') return receipt
@@ -1147,7 +1282,10 @@ export class RemoteOperationJournal {
   async jobNativeOwner(operationId: string): Promise<JobNativeOwner | null> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
-    return structuredClone(this.data.jobOwners.find(value => value.operationId === operationId) ?? null)
+    const owner = this.data.jobOwners.find(value => value.operationId === operationId)
+    if (owner) return structuredClone(owner)
+    const archived = await this.runtimeArchive.read(`operation:${operationId}`)
+    return archived?.kind === 'job' ? archived.owner : null
   }
   jobReleasePreparatoryOwner(operationId: string, scope: {
     executionId: string; attemptId: string; bindingHash: string; materializationId: string; closureEvidenceDigest: string
@@ -1216,24 +1354,28 @@ export class RemoteOperationJournal {
   jobSourceReclaimed(operationId: string, raw: SourcePreparationClosure) {
     return this.change(data => {
       const closure = SourcePreparationClosureSchema.parse(raw)
-      const receipt = this.jobReceipt(data, operationId), owner = this.jobOwner(data, operationId)
+      const receipt = this.jobReceipt(data, operationId)
+      const owner = data.jobOwners.find(value => value.operationId === operationId)
       const execution = receipt.execution, target = execution.acceptedSpec.target
-      if (execution.schemaVersion !== 2 || receipt.phase !== 'confirmed_terminal'
+      if (receipt.phase !== 'confirmed_terminal'
         || !receipt.terminal?.processStopped || !['complete', 'failed'].includes(receipt.publication)
-        || closure.quotaReclaimed !== true || closure.operationId !== operationId
+        || execution.schemaVersion === 2 && closure.quotaReclaimed !== true || closure.operationId !== operationId
         || closure.executionId !== execution.id || closure.attemptId !== execution.attemptId
         || closure.mainId !== target.mainId || closure.deviceId !== (target.hostRef.kind === 'device' ? target.hostRef.deviceId : null)
         || closure.workerInstallationId !== (target.registration?.workerInstallationId ?? null)
         || closure.keyRevision !== (target.registration?.keyRevision ?? null)
         || closure.authorizationRevision !== (target.registration?.authorizationRevision ?? null)
         || closure.materializationId !== execution.acceptedSpec.source.materializationId
-        || receipt.native && !owner.container
-        || owner.launches.some(launch => !launch.closed)
-        || owner.container && owner.container.certificate?.lifecycle !== 'closed'
+        || receipt.native && !owner?.container
+        || owner?.launches.some(launch => !launch.closed)
+        || owner?.container && owner.container.certificate?.lifecycle !== 'closed'
           && !(owner.nonEntryConfirmed && jobContainerNonEntryObserved(owner))) {
         throw new Error('Original stopped Job and reclaimed quota closure required.')
       }
-      owner.sourceReclamation ??= closure
+      const prior = data.jobSourceClosures.find(value => value.operationId === operationId)
+      if (prior && !same(prior, closure)) throw new Error('Original Job source closure changed')
+      if (!prior) data.jobSourceClosures.push(closure)
+      if (owner) owner.sourceReclamation ??= closure
     })
   }
   jobReserveProcess(operationId: string, input: { launchId: string; processOwner?: string; binary: string; argv: string[] }) {
@@ -1244,6 +1386,12 @@ export class RemoteOperationJournal {
         throw new Error('Job controller owner differs from its original operation')
       }
       const owner = this.jobOwner(data, operationId)
+      const argv = input.argv[0] === '--remote=false' ? input.argv.slice(1) : input.argv
+      const cleanup = argv[0] === 'rm'
+        || argv[0] === 'container' && ['inspect', 'exists'].includes(argv[1] ?? '')
+      if (owner.container?.unreleasedClosureConfirmed && !cleanup) {
+        throw new Error('Closed unreleased container cannot start a native process')
+      }
       if (owner.launches.some(value => value.launchId === input.launchId)) throw new Error('Job native launch already reserved')
       owner.launches.push({ ...input, exit: null, closed: false })
     })
@@ -1260,12 +1408,14 @@ export class RemoteOperationJournal {
     })
   }
   jobContainerIntent(operationId: string, identity: string, fingerprint: string, qualificationOperationId?: string) {
-    return this.change(data => {
+    return this.change(async data => {
       const receipt = this.jobReceipt(data, operationId), owner = this.jobOwner(data, operationId)
       if (qualificationOperationId) {
         if (owner.qualificationOperationId && owner.qualificationOperationId !== qualificationOperationId) throw new Error('Original Job qualifier changed')
-        const qualification = this.qualificationReceipt(data, qualificationOperationId)
-        if (qualification.result?.outcome !== 'qualified' || qualification.phase !== 'closed') throw new Error('Original Job qualifier unavailable')
+        const archived = await this.runtimeArchive.read(`operation:${qualificationOperationId}`)
+        const qualification = data.qualificationReceipts.find(value => value.admission.operationId === qualificationOperationId)
+          ?? (archived?.kind === 'qualification' ? archived.receipt : null)
+        if (qualification?.result?.outcome !== 'qualified' || qualification.phase !== 'closed') throw new Error('Original Job qualifier unavailable')
         owner.qualificationOperationId = qualificationOperationId
       }
       if (identity !== jobSupervisorIdentity(receipt.execution) || fingerprint !== receipt.execution.acceptedSpec.specDigest) throw new Error('Original Job container intent changed')

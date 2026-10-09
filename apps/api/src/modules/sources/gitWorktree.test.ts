@@ -13,6 +13,32 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8',
   env: gitFixtureEnvironment() }).trim()
 
+it('joins cancelled Git acquisition before returning control to source cleanup', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'git-cancellation-'))
+  roots.push(root)
+  const bin = join(root, 'bin')
+  const marker = join(root, 'started')
+  await mkdir(bin)
+  await writeFile(join(bin, 'git'), `#!${process.execPath}\n
+require('node:fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));
+process.on('SIGTERM', () => {});
+setInterval(() => {}, 1000);\n`, { mode: 0o700 })
+  const environment = gitFixtureEnvironment()
+  const ports = systemGitWorktreePorts({ ...environment, PATH: `${bin}:${environment.PATH}` })
+  const lifetime = new AbortController()
+  const task = ports.git(['status'], { signal: lifetime.signal })
+  try {
+    await vi.waitFor(async () => expect(await readFile(marker, 'utf8')).toMatch(/^\d+$/))
+    const pid = Number(await readFile(marker, 'utf8'))
+    lifetime.abort()
+    expect((await task).code).not.toBe(0)
+    expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+  } finally {
+    lifetime.abort()
+    await task
+  }
+})
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'git-worktree-')); roots.push(root)
   const origin = join(root, 'origin'); await mkdir(origin)

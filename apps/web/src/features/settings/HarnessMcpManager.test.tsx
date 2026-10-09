@@ -10,6 +10,29 @@ const checkedAt = '2026-09-20T00:00:00.000Z'
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()) })
 
+it('shows refresh failures and disables writes until an inspection succeeds', async () => {
+  let unavailable = false
+  server.use(
+    http.get('/api/management/harnesses/codex/mcp', () => unavailable
+      ? HttpResponse.json({ error: { code: 'HARNESS_QUALIFICATION_FAILED', message: 'Native inspection unavailable' } }, { status: 503 })
+      : HttpResponse.json({ harness: 'codex', revision, checkedAt, scope: 'native-user', servers: [],
+        presets: { graphql: 'missing', linear: 'missing' } })),
+    http.get('/api/management/harnesses/codex/mcp/plans', () => HttpResponse.json({ items: [] })),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Add server' })).toBeEnabled())
+  unavailable = true
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+  expect(await screen.findByText('Native inspection unavailable')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Add server' })).toBeDisabled()
+  unavailable = false
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+  await waitFor(() => expect(screen.queryByText('Native inspection unavailable')).not.toBeInTheDocument())
+  expect(screen.getByRole('button', { name: 'Add server' })).toBeEnabled()
+})
+
 it.each(['codex'] as const)('adds, toggles, and removes Foreman Code and Linear MCP in %s', async (harness) => {
   const installed = new Map<string, boolean>()
   const calls: Array<{ preset: string; installed?: boolean; enabled?: boolean }> = []

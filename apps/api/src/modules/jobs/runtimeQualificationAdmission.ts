@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { DeviceExecutionAdmissionFields } from '@foreman-code/contracts/device-resources'
 import { JobRuntimeApprovalRecordSchema, JobRuntimeProfileRecordSchema, JobRuntimeNativeAdmissionRecordSchema,
-  type JobRuntimeNativeAdmissionRecord, type JobRuntimeFingerprintRecord, type JobRuntimeProfileRecord,
+  type JobRuntimeNativeAdmissionRecord, type JobRuntimeFingerprintRecord, type JobRuntimeProfileRecord, type JobRuntimeApprovalRecord,
   type JobQualificationCandidateRecord, jobRuntimeQualificationAnchorAt } from '@foreman-code/contracts/job-verification-runtime'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
@@ -21,6 +21,44 @@ export interface JobRuntimeNativeAdmissionInput {
   readCurrent(sql: JobSql, profile: JobRuntimeProfileRecord): Promise<{ fingerprint: JobRuntimeFingerprintRecord; connection: DeviceSessionBinding | null }>
 }
 function changed(): never { throw new DomainError('JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT', 'The original human-approved qualification authority changed.', 409) }
+
+/** Reading an admitted operation permits cleanup only; it cannot issue or renew a lease. */
+export async function readInstalledJobQualificationAdmission(sql: JobSql, input: {
+  approval: JobRuntimeApprovalRecord; runCommandId: string; runPrincipalId: string
+}): Promise<JobRuntimeNativeAdmissionRecord> {
+  const { approval } = input
+  await lockActiveWorkspace(sql, approval.workspaceId)
+  const row = (await sql.query<{
+    record: unknown; run_command_id: string | null; run_principal_id: string | null; native_admission: unknown
+  }>(`select record,run_command_id,run_principal_id,native_admission
+    from job_runtime_qualification_approvals where id=$1 and workspace_id=$2 for share`,
+  [approval.id,approval.workspaceId])).rows[0]
+  if (!row?.native_admission) changed()
+  const current = JobRuntimeApprovalRecordSchema.parse(row.record)
+  const admission = JobRuntimeNativeAdmissionRecordSchema.parse(row.native_admission)
+  if (!['qualifying','recovery-required'].includes(current.status)
+    || current.id !== approval.id || current.workspaceId !== approval.workspaceId
+    || current.profileId !== approval.profileId || current.profileRevision !== approval.profileRevision
+    || row.run_command_id !== input.runCommandId || row.run_principal_id !== input.runPrincipalId
+    || current.qualificationId !== approval.qualificationId || current.fingerprintDigest !== approval.fingerprintDigest
+    || canonical(current.fingerprint) !== canonical(approval.fingerprint)
+    || admission.approvalId !== approval.id || admission.qualificationId !== approval.qualificationId
+    || admission.workspaceId !== approval.workspaceId || admission.profileId !== approval.profileId
+    || admission.profileRevision !== approval.profileRevision || admission.fingerprintDigest !== approval.fingerprintDigest
+    || admission.runCommandId !== input.runCommandId || admission.runPrincipalId !== input.runPrincipalId
+    || admission.expiresAt !== approval.expiresAt || admission.bootId !== approval.fingerprint.bootId
+    || canonical(admission.hostRef) !== canonical(approval.fingerprint.hostRef)
+    || canonical(admission.registration) !== canonical(approval.fingerprint.registration)
+    || admission.mainInstallationId !== approval.fingerprint.mainInstallationId) changed()
+  requireAuthorization(await readLiveManagementPrincipal(sql,input.runPrincipalId),
+    'job_definitions:write',{workspaceId:approval.workspaceId})
+  const registration = await assertDeviceHostInstallation(sql,admission.hostRef,
+    admission.hostRef.kind === 'main' ? admission.mainInstallationId : admission.registration!.workerInstallationId)
+  const registrationPin = registration ? { workerInstallationId: registration.workerInstallationId,
+    keyRevision: registration.keyRevision,authorizationRevision: registration.authorizationRevision } : null
+  if (canonical(registrationPin) !== canonical(admission.registration)) changed()
+  return admission
+}
 /** Called inside the existing Main transaction, committed before native entry.
  * Its original approval row is the sole admission store. Retry reads the same
  * immutable lease and never mints replacement native authority. */
@@ -32,6 +70,14 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
       from job_runtime_qualification_approvals where id=$1 for update`, [candidate.approvalId])).rows[0]
   if (!row) changed()
   const approval = JobRuntimeApprovalRecordSchema.parse(row.record)
+  if (options.access === 'read') {
+    if (candidate.approvalId !== approval.id || candidate.fingerprint.root.binding.workspaceId !== approval.workspaceId
+      || candidate.operationId !== approval.qualificationId || candidate.qualificationId !== approval.qualificationId
+      || jobQualificationFingerprint(candidate) !== approval.fingerprintDigest
+      || canonical(candidate.fingerprint) !== canonical(approval.fingerprint)) changed()
+    return readInstalledJobQualificationAdmission(sql,{ approval,runCommandId: input.runCommandId,
+      runPrincipalId: input.runPrincipalId })
+  }
   if (approval.id!==candidate.approvalId||approval.workspaceId!==candidate.fingerprint.root.binding.workspaceId||approval.status !== 'qualifying' || row.run_command_id !== input.runCommandId || row.run_principal_id !== input.runPrincipalId || Date.parse(approval.expiresAt) <= Date.now() ||
     candidate.operationId !== approval.qualificationId || candidate.qualificationId !== approval.qualificationId ||
     jobQualificationFingerprint(candidate) !== approval.fingerprintDigest || canonical(candidate.fingerprint) !== canonical(approval.fingerprint)) changed()
@@ -73,20 +119,10 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
   if (row.native_admission) {
     const saved = JobRuntimeNativeAdmissionRecordSchema.parse(row.native_admission)
     const expected = { ...context, leaseId: saved.leaseId, admittedAt: saved.admittedAt }
-    if (options.access === 'read') {
-      const { connection: savedConnection, ...savedScope } = saved
-      const { connection: currentConnection, ...currentScope } = expected
-      if (canonical(savedScope) !== canonical(currentScope)) changed()
-      if ((savedConnection === null) !== (currentConnection === null)) changed()
-      if (savedConnection && currentConnection) {
-        for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId']) {
-          if (Reflect.get(savedConnection, key) !== Reflect.get(currentConnection, key)) changed()
-        }
-      }
-    } else if (canonical(saved) !== canonical(expected)) changed()
+    if (canonical(saved) !== canonical(expected)) changed()
     return saved
   }
-  if(options.requireExisting || options.access === 'read')changed()
+  if(options.requireExisting)changed()
   const admission = JobRuntimeNativeAdmissionRecordSchema.parse({ ...context, leaseId: randomUUID(), admittedAt: new Date().toISOString() })
   await sql.query('update job_runtime_qualification_approvals set native_admission=$2::jsonb where id=$1', [approval.id, JSON.stringify(admission)])
   return admission

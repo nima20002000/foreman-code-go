@@ -206,6 +206,22 @@ describe('actual common owned Claude version command', () => {
       await f.manager.dispose?.()
     }
   })
+  it('preserves reservation failure before a version process starts without requesting missing closure', async () => {
+    const f = ownedVersion()
+    delete f.recovery.launchId
+    const failure = new Error('Reservation storage is full.')
+    f.admit.mockImplementation(() => { throw failure })
+    f.close.mockImplementation(async () => { throw new Error('No process closure exists.') })
+    try {
+      await expect(f.factories.observeClaudeVersion(f.binding, '/recorded-neutral')).rejects.toBe(failure)
+      expect(f.command).not.toHaveBeenCalled()
+      expect(f.abandon).not.toHaveBeenCalled()
+      expect(f.close).not.toHaveBeenCalled()
+    } finally {
+      await f.factories.disposeAuxiliaries()
+      await f.manager.dispose?.()
+    }
+  })
   it('aborts and joins an in-flight version command during the existing factory shutdown phase', async () => {
     const f = ownedVersion(), entered = deferred<void>()
     f.command.mockImplementation((...args: unknown[]) => new Promise((_resolve, reject) => {

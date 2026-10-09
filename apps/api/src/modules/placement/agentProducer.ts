@@ -36,17 +36,26 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     private readonly registry: Pick<ProductionHarnessRegistry, 'installations' | 'pinOverride'>,
     private readonly qualificationSuites: Readonly<Record<CompatibilityHarness, string>>,
     private readonly workerExecution = new WorkerExecutionPolicy(),
-    private readonly assertProfileReady?: (host: CanonicalMachineReference) => void) {}
+    private readonly assertProfileReady?: (host: CanonicalMachineReference) => void,
+    private readonly refreshProfileInventory?: (
+      hosts: readonly CanonicalMachineReference[], signal?: AbortSignal,
+    ) => Promise<void>) {}
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
     signal?: AbortSignal): Promise<PreparedRunPlacementAdmission | undefined> {
     signal?.throwIfAborted()
+    const savedVersion = await withExclusiveGraphConnection(this.pool, connection => this.readVersion(connection, input))
+    signal?.throwIfAborted()
+    if (!sameWorkflowValue(savedVersion.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
+    const hosts = savedVersion.definition.nodes.filter(node => node.kind !== 'job')
+      .map(node => node.placement?.hostRef ?? { kind: 'main' as const, mainId: this.mainId })
+    if (hosts.length) await this.refreshProfileInventory?.(hosts, signal)
+    signal?.throwIfAborted()
+    for (const host of hosts) this.assertProfileReady?.(host)
+    if (!workflowUsesAgentPlacements(savedVersion.definition)) return undefined
     return withExclusiveGraphConnection(this.pool, connection => connection.transaction(async sql => {
       signal?.throwIfAborted()
       if (signal) beforeGraphCommit(sql, async () => signal.throwIfAborted())
-      const row = (await sql.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions
-        where id=$1 and workspace_id=$2 and workflow_id=$3`, [input.workflowVersionId, input.workspaceId, input.workflowId])).rows[0]
-      if (!row) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', 'Exact saved workflow version is required.', 404)
-      const version = readImmutableWorkflowVersion(row)
+      const version = await this.readVersion(sql, input)
       signal?.throwIfAborted()
       if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
       const nodes = version.definition.nodes.filter(node => node.kind !== 'job')
@@ -63,6 +72,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const configRow = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
           [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
         const config = AgentConfigurationVersionSchema.parse(configRow?.record)
+        this.assertProfileReady?.(node.placement?.hostRef ?? { kind: 'main', mainId: this.mainId })
         const saved = node.placement ?? await resolveMain(sql, principal, config)
         if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
@@ -81,7 +91,6 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const instance = await this.readInstance(sql, saved!.instanceId)
         if (!instance.enabled || instance.instanceRevision !== saved!.instanceRevision
           || !sameWorkflowValue(instance.target.hostRef, saved!.hostRef)
-          || instance.target.harnessInstallationId !== saved!.harnessInstallationId
           || !sameWorkflowValue(withAdvancedDefaults(instance.configuration), withAdvancedDefaults(config.harness))
           || instance.driverId !== config.harness.harness) this.conflict()
         this.assertProfileReady?.(instance.target.hostRef)
@@ -122,6 +131,13 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           await this.assertPinsCurrent(transaction, pin, live, input.workspaceId)
         } }) }
     }))
+  }
+  private async readVersion(sql: GraphSqlClient, input: RunStartV3Input) {
+    const row = (await sql.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS}
+      from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3`,
+    [input.workflowVersionId, input.workspaceId, input.workflowId])).rows[0]
+    if (!row) throw new DomainError('WORKFLOW_VERSION_NOT_FOUND', 'Exact saved workflow version is required.', 404)
+    return readImmutableWorkflowVersion(row)
   }
   harnessFacts(sql: GraphTransactionSql, pin: AcceptedNodePlacement, options?: { purpose: 'resident' }) {
     return readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites, options)

@@ -27,6 +27,9 @@ export function registerHarnessRegistryTools(server: McpServer, service: Harness
       + 'Match its driver to an installed harness, use harness_instance_save to configure a host override, '
       + 'then harness_instance_check to qualify the saved profile. Saving and checking require update grants. '
       + 'Installation, authentication, qualification and connection facts remain separate; '
+      + 'the sidebar installation indicator uses installed, without implying authentication or execution readiness. '
+      + 'previously qualified Main and Worker profiles are checked automatically after installed payload changes. '
+      + 'harness_instances_list reports pending checks and persisted failure reasons. '
       + 'no discovery, native probe or fallback is performed.',
     inputSchema: HarnessHostReferenceSchema, outputSchema: HarnessRegistryReadbackSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

@@ -55,12 +55,12 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_folder_create', () => context.services.harnessSettings!.directories.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_list')) server.registerTool('workspace_list', {
-    description: 'List one cursor page of authorized workspaces with revisions and archive state. Pass pageInfo.nextCursor as cursor to load more; null means the end.', inputSchema: WorkspaceListInputSchema,
+    description: 'List one cursor page of authorized workspaces with revisions and archive state. Saved computer roots are inspected on their approved host when source_roots:read and workspace_locations:read are granted. Pass pageInfo.nextCursor as cursor to load more; null means the end.', inputSchema: WorkspaceListInputSchema,
     outputSchema: ManagedWorkspacePageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_list', () => context.services.workspaces.list(context.principal, input)))
   if (operatorToolAvailable(context, 'workspace_get')) server.registerTool('workspace_get', {
-    description: 'Read an authorized workspace by stable ID.', inputSchema: WorkspaceGetInputSchema,
+    description: 'Read an authorized workspace by stable ID. Saved computer roots are inspected on their approved host when source_roots:read and workspace_locations:read are granted; missing host authority is reported in locationValidation.', inputSchema: WorkspaceGetInputSchema,
     outputSchema: ManagedWorkspaceSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_get', () => context.services.workspaces.get(context.principal, input.workspaceId)))
@@ -75,12 +75,12 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_update', () => context.services.workspaces.update(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_batch_archive')) server.registerTool('workspace_batch_archive', {
-    description: 'Archive 1–100 workspaces and delete their app-created project folders, including contents. Retain workflow/run history and externally selected folders. Requires archive permission and expected revision for every workspace, plus workspace_locations:provision for owned folders. Active runs or conflicts reject the entire archive batch. Folder cleanup follows the database commit; on cleanup failure retry with the same commandId and input.',
+    description: 'Archive 1–100 workspaces and delete their app-created project folders, including contents. Retain workflow/run history and externally selected folders. Requires archive permission and expected revision for every workspace, plus workspace_locations:provision for owned folders. Active runs or conflicts reject the entire archive batch. Folder cleanup follows the database commit and protects directories still required by accepted Runs or pending cleanup, even after workspace location changes. On cleanup failure retry with the same commandId and input.',
     inputSchema: WorkspaceBatchArchiveInputSchema, outputSchema: WorkspaceBatchArchiveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_batch_archive', () => context.services.workspaces.archiveBatch(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_archive')) server.registerTool('workspace_archive', {
-    description: 'Archive a settled workspace and delete its app-created project folder, including contents. Retain workflow/run history and externally selected folders. Requires workspaces:archive, plus workspace_locations:provision for an owned folder. On cleanup failure retry with the same commandId and input; the workspace may already be archived.', inputSchema: WorkspaceArchiveInputSchema,
+    description: 'Archive a settled workspace and delete its app-created project folder, including contents. Retain workflow/run history and externally selected folders. Requires workspaces:archive, plus workspace_locations:provision for an owned folder. Cleanup protects directories still required by accepted Runs or pending cleanup, even after workspace location changes. On cleanup failure retry with the same commandId and input; the workspace may already be archived.', inputSchema: WorkspaceArchiveInputSchema,
     outputSchema: ManagedWorkspaceCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workspace_archive', () => context.services.workspaces.archive(context.principal, 'mcp', input)))
@@ -91,7 +91,7 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_location_validate', () => context.services.locations.validate(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_location_set')) server.registerTool('workspace_location_set', {
-    description: 'Revision-check and save an existing canonical workspace execution folder. All workflows inherit it for new runs; accepted runs retain their snapshots. Read workspace_get for expectedLocationRevision. This does not change harness permissions.',
+    description: 'Revision-check and save a legacy workspace execution folder. Workspaces with approved computer roots reject this setter without mutation; use workspace_root_location_set with approved choices and revisions instead. Accepted runs retain their snapshots. Read workspace_get for expectedLocationRevision. This does not change harness permissions.',
     inputSchema: WorkspaceLocationSetInputSchema,
     outputSchema: WorkspaceLocationSetResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },

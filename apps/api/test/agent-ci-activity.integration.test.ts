@@ -9,12 +9,13 @@ import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js
 import { withCurrentRunRead } from '../src/modules/runs/currentRead.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { agentCiActivityMigration } from '../src/infrastructure/agentCiActivityMigration.js'
 import { graphFixture, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
 
-async function fixture(options: { beforeMigration?: number } = {}) {
+async function fixture(options: { deferMigration?: number } = {}) {
   const database = await currentDatabase(options)
   const graph = await graphFixture(database, { form: 'single', qualifiedReads: true })
   const node = agentWorkflowNode(graph.version.definition.nodes[0])
@@ -162,7 +163,8 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
   }, 120000)
 
   it('adds a present-state observation for retained tickets without inventing earlier CI transitions', async () => {
-    const f = await fixture({ beforeMigration: 2026100901 })
+    // Current queue services need the other migrations while activity backfill remains pending.
+    const f = await fixture({ deferMigration: agentCiActivityMigration.version })
     try {
       const ticket = await f.submit()
       expect((await f.activity()).items.filter(item => item.kind === 'job_work')).toEqual([])
@@ -170,6 +172,8 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
       const ci = (await f.activity()).items.filter(item => item.refs.jobExecutionId === ticket.executionId)
       expect(ci).toHaveLength(1)
       expect(ci[0]?.status).toBe('queued')
+      await applyApplicationMigrations(f.database.pool)
+      expect((await f.activity()).items.filter(item => item.refs.jobExecutionId === ticket.executionId)).toEqual(ci)
     } finally { await f.close() }
   }, 120000)
 })

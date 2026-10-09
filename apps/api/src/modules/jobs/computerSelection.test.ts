@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { createSourceManifest, sourceSha256 } from '../sources/manifest.js'
+import { sourceMaterializationBytes } from '../sources/footprint.js'
+import { SOURCE_AGGREGATE_LIMITS } from '../sources/reservations.js'
 import { describe, expect, it, vi } from 'vitest'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
@@ -21,14 +25,14 @@ it('inspects an explicit launch override without reserving and permits an offlin
   const settings = { preference: async () => preference } as unknown as BuildComputerSettings
   const selection = new JobComputerSelection(settings, { candidates },
     { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
-  const query = vi.fn()
+  const query = vi.fn(async () => ({ rows: [], rowCount: 0 }))
   const sql = { query } as unknown as JobSql
   const principal = {} as ManagementPrincipal
   const placementOverride = { kind: 'explicit' as const, target: candidate.spec.target }
   expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, placementOverride))
     .toEqual({ valid: false, canQueue: true, reasons: ['offline'], sideEffects: false })
   expect(candidates).toHaveBeenCalledWith(sql, principal, 'workspace-fixture', auto, placementOverride)
-  expect(query).not.toHaveBeenCalled()
+  expect(query).toHaveBeenCalledTimes(1)
   candidate.reasons = ['AUTH_REVOKED']
   expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, placementOverride))
     .toMatchObject({ valid: false, canQueue: false })
@@ -76,7 +80,7 @@ describe('reviewed verification admission capacity', () => {
     const selection = new JobComputerSelection(settings, {
       candidates: async () => ({ candidates: [unqualified, ready], diagnosticCodes: [] }),
     }, { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
-    const sql = { query: async () => ({ rowCount: 0, rows: [{ bytes: '0', verification_bytes: '0', materializations: '2' }] }) } as unknown as JobSql
+    const sql = { query: async () => ({ rowCount: 0, rows: [{ bytes: '0', verification_bytes: '0', materializations: '0', verification_materializations: '2' }] }) } as unknown as JobSql
     expect(await selection.claim(sql, {} as ManagementPrincipal, definition,
       { executionId: 'waiting', attemptId: 'attempt', operationId: 'source-operation' }))
       .toMatchObject({ spec: null, reasons: ['busy'] })
@@ -239,4 +243,78 @@ describe('build computer ordering', () => {
       { ...f.auto, outputs: [{ path: 'dist/required.txt', required: true, mediaType: 'text/plain' as const }] },
     ]) expect(compatibleJobComputer(f.candidate, changed)).toBe(false)
   })
+})
+
+
+it.each([false, true])('checks only the requesting source pool during placement (verification: %s)', async verification => {
+  const ordinary = buildComputerFixture(mainId, 'workspace-fixture')
+  const profile = verification ? verificationCapacityFixture('device') : ordinary.candidate.profile
+  const { spec } = verificationFixture()
+  const candidate = verification ? { spec, profile, ready: true, reasons: [],
+    sourceReservation: { scopeId: 'same-filesystem', reservedBytes: 1024 } } : ordinary.candidate
+  const requested = verification ? JobDefinitionRecordSchema.parse({ schemaVersion: 2, id: 'pool-request',
+    versionId: 'pool-version', workspaceId: profile.workspaceId, name: 'Independent pools', revision: 1,
+    createdAt: profile.createdAt, updatedAt: profile.updatedAt,
+    spec: { ...spec, target: { kind: 'auto' }, policy: jobPolicyRequirementsRecord(spec.policy),
+      limits: candidate.profile.schemaVersion === 2 ? candidate.profile.spec.resources.limits
+      : candidate.profile.limits } }).spec : ordinary.auto
+  const preference = { target: buildComputerTarget(candidate.spec.target), revision: 1, buildEnabled: true,
+    buildPriority: 100, buildAllowancePercent: 100 }
+  const selection = new JobComputerSelection({ preference: async () => preference } as unknown as BuildComputerSettings,
+    { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) },
+    { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
+  const storage = { bytes: '0', verification_bytes: '0',
+    materializations: verification ? '2' : '0', verification_materializations: verification ? '0' : '2' }
+  const sql = { query: async (...args: [string, unknown[]?]) => {
+    const rows = args[1]?.[0] === candidate.sourceReservation.scopeId ? [storage] : []
+    return { rowCount: rows.length, rows }
+  } } as unknown as JobSql
+  const validate = () => selection.validateRequest(sql, {} as ManagementPrincipal, profile.workspaceId, requested)
+  expect(await validate()).toEqual({ valid: true, canQueue: true, reasons: [], sideEffects: false })
+  if (verification) storage.verification_materializations = '2'
+  else storage.materializations = '2'
+  expect(await validate()).toMatchObject({ valid: false, canQueue: true, reasons: ['busy'] })
+})
+
+
+it('selects the fallback computer when only it fits the captured source and Git metadata', async () => {
+  const first = buildComputerFixture(mainId, 'workspace-fixture')
+  const second = buildComputerFixture(mainId, 'workspace-fixture')
+  const bytes = Buffer.from('source')
+  const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
+    capturePolicy: 'git-tree-v1', executablePolicy: 'strip', deletions: [],
+    git: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), objectFormat: 'sha1',
+      metadata: { byteSize: 8 * 1024 * 1024, sha256: 'c'.repeat(64) } },
+    entries: [{ path: 'source.ts', kind: 'file', byteSize: bytes.length,
+      sha256: sourceSha256(bytes), executable: false }] })
+  for (const computer of [first, second]) {
+    computer.candidate.sourceReservation.reservedBytes = sourceMaterializationBytes(manifest)
+  }
+  const preference = (target: ReturnType<typeof buildComputerTarget>) => ({ target, revision: 1, buildEnabled: true,
+    buildPriority: target.hostRef.kind === 'device' && target.hostRef.deviceId === first.registration.deviceId ? 100 : 50,
+    buildAllowancePercent: 100 })
+  const settings = { preference: async (_sql: unknown, target: ReturnType<typeof buildComputerTarget>) => preference(target),
+    requireEnabled: async (_sql: unknown, target: ReturnType<typeof buildComputerTarget>) => preference(target) }
+  const selection = new JobComputerSelection(settings as unknown as BuildComputerSettings,
+    { candidates: async () => ({ candidates: [first.candidate, second.candidate], diagnosticCodes: [] }) },
+    { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
+  let saved: { spec: unknown; bytes: number } | undefined
+  const sql = { query: async (text: string, values?: unknown[]) => {
+    if (text.includes('coalesce(sum(bytes)')) return { rowCount: 1, rows: [{
+      bytes: values![0] === first.candidate.sourceReservation.scopeId
+        ? String(SOURCE_AGGREGATE_LIMITS.bytes - 4 * 1024 * 1024) : '0',
+      verification_bytes: '0', materializations: '0', verification_materializations: '0',
+    }] }
+    if (text.startsWith('insert into job_computer_selections')) {
+      saved = { spec: JSON.parse(String(values![6])), bytes: Number(values![10]) }
+    }
+    return { rowCount: 0, rows: [] }
+  } } as unknown as JobSql
+  const definition = JobDefinitionRecordSchema.parse({ schemaVersion: 1, id: randomUUID(), versionId: randomUUID(),
+    workspaceId: 'workspace-fixture', name: 'Metadata placement', revision: 1, spec: first.auto,
+    createdAt: first.candidate.profile.createdAt, updatedAt: first.candidate.profile.updatedAt })
+  const result = await selection.claim(sql, {} as ManagementPrincipal, definition,
+    { executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID() })
+  expect(result.spec?.target.hostRef).toEqual(second.candidate.spec.target.hostRef)
+  expect(saved).toEqual({ spec: second.candidate.spec, bytes: sourceMaterializationBytes(manifest) })
 })

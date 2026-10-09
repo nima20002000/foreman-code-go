@@ -14,7 +14,8 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { ComputerAccountsEndpoint } from '../computers/accounts.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { DomainError } from '../errors.js'
-import { buildComputerTarget, readBuildComputerPreference } from '../settings/buildComputers.js'
+import { assertBuildComputerTarget, buildComputerTarget, readBuildComputerPreference }
+  from '../settings/buildComputers.js'
 import type { PostgresSourceService } from '../sources/service.js'
 import { beforeGraphCommit } from '../run-graph/connection.js'
 import { CI_PREPARATION_ACTIONS } from './ciAuthority.js'
@@ -185,7 +186,7 @@ export class CiRuntimeProvisioner {
       // Another owner may have committed completion while this operation was being read.
       Object.assign(record, await this.repository.get(id))
       if (['qualified', 'failed'].includes(record.status.state)) return
-      await runCiPreparation(record, { profiles: this.profiles, sources: this.sources, principal, checkpoint,
+      await runCiPreparation(record, { profiles: this.profiles, sources: this.sources, principal, signal, checkpoint,
         repository: workspaceId => this.projectRepository(workspaceId), now: this.timing.now,
         deliverSource: repository => this.deliverSource(record, repository, principal, signal),
         wait: () => this.wait(signal), device: request => this.device(record, request, principal, signal),
@@ -285,7 +286,9 @@ export class CiRuntimeProvisioner {
   }
 
   private async requireEnabled(profile: JobVerificationProfile, sql: JobSql = this.pool): Promise<void> {
-    if (!(await readBuildComputerPreference(sql, this.profileTarget(profile))).buildEnabled) {
+    const target = this.profileTarget(profile)
+    await assertBuildComputerTarget(sql, target)
+    if (!(await readBuildComputerPreference(sql, target)).buildEnabled) {
       throw new DomainError('BUILD_COMPUTER_DISABLED', 'Enable builds on this computer before preparing its runtime.', 409)
     }
   }

@@ -1,3 +1,4 @@
+import { inventoryPayloadFingerprints } from '../harnesses/payloadFingerprintCache.js'
 import { realpath } from 'node:fs/promises'
 import { setTimeout as wait } from 'node:timers/promises'
 import { SourceReservationReclamationAuthorityResponseSchema } from '@foreman-code/contracts/source-operations'
@@ -48,7 +49,7 @@ import { createInstalledWorkflowHost, type InstalledWorkflowHostOptions } from '
 import { InstalledWorkflowRecovery } from '../runs/remote/installedWorkflowRecovery.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
-import { COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceReplySchema, MaintenanceRequestSchema } from '@foreman-code/contracts/computer-maintenance'
+import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION, MaintenanceReplySchema, MaintenanceRequestSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerMaintenance, systemMaintenancePorts } from '../computers/maintenance.js'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
 import { createComputerSyncExtension } from '../computers/syncExtension.js'
@@ -86,7 +87,7 @@ export async function createInstalledWorkerDomains(input: {
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
   jobReports?: Pick<RemoteJobExecutionHostPorts, 'prepareOutputs' | 'preparePublication'>
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
-  connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest'> | undefined
+  connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest' | 'mainNow'> | undefined
   codexSuiteRevision: string
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
   rsync?: InstalledRsyncProviders
@@ -94,10 +95,14 @@ export async function createInstalledWorkerDomains(input: {
   const lifetime = new AbortController()
   const active = new Map<Promise<unknown>, string>()
   let runtimeDrain: ReturnType<typeof createWorkerRuntimeDrain> | undefined
+  let maintenance: Promise<ComputerMaintenance> | undefined
+  let ciRuntime: CiRuntimeWorker | undefined
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
-  const ownership = input.assertStateOwnership ? { assertExclusiveOwner: input.assertStateOwnership } : undefined
+  const ownership = { now: () => input.connection()?.mainNow() ?? Date.now(),
+    retentionNow: () => input.connection()?.mainNow(),
+    ...(input.assertStateOwnership ? { assertExclusiveOwner: input.assertStateOwnership } : {}) }
   const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(
     join(input.stateDirectory, 'job-runtime-operations.json'), ownership)
   const systemInput = createVerificationSystemInput({ configuration: input.jobConfiguration ?? null, journal: jobJournal })
@@ -257,8 +262,7 @@ export async function createInstalledWorkerDomains(input: {
         if (!input.jobConfiguration) return
         const retained = await jobJournal()
         const status = await retained.jobStatus(closure.operationId)
-        if (status.status === 'known' && status.receipt.execution.schemaVersion === 2
-          && await retained.jobNativeOwner(closure.operationId)) {
+        if (status.status === 'known' && !await retained.isJobRetired(closure.operationId)) {
           await retained.jobSourceReclaimed(closure.operationId, closure)
         }
       },
@@ -299,12 +303,19 @@ export async function createInstalledWorkerDomains(input: {
       }) })
     extensions.push(telemetry.extension)
     qualification = createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
-    currentBinding: current, request, journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
+      currentBinding: current, now: () => {
+        const now = input.connection()?.mainNow()
+        if (now === undefined) throw new DomainError('WORKER_CLOCK_UNTRUSTED',
+          'Main clock has not been observed on this connection.', 409)
+        return now
+      }, request,
+      journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
     extensions.push(qualification)
     runtimeDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
       active: () => [...active].filter(([, namespace]) => namespace !== CI_RUNTIME_NAMESPACE).map(([task]) => task),
       drainJobs: async () => { if (jobOpening) await (await jobOpening).beginDrain() },
       drainQualifications: async () => { await qualification?.drain() },
+      drainMaintenance: async () => { if (maintenance) await (await maintenance).drain() },
       quiescent: async () => {
         const journals = await Promise.all([journal(), jobJournal()])
         const quiet = await Promise.all(journals.map(log => log.isRuntimeQuiescent()))
@@ -312,7 +323,7 @@ export async function createInstalledWorkerDomains(input: {
           value.snapshot().launches.some(launch => launch.lifecycle !== 'closed'))
         return quiet.every(Boolean) && !nativeActive
       } })
-    const ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
+    ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
       managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot,
       prepare: async options => {
         const retained = await jobJournal()
@@ -340,7 +351,7 @@ export async function createInstalledWorkerDomains(input: {
         if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
           throw new DomainError('CI_RUNTIME_STALE', 'CI runtime preparation requires the actual authenticated worker channel.', 409)
         }
-        return { payload: await ciRuntime.handle(payload) }
+        return { payload: await ciRuntime!.handle(payload) }
       },
     })
   }
@@ -358,8 +369,7 @@ export async function createInstalledWorkerDomains(input: {
     },
   })
   // One maintenance owner per worker process keeps task history across requests.
-  let maintenance: Promise<ComputerMaintenance> | undefined
-  extensions.push({ namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+  extensions.push({ namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: COMPUTER_MAINTENANCE_VERSION, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
     async handle(payload, context) {
       const request = MaintenanceRequestSchema.parse(payload)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
@@ -379,7 +389,7 @@ export async function createInstalledWorkerDomains(input: {
       const owner = await maintenance
       return { payload: MaintenanceReplySchema.parse(request.operation === 'status'
         ? { operation: 'status', status: await owner.status(AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(90_000)])) }
-        : { operation: 'start', task: await owner.start(request.task) }) }
+        : { operation: 'start', task: await owner.start(request.task, request.commandId) }) }
     },
   })
   extensions.push({ namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
@@ -418,9 +428,11 @@ export async function createInstalledWorkerDomains(input: {
       HarnessDiscoveryRequestSchema.parse(payload)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The actual installed inventory requires its original worker channel.', 409)
       const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: input.configuration,
-        environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
+        fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
+        signal: AbortSignal.any([context.signal, lifetime.signal]) })
       const claude = await inspectInstalledClaude({ binding: context.binding, configuration: input.configuration,
-        environment: process.env, cwd: input.stateDirectory, signal: AbortSignal.any([context.signal, lifetime.signal]) })
+        fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
+        signal: AbortSignal.any([context.signal, lifetime.signal]) })
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
       return { payload: { ...inspected.inventory,
         installations: [...inspected.inventory.installations,
@@ -504,6 +516,7 @@ export async function createInstalledWorkerDomains(input: {
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
+      try { await ciRuntime?.close() } catch (error) { failures.push(error) }
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
       try { await telemetry?.close() } catch (error) { failures.push(error) }
       try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }
@@ -529,6 +542,7 @@ export function createWorkerRuntimeDrain(ports: {
   active(): Promise<unknown>[]
   drainJobs(): Promise<void>
   drainQualifications(): Promise<void>
+  drainMaintenance(): Promise<void>
   quiescent(): Promise<boolean>
 }) {
   let draining = false
@@ -539,6 +553,7 @@ export function createWorkerRuntimeDrain(ports: {
       await Promise.allSettled(ports.active())
       await ports.drainJobs()
       await ports.drainQualifications()
+      await ports.drainMaintenance()
       while (!await ports.quiescent()) await wait(100, undefined, { signal: ports.signal })
       ports.signal.throwIfAborted()
     },
@@ -563,6 +578,7 @@ function isWorkerAdmission(namespace: string, payload: unknown): boolean {
   }
   if (!('operation' in payload)) return false
   return namespace === SOURCE_OPERATION_EXTENSION.namespace && payload.operation === 'sources.prepare'
+    || namespace === COMPUTER_MAINTENANCE_NAMESPACE && payload.operation === 'start'
     || namespace === 'job-runtime-qualification-v1' && ['start', 'run'].includes(String(payload.operation))
     || namespace === CI_RUNTIME_NAMESPACE && payload.operation === 'prepare'
 }

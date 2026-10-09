@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -22,6 +22,7 @@ import { PrivateSourceMaterializer, releaseMaterializationClaim } from '../src/m
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { sourceBindingHash } from '../src/modules/sources/bindingHash.js'
 import { createSourceManifest, sourceSha256 } from '../src/modules/sources/manifest.js'
+import { measureRetainedMaterializationFootprint, measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
 import { identity, openPrivateRoot } from '../src/modules/sources/privateFilesystem.js'
 import { qualifyApprovedRootAllowlist } from '../src/modules/sources/rootAttestation.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -109,7 +110,7 @@ async function setup() {
       operation: 'sources.reclaim-reservation', reservationId: grant.reservationId, reclamationId: grant.reclamationId },
     { binding, signal: AbortSignal.timeout(60_000) }))
     expect(response.operationId).toBe(grant.operationId)
-    return response.closures
+    return { closures: response.closures, ...(response.retained ? { retained: response.retained } : {}) }
   })
   const cleanup = new MaterializationReservationCleanup(pool, reclaim)
   const reservations = new PostgresSourceReservations()
@@ -120,15 +121,18 @@ async function setup() {
     value.placementHash = sourceBindingHash(root, value, operationId)
     return value
   }
-  async function orphan(state: 'owned' | 'preparing') {
+  async function orphan(state: 'owned' | 'preparing', options?: { sharedWritableTree?: true }) {
     const operationId = randomUUID()
     const ownerAttempt = attempt(operationId)
-    const receipt = await materializer.prepare({ binding: root.binding, manifest, attempt: ownerAttempt })
+    const receipt = await materializer.prepare({ binding: root.binding, manifest, attempt: ownerAttempt, ...options })
     const sql = await pool.connect()
     try {
       await sql.query('begin')
       const reservation = await reservations.reserve(sql, { scopeId, ownerKind: 'materialization',
-        ownerId: operationId, reservedBytes: computer.candidate.sourceReservation.reservedBytes })
+        ownerId: operationId, reservedBytes: computer.candidate.sourceReservation.reservedBytes,
+        preparation: { identity: { operationId, ownerPrincipalId: writer.principal.id,
+          expiresAt: writer.principal.expiresAt }, root, source: root.source, attempt: ownerAttempt,
+          record: null, physicalClosureConfirmed: false } })
       if (state === 'owned') await reservations.retain(sql, reservation, 'owned')
       await sql.query('commit')
       return { reservation, receipt, attempt: ownerAttempt }
@@ -365,3 +369,102 @@ it.each(['timeout', 'invalid reply', 'adoption rollback'] as const)(
       .toBe('reclaimed')
     await expect(sources.prepareExecution(input)).rejects.toMatchObject({ code: 'SOURCE_PREPARATION_RECONCILED' })
   }, 60_000)
+
+
+it('keeps abandoned writable trees and their measured charge after releasing preparation ownership', async () => {
+  fixture = await setup()
+  const f = fixture
+  const orphan = await f.orphan('owned', { sharedWritableTree: true })
+  const working = join(f.namespace, orphan.receipt.sharedTree!.id, 'tree', 'output.txt')
+  await writeFile(working, 'Unintegrated Agent output')
+  expect(await f.cleanup.reconcile()).toBe(1)
+  expect(await f.cleanup.reconcile()).toBe(0)
+  const footprint = await measureRetainedMaterializationFootprint(orphan.receipt)
+  const retained = (await f.pool.query<{ state: string; reserved_bytes: string }>(
+    'select state,reserved_bytes from source_storage_reservations where reservation_id=$1',
+    [orphan.reservation.reservationId])).rows[0]!
+  expect(retained).toEqual({ state: 'retained', reserved_bytes: String(footprint.retainedBytes + 16 * 1024) })
+  expect(await readFile(working, 'utf8')).toBe('Unintegrated Agent output')
+  expect(await readFile(join(f.namespace, orphan.receipt.materializationId, 'tree', 'source.txt'))).toBeDefined()
+  const next = await f.orphan('owned')
+  expect(next.reservation.reservationId).not.toBe(orphan.reservation.reservationId)
+}, 60_000)
+
+it('charges three closed references and one reused writable tree across closure replay', async () => {
+  fixture = await setup()
+  const f = fixture
+  const copies = []
+  const reservations = new PostgresSourceReservations()
+  async function close(copy: Awaited<ReturnType<typeof f.orphan>>) {
+    await releaseMaterializationClaim(copy.receipt, async () => 'released')
+    const footprint = await measureRetainedMaterializationFootprint(copy.receipt)
+    const sql = await f.pool.connect()
+    try {
+      await sql.query('begin')
+      await reservations.retainMaterialization(sql, copy.reservation,
+        { ...footprint, retainedBytes: footprint.retainedBytes + 16 * 1024 })
+      await sql.query('commit')
+    } catch (error) {
+      await sql.query('rollback')
+      throw error
+    } finally { sql.release() }
+  }
+  for (let index = 0; index < 3; index++) {
+    const copy = await f.orphan('owned', { sharedWritableTree: true })
+    await close(copy)
+    copies.push(copy)
+  }
+  expect(new Set(copies.map(copy => copy.receipt.sharedTree!.id)).size).toBe(1)
+  const references = await Promise.all(copies.map(copy =>
+    measureRetainedSourceDirectory(f.namespace, copy.receipt.materializationId)))
+  const shared = await measureRetainedSourceDirectory(f.namespace, copies[0]!.receipt.sharedTree!.id)
+  const expected = references.reduce((total, bytes) => total + bytes, 0) + shared + 3 * 16 * 1024
+  const charged = async () => Number((await f.pool.query<{ bytes: string }>(
+    "select sum(reserved_bytes) as bytes from source_storage_reservations where scope_id=$1 and state<>'reclaimed'",
+    [f.scopeId])).rows[0]!.bytes)
+  expect(await charged()).toBe(expected)
+  for (const copy of copies) await close(copy)
+  expect(await charged()).toBe(expected)
+}, 60_000)
+
+it.each([false, true])('ignores an unrelated historical host key during cleanup (other workspace: %s)', async otherWorkspace => {
+  fixture = await setup()
+  const f = fixture
+  const orphan = await f.orphan('preparing')
+  const workspaceId = otherWorkspace ? randomUUID() : f.workspaceId
+  if (otherWorkspace) await f.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+    [workspaceId, JSON.stringify({ id: workspaceId, name: 'Historical roots' })])
+  const rootId = randomUUID()
+  const old = SourceRootRecordSchema.parse({ ...f.root,
+    registration: { ...f.root.registration!, keyRevision: 2 },
+    binding: { ...f.root.binding, rootId, workspaceId } })
+  const current = SourceRootRecordSchema.parse({ ...old, registration: f.root.registration,
+    binding: { ...old.binding, bindingRevision: 2 } })
+  await f.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
+    values($1,$2,$3,2)`, [rootId, workspaceId, randomUUID()])
+  for (const root of [old, current]) await f.pool.query(`insert into source_root_bindings
+    (root_id,binding_revision,workspace_id,snapshot_id,record) values($1,$2,$3,$4,$5::jsonb)`,
+    [rootId, root.binding.bindingRevision, workspaceId, f.manifest.snapshotId, JSON.stringify(root)])
+  expect(await f.cleanup.reconcile()).toBe(1)
+  expect(f.reclaim.mock.calls[0]![0].roots).toEqual([f.root])
+  expect((await f.pool.query('select state from source_storage_reservations where reservation_id=$1',
+    [orphan.reservation.reservationId])).rows[0]!.state).toBe('reclaimed')
+  expect((await f.pool.query('select record from source_root_bindings where root_id=$1 and binding_revision=1',
+    [rootId])).rows[0]!.record).toEqual(old)
+}, 60_000)
+
+
+it('keeps an unowned reservation charged until its original cleanup root is recovered', async () => {
+  fixture = await setup()
+  const f = fixture
+  const orphan = await f.orphan('owned')
+  await f.pool.query("update source_storage_reservations set record=record-'preparation' where reservation_id=$1",
+    [orphan.reservation.reservationId])
+  expect(await f.cleanup.reconcile()).toBe(0)
+  expect(f.reclaim).not.toHaveBeenCalled()
+  const retained = (await f.pool.query<{ state: string; reserved_bytes: string }>(
+    'select state,reserved_bytes from source_storage_reservations where reservation_id=$1',
+    [orphan.reservation.reservationId])).rows[0]!
+  expect(retained).toEqual({ state: 'owned', reserved_bytes: String(orphan.reservation.reservedBytes) })
+  expect(await readFile(join(f.namespace, orphan.receipt.materializationId, 'tree', 'source.txt'))).toBeDefined()
+}, 60_000)
