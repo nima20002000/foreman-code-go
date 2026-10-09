@@ -42,7 +42,7 @@ import { JobQueuePreparation } from './preparation.js'
 import { JobQueueTicketSchema, JobQueuedStartSchema, JobQueueCancelSchema, JobQueueLimitsSchema,
   JobAdmissionResultSchema, JobQueueListInputSchema, JobQueuePageSchema,
   JobLaunchValidationInputSchema, JobLaunchValidationSchema,
-  type JobQueueTicket } from '@foreman-code/contracts/job-admission'
+  jobQueueHasExecution, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { JobResourceRequestSchema } from '@foreman-code/contracts/job-verification-policy'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { acceptVerificationSpec } from './verificationAcceptance.js'
@@ -369,7 +369,7 @@ export class JobService {
     }, source)
   }
   private admissionResult(ticket: JobQueueTicket) {
-    if (ticket.state === 'accepted') return JobAdmissionResultSchema.parse({ kind: 'accepted',
+    if (jobQueueHasExecution(ticket)) return JobAdmissionResultSchema.parse({ kind: 'accepted',
       ticketId: ticket.id, executionId: ticket.executionId })
     return JobAdmissionResultSchema.parse({ kind: 'pending-admission', ticket })
   }

@@ -39,7 +39,8 @@ export interface SourceOperationWorkerOptions {
   /** Existing actual paired-main/current boot/key/auth root authentication. */
   authenticate(context: SourceOperationWorkerContext): Promise<void>
   approvedRoots(): Promise<ApprovedRootAllowlist>
-  quotaPoolFor?(binding: MaterializationReceipt['binding']): Promise<SourceQuotaPool | undefined>
+  quotaPoolFor?(binding: MaterializationReceipt['binding'],
+    options: { purpose: 'preparation' | 'cleanup' }): Promise<SourceQuotaPool | undefined>
   /** Real sources.authorize on the sole authenticated W07 Main channel. */
   currentOwner(request: SourceFilesystemOperation, context: SourceOperationWorkerContext): Promise<SourceOperationOwner>
   transfers: VerifiedSourceTransfers
@@ -144,7 +145,8 @@ export class SourceOperationWorkerService {
         },
         operationClosed: operationId => this.options.reclamationNativeClosed!(null, operationId),
         nativeClosed: owner => this.options.reclamationNativeClosed!(owner, grant.operationId),
-        quotaPoolFor: owner => this.options.quotaPoolFor?.(owner.root.binding) ?? Promise.resolve(undefined),
+        quotaPoolFor: owner => this.options.quotaPoolFor?.(owner.root.binding, { purpose: 'cleanup' })
+          ?? Promise.resolve(undefined),
         closed: async closure => {
           await this.options.preparationTransfersClosed?.(closure, context.signal)
           await this.options.preparationReconciled?.(closure)
@@ -199,8 +201,9 @@ export class SourceOperationWorkerService {
         owner = current
       }
       const reader = null
+      const cleanup = request.operation === 'sources.reconcile-preparation' || request.operation === 'sources.release'
       const quotaPool = owner.quotaRequired || owner.record?.receipt.quota
-        ? await this.options.quotaPoolFor?.(owner.root.binding) : undefined
+        ? await this.options.quotaPoolFor?.(owner.root.binding, { purpose: cleanup ? 'cleanup' : 'preparation' }) : undefined
       if (owner.quotaRequired && !quotaPool) {
         throw new SourceError('SOURCE_QUOTA_MISSING', 'The original verification Job requires its installed quota pool.')
       }

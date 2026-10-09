@@ -1,5 +1,6 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
 import type { JobInitiatingAgent } from '@foreman-code/contracts/jobs'
+import { jobQueueHasExecution } from '@foreman-code/contracts/job-admission'
 import type { RepeatGraphScopeV3, RunExecutionSummary } from '@foreman-code/contracts/wave25'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
@@ -54,7 +55,7 @@ export function AgentExecutionResults({ selection, scope, execution, name }: {
         {!ci.isPending && !tickets.size ? <p>No CI requests recorded for this Agent execution.</p> : null}
         {[...tickets.values()].map(ticket => <section key={ticket.id} aria-label={`CI request ${ticket.id}`}>
           <JobQueueFacts ticket={ticket} />
-          {ticket.state === 'accepted' ? <JobResult workspaceId={scope.workspaceId}
+          {jobQueueHasExecution(ticket) ? <JobResult workspaceId={scope.workspaceId}
             executionId={ticket.executionId} expectedInitiatingAgent={origin}
             expectedDefinitionVersionId={ticket.definition.versionId} /> : null}
         </section>)}

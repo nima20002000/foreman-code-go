@@ -8,7 +8,7 @@ import { jobDigest } from '../src/modules/jobs/service.js'
 import { JobVerificationPolicyRequirementsSchema } from '@foreman-code/contracts/job-verification-policy'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import pino from 'pino'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -43,6 +43,7 @@ import { createVerificationProfile } from '../src/modules/jobs/verificationProfi
 import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/job-verification-policy'
 import { jobSpec } from './helpers/jobFixture.js'
 import { buildQueueFixture } from './helpers/buildComputerFixture.js'
+import { installedSourceQuotaPool } from '../src/modules/jobs/quotaOwnership.js'
 import { JobComputerSelection, releaseClosedJobComputers } from '../src/modules/jobs/computerSelection.js'
 import { buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { JobDefinitionSchema, ResolvedJobDefinitionSpecSchema } from '@foreman-code/contracts/jobs'
@@ -70,6 +71,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   let failSourceSettlement = false
   let interruptSourceTransfer = false
   let allowPreparationClosure = true
+  let sourceQuotaConfiguration: { path: string; ownerUid: number } | undefined
   const queueServices: JobService[] = []
   const dispatches: PostgresJobDispatch[] = []
   beforeAll(async () => {
@@ -128,7 +130,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       currentOwner:(operation,context)=>owners.resolve(operation,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
         workerInstallationId:context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:context.binding.bootId,connectionGeneration:1})),
       transfers:{resolveVerifiedReceipt:unused,openVerified:unused},transferContext:async()=>binding,
-      quotaPoolFor: async () => verificationQuota,
+      quotaPoolFor: async (binding, options) => {
+        if (!sourceQuotaConfiguration) return verificationQuota
+        const pool = await installedSourceQuotaPool(sourceQuotaConfiguration, binding, options)
+        return pool && verificationQuota ? { ...verificationQuota, pool } : undefined
+      },
       preparationNativeClosed:async operationId=>allowPreparationClosure && (await journal.jobNativeOwner(operationId))===null})
     const remote = new CarrierRemoteSourceMaterializationHost({capture:()=>({identity:DeviceConnectionIdentitySchema.parse({mainId,deviceId:binding.deviceId,
       workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:binding.bootId,connectionGeneration:1}),
@@ -498,6 +504,48 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       'select owner,status from source_preparation_reconciliations where operation_id=$1', [ticket.operationId])).rows[0]!
     expect(persisted.status).toBe('closed')
     expect(Date.parse(persisted.owner.identity.expiresAt) - Date.now()).toBeLessThanOrEqual(execution.acceptedSpec.policy.cleanupTimeoutMs)
+  })
+
+  it('automatically releases a timed-out claim after CI rebound source on the installed quota root', async () => {
+    const f = await queuedFixture('verification')
+    const path = join(directory, 'rebound-quota-runtime.json')
+    await writeFile(path, JSON.stringify({ schemaVersion: 2,
+      root: { ...root, binding: { ...root.binding, bindingRevision: 2,
+        snapshotId: randomUUID(), manifestDigest: '9'.repeat(64) } },
+      descriptor: { quotaPool: verificationQuota!.pool } }), { mode: 0o600 })
+    sourceQuotaConfiguration = { path, ownerUid: process.getuid!() }
+    interruptSourceTransfer = true
+    try {
+      const ticket = await f.enqueue()
+      await expect(f.jobs.wakeQueue()).rejects.toMatchObject({ code: 'SOURCE_TRANSFER_PENDING' })
+      await database.pool.query("update job_preparations set created_at=now()-interval '1 hour' where execution_id=$1",
+        [ticket.executionId])
+      await expect(f.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_PREPARATION_TIMEOUT' })
+      await f.jobs.wakeQueue()
+      expect(await f.jobs.getQueueTicket(f.principal, workspaceId, ticket.id))
+        .toMatchObject({ state: 'terminal', terminalReason: 'timed_out', cleanupStatus: 'complete' })
+      expect((await database.pool.query('select 1 from job_computer_selections where execution_id=$1 and released_at is null',
+        [ticket.executionId])).rowCount).toBe(0)
+      expect((await database.pool.query('select 1 from job_executions where id=$1', [ticket.executionId])).rowCount).toBe(0)
+      const operator = await client(writer.token)
+      const read = await operator.callTool({ name: 'source_preparation_get',
+        arguments: { workspaceId, operationId: ticket.operationId } })
+      expect(read.isError).not.toBe(true)
+      expect(read.structuredContent).toMatchObject({ reservationState: 'retained', closure: {
+        materializationId: null, admissionClosed: true, childrenClosed: true, claimReleased: true,
+      } })
+      const denied = await client(reader.token)
+      await expectMcpAccessDenied(denied.callTool({ name: 'source_preparation_reconcile',
+        arguments: { workspaceId, operationId: ticket.operationId, commandId: randomUUID() } }))
+      interruptSourceTransfer = false
+      const next = await f.enqueue()
+      await f.jobs.wakeQueue()
+      expect((await f.jobs.getQueueTicket(f.principal, workspaceId, next.id)).executionId).toBe(next.executionId)
+      expect(f.delivered).toEqual([next.executionId])
+    } finally {
+      sourceQuotaConfiguration = undefined
+      interruptSourceTransfer = false
+    }
   })
 
   it.each(['cancelled', 'authorization_revoked', 'timed_out'] as const)(

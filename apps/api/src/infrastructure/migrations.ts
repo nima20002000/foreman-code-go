@@ -27,6 +27,7 @@ import { buildComputersMigration } from './buildComputersMigration.js'
 import { ciRuntimePreparationMigration } from './ciRuntimePreparationMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
+import { jobQueueCompletionMigration } from './jobQueueCompletionMigration.js'
 import { jobSelectionTimeMigration } from './jobSelectionTimeMigration.js'
 import { jobsMigration } from './jobsMigration.js'
 import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
@@ -874,6 +875,7 @@ export const migrations = [
   ciRuntimePreparationMigration,
   buildComputerPriorityMigration,
   retiredHarnessCredentialsMigration,
+  jobQueueCompletionMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

@@ -238,10 +238,14 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
         acceptedSpec: { ...runtime.spec, definitionVersionId: ticket.definition.versionId,
           source: { ...runtime.spec.source, ...ticket.definition.spec.source } },
         publication: options.publication ?? 'complete',
+        finishedAt: new Date().toISOString(),
         resultIssue: options.publication === 'failed' ? 'publication_failed' : null,
         process: { phase: 'terminal', outcome: options.failed ? 'build_failed' : 'succeeded',
           exitCode: options.failed ? 1 : 0, signal: null, processStopped: true } })
-      ticket = JobQueueTicketSchema.parse({ ...ticket, state: 'accepted', reservationId: ticket.id,
+      const publishing = options.publication === 'collecting'
+      ticket = JobQueueTicketSchema.parse({ ...ticket, state: publishing ? 'accepted' : 'terminal',
+        terminalReason: publishing ? null : 'completed', finishedAt: publishing ? null : execution.finishedAt,
+        reservationId: ticket.id, queuePosition: null,
         waitingReasons: [], selectedComputer: { target: runtime.spec.target,
           rootId: runtime.spec.profile.rootId, bindingRevision: 1, profileId: 'profile', profileRevision: 1 } })
       tickets.set(ticket.id, ticket)
