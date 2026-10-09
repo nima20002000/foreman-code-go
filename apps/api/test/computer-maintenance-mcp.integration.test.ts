@@ -18,6 +18,9 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { fakeComputer, settle } from './helpers/fleetSync.js'
 
+// Queued maintenance tasks settle in the background; the 1 s expect.poll default is too short on a loaded machine.
+const POLL = { timeout: 10_000 }
+
 const status = (codex: string): MaintenanceStatus => ({ observedAt: new Date().toISOString(), tasks: [],
   harnesses: [{ harness: 'codex', installed: true, version: codex, latest: '0.161.0' }, { harness: 'claude', installed: false, version: null, latest: '2.1.294' }],
   system: { packageUpdates: 3, rebootRequired: false, sudo: true, disk: { path: '/home/owner', freeBytes: 10, totalBytes: 20 } } })
@@ -341,7 +344,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
       const current = ComputerMaintenanceListSchema.parse((await client.callTool({ name: 'computers_maintenance_status',
         arguments: { refresh: true } })).structuredContent).computers.find(computer => computer.target.hostRef.kind === 'main')
       return current?.status?.tasks[0]?.state
-    }).toBe('succeeded')
+    }, POLL).toBe('succeeded')
     const after = ComputerMaintenanceListSchema.parse((await client.callTool({ name: 'computers_maintenance_status',
       arguments: { refresh: true } })).structuredContent).computers.find(computer => computer.target.hostRef.kind === 'main')!
     expect(after.status?.system.packageUpdates).toBe(23)
@@ -441,13 +444,13 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect((await readOnly.callTool({ name: 'computers_maintenance_start', arguments: codex })).isError).toBe(true)
     expect(installs).toBe(0)
     const first = await start(codex)
-    await expect.poll(() => installs).toBe(1)
+    await expect.poll(() => installs, POLL).toBe(1)
     const sampledVersions = versionReads
     let releaseDisk!: () => void
     const diskGate = new Promise<null>(resolve => { releaseDisk = () => resolve(null) })
     ports.disk = () => diskGate
     const slowStatus = current()
-    await expect.poll(() => versionReads).toBe(sampledVersions + 2)
+    await expect.poll(() => versionReads, POLL).toBe(sampledVersions + 2)
     const both = { ...codex, commandId: randomUUID(), task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } }
     const broader = await start(both)
     expect(broader.id).not.toBe(first.id)
@@ -456,7 +459,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     } })).id).toBe(broader.id)
     releaseInstall()
     ports.disk = async () => null
-    await expect.poll(async () => (await current()).status?.tasks.every(task => task.state === 'succeeded')).toBe(true)
+    await expect.poll(async () => (await current()).status?.tasks.every(task => task.state === 'succeeded'), POLL).toBe(true)
     releaseDisk()
     const coherent = await slowStatus
     expect(coherent.status?.tasks.every(task => task.state === 'succeeded')).toBe(true)
@@ -474,7 +477,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     installGate = new Promise<void>(resolve => { releaseInstall = resolve })
     const interruptedInput = { ...codex, commandId: randomUUID() }
     const interrupted = await start(interruptedInput)
-    await expect.poll(() => installs).toBe(3)
+    await expect.poll(() => installs, POLL).toBe(3)
     const previousOwner = local
     local = new ComputerMaintenance(ports)
     expect((await current()).status?.tasks.find(task => task.id === interrupted.id)).toMatchObject({
@@ -483,7 +486,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(await start(interruptedInput)).toMatchObject({ id: interrupted.id, state: 'failed' })
     expect(installs).toBe(3)
     releaseInstall()
-    await expect.poll(async () => (await previousOwner.status(AbortSignal.timeout(1000))).tasks[0]?.state).toBe('succeeded')
+    await expect.poll(async () => (await previousOwner.status(AbortSignal.timeout(1000))).tasks[0]?.state, POLL).toBe('succeeded')
   })
 
 })
