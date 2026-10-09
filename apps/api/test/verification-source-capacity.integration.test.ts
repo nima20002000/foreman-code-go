@@ -65,6 +65,14 @@ it.each([['main', 4], ['device', 2]] as const)(
     const captures = await sourceReservations.reserve(pool, { scopeId, ownerKind: 'capture', ownerId: randomUUID(),
       reservedBytes: SOURCE_AGGREGATE_LIMITS.bytes - 1 })
     await sourceReservations.retain(pool, captures, 'retained')
+    // Agent worktrees on the same computer fill their own pool; they never occupy its CI slots.
+    for (let index = 0; index < SOURCE_AGGREGATE_LIMITS.materializations; index++) {
+      const agent = await sourceReservations.reserve(pool, { scopeId, ownerKind: 'materialization', ownerId: randomUUID(),
+        reservedBytes: 0 })
+      await sourceReservations.retain(pool, agent, 'owned')
+    }
+    await expect(sourceReservations.reserve(pool, { scopeId, ownerKind: 'materialization', ownerId: randomUUID(),
+      reservedBytes: 0 })).rejects.toMatchObject({ code: 'SOURCE_CAPACITY' })
     const reservations = []
     for (let index = 0; index <= count; index++) {
       const operationId = randomUUID()
@@ -88,8 +96,8 @@ it.each([['main', 4], ['device', 2]] as const)(
     const restarted = new PostgresSourceReservations()
     expect(await restarted.reserve(pool, reservations[0]!)).toEqual(reservations[0])
     const stored = (await pool.query<{ state: string; reserved_bytes: string }>(
-      "select state,reserved_bytes from source_storage_reservations where scope_id=$1 and owner_kind='materialization'",
-      [scopeId])).rows
+      "select state,reserved_bytes from source_storage_reservations where scope_id=$1 and owner_id=any($2::text[])",
+      [scopeId, reservations.map(reservation => reservation.ownerId)])).rows
     expect(stored).toHaveLength(count)
     expect(stored.every(row => row.state === 'owned' && Number(row.reserved_bytes) === reservedBytes)).toBe(true)
     const history = (await pool.query<{ record: typeof saved }>(

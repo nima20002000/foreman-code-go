@@ -93,17 +93,23 @@ export class PostgresSourceReservations {
       }
       return existing.record
     }
-    const totals = (await sql.query<{ bytes: string; verification_bytes: string; preparing: string; materializations: string }>(`select
+    // Verification and other materializations (Agent worktrees) are separate pools for bytes and for count, so
+    // running Agents never occupy the computer's CI slots.
+    const totals = (await sql.query<{ bytes: string; verification_bytes: string; preparing: string; materializations: string;
+      verification_materializations: string }>(`select
       coalesce(sum(reserved_bytes) filter(where not verification),0) as bytes,
       coalesce(sum(reserved_bytes) filter(where verification),0) as verification_bytes,
       count(*) filter(where state='preparing') as preparing,
-      count(*) filter(where owner_kind='materialization' and state in ('preparing','owned','uncertain')) as materializations
+      count(*) filter(where owner_kind='materialization' and state in ('preparing','owned','uncertain') and not verification) as materializations,
+      count(*) filter(where owner_kind='materialization' and state in ('preparing','owned','uncertain') and verification)
+        as verification_materializations
       from (select r.*,exists(select 1 from job_computer_selections s
         where r.owner_kind='materialization' and s.operation_id=r.owner_id and s.spec ? 'verification') as verification
         from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed') usage`, [request.scopeId])).rows[0]!
     const usedBytes = capacity.verification ? Number(totals.verification_bytes) : Number(totals.bytes)
+    const activeMaterializations = Number(capacity.verification ? totals.verification_materializations : totals.materializations)
     if (usedBytes + request.reservedBytes > capacity.bytes || Number(totals.preparing) >= SOURCE_AGGREGATE_LIMITS.preparing
-      || (request.ownerKind === 'materialization' && Number(totals.materializations) >= capacity.materializations))
+      || (request.ownerKind === 'materialization' && activeMaterializations >= capacity.materializations))
       throw new DomainError('SOURCE_CAPACITY', 'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409)
     const reservation = { ...request, reservationId: randomUUID() }
     await sql.query(`insert into source_storage_reservations(reservation_id,scope_id,owner_kind,owner_id,reserved_bytes,state,record)
