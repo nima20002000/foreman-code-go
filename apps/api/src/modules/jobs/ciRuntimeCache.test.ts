@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
-import { readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
+import { pruneCiRuntimeCache, readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
 
 const directories: string[] = []
 afterEach(async () => {
@@ -25,7 +25,7 @@ async function fixture() {
   await writeFile(prepared.contextReceiptPath, 'installed controls', { mode: 0o600 })
   const input = { installer, prepared, inputDigest: 'd'.repeat(64) }
   await writeCiRuntimeCache(input)
-  return { ...input, imageExists: vi.fn(async () => true) }
+  return { ...input, imageExists: vi.fn<(imageId: string) => Promise<boolean>>(async () => true) }
 }
 
 it('reuses an immutable image and its verified receipts without claiming source qualification', async () => {
@@ -57,4 +57,22 @@ it('does not read cache artifacts outside the installation', async () => {
   await expect(writeCiRuntimeCache({ ...f,
     prepared: { ...f.prepared, seedReceiptPath: '/another-installation/seed.json' },
   })).rejects.toThrow('belong to the installed runtime')
+})
+
+it('drops records of pruned images and the installer copies only they used', async () => {
+  const f = await fixture()
+  const pruned = { installer: f.installer, inputDigest: 'e'.repeat(64), prepared: { ...f.prepared,
+    imageId: 'sha256:' + 'f'.repeat(64), seedReceiptPath: join(f.installer, 'seed-receipt-' + '1'.repeat(12) + '.json'),
+    contextReceiptPath: join(f.installer, 'context-receipt-' + '1'.repeat(12) + '.json') } }
+  await writeFile(pruned.prepared.seedReceiptPath, 'old seed', { mode: 0o600 })
+  await writeFile(pruned.prepared.contextReceiptPath, 'old controls', { mode: 0o600 })
+  await writeFile(join(f.installer, 'codex-' + '2'.repeat(12)), 'refreshed Codex', { mode: 0o700 })
+  await writeCiRuntimeCache(pruned)
+  f.imageExists.mockImplementation(async imageId => imageId === f.prepared.imageId)
+  await pruneCiRuntimeCache(f)
+  expect(await readCiRuntimeCache(f)).not.toBeNull()
+  expect(await readCiRuntimeCache({ ...f, inputDigest: pruned.inputDigest })).toBeNull()
+  expect((await readdir(f.installer)).sort()).toEqual(['context-receipt.json', 'original-source', 'runtime-cache',
+    'seed-receipt.json'])
+  expect(await readdir(join(f.installer, 'runtime-cache'))).toEqual([f.inputDigest + '.json'])
 })

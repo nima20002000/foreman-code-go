@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { PreparedCiRuntimeSchema, type PreparedCiRuntime } from '@foreman-code/contracts'
@@ -102,5 +102,33 @@ export async function writeCiRuntimeCache(input: {
   } finally {
     await rm(temporary, { force: true })
     await root.close()
+  }
+}
+
+/** After image pruning, drops cache records whose image is gone, then the per-image Codex copies and receipts
+ * no remaining record uses. Protected configurations hold their own copies; none reads these installer files. */
+export async function pruneCiRuntimeCache(input: {
+  installer: string
+  imageExists(imageId: string): Promise<boolean>
+}): Promise<void> {
+  const directory = join(input.installer, 'runtime-cache')
+  const used = new Set<string>()
+  for (const name of await readdir(directory).catch(() => [] as string[])) {
+    const digest = /^([a-f0-9]{64})\.json$/u.exec(name)?.[1]
+    if (!digest) continue
+    const cached = await readCiRuntimeCache({ ...input, inputDigest: digest })
+    if (!cached) {
+      await rm(join(directory, name), { force: true })
+      continue
+    }
+    for (const path of [cached.seedReceiptPath, cached.contextReceiptPath, cached.unitCodex?.sourceExecutable]) {
+      if (path) used.add(path)
+    }
+  }
+  for (const name of await readdir(input.installer)) {
+    const path = join(input.installer, name)
+    if (/^(?:codex-[a-f0-9]{12}|(?:seed|context)-receipt-[a-f0-9]{12}\.json)$/u.test(name) && !used.has(path)) {
+      await rm(path, { force: true })
+    }
   }
 }

@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises'
 import { buildCiRuntimeContext, ciRuntimeInputDigest, parseCiLock } from '../../../../worker/artifacts/ci-runtime/context.mjs'
 import { expectedPortions } from '../../../../../scripts/verification-runner.mjs'
 import type { PreparedCiRuntime } from '@foreman-code/contracts'
-import { readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
+import { pruneCiRuntimeCache, readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
 
 const run = promisify(execFile)
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
@@ -42,7 +42,7 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   await reclaimInterruptedPreparation({ repository, installer, keepPaths, env })
   log('checking-runtime-cache')
   const inputDigest = await ciRuntimeInputDigest({ repository, commit })
-  const cached = await readCiRuntimeCache({ installer, inputDigest, imageExists: async imageId => {
+  const imageExists = async (imageId: string) => {
     try {
       await podman(['image', 'exists', imageId], env)
       return true
@@ -50,7 +50,8 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
       if ((error as { code?: unknown }).code === 1) return false
       throw error
     }
-  } })
+  }
+  const cached = await readCiRuntimeCache({ installer, inputDigest, imageExists })
   if (cached) {
     log('reusing-runtime-image')
     const qualificationSource = await extractQualificationSource(repository, commit,
@@ -68,6 +69,7 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   log('prune-images')
   // Other preparations and recovery records may still own older installer files.
   await pruneCiImages(keepImages, env)
+  await pruneCiRuntimeCache({ installer, imageExists })
   // 1. The build stage fetches the frozen lockfile's packages with network into its own store.
   const buildContext = join(installer, `build-context-${short}`)
   await rm(buildContext, { recursive: true, force: true })
