@@ -140,20 +140,22 @@ function HarnessChip({ label, account, computer, known, version, busy, onInstall
   version: { installed: boolean; version: string | null; latest: string | null } | undefined; busy: boolean; onInstall(): void
 }) {
   const installed = version ? version.installed : account?.installed
-  if (!known && !version) return <Badge>{label} · unknown</Badge>
+  if ((!known && !version) || installed === undefined) return <Badge>{label} · account unknown</Badge>
   if (!installed) return <span className="computer-card-chip">
     <Badge tone="warning">{label} · not installed</Badge>
     <Button size="sm" variant="ghost" disabled={busy} onClick={onInstall}>Install</Button>
   </span>
   const named = version?.version ? `${label} ${version.version}` : label
+  const summary = account?.signedIn == null ? `${named} · account unknown` : named
   if (version?.latest && version.version && version.latest !== version.version) return <span className="computer-card-chip">
-    <Badge tone="warning">{named} · {version.latest} available</Badge>
+    <Badge tone="warning">{summary} · {version.latest} available</Badge>
     <Button size="sm" variant="ghost" disabled={busy} onClick={onInstall}>Update</Button>
   </span>
   if (account?.signedIn === false) return <span className="computer-card-chip">
     <Badge tone="warning">{named} · signed out</Badge>
     <Button size="sm" variant="ghost" onClick={() => askOperator(`Sign ${label} in on ${computer}.`)}>Sign in</Button>
   </span>
+  if (account?.signedIn == null) return <Badge>{summary}</Badge>
   return <Badge tone="success">{named}</Badge>
 }
 
@@ -184,9 +186,11 @@ function taskLabel(kind: string) { return TASK_LABELS[kind] ?? kind }
 function bytes(value: number) { return value >= 1e12 ? `${(value / 1e12).toFixed(1)} TB` : `${Math.round(value / 1e9)} GB` }
 
 function GitHubState({ account, computer, known }: { account: ComputerAccount | undefined; computer: string; known: boolean }) {
-  if (!known) return <>—</>
-  if (account?.installed && account.signedIn) return <>{account.account ?? 'Signed in'}</>
-  return <span className="computer-card-chip">{account?.installed ? 'Signed out' : 'GitHub CLI not installed'}
+  if (!known || !account) return <>Account unknown</>
+  if (!account.installed) return <>GitHub CLI not installed</>
+  if (account.signedIn === null) return <>Account unknown</>
+  if (account.signedIn === true) return <>{account.account ?? 'Signed in'}</>
+  return <span className="computer-card-chip">Signed out
     <Button size="sm" variant="ghost" onClick={() => askOperator(`Sign GitHub in on ${computer} and set up git to use it.`)}>Sign in</Button></span>
 }
 

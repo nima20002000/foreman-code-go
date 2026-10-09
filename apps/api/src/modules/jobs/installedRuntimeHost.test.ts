@@ -115,6 +115,7 @@ describe('protected installed runtime reader, no DB or native runtime execution'
     const wrongMain = { query: vi.fn(async () => ({ rows: [{ id: 'different-main' }] })) } as unknown as JobSql
     expect(await host.currentMetadata(wrongMain, f.profile)).toBeNull()
     await expect(host.descriptor(f.profile)).rejects.toMatchObject({ details: { reason: 'configuration_unavailable' } })
+    expect(await host.currentMetadata(f.sql, f.profile)).toBeNull()
     const restarted = createInstalledJobRuntimeHost({ configuration: f.location, identity: f.sql, reserve: vi.fn() })
     expect(await restarted.currentMetadata(f.sql, f.profile)).toBeNull()
   })

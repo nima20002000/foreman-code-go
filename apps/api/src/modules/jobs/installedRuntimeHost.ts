@@ -256,6 +256,7 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
     descriptor: ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>; fingerprint: JobRuntimeFingerprintRecord }>()
   const key = (profile: Pick<JobRuntimeProfileRecord, 'id' | 'revision'>) => `${profile.id}:${profile.revision}`
   async function current(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]) {
+    snapshots.delete(key(profile))
     let snapshot
     if (profile.schemaVersion === 2) {
       const configuration = await readProtectedRuntimeConfiguration(dependencies.configuration,

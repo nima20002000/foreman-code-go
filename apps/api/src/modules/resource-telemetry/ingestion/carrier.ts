@@ -10,6 +10,7 @@ import { resourceTelemetryExtension } from './ports.js'
 import { ResourceTelemetryService, TelemetryRejected } from './service.js'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { DomainError } from '../../errors.js'
 
 /** Ready/lost hooks retain only the exact authenticated channel's passive collector. */
 export function createMainResourceTelemetryBindings(service: () => ResourceTelemetryService | undefined) {
@@ -100,7 +101,17 @@ export function createWorkerResourceTelemetryExtension(input: {
   const waiting = new Map<string, { resolve(payload: unknown): void; reject(error: unknown): void }>()
   const current = (binding: Readonly<DeviceSessionBinding>) => {
     input.signal.throwIfAborted()
-    if (closed || telemetryCanonical(input.currentBinding()) !== telemetryCanonical(binding)) throw new TelemetryRejected('session-generation')
+    if (closed) throw new TelemetryRejected('session-generation')
+    let live: ReturnType<typeof input.currentBinding>
+    try {
+      live = input.currentBinding()
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'WORKER_DOMAIN_UNAVAILABLE') {
+        throw new TelemetryRejected('session-generation')
+      }
+      throw error
+    }
+    if (telemetryCanonical(live) !== telemetryCanonical(binding)) throw new TelemetryRejected('session-generation')
   }
   const stop = async () => {
     const old = active; active = undefined
@@ -147,6 +158,7 @@ export function createWorkerResourceTelemetryExtension(input: {
             if (!lifetime.signal.aborted) throw new TelemetryRejected('collector-ended')
           } catch (error) {
             const cancelled = lifetime.signal.aborted
+              || error instanceof TelemetryRejected && error.reason === 'session-generation'
             lifetime.abort(error)
             for (const waiter of waiting.values()) waiter.reject(error)
             waiting.clear()
