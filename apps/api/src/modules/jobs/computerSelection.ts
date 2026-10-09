@@ -48,6 +48,16 @@ export interface JobComputerClaim {
   selectedHost: string | null
   exceedsMaximum: boolean
 }
+
+/** An explicit placement names a computer and root. Each listing re-attests the root, so the attestation itself
+ * cannot identify it; admission still uses the candidate's current attestation. */
+function placedRoot(target: { destination?: unknown }) {
+  if (!target.destination || typeof target.destination !== 'object') return target
+  const destination = Object.fromEntries(Object.entries(target.destination as Record<string, unknown>)
+    .filter(([key]) => key !== 'attestationId' && key !== 'attestationHash'))
+  return { ...target, destination }
+}
+
 export function jobEligibilityReason(code: string): JobComputerEligibility['reasons'][number] {
   const known = JobComputerEligibilityReasonSchema.safeParse(code)
   if (known.success) return known.data
@@ -257,7 +267,7 @@ export class JobComputerSelection {
     for (const candidate of discovery.candidates) {
       if (!compatibleJobComputer(candidate, request)
         || (placementOverride?.kind === 'explicit'
-          && canonical(candidate.spec.target) !== canonical(placementOverride.target))) {
+          && canonical(placedRoot(candidate.spec.target)) !== canonical(placedRoot(placementOverride.target)))) {
         reasons.push('incompatible')
         continue
       }

@@ -36,6 +36,14 @@ it('inspects an explicit launch override without reserving and permits an offlin
   expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, {
     kind: 'explicit', target: { ...candidate.spec.target, mainInstallationId: 'replacement-installation' },
   })).toMatchObject({ valid: false, canQueue: false, reasons: ['incompatible'] })
+  // A later listing re-attests the same root; the explicit choice still names this computer and root.
+  const destination = candidate.spec.target.destination
+  expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, { kind: 'explicit', target: {
+    ...candidate.spec.target, destination: { ...destination, attestationId: '22222222-2222-4222-8222-222222222222',
+      attestationHash: 'f'.repeat(64) } } })).toEqual({ valid: false, canQueue: true, reasons: ['offline'], sideEffects: false })
+  expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, { kind: 'explicit', target: {
+    ...candidate.spec.target, destination: { ...destination, canonicalCwd: `${destination.canonicalCwd}/other` } } }))
+    .toMatchObject({ valid: false, canQueue: false, reasons: ['incompatible'] })
 })
 
 function capacityRows(profile: ReturnType<typeof verificationCapacityFixture>, computing: number, retained = 0): JobSql {
