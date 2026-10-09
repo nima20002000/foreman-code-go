@@ -36,7 +36,7 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   const maintenance = context.services.computerMaintenance
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_status')) server.registerTool('computers_maintenance_status', {
     description: 'Read maintenance status for Main and every paired computer: installed and latest Codex/Claude versions, pending OS '
-      + 'package updates (including phased or held packages), whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome. '
+      + 'package updates (including phased or held packages), whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome and sync source fingerprint. '
       + 'Requires global settings:read. Cached for 20 seconds unless refresh is true; an offline computer reports null status.',
     inputSchema: z.object({ refresh: z.boolean().optional() }).strict(), outputSchema: ComputerMaintenanceListSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
@@ -46,7 +46,8 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
       + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), restart (sudo reboot; targets are required), sync-mcp (add Main\'s user-level Codex and Claude MCP '
       + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
-      + 'sync-plugins (install Main\'s Codex and Claude plugins that other computers lack, adding Main\'s Git marketplaces first and matching Claude enabled state). Tasks run in the background; read their outcome with '
+      + 'sync-plugins (install Main\'s Codex and Claude plugins that other computers lack, adding Main\'s Git marketplaces first and matching enabled state for fleet-managed Claude plugins). '
+      + 'Sync preserves pre-existing computer-owned entries and removes only fleet-managed entries absent from an available Main catalog. Unsafe MCP definitions and unreadable catalogs are skipped and reported in the task summary. Tasks run in the background; read their outcome with '
       + 'computers_maintenance_status. Check every returned computer error; unavailable targets are not updated. Harness updates verify the installed version against the latest published version. Requires global settings:update. Reuse commandId to retry without starting work twice.',
     inputSchema: ComputerMaintenanceStartInputSchema, outputSchema: ComputerMaintenanceStartResultSchema,
     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },

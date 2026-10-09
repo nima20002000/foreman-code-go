@@ -1,4 +1,5 @@
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
+import { syncFingerprint } from './syncFingerprint.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { access, mkdir, readFile, rename, statfs, writeFile } from 'node:fs/promises'
@@ -76,6 +77,7 @@ export class ComputerMaintenance {
     if (running) return structuredClone(running)
     const task: MaintenanceTask = { id: randomUUID(), kind: request.kind, state: 'running',
       startedAt: this.ports.now().toISOString(), finishedAt: null, summary: 'Running…', outputTail: '' }
+    if (request.kind === 'sync-mcp' || request.kind === 'sync-plugins') task.sourceFingerprint = syncFingerprint(request)
     this.tasks.push(task)
     if (this.tasks.length > 20) this.tasks.splice(0, this.tasks.length - 20)
     void this.perform(request, task).then(summary => this.finish(task, 'succeeded', summary),
@@ -174,28 +176,46 @@ export class ComputerMaintenance {
       }
       case 'sync-mcp': {
         const ledger = await this.readLedger()
-        const results: string[] = []
+        const results: string[] = [...request.warnings ?? []]
+        const failures: string[] = []
         for (const harness of ['codex', 'claude'] as const) {
-          const synced = await this.syncMcp(harness, request.servers[harness], ledger.mcp[harness], step, signal)
-          await this.updateLedger(current => { current.mcp[harness] = synced.managed })
-          if (synced.summary) results.push(`${LABELS[harness]}: ${synced.summary}`)
+          const servers = request.servers[harness]
+          if (servers === undefined) continue
+          const managed = new Set(ledger.mcp[harness])
+          try {
+            const summary = await this.syncMcp(harness, servers, managed, step, signal)
+            if (summary) results.push(`${LABELS[harness]}: ${summary}`)
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : `${LABELS[harness]} MCP sync failed.`)
+          } finally {
+            await this.updateLedger(current => { current.mcp[harness] = [...managed] })
+          }
         }
+        if (failures.length) throw new Error([...results, ...failures].join(' · '))
         return results.join(' · ') || 'Nothing to sync'
       }
       case 'sync-plugins': {
         const ledger = await this.readLedger()
-        const results: string[] = []
+        const results: string[] = [...request.warnings ?? []]
         const failures: string[] = []
         const sync = [
           { name: 'Codex', run: async () => {
-            const synced = await this.syncPlugins(request.plugins, request.marketplaces, ledger.codexPlugins, step, signal)
-            await this.updateLedger(current => { current.codexPlugins = synced.managed })
-            return synced.summary
+            if (request.plugins === undefined || request.marketplaces === undefined) return 'Skipped'
+            const managed = new Set(ledger.codexPlugins)
+            try {
+              return await this.syncPlugins(request.plugins, request.marketplaces, managed, step, signal)
+            } finally {
+              await this.updateLedger(current => { current.codexPlugins = [...managed] })
+            }
           } },
           { name: 'Claude', run: async () => {
-            const synced = await this.syncClaudePlugins(request, ledger.claudePlugins, step, signal)
-            await this.updateLedger(current => { current.claudePlugins = synced.managed })
-            return synced.summary
+            if (request.claudePlugins === undefined || request.claudeMarketplaces === undefined) return 'Skipped'
+            const managed = new Set(ledger.claudePlugins)
+            try {
+              return await this.syncClaudePlugins(request.claudePlugins, request.claudeMarketplaces, managed, step, signal)
+            } finally {
+              await this.updateLedger(current => { current.claudePlugins = [...managed] })
+            }
           } },
         ]
         for (const harness of sync) {
@@ -224,19 +244,29 @@ export class ComputerMaintenance {
 
   /** Adds Main's servers this computer lacks and removes the ones it received from Main earlier that Main has since
    * removed. Servers the computer has on its own are never touched. */
-  private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[], previous: readonly string[], step: Step,
-    signal: AbortSignal): Promise<{ summary: string; managed: string[] }> {
+  private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[], managed: Set<string>, step: Step,
+    signal: AbortSignal): Promise<string> {
+    const previous = [...managed]
     const wanted = servers.map(server => server.name)
     const binary = await this.ports.find(harness)
-    if (!binary) return { summary: servers.length || previous.length ? 'not installed, skipped' : '', managed: [...previous] }
-    if (!servers.length && !previous.length) return { summary: '', managed: [] }
+    if (!binary) return servers.length || previous.length ? 'not installed, skipped' : ''
+    if (!servers.length && !previous.length) return ''
     const existing = new Set(await this.mcpNames(harness, binary, signal))
-    const added: string[] = [], removed: string[] = [], kept: string[] = []
+    const added: string[] = []
+    const removed: string[] = []
+    const kept: string[] = []
     for (const name of previous) {
-      if (wanted.includes(name) || !existing.has(name)) continue
+      if (wanted.includes(name)) continue
+      if (!existing.has(name)) {
+        managed.delete(name)
+        continue
+      }
       const result = await step(binary, harness === 'codex' ? ['mcp', 'remove', name] : ['mcp', 'remove', '--scope', 'user', name],
         `${harness} mcp remove ${name}`, { timeoutMs: 30_000, allowFailure: true })
-      ;(result.code === 0 ? removed : kept).push(name)
+      if (result.code === 0) {
+        removed.push(name)
+        managed.delete(name)
+      } else kept.push(name)
     }
     for (const server of servers) {
       if (existing.has(server.name)) continue
@@ -249,6 +279,7 @@ export class ComputerMaintenance {
           : ['mcp', 'add', server.name, '--', server.command, ...server.args], label, { timeoutMs: 30_000, allowFailure: true })
         if (result.code !== 0) {
           if (!(await this.mcpNames(harness, binary, signal)).includes(server.name)) throw new Error(`${label} failed.`)
+          managed.add(server.name)
           added.push(`${server.name} (sign in on this computer)`)
           continue
         }
@@ -256,14 +287,14 @@ export class ComputerMaintenance {
         const definition = server.transport === 'http' ? { type: 'http', url: server.url } : { type: 'stdio', command: server.command, args: server.args }
         await step(binary, ['mcp', 'add-json', '--scope', 'user', server.name, JSON.stringify(definition)], `claude mcp add-json ${server.name}`)
       }
+      managed.add(server.name)
       added.push(server.name)
     }
     // A server that could not be removed stays managed, so the next sync tries again.
-    const managed = [...wanted, ...kept]
     if (kept.length) throw new Error(`Could not remove ${kept.join(', ')}`)
     const summary = [added.length ? `Added ${added.join(', ')}` : '', removed.length ? `Removed ${removed.join(', ')}` : '']
       .filter(Boolean).join(' · ')
-    return { summary: summary || 'Already in sync', managed }
+    return summary || 'Already in sync'
   }
 
   private async mcpNames(harness: MaintainedHarness, binary: string, signal: AbortSignal): Promise<string[]> {
@@ -275,19 +306,30 @@ export class ComputerMaintenance {
     return Object.keys(await claudeUserMcpServers(this.ports))
   }
 
-  private async syncPlugins(plugins: readonly string[], marketplaces: readonly SyncedMarketplace[], previous: readonly string[],
-    step: Step, signal: AbortSignal): Promise<{ summary: string; managed: string[] }> {
-    if (!plugins.length && !previous.length) return { summary: 'Nothing to sync', managed: [] }
+  private async syncPlugins(plugins: readonly string[], marketplaces: readonly SyncedMarketplace[], managed: Set<string>,
+    step: Step, signal: AbortSignal): Promise<string> {
+    const previous = [...managed]
+    if (!plugins.length && !previous.length) return 'Nothing to sync'
     const codex = await this.ports.find('codex')
     if (!codex) throw new Error('Codex is not installed on this computer.')
     const installed = new Set(await installedPlugins(this.ports, codex, signal))
     const missing = plugins.filter(plugin => !installed.has(plugin))
     const known = new Set(missing.length ? (await pluginMarketplaces(this.ports, codex, signal)).map(marketplace => marketplace.name) : [])
-    const added: string[] = [], failed: string[] = [], removed: string[] = [], kept: string[] = []
+    const added: string[] = []
+    const failed: string[] = []
+    const removed: string[] = []
+    const kept: string[] = []
     for (const plugin of previous) {
-      if (plugins.includes(plugin) || !installed.has(plugin)) continue
+      if (plugins.includes(plugin)) continue
+      if (!installed.has(plugin)) {
+        managed.delete(plugin)
+        continue
+      }
       const result = await step(codex, ['plugin', 'remove', plugin], `codex plugin remove ${plugin}`, { allowFailure: true })
-      ;(result.code === 0 ? removed : kept).push(plugin)
+      if (result.code === 0) {
+        removed.push(plugin)
+        managed.delete(plugin)
+      } else kept.push(plugin)
     }
     for (const marketplace of marketplaces) {
       if (known.has(marketplace.name) || !missing.some(plugin => plugin.endsWith(`@${marketplace.name}`))) continue
@@ -297,42 +339,53 @@ export class ComputerMaintenance {
     // One plugin that cannot install does not keep the others from installing.
     for (const plugin of missing) {
       const result = await step(codex, ['plugin', 'add', plugin], `codex plugin add ${plugin}`, { allowFailure: true })
-      ;(result.code === 0 ? added : failed).push(plugin)
+      if (result.code === 0) {
+        added.push(plugin)
+        managed.add(plugin)
+      } else failed.push(plugin)
     }
-    const managed = [...plugins, ...kept]
     const summary = [added.length ? `Installed ${added.join(', ')}` : '', removed.length ? `Removed ${removed.join(', ')}` : '',
       failed.length ? `Could not install ${failed.join(', ')}` : '', kept.length ? `Could not remove ${kept.join(', ')}` : '']
       .filter(Boolean).join(' · ')
     if (failed.length || kept.length) throw new Error(summary)
-    return { summary: summary || 'Already in sync', managed }
+    return summary || 'Already in sync'
   }
 
   private async syncClaudePlugins(
-    request: Extract<MaintenanceTaskStart, { kind: 'sync-plugins' }>, previous: readonly string[], step: Step, signal: AbortSignal,
-  ): Promise<{ summary: string; managed: string[] }> {
-    const wanted = request.claudePlugins.map(plugin => plugin.pluginId)
-    if (!wanted.length && !previous.length) return { summary: 'Nothing to sync', managed: [] }
+    plugins: readonly { pluginId: string; enabled: boolean }[], marketplaces: readonly SyncedMarketplace[],
+    managed: Set<string>, step: Step, signal: AbortSignal,
+  ): Promise<string> {
+    const previous = [...managed]
+    const wanted = plugins.map(plugin => plugin.pluginId)
+    if (!wanted.length && !previous.length) return 'Nothing to sync'
     const claude = await this.ports.find('claude')
     if (!claude) throw new Error('Claude Code is not installed on this computer.')
     const catalog = await readClaudePlugins(this.ports, signal)
     const installed = new Map(catalog.plugins.filter(item => item.installed).map(item => [item.pluginId, item]))
     const known = new Set(catalog.marketplaces.map(item => item.name))
-    const failed: string[] = [], removed: string[] = [], kept: string[] = []
+    const failed: string[] = []
+    const removed: string[] = []
+    const kept: string[] = []
     for (const pluginId of previous) {
-      if (wanted.includes(pluginId) || !installed.has(pluginId)) continue
+      if (wanted.includes(pluginId)) continue
+      if (!installed.has(pluginId)) {
+        managed.delete(pluginId)
+        continue
+      }
       const result = await step(claude, ['plugin', 'uninstall', pluginId, '--scope', 'user', '--json'],
         `claude plugin uninstall ${pluginId}`, { allowFailure: true })
       ;(result.code === 0 && claudeCliResult(result.stdout)?.outcome === 'ok' ? removed : kept).push(pluginId)
     }
-    for (const marketplace of request.claudeMarketplaces) {
+    for (const marketplace of marketplaces) {
       if (known.has(marketplace.name)) continue
       const result = await step(claude, ['plugin', 'marketplace', 'add', marketplace.source, '--json'],
         `claude plugin marketplace add ${marketplace.source}`, { allowFailure: true })
       if (result.code === 0 && claudeCliResult(result.stdout)?.outcome === 'ok') known.add(marketplace.name)
       else failed.push(`marketplace ${marketplace.name}`)
     }
-    for (const plugin of request.claudePlugins) {
+    for (const plugin of plugins) {
       const existing = installed.get(plugin.pluginId)
+      if (existing && !managed.has(plugin.pluginId)) continue
       const actions: string[] = []
       if (!existing) actions.push('install')
       if (!plugin.enabled) actions.push('disable')
@@ -344,24 +397,25 @@ export class ComputerMaintenance {
           failed.push(plugin.pluginId)
           break
         }
+        if (action === 'install') managed.add(plugin.pluginId)
       }
     }
     const readback = await readClaudePlugins(this.ports, signal)
-    for (const expected of request.claudePlugins) {
+    for (const expected of plugins.filter(plugin => managed.has(plugin.pluginId))) {
       if (!readback.plugins.some(item => item.pluginId === expected.pluginId && item.installed && item.enabled === expected.enabled)) {
         failed.push(expected.pluginId)
       }
     }
     for (const pluginId of removed) {
       if (readback.plugins.some(item => item.pluginId === pluginId && item.installed)) kept.push(pluginId)
+      else managed.delete(pluginId)
     }
-    const managed = [...wanted, ...kept]
     if (failed.length || kept.length) {
       throw new Error([failed.length ? `Could not sync ${[...new Set(failed)].join(', ')}` : '',
         kept.length ? `Could not remove ${kept.join(', ')}` : ''].filter(Boolean).join(' · '))
     }
     const done = removed.length ? ` · Removed ${removed.join(', ')}` : ''
-    return { summary: `${request.claudePlugins.length} plugins in sync${done}`, managed }
+    return `${plugins.length} plugins in sync${done}`
   }
 
   private async installedVersion(harness: MaintainedHarness, signal: AbortSignal): Promise<string | null | undefined> {
@@ -461,7 +515,14 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
       })
     }),
     exists: async target => { try { await access(target); return true } catch { return false } },
-    readText: target => readFile(target, 'utf8').catch(() => null),
+    readText: async target => {
+      try {
+        return await readFile(target, 'utf8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    },
     async writePrivateText(target, text) {
       await mkdir(dirname(target), { recursive: true, mode: 0o700 })
       const temporary = `${target}.${randomUUID()}.tmp`

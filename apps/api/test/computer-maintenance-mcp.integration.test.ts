@@ -12,6 +12,7 @@ import { ComputerMaintenance, type MaintenancePorts } from '../src/modules/compu
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { fakeComputer, settle } from './helpers/fleetSync.js'
 
 const status = (codex: string): MaintenanceStatus => ({ observedAt: new Date().toISOString(), tasks: [],
   harnesses: [{ harness: 'codex', installed: true, version: codex, latest: '0.161.0' }, { harness: 'claude', installed: false, version: null, latest: '2.1.294' }],
@@ -108,6 +109,115 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(audits.rows.length).toBeGreaterThanOrEqual(3)
     expect(new Set(audits.rows.map(row => row.source))).toEqual(new Set(['mcp']))
   })
+  it('syncs safely through authenticated MCP, preserves local entries, and reads persisted partial ownership', async () => {
+    const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const access = new PostgresAccessService(database.pool)
+    const writer = await access.issue({ name: 'Sync maintainer', audience: 'operator',
+      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }] })
+    const reader = await access.issue({ name: 'Sync reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['settings:read'], scope: {} }] })
+    const device = { mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
+      authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'], publicKeyFingerprint: 'b'.repeat(64) }
+    await database.pool.query(`insert into device_registrations (id,main_id,worker_installation_id,public_key,record)
+      values($1,$2,$3,'fixture',$4::jsonb)`, [device.deviceId, mainId, device.workerInstallationId, JSON.stringify(device)])
+    const computer = fakeComputer()
+    const localDefinition = { type: 'http', url: 'https://receiver.example/mcp' }
+    computer.codexMcp.add('local')
+    computer.claudeMcp.set('local', localDefinition)
+    computer.codexPlugins.add('local@official')
+    computer.claudePlugins.set('local@official', false)
+    computer.fail((_binary, args) => ['add', 'add-json', 'install'].includes(args[1]!)
+      && (args.includes('bad') || args.includes('bad@official')))
+    let names = ['local', 'good', 'bad']
+    let unreadable = false
+    const sourceServers = async () => {
+      return { ...Object.fromEntries(names.map(name => [name, { url: `https://${name}.example/mcp` }])),
+        query: { url: 'https://service.example/mcp?api_key=fixture-secret' },
+        argument: { command: '/usr/bin/server', args: ['--api-key', 'fixture-secret'] } }
+    }
+    const commands = new PostgresCommandCoordinator(database.pool)
+    const starts: MaintenanceTaskStart[] = []
+    const service = new FleetMaintenanceService(database.pool, mainId, () => ({
+      capabilities: () => [{ namespace: COMPUTER_MAINTENANCE_NAMESPACE, mainCanRequest: true }],
+      request: async (_deviceId, _namespace, payload) => {
+        const request = MaintenanceRequestSchema.parse(payload)
+        if (request.operation === 'status') {
+          return { payload: { operation: 'status', status: await computer.maintenance.status(AbortSignal.timeout(1000)) } }
+        }
+        starts.push(request.task)
+        return { payload: { operation: 'start', task: computer.maintenance.start(request.task) } }
+      },
+    }), commands, new ComputerMaintenance(computer.ports), {
+      codexUserMcpServers: async () => {
+        if (unreadable) throw new Error('Native source unavailable')
+        return sourceServers()
+      },
+      claudeUserMcpServers: sourceServers,
+      codexPlugins: async () => names.map(name => `${name}@official`), codexMarketplaces: async () => [],
+      claudePlugins: async () => ({ marketplaces: [], plugins: names.map(name => ({
+        pluginId: `${name}@official`, name, marketplaceName: 'official', description: null, version: null,
+        installed: true, enabled: true, installCount: null,
+      })) }),
+    })
+    const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { computerMaintenance: service, commands } as unknown as OperatorServices } })
+    apps.push(app)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'fleet-sync-test', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      }))
+      return client
+    }
+    const operator = await connect(writer.token)
+    const readOnly = await connect(reader.token)
+    expect((await readOnly.listTools()).tools.map(tool => tool.name)).not.toContain('computers_maintenance_start')
+    const targets = [{ hostRef: { kind: 'device', mainId, deviceId: device.deviceId },
+      applicationInstallationId: device.workerInstallationId, keyRevision: 1, authorizationRevision: 1 }]
+    expect((await readOnly.callTool({ name: 'computers_maintenance_start', arguments: {
+      commandId: randomUUID(), task: { kind: 'sync-mcp' }, targets,
+    } })).isError).toBe(true)
+    expect(starts).toHaveLength(0)
+    const sync = async (kind: 'sync-mcp' | 'sync-plugins') => {
+      const arguments_ = { commandId: randomUUID(), task: { kind }, targets }
+      const result = ComputerMaintenanceStartResultSchema.parse((await operator.callTool({
+        name: 'computers_maintenance_start', arguments: arguments_,
+      })).structuredContent)
+      const count = starts.length
+      await operator.callTool({ name: 'computers_maintenance_start', arguments: arguments_ })
+      expect(starts).toHaveLength(count)
+      expect(result.computers[0]?.task?.sourceFingerprint).toMatch(/^sha256:/u)
+      await settle(computer)
+      const readback = ComputerMaintenanceListSchema.parse((await operator.callTool({
+        name: 'computers_maintenance_status', arguments: { refresh: true },
+      })).structuredContent)
+      return readback.computers.find(item => item.target.applicationInstallationId === device.workerInstallationId)
+        ?.status?.tasks.find(task => task.id === result.computers[0]?.task?.id)
+    }
+    expect(await sync('sync-mcp')).toMatchObject({ state: 'failed', summary: expect.stringContaining('query') })
+    expect(await sync('sync-plugins')).toMatchObject({ state: 'failed' })
+    expect(JSON.stringify(starts)).not.toContain('fixture-secret')
+    expect(JSON.stringify(computer.calls)).not.toContain('fixture-secret')
+    expect(computer.claudePlugins.get('local@official')).toBe(false)
+    names = []
+    computer.fail(() => false)
+    unreadable = true
+    expect(await sync('sync-mcp')).toMatchObject({ state: 'succeeded',
+      summary: expect.stringContaining('could not be read') })
+    expect(computer.codexMcp.has('good')).toBe(true)
+    expect(computer.claudeMcp.has('good')).toBe(false)
+    unreadable = false
+    computer.maintenance = new ComputerMaintenance(computer.ports)
+    expect(await sync('sync-mcp')).toMatchObject({ state: 'succeeded' })
+    expect(await sync('sync-plugins')).toMatchObject({ state: 'succeeded' })
+    expect([...computer.codexMcp]).toEqual(['local'])
+    expect([...computer.claudeMcp]).toEqual([['local', localDefinition]])
+    expect([...computer.codexPlugins]).toEqual(['local@official'])
+    expect([...computer.claudePlugins]).toEqual([['local@official', false]])
+  })
+
   it('shows a running task\'s progress within seconds instead of the settled-status cache', async () => {
     const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
     const owner = await new PostgresAccessService(database.pool).issue({ name: 'Progress reader', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),

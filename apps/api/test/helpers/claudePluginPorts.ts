@@ -4,6 +4,7 @@ export function claudePluginPorts() {
   const installed = new Map<string, { version: string; enabled: boolean }>()
   const marketplaces = new Map<string, string>()
   const changes: string[] = []
+  const files = new Map<string, string>()
   const available = ['notes', 'review', 'command'].map(name => ({
     pluginId: `${name}@official`, name, description: `${name} tools`, marketplaceName: 'official', installCount: 10,
   }))
@@ -35,8 +36,8 @@ export function claudePluginPorts() {
       return result({ outcome: 'ok' })
     },
     exists: async () => false,
-    readText: async () => null,
-    writePrivateText: async () => undefined,
+    readText: async path => files.get(path) ?? null,
+    writePrivateText: async (path, text) => { files.set(path, text) },
     disk: async () => ({ freeBytes: 50, totalBytes: 100 }),
     later: () => {},
     now: () => new Date(),

@@ -263,6 +263,8 @@ describe('fleet MCP sync source', () => {
       linear: { url: 'https://mcp.linear.app/mcp', bearer_token_env_var: 'LINEAR_TOKEN' },
       search: { command: 'npx', args: ['search-mcp'] },
       secret: { command: 'npx', args: ['x'], env: { API_KEY: 'value' } },
+      querySecret: { url: 'https://example.test/mcp?token=secret' },
+      argumentSecret: { command: 'npx', args: ['x', '--token', 'secret'] },
       claude: { type: 'http', url: 'https://example.test/mcp', headers: { Authorization: 'Bearer x' } },
     })).toEqual([
       { transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: 'LINEAR_TOKEN' },
