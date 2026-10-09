@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { HarnessMcpSettingsService } from './mcpSettings.js'
+import type { NativeMcpSnapshot } from './nativeMcpCommon.js'
 
 const principal: ManagementPrincipal = {
   id: 'owner',
@@ -100,4 +104,61 @@ it('continues to deny retired plan readback to a caller without grants', async (
   const { service, row, query } = fixture()
   await expect(service.get({ ...principal, grants: [] }, row.id)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
   expect(query).not.toHaveBeenCalled()
+})
+
+it('keeps a pre-write inspection from replacing the fresh list after an approved write', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mcp-write-cache-'))
+  let service: HarnessMcpSettingsService | undefined
+  let finishBackground: (() => void) | undefined
+  try {
+    const file = join(directory, 'config.toml')
+    await writeFile(file, '')
+    const snapshot: NativeMcpSnapshot = { harness: 'codex', revision, file, version: '1',
+      userConfig: {}, user: {}, effective: {} }
+    const updated = { ...snapshot, revision: `sha256:${'b'.repeat(64)}`,
+      user: { added: { command: 'added', enabled: true } },
+      effective: { added: { command: 'added', enabled: true } } }
+    const row = { ...fixture('pending').row, harness: 'codex',
+      change: { kind: 'add', name: 'added', connection: { transport: 'stdio', executable: '/usr/bin/added', arguments: [],
+        environmentVariables: [] } }, expires_at: new Date('2099-01-01T00:00:00Z') }
+    const liveWriter = { rows: [{ grants: principal.grants, expires_at: new Date(principal.expiresAt) }] }
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce(liveWriter)
+      .mockResolvedValueOnce({ rows: [{ locked: true }] })
+      .mockResolvedValueOnce({ rows: [row] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ locked: true }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce(liveWriter)
+      .mockResolvedValueOnce({ rows: [{ ...row, status: 'submitting' }] })
+    const client = { query, release: vi.fn() }
+    const pool = { connect: async () => client, query: vi.fn().mockResolvedValue({ rows: [{ ...row, status: 'applied' }], rowCount: 1 }) }
+    let release!: (snapshot: NativeMcpSnapshot) => void
+    const background = new Promise<NativeMcpSnapshot>((resolve) => { release = resolve })
+    finishBackground = () => release(snapshot)
+    const read = vi.fn().mockResolvedValue(snapshot)
+      .mockResolvedValueOnce(snapshot)
+      .mockReturnValueOnce(background)
+    const apply = vi.fn(async () => { read.mockResolvedValue(updated) })
+    service = new HarnessMcpSettingsService(pool as never, {} as never, { codex: { read, apply } }, vi.fn())
+    await service.list(principal, 'codex')
+    await writeFile(file, '# external edit\n')
+    const previousRead = service.list(principal, 'codex')
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+    expect(await service.decide(principal, row.id, true)).toMatchObject({ status: 'applied' })
+    expect(apply).toHaveBeenCalledOnce()
+    const after = await service.list(principal, 'codex')
+    expect(after.servers.map(server => server.name)).toEqual(['added'])
+    expect(read).toHaveBeenCalledTimes(4)
+    release(snapshot)
+    await previousRead
+    expect(await service.list(principal, 'codex')).toEqual(after)
+    expect(read).toHaveBeenCalledTimes(4)
+    await expect(service.list({ ...principal, grants: [] }, 'codex')).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+  } finally {
+    finishBackground?.()
+    await service?.shutdown()
+    await rm(directory, { recursive: true, force: true })
+  }
 })

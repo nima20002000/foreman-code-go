@@ -57,7 +57,13 @@ export class HarnessMcpSettingsService {
   // unchanged (5 min at most); this service's own writes clear it, so changes are visible at once.
   private readonly lists = new Map<Harness, { list: McpList; file: string; stamp: string; readAt: number }>()
   private readonly reads = new Map<Harness, Promise<McpList>>()
-  private notifyChanged(): void { this.lists.clear(); this.changed() }
+  private listGeneration = 0
+  private notifyChanged(): void {
+    this.listGeneration++
+    this.lists.clear()
+    this.reads.clear()
+    this.changed()
+  }
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly adapters: Record<Harness, NativeMcpAdapter>, private readonly changed: () => void,
     private readonly closeProcesses: () => Promise<unknown> = async () => undefined,
@@ -109,6 +115,7 @@ export class HarnessMcpSettingsService {
     return reading
   }
   private readList(harness: Harness) {
+    const generation = this.listGeneration
     return this.work(async (signal) => {
       try {
         const snapshot = await this.adapters[harness].read(signal)
@@ -119,8 +126,11 @@ export class HarnessMcpSettingsService {
         } } : {}) }
         // Without a readable config file there is no change signal, so the read is not reused.
         const stamp = await fileStamp(snapshot.file)
-        if (stamp) this.lists.set(harness, { list: structuredClone(result), file: snapshot.file, stamp, readAt: Date.now() })
-        else this.lists.delete(harness)
+        // A read started before a write cannot repopulate its invalidated cache.
+        if (generation === this.listGeneration) {
+          if (stamp) this.lists.set(harness, { list: structuredClone(result), file: snapshot.file, stamp, readAt: Date.now() })
+          else this.lists.delete(harness)
+        }
         return result
       }
       catch (error) { throw qualificationError(error) }

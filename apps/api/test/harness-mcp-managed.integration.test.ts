@@ -1,5 +1,8 @@
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, expect, it } from 'vitest'
@@ -22,10 +25,17 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
   await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const endpoint = 'http://127.0.0.1:3000/mcp'
+  const directory = await mkdtemp(join(tmpdir(), 'managed-mcp-cache-'))
+  const file = join(directory, 'config.toml')
+  await writeFile(file, '')
   const snapshots = Object.fromEntries((['codex'] as const).map((harness) => [harness,
-    { harness, revision: fingerprint({}), effective: {}, user: {}, userConfig: {}, file: '/tmp/config', version: '1' }])) as Record<'codex', NativeMcpSnapshot>
+    { harness, revision: fingerprint({}), effective: {}, user: {}, userConfig: {}, file, version: '1' }])) as Record<'codex', NativeMcpSnapshot>
+  let reads = 0
   const adapter = (harness: 'codex'): NativeMcpAdapter => ({
-    read: async () => structuredClone(snapshots[harness]),
+    read: async () => {
+      reads++
+      return structuredClone(snapshots[harness])
+    },
     apply: async (snapshot, change, _signal, managed) => {
       const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
       snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
@@ -48,6 +58,8 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     await pool.query('update management_principals set delegated_from=$2 where id=$1', [delegated.principal.id, owner.principal.id])
     const reader = await access.issue({ name: 'MCP reader', audience: 'operator', grants: [{ actions: ['harnesses:read'], scope: {} }],
       expiresAt: new Date(Date.now() + 120_000) })
+    const writer = await access.issue({ name: 'MCP writer without read access', audience: 'operator',
+      grants: [{ actions: ['harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'managed-mcp-test', version: '1' }); clients.push(client)
@@ -56,6 +68,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     }
     const client = await connect(delegated.token)
     const denied = await connect(reader.token)
+    const deniedReader = await connect(writer.token)
     expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_mcp_managed_request')
     const deniedRequest = await denied.callTool({ name: 'harness_mcp_managed_request', arguments: {} })
     expect(deniedRequest.isError).toBe(true)
@@ -65,6 +78,13 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     for (const harness of ['codex'] as const) {
       for (const preset of ['graphql', 'linear'] as const) {
         const before = await listed(harness)
+        const previousReads = reads
+        expect(await listed(harness)).toEqual(before)
+        expect(reads).toBe(previousReads)
+        const deniedList = await deniedReader.callTool({ name: 'harness_mcp_servers_list', arguments: { harness } })
+        expect(deniedList.isError).toBe(true)
+        expect(JSON.stringify(deniedList.content)).toContain('ACCESS_DENIED')
+        expect(reads).toBe(previousReads)
         expect(before.presets?.[preset]).toBe('missing')
         const args = { harness, preset, installed: true, expectedRevision: before.revision, commandId: randomUUID() }
         // The delegated Operator applies the preset itself: no human review step.
@@ -103,6 +123,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       // Retired per-role entries are replaced by the one graphql entry in the same reviewed write.
       const legacy = { 'graphql-app': { enabled: true }, 'graphql-operator': { enabled: true } }
       snapshots[harness] = { ...snapshots[harness], user: legacy, effective: structuredClone(legacy), revision: fingerprint(legacy) }
+      await writeFile(file, JSON.stringify(legacy))
       const before = await listed(harness)
       expect(before.presets?.graphql).toBe('legacy')
       expect(before.servers.find((server) => server.name === 'graphql-app')?.label).toBe('Legacy app connection · replaced by foreman-code')
@@ -116,6 +137,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       const oldUser = { graphql: oldEntry }
       snapshots[harness] = { ...snapshots[harness], user: oldUser, effective: structuredClone(oldUser),
         revision: fingerprint(oldUser), }
+      await writeFile(file, JSON.stringify(oldUser))
       expect((await listed(harness)).presets?.graphql).toBe('disabled')
       const rename = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
         harness, preset: 'graphql', installed: true, expectedRevision: (await listed(harness)).revision, commandId: randomUUID(),
@@ -132,5 +154,6 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
   } finally {
     await mcp.shutdown(); await app.close(); await pool.end()
     await dropFixtureSchema(admin, schema); await admin.end()
+    await rm(directory, { recursive: true, force: true })
   }
 }, 30_000)

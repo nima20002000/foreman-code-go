@@ -33,7 +33,7 @@ export function createMainCiRuntime(input: {
         ...(await journal.jobOperations()).map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
         ...(await journal.pendingQualifications()).map(receipt => receipt.candidate.fingerprint.imageDigest)]
       const configurations = await retireCiRuntimeConfigurations(input.runtimeRoot, used)
-      return prepareCiRuntime({ ...options, keepImages: [...used, ...configurations.images],
+      return prepareCiRuntime({ ...options, stateDirectory: input.runtimeRoot, keepImages: [...used, ...configurations.images],
         keepPaths: [...options.keepPaths ?? [], ...configurations.paths] })
     },
     // Stopping Main ends its local Jobs and qualifications; their recovery runs when Main starts again.

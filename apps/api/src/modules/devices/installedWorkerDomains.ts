@@ -322,7 +322,7 @@ export async function createInstalledWorkerDomains(input: {
           ...executions.map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
           ...qualifications.map(receipt => receipt.candidate.fingerprint.imageDigest)]
         const configurations = await retireCiRuntimeConfigurations(input.stateDirectory, used)
-        return prepareCiRuntime({ ...options, keepImages: [...used, ...configurations.images],
+        return prepareCiRuntime({ ...options, stateDirectory: input.stateDirectory, keepImages: [...used, ...configurations.images],
           keepPaths: [...options.keepPaths ?? [], ...configurations.paths] })
       },
       refresh: async options => {

@@ -8,18 +8,56 @@ import { pipeline } from 'node:stream/promises'
 import { buildCiRuntimeContext, ciRuntimeInputDigest, parseCiLock } from '../../../../worker/artifacts/ci-runtime/context.mjs'
 import { expectedPortions } from '../../../../../scripts/verification-runner.mjs'
 import type { PreparedCiRuntime } from '@foreman-code/contracts'
+import { JobVerificationQuotaPoolSchema } from '@foreman-code/contracts/job-verification-runtime'
+import { z } from 'zod'
 import { pruneCiRuntimeCache, readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
+import { readJobProjectQuota } from './quotaOwnership.js'
+import { readProtectedRuntimeConfiguration } from './installedRuntimeHost.js'
+import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
 
 const run = promisify(execFile)
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
 const COMMIT = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u
+
+const quotaConfiguration = z.object({
+  schemaVersion: z.literal(2),
+  descriptor: z.object({ quotaPool: JobVerificationQuotaPoolSchema }).passthrough(),
+}).passthrough()
+
+/** `stateDirectory` holds the computer's protected runtime configuration, whose quota pool reports usage when
+ * preparation runs out of CI storage. */
+export async function prepareCiRuntime({ stateDirectory, ...input }: Parameters<typeof prepareRuntime>[0]
+  & { stateDirectory?: string }): Promise<PreparedCiRuntime> {
+  try {
+    return await prepareRuntime(input)
+  } catch (error) {
+    const failure = error as { code?: unknown; message?: unknown; stderr?: unknown } | null
+    const diagnostics = `${failure?.code ?? ''} ${failure?.message ?? ''} ${failure?.stderr ?? ''}`
+    if (!/\b(?:ENOSPC|EDQUOT)\b|disk quota exceeded|no space left on device/iu.test(diagnostics)) throw error
+
+    let quota = 'Control quota readback unavailable: this computer did not supply its protected runtime state.'
+    if (stateDirectory) try {
+      const configuration = await readProtectedRuntimeConfiguration({
+        path: join(stateDirectory, 'job-runtime.json'), ownerUid: process.getuid!(),
+      }, quotaConfiguration, MAX_VERIFICATION_CONFIGURATION_BYTES)
+      const observed = await readJobProjectQuota(configuration.descriptor.quotaPool, input.installer,
+        AbortSignal.timeout(5000))
+      quota = `Control quota (project ${observed.projectId}): bytes used=${observed.usedBytes} `
+        + `hard=${observed.hardLimitBytes}; inodes used=${observed.usedInodes} hard=${observed.hardInodes}.`
+    } catch (readError) {
+      const reason = readError instanceof Error ? readError.message : String(readError)
+      quota = `Control quota readback unavailable: ${reason.slice(-300)}`
+    }
+    throw new Error(`CI storage is full on this build computer. ${quota}`, { cause: error })
+  }
+}
 
 /** Prepares this build computer for one commit's dependencies, with no human step:
  * a checkout of the commit, an offline package seed fetched with network, the verification
  * image built without network, and the qualification source tree. Returns the facts Main
  * needs to capture and qualify the new runtime. Everything stays inside `installer`. */
 export interface CiRuntimeReview { reviewedByPrincipalId: string; decisionDigest: string }
-export async function prepareCiRuntime({ repository, commit, installer, review, keepImages = [], keepPaths = [], environment = process.env, log = () => {} }: {
+async function prepareRuntime({ repository, commit, installer, review, keepImages = [], keepPaths = [], environment = process.env, log = () => {} }: {
   repository: string; commit: string; installer: string; review: CiRuntimeReview
   /** Image ids referenced by protected configurations and retained execution records. */
   keepImages?: readonly string[]

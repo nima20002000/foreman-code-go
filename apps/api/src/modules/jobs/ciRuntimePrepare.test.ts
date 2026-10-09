@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,6 +7,7 @@ import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDir
 import { codexBinary, extractQualificationSource, prepareCiRuntime, pruneCiImages, reclaimInterruptedPreparation }
   from './ciRuntimePrepare.js'
 import { PreparedCiRuntimeSchema } from '@foreman-code/contracts'
+import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 
 const command = vi.hoisted(() => ({ run: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
@@ -60,6 +62,53 @@ async function repository() {
 }
 
 describe('CI runtime preparation boundaries', () => {
+  it.each([
+    { code: 125, stderr: 'Error: writing layer: disk quota exceeded', worker: false },
+    { code: 'ENOSPC', stderr: '', worker: false },
+    { code: 'EDQUOT', stderr: '', worker: true },
+  ])('reports CI storage exhaustion with the installer project quota: $code', async failure => {
+    const f = await repository()
+    const commit = f.save()
+    const installer = join(f.root, 'installer')
+    await mkdir(installer)
+    const pool = verificationCapacityFixture('main').measurement!.fingerprint.quotaPool!
+    const observed = { volumeCapacityBytes: 64 * 2 ** 30, volumeCapacityInodes: pool.volumeCapacityInodes,
+      projectId: 1, inheritance: true, hardLimitBytes: 1048576, hardInodes: 1000,
+      usedBytes: 1044480, usedInodes: 990, accountingEnabled: true, filesystem: pool.slots[0]!.filesystem }
+    const observer = join(f.root, 'quota-query')
+    const script = `#!/bin/sh\n[ "$1" = '${installer}' ] || exit 1\nprintf '%s' '${JSON.stringify(observed)}'\n`
+    await writeFile(observer, script, { mode: 0o700 })
+    const state = failure.worker ? join(f.root, 'worker-state') : f.root
+    if (failure.worker) await mkdir(state)
+    await writeFile(join(state, 'job-runtime.json'), JSON.stringify({ schemaVersion: 2,
+      descriptor: { quotaPool: { ...pool, queryExecutable: observer,
+        queryBinarySha256: createHash('sha256').update(script).digest('hex') } } }), { mode: 0o600 })
+    command.run.mockRejectedValue(Object.assign(new Error('podman failed'), failure))
+
+    await expect(prepareCiRuntime({ repository: f.source, commit, installer, stateDirectory: state,
+      review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } }))
+      .rejects.toThrow('CI storage is full on this build computer. Control quota (project 1): '
+        + 'bytes used=1044480 hard=1048576; inodes used=990 hard=1000.')
+  })
+
+  it('reports storage exhaustion even when the protected quota readback is unavailable', async () => {
+    const f = await repository()
+    const commit = f.save()
+    command.run.mockRejectedValue(new Error('write: no space left on device'))
+    await expect(prepareCiRuntime({ repository: f.source, commit, installer: join(f.root, 'installer'),
+      review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } }))
+      .rejects.toThrow('CI storage is full on this build computer. Control quota readback unavailable:')
+  })
+
+  it('preserves an unrelated preparation failure', async () => {
+    const f = await repository()
+    const commit = f.save()
+    const failure = new Error('Podman storage configuration is invalid')
+    command.run.mockRejectedValue(failure)
+    await expect(prepareCiRuntime({ repository: f.source, commit, installer: join(f.root, 'installer'),
+      review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } })).rejects.toBe(failure)
+  })
+
   it('prepares another project from its own dependency seed without requiring the Foreman Codex package', async () => {
     const f = await repository()
     await writeFile(join(f.source, 'package.json'), JSON.stringify({ name: 'ordinary-project',
