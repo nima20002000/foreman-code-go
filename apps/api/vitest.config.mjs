@@ -13,5 +13,8 @@ export default defineConfig({
     setupFiles: ['./test/setupResources.ts'],
     // Leave CPU headroom for the Vitest coordinator and application processes.
     maxWorkers,
+    // Many cases start real processes, Postgres sessions or MCP servers; under a full gate the 5 s default
+    // times out heavy cases at random (2026-10-09 gates).
+    testTimeout: 20_000,
   },
 })
