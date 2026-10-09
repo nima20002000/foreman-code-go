@@ -50,6 +50,7 @@ import './operatorChat.css'
 const listKey = ['operator-chat', 'summaries'] as const
 const detailKey = (id: string) => ['operator-chat', 'conversation', id] as const
 type Summaries = Awaited<ReturnType<typeof listOperatorConversationSummaries>>
+type AppRequest = NonNullable<ReturnType<typeof useOperatorChatStore.getState>['request']>
 function currentSession(generation: number): boolean {
   return !sessionIsSwitching() && sessionGeneration() === generation
 }
@@ -71,6 +72,9 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const [removed, setRemoved] = useState<{ id: string; title: string }>()
   const [handoffNotice, setHandoffNotice] = useState<{ id: string; epoch: string }>()
   const [closing, setClosing] = useState(false)
+  const [askSend, setAskSend] = useState<{
+    id: string; requestId: string; content: string; generation: number; navigationGeneration: number; ready: boolean
+  }>()
   const queryClient = useQueryClient()
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
@@ -153,15 +157,28 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const invalidate = async (id: string) => { await Promise.all([
     queryClient.invalidateQueries({ queryKey: detailKey(id) }), queryClient.invalidateQueries({ queryKey: listKey }),
   ]) }
-  const create = useMutation({ mutationFn: (input: { generation: number; navigationGeneration: number }) => {
+  const create = useMutation({ mutationFn: (input: {
+    generation: number; navigationGeneration: number; request?: AppRequest
+  }) => {
     if (!currentSession(input.generation)) throw new SessionChangedError()
     return createOperatorConversation()
   },
     onSuccess: async ({ conversation }, input) => {
       if (!currentSession(input.generation)) return
+      if (input.request) {
+        const store = useOperatorChatStore.getState()
+        if (store.request?.id !== input.request.id) return
+        useConversationDraftStore.getState().setDraft(conversation.id, input.request.content)
+        store.takeRequest(input.request.id)
+      }
       if (useOperatorChatStore.getState().navigationGeneration === input.navigationGeneration) {
         select(conversation.id)
         if (isNarrowOperatorChat()) historyTriggerRef.current?.focus()
+        if (input.request?.send) setAskSend({
+          id: conversation.id, requestId: input.request.id, content: input.request.content,
+          generation: input.generation, navigationGeneration: useOperatorChatStore.getState().navigationGeneration,
+          ready: false,
+        })
       }
       // Pre-creation inspection has no accepted configuration pin. Once one
       // exists, reuse its verified installation across every subsequent chat.
@@ -170,7 +187,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
       const inspected = cached?.fetchStatus === 'fetching' ? await setup.refetch({ cancelRefetch: false }) : cached
       if (inspected?.data?.status === 'configured' && !inspected.data.configurationVersionId) await setup.refetch()
       await queryClient.invalidateQueries({ queryKey: listKey })
-    } })
+    },
+    onSettled: (_data, error, input) => {
+      creating.current = false
+      const requestId = input.request?.id
+      if (!error && requestId) setAskSend((current) =>
+        current?.requestId === requestId ? { ...current, ready: true } : current)
+    },
+  })
   const send = useMutation({
     mutationFn: async (input: { id: string; command: SendOperatorMessageRequest; generation: number; epoch: string; navigationGeneration: number; recoverFirst?: boolean; attemptId?: string }) => {
       const { id, command, generation, epoch } = input
@@ -362,17 +386,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const fileDrop = useFileDrop({ disabled: attachmentsDisabled || !attachments.canAdd, onFiles: attachments.addFiles })
   // A request from elsewhere in the app (askOperator) starts its own conversation and is sent once the chat can send.
   const request = useOperatorChatStore((state) => state.request)
-  const [askSend, setAskSend] = useState<{ id: string; content: string }>()
+  const requestedDraft = useConversationDraftStore((state) => askSend ? state.drafts[askSend.id] : undefined)
   const submitRef = useRef<((content: string) => Promise<void>) | undefined>(undefined)
   useEffect(() => {
     if (!enabled || !open || !request || accessDenied || creating.current) return
-    useOperatorChatStore.getState().takeRequest(request.id)
+    if (create.isError && create.variables?.request?.id === request.id) return
     creating.current = true
-    void create.mutateAsync({ generation: sessionGeneration(), navigationGeneration: useOperatorChatStore.getState().beginNavigation() })
-      .then(({ conversation: created }) => {
-        useConversationDraftStore.getState().setDraft(created.id, request.content)
-        if (request.send) setAskSend({ id: created.id, content: request.content })
-      }).catch(() => undefined).finally(() => { creating.current = false })
+    create.mutate({ generation: sessionGeneration(),
+      navigationGeneration: useOperatorChatStore.getState().beginNavigation(), request })
   }, [accessDenied, create, enabled, open, request])
   const settings = preferencesDenied ? undefined : preferences.settings
   // Historical OpenCode chats stay readable, with no composer or response controls.
@@ -473,10 +494,17 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const askReady = setupReady && settingsReady && conversation?.conversation.id === selectedId && !active && !archived
     && !pending.command && !pending.error && !attachmentReceiptPending
   useEffect(() => {
-    if (!askSend || askSend.id !== selectedId || !askReady) return
+    if (!askSend) return
+    const store = useOperatorChatStore.getState()
+    if (!currentSession(askSend.generation) || store.navigationGeneration !== askSend.navigationGeneration
+      || (store.request && store.request.id !== askSend.requestId) || requestedDraft !== askSend.content) {
+      setAskSend(undefined)
+      return
+    }
+    if (!askSend.ready || askSend.id !== selectedId || !askReady) return
     setAskSend(undefined)
     void submitRef.current?.(askSend.content)
-  }, [askReady, askSend, selectedId])
+  }, [askReady, askSend, request, requestedDraft, selectedId])
   if (!enabled || sessionIsSwitching()) return null
   return <div className="operator-chat-root">
     {open || closing ? <section ref={panelRef} style={size} id={panelId} className="operator-chat" data-state={open ? 'open' : 'closing'} role="dialog" aria-modal={false} aria-label="Operator chat" aria-hidden={closing} inert={closing}
@@ -524,7 +552,13 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
           {!missingSelection ? <OperatorSetupNotice data={shownSetup.data} checking={shownSetup.isFetching} failed={shownSetup.isError} onRetry={() => void shownSetup.refetch()} /> : null}
           {remove.error instanceof Error ? <Alert live tone="danger" title="Chat could not be deleted">{remove.error.message}</Alert> : null}
           {restore.error instanceof Error ? <Alert live tone="danger" title="Chat could not be restored">{restore.error.message}</Alert> : null}
-          {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created">{create.error.message}</Alert> : null}
+          {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created"
+            action={request && create.variables?.request?.id === request.id
+              ? <Button size="sm" disabled={create.isPending || accessDenied} onClick={() => create.reset()}>Retry requested chat</Button>
+              : undefined}>
+            {create.error.message}
+            {request && create.variables?.request?.id === request.id ? <p>{request.content}</p> : null}
+          </Alert> : null}
           {!selectedId && !accessDenied ? <div className="operator-chat-start"><EmptyState icon="chat" title="Chat with Operator"
             description="Ask about your workspaces and workflows, or describe a change you need."
             action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation}
