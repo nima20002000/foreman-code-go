@@ -265,6 +265,10 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
   })
   it('keeps harness updates and MCP sync working when plugin discovery fails', async () => {
     const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const device = { mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
+      authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'], publicKeyFingerprint: 'c'.repeat(64) }
+    await database.pool.query(`insert into device_registrations (id,main_id,worker_installation_id,public_key,record)
+      values($1,$2,$3,'fixture',$4::jsonb)`, [device.deviceId, mainId, device.workerInstallationId, JSON.stringify(device)])
     const starts: MaintenanceTaskStart[] = []
     const local = {
       status: async () => status('0.150.0'),
