@@ -50,7 +50,8 @@ export async function createInstalledWorkerProfileChecks(input: {
           }
           if (profile.configuration.harness !== 'codex') throw new DomainError('HARNESS_DRIVER_UNAVAILABLE',
             'The selected driver has no installed profile checker.', 409)
-          const codex = installedHarnessSelection(configuration)
+          const selected = await guarded(() => readInstalledWorkflowConfiguration(input.configuration))
+          const codex = selected && installedHarnessSelection(selected)
           if (!codex) throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'The installed Codex selection is missing.', 409)
           const manager = new CodexAppServerSessionManager(codex.binary, codex.expectedVersion,
             undefined, recovery, 'none', undefined, {
