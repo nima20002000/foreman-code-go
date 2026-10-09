@@ -246,7 +246,12 @@ export async function extractQualificationSource(repository: string, commit: str
   const directory = await mkdtemp(`${qualificationSource}-`)
   const archive = spawn('git', ['-C', repository, 'archive', '--format=tar', commit], { env })
   const extract = spawn('/bin/sh', ['-c', 'umask 077 && exec tar -x -C "$1"', 'sh', directory], { env })
-  const tasks = [pipeline(archive.stdout, extract.stdin), closed(archive, 'git archive'), closed(extract, 'tar')]
+  // tar may stop reading at the end-of-archive marker before git writes its trailing padding; both exit
+  // codes still decide success, so only that early close of the pipe is not a failure.
+  const copy = pipeline(archive.stdout, extract.stdin).catch((error: unknown) => {
+    if ((error as { code?: unknown } | null)?.code !== 'ERR_STREAM_PREMATURE_CLOSE') throw error
+  })
+  const tasks = [copy, closed(archive, 'git archive'), closed(extract, 'tar')]
   try {
     await Promise.all(tasks)
     return directory
