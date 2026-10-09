@@ -54,6 +54,7 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
     const capabilities = operatorCapabilities(context, input)
     if (input.detail === 'full') return capabilities
     const { requirements: _requirements, ...compact } = capabilities
+    void _requirements
     const tools = await catalog?.(callbackContext)
     const selectedResource = input.workspaceId || input.workflowId || input.runId
     const names = tools?.map((tool) => tool.name) ?? capabilities.tools

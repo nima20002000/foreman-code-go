@@ -1910,8 +1910,16 @@ export function buildProductionApp(
     // External callers close HTTP first. Repeated calls share app.close(), and
     // cannot release ownership while HTTP is draining in preClose.
     // onClose hooks must use drainShutdown(), not await this enclosing close.
-    applicationClose ??= Promise.resolve().then(() => app.close())
-    return applicationClose
+    applicationClose ??= Promise.resolve().then(async () => {
+      await app.close()
+      // Fastify consumes onClose hooks once, so retries must drain retained work explicitly.
+      await drainShutdown()
+    })
+    const attempt = applicationClose
+    void attempt.catch(() => {
+      if (applicationClose === attempt) applicationClose = undefined
+    })
+    return attempt
   }
   return { app, engine, initialize, reconcile, shutdown, drainShutdown, rsync,
     registerFileStorage: () => {

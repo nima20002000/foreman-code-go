@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { MemorySaver } from '@langchain/langgraph'
 import { describe, expect, it, vi } from 'vitest'
-import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
+import { CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphSnapshotV3Schema,
+  type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { workflowJobFixture } from './helpers/workflowJobFixture.js'
 import { assertWorkflowFailureReadback } from './helpers/workflowFailureReadback.js'
@@ -10,6 +11,7 @@ import { executeRepeatRuntime } from '../src/modules/runs/repeatRuntime.js'
 import { requireJobPreparationDeadline } from '../src/modules/jobs/preparationDeadline.js'
 import { readWorkflowJobSourceLocked } from '../src/modules/jobs/workflowSource.js'
 import type { WorkflowJobDriver } from '../src/modules/jobs/workflowRuntimePorts.js'
+import { graphRpcValue } from './eng04-graph-composition-fixture.js'
 
 vi.mock('../src/modules/interactions/repeatNativeSettlement.js', async importOriginal => ({
   ...await importOriginal<Record<string, unknown>>(),
@@ -27,6 +29,12 @@ async function withJob(configure: Parameters<typeof workflowJobFixture>[1], work
     const f = await workflowJobFixture(db, configure, form)
     try { await work(f) } finally { await f.close() }
   } finally { await db.close() }
+}
+async function snapshot(f: Fixture) {
+  const response = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.snapshot, { protocolVersion: 1, scope: f.scope })
+  expect(response.status).toBe(200)
+  expect(response.result?.isError, JSON.stringify(graphRpcValue(response.result))).not.toBe(true)
+  return RepeatGraphSnapshotV3Schema.parse(graphRpcValue(response.result))
 }
 const sink: Parameters<typeof workflowJobFixture>[1] = (graph, job) => {
   assert.ok(graph.entryNodeId, 'Expected an Agent entry node')
@@ -76,12 +84,30 @@ describe.skipIf(!postgresEnabled)('shared workflow Agent and Job budget', () => 
       const retry = vi.fn(() => f.candidate(ref.nodeId, 2))
       const accepted = await f.store.acceptTerminal(branch.execution.id, retry)
       expect(accepted).toMatchObject({ kind: 'accepted', resolution: { value: { resolution: 'failed' } } })
+      if (accepted.kind !== 'accepted') throw new Error('Expected first terminal acceptance')
       expect(retry).not.toHaveBeenCalled()
       await f.restart()
+      expect(await f.store.acceptTerminal(branch.execution.id, retry))
+        .toEqual({ kind: 'resolved', resolution: accepted.resolution })
+      expect(retry).not.toHaveBeenCalled()
       expect(await capacity()).toBe(false)
       const replay = await f.jobStore().prepareJob({ nodeId: f.node.id, occurrence: null })
       if (state === 'preparing') expect(replay).toEqual(preparation)
       else expect(replay.kind).toBe('admitted')
+      const persisted = await snapshot(f)
+      expect(persisted.state.nodes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ state: expect.objectContaining({ workflowNodeId: ref.nodeId }),
+          resolution: accepted.resolution.value }),
+        expect.objectContaining({ state: expect.objectContaining({ workflowNodeId: f.node.id,
+          lifecycle: state === 'preparing' ? 'starting' : 'queued' }) }),
+      ]))
+      const denied = await f.credential([{ actions: ['runs:read'],
+        scope: { workspaceIds: [f.run.workspaceId], workflowIds: ['another-workflow'] } }])
+      const blocked = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.snapshot,
+        { protocolVersion: 1, scope: f.scope }, denied.token)
+      expect(blocked.result?.isError).toBe(true)
+      expect(graphRpcValue(blocked.result)).toMatchObject({ error: { code: 'GRAPH_READ_ACCESS_DENIED' } })
+      expect(await snapshot(f)).toEqual(persisted)
       expect((await f.db.pool.query('select id from harness_executions where run_id=$1', [f.run.id])).rows).toHaveLength(2)
     })
   }, timeout)
@@ -150,6 +176,13 @@ describe.skipIf(!postgresEnabled)('accepted Job result binding', () => {
       expect(sources[0]).toMatchObject({ relationshipId: 'job-agent', execution: resolution.value.execution,
         acceptedResultDigest: resolution.value.acceptedResultDigest, acceptedResult: { outcome: 'succeeded' } })
       expect(JSON.stringify(sources[0]!.acceptedResult)).toContain(execution.id)
+      const persisted = await snapshot(f)
+      expect(persisted.state.bindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sender: expect.objectContaining({ kind: 'job', executionId: execution.id }),
+          recipient: expect.objectContaining({ executionId: admitted.execution.id }),
+          acceptedResultDigest: resolution.value.acceptedResultDigest,
+          kind: repeated ? 'external' : 'predecessor', relationshipId: 'job-agent' }),
+      ]))
       expect((await f.jobStore().prepareJob({ nodeId: f.node.id, occurrence: null })).kind).toBe('resolved')
       expect((await f.db.pool.query('select id from job_executions where workspace_id=$1', [f.run.workspaceId])).rows).toHaveLength(1)
       await expect(f.owner.oneShotConnection().transaction(sql => readWorkflowJobSourceLocked(sql,

@@ -256,7 +256,7 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         const genericList = await call('workspace_list', { limit: 100, detail: 'full' }) as { items: unknown[] }
         expect(genericList.items).toContainEqual(expect.objectContaining({
           workspace: expect.objectContaining({ id: f.workspaceId }),
-          executionLocation: read.executionLocation, locationValidation: { status: 'ready' },
+          executionLocation: read.executionLocation, locationValidation: expect.objectContaining({ status: 'ready' }),
         }))
         expect(await f.createLocations().get(f.base.writer.principal, { workspaceId: f.workspaceId })).toEqual(read)
         expect(await f.createChoices().get(f.base.writer.principal, f.input)).toEqual(before)

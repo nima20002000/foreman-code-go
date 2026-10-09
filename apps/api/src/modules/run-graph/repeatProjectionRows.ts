@@ -12,6 +12,7 @@ import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'
 import { repeatSlotId, workActivationSlotId } from '../runs/repeatResolution.js'
+import { readWorkflowJobGraphExecutionsLocked } from './workflowJobProjection.js'
 import { readImmutableWorkflowVersion, readPinnedAgentConfigurations,
   type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
 
@@ -92,7 +93,7 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
       o.record as occurrence
     from run_repeat_executions x left join harness_executions e on e.id=x.execution_id
     left join run_repeat_slots s on s.slot_id=x.slot_id left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id
-    where x.run_id=$1 and ($2::text[] is null or x.execution_id=any($2::text[]))
+    where x.run_id=$1 and x.executor_kind='agent' and ($2::text[] is null or x.execution_id=any($2::text[]))
     order by x.execution_id limit $3`, [scope.runId, executionIds ? [...executionIds] : null, REPEAT_GRAPH_LIMITS.executions + 1])
   const parsed = boundedRepeatRows(rows.rows, REPEAT_GRAPH_LIMITS.executions).map((row) => {
     const occurrence = row.occurrence_id === null ? null : RepeatOccurrenceV1Schema.parse(row.occurrence).identity
@@ -117,9 +118,12 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
       ...(row.work_activation_id ? { workActivationId: row.work_activation_id } : {}),
       previousExecutionId: row.previous_execution_id, state: row.state, resultOutcome: row.result_outcome })
   })
-  if (executionIds && (new Set(executionIds).size !== parsed.length
-    || parsed.some((item) => !executionIds.includes(item.identity.executionId)))) return conflict()
-  return parsed
+  const jobs = await readWorkflowJobGraphExecutionsLocked(sql, scope, executionIds)
+  const executions = boundedRepeatRows([...parsed, ...jobs], REPEAT_GRAPH_LIMITS.executions)
+    .sort((left, right) => left.identity.executionId.localeCompare(right.identity.executionId))
+  if (executionIds && (new Set(executionIds).size !== executions.length
+    || executions.some((item) => !executionIds.includes(item.identity.executionId)))) return conflict()
+  return executions
 }
 
 interface BindingRow {

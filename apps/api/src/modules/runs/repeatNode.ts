@@ -12,7 +12,7 @@ import {
 
 export type RepeatAdmission = { kind: 'waiting' } | { kind: 'resolved'; resolution: RepeatResolution }
   | { kind: 'admitted'; execution: HarnessExecution; reused: boolean }
-export type RepeatAcceptance = { kind: 'resolved'; resolution: RepeatResolution }
+export type RepeatAcceptance = { kind: 'accepted' | 'resolved'; resolution: RepeatResolution }
   | { kind: 'retry'; execution: HarnessExecution }
 export interface RepeatNodeStore {
   admit(ref: RepeatNodeRef, candidate: () => HarnessExecution): Promise<RepeatAdmission>
@@ -145,7 +145,7 @@ export function repeatNodeAction(input: {
       })
       input.signal.throwIfAborted()
       const accepted = await input.store.acceptTerminal(execution.id, (attempt) => input.driver.candidate(ref, attempt))
-      if (accepted.kind === 'resolved') return checkpointResolution(accepted.resolution)
+      if (accepted.kind !== 'retry') return checkpointResolution(accepted.resolution)
       // Technical attempts keep the same slot and frozen input. The repository
       // checked retry policy, exact negative evidence, cleanup and budget at COMMIT.
       execution = accepted.execution

@@ -141,22 +141,33 @@ describe('ENG04 exact native occurrence driver', () => {
 })
 
 describe('ENG04 occurrence wrapper settlement ordering', () => {
-  it('reconciles a completed admitted execution outside launch capacity, before acceptance', async () => {
-    const f = nativeFixture(), execution = nativeCompleted(f.execution), order: string[] = []
-    const limiter = new ExecutionLimiter(1), capacity = vi.spyOn(limiter, 'run')
-    const store = {
-      admit: vi.fn(async () => ({ kind: 'admitted' as const, execution, reused: true })),
-      acceptTerminal: vi.fn(async (): Promise<RepeatAcceptance> => {
-        order.push('accept'); return { kind: 'resolved', resolution: repeatTerminalResolution(f.version, f.scope, f.ref, execution) }
-      }),
-    }
-    const driver = { candidate: vi.fn(() => execution), observe: vi.fn(async () => { order.push('settle') }) }
-    const action = repeatNodeAction({ runId: f.scope.runId, store, driver, limiter, signal: new AbortController().signal })
-    await action(f.ref, { runId: f.scope.runId, occurrences: {}, boundaries: {}, executionIds: {} })
-    expect(order).toEqual(['settle', 'accept'])
-    expect(capacity).not.toHaveBeenCalled()
-    expect(driver.candidate).not.toHaveBeenCalled()
-  })
+  it.each(['accepted', 'resolved'] as const)(
+    'settles outside launch capacity before returning a %s terminal resolution', async kind => {
+      const f = nativeFixture()
+      const execution = nativeCompleted(f.execution)
+      const order: string[] = []
+      const limiter = new ExecutionLimiter(1)
+      const capacity = vi.spyOn(limiter, 'run')
+      const store = {
+        admit: vi.fn(async () => ({ kind: 'admitted' as const, execution, reused: true })),
+        acceptTerminal: vi.fn(async (): Promise<RepeatAcceptance> => {
+          order.push('accept')
+          return { kind, resolution: repeatTerminalResolution(f.version, f.scope, f.ref, execution) }
+        }),
+      }
+      const driver = { candidate: vi.fn(() => execution), observe: vi.fn(async () => { order.push('settle') }) }
+      const action = repeatNodeAction({ runId: f.scope.runId, store, driver, limiter,
+        signal: new AbortController().signal })
+      const checkpoint = await action(f.ref,
+        { runId: f.scope.runId, occurrences: {}, boundaries: {}, executionIds: {} })
+      expect(checkpoint).toEqual({ executionIds: { [f.ref.nodeId]: {
+        executionId: execution.id, occurrenceId: f.ref.occurrence?.occurrenceId ?? null,
+      } } })
+      expect(order).toEqual(['settle', 'accept'])
+      expect(capacity).not.toHaveBeenCalled()
+      expect(driver.candidate).not.toHaveBeenCalled()
+    },
+  )
   it('blocks a technical retry and successor acceptance while cleanup is pending', async () => {
     const f = nativeFixture(), execution = nativeCompleted(f.execution)
     const store = { admit: vi.fn(async () => ({ kind: 'admitted' as const, execution, reused: true })), acceptTerminal: vi.fn() }

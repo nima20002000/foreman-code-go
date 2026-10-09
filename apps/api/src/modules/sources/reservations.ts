@@ -81,6 +81,8 @@ export class PostgresSourceReservations {
       }
       const { preparation: existingPreparation, retainedSharedTree: _retainedSharedTree, ...existingRequest } = existing.record
       const { preparation: requestedPreparation, retainedSharedTree: _requestedTree, ...requested } = request
+      void _retainedSharedTree
+      void _requestedTree
       if (!isDeepStrictEqual({ ...existingRequest, reservationId: undefined }, { ...requested, reservationId: undefined })
         || existingPreparation && requestedPreparation && !isDeepStrictEqual(
           { ...existingPreparation, identity: { ...existingPreparation.identity, expiresAt: null } },

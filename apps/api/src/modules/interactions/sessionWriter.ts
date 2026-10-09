@@ -617,9 +617,9 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     })
   }
 
-  private async closeOwned(session: NativeSessionReference, restart: boolean): Promise<void> {
+  private async closeOwned(session: NativeSessionReference, restart: boolean, signal?: AbortSignal): Promise<void> {
     const close = (manager: NativeHarnessSessionManager) => restart && manager.closeForRestart
-      ? manager.closeForRestart(session) : manager.close(session)
+      ? manager.closeForRestart(session, signal) : manager.close(session)
     const releasing = this.releasing.get(session.nativeSessionId)
     if (releasing) await releasing
     let active = this.active.get(session.nativeSessionId)
@@ -637,14 +637,16 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       active.observedStatus = 'disconnected'
       return close(this.manager)
     }
-    return this.withLane(session, `close-${randomUUID()}`, undefined, async (manager, lease) => {
+    return this.withLane(session, `close-${randomUUID()}`, signal, async (manager, lease) => {
       lease.observedStatus = lease.previous.observedStatus === 'idle' ? 'idle' : 'disconnected'
       await close(manager)
     })
   }
 
   close(session: NativeSessionReference): Promise<void> { return this.closeOwned(session, false) }
-  closeForRestart(session: NativeSessionReference): Promise<void> { return this.closeOwned(session, true) }
+  closeForRestart(session: NativeSessionReference, signal?: AbortSignal): Promise<void> {
+    return this.closeOwned(session, true, signal)
+  }
 }
 
 async function waitForSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {

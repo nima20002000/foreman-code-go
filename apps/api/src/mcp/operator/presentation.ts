@@ -30,7 +30,7 @@ export function installOperatorPresentation(server: McpServer): OperatorCatalog 
         const fullList = list
         const handler: ListHandler = async (request, context) => {
           const result = await fullList(request, context)
-          return { ...result, tools: result.tools.map(({ outputSchema: _outputSchema, ...tool }) => tool) }
+          return { ...result, tools: result.tools.map(({ outputSchema: _outputSchema, ...tool }) => { void _outputSchema; return tool }) }
         }
         return Reflect.apply(register, target, ['tools/list', handler])
       }

@@ -22,6 +22,7 @@ import {
 } from './connection.js'
 import { RunGraphError } from './errors.js'
 import type { RunOwnership } from '../runs/ownership.js'
+import { workflowJobGraphSourceChangesLocked } from './workflowJobProjection.js'
 
 export function graphSourceDigest(value: unknown): string {
   return 'sha256:' + createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
@@ -673,6 +674,29 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
           || canonicalGraphJson(final.fact) !== canonicalGraphJson(current.fact)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
       })
     }
+    const jobChanges = await workflowJobGraphSourceChangesLocked(this.sql, this.scope)
+    for (const change of jobChanges) {
+      const executionId = change.fact.execution.identity.executionId
+      const published = [...this.#sources.values()].some(source => source.events.some(({ fact }) => {
+        if (fact.type === 'repeat.execution') return fact.execution.identity.executionId === executionId
+        return fact.type === 'node.state' && fact.state.execution?.executionId === executionId
+      }))
+      if (!published) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+    }
+    for (const change of jobChanges) {
+      const key = canonicalGraphJson(change.evidence)
+      if (this.#sources.has(key)) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+      this.#sources.set(key, { evidence: change.evidence, sourceDigest: change.sourceDigest,
+        semanticDigest: change.semanticDigest, events: [RepeatGraphEventContentV3Schema.parse({
+          eventId: randomUUID(), evidence: change.evidence, sourceDigest: change.sourceDigest,
+          semanticDigest: change.semanticDigest, effect: null, fact: change.fact,
+        })] })
+    }
+    if (jobChanges.length) beforeGraphCommit(this.sql, async () => {
+      if ((await workflowJobGraphSourceChangesLocked(this.sql, this.scope)).length) {
+        throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
+      }
+    })
     // Retirement reads source receipts. Persist the staged domain receipts before
     // capturing their public projection, in this same atomic transaction. The
     // locked head reserves the next sequence; any finalization failure rolls back.
@@ -804,6 +828,9 @@ export async function openRunGraphPublication<S extends CanonicalRunGraphScope>(
       const priorRun = await readRepeatRunSourceLocked(sql, scope)
       if (!priorRun.replayed) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
       await assertPublicProjectionCommittedLocked(sql, scope, head.rows[0].sequence)
+      if ((await workflowJobGraphSourceChangesLocked(sql, scope)).length) {
+        throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+      }
     } else {
       const inserted = (await sql.query<{ fresh: boolean }>(
         'select xmin=pg_current_xact_id_if_assigned()::xid and created_at=transaction_timestamp() as fresh from runs where id=$1', [scope.runId])).rows[0]

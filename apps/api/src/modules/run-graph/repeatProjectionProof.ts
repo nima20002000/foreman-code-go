@@ -40,6 +40,11 @@ export function repeatEffectFactsFromState(scope: RepeatGraphScopeV3, state: Rep
       return [{ type: 'repeat.occurrence', occurrence }]
     }
     case 'input.bind': {
+      const preparation = state.executions.find((item) => item.identity.kind === 'job'
+        && repeatId('job-preparation', item.identity.executionId) === effect.entityId)
+      if (preparation) return [{ type: 'repeat.execution', execution: {
+        ...preparation, state: 'starting', resultOutcome: null,
+      } }]
       const execution = state.executions.find((item) => item.identity.executionId === effect.entityId)
       if (!execution) return fail()
       const bindings = state.bindings.filter((item) => item.recipient.executionId === effect.entityId).sort((a, b) => a.ordinal - b.ordinal)
@@ -149,9 +154,9 @@ export async function assertRepeatGraphCommittedState(sql: GraphTransactionSql, 
   for (const fact of repeatGraphStateFacts(state)) {
     if (fact.type !== 'repeat.run.state' && !covered.has(factKey(fact))) return fail()
   }
-  // A mutable execution's CURRENT metadata requires an exact native observation
-  // receipt. Historical queued input proof alone is not running/terminal proof.
-  const live = state.executions.filter((item) => item.state !== 'queued')
+  // Jobs use their shared Run publication and latest execution source below;
+  // harness executions additionally require a native observation receipt.
+  const live = state.executions.filter((item) => item.identity.kind !== 'job' && item.state !== 'queued')
   const launchRows = live.length ? (await sql.query<{ entity_id: string; effect_digest: string }>(
     `select entity_id,effect_digest from run_graph_effects where run_id=$1 and effect_kind='execution.launch'
       and entity_id=any($2::text[])`, [scope.runId, live.map((item) => item.identity.executionId)])).rows : []

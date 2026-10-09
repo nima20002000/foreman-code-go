@@ -443,11 +443,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       await this.restartIntent
       this.restartClosure = this.nativeExecutions.closeForRestart()
       for (const controller of this.activeRuns.values()) controller.abort(reason)
-      const outcomes = await Promise.allSettled([
-        this.restartClosure,
+      // Drive finalizers wait for restart closure before releasing their owners.
+      // Start their drain deadline after that dependency has settled.
+      const closure = await Promise.allSettled([this.restartClosure])
+      const outcomes = [...closure, ...await Promise.allSettled([
         withCleanupDeadline(async () => { await Promise.allSettled([...this.activeTasks.values(), ...this.resumeTasks.values()]) }),
         ...this.cleanupTasks.values(),
-      ])
+      ])]
       const errors = outcomes.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Workflow restart closure or task draining remains unconfirmed.')
       // A naturally finished drive may have retained its owner after a failed

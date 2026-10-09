@@ -33,7 +33,7 @@ import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './review
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
-import { attemptCleanup } from './cleanup.js'
+import { attemptCleanup, withCleanupDeadline } from './cleanup.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { maintainCredential } from '../harnesses/credentialHeartbeat.js'
@@ -92,6 +92,7 @@ interface OwnedNativeSession {
   runOwner?: RunOwnership
   stopReviewerRenewal?: () => Promise<void>
   retainedObservationError?: unknown
+  restartRecoveryPending?: boolean
 }
 
 interface ApprovalObservationInput {
@@ -220,10 +221,21 @@ export class ApprovalExecutionCoordinator {
 
   private async closeWorkflowSessionOwned(owned: OwnedNativeSession, restart: boolean): Promise<void> {
     const session = owned.session
-    if (!session) return this.closeUnboundWorkflowSession(owned)
+    if (restart && owned.restartRecoveryPending) return
+    if (!session) {
+      if (restart && owned.closureRegistration && await this.deferRemoteWorkflowRecovery(owned)) return
+      if (restart) return withCleanupDeadline(() => this.closeUnboundWorkflowSession(owned))
+      return this.closeUnboundWorkflowSession(owned)
+    }
     const generation = owned.generation
-    if (restart) await owned.manager.closeForRestart(session)
-    else await owned.manager.close(session)
+    if (restart) {
+      try {
+        await withCleanupDeadline(signal => owned.manager.closeForRestart(session, signal))
+      } catch (error) {
+        if (await this.deferRemoteWorkflowRecovery(owned)) return
+        throw error
+      }
+    } else await owned.manager.close(session)
     // Persist the same positive close that formerly survived only in RAM.
     // Registration precedes native preflight/spawn; no cold resolver or
     // terminal business state can create this receipt.
@@ -255,7 +267,36 @@ export class ApprovalExecutionCoordinator {
     this.closedWorkflowSessions.set(owned.execution.id, durable)
   }
 
+  private async deferRemoteWorkflowRecovery(owned: OwnedNativeSession): Promise<boolean> {
+    const placement = owned.context.acceptedPlacement
+    const manager = this.rawManagers.get(owned.manager)
+    if (placement?.hostRef.kind !== 'device' || !manager?.releaseForRecovery) return false
+    const registration = owned.closureRegistration
+    const closureGeneration = await registration
+    if (!this.workflowClosures || !closureGeneration) throw new DomainError(
+      'NATIVE_WORKFLOW_CLOSURE_CONFLICT', 'The remote execution has no reserved lifetime for recovery.', 409)
+    const generation = owned.generation
+    const session = owned.session
+    const assertCurrent = () => {
+      if (this.ownedSessions.get(owned.execution.id) !== owned || owned.generation !== generation
+        || owned.opening || owned.session !== session || owned.closureRegistration !== registration) {
+        throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
+          'The remote native lifetime changed while recording recovery.', 409)
+      }
+    }
+    assertCurrent()
+    await manager.releaseForRecovery(() => this.workflowClosures!.recordRecoveryPending(
+      owned.execution, closureGeneration, placement, assertCurrent))
+    assertCurrent()
+    owned.restartRecoveryPending = true
+    componentLogger('harness').warn({ executionId: owned.execution.id, runId: owned.execution.runId },
+      'Remote native execution remains open and was recorded for recovery')
+    return true
+  }
+
   private cleanupSession(owned: OwnedNativeSession, cancel = true): Promise<Error[]> {
+    if (owned.restartRecoveryPending) return Promise.resolve([new DomainError(
+      'REPEAT_CLEANUP_PENDING', 'The remote native execution still requires recovery.', 409)])
     if (cancel) owned.controller.abort()
     if (owned.cleanup) return owned.cleanup
     const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
@@ -1107,7 +1148,7 @@ export class ApprovalExecutionCoordinator {
   /** Production calls this AFTER stopping/draining producers and BEFORE raw
    * manager disposal. Waiting Workers and retained reviewers are not Stop: their
    * checkpoints, budgets, credentials and business records must survive restart.
-   * Every sibling is attempted; failed/uncertain closure keeps shutdown failed. */
+   * Every sibling is closed or recorded as unresolved remote work for recovery. */
   closeForRestart(): Promise<void> {
     this.closing = true
     if (this.restartClosure) return this.restartClosure
@@ -1118,16 +1159,19 @@ export class ApprovalExecutionCoordinator {
       const results = await Promise.all(sessions.map(async (owned) => {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
         const failures: Error[] = []
-        await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
+        try {
           // A failed drain can leave cleanup or create/attach in flight. Observe
           // its actual completion; an abort/timeout is never a closure receipt.
-          await owned.cleanup
-          // A rejected opening still requires positive disposal of its manager.
-          if (owned.opening) await Promise.allSettled([owned.opening])
-          if (this.ownedSessions.get(owned.execution.id) !== owned) return
-          if (this.closedExecutions.has(owned.execution.id)) return
+          await withCleanupDeadline(async () => {
+            await owned.cleanup
+            if (owned.opening) await Promise.allSettled([owned.opening])
+          })
+          if (this.ownedSessions.get(owned.execution.id) !== owned) return []
+          if (this.closedExecutions.has(owned.execution.id)) return []
           await this.closeWorkflowSession(owned, true)
-        })
+        } catch (error) {
+          failures.push(new Error(`${owned.execution.id}: close for restart`, { cause: error }))
+        }
         return failures.map((error) => safe.error(error) as Error)
       }))
       const failures = results.flat()

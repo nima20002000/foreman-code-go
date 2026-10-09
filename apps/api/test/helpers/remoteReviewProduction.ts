@@ -519,6 +519,8 @@ export async function remoteReviewProduction(options: {
       entryCapture: (operationId: string) => new InstalledWorkflowRecovery(
         join(stateDirectory, 'workflow-recovery'), registry).readEntry(operationId),
       workerPid: () => worker?.pid,
+      shutdownMain: () => stopMain(),
+      disconnectWorker: () => transport.disconnect(),
       inventory: () => value('harness_registry_get', executionHostRef).then(HarnessRegistryReadbackSchema.parse),
       blockWorkerDiscovery() {
         let entered!: () => void

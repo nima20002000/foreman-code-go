@@ -174,7 +174,7 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
   }
   private async slot(context:Context,ref:RepeatNodeRef,executionId:string){const row=(await context.sql.query<{execution_id:string;identity:unknown;input_digest:string;input_json:string}>(`select x.execution_id,x.identity,s.input_digest,s.input_json from run_repeat_executions x join run_repeat_slots s on s.slot_id=x.slot_id where x.run_id=$1 and x.slot_id=$2 order by x.technical_attempt desc limit 1`,[context.scope.runId,repeatSlotId(context.scope.runId,ref)])).rows[0];if(!row||row.execution_id!==executionId||row.input_digest!==repeatDigest(JSON.parse(row.input_json),4*1024*1024))repeatConflict('JOB_WORKFLOW_PIN_CONFLICT');const identity=ref.occurrence?RepeatGraphExecutionIdentityV3Schema.parse(row.identity):GraphExecutionIdentitySchema.parse(row.identity);if(ref.occurrence&&(!('occurrence' in identity)||!sameRepeatValue(identity.occurrence,ref.occurrence)))repeatConflict('REPEAT_OCCURRENCE_CONFLICT');if(identity.kind!=='job'||identity.workflowNodeId!==ref.nodeId||identity.executionId!==executionId)repeatConflict('JOB_WORKFLOW_PIN_CONFLICT');return row}
   async prepareJob(ref:RepeatNodeRef):Promise<WorkflowJobAdmission>{return this.transaction(async context=>{
-    this.node(context,ref);const occurrence=await this.occurrence(context,ref),resolutions=await this.resolutions(context,ref.occurrence?.occurrenceId??null),admission=decideRepeatAdmission(context.version,ref,resolutions)
+    const node=this.node(context,ref);const occurrence=await this.occurrence(context,ref),resolutions=await this.resolutions(context,ref.occurrence?.occurrenceId??null),admission=decideRepeatAdmission(context.version,ref,resolutions)
     if(admission.kind==='resolved'){const resolution=resolutions.get(ref.nodeId)!;await this.recorded(context,resolution.value.execution?'terminal.accept':'node.inactive',resolution.value.execution?.executionId??repeatSlotId(context.scope.runId,ref));return {kind:'resolved',resolution}}
     if(admission.kind==='waiting')return {kind:'waiting'}
     if(admission.kind==='skipped'||admission.kind==='excluded'){const resolution=inactiveRepeatResolution(context.version,ref,admission.kind,context.now);await this.effect(context,'node.inactive',repeatSlotId(context.scope.runId,ref),resolution,()=>this.putResolution(context,resolution),async()=>[{type:'repeat.node.resolved',resolution:{...resolution,outside:ref.occurrence===null}}]);return {kind:'resolved',resolution}}
@@ -190,7 +190,11 @@ export class PostgresWorkflowJobNodeStore implements WorkflowJobNodeStore {
     await this.effect(context,'input.bind',repeatId('job-preparation',id),{preparation,bindings:bound.bindings},async()=>{
       await context.sql.query('insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest) values($1,$2,$3,$4,$5,$6)',[slotId,context.scope.runId,ref.occurrence?.occurrenceId??null,ref.nodeId,canonicalGraphJson(bound.input,4*1024*1024),bound.digest])
       await context.sql.query('insert into workflow_job_preparations(slot_id,run_id,preparation,bindings) values($1,$2,$3::jsonb,$4::jsonb)',[slotId,context.scope.runId,JSON.stringify(preparation),JSON.stringify(bound.bindings)])
-    },async()=>[]) // The real pending Job node is captured by the same Run publication below.
+    },async()=>[{type:'repeat.execution',execution:{
+      identity:qualifyRepeatGraphExecution({kind:'job',workflowNodeId:node.id,executionId:id,
+        jobDefinitionId:node.jobDefinitionId,jobDefinitionVersionId:node.jobDefinitionVersionId,attempt:1},ref.occurrence),
+      inputDigest:bound.digest,previousExecutionId:null,state:'starting',resultOutcome:null,
+    }}])
     return {kind:'preparation',preparation,ref}
   })}
   async admitPreparedJob(ref:RepeatNodeRef,preparation:WorkflowJobPreparation,spec:PreparedJobSpecRecord):Promise<JobExecutionRecord>{return this.transaction(async context=>{

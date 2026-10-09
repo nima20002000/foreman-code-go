@@ -149,7 +149,7 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
         expect(removedOwnership.rows[0]!.created_project_folder).toBeNull()
         const audit = await f.db.pool.query<{ outcome: string }>(
           `select outcome from management_audit where action='workspace.folder.cleanup'
-           and details->>'commandId'=$1 order by id`, [archive.commandId],
+           and details->>'commandId'=$1 order by sequence`, [archive.commandId],
         )
         expect(audit.rows.map(row => row.outcome)).toContain('failed')
         expect(audit.rows.map(row => row.outcome)).toContain('succeeded')

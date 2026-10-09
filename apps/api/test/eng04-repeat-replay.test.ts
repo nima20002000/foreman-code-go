@@ -32,7 +32,9 @@ describe('NIM-2648 ENG04-D replay and retry separation', () => {
     expect(harness.state().nativeReservations.get(work.id)).toEqual(reservation)
 
     harness.finish(work.id)
-    await harness.accept(work.id)
+    const accepted = await harness.accept(work.id)
+    expect(accepted).toMatchObject({ kind: 'accepted', resolution: { value: { resolution: 'succeeded' } } })
+    if (accepted.kind !== 'accepted') throw new Error('Expected first terminal acceptance')
     const resultDigest = harness.state().results.get(work.id)!.result_digest
     const countsBeforeReplay = {
       occurrences: harness.state().occurrences.size,
@@ -42,7 +44,9 @@ describe('NIM-2648 ENG04-D replay and retry separation', () => {
       effects: harness.state().effects.size,
       publications: harness.state().publications.length,
     }
-    await harness.repository().acceptTerminal(work.id, () => { throw new Error('accepted replay must not allocate') })
+    const replay = await harness.repository().acceptTerminal(work.id,
+      () => { throw new Error('accepted replay must not allocate') })
+    expect(replay).toEqual({ kind: 'resolved', resolution: accepted.resolution })
     expect(harness.state().results.get(work.id)!.result_digest).toBe(resultDigest)
     expect({
       occurrences: harness.state().occurrences.size,
