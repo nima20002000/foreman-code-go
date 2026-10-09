@@ -98,11 +98,11 @@ const SourceQuotaConfigurationSchema = z.object({
   descriptor: z.object({ quotaPool: JobVerificationQuotaPoolSchema.optional() }).passthrough().optional(),
 }).passthrough()
 export async function installedSourceQuotaPool(configuration: InstalledRuntimeConfigurationLocation | null,
-  binding: RootBinding
+  binding: RootBinding,
 ): Promise<JobVerificationQuotaPool | null> {
   if (!configuration) return null
   const installed = await findRetainedRuntimeConfiguration(configuration, SourceQuotaConfigurationSchema, candidate => {
-    // Source authorization checks the snapshot; the quota belongs to its installed physical root.
+    // Quota slots belong to the installed physical root across source snapshots.
     const expected = { ...binding,
       bindingRevision: candidate.root.binding.bindingRevision,
       snapshotId: candidate.root.binding.snapshotId,

@@ -135,7 +135,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       currentOwner:(operation,context)=>owners.resolve(operation,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
         workerInstallationId:context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:context.binding.bootId,connectionGeneration:1})),
       transfers:{resolveVerifiedReceipt:unused,openVerified:unused},transferContext:async()=>binding,
-      quotaPoolFor: async (binding) => {
+      quotaPoolFor: async binding => {
         if (!sourceQuotaConfiguration) return verificationQuota
         const pool = await installedSourceQuotaPool(sourceQuotaConfiguration, binding)
         return pool && verificationQuota ? { ...verificationQuota, pool } : undefined

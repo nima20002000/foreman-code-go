@@ -19,6 +19,7 @@ import { sourceOperationSelectionHash } from './operationDigests.js'
 import { sourceCwdAttestationDigest } from './workingDirectory.js'
 import { SourceOperationWorkerService, type SourceOperationWorkerOptions } from './operationWorker.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
+import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import type { SourceQuotaPool } from './materialization.js'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 const directories: string[] = []
@@ -74,6 +75,74 @@ async function fixture() {
     readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
     currentReclamation, reclamationNativeClosed, quotaPoolFor }
 }
+
+async function installQuota(f: Awaited<ReturnType<typeof fixture>>) {
+  const namespace = randomUUID()
+  await mkdir(join(f.namespace, namespace), { mode: 0o700 })
+  const directory = await openPrivateRoot(join(f.namespace, namespace))
+  const filesystem = await identity(directory)
+  await directory.close()
+  const declared = verificationCapacityFixture('device').measurement!.fingerprint.quotaPool!
+  const slot = { ...declared.slots[0]!, namespace, filesystem }
+  const pool = { ...declared, slots: [slot] }
+  const configuration = { schemaVersion: 2, root: structuredClone(f.root), descriptor: { quotaPool: pool } }
+  const path = join(f.directory, 'job-runtime.json')
+  await writeFile(path, JSON.stringify(configuration), { mode: 0o600 })
+  const location = { path, ownerUid: process.getuid!() }
+  // Only kernel readback is doubled; configuration selection, claims and source copying run normally.
+  const read: NonNullable<SourceQuotaPool['read']> = async (_pool, path, signal) => {
+    signal.throwIfAborted()
+    const directory = await openPrivateRoot(path)
+    const filesystem = await identity(directory)
+    await directory.close()
+    return { volumeCapacityBytes: 64 * 2 ** 30, volumeCapacityInodes: pool.volumeCapacityInodes,
+      projectId: slot.projectId, inheritance: true, hardLimitBytes: slot.hardLimitBytes,
+      hardInodes: slot.hardInodes, usedBytes: 0, usedInodes: 0, accountingEnabled: true, filesystem }
+  }
+  f.owner.quotaRequired = true
+  f.quotaPoolFor.mockImplementation(async binding => {
+    const selected = await installedSourceQuotaPool(location, binding)
+    return selected ? { pool: selected, read } : undefined
+  })
+  return { configuration, location, slot }
+}
+
+it('prepares a quota-required Job after the approved root is rebound to a new snapshot', async () => {
+  const f = await fixture()
+  const installed = await installQuota(f)
+  const manifest = createSourceManifest({ ...f.manifest, snapshotId: randomUUID() })
+  f.root.source = { ...f.root.source, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
+  f.root.binding = { ...f.root.binding, bindingRevision: f.root.binding.bindingRevision + 1,
+    snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
+  f.owner.source = f.root.source
+  f.owner.attempt.placementHash = sourceBindingHash(f.root, f.owner.attempt, f.owner.identity.operationId)
+  const data = Buffer.concat([sourcePackageHeader(manifest), f.bytes])
+  Object.assign(f.receipt, { sha256: sourceSha256(data), byteSize: data.length })
+  Object.assign(f.receipt.intent, { sha256: f.receipt.sha256, byteSize: data.length,
+    rootBindingRevision: f.root.binding.bindingRevision, manifestDigest: manifest.manifestDigest,
+    placementHash: f.owner.attempt.placementHash })
+  if (f.request.operation !== 'sources.prepare') throw new Error('Expected source preparation request')
+  Object.assign(f.request.package, { sha256: f.receipt.sha256, byteSize: data.length })
+  f.open.mockImplementation(async () => Readable.from([data]))
+
+  const prepared = await f.service.handle(f.request, f.context)
+  if (prepared.operation !== 'sources.prepare') throw new Error('Expected source preparation')
+  expect(prepared.receipt).toMatchObject({ binding: f.root.binding, quota: installed.slot,
+    verifiedManifestDigest: manifest.manifestDigest })
+  expect(await readFile(join(sourceMaterializationParent(prepared.receipt), 'tree/src/source.ts'))).toEqual(f.bytes)
+  expect(JSON.parse(await readFile(installed.location.path, 'utf8'))).toEqual(installed.configuration)
+  expect(await f.service.handle(f.request, f.context)).toEqual(prepared)
+})
+
+it.each(['rootId', 'workerInstallationId', 'canonicalPath'] as const)(
+  'denies quota-required preparation when the installed quota belongs to another %s', async field => {
+    const f = await fixture()
+    const installed = await installQuota(f)
+    installed.configuration.root.binding[field] = field === 'canonicalPath' ? '/another/approved/root' : randomUUID()
+    await writeFile(installed.location.path, JSON.stringify(installed.configuration))
+    await expect(f.service.handle(f.request, f.context)).rejects.toMatchObject({ code: 'SOURCE_QUOTA_MISSING' })
+    expect(f.open).not.toHaveBeenCalled()
+  })
 
 it('finds and removes an abandoned Worker materialization without Main preparation metadata', async () => {
   const f = await fixture()
@@ -185,7 +254,7 @@ it('closes an unmaterialized verification attempt using its installed quota afte
   await writeFile(path, JSON.stringify({ schemaVersion: 2,
     root: { binding: { ...f.root.binding, bindingRevision: 2, snapshotId: randomUUID(), manifestDigest: 'c'.repeat(64) } },
     descriptor: { quotaPool: pool } }), { mode: 0o600 })
-  f.quotaPoolFor.mockImplementation(async (binding) => {
+  f.quotaPoolFor.mockImplementation(async binding => {
     const selected = await installedSourceQuotaPool({ path, ownerUid: process.getuid!() }, binding)
     return selected ? { pool: selected } : undefined
   })
