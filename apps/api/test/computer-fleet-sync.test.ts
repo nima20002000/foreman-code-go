@@ -39,7 +39,10 @@ describe('fleet source propagation', () => {
     expect(JSON.stringify(requested)).not.toContain('fixture-secret')
     expect(JSON.stringify(computer.calls)).not.toContain('fixture-secret')
     const summary = status.tasks.find(task => task.kind === 'sync-mcp')?.summary
-    for (const name of ['query', 'userinfo', 'argument', 'separate', 'bearer']) expect(summary).toContain(name)
+    const skipped = ['query', 'userinfo', 'argument', 'separate', 'bearer']
+    expect(requested.find(task => task.kind === 'sync-mcp')?.warnings).toEqual(
+      skipped.map(name => `codex MCP server ${name} is unsafe or invalid; skipped.`))
+    for (const name of skipped) expect(summary).toContain(name)
     expect(syncableServers({ tool: { command: 'npx', args: ['server', '--token-env-var', 'SERVICE_TOKEN'] } }))
       .toHaveLength(1)
   })
@@ -232,5 +235,42 @@ describe('fleet source propagation', () => {
     expect(requested.map(task => task.kind)).toEqual([kind === 'plugins' ? 'sync-mcp' : 'sync-plugins'])
     if (kind === 'plugins') expect([...computer.codexMcp]).toEqual(['docs'])
     else expect([...computer.codexPlugins]).toEqual(['notes@official'])
+  })
+
+  it('keeps readable Claude plugins in background upkeep when Codex discovery fails', async () => {
+    const computer = fakeComputer()
+    computer.codexPlugins.add('local@official')
+    const { fleet, sources, requested } = fakeFleet(computer)
+    sources.codexPlugins = async () => { throw new Error('Codex plugin catalog unavailable') }
+    sources.claudePlugins = async () => ({ marketplaces: [], plugins: [{
+      pluginId: 'notes@official', name: 'notes', marketplaceName: 'official', description: null, version: null,
+      installed: true, enabled: true, installCount: null,
+    }] })
+    await expect(fleet.keepCurrent()).resolves.toBeUndefined()
+    await settle(computer)
+    expect(requested.find(task => task.kind === 'sync-plugins')).toEqual({
+      kind: 'sync-plugins', claudePlugins: [{ pluginId: 'notes@official', enabled: true }],
+      claudeMarketplaces: [], warnings: ['Codex plugin catalog could not be read; skipped.'],
+    })
+    expect([...computer.codexMcp]).toEqual(['docs'])
+    expect([...computer.codexPlugins]).toEqual(['local@official'])
+    expect([...computer.claudePlugins]).toEqual([['notes@official', true]])
+  })
+
+  it('reports complete plugin discovery failure after dispatching background harness updates and MCP sync', async () => {
+    const computer = fakeComputer()
+    const readStatus = computer.maintenance.status.bind(computer.maintenance)
+    computer.maintenance.status = async signal => {
+      const status = await readStatus(signal)
+      return { ...status, harnesses: status.harnesses.map(entry => ({ ...entry, latest: '9.0.0' })) }
+    }
+    const { fleet, sources, requested } = fakeFleet(computer)
+    sources.codexPlugins = async () => { throw new Error('Codex plugin catalog unavailable') }
+    sources.claudePlugins = async () => { throw new Error('Claude plugin catalog unavailable') }
+    await expect(fleet.keepCurrent()).rejects.toThrow('Some fleet settings could not be read.')
+    await settle(computer)
+    expect(requested.map(task => task.kind)).toEqual(['update-harnesses', 'sync-mcp'])
+    expect(requested[0]).toEqual({ kind: 'update-harnesses', harnesses: ['codex', 'claude'] })
+    expect([...computer.codexMcp]).toEqual(['docs'])
   })
 })
