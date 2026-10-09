@@ -151,7 +151,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
           return { payload: { operation: 'status', status: await computer.maintenance.status(AbortSignal.timeout(1000)) } }
         }
         starts.push(request.task)
-        return { payload: { operation: 'start', task: computer.maintenance.start(request.task) } }
+        return { payload: { operation: 'start', task: await computer.maintenance.start(request.task) } }
       },
     }), commands, new ComputerMaintenance(computer.ports), {
       codexUserMcpServers: async () => {

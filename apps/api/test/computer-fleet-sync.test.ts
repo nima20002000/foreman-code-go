@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { MaintenanceRequestSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerMaintenance, systemMaintenancePorts } from '../src/modules/computers/maintenance.js'
 import { syncableServers } from '../src/modules/computers/fleet.js'
 import { fakeComputer, fakeFleet, server, settle } from './helpers/fleetSync.js'
@@ -134,9 +135,20 @@ describe('fleet source propagation', () => {
       if (path.endsWith('fleet-sync.json')) await gate
       return originalRead(path)
     }
-    computer.maintenance.start({ kind: 'sync-mcp', servers: { codex: [server('old')], claude: [] } })
-    const { fleet, requested } = fakeFleet(computer)
+    const older = await computer.maintenance.start({ kind: 'sync-mcp', servers: { codex: [server('old')], claude: [] } })
+    const { fleet, requested, endpoint } = fakeFleet(computer)
+    const workerRequest = endpoint.request
+    // An older receiver reply must not acknowledge Main's current sources.
+    endpoint.request = async (device, namespace, payload) => {
+      const request = MaintenanceRequestSchema.parse(payload)
+      if (request.operation === 'start' && request.task.kind === 'sync-mcp') {
+        requested.push(request.task)
+        return { payload: { operation: 'start', task: older } }
+      }
+      return workerRequest(device, namespace, payload)
+    }
     await fleet.syncChangedSources()
+    endpoint.request = workerRequest
     release()
     await settle(computer)
     expect([...computer.codexMcp]).toEqual(['old'])
