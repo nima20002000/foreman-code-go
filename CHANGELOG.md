@@ -7,15 +7,39 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.54] - 2026-10-09
+
+Known issues: under heavy parallel load, Main can shut down before a completed remote Agent session has closed, leaving its Run for reconciliation (seen only in the computer-workflow-save test). A reboot that changes a Worker's storage device identity requires its approved roots to be re-approved. Computers status can briefly show harness versions read before an update finished.
+
 ### Added
 
+- Update computers from Main: one action updates every computer's system packages (respecting Ubuntu phased updates), Codex and Claude, and reports each computer's result, including pending or unreachable ones.
+- Main keeps every computer's MCP servers and Codex and Claude plugins the same as its own; additions and removals reach the other computers within about a minute.
+- The Operator installs MCP connections and Codex and Claude plugins itself, and the harness settings cards show and install the Operator MCP.
 - Syncthing shared folders per workspace and computer, synchronized over Tailscale with Main as hub, automatic pairing, simple file versioning, Computers status and Operator MCP controls.
 - General settings shows per-computer workspace file sync; the theme preference is saved on Main and shared by connected browsers, with Operator MCP read and update support.
+- Chat retention moved to General settings.
+- Board Jobs button with a compact history of a workflow's Jobs; Jobs are otherwise managed by Agents and the Operator through MCP (`job_workflow_list`).
+- Inspect executions from saved Run nodes.
+- Settings pages show summary cards; detailed changes go through the Operator. Computers use one build priority order.
+
+### Changed
+
+- Update computers now updates the Codex each Worker actually runs, and a failed Codex update no longer skips the Claude update.
+
+### Fixed
+
+- Two CI runs started together in one workspace no longer deadlock in the database and fail one of them.
+- Worker Agent chat no longer fails when the Worker takes more than 30 seconds to start the native session.
+- Agent context reads no longer wait on a slow or unavailable shared-folder status.
+- The Operator capability listing includes `job_workflow_list`.
+- Many CI, Job queue, Claude preset, session control, workflow save and Run evidence fixes from the PR 59 review lanes.
 
 ### Removed
 
 - OpenCode support. Saved OpenCode history remains readable as a retired, non-executable harness.
 - Google Drive shared folders via rclone, including OAuth sign-in and mount services.
+- The Jobs page and the Account page.
 
 ## [0.0.53] - 2026-10-08
 
