@@ -20,9 +20,10 @@ let stopping
 const shutdown = () => {
   stopping ??= (async () => {
     await server?.close()
-    if (process.connected) process.send({ type: 'closed' })
-    process.exitCode = 0
+    if (process.connected) await new Promise(sent => process.send({ type: 'closed' }, sent))
     if (process.connected) process.disconnect()
+    // Vite's watcher can still register fs watchers after close; they would keep this disposable process alive.
+    process.exit(0)
   })()
   void stopping.catch(error => {
     console.error(error)
