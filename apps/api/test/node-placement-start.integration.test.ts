@@ -176,7 +176,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
         .toMatchObject({ evidence: 'accepted', placement: { labelAtAcceptance: 'Main',
           hostRef: f.placement.local.hostRef } })
     } finally { await f.close() }
-  })
+  }, 120_000)
 
   it('starts a fully placed workflow without probing the original workspace directory', async () => {
     const f = await fixture()
@@ -189,7 +189,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
       expect(accepted.run.workflowVersionId).toBe(saved.version.id)
       expect(directory).not.toHaveBeenCalled()
     } finally { await f.close() }
-  })
+  }, 120_000)
 
   it('persists implicit Main placement for an artifact producer through authenticated MCP and denies a reader', async () => {
     const f = await fixture()

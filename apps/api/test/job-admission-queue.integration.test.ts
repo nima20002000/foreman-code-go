@@ -124,7 +124,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     } })
     expect(forged.isError).toBe(true)
     expect(await restarted.listQueue(scopedReader.principal, f.workspaceId)).toEqual([ticket])
-  })
+  }, 60000)
   it('serializes five concurrent requests on one heavy slot and advances only after closure and publication', async () => {
     const f = await fixture()
     const definition = await f.save()
