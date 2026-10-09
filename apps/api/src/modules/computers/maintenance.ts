@@ -97,7 +97,17 @@ export class ComputerMaintenance {
         codexPlugins: names(value.codexPlugins), claudePlugins: names(value.claudePlugins) }
     } catch { return empty }
   }
-  private writeLedger(ledger: FleetLedger) { return this.ports.writePrivateText(this.ledgerPath(), `${JSON.stringify(ledger)}\n`) }
+  private ledgerWrites: Promise<unknown> = Promise.resolve()
+  /** MCP and plugin syncs can run at once; each changes only its own part of the ledger, one write at a time. */
+  private updateLedger(change: (ledger: FleetLedger) => void): Promise<void> {
+    const write = this.ledgerWrites.then(async () => {
+      const ledger = await this.readLedger()
+      change(ledger)
+      await this.ports.writePrivateText(this.ledgerPath(), `${JSON.stringify(ledger)}\n`)
+    })
+    this.ledgerWrites = write.catch(() => undefined)
+    return write
+  }
 
   private finish(task: MaintenanceTask, state: 'succeeded' | 'failed', summary: string) {
     task.state = state
@@ -167,10 +177,9 @@ export class ComputerMaintenance {
         const results: string[] = []
         for (const harness of ['codex', 'claude'] as const) {
           const synced = await this.syncMcp(harness, request.servers[harness], ledger.mcp[harness], step, signal)
-          ledger.mcp[harness] = synced.managed
+          await this.updateLedger(current => { current.mcp[harness] = synced.managed })
           if (synced.summary) results.push(`${LABELS[harness]}: ${synced.summary}`)
         }
-        await this.writeLedger(ledger)
         return results.join(' · ') || 'Nothing to sync'
       }
       case 'sync-plugins': {
@@ -180,12 +189,12 @@ export class ComputerMaintenance {
         const sync = [
           { name: 'Codex', run: async () => {
             const synced = await this.syncPlugins(request.plugins, request.marketplaces, ledger.codexPlugins, step, signal)
-            ledger.codexPlugins = synced.managed
+            await this.updateLedger(current => { current.codexPlugins = synced.managed })
             return synced.summary
           } },
           { name: 'Claude', run: async () => {
             const synced = await this.syncClaudePlugins(request, ledger.claudePlugins, step, signal)
-            ledger.claudePlugins = synced.managed
+            await this.updateLedger(current => { current.claudePlugins = synced.managed })
             return synced.summary
           } },
         ]
@@ -193,7 +202,6 @@ export class ComputerMaintenance {
           try { results.push(`${harness.name}: ${await harness.run()}`) }
           catch (error) { failures.push(`${harness.name}: ${error instanceof Error ? error.message : 'Plugin sync failed.'}`) }
         }
-        await this.writeLedger(ledger)
         if (failures.length) throw new Error([...results, ...failures].join(' · '))
         return results.join(' · ')
       }
@@ -418,12 +426,14 @@ export async function installedPlugins(ports: Pick<MaintenancePorts, 'run'>, cod
 }
 
 /** Configured plugin marketplaces; only Git sources can be added on another computer. */
-export async function pluginMarketplaces(ports: Pick<MaintenancePorts, 'run'>, codex: string, signal: AbortSignal): Promise<{ name: string; gitSource: string | null }[]> {
+export async function pluginMarketplaces(ports: Pick<MaintenancePorts, 'run'>, codex: string, signal: AbortSignal): Promise<{ name: string; gitSource: string | null; local: boolean }[]> {
   const listed = await ports.run(codex, ['plugin', 'marketplace', 'list', '--json'], { signal, timeoutMs: 60_000 })
   if (listed.code !== 0) throw new Error('Codex could not list its plugin marketplaces.')
   const value = JSON.parse(listed.stdout) as { marketplaces?: { name?: unknown; marketplaceSource?: { sourceType?: unknown; source?: unknown } }[] }
   return (value.marketplaces ?? []).flatMap(entry => typeof entry.name !== 'string' ? [] : [{ name: entry.name,
-    gitSource: entry.marketplaceSource?.sourceType === 'git' && typeof entry.marketplaceSource.source === 'string' ? entry.marketplaceSource.source : null }])
+    gitSource: entry.marketplaceSource?.sourceType === 'git' && typeof entry.marketplaceSource.source === 'string' ? entry.marketplaceSource.source : null,
+    // A local marketplace is a folder on this computer (for example the Codex app's own runtime) and cannot be copied.
+    local: entry.marketplaceSource?.sourceType === 'local' }])
 }
 
 export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.env,

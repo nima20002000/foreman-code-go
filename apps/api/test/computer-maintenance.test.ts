@@ -246,6 +246,17 @@ describe('fleet MCP sync source', () => {
     expect(fake.codexMcp).toEqual(['own-local'])
   })
 
+  it('records both MCP and plugin syncs when they run at the same time', async () => {
+    const fake = ports()
+    const maintenance = new ComputerMaintenance(fake.value)
+    maintenance.start({ kind: 'sync-mcp', servers: { codex: [{ name: 'docs', transport: 'http', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }], claude: [] } })
+    maintenance.start({ kind: 'sync-plugins', plugins: ['shared@openai'], marketplaces: [], claudePlugins: [], claudeMarketplaces: [] })
+    await settle(maintenance)
+    const ledger = JSON.parse(Object.values(fake.written)[0]!) as { mcp: { codex: string[] }; codexPlugins: string[] }
+    expect(ledger.mcp.codex).toEqual(['docs'])
+    expect(ledger.codexPlugins).toEqual(['shared@openai'])
+  })
+
   it('copies servers without inline secrets and never the app MCP', () => {
     expect(syncableServers({
       'foreman-code': { command: 'foreman-mcp' }, graphql: { url: 'http://127.0.0.1:3000/mcp' },

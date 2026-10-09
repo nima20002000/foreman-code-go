@@ -1674,8 +1674,15 @@ export function buildProductionApp(
           claudeUserMcpServers: () => claudeUserMcpServers(maintenancePorts),
           claudePlugins: async () => await maintenancePorts.find('claude')
             ? readClaudePlugins(maintenancePorts, AbortSignal.timeout(120_000)) : { plugins: [], marketplaces: [] },
-          codexPlugins: async () => await maintenancePorts.find('codex')
-            ? installedPlugins(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(120_000)) : [],
+          // Plugins from a local marketplace exist only on Main, so they are not copied to other computers.
+          codexPlugins: async () => {
+            if (!await maintenancePorts.find('codex')) return []
+            const [plugins, marketplaces] = await Promise.all([
+              installedPlugins(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(120_000)),
+              pluginMarketplaces(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(60_000))])
+            const local = new Set(marketplaces.filter(marketplace => marketplace.local).map(marketplace => marketplace.name))
+            return plugins.filter(pluginId => !local.has(pluginId.split('@').at(-1)!))
+          },
           codexMarketplaces: async () => await maintenancePorts.find('codex')
             ? (await pluginMarketplaces(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(60_000)))
               .flatMap(marketplace => marketplace.gitSource ? [{ name: marketplace.name, source: marketplace.gitSource }] : []) : [],
