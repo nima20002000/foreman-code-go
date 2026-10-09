@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 import { randomUUID } from 'node:crypto'
@@ -118,7 +119,7 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       expect(f.counts().responses).toBe(0)
       const response = await reviewer.callTool({ name: 'interaction_respond', arguments: input })
       expect(response.isError).not.toBe(true)
-      expect(response.structuredContent).toMatchObject({ interaction: { deliveryState: 'pending' } })
+      expect(decodeMcpToolResult(response)).toMatchObject({ interaction: { deliveryState: 'pending' } })
       expect(f.counts().responses).toBe(0)
       cuts.continueStart.resolve()
       f.provider.completeReview(f.job.correlationId, f.reviewer.nativeSessionId!)
@@ -133,7 +134,7 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       expect((await f.service.recover({ limit: 10 })).errors).toEqual([])
       expect(await f.repository.get(input.interactionId)).toMatchObject({ deliveryState: 'delivered' })
       expect(f.counts().responses).toBe(1)
-      expect((await operator.callTool({ name: 'interaction_get', arguments: { interactionId: input.interactionId } })).structuredContent)
+      expect(decodeMcpToolResult((await operator.callTool({ name: 'interaction_get', arguments: { interactionId: input.interactionId } }))))
         .toMatchObject({ interaction: { deliveryState: 'delivered' } })
       // The provider fixture retains the requester terminal result only in history.
       // Decision and graph resume are durable; Run completion needs later native observation.

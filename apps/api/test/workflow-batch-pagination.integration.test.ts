@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
@@ -43,8 +44,8 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
     expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('workflow_batch_archive')
     const workspaceId = (await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Batch' })).value.workspace.id
     await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Second' })
-    const first = c.ManagedWorkspacePageSchema.parse((await client.callTool({ name: 'workspace_list', arguments: { limit: 1 } })).structuredContent)
-    const next = c.ManagedWorkspacePageSchema.parse((await client.callTool({ name: 'workspace_list', arguments: { limit: 1, cursor: first.pageInfo.nextCursor } })).structuredContent)
+    const first = c.ManagedWorkspacePageSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workspace_list', arguments: { detail: 'full', limit: 1 } }))))
+    const next = c.ManagedWorkspacePageSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workspace_list', arguments: { detail: 'full', limit: 1, cursor: first.pageInfo.nextCursor } }))))
     expect(first.items).toHaveLength(1); expect(next.items).toHaveLength(1)
     expect(first.items[0]!.workspace.id).not.toBe(next.items[0]!.workspace.id)
     expect(next.pageInfo.nextCursor).toBeNull()
@@ -53,7 +54,7 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
     expect(querySpy).toHaveBeenCalledTimes(2) // page + one batched location read
     querySpy.mockRestore()
     const created = await Promise.all(['Alpha', 'Beta', 'Gamma'].map((name) => workflows.create(owner.principal, 'http', { workspaceId, name, commandId: randomUUID() })))
-    const readPage = async (cursor?: string) => c.ManagedWorkflowPageSchema.parse((await client.callTool({ name: 'workflow_list', arguments: { workspaceId, limit: 2, ...(cursor ? { cursor } : {}) } })).structuredContent)
+    const readPage = async (cursor?: string) => c.ManagedWorkflowPageSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workflow_list', arguments: { detail: 'full', workspaceId, limit: 2, ...(cursor ? { cursor } : {}) } }))))
     const a = await readPage(), b = await readPage(a.pageInfo.nextCursor!)
     expect(a.items).toHaveLength(2); expect(b.items).toHaveLength(1); expect(b.pageInfo.nextCursor).toBeNull()
     expect(new Set([...a.items, ...b.items].map((item) => item.workflow.id)).size).toBe(3)
@@ -65,19 +66,19 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
     const scoped = await access.issue({ name: 'Scoped', audience: 'operator', grants: [{ actions: ['workflows:read', 'workflows:archive'], scope: { workspaceIds: [workspaceId], workflowIds: [input.workflows[0]!.workflowId] } }], expiresAt: new Date(Date.now() + 60_000) })
     const scopedClient = await connect(scoped.token)
     expect((await scopedClient.callTool({ name: 'workflow_batch_archive', arguments: input })).isError).toBe(true)
-    const scopedPage = c.ManagedWorkflowPageSchema.parse((await scopedClient.callTool({ name: 'workflow_list', arguments: { workspaceId, limit: 1 } })).structuredContent)
+    const scopedPage = c.ManagedWorkflowPageSchema.parse(decodeMcpToolResult((await scopedClient.callTool({ name: 'workflow_list', arguments: { detail: 'full', workspaceId, limit: 1 } }))))
     expect(scopedPage.items.map((item) => item.workflow.id)).toEqual([input.workflows[0]!.workflowId])
     expect(scopedPage.pageInfo.nextCursor).toBeNull()
     expect((await client.callTool({ name: 'workflow_batch_archive', arguments: { ...input, commandId: randomUUID(), workflows: [input.workflows[0], { ...input.workflows[1], expectedRevision: 99 }] } })).isError).toBe(true)
     expect((await readPage()).items).toHaveLength(2)
     expect((await pool.query('select count(*) from workflows where archived_at is not null')).rows[0].count).toBe('0')
-    const result = c.WorkflowBatchArchiveResultSchema.parse((await client.callTool({ name: 'workflow_batch_archive', arguments: input })).structuredContent)
+    const result = c.WorkflowBatchArchiveResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workflow_batch_archive', arguments: input }))))
     expect(result.value.workflowIds.sort()).toEqual(input.workflows.map((item) => item.workflowId).sort())
     expect(result.replayed).toBe(false)
-    const replay = c.WorkflowBatchArchiveResultSchema.parse((await client.callTool({ name: 'workflow_batch_archive', arguments: input })).structuredContent)
+    const replay = c.WorkflowBatchArchiveResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workflow_batch_archive', arguments: input }))))
     expect(replay.replayed).toBe(true)
     expect((await readPage()).items.map((item) => item.workflow.id)).toEqual([created[2]!.value.workflow.id])
-    const archived = c.ManagedWorkflowSchema.parse((await client.callTool({ name: 'workflow_get', arguments: { workspaceId, workflowId: input.workflows[0]!.workflowId } })).structuredContent)
+    const archived = c.ManagedWorkflowSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workflow_get', arguments: { workspaceId, workflowId: input.workflows[0]!.workflowId } }))))
     expect(archived.archivedAt).not.toBeNull(); expect(archived.revision).toBe(input.workflows[0]!.expectedRevision + 1)
     expect((await pool.query("select count(*) from management_audit where action = 'workflow.batch_archive' and outcome = 'succeeded'")).rows[0].count).toBe('1')
   } finally {

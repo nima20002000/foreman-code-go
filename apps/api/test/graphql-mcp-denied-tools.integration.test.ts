@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { readdir } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
@@ -52,7 +53,7 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
       ]))
       const workspaceId = f.f.scope.workspaceId
       const workspace = ManagedWorkspaceSchema.parse(
-        (await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent,
+        decodeMcpToolResult((await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))),
       )
       const folders = await readdir(f.db.directory)
       const receiptsQuery = 'select * from management_command_receipts order by principal_id, operation, command_id'
@@ -72,7 +73,7 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
       expect((await f.db.pool.query('select action from management_audit where principal_id=$1',
         [restricted.principal.id])).rowCount).toBe(hidden.length)
       expect((await f.db.pool.query(receiptsQuery)).rows).toEqual(receipts)
-      expect((await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))))
         .toMatchObject({ ...workspace, locationValidation: { status: workspace.locationValidation.status } })
       expect(await readdir(f.db.directory)).toEqual(folders)
       expect(f.provider.counts).toEqual(providerCounts)
@@ -86,7 +87,7 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
     try {
       const workspaceId = f.f.scope.workspaceId
       const workspace = ManagedWorkspaceSchema.parse(
-        (await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent,
+        decodeMcpToolResult((await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))),
       )
       const initial = { ...workspace, locationValidation: { status: workspace.locationValidation.status } }
       const input = { workspaceId, commandId: randomUUID(), expectedRevision: workspace.revision,
@@ -98,7 +99,7 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
       const client = await f.connect(reader.token)
       expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain('workspace_update')
       expect((await client.callTool({ name: 'workspace_update', arguments: input })).isError).toBe(true)
-      expect((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))))
         .toMatchObject(initial)
       const otherWorkspace = await f.access.issue({
         name: 'Other workspace editor', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
@@ -129,14 +130,14 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
       }
       const updated = await f.client.callTool({ name: 'workspace_update', arguments: input })
       expect(updated.isError).not.toBe(true)
-      expect((await f.client.callTool({ name: 'workspace_update', arguments: input })).structuredContent)
-        .toEqual({ ...(updated.structuredContent as object), replayed: true })
+      expect(decodeMcpToolResult((await f.client.callTool({ name: 'workspace_update', arguments: input }))))
+        .toEqual({ ...(decodeMcpToolResult(updated) as object), replayed: true })
       const conflict = await f.client.callTool({ name: 'workspace_update', arguments: {
         ...input, commandId: randomUUID(),
       } })
       expect(conflict.isError).toBe(true)
       expect(JSON.stringify(conflict.content)).toContain('REVISION_CONFLICT')
-      expect((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))))
         .toMatchObject({ revision: workspace.revision + 1, workspace: { name: input.name } })
       await f.access.revoke(reader.principal.id)
       const revoked = await f.app.inject({ method: 'POST', url: '/mcp',

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { callWorkspaceTool } from './helpers/workspaceMcp.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
@@ -80,7 +81,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
     const tools = (await denied.listTools()).tools.map((tool) => tool.name)
     expect(tools).toContain('workspace_storage_folders_list')
     expect(tools).not.toContain('workspace_storage_folder_delete')
-    const capabilities = (await denied.callTool({ name: 'operator_get_capabilities', arguments: {} })).structuredContent as { tools: string[] }
+    const capabilities = decodeMcpToolResult((await denied.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } }))) as { tools: string[] }
     expect(capabilities.tools).not.toContain('workspace_storage_folder_delete')
     await expectMcpAccessDenied(denied.callTool({ name: 'workspace_storage_folder_delete', arguments: input }))
     const deniedHttp = await app.inject({ method: 'POST', url: '/api/management/workspace-storage/folders/delete',

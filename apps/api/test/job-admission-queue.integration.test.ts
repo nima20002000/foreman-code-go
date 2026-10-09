@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -162,15 +163,15 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const listed = await client.callTool({ name: 'job_queue_list', arguments: {
       workspaceId: f.workspaceId, initiatingExecutionId: initiatingAgent.executionId,
     } })
-    expect(JobQueuePageSchema.parse(listed.structuredContent).tickets).toEqual([ticket])
+    expect(JobQueuePageSchema.parse(decodeMcpToolResult(listed)).tickets).toEqual([ticket])
     const unrelated = await client.callTool({ name: 'job_queue_list', arguments: {
       workspaceId: f.workspaceId, initiatingExecutionId: 'another-execution',
     } })
-    expect(JobQueuePageSchema.parse(unrelated.structuredContent).tickets).toEqual([])
+    expect(JobQueuePageSchema.parse(decodeMcpToolResult(unrelated)).tickets).toEqual([])
     const read = await client.callTool({ name: 'job_get', arguments: {
       workspaceId: f.workspaceId, executionId: execution.id,
     } })
-    expect(read.structuredContent).toEqual({ execution })
+    expect(decodeMcpToolResult(read)).toEqual({ execution })
     const denied = await client.callTool({ name: 'job_queue_list', arguments: {
       workspaceId: 'foreign-workspace', initiatingExecutionId: initiatingAgent.executionId,
     } })
@@ -194,7 +195,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const terminalRead = await client.callTool({ name: 'job_queue_get', arguments: {
       workspaceId: f.workspaceId, ticketId: id,
     } })
-    expect(terminalRead.structuredContent).toEqual({ ticket: completed })
+    expect(decodeMcpToolResult(terminalRead)).toEqual({ ticket: completed })
     expect(await restarted.getAdmission(scopedReader.principal, f.workspaceId, id))
       .toEqual({ kind: 'accepted', ticketId: id, executionId: execution.id })
     expect((await restarted.getExecution(scopedReader.principal, f.workspaceId, execution.id)).acceptedSpec)
@@ -468,12 +469,12 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
         workspaceId: f.workspaceId, ticketId: original.id,
       } })
       expect(read.isError).not.toBe(true)
-      expect(read.structuredContent).toEqual({ ticket: claimed })
+      expect(decodeMcpToolResult(read)).toEqual({ ticket: claimed })
       const http = await app.inject({ method: 'GET',
         url: `/api/management/workspaces/${f.workspaceId}/jobs/queue/${original.id}`,
         headers: { authorization: `Bearer ${reader.token}` } })
       expect(http.statusCode).toBe(200)
-      expect(http.json()).toEqual(read.structuredContent)
+      expect(http.json()).toEqual(decodeMcpToolResult(read))
       const foreign = await access.issue({ name: 'Foreign claim reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 300000), grants: [{ actions: ['jobs:read'],
           scope: { workspaceIds: [randomUUID()] } }] })
@@ -514,11 +515,11 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const listed = await client.callTool({ name: 'job_queue_list', arguments: {
       workspaceId: f.workspaceId, historyLimit: 3,
     } })
-    expect(listed.structuredContent).toEqual(first)
+    expect(decodeMcpToolResult(listed)).toEqual(first)
     const read = await client.callTool({ name: 'job_queue_get', arguments: {
       workspaceId: f.workspaceId, ticketId: original.id,
     } })
-    expect(read.structuredContent).toEqual({ ticket })
+    expect(decodeMcpToolResult(read)).toEqual({ ticket })
     const before = (await database.pool.query('select state from source_execution_materializations where execution_id=$1',
       [ticket.executionId])).rows[0]
     expect(before).toEqual({ state: 'prepared' })
@@ -779,11 +780,11 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const readerTools = (await readOnly.listTools()).tools.map(tool => tool.name)
     expect(readerTools).toEqual(expect.arrayContaining(['job_queue_get', 'job_queue_list']))
     expect(readerTools).not.toContain('job_queue_cancel')
-    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full',
       workspaceId: f.workspaceId,
     } })
     expect(capabilities.isError).not.toBe(true)
-    const capabilitySummary = ScheduleOperatorCapabilitiesSchema.parse(capabilities.structuredContent)
+    const capabilitySummary = ScheduleOperatorCapabilitiesSchema.parse(decodeMcpToolResult(capabilities))
     expect(capabilitySummary.requirements).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'job_queue_get', actions: ['jobs:read'] }),
       expect.objectContaining({ name: 'job_queue_list', actions: ['jobs:read'] }),
@@ -795,7 +796,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(readerTools).not.toContain('job_launch_validate')
     const checked = await client.callTool({ name: 'job_launch_validate', arguments: launch })
     expect(checked.isError).not.toBe(true)
-    expect(JobLaunchValidationSchema.parse(checked.structuredContent))
+    expect(JobLaunchValidationSchema.parse(decodeMcpToolResult(checked)))
       .toMatchObject({ valid: false, canQueue: true, reasons: ['offline'] })
     expect((await readOnly.callTool({ name: 'job_launch_validate', arguments: launch })).isError).toBe(true)
     expect(await ordered(f)).toHaveLength(0)
@@ -804,19 +805,19 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       headers: { authorization: `Bearer ${writer.token}` },
       payload: { definitionId: definition.id, expectedRevision: definition.revision } })
     expect(httpCheck.statusCode).toBe(200)
-    expect(httpCheck.json()).toEqual(checked.structuredContent)
+    expect(httpCheck.json()).toEqual(decodeMcpToolResult(checked))
     const denied = await readOnly.callTool({ name: 'job_start', arguments: input })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     expect(await ordered(f)).toHaveLength(0)
     const started = await client.callTool({ name: 'job_start', arguments: input })
     expect(started.isError).not.toBe(true)
-    const { admission } = z.object({ admission: JobPendingAdmissionSchema }).parse(started.structuredContent)
+    const { admission } = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(started))
     expect(admission.kind).toBe('pending-admission')
     await f.jobs.wakeQueue()
     const retried = await client.callTool({ name: 'job_start', arguments: input })
     expect(retried.isError).not.toBe(true)
-    const retry = z.object({ admission: JobPendingAdmissionSchema }).parse(retried.structuredContent)
+    const retry = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(retried))
     expect(retry.admission.ticket.id).toBe(admission.ticket.id)
     await f.jobs.wakeQueue()
     const read = await readOnly.callTool({ name: 'job_queue_get', arguments: {
@@ -824,18 +825,18 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     } })
     expect(read.isError).not.toBe(true)
     const persisted = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, admission.ticket.id)
-    expect(read.structuredContent).toEqual({ ticket: persisted })
+    expect(decodeMcpToolResult(read)).toEqual({ ticket: persisted })
     const http = await app.inject({ method: 'GET',
       url: `/api/management/workspaces/${f.workspaceId}/jobs/queue/${persisted.id}`,
       headers: { authorization: `Bearer ${reader.token}` } })
     expect(http.statusCode).toBe(200)
-    expect(http.json()).toEqual(read.structuredContent)
+    expect(http.json()).toEqual(decodeMcpToolResult(read))
     const listed = await readOnly.callTool({ name: 'job_queue_list', arguments: { workspaceId: f.workspaceId } })
     const httpList = await app.inject({ method: 'GET',
       url: `/api/management/workspaces/${f.workspaceId}/jobs/queue`,
       headers: { authorization: `Bearer ${reader.token}` } })
     expect(httpList.statusCode).toBe(200)
-    expect(httpList.json()).toEqual(listed.structuredContent)
+    expect(httpList.json()).toEqual(decodeMcpToolResult(listed))
     const { workspaceId, ...body } = input
     const crossTransport = await app.inject({ method: 'POST',
       url: `/api/management/workspaces/${workspaceId}/jobs/executions`,
@@ -853,13 +854,13 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       ...launch, placementOverride: overrideInput.placementOverride,
     } })
     expect(overrideCheck.isError).not.toBe(true)
-    expect(JobLaunchValidationSchema.parse(overrideCheck.structuredContent))
+    expect(JobLaunchValidationSchema.parse(decodeMcpToolResult(overrideCheck)))
       .toMatchObject({ valid: false, canQueue: true })
     expect((await readOnly.callTool({ name: 'job_start', arguments: overrideInput })).isError).toBe(true)
     const override = await client.callTool({ name: 'job_start', arguments: overrideInput })
     expect(override.isError).not.toBe(true)
-    const overrideAdmission = z.object({ admission: JobPendingAdmissionSchema }).parse(override.structuredContent)
-    expect((await client.callTool({ name: 'job_start', arguments: overrideInput })).structuredContent)
+    const overrideAdmission = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(override))
+    expect(decodeMcpToolResult((await client.callTool({ name: 'job_start', arguments: overrideInput }))))
       .toMatchObject({ admission: { ticket: { id: overrideAdmission.admission.ticket.id } } })
     await f.jobs.wakeQueue()
     const overrideTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, overrideAdmission.admission.ticket.id)
@@ -868,7 +869,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const overrideRead = await readOnly.callTool({ name: 'job_queue_get', arguments: {
       workspaceId: f.workspaceId, ticketId: overrideTicket.id,
     } })
-    expect(overrideRead.structuredContent).toEqual({ ticket: overrideTicket })
+    expect(decodeMcpToolResult(overrideRead)).toEqual({ ticket: overrideTicket })
     await f.jobs.cancelQueued(writer.principal, 'mcp', f.workspaceId, { commandId: randomUUID(),
       ticketId: overrideTicket.id, expectedRevision: overrideTicket.revision })
     const cancellationTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, persisted.id)
@@ -907,35 +908,35 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(JSON.stringify(staleCancel.content)).toContain('REVISION_CONFLICT')
     const cancelled = await client.callTool({ name: 'job_queue_cancel', arguments: cancelInput })
     expect(cancelled.isError).not.toBe(true)
-    const cancellation = z.object({ ticket: JobQueueTicketSchema }).parse(cancelled.structuredContent)
+    const cancellation = z.object({ ticket: JobQueueTicketSchema }).parse(decodeMcpToolResult(cancelled))
     expect(cancellation.ticket).toMatchObject({ state: 'terminal', terminalReason: 'cancelled' })
     const cancelledHttp = await app.inject({ method: 'POST',
       url: `/api/management/workspaces/${workspaceId}/jobs/queue/${persisted.id}/cancel`,
       headers: { authorization: `Bearer ${writer.token}` },
       payload: { commandId: cancelInput.commandId, expectedRevision: cancelInput.expectedRevision } })
     expect(cancelledHttp.statusCode).toBe(200)
-    expect(cancelledHttp.json()).toEqual(cancelled.structuredContent)
-    expect((await readOnly.callTool({ name: 'job_queue_get', arguments: {
+    expect(cancelledHttp.json()).toEqual(decodeMcpToolResult(cancelled))
+    expect(decodeMcpToolResult((await readOnly.callTool({ name: 'job_queue_get', arguments: {
       workspaceId, ticketId: persisted.id,
-    } })).structuredContent).toEqual(cancelled.structuredContent)
+    } })))).toEqual(decodeMcpToolResult(cancelled))
     expect(f.accept).not.toHaveBeenCalled()
     const next = await client.callTool({ name: 'job_start', arguments: { ...input, commandId: randomUUID() } })
     expect(next.isError).not.toBe(true)
-    const nextTicket = z.object({ admission: JobPendingAdmissionSchema }).parse(next.structuredContent).admission.ticket
+    const nextTicket = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(next)).admission.ticket
     f.online()
     await f.jobs.wakeQueue()
     const executed = await readOnly.callTool({ name: 'job_get', arguments: {
       workspaceId: f.workspaceId, executionId: nextTicket.executionId,
     } })
     expect(executed.isError).not.toBe(true)
-    expect(executed.structuredContent).toEqual({
+    expect(decodeMcpToolResult(executed)).toEqual({
       execution: await f.jobs.getExecution(reader.principal, f.workspaceId, nextTicket.executionId),
     })
     expect(f.accept).toHaveBeenCalledTimes(1)
     const acceptedRetry = await client.callTool({ name: 'job_start', arguments: {
       ...input, commandId: nextTicket.commandId,
     } })
-    expect(acceptedRetry.structuredContent).toEqual({ admission: {
+    expect(decodeMcpToolResult(acceptedRetry)).toEqual({ admission: {
       kind: 'accepted', ticketId: nextTicket.id, executionId: nextTicket.executionId,
     } })
     expect(f.accept).toHaveBeenCalledTimes(1)
@@ -974,7 +975,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
         ...(cursor ? { historyBeforeSequence: cursor } : {}) }
       const response = await client.callTool({ name: 'job_queue_list', arguments: input })
       expect(response.isError).not.toBe(true)
-      const page = JobQueuePageSchema.parse(response.structuredContent)
+      const page = JobQueuePageSchema.parse(decodeMcpToolResult(response))
       expect(page.tickets.find(ticket => ticket.id === active.id)).toMatchObject({ state: 'blocked' })
       const query = new URLSearchParams({ historyLimit: '10' })
       if (cursor) query.set('historyBeforeSequence', cursor)
@@ -993,7 +994,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       commandId: randomUUID(),
     } })
     expect(cancelled.isError).not.toBe(true)
-    expect(cancelled.structuredContent).toEqual({ ticket:
+    expect(decodeMcpToolResult(cancelled)).toEqual({ ticket:
       await f.jobs.getQueueTicket(reader.principal, f.workspaceId, active.id) })
     expect((await f.jobs.getQueueTicket(reader.principal, f.workspaceId, active.id)).terminalReason).toBe('cancelled')
   }, 60000)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
@@ -108,7 +109,7 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
       }
       const reader = await connect(writer.token)
       const readback = await reader.callTool({ name: 'job_get', arguments: { workspaceId, executionId: execution.id } })
-      expect(readback.isError).not.toBe(true); expect(readback.structuredContent).toEqual({ execution: persisted })
+      expect(readback.isError).not.toBe(true); expect(decodeMcpToolResult(readback)).toEqual({ execution: persisted })
       const ungranted = await connect(denied.token)
       const rejected = await ungranted.callTool({ name: 'job_get', arguments: { workspaceId, executionId: execution.id } })
       expect(rejected.isError).toBe(true); expect(JSON.stringify(rejected.content)).toContain('ACCESS_DENIED')

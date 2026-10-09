@@ -1,3 +1,6 @@
+import {
+  decodeMcpToolResult, OperatorCompactCapabilitiesSchema, OperatorToolSchemaResultSchema,
+} from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -40,8 +43,8 @@ type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 type Client = Fixture['client']
 function value(result: { isError?: boolean | undefined; structuredContent?: unknown }): unknown {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
-  expect(result.structuredContent).toBeDefined()
-  return result.structuredContent
+  expect(decodeMcpToolResult(result)).toBeDefined()
+  return decodeMcpToolResult(result)
 }
 function errorCode(result: unknown): string {
   const response = result as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
@@ -206,10 +209,19 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
       const discovery = (await r.client.listTools()).tools
       for (const name of Object.values(RUN_HISTORY_TOOLS)) {
         const tool = discovery.find((item) => item.name === name)
-        expect(tool?.outputSchema?.type).toBe('object'); expect(tool?.annotations?.readOnlyHint).toBe(true)
+        expect(tool?.name).toBe(name)
+        expect(tool?.inputSchema.type).toBe('object')
+        expect(tool).not.toHaveProperty('outputSchema')
+        expect(tool?.annotations?.readOnlyHint).toBe(true)
+        const schema = OperatorToolSchemaResultSchema.parse(value(await r.client.callTool({
+          name: 'operator_tool_schema_get', arguments: { name, includeOutputSchema: true },
+        })))
+        expect(schema.name).toBe(name)
+        expect(schema.inputSchema).toEqual(tool?.inputSchema)
+        expect(schema.outputSchema?.type).toBe('object')
       }
       expect(discovery.map((tool) => tool.name)).not.toContain('run_start')
-      const caps = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: {} })) as {
+      const caps = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })) as {
         runtimeLimits: Array<{ feature: string; detail: string }> }
       expect(caps.runtimeLimits.find((item) => item.feature === 'run_board_history')?.detail).toContain('tools/list')
       expect((await f.app.inject({ method: 'GET', url: url(RUN_HISTORY_TOOLS.snapshot, args), headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)
@@ -237,6 +249,38 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
       await expect(f.services.runs.history.list(r.principal, scope(f))).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
       await f.db.pool.query('update management_principals set revoked_at=now() where id=$1', [r.principal.id])
       await expect(f.services.runs.history.snapshot(r.principal, args)).rejects.toMatchObject({ status: 403 })
+    } finally { await f.close() }
+  }, 60000)
+
+  it('reports history capabilities for permitted Run-only scopes and omits denied resources', async () => {
+    const f = await currentOperatorIntegration({ approvalNodeIds: [] })
+    try {
+      const args = snapshotScope(f)
+      const r = await reader(f, [{ actions: ['capabilities:read'], scope: {} },
+        { actions: ['runs:read'], scope: { workspaceIds: [args.workspaceId],
+          workflowIds: [args.workflowId], runIds: [args.runId] } }])
+      const capabilities = async (input: Record<string, unknown>) => OperatorCompactCapabilitiesSchema.parse(
+        value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: input })),
+      )
+      const historyNames = Object.values(RUN_HISTORY_TOOLS)
+      expect((await capabilities({})).tools).toEqual(expect.arrayContaining(historyNames))
+      expect((await capabilities(args)).tools).toEqual(expect.arrayContaining(historyNames))
+      expect((await capabilities(scope(f))).tools).toContain(RUN_HISTORY_TOOLS.list)
+      expect((await capabilities(scope(f))).tools).not.toContain(RUN_HISTORY_TOOLS.snapshot)
+      for (const resource of [{ ...args, workspaceId: 'other-workspace' },
+        { ...args, workflowId: 'other-workflow' }, { ...args, runId: 'other-run' }]) {
+        const deniedCapabilities = await capabilities(resource)
+        for (const name of historyNames) expect(deniedCapabilities.tools).not.toContain(name)
+      }
+      const persisted = await parity(f, r.client, r.token, RUN_HISTORY_TOOLS.snapshot, args)
+      await parity(f, r.client, r.token, RUN_HISTORY_TOOLS.list, scope(f))
+      const noRead = await reader(f, [{ actions: ['capabilities:read'], scope: {} }])
+      const deniedCapabilities = OperatorCompactCapabilitiesSchema.parse(value(await noRead.client.callTool({
+        name: 'operator_get_capabilities', arguments: args,
+      })))
+      for (const name of historyNames) expect(deniedCapabilities.tools).not.toContain(name)
+      await denied(f, noRead.client, noRead.token, RUN_HISTORY_TOOLS.snapshot, args, 403, 'ACCESS_DENIED')
+      expect(await parity(f, r.client, r.token, RUN_HISTORY_TOOLS.snapshot, args)).toEqual(persisted)
     } finally { await f.close() }
   }, 60000)
 

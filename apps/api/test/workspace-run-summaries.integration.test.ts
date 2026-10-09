@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -47,7 +48,7 @@ describe('workspace Run summaries', () => {
       expect(currentPage.pageInfo.nextCursor).toBeNull()
       const remoteList = await f.client.callTool({ name: 'run_list', arguments: listInput })
       expect(remoteList.isError).not.toBe(true)
-      expect(remoteList.structuredContent).toEqual(currentPage)
+      expect(decodeMcpToolResult(remoteList)).toEqual(currentPage)
       for (const scope of [{ workflowIds: [listInput.workflowId] }, { runIds: [f.f.run.id] }]) {
         const reader = await f.access.issue({ name: 'Scoped Run reader', audience: 'operator',
           expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'], scope }] })
@@ -59,7 +60,7 @@ describe('workspace Run summaries', () => {
         expect(page.items[0]).not.toHaveProperty('executionLocation')
         const remote = await (await f.connect(reader.token)).callTool({ name: 'run_list', arguments: listInput })
         expect(remote.isError).not.toBe(true)
-        expect(remote.structuredContent).toEqual(page)
+        expect(decodeMcpToolResult(remote)).toEqual(page)
       }
       for (const scope of [{ workspaceIds: ['another-workspace'] }, { workflowIds: ['another-workflow'] }]) {
         const denied = await f.access.issue({ name: 'Denied Run reader', audience: 'operator',
@@ -74,7 +75,7 @@ describe('workspace Run summaries', () => {
         }
         const snapshot = { snapshot: { ...scope, kind: 'unavailable', reason: 'legacy_run' } }
         expect(await f.services.runs.history.snapshot(f.writer.principal, scope)).toEqual(snapshot)
-        expect((await f.client.callTool({ name: 'run_board_snapshot_get', arguments: scope })).structuredContent)
+        expect(decodeMcpToolResult((await f.client.callTool({ name: 'run_board_snapshot_get', arguments: scope }))))
           .toEqual(snapshot)
         const historicalRead = await f.app.inject({ method: 'GET',
           url: `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/${runId}/snapshot`,

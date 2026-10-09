@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { AgentHarnessSchema } from '@foreman-code/contracts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -317,12 +318,12 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
         assert.match(result.replayWarning!.message, /not verified or applied/)
         const tool = await mcp.callTool({ name: 'agent_chat_send', arguments: { workspaceId: f.workspaceId, request } })
         assert.notEqual(tool.isError, true)
-        assert.deepEqual(SendAgentChatMessageResponseSchema.parse(tool.structuredContent), result)
+        assert.deepEqual(SendAgentChatMessageResponseSchema.parse(decodeMcpToolResult(tool)), result)
       }
       const noWrite = await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${readerToken}` }, payload: input })
       assert.equal(noWrite.statusCode, 403)
       const deniedTool = await denied.callTool({ name: 'agent_chat_send', arguments: { workspaceId: f.workspaceId, request: input } })
-      assert.equal(deniedTool.isError, true); assert.equal(deniedTool.structuredContent, undefined)
+      assert.equal(deniedTool.isError, true); assert.equal(decodeMcpToolResult(deniedTool), undefined)
       const conflict = await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${writerToken}` }, payload: { ...input, content: 'different' } })
       assert.equal(conflict.statusCode, 409); assert.match(conflict.body, /AGENT_CHAT_REQUEST_CONFLICT/)
       const conflictTool = await mcp.callTool({ name: 'agent_chat_send', arguments: { workspaceId: f.workspaceId, request: { ...input, intent: 'next_turn' } } })

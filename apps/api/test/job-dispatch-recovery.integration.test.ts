@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { BuildComputerSettings, buildComputerTarget } from '../src/modules/settings/buildComputers.js'
 import { JobComputerSelection } from '../src/modules/jobs/computerSelection.js'
@@ -98,7 +99,7 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     }
     const retry = await client.callTool({ name: 'job_start', arguments: { workspaceId, ...command } })
     expect(retry.isError).not.toBe(true)
-    expect(retry.structuredContent).toEqual({ admission: { kind: 'accepted', ticketId: tickets[0]!.id, executionId: execution.id } })
+    expect(decodeMcpToolResult(retry)).toEqual({ admission: { kind: 'accepted', ticketId: tickets[0]!.id, executionId: execution.id } })
     await expect(jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
     expect(request.mock.calls.map(([, , raw]) => (raw as { method: string }).method)).toEqual(['job-dispatch', 'job-status'])
     const cancel = await client.callTool({ name: 'job_cancel', arguments: { workspaceId, executionId: execution.id, commandId: randomUUID() } })
@@ -106,10 +107,10 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     expect(request.mock.calls.map(([, , raw]) => (raw as { method: string }).method)).toEqual(['job-dispatch', 'job-status', 'job-status', 'job-control'])
     const read = await client.callTool({ name: 'job_get', arguments: { workspaceId, executionId: execution.id } })
     expect(read.isError).not.toBe(true)
-    expect(read.structuredContent).toMatchObject({ execution: { id: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, acceptedSpec: execution.acceptedSpec,
+    expect(decodeMcpToolResult(read)).toMatchObject({ execution: { id: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, acceptedSpec: execution.acceptedSpec,
       process: { phase: 'queued', outcome: null, processStopped: false }, transport: 'unknown', publication: 'pending', cancelRequestedAt: expect.any(String) } })
     const http = await app.inject({ method: 'GET', url: `${root}/executions/${execution.id}`, headers })
-    expect(http.statusCode).toBe(200); expect(http.json()).toEqual(read.structuredContent)
+    expect(http.statusCode).toBe(200); expect(http.json()).toEqual(decodeMcpToolResult(read))
     const denied = await deniedClient.callTool({ name: 'job_cancel', arguments: { workspaceId, executionId: execution.id, commandId: randomUUID() } })
     expect(denied.isError).toBe(true); expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     expect(request).toHaveBeenCalledTimes(4)

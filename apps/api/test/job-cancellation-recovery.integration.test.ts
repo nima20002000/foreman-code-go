@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
@@ -183,7 +184,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
       const result = await client.callTool({ name: 'job_cancellation_recovery_propose', arguments: {
         workspaceId, executionId: execution.id, commandId: randomUUID(), journalSha256: sha(await readFile(join(directory, 'original-journal'))) } })
       expect(result.isError).not.toBe(true)
-      proposal = JobCancellationRecoveryReadSchema.parse(result.structuredContent)
+      proposal = JobCancellationRecoveryReadSchema.parse(decodeMcpToolResult(result))
       const approved = await app.inject({ method: 'POST', url: `${route()}/approve`,
         headers: { origin: 'http://127.0.0.1:5173' }, payload: { commandId: randomUUID() } })
       expect(approved.statusCode).toBe(200)
@@ -253,7 +254,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
     const pending = await client.callTool({ name: 'job_cancellation_recovery_propose', arguments: {
       workspaceId, executionId: execution.id, commandId: randomUUID(), journalSha256: proposal.journalSha256 } })
     expect(pending.isError).not.toBe(true)
-    const unapproved = JobCancellationRecoveryReadSchema.parse(pending.structuredContent)
+    const unapproved = JobCancellationRecoveryReadSchema.parse(decodeMcpToolResult(pending))
     const changed = structuredClone(apply)
     changed.recoveryId = unapproved.id
     changed.closure.closure.grantId = unapproved.id
@@ -287,16 +288,16 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
     const commandId = randomUUID()
     const result = await importClosure(apply, client, commandId)
     expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toMatchObject({ execution: { id: execution.id, operationId: execution.operationId,
+    expect(decodeMcpToolResult(result)).toMatchObject({ execution: { id: execution.id, operationId: execution.operationId,
       acceptedSpec: execution.acceptedSpec, transport: 'unknown', process: { phase: 'terminal', outcome: 'cancelled', processStopped: true } } })
-    expect((await importClosure(apply, client, commandId)).structuredContent).toEqual(result.structuredContent)
+    expect(decodeMcpToolResult((await importClosure(apply, client, commandId)))).toEqual(decodeMcpToolResult(result))
     expect((await importClosure(apply, client, randomUUID())).isError).toBe(true)
     expect(await state()).toMatchObject({ state: 'retained', record: { process: { processStopped: true } } })
     const get = await client.callTool({ name: 'job_get', arguments: { workspaceId, executionId: execution.id } })
-    expect(get.structuredContent).toEqual(result.structuredContent)
+    expect(decodeMcpToolResult(get)).toEqual(decodeMcpToolResult(result))
     const persisted = await client.callTool({ name: 'job_cancellation_recovery_get', arguments: {
       workspaceId, executionId: execution.id, recoveryId: proposal.id } })
-    expect(persisted.structuredContent).toMatchObject({ state: 'consumed', closure: apply.closure })
+    expect(decodeMcpToolResult(persisted)).toMatchObject({ state: 'consumed', closure: apply.closure })
     expect(ordinaryTransport).not.toHaveBeenCalled()
   })
 })

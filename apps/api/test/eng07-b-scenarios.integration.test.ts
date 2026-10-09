@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GetInteractionResponseSchema, ListInteractionsResponseSchema, RespondToInteractionRequestSchema, RespondToInteractionResponseSchema } from '@foreman-code/contracts'
@@ -36,7 +37,7 @@ async function approveThroughHttp(f: Harness, started: Started) {
     name: 'interaction_list', arguments: { workspaceId, workflowId, runId, limit: 10 },
   })
   expect(monitoringResult.isError).not.toBe(true)
-  const monitoring = ManagedInteractionPageSchema.parse(monitoringResult.structuredContent)
+  const monitoring = ManagedInteractionPageSchema.parse(decodeMcpToolResult(monitoringResult))
   expect(monitoring.items).toEqual(page.items)
   expect(f.base.provider.startedNodes).toEqual(f.scenario.nodes.slice(0, 2).map((node) => node.id))
   const current = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
@@ -113,7 +114,7 @@ async function approveThroughHttp(f: Harness, started: Started) {
     name: 'interaction_list', arguments: { workspaceId, workflowId, runId, limit: 10 },
   })
   expect(finalMonitoringResult.isError).not.toBe(true)
-  const finalMonitor = ManagedInteractionPageSchema.parse(finalMonitoringResult.structuredContent)
+  const finalMonitor = ManagedInteractionPageSchema.parse(decodeMcpToolResult(finalMonitoringResult))
   expect(finalMonitor.items).toEqual(ListInteractionsResponseSchema.parse(await list()).items)
 }
 

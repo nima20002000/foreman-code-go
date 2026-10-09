@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -88,7 +89,7 @@ async function setup() {
     try {
       const response = await client.callTool({ name: 'source_approve', arguments: input })
       expect(response.isError, JSON.stringify(response)).not.toBe(true)
-      return { input, source: SourceApproveResultSchema.parse(response.structuredContent).value }
+      return { input, source: SourceApproveResultSchema.parse(decodeMcpToolResult(response)).value }
     } finally { vi.useRealTimers() }
   }
   function sourcePin(source: ApprovedSource) {
@@ -106,7 +107,7 @@ async function setup() {
   async function read(source: ApprovedSource) {
     const response = await client.callTool({ name: 'source_get', arguments: pin(source) })
     expect(response.isError, JSON.stringify(response)).not.toBe(true)
-    return ApprovedSourceSchema.parse(response.structuredContent)
+    return ApprovedSourceSchema.parse(decodeMcpToolResult(response))
   }
   async function seedJob(source: ApprovedSource, retentionSeconds = SOURCE_RETENTION_SECONDS) {
     const now = source.approvedAt
@@ -167,7 +168,7 @@ it('reclaims older terminal snapshots before capture capacity fails and exposes 
     const first = approvals[0]!
     const listed = await f.client.callTool({ name: 'source_list', arguments: { workspaceId: f.workspaceId } })
     expect(listed.isError).not.toBe(true)
-    const items = SourceListResultSchema.parse(listed.structuredContent).items
+    const items = SourceListResultSchema.parse(decodeMcpToolResult(listed)).items
     expect(items.find(item => item.manifest.snapshotId === first.source.manifest.snapshotId)?.availability)
       .toBe('unavailable')
     const get = await f.client.callTool({ name: 'source_get', arguments: f.pin(first.source) })
@@ -294,8 +295,8 @@ it.each(['deletion', 'accounting'] as const)('retries interrupted %s without res
           for each row execute function fail_snapshot_accounting()`)
     }
     await expect(f.sources.releaseUnusedSnapshots()).rejects.toThrow('Injected')
-    const listed = SourceListResultSchema.parse((await f.client.callTool({ name: 'source_list',
-      arguments: { workspaceId: f.workspaceId } })).structuredContent)
+    const listed = SourceListResultSchema.parse(decodeMcpToolResult((await f.client.callTool({ name: 'source_list',
+      arguments: { workspaceId: f.workspaceId } }))))
     expect(listed.items[0]!.availability).toBe('unavailable')
     expect((await f.reservation(approved.source)).state).toBe('retained')
     const retry = await f.client.callTool({ name: 'source_approve', arguments: approved.input })

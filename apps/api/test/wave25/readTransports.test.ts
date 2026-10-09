@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { describe, expect, it, vi } from 'vitest'
 import Fastify from 'fastify'
 import type pg from 'pg'
@@ -69,7 +70,7 @@ describe('A5 HTTP graph adapters', () => {
 
 describe('A5 Operator extension callbacks', () => {
   it('registers versioned read-only tools, forwards identical requests and audits denied calls', async () => {
-    type Result = { content: { text: string }[]; structuredContent?: unknown; isError?: boolean }
+    type Result = { content: { type: string; text: string }[]; structuredContent?: unknown; isError?: boolean }
     const tools = new Map<string, { annotations: Record<string, boolean>; call: (input: unknown) => Promise<Result> }>()
     // Registration double only. Actual SDK framing/output validation is a separate qualification check.
     const server = { registerTool(name: string, definition: { annotations: Record<string, boolean> }, call: (input: unknown) => Promise<Result>) {
@@ -82,7 +83,7 @@ describe('A5 Operator extension callbacks', () => {
     expect([...tools.keys()].sort()).toEqual(Object.values(RUN_GRAPH_MCP_TOOLS).sort())
     for (const tool of tools.values()) expect(tool.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false })
     const input = { protocolVersion: 1, scope: fixture.scope }
-    expect((await tools.get(RUN_GRAPH_MCP_TOOLS.snapshot)!.call(input)).structuredContent).toEqual(fixture.snapshot)
+    expect(decodeMcpToolResult((await tools.get(RUN_GRAPH_MCP_TOOLS.snapshot)!.call(input)))).toEqual(fixture.snapshot)
     expect(reads.snapshot).toHaveBeenCalledWith(principal, input)
     reads.snapshot = async () => { throw new RunGraphError('GRAPH_READ_ACCESS_DENIED') }
     const denied = await tools.get(RUN_GRAPH_MCP_TOOLS.snapshot)!.call(input)

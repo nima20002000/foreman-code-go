@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
@@ -79,8 +80,9 @@ describe('FIL-02 production reference adapter supports detached working copies',
         assert.equal(response.statusCode, 200, response.body)
         assert.equal(body.error, undefined, response.body)
         assert.notEqual(body.result?.isError, true, response.body)
-        assert.ok(body.result?.structuredContent, response.body)
-        return body.result.structuredContent
+        assert.ok(body.result, response.body)
+        assert.ok(decodeMcpToolResult(body.result), response.body)
+        return decodeMcpToolResult(body.result)
       }
       try {
         const copy = AgentFileCreateWorkingCopyResultSchema.parse(await call('files.create_working_copy', {

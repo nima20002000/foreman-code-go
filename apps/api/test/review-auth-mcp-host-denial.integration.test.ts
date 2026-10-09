@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { reviewAuthMcpDatabase } from './helpers/reviewAuthMcpDatabase.js'
@@ -37,7 +38,7 @@ it('audits authenticated calls to grant-hidden host-profile tools without mutati
     expect((await f.pool.query('select record from harness_instance_settings')).rows).toEqual(before)
     expect((await f.pool.query('select count(*)::int as count from harness_instance_profile_evidence')).rows[0].count).toBe(0)
     const readback = await denied.callTool({ name: 'harness_instances_list', arguments: listInput })
-    expect(readback.structuredContent).toEqual({ overrides: [before[0].record] })
+    expect(decodeMcpToolResult(readback)).toEqual({ overrides: [before[0].record] })
     // The writer's unsupported check is unavailable, not permission to manufacture qualification.
     const check = await writer.callTool({ name: 'harness_instance_check', arguments: {
       commandId: randomUUID(), instanceId: input.instanceId, expectedRevision: 1, target: input.target,

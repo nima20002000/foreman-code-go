@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
@@ -99,7 +100,7 @@ export async function callWorkspaceTool<T>(
 ): Promise<T> {
   const response = await client.callTool({ name, arguments: args })
   if (response.isError) throw new Error(`MCP tool ${name} failed: ${JSON.stringify(response)}`)
-  return schema.parse(response.structuredContent)
+  return schema.parse(decodeMcpToolResult(response))
 }
 
 export async function waitForWorkspaceBlocker(pool: pg.Pool, blockerPid: number) {

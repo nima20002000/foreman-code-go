@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import Fastify from 'fastify'
@@ -77,14 +78,14 @@ describe.skipIf(!postgresEnabled)('W08 exact accepted host readback parity', () 
       const http = await app.inject({ method: 'GET', url: path, headers: { authorization: `Bearer ${f.owner.token}` } })
       expect(http.statusCode).toBe(200)
       const result = await owner.callTool({ name: 'run_node_placement_get', arguments: input })
-      expect(result.isError).not.toBe(true); expect(result.structuredContent).toEqual(http.json())
+      expect(result.isError).not.toBe(true); expect(decodeMcpToolResult(result)).toEqual(http.json())
       expect(http.json().readback).toEqual({ evidence: 'accepted', placement, observations: [] })
       const choiceInput = { workspaceId: input.workspaceId, workflowId: input.workflowId, nodeId: node.id, agentConfigurationVersionId: configuration.id }
       const choicePath = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/nodes/${node.id}/placement-choices?agentConfigurationVersionId=${configuration.id}`
       const choiceHttp = await app.inject({ method: 'GET', url: choicePath, headers: { authorization: `Bearer ${f.owner.token}` } })
       expect(choiceHttp.statusCode).toBe(200)
       const choiceMcp = await owner.callTool({ name: 'workflow_node_placement_choices', arguments: choiceInput })
-      expect(choiceMcp.isError).not.toBe(true); expect(choiceMcp.structuredContent).toEqual(choiceHttp.json())
+      expect(choiceMcp.isError).not.toBe(true); expect(decodeMcpToolResult(choiceMcp)).toEqual(choiceHttp.json())
       expect((await choices.get(f.owner.principal, choiceInput)).choices[0]?.placement.hostRef).toEqual(placement.hostRef)
       await expect(choices.get(f.owner.principal, { ...choiceInput, agentConfigurationVersionId: 'unsaved-configuration' })).rejects.toMatchObject({ code: 'PLACEMENT_CONFIGURATION_CONFLICT' })
       await expect(f.db.pool.query("update run_node_placements set record=jsonb_set(record,'{labelAtAcceptance}','\"Edited laptop\"') where run_id=$1", [draft.run.id])).rejects.toMatchObject({ code: 'P2843' })

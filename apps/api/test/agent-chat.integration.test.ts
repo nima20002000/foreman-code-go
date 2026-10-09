@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { mkdtemp } from 'node:fs/promises'
@@ -251,7 +252,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       const target = { workspaceId: fixture.scope.workspaceId, query: query(codexNode) }
       const mcp = await client.callTool({ name: 'agent_chat_read', arguments: target })
       expect(mcp.isError).not.toBe(true)
-      expect(AgentChatStateSchema.parse(mcp.structuredContent).messages).toEqual(done.messages)
+      expect(AgentChatStateSchema.parse(decodeMcpToolResult(mcp)).messages).toEqual(done.messages)
       expect(pending).toHaveBeenCalledTimes(2)
       await expectMcpAccessDenied(client.callTool({ name: 'agent_chat_send', arguments: {
         workspaceId: fixture.scope.workspaceId,
@@ -338,7 +339,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       const target = { workspaceId, conversationId }
       const mcp = await client.callTool({ name: 'agent_chat_controls_get', arguments: target })
       expect(mcp.isError).not.toBe(true)
-      expect(SessionControlStateSchema.parse(mcp.structuredContent)).toMatchObject({ desiredMode: 'plan',
+      expect(SessionControlStateSchema.parse(decodeMcpToolResult(mcp))).toMatchObject({ desiredMode: 'plan',
         capabilities, nativeSessionId: saved.nativeSessionId, nativeStatus: 'resume-required' })
       const denied = await access.issue({ name: 'denied retiring-chat reader', audience: 'operator', grants: [],
         expiresAt: new Date(Date.now() + 600000) })
@@ -425,11 +426,11 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
         const target = { workspaceId, conversationId }
         const mcp = await client.callTool({ name: 'agent_chat_controls_get', arguments: target })
         expect(mcp.isError).not.toBe(true)
-        expect(SessionControlStateSchema.parse(mcp.structuredContent)).toEqual(SessionControlStateSchema.parse(http.json()))
+        expect(SessionControlStateSchema.parse(decodeMcpToolResult(mcp))).toEqual(SessionControlStateSchema.parse(http.json()))
         const context = await client.callTool({ name: 'agent_chat_controls_get',
           arguments: { workspaceId, context: selector } })
         expect(context.isError).not.toBe(true)
-        expect(SessionControlStateSchema.parse(context.structuredContent).desiredMode).toBe('plan')
+        expect(SessionControlStateSchema.parse(decodeMcpToolResult(context)).desiredMode).toBe('plan')
         expect((await app.inject({ method: 'GET', url,
           headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
         await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
@@ -544,7 +545,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       const control = { ...target, request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: 0 } }
       const updated = await client.callTool({ name: 'agent_chat_controls_update', arguments: control })
       expect(updated.isError).not.toBe(true)
-      const controls = SessionControlStateSchema.parse(updated.structuredContent)
+      const controls = SessionControlStateSchema.parse(decodeMcpToolResult(updated))
       expect(controls.conversationId).toBeTruthy()
       expect(controls.nativeSessionId).toBeNull()
       expect(FakeNative.all).toHaveLength(0)
@@ -554,8 +555,8 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       const denied = await reader.callTool({ name: 'agent_chat_controls_update', arguments: {
         ...control, request: { ...control.request, requestId: randomUUID(), mode: 'regular', expectedRevision: controls.revision } } })
       expect(denied.isError).toBe(true)
-      const persisted = SessionControlStateSchema.parse((await reader.callTool({
-        name: 'agent_chat_controls_get', arguments: target })).structuredContent)
+      const persisted = SessionControlStateSchema.parse(decodeMcpToolResult((await reader.callTool({
+        name: 'agent_chat_controls_get', arguments: target }))))
       expect(persisted.desiredMode).toBe('plan')
       expect(persisted.conversationId).toBe(controls.conversationId)
     } finally {
@@ -622,11 +623,11 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
         await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => writerToken } }))
         await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => readOnlyToken } }))
         const target = { workspaceId: seeded.scope.workspaceId, conversationId: first.id }
-        const before = SessionControlStateSchema.parse((await client.callTool({ name: 'agent_chat_controls_get', arguments: target })).structuredContent)
+        const before = SessionControlStateSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'agent_chat_controls_get', arguments: target }))))
         const result = await client.callTool({ name: 'agent_chat_controls_update', arguments: { ...target,
           request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: before.revision } } })
         expect(result.isError).not.toBe(true)
-        expect(SessionControlStateSchema.parse(result.structuredContent).desiredMode).toBe('plan')
+        expect(SessionControlStateSchema.parse(decodeMcpToolResult(result)).desiredMode).toBe('plan')
         expect((await service.readSessionControls(writer, seeded.scope.workspaceId, second.id)).desiredMode).toBe('regular')
         const denied = await app.inject({ method: 'POST',
           url: `/api/workspaces/${seeded.scope.workspaceId}/agent-chat/conversations/${first.id}/session-controls`,
@@ -898,7 +899,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       expect(AgentChatHistoryPageSchema.parse(historyReply.json()).messages).toEqual(state.messages)
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => readOnlyToken } }))
       const read = await client.callTool({ name: 'agent_chat_read', arguments: { workspaceId, query: query(codexNode) } })
-      expect(AgentChatStateSchema.parse(read.structuredContent).messages).toEqual(state.messages)
+      expect(AgentChatStateSchema.parse(decodeMcpToolResult(read)).messages).toEqual(state.messages)
       const denied = await app.inject({ method: 'POST', url: `${base}/messages`, headers: { authorization: `Bearer ${readOnlyToken}` },
         payload: request(codexNode, 'must not send', id) })
       expect(denied.statusCode).toBe(403)
@@ -942,8 +943,8 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
           workspaceId: fixture.scope.workspaceId, request: { ...input, requestId: randomUUID() } } }))
       }
       expect(native.steers).toEqual([])
-      const persisted = AgentChatStateSchema.parse((await reader.callTool({ name: 'agent_chat_read', arguments: {
-        workspaceId: fixture.scope.workspaceId, query: query(codexNode) } })).structuredContent)
+      const persisted = AgentChatStateSchema.parse(decodeMcpToolResult((await reader.callTool({ name: 'agent_chat_read', arguments: {
+        workspaceId: fixture.scope.workspaceId, query: query(codexNode) } }))))
       expect(persisted.turns).toHaveLength(2)
       expect(persisted.messages.filter(message => message.role === 'user').map(message => message.content))
         .toEqual(['Seed chat', 'Active regular turn'])
@@ -978,7 +979,7 @@ describe('selected-Agent chat service', { timeout: 60_000 }, () => {
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('agent_chat_send')
       await settled(service, () => service.read(writer, fixture.scope.workspaceId, query(codexNode)))
       const read = await mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: fixture.scope.workspaceId, query: query(codexNode) } })
-      const state = AgentChatStateSchema.parse(read.structuredContent)
+      const state = AgentChatStateSchema.parse(decodeMcpToolResult(read))
       const sendResult = await mcp.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId,
         request: request(codexNode, 'via mcp', state.conversation!.id) } })
       expect(sendResult.isError).not.toBe(true)
@@ -1072,7 +1073,7 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
             'agent_chat_interrupt', 'agent_chat_cancel_queued', 'agent_chat_respond']))
           const read = await mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: scopedWorkspaceId, query: context } })
           expect(read.isError === true).toBe(!matching)
-          if (matching) expect(AgentChatStateSchema.parse(read.structuredContent).conversation?.id).toBe(id)
+          if (matching) expect(AgentChatStateSchema.parse(decodeMcpToolResult(read)).conversation?.id).toBe(id)
           const controller = new AbortController()
           try {
             const stream = await fetch(`${f.address}${path}/conversations/${id}/events`, { headers,
@@ -1166,7 +1167,7 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       expect(canceled.statusCode, canceled.body).toBe(200)
       const cancelReceipt = await receipt(cancel.requestId)
       const later = await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later queued', id))
-      expect((await replay('agent_chat_cancel_queued', { ...cancel, turnRequestId: queued.turn.requestId })).structuredContent).toEqual({ state: await read() })
+      expect(decodeMcpToolResult((await replay('agent_chat_cancel_queued', { ...cancel, turnRequestId: queued.turn.requestId })))).toEqual({ state: await read() })
       expect(await receipt(cancel.requestId)).toEqual(cancelReceipt)
       expect(cancelReceipt.result).toMatchObject({ status: 'completed', state: { conversation: { id },
         turns: expect.arrayContaining([expect.objectContaining({ requestId: queued.turn.requestId, delivery: 'canceled' })]) } })
@@ -1184,7 +1185,7 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       expect(responded.statusCode, responded.body).toBe(200)
       const respondReceipt = await receipt(respond.requestId)
       await repository.pending(id, active.activeTurn!.requestId, { ...pending, turn: { ...pending.turn, nativeRequestId: 'approval-two' } })
-      expect((await replay('agent_chat_respond', respond)).structuredContent).toEqual({ state: await read() })
+      expect(decodeMcpToolResult((await replay('agent_chat_respond', respond)))).toEqual({ state: await read() })
       expect(await receipt(respond.requestId)).toEqual(respondReceipt)
       expect(respondReceipt.result).toMatchObject({ status: 'completed', acceptedControl: { modelRequestId: active.activeTurn!.requestId,
         native: { sessionId: pending.session.nativeSessionId, turnId: pending.turn.nativeTurnId, requestId: 'approval-one' } } })
@@ -1212,7 +1213,7 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
       await service.send(writer, fixture.scope.workspaceId, request(codexNode, 'later active', id))
       const next = await settled(service, read, (state) => Boolean(state.activeTurn?.nativeTurnId && native.activeTurn))
       await vi.waitFor(async () => {
-        expect((await replay('agent_chat_interrupt', interrupt)).structuredContent).toEqual({ state: await read() })
+        expect(decodeMcpToolResult((await replay('agent_chat_interrupt', interrupt)))).toEqual({ state: await read() })
       })
       expect(await receipt(interrupt.requestId)).toEqual(interruptReceipt)
       expect(interruptReceipt.result).toMatchObject({ status: 'completed', state: { conversation: { id },

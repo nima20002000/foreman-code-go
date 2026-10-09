@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { fork, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
@@ -135,7 +136,9 @@ describe('workspace project folder compensation through authenticated MCP', () =
       expect(denied.isError).toBe(true)
       expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
       expect(await readdir(f.parentPath)).toEqual([])
-      expect((await callWorkspaceTool(f.owner.client, 'workspace_list', contracts.ManagedWorkspacePageSchema)).items).toEqual([])
+      const listed = await callWorkspaceTool(f.owner.client, 'workspace_list', contracts.ManagedWorkspacePageSchema,
+        { detail: 'full' })
+      expect(listed.items).toEqual([])
       expect((await f.pool.query('select count(*)::int as count from management_command_receipts where command_id = $1',
         [input.commandId])).rows[0].count).toBe(0)
     } finally { await f.close() }
@@ -238,7 +241,7 @@ describe('workspace project folder compensation through authenticated MCP', () =
       const [message] = await once(restarted, 'message')
       expect(message.phase, JSON.stringify(message)).toBe('completed')
       expect(message.result.isError, JSON.stringify(message.result)).not.toBe(true)
-      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(message.result))
       expect(saved.replayed).toBe(false)
       expect(saved.value.workspace.name).toBe(name)
       expect(await completion).toEqual([0, null])
@@ -323,7 +326,7 @@ publish().catch(error => { console.error(error); process.exitCode = 1 })
       const [message] = await once(restarted, 'message')
       expect(message.phase, JSON.stringify(message)).toBe('completed')
       expect(message.result.isError, JSON.stringify(message.result)).not.toBe(true)
-      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(message.result))
       expect(saved.value.workspace.name).toBe(name)
       expect(await completion).toEqual([0, null])
       expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])

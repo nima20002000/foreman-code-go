@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { CLAUDE_FULL_ACCESS_REQUIRED } from '@foreman-code/contracts/claude'
@@ -15,7 +16,7 @@ it('rejects non-full Claude saves and Start through authenticated MCP, preservin
   const call = async (name: string, arguments_: Record<string, unknown>) => {
     const result = await f.client.callTool({ name, arguments: arguments_ })
     expect(result.isError).not.toBe(true)
-    return result.structuredContent
+    return decodeMcpToolResult(result)
   }
   try {
     Object.assign(f.services, { extensions: {

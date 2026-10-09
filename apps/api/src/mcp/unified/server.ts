@@ -10,6 +10,7 @@ import type { AppInteractionService } from '../../modules/interactions/app.js'
 import { registerAppTools } from '../app/server.js'
 import { registerCiTools } from '../shared/ciTools.js'
 import { registerOperatorTools } from '../operator/server.js'
+import { installOperatorPresentation } from '../operator/presentation.js'
 import type { OperatorServices } from '../operator/types.js'
 import { toolFailure } from '../shared/results.js'
 import { MCP_ROLE_LABELS, roleInstructions, roleList, toolRoles, type McpRole } from './roles.js'
@@ -99,7 +100,10 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promis
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' }, { instructions: roleInstructions(context.role) })
   paginateToolLists(server)
   if (context.role === 'operator') {
-    if (context.operator) registerOperatorTools(server, { principal: context.principal, services: context.operator })
+    if (context.operator) {
+      const catalog = installOperatorPresentation(server)
+      registerOperatorTools(server, { principal: context.principal, services: context.operator }, catalog)
+    }
   } else if (context.interactions) {
     const tools = context.tools
     // Registers only the tools enabled for this Agent; the rest are never listed.

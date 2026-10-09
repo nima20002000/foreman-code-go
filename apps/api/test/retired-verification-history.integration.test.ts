@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it } from 'vitest'
@@ -72,10 +73,10 @@ it('preserves retired qualification profiles through HTTP and MCP and reports th
     })
     const result = await client.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId } })
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-    expect(JobRuntimeProfileListRecordSchema.parse(result.structuredContent)).toEqual(state)
+    expect(JobRuntimeProfileListRecordSchema.parse(decodeMcpToolResult(result))).toEqual(state)
     const read = await client.callTool({ name: 'job_runtime_qualification_get', arguments: { workspaceId, approvalId } })
     expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-    expect(JobRuntimeQualificationReadRecordSchema.parse(read.structuredContent)).toMatchObject({
+    expect(JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(read))).toMatchObject({
       profile: historical, approval, measurement, readiness: { ready: false, reasons: ['HARNESS_RETIRED'] },
     })
     const denied = await f.access.issue({ name: 'Caller without job access', audience: 'operator',
@@ -93,7 +94,7 @@ it('preserves retired qualification profiles through HTTP and MCP and reports th
     const oldQualification = await client.callTool({ name: 'job_runtime_qualification_get',
       arguments: { workspaceId, approvalId } })
     expect(oldQualification.isError, JSON.stringify(oldQualification.content)).not.toBe(true)
-    expect(JobRuntimeQualificationReadRecordSchema.parse(oldQualification.structuredContent)).toMatchObject({
+    expect(JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(oldQualification))).toMatchObject({
       profile: qualified, approval, measurement, readiness: { ready: false, reasons: ['HARNESS_RETIRED'] },
     })
     expect(await snapshots()).toEqual(supportedCurrent)

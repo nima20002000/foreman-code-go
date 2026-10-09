@@ -4,9 +4,10 @@ import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'
 
 import {
-  RunEventsListInputSchema, RunGetInputSchema, RunListInputSchema, RunStopInputSchema,
+  RunEventsListInputSchema, RunGetInputSchema, RunStopInputSchema,
   RunEventsPageSchema, RunStopResultSchema,
 } from '@foreman-code/contracts/management'
+import { OperatorRunListInputSchema } from '@foreman-code/contracts/operator-mcp'
 import { ManualRunStartInputSchema, ManualRunStartResultSchema, SavedRunPageSchema, SavedRunDetailsSchema,
   RunActivitiesInputSchema, RunActivitiesPageSchema, RunHandoffsReadInputSchema,
   RunHandoffsReadSchema } from '@foreman-code/contracts/wave25'
@@ -18,7 +19,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
   if (operatorToolAvailable(context, 'run_list')) server.registerTool('run_list', {
     description: 'List authorized execution-semantics-3 Runs newest-first by creation time and ID. '
       + 'Retained historical Runs remain readable through run_board_snapshot_get. '
-      + 'Pass the returned nextCursor unchanged; it is scoped to this workspace and optional workflow filter.', inputSchema: RunListInputSchema,
+      + 'Returns 10 by default. Pass nextCursor unchanged; it is scoped to this workspace and optional workflow filter.', inputSchema: OperatorRunListInputSchema,
     outputSchema: SavedRunPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))

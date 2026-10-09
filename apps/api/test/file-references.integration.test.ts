@@ -1,3 +1,4 @@
+import { decodeMcpToolResult, OperatorCompactCapabilitiesSchema } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -28,6 +29,8 @@ import { FileReferenceService } from '../src/modules/files/references/service.js
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { FILE_REFERENCE_TOOL_NAMES } from '../src/mcp/operator/tools/fileReferences.js'
+import { FileReferenceReadResultSchema } from '../src/modules/files/references/requests.js'
 import { agent3Database, postgresEnabled, deferred } from './helpers/wave25Agent3.js'
 
 /** Real credentials, PostgreSQL, disk storage and authenticated /mcp. No harness or paid model. */
@@ -124,6 +127,56 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
   }
   const tool = (token: string, name: string, args: unknown) => rpc(token, 'tools/call', { name, arguments: args })
   const errorCode = (result: Awaited<ReturnType<typeof rpc>>['result']) => JSON.parse(result.content?.find((part) => part.type === 'text')?.text ?? '{}').error?.code
+
+  it('filters compact reference capabilities by the selected hierarchy and preserves scoped readback', async () => {
+    if (workflow.kind !== 'workflow_reference' || sibling.kind !== 'workflow_reference') {
+      throw new Error('Workflow reference scopes are required')
+    }
+    const editor = await access.issue({ name: 'Scoped reference editor', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [
+        { actions: ['capabilities:read'], scope: {} },
+        { actions: ['workflows:read', 'workflows:update'], scope: {
+          workspaceIds: [workflow.workspaceId], workflowIds: [workflow.workflowId],
+        } },
+      ] })
+    const capabilities = async (resource: Record<string, unknown>) => {
+      const response = await tool(editor.token, 'operator_get_capabilities', resource)
+      assert.notEqual(response.result.isError, true)
+      return OperatorCompactCapabilitiesSchema.parse(decodeMcpToolResult(response.result))
+    }
+    const resource = { workspaceId: workflow.workspaceId, workflowId: workflow.workflowId, runId: 'selected-run' }
+    for (const input of [{}, resource]) {
+      const result = await capabilities(input)
+      for (const name of FILE_REFERENCE_TOOL_NAMES) assert.ok(result.tools.includes(name))
+    }
+    for (const input of [{ ...resource, workspaceId: otherWorkspace.workspaceId },
+      { ...resource, workflowId: sibling.workflowId }, { workspaceId: workflow.workspaceId }]) {
+      const result = await capabilities(input)
+      for (const name of FILE_REFERENCE_TOOL_NAMES) assert.ok(!result.tools.includes(name))
+    }
+    const requestId = randomUUID()
+    const added = await tool(editor.token, 'reference_file_add', { scope: workflow,
+      upload: { requestId, ...metadata() }, contentBase64: text.toString('base64') })
+    assert.notEqual(added.result.isError, true)
+    const row = FileWithRevisionSchema.parse(decodeMcpToolResult(added.result).value)
+    const listed = await tool(editor.token, 'reference_files_list', { scope: workflow })
+    const page = FilePageSchema.parse(decodeMcpToolResult(listed.result))
+    assert.ok(page.items.some((item) => item.file.fileId === row.file.fileId))
+    const readback = FileReferenceReadResultSchema.parse(decodeMcpToolResult(
+      (await tool(editor.token, 'reference_file_read', { scope: workflow,
+        fileId: row.file.fileId, revisionId: row.revision.revisionId, offset: 0, length: text.length })).result,
+    )).value
+    assert.equal(readback.status, 'ready')
+    if (readback.status !== 'ready') throw new Error('Reference bytes must be ready')
+    assert.equal(readback.contentBase64, text.toString('base64'))
+    assert.deepEqual(readback.revision, row.revision)
+    assert.deepEqual((await repository.read(row.file.fileId, row.revision.revisionId))?.value, row)
+    const denied = await tool(editor.token, 'reference_files_list', { scope: sibling })
+    assert.equal(denied.result.isError, true)
+    assert.equal(errorCode(denied.result), 'ACCESS_DENIED')
+    assert.deepEqual(FilePageSchema.parse(decodeMcpToolResult(
+      (await tool(editor.token, 'reference_files_list', { scope: workflow })).result)), page)
+  })
 
   for (const kind of ['workspace_reference', 'workflow_reference'] as const) {
     it(`${kind}: add/list/download/remove and retained metadata`, async () => {
@@ -293,30 +346,30 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
   })
   for (const kind of ['workspace_reference', 'workflow_reference'] as const) it(`MCP ${kind}: add/list/range read/remove/readback share HTTP persistence, retries and audit`, async () => {
     const scope = kind === 'workspace_reference' ? workspace : workflow
-    const capabilities = await tool(owner.token, 'operator_get_capabilities', {})
-    assert.ok((capabilities.result.structuredContent as { runtimeLimits: { feature: string; detail: string }[] }).runtimeLimits
+    const capabilities = await tool(owner.token, 'operator_get_capabilities', { detail: 'full' })
+    assert.ok((decodeMcpToolResult(capabilities.result) as { runtimeLimits: { feature: string; detail: string }[] }).runtimeLimits
       .some((limit) => limit.feature === 'permanent_reference_files' && limit.detail.includes('tools/list')))
     const args = { scope, upload: { requestId: randomUUID(), ...metadata() }, contentBase64: text.toString('base64') }
     const added = await tool(owner.token, 'reference_file_add', args)
     assert.equal(added.result.isError, undefined, JSON.stringify(added))
-    const result = added.result.structuredContent as { value: FileWithRevision; replayed: boolean }
+    const result = decodeMcpToolResult(added.result) as { value: FileWithRevision; replayed: boolean }
     const row = FileWithRevisionSchema.parse(result.value); assert.equal(row.file.state, 'ready')
     const replay = await tool(owner.token, 'reference_file_add', args)
-    assert.equal((replay.result.structuredContent as { replayed: boolean }).replayed, true)
+    assert.equal((decodeMcpToolResult(replay.result) as { replayed: boolean }).replayed, true)
     const list = await tool(reader.token, 'reference_files_list', { scope })
-    assert.ok(FilePageSchema.parse(list.result.structuredContent).items.some((item) => item.file.fileId === row.file.fileId))
+    assert.ok(FilePageSchema.parse(decodeMcpToolResult(list.result)).items.some((item) => item.file.fileId === row.file.fileId))
     const readInput = { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId, offset: 2, length: 8 }
     const read = await tool(reader.token, 'reference_file_read', readInput)
-    const value = (read.result.structuredContent as { value: { status: string; contentBase64: string; byteLength: number } }).value
+    const value = (decodeMcpToolResult(read.result) as { value: { status: string; contentBase64: string; byteLength: number } }).value
     assert.equal(value.status, 'ready'); assert.equal(value.byteLength, 8)
     assert.deepEqual(Buffer.from(value.contentBase64, 'base64'), text.subarray(2, 10))
     const http = await app.inject({ method: 'GET', url: `${pinned(scope, row)}/content`, headers: headers(reader.token) })
     assert.deepEqual(http.rawPayload, text)
     const removeInput = { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId, commandId: randomUUID() }
     const removed = await tool(owner.token, 'reference_file_remove', removeInput)
-    assert.equal((removed.result.structuredContent as { value: FileWithRevision }).value.file.state, 'removed')
-    assert.equal(((await tool(owner.token, 'reference_file_remove', removeInput)).result.structuredContent as { replayed: boolean }).replayed, true)
-    const gone = (await tool(reader.token, 'reference_file_read', readInput)).result.structuredContent as { value: { status: string; reason: string } }
+    assert.equal((decodeMcpToolResult(removed.result) as { value: FileWithRevision }).value.file.state, 'removed')
+    assert.equal((decodeMcpToolResult((await tool(owner.token, 'reference_file_remove', removeInput)).result) as { replayed: boolean }).replayed, true)
+    const gone = decodeMcpToolResult((await tool(reader.token, 'reference_file_read', readInput)).result) as { value: { status: string; reason: string } }
     assert.deepEqual(gone.value.status, 'unavailable'); assert.equal(gone.value.reason, 'removed')
     const audit = await database.pool.query<{ action: string }>("select action from management_audit where source='mcp' and target_key=$1", [`file:${row.file.fileId}`])
     assert.ok(audit.rows.some((item) => item.action === 'reference_file.add'))
@@ -349,10 +402,10 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     const bytes = Buffer.alloc(MAX_FILE_BYTES, 97)
     const result = await tool(owner.token, 'reference_file_add', { scope: workflow, upload: { requestId: randomUUID(), ...metadata(bytes) }, contentBase64: bytes.toString('base64') })
     assert.equal(result.result.isError, undefined, JSON.stringify(result))
-    const row = FileWithRevisionSchema.parse((result.result.structuredContent as { value: unknown }).value)
+    const row = FileWithRevisionSchema.parse((decodeMcpToolResult(result.result) as { value: unknown }).value)
     assert.equal(row.revision.byteSize, MAX_FILE_BYTES)
     const read = await tool(reader.token, 'reference_file_read', { scope: workflow, fileId: row.file.fileId, revisionId: row.revision.revisionId })
-    const value = (read.result.structuredContent as { value: { byteLength: number; eof: boolean; contentBase64: string } }).value
+    const value = (decodeMcpToolResult(read.result) as { value: { byteLength: number; eof: boolean; contentBase64: string } }).value
     assert.equal(value.byteLength, MAX_FILE_READ_BYTES); assert.equal(value.eof, false)
     assert.deepEqual(Buffer.from(value.contentBase64, 'base64'), bytes.subarray(0, MAX_FILE_READ_BYTES))
   }, 60_000)

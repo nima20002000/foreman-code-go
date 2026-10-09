@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -172,12 +173,12 @@ describe('current device and Operator control MCP parity', () => {
       const names = ['device_main_identity_get', 'device_setup_options_get', 'devices_list', 'device_setup_code_create', 'device_pairing_grant_create', 'device_revoke', 'operator_chat_cancel', 'operator_chat_respond']
       const [ownerTools, capability, readerTools, scopedTools] = await Promise.all([
         ownerClient.listTools(),
-        ownerClient.callTool({ name: 'operator_get_capabilities', arguments: {} }),
+        ownerClient.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } }),
         reader.listTools(),
         scoped.listTools(),
       ])
       expect(ownerTools.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(names))
-      expect(capability.structuredContent).toMatchObject({ tools: expect.arrayContaining(names) })
+      expect(decodeMcpToolResult(capability)).toMatchObject({ tools: expect.arrayContaining(names) })
       const readerNames = readerTools.tools.map(tool => tool.name)
       expect(readerNames).toContain('devices_list')
       for (const name of names.filter(name => !['device_main_identity_get', 'device_setup_options_get', 'devices_list'].includes(name))) expect(readerNames).not.toContain(name)
@@ -227,27 +228,27 @@ describe('current device and Operator control MCP parity', () => {
     const f = await fixture()
     try {
       const client = await f.connect('owner')
-      expect(MainDeviceIdentityPublicSchema.parse((await client.callTool({ name: 'device_main_identity_get', arguments: {} })).structuredContent).mainId).toBe(f.registration.mainId)
-      expect(DeviceSetupOptionsSchema.parse((await client.callTool({ name: 'device_setup_options_get', arguments: {} })).structuredContent)).toEqual({ endpoint: null, available: false, reason: 'listener-unconfigured' })
+      expect(MainDeviceIdentityPublicSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'device_main_identity_get', arguments: {} })))).mainId).toBe(f.registration.mainId)
+      expect(DeviceSetupOptionsSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'device_setup_options_get', arguments: {} }))))).toEqual({ endpoint: null, available: false, reason: 'listener-unconfigured' })
       expect(f.c.services.devices!.readSetupOptions).toHaveBeenCalledWith(owner)
       const grantInput = { workerInstallationId: f.registration.workerInstallationId, publicKey: 'approved-public-key',
         expectedFingerprint: f.registration.publicKeyFingerprint, scopes: f.registration.scopes, commandId: randomUUID() }
-      const issued = DevicePairingGrantResultSchema.parse((await client.callTool({ name: 'device_pairing_grant_create', arguments: grantInput })).structuredContent)
+      const issued = DevicePairingGrantResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'device_pairing_grant_create', arguments: grantInput }))))
       expect(f.grant).toHaveBeenCalledWith(owner, grantInput, 'mcp')
-      const pending = DeviceListResultSchema.parse((await client.callTool({ name: 'devices_list', arguments: {} })).structuredContent)
+      const pending = DeviceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'devices_list', arguments: {} }))))
       expect(pending.devices).toEqual([issued.registration])
       expect(JSON.stringify(pending)).not.toContain(issued.grant)
       const revokeInput = { deviceId: f.registration.deviceId, expectedRevision: 1, commandId: randomUUID() }
-      const revoked = DeviceRegistrationSchema.parse((await client.callTool({ name: 'device_revoke', arguments: revokeInput })).structuredContent)
+      const revoked = DeviceRegistrationSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'device_revoke', arguments: revokeInput }))))
       expect(f.revoke).toHaveBeenCalledWith(owner, revokeInput.deviceId, 1, revokeInput.commandId, 'mcp')
-      expect(DeviceListResultSchema.parse((await client.callTool({ name: 'devices_list', arguments: {} })).structuredContent).devices).toEqual([revoked])
+      expect(DeviceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'devices_list', arguments: {} })))).devices).toEqual([revoked])
       const commandId = randomUUID()
       await client.callTool({ name: 'operator_chat_cancel', arguments: { conversationId: 'conversation', request: { requestId: 'request', commandId } } })
       expect(f.cancel).toHaveBeenCalledWith('conversation', 'request', owner, commandId, 'mcp')
       const response = { requestId: 'request', nativeRequestId: 'native-question', optionId: 'native-option', commandId: randomUUID() }
-      const responded = CancelOperatorTurnResponseSchema.parse((await client.callTool({ name: 'operator_chat_respond', arguments: { conversationId: 'conversation', request: response } })).structuredContent)
+      const responded = CancelOperatorTurnResponseSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'operator_chat_respond', arguments: { conversationId: 'conversation', request: response } }))))
       expect(f.respond).toHaveBeenCalledWith('conversation', response, owner, 'mcp')
-      expect(OperatorConversationStateSchema.parse((await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: 'conversation' } })).structuredContent)).toEqual(responded.state)
+      expect(OperatorConversationStateSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: 'conversation' } }))))).toEqual(responded.state)
       expect(f.connectSql).not.toHaveBeenCalled()
     } finally { await f.close() }
   })

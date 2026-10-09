@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createHash, randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, HarnessDefaultsSchema } from '@foreman-code/contracts'
@@ -63,7 +64,7 @@ it('rejects OpenCode creation through authenticated HTTP and MCP without persist
     expect(denied.statusCode).toBe(403)
     const choices = await f.client.callTool({ name: 'harness_list', arguments: {} })
     expect(choices.isError).not.toBe(true)
-    expect(choices.structuredContent).toMatchObject({ items: expect.not.arrayContaining([
+    expect(decodeMcpToolResult(choices)).toMatchObject({ items: expect.not.arrayContaining([
       expect.objectContaining({ harness: 'opencode' }),
     ]) })
     const listed = await f.app.inject({ method: 'GET', url: '/api/management/harnesses',
@@ -87,7 +88,7 @@ it('discovers only configured Codex and Claude through HTTP and MCP with persist
     const before = await settings.getManagedHarnessDefaults()
     const mcp = await f.client.callTool({ name: 'harness_list', arguments: {} })
     expect(mcp.isError, JSON.stringify(mcp.content)).not.toBe(true)
-    const items = HarnessCatalogResultSchema.parse(mcp.structuredContent).items
+    const items = HarnessCatalogResultSchema.parse(decodeMcpToolResult(mcp)).items
     expect(items.map(entry => entry.harness)).toEqual(['codex', 'claude'])
     const http = await f.app.inject({ method: 'GET', url: '/api/management/harnesses',
       headers: { authorization: `Bearer ${f.writer.token}` } })
@@ -133,7 +134,7 @@ it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewrit
     const args = { workspaceId: f.f.scope.workspaceId, agentId: configuration.agentId }
     const result = await f.client.callTool({ name: 'agent_get', arguments: args })
     expect(result.isError).not.toBe(true)
-    const saved = ManagedAgentDetailSchema.parse(result.structuredContent)
+    const saved = ManagedAgentDetailSchema.parse(decodeMcpToolResult(result))
     expect(saved.agent.harnessConfiguration).toEqual(historicalConfiguration)
     const http = await f.app.inject({ method: 'GET',
       url: `/api/management/workspaces/${args.workspaceId}/agents/${args.agentId}`,
@@ -145,7 +146,7 @@ it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewrit
     const run = await f.client.callTool({ name: 'run_get',
       arguments: { workspaceId: args.workspaceId, runId: f.f.run.id } })
     expect(run.isError, JSON.stringify(run.content)).not.toBe(true)
-    const details = SavedRunDetailsSchema.parse(run.structuredContent)
+    const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(run))
     const visibleRun = { ...f.f.run }
     delete visibleRun.authorizationPrincipalId
     expect(details.run).toEqual(visibleRun)
@@ -188,7 +189,7 @@ it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewrit
       expect(httpRead.statusCode, httpRead.body).toBe(200)
       const mcpRead = await f.client.callTool({ name, arguments: input })
       expect(mcpRead.isError, JSON.stringify(mcpRead.content)).not.toBe(true)
-      expect(schema.parse(mcpRead.structuredContent)).toEqual(schema.parse(httpRead.json()))
+      expect(schema.parse(decodeMcpToolResult(mcpRead))).toEqual(schema.parse(httpRead.json()))
       await expectMcpAccessDenied(deniedClient.callTool({ name, arguments: input }))
       const forbidden = await f.app.inject({ method: 'GET', url: `${runUrl}/${suffix}`,
         headers: { authorization: `Bearer ${denied.token}` } })
@@ -211,7 +212,7 @@ it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewrit
       expect(httpRead.statusCode, httpRead.body).toBe(200)
       const mcpRead = await f.client.callTool({ name: CANONICAL_RUN_GRAPH_MCP_TOOLS[kind], arguments: input })
       expect(mcpRead.isError, JSON.stringify(mcpRead.content)).not.toBe(true)
-      expect(mcpRead.structuredContent).toEqual(httpRead.json())
+      expect(decodeMcpToolResult(mcpRead)).toEqual(httpRead.json())
       const forbiddenMcp = await deniedClient.callTool({ name: CANONICAL_RUN_GRAPH_MCP_TOOLS[kind], arguments: input })
       expect(forbiddenMcp.isError).toBe(true)
       expect(JSON.stringify(forbiddenMcp.content)).toContain('GRAPH_READ_ACCESS_DENIED')

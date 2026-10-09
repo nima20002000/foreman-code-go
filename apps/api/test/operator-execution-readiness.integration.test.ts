@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { expect, it } from 'vitest'
 import { OperatorConfigurationVersionSchema } from '@foreman-code/contracts'
@@ -53,7 +54,7 @@ it.skipIf(!postgresEnabled)('reads the exact persisted Operator readiness throug
         harness: configuration.harness.harness, scope: 'operator-configuration', ...(id ? { configurationVersionId: id } : {}),
       } })
       expect(result.isError, JSON.stringify(result)).not.toBe(true)
-      return ExecutionReadinessSchema.parse(result.structuredContent)
+      return ExecutionReadinessSchema.parse(decodeMcpToolResult(result))
     }
     expect(await read()).toMatchObject({ status: 'eligible', scope: 'operator-configuration', defaultsRevision: defaults.revision,
       configurationVersionId: configuration.id })
@@ -116,7 +117,7 @@ it.skipIf(!postgresEnabled)('reads the exact persisted Operator readiness throug
     expect((await f.access.currentHarnessInspectionPrincipal(delegate.principal.id)).grants.flatMap(grant => grant.actions)).not.toContain('operator_chat:read')
     const historical = await inspect()
     expect(historical.isError, JSON.stringify(historical)).not.toBe(true)
-    expect(ExecutionReadinessSchema.parse(historical.structuredContent)).toMatchObject({ status: 'eligible', configurationVersionId: configuration.id })
+    expect(ExecutionReadinessSchema.parse(decodeMcpToolResult(historical))).toMatchObject({ status: 'eligible', configurationVersionId: configuration.id })
     const foreign = await conversations.create(configuration.operatorId, next.configuration, other.principal.id)
     await operators.update({ ...changedHarness, model: 'fixture-third-model' }, next.configuration.id)
     const foreignRead = await inspect(next.configuration.id)

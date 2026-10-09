@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { describe, expect, it } from 'vitest'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 
@@ -11,7 +12,7 @@ describe.skipIf(!postgresEnabled)('authenticated MCP request parsing', () => {
     try {
       const workspaceId = f.f.scope.workspaceId
       const before = ManagedWorkspaceSchema.parse(
-        (await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent,
+        decodeMcpToolResult((await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))),
       )
       const receipts = await f.db.pool.query('select count(*)::int as count from management_command_receipts')
       const restricted = await f.access.issue({
@@ -47,7 +48,7 @@ describe.skipIf(!postgresEnabled)('authenticated MCP request parsing', () => {
       })
       expect(unauthenticated.statusCode).toBe(401)
       expect(unauthenticated.json().error.code).toBe('AUTH_REQUIRED')
-      expect((await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))))
         .toMatchObject({ ...before, locationValidation: { status: before.locationValidation.status } })
       expect((await f.db.pool.query('select count(*)::int as count from management_command_receipts')).rows)
         .toEqual(receipts.rows)

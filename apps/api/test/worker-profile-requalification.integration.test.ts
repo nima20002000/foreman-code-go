@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema, HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
@@ -103,7 +104,7 @@ describe('automatic Worker profile qualification', () => {
         hostRef: fixture.hostRef, applicationInstallationId: profile.target.applicationInstallationId,
       }, reader.token)
       expect(readerProfiles.isError).not.toBe(true)
-      expect(HostHarnessOverrideListSchema.parse(readerProfiles.structuredContent)).toEqual(
+      expect(HostHarnessOverrideListSchema.parse(decodeMcpToolResult(readerProfiles))).toEqual(
         HostHarnessOverrideListSchema.parse(await fixture.value('harness_instances_list', {
           hostRef: fixture.hostRef, applicationInstallationId: profile.target.applicationInstallationId,
         })))

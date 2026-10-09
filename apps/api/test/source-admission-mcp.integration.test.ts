@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
@@ -110,9 +111,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(tools.tools.find(tool => tool.name === 'source_approve')?.inputSchema.properties)
       .toHaveProperty('approveTrackedTree')
     const capabilities = await client.callTool({ name: 'operator_get_capabilities',
-      arguments: { workspaceId: workspace.id } })
+      arguments: { workspaceId: workspace.id, detail: 'full' } })
     expect(capabilities.isError).not.toBe(true)
-    const { runtimeLimits } = OperatorCapabilitiesSchema.parse(capabilities.structuredContent)
+    const { runtimeLimits } = OperatorCapabilitiesSchema.parse(decodeMcpToolResult(capabilities))
     expect(runtimeLimits?.find(limit => limit.feature === 'source_approval')?.detail)
       .toContain('approveTrackedTree: true')
     const failure = (response: Awaited<ReturnType<Client['callTool']>>) => {
@@ -137,7 +138,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     }
     const firstCall = await client.callTool({ name: 'source_approve', arguments: approve })
     expect(firstCall.isError, JSON.stringify(firstCall)).not.toBe(true)
-    const first = SourceApproveResultSchema.parse(firstCall.structuredContent)
+    const first = SourceApproveResultSchema.parse(decodeMcpToolResult(firstCall))
     expect(first.value.manifest.entries.map(entry => entry.path)).toEqual(['run.sh', 'source.ts'])
     expect(first.value.manifest.entries.every(entry => !entry.executable)).toBe(true)
     const storedApproval = (await pool.query<{ request: unknown; origin: { approvedPaths: string[] } }>(
@@ -150,10 +151,10 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
         and action='source.approve' and outcome='succeeded' and details->>'commandId'=$2`,
       [operator.principal.id, approve.commandId])).rows[0]!
     expect(approvalAudit.count).toBe(1)
-    const replay = SourceApproveResultSchema.parse((await client.callTool({ name: 'source_approve', arguments: approve })).structuredContent)
+    const replay = SourceApproveResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_approve', arguments: approve }))))
     expect(replay.replayed).toBe(true); expect(replay.value).toEqual(first.value)
     const pin = { approvedSourceId: first.value.manifest.approvedSourceId, snapshotId: first.value.manifest.snapshotId, manifestDigest: first.value.manifest.manifestDigest }
-    const read = ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)
+    const read = ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } }))))
     expect(read.manifest.git?.commit).toBe(commit)
     expect(read.manifest.git?.repository).toBe('original/site')
     expect(read.manifest.git?.metadata).toMatchObject({ byteSize: expect.any(Number), sha256: expect.any(String) })
@@ -163,8 +164,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
       repository: { provider: 'github', owner: 'other', name: 'site', defaultBranch: 'main' } })
     await workspaces.update(owner.principal, 'http', { workspaceId: workspace.id, commandId: randomUUID(),
       expectedRevision: changed.value.revision, repository: null })
-    const retained = ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get',
-      arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)
+    const retained = ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',
+      arguments: { workspaceId: workspace.id, ...pin } }))))
     expect(retained.manifest.git?.repository).toBe('original/site')
     expect(retained.manifest).toEqual(read.manifest)
     const bind = { workspaceId: workspace.id, commandId: randomUUID(), source: pin, selection: { hostRef: { kind: 'main', mainId }, rootPolicyId: policy.rootPolicyId, rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision }, expectedBindingRevision: 0, accessMode: 'exclusive-write' }
@@ -177,8 +178,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
       for each row execute function reject_root_receipt()`)
     const interruptedBind = await client.callTool({ name: 'source_root_bind', arguments: bind })
     expect(interruptedBind.isError).toBe(true)
-    expect(SourceRootListResultSchema.parse((await client.callTool({ name: 'source_root_list',
-      arguments: { workspaceId: workspace.id } })).structuredContent).items).toEqual([])
+    expect(SourceRootListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_root_list',
+      arguments: { workspaceId: workspace.id } })))).items).toEqual([])
     expect((await pool.query('select count(*)::int as count from source_root_bindings')).rows[0].count).toBe(0)
     await pool.query('drop trigger interrupt_root_receipt on management_command_receipts')
     await pool.query('drop function reject_root_receipt()')
@@ -186,12 +187,12 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     services.sources = sources
     const rootResult = await client.callTool({ name: 'source_root_bind', arguments: bind })
     expect(rootResult.isError, JSON.stringify(rootResult)).not.toBe(true)
-    const bound = SourceRootBindResultSchema.parse(rootResult.structuredContent).value
+    const bound = SourceRootBindResultSchema.parse(decodeMcpToolResult(rootResult)).value
     expect(bound.binding.deviceId).toBeNull(); expect(bound.binding.workerInstallationId).toBeNull()
-    const rootRead = SourceRootRecordSchema.parse((await client.callTool({ name: 'source_root_get', arguments: { workspaceId: workspace.id, rootId: bound.binding.rootId, bindingRevision: 1 } })).structuredContent)
+    const rootRead = SourceRootRecordSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_root_get', arguments: { workspaceId: workspace.id, rootId: bound.binding.rootId, bindingRevision: 1 } }))))
     expect(rootRead).toEqual(bound)
     const replayedBind = await client.callTool({ name: 'source_root_bind', arguments: bind })
-    expect(SourceRootBindResultSchema.parse(replayedBind.structuredContent)).toEqual({ value: bound, replayed: true })
+    expect(SourceRootBindResultSchema.parse(decodeMcpToolResult(replayedBind))).toEqual({ value: bound, replayed: true })
     const bindingAudit = await pool.query<{ count: number }>(`select count(*)::int as count from management_audit
       where principal_id=$1 and action='source.root.bind' and outcome='succeeded' and details->>'commandId'=$2`,
     [operator.principal.id, bind.commandId])
@@ -215,19 +216,19 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     services.ci = createCi()
     const recoveredCall = await ciClient.callTool({ name: 'ci_run', arguments: ciInput })
     expect(recoveredCall.isError, JSON.stringify(recoveredCall.content)).not.toBe(true)
-    const recovered = CiRunOutputSchema.parse(recoveredCall.structuredContent)
+    const recovered = CiRunOutputSchema.parse(decodeMcpToolResult(recoveredCall))
     const ciRead = await ciClient.callTool({ name: 'ci_get', arguments: {
       workspaceId: workspace.id, ticketId: recovered.ticketId,
     } })
-    expect(CiGetOutputSchema.parse(ciRead.structuredContent).queue.definition.spec.source).toMatchObject({
+    expect(CiGetOutputSchema.parse(decodeMcpToolResult(ciRead)).queue.definition.spec.source).toMatchObject({
       snapshotId: originalSource.manifest.snapshotId, commit,
     })
     const sourceRead = await ciClient.callTool({ name: 'source_get', arguments: {
       workspaceId: workspace.id, approvedSourceId: originalSource.manifest.approvedSourceId,
       snapshotId: originalSource.manifest.snapshotId, manifestDigest: originalSource.manifest.manifestDigest,
     } })
-    expect(ApprovedSourceSchema.parse(sourceRead.structuredContent)).toEqual(originalSource)
-    expect(CiRunOutputSchema.parse((await ciClient.callTool({ name: 'ci_run', arguments: ciInput })).structuredContent))
+    expect(ApprovedSourceSchema.parse(decodeMcpToolResult(sourceRead))).toEqual(originalSource)
+    expect(CiRunOutputSchema.parse(decodeMcpToolResult((await ciClient.callTool({ name: 'ci_run', arguments: ciInput })))))
       .toEqual(recovered)
     expect(ciData.counts().enqueues).toBe(1)
 
@@ -251,11 +252,11 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     choices.mockRestore()
     for (const response of parallel) {
       expect(response.isError, JSON.stringify(response.content)).not.toBe(true)
-      const queued = CiRunOutputSchema.parse(response.structuredContent)
+      const queued = CiRunOutputSchema.parse(decodeMcpToolResult(response))
       const read = await ciClient.callTool({ name: 'ci_get', arguments: {
         workspaceId: workspace.id, ticketId: queued.ticketId,
       } })
-      expect(CiGetOutputSchema.parse(read.structuredContent).queue.state).toBe('waiting')
+      expect(CiGetOutputSchema.parse(decodeMcpToolResult(read)).queue.state).toBe('waiting')
     }
     const persistedRoots = await sources.rootList(owner.principal, 'mcp', { workspaceId: workspace.id, limit: 100 })
     expect(persistedRoots.items[0]!.binding.bindingRevision).toBe(4)
@@ -270,8 +271,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const deniedClient = await connect(denied.token)
     expect(failure(await deniedClient.callTool({ name: 'source_approve',
       arguments: { ...approve, commandId: randomUUID() } }))).toMatchObject({ code: 'ACCESS_DENIED' })
-    expect(ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get',
-      arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)).toEqual(read)
+    expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',
+      arguments: { workspaceId: workspace.id, ...pin } }))))).toEqual(read)
     expect((await deniedClient.callTool({ name: 'ci_run', arguments: {
       workspaceId: workspace.id, suite: 'unit', commandId: randomUUID(),
     } })).isError).toBe(true)
@@ -286,8 +287,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     await writeFile(join(project, 'source.ts'), 'export const revision = 2\n'); await qualifiedGit(project, ['add', '.']); await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'source2'])
     const newCommit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
     const second = await client.callTool({ name: 'source_approve', arguments: { ...approve, commandId: randomUUID(), commit: newCommit } }); expect(second.isError).not.toBe(true)
-    expect(ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).structuredContent).manifest.git?.commit).toBe(commit)
-    expect(SourceListResultSchema.parse((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id } })).structuredContent).items).toHaveLength(5)
+    expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })))).manifest.git?.commit).toBe(commit)
+    expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id } })))).items).toHaveLength(5)
     await writeFile(join(project, '.env'), 'SECRET=fixture\n')
     await qualifiedGit(project, ['add', '.env'])
     await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
@@ -296,10 +297,10 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(failure(await client.callTool({ name: 'source_approve', arguments: {
       ...approve, commandId: randomUUID(), commit: sensitiveCommit,
     } }))).toMatchObject({ code: 'SOURCE_SENSITIVE_PATH' })
-    expect(SourceListResultSchema.parse((await client.callTool({ name: 'source_list',
-      arguments: { workspaceId: workspace.id } })).structuredContent).items).toHaveLength(5)
-    expect(ApprovedSourceSchema.parse((await client.callTool({ name: 'source_get',
-      arguments: { workspaceId: workspace.id, ...pin } })).structuredContent)).toEqual(read)
+    expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list',
+      arguments: { workspaceId: workspace.id } })))).items).toHaveLength(5)
+    expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',
+      arguments: { workspaceId: workspace.id, ...pin } }))))).toEqual(read)
     const http = await app.inject({ method: 'POST', url: `/api/management/workspaces/${workspace.id}/sources/get`, headers: { authorization: `Bearer ${operator.token}` }, payload: pin })
     expect(http.statusCode).toBe(200); expect(ApprovedSourceSchema.parse(http.json()).manifest.manifestDigest).toBe(pin.manifestDigest)
     await pool.query(`update source_snapshots set availability='unavailable' where snapshot_id=$1`, [pin.snapshotId])

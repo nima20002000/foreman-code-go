@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -156,7 +157,7 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const mcp = await client.callTool({ name: 'job_start',
       arguments: { workspaceId: fixture.workspaceId, ...input, commandId: randomUUID() } })
     expect(mcp.isError).not.toBe(true)
-    const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(mcp.structuredContent)
+    const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(mcp))
     expect(pending.admission).toMatchObject({ kind: 'pending-admission' })
     await fixture.jobs.wakeQueue()
     expect(fixture.preparation.accept).not.toHaveBeenCalled()
@@ -225,11 +226,11 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const read = await client.callTool({ name: 'job_get',
       arguments: { workspaceId: fixture.workspaceId, executionId: accepted.id } })
     expect(read.isError).not.toBe(true)
-    expect(read.structuredContent).toMatchObject({ execution: accepted })
+    expect(decodeMcpToolResult(read)).toMatchObject({ execution: accepted })
     const cancel = await client.callTool({ name: 'job_cancel', arguments: { workspaceId: fixture.workspaceId,
       executionId: accepted.id, commandId: randomUUID() } })
     expect(cancel.isError).not.toBe(true)
-    expect(cancel.structuredContent).toMatchObject({ execution: {
+    expect(decodeMcpToolResult(cancel)).toMatchObject({ execution: {
       id: accepted.id, process: { phase: 'terminal', outcome: 'cancelled', processStopped: true },
       publication: 'complete',
     } })
@@ -265,7 +266,7 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const http = await restarted.app.inject({ method: 'GET', url: `${fixture.root}/executions/${execution.id}`,
       headers: fixture.headers })
     expect(http.statusCode).toBe(200)
-    expect(http.json()).toEqual(history.structuredContent)
+    expect(http.json()).toEqual(decodeMcpToolResult(history))
     expect(http.json().execution).toMatchObject({ id: execution.id, acceptedSpec: execution.acceptedSpec,
       operationId: execution.operationId, attemptId: execution.attemptId, cancelRequestedAt: expect.any(String) })
     expect((await database.pool.query('select id from job_executions where workspace_id=$1',
@@ -293,7 +294,7 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
     const client = await fixture.connect(fixture.writer.token)
     const permitted = await client.callTool({ name: 'job_start', arguments: { workspaceId: fixture.workspaceId, ...input } })
     expect(permitted.isError).not.toBe(true)
-    const accepted = z.object({ admission: JobAdmissionResultSchema }).parse(permitted.structuredContent)
+    const accepted = z.object({ admission: JobAdmissionResultSchema }).parse(decodeMcpToolResult(permitted))
     expect(accepted.admission).toMatchObject({ kind: 'accepted' })
     await expect(fixture.jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
     expect(fixture.remote.deliver).toHaveBeenCalledOnce()
@@ -344,11 +345,11 @@ describe.skipIf(!postgresEnabled)('Worker execution startup gates', () => {
       workspaceId: fixture.workspaceId, ...input,
     } })
     expect(retainedStart.isError).not.toBe(true)
-    expect(retainedStart.structuredContent).toEqual({ admission: { kind: 'retained-execution', execution } })
+    expect(decodeMcpToolResult(retainedStart)).toEqual({ admission: { kind: 'retained-execution', execution } })
     const httpRetry = await restarted.app.inject({ method: 'POST', url: `${fixture.root}/executions`,
       headers: fixture.headers, payload: input })
     expect(httpRetry.statusCode).toBe(200)
-    expect(httpRetry.json()).toEqual(retainedStart.structuredContent)
+    expect(httpRetry.json()).toEqual(decodeMcpToolResult(retainedStart))
     expect(await restarted.jobs.listQueue(fixture.writer.principal, fixture.workspaceId)).toEqual([])
     expect(fixture.remote.deliver).toHaveBeenCalledOnce()
     expect(fixture.remote.reconcile).not.toHaveBeenCalled()

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -69,9 +70,9 @@ describe.skipIf(!postgresEnabled)('SCH-03 authenticated schedule capability comp
     const owner = await connect(f.writer.token), reader = await connect(f.reader.token)
     const before = await sch11DomainState(f)
     for (const [client, principal] of [[owner, f.writer.principal], [reader, f.reader.principal]] as const) {
-      const result = await client.callTool({ name: 'operator_get_capabilities', arguments: f.scope })
+      const result = await client.callTool({ name: 'operator_get_capabilities', arguments: { ...f.scope, detail: 'full' } })
       expect(result.isError).not.toBe(true)
-      const capabilities = ScheduleOperatorCapabilitiesSchema.parse(result.structuredContent)
+      const capabilities = ScheduleOperatorCapabilitiesSchema.parse(decodeMcpToolResult(result))
       expect(capabilities.grants).toEqual(principal.grants)
       expect(capabilities.tools).toContain('workflow_schedule_get')
       expect(capabilities.tools.includes('workflow_schedule_save')).toBe(client === owner)
@@ -96,7 +97,7 @@ describe.skipIf(!postgresEnabled)('SCH-03 authenticated schedule capability comp
       }
       const readback = await client.callTool({ name: 'workflow_schedule_get', arguments: f.scope })
       expect(readback.isError).not.toBe(true)
-      expect(ScheduleGetResultSchema.parse(readback.structuredContent)).toEqual({ schedule: saved })
+      expect(ScheduleGetResultSchema.parse(decodeMcpToolResult(readback))).toEqual({ schedule: saved })
     }
     const denied = await reader.callTool({ name: 'workflow_schedule_disable', arguments: f.command() })
     expect(denied.isError).toBe(true)

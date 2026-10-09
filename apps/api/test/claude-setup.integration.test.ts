@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
@@ -31,7 +32,7 @@ it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MC
   }
   try {
     const client = await connect(f.writer.token)
-    const result = (value: { isError?: boolean | undefined; structuredContent?: unknown }) => { expect(value.isError).not.toBe(true); return value.structuredContent }
+    const result = (value: { isError?: boolean | undefined; structuredContent?: unknown }) => { expect(value.isError).not.toBe(true); return decodeMcpToolResult(value) }
     const before = ExecutionReadinessSchema.parse(result(await client.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } })))
     expect(before).toMatchObject({ status: 'blocked', reason: { code: 'HARNESS_PROFILE_REQUIRED' } })
     const setup = ClaudeSetupOptionsSchema.parse(result(await client.callTool({ name: 'claude_setup_options_get', arguments: {} })))
@@ -108,10 +109,10 @@ it.skipIf(!postgresEnabled)('keeps fresh Claude board defaults incomplete until 
     const reader = await f.access.issue({ name: 'Claude defaults reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 120_000), grants: [{ actions: ['harnesses:read'], scope: {} }] })
     const readClient = await connect(reader.token)
-    expect((await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })).structuredContent)
+    expect(decodeMcpToolResult((await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } }))))
       .toMatchObject({ defaults: original.defaults.claude, capability: null,
         discoveryError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED' } })
-    expect((await readClient.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } })).structuredContent)
+    expect(decodeMcpToolResult((await readClient.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } }))))
       .toMatchObject({ status: 'blocked', reason: { code: 'CLAUDE_FULL_ACCESS_REQUIRED' } })
     await initializeNativeDefaults({ pool: f.db.pool, options, appMcpEndpoint: new URL('/mcp', address).href })
     expect(await repository.getManagedHarnessDefaults()).toEqual(original)
@@ -124,10 +125,10 @@ it.skipIf(!postgresEnabled)('keeps fresh Claude board defaults incomplete until 
     expect(unsupported).toMatchObject({ isError: true,
       content: [{ type: 'text', text: expect.stringContaining('Claude requires Full access') }] })
     expect(await repository.getManagedHarnessDefaults()).toEqual(original)
-    const saved = HarnessDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'harness_defaults_update', arguments: input })).structuredContent)
+    const saved = HarnessDefaultsUpdateResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_defaults_update', arguments: input }))))
     expect(saved.value.defaults.claude?.sandbox).toBe('danger-full-access')
     expect((await repository.getManagedHarnessDefaults()).unavailable ?? []).not.toContain('claude')
-    expect((await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })).structuredContent)
+    expect(decodeMcpToolResult((await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } }))))
       .toMatchObject({ defaults: saved.value.defaults.claude, defaultsRevision: saved.value.revision })
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))
@@ -157,15 +158,15 @@ it.skipIf(!postgresEnabled)('saves other provider defaults through HTTP and MCP 
       defaults: { ...original.defaults, codex: { ...original.defaults.codex, sandbox: 'workspace-write' } } }
     await expectMcpAccessDenied(readClient.callTool({ name: 'harness_defaults_update', arguments: input }))
     expect(await repository.getManagedHarnessDefaults()).toEqual(original)
-    const saved = HarnessDefaultsUpdateResultSchema.parse((await f.client.callTool({
+    const saved = HarnessDefaultsUpdateResultSchema.parse(decodeMcpToolResult((await f.client.callTool({
       name: 'harness_defaults_update', arguments: input,
-    })).structuredContent)
+    }))))
     expect(saved.value.defaults.codex.sandbox).toBe('workspace-write')
     expect(saved.value.defaults.claude).toEqual(original.defaults.claude)
     expect((await repository.getManagedHarnessDefaults()).unavailable).toContain('claude')
-    expect(HarnessDefaultsUpdateResultSchema.parse((await f.client.callTool({
+    expect(HarnessDefaultsUpdateResultSchema.parse(decodeMcpToolResult((await f.client.callTool({
       name: 'harness_defaults_update', arguments: input,
-    })).structuredContent)).toEqual({ ...saved, replayed: true })
+    }))))).toEqual({ ...saved, replayed: true })
     const http = await fetch(new URL('/api/management/harnesses/defaults', f.address), { method: 'PUT',
       headers: { authorization: `Bearer ${f.writer.token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ commandId: randomUUID(), expectedRevision: saved.value.revision, configure: ['codex'],
@@ -178,7 +179,7 @@ it.skipIf(!postgresEnabled)('saves other provider defaults through HTTP and MCP 
     expect(persisted.defaults).toEqual(httpSaved.value.defaults)
     expect(persisted.defaults.claude).toEqual(original.defaults.claude)
     expect(persisted.unavailable).toContain('claude')
-    expect((await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })).structuredContent)
+    expect(decodeMcpToolResult((await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } }))))
       .toMatchObject({ defaults: original.defaults.claude, defaultsRevision: persisted.revision,
         capability: null, discoveryError: { code: 'CLAUDE_FULL_ACCESS_REQUIRED' } })
     for (const claude of [

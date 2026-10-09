@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
@@ -217,8 +218,8 @@ export const runPath = (f: RecoveryFixture, runId = f.base.f.run.id) =>
   `/api/management/workspaces/${encodeURIComponent(f.base.f.scope.workspaceId)}/runs/${encodeURIComponent(runId)}`
 export function toolValue(result: { isError?: boolean | undefined; structuredContent?: unknown }, diagnostics?: unknown) {
   expect(result.isError, JSON.stringify({ result, diagnostics })).not.toBe(true)
-  expect(result.structuredContent).toBeDefined()
-  return result.structuredContent
+  expect(decodeMcpToolResult(result)).toBeDefined()
+  return decodeMcpToolResult(result)
 }
 export async function readParity(f: RecoveryFixture, name: RunInspectionToolName, input: Record<string, unknown>,
   client = f.transport.client, token = f.base.writer.token) {

@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { FilePageSchema, type PermanentFileScope } from '@foreman-code/contracts/files'
 import type { ManagementScope } from '@foreman-code/contracts/management'
 
-import { hasAction } from '../../../modules/access/policy.js'
+import { hasAction, isAuthorized, type AuthorizedResource } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
 import { referenceFileActions } from '../../../modules/files/references/authorization.js'
 import {
@@ -32,10 +32,18 @@ function compatibleScope(left: ManagementScope, right: ManagementScope): Managem
 }
 
 /** Discovery requires overlapping read/write grants. Every call still rechecks live resource authority. */
-export function fileReferenceToolAvailable(context: OperatorRequestContext, name: FileReferenceToolName): boolean {
+export function fileReferenceToolAvailable(context: OperatorRequestContext, name: FileReferenceToolName,
+  resource: AuthorizedResource = {}): boolean {
   if (!context.services.fileReferences || context.principal.audience !== 'operator') return false
   const access = name === 'reference_file_add' || name === 'reference_file_remove' ? 'write' : 'read'
   return (['workspace_reference', 'workflow_reference'] as const).some((kind: PermanentFileScope['kind']) => {
+    if (Object.keys(resource).length) {
+      if (!resource.workspaceId || (kind === 'workflow_reference' && !resource.workflowId)) return false
+      const scope = kind === 'workspace_reference'
+        ? { workspaceId: resource.workspaceId }
+        : { workspaceId: resource.workspaceId, workflowId: resource.workflowId! }
+      return referenceFileActions(kind, access).every((action) => isAuthorized(context.principal, action, scope))
+    }
     let compatible: ManagementScope[] = [{}]
     for (const action of referenceFileActions(kind, access)) {
       if (!hasAction(context.principal, action)) return false

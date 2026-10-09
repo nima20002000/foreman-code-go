@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { AppMcpRoutes } from '../src/modules/harnesses/appMcpRoutes.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -71,12 +72,12 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   expect(second.requests()).toBe(0)
   const readerClient = await connect(reader.token)
   expect(second.requests()).toBeGreaterThan(0)
-  const initial = (await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent as { revision: number; value: Record<string, unknown> }
+  const initial = decodeMcpToolResult((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))) as { revision: number; value: Record<string, unknown> }
   const value = { ...initial.value, description: `automatic routing ${randomUUID()}` }
   const saved = await ownerClient.callTool({ name: 'workspace_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: initial.revision, value } })
   expect(saved.isError).not.toBe(true)
   const readback = await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })
-  expect(readback.structuredContent).toMatchObject({ value })
+  expect(decodeMcpToolResult(readback)).toMatchObject({ value })
   expect(await settings.getWorkspaceDefaults(owner.principal)).toMatchObject({ value })
   const deniedUpdate = await readerClient.callTool({ name: 'workspace_defaults_update', arguments: {
     commandId: randomUUID(), expectedRevision: initial.revision + 1, value: initial.value,
@@ -87,7 +88,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   await first.app.close()
   await removeOwner()
   removeOwner = await registerAppRoute(owner.token, second.endpoint, owner.principal.expiresAt, launcher)
-  expect((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent).toMatchObject({ value })
+  expect(decodeMcpToolResult((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })))).toMatchObject({ value })
   for (const file of await readdir(join(directory, 'routes'))) {
     const text = await readFile(join(directory, 'routes', file), 'utf8')
     expect(text).not.toContain(owner.token)
@@ -101,7 +102,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   const restarted = new AppMcpRoutes(database.pool, second.endpoint, launcher)
   cleanup.push(() => restarted.close())
   await restarted.refresh()
-  expect((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent).toMatchObject({ value })
+  expect(decodeMcpToolResult((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })))).toMatchObject({ value })
   await access.revoke(owner.principal.id)
   await restarted.refresh()
   const remaining = await readdir(join(directory, 'routes'))

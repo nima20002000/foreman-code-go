@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -90,9 +91,9 @@ it('shares HTTP and authenticated MCP preferences with persisted readback after 
   const f = await fixture()
   const client = await f.connect(f.owner.id)
   expect((await client.listTools()).tools.map(tool => tool.name)).toContain('general_settings_update')
-  const initial = ManagedGeneralSettingsSchema.parse((await client.callTool({
+  const initial = ManagedGeneralSettingsSchema.parse(decodeMcpToolResult((await client.callTool({
     name: 'general_settings_get', arguments: {},
-  })).structuredContent)
+  }))))
   expect(initial).toEqual({ value: { theme: 'dark' }, revision: 0, versionId: null })
   const input = { value: { theme: 'light' }, expectedRevision: initial.revision, commandId: randomUUID() }
   const http = await f.app.inject({ method: 'PUT', url: '/api/management/settings/general',
@@ -101,7 +102,7 @@ it('shares HTTP and authenticated MCP preferences with persisted readback after 
   const saved = GeneralSettingsUpdateResultSchema.parse(http.json())
   expect(saved.value).toMatchObject({ value: { theme: 'light' }, revision: 1 })
   const otherComputer = await f.connect(f.reader.id)
-  expect((await otherComputer.callTool({ name: 'general_settings_get', arguments: {} })).structuredContent)
+  expect(decodeMcpToolResult((await otherComputer.callTool({ name: 'general_settings_get', arguments: {} }))))
     .toEqual(saved.value)
   expect(await f.createSettings().getGeneralSettings(f.reader)).toEqual(saved.value)
   expect(f.audits).toContainEqual({ principalId: f.owner.id, source: 'http', action: 'general.settings.update' })
@@ -127,8 +128,8 @@ it('replays the same command, rejects revision and command conflicts and recheck
   const input: GeneralSettingsUpdateInput = { value: { theme: 'light' }, expectedRevision: 0, commandId: randomUUID() }
   const call = (arguments_: unknown) => client.callTool({ name: 'general_settings_update',
     arguments: arguments_ as Record<string, unknown> })
-  const first = GeneralSettingsUpdateResultSchema.parse((await call(input)).structuredContent)
-  expect(GeneralSettingsUpdateResultSchema.parse((await call(input)).structuredContent))
+  const first = GeneralSettingsUpdateResultSchema.parse(decodeMcpToolResult((await call(input))))
+  expect(GeneralSettingsUpdateResultSchema.parse(decodeMcpToolResult((await call(input)))))
     .toEqual({ ...first, replayed: true })
   expect((await call({ ...input, value: { theme: 'dark' } })).isError).toBe(true)
   expect((await call({ ...input, commandId: randomUUID() })).isError).toBe(true)

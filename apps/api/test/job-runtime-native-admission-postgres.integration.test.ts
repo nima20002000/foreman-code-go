@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID,createHash } from 'node:crypto'
 import pg from 'pg'
@@ -90,7 +91,7 @@ describe.skipIf(!url)('Main qualification admission PostgreSQL and authenticated
         const response = await app.inject({ url: `/api/management/workspaces/${profile.workspaceId}/jobs/runtime-profiles`,
           headers: { authorization: `Bearer ${token}` } })
         expect(response.statusCode).toBe(200)
-        expect(read.structuredContent).toEqual(response.json())
+        expect(decodeMcpToolResult(read)).toEqual(response.json())
         expect(response.json().profiles[0]).toMatchObject({ profile: stored, ready: false, sideEffects: false })
         expect((await pool.query('select record from job_runtime_profiles where id=$1', [profile.id])).rows[0].record)
           .toEqual(stored)
@@ -113,7 +114,7 @@ describe.skipIf(!url)('Main qualification admission PostgreSQL and authenticated
     const client=new Client({name:'runtime-admission-tests',version:'1'});clients.push(client)
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp',address),{requestInit:{headers:{Authorization:`Bearer ${token}`}}}))
     const read=await client.callTool({name:'job_runtime_qualification_get',arguments:{workspaceId:profile.workspaceId,approvalId:uuid}})
-    expect(read.isError).not.toBe(true);expect(read.structuredContent).toEqual(http.json())
+    expect(read.isError).not.toBe(true);expect(decodeMcpToolResult(read)).toEqual(http.json())
     const denied=await client.callTool({name:'job_runtime_qualification_get',arguments:{workspaceId:'foreign',approvalId:uuid}})
     expect(denied.isError).toBe(true)
     await expect(pool.query('update job_runtime_qualification_approvals set native_admission=null where id=$1',[uuid])).rejects.toThrow('JOB_RUNTIME_NATIVE_ADMISSION_IMMUTABLE')

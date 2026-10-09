@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, rename, rm, stat, symlink } from 'node:fs/promises'
@@ -108,8 +109,8 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       expect(await service.get(owner.principal, { workspaceId })).toMatchObject({ evidence: 'legacy_missing', locationRevision: 1 })
       const choices = await client.callTool({ name: 'workspace_root_choices_list', arguments: { workspaceId } })
       expect(choices.isError).not.toBe(true)
-      expect(choices.structuredContent).toEqual(localChoices.json())
-      expect(choices.structuredContent).toEqual((await app.inject({ method: 'GET', url: `${url}/root-policies`, headers: auth })).json())
+      expect(decodeMcpToolResult(choices)).toEqual(localChoices.json())
+      expect(decodeMcpToolResult(choices)).toEqual((await app.inject({ method: 'GET', url: `${url}/root-policies`, headers: auth })).json())
       for (const grants of [
         [{ actions: ['workspace_locations:read' as const], scope: { workspaceIds: [workspaceId] } }],
         [{ actions: ['source_roots:read' as const, 'workspace_locations:read' as const],
@@ -132,7 +133,7 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
         relativePath: '', accessMode: 'read-write', expectedLocationRevision: 1, expectedRootPolicyRevision: 0 }
       const browse = await client.callTool({ name: 'workspace_root_directories_list', arguments: selection })
       expect(browse.isError).not.toBe(true)
-      expect(browse.structuredContent).toMatchObject({ browse: { directories: [{ name: 'Project', relativePath: 'Project' }] } })
+      expect(decodeMcpToolResult(browse)).toMatchObject({ browse: { directories: [{ name: 'Project', relativePath: 'Project' }] } })
       const input = { ...selection, relativePath: 'Project', commandId: randomUUID() }
       expect((await denied.callTool({ name: 'workspace_root_location_set', arguments: input })).isError).toBe(true)
       expect((await denied.callTool({ name: 'workspace_root_location_validate', arguments: { ...selection, relativePath: 'Project' } })).isError).toBe(true)
@@ -140,14 +141,14 @@ describe.skipIf(!postgresEnabled)('trusted local Main workspace storage bootstra
       expect(valid.isError).not.toBe(true)
       const saved = await client.callTool({ name: 'workspace_root_location_set', arguments: input })
       expect(saved.isError).not.toBe(true)
-      const accepted = WorkspaceBoundLocationSetResultSchema.parse(saved.structuredContent)
-      expect(saved.structuredContent).toMatchObject({ replayed: false, value: { evidence: 'bound', locationRevision: 2,
+      const accepted = WorkspaceBoundLocationSetResultSchema.parse(decodeMcpToolResult(saved))
+      expect(decodeMcpToolResult(saved)).toMatchObject({ replayed: false, value: { evidence: 'bound', locationRevision: 2,
         executionLocation: { runnerId: 'runner-local', rootPath: join(storageRoot, 'Project') },
         binding: { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId, rootPolicyRevision: '1', configurationRevision: '1' } } })
-      expect((await client.callTool({ name: 'workspace_root_location_set', arguments: input })).structuredContent).toEqual({ ...accepted, replayed: true })
+      expect(decodeMcpToolResult((await client.callTool({ name: 'workspace_root_location_set', arguments: input })))).toEqual({ ...accepted, replayed: true })
       const get = await client.callTool({ name: 'workspace_root_location_get', arguments: { workspaceId } })
-      expect(get.structuredContent).toEqual(accepted.value)
-      expect((await app.inject({ method: 'GET', url: `${url}/root-location`, headers: auth })).json()).toEqual(get.structuredContent)
+      expect(decodeMcpToolResult(get)).toEqual(accepted.value)
+      expect((await app.inject({ method: 'GET', url: `${url}/root-location`, headers: auth })).json()).toEqual(decodeMcpToolResult(get))
       const persistedLocalLocation = await app.inject({ url: `${url}/root-location` })
       expect(persistedLocalLocation.statusCode, persistedLocalLocation.body).toBe(200)
       expect(persistedLocalLocation.json()).toEqual(accepted.value)

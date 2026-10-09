@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -153,7 +154,7 @@ describe('authorized telemetry selector discovery', () => {
           accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2025-06-18' },
           payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: RESOURCE_TELEMETRY_SELECTOR_TOOL, arguments: target } } })
         const result = mcp.json().result
-        expect(result.structuredContent).toEqual(http.json())
+        expect(decodeMcpToolResult(result)).toEqual(http.json())
         const read = TelemetrySelectorResultSchema.parse(http.json())
         if (credential === 'denied') {
           expect(http.statusCode).toBe(403); expect(result.isError).toBe(true); expect(read).toEqual({ kind: 'denied' })

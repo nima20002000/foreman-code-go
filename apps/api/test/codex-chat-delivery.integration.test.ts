@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -203,17 +204,17 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   async function sendAgent(input: SendAgentChatMessageRequest) {
     const result = await writer.callTool({ name: 'agent_chat_send', arguments: { workspaceId, request: input } })
     assert.notEqual(result.isError, true, JSON.stringify(result))
-    return result.structuredContent as { state: AgentChatState; replayed: boolean }
+    return decodeMcpToolResult(result) as { state: AgentChatState; replayed: boolean }
   }
   async function readAgent() {
     const result = await writer.callTool({ name: 'agent_chat_read', arguments: { workspaceId, query: context } })
     assert.notEqual(result.isError, true, JSON.stringify(result))
-    return result.structuredContent as AgentChatState
+    return decodeMcpToolResult(result) as AgentChatState
   }
   async function createOperator() {
     const result = await writer.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })
     assert.notEqual(result.isError, true, JSON.stringify(result))
-    return (result.structuredContent as { conversation: { id: string } }).conversation.id
+    return (decodeMcpToolResult(result) as { conversation: { id: string } }).conversation.id
   }
   async function sendOperator(id: string, requestId: string, content = 'A user message') {
     const result = await writer.callTool({ name: 'operator_chat_send', arguments: {
@@ -224,7 +225,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   async function readOperator(id: string) {
     const result = await writer.callTool({ name: 'operator_chat_get', arguments: { conversationId: id } })
     assert.notEqual(result.isError, true, JSON.stringify(result))
-    return result.structuredContent as OperatorConversationState
+    return decodeMcpToolResult(result) as OperatorConversationState
   }
 
   function restartAgentService() {
@@ -830,7 +831,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         assert.equal(receipt.result.providerAcknowledgment.optionId, input.optionId)
         assert.match(receipt.result.providerAcknowledgment.responseDigest, /^[a-f0-9]{64}$/)
       }
-      const state = (valid.structuredContent as { state: AgentChatState }).state
+      const state = (decodeMcpToolResult(valid) as { state: AgentChatState }).state
       const activity = state.activitySnapshot
       const decisions = [...(activity?.pendingInteractions ?? []),
         ...(activity?.activities.flatMap((item) => item.kind === 'interaction' ? [item.interaction] : []) ?? [])]

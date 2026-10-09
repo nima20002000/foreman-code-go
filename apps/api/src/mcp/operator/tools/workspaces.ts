@@ -6,13 +6,14 @@ import {
   WorkspaceFolderCreateInputSchema, WorkspaceFolderCreateResultSchema, WorkspaceFolderRenameInputSchema, WorkspaceFolderRenameResultSchema,
   WorkspaceBatchArchiveInputSchema, WorkspaceBatchArchiveResultSchema,
   WorkspaceArchiveInputSchema, WorkspaceCreateInputSchema, WorkspaceGetInputSchema,
-  WorkspaceListInputSchema, WorkspaceUpdateInputSchema,
+  WorkspaceUpdateInputSchema,
   WorkspaceStorageFoldersListInputSchema, WorkspaceStorageFoldersPageSchema,
   WorkspaceStorageFolderDeleteInputSchema, WorkspaceStorageFolderDeleteResultSchema,
   ManagedWorkspaceCommandResultSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
   WorkspaceLocationSetInputSchema, WorkspaceLocationSetResultSchema,
   WorkspaceLocationValidateInputSchema, WorkspaceLocationValidationSchema,
 } from '@foreman-code/contracts/management'
+import { OperatorWorkspaceListInputSchema, WorkspaceSummaryPageSchema } from '@foreman-code/contracts/operator-mcp'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
@@ -55,10 +56,19 @@ export function registerWorkspaceTools(server: McpServer, context: OperatorReque
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => invokeOperatorTool(context, 'workspace_folder_create', () => context.services.harnessSettings!.directories.create(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_list')) server.registerTool('workspace_list', {
-    description: 'List one cursor page of authorized workspaces with revisions and archive state. Saved computer roots are inspected on their approved host when source_roots:read and workspace_locations:read are granted. Pass pageInfo.nextCursor as cursor to load more; null means the end.', inputSchema: WorkspaceListInputSchema,
-    outputSchema: ManagedWorkspacePageSchema,
+    description: 'List authorized workspace summaries (10 by default). Use detail:full or workspace_get for complete records. Saved computer roots are inspected on their approved host when source_roots:read and workspace_locations:read are granted. Pass pageInfo.nextCursor as cursor; null means the end.', inputSchema: OperatorWorkspaceListInputSchema,
+    outputSchema: WorkspaceSummaryPageSchema.or(ManagedWorkspacePageSchema),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workspace_list', () => context.services.workspaces.list(context.principal, input)))
+  }, async ({ detail, ...input }) => invokeOperatorTool(context, 'workspace_list', async () => {
+    const page = await context.services.workspaces.list(context.principal, input)
+    if (detail === 'full') return page
+    return { detail: 'compact', pageInfo: page.pageInfo, items: page.items.map((item) => ({
+      workspace: { id: item.workspace.id, name: item.workspace.name },
+      revision: item.revision, archivedAt: item.archivedAt,
+      locationRevision: item.locationRevision, locationStatus: item.locationValidation.status,
+      detailsOmitted: true,
+    })) }
+  }))
   if (operatorToolAvailable(context, 'workspace_get')) server.registerTool('workspace_get', {
     description: 'Read an authorized workspace by stable ID. Saved computer roots are inspected on their approved host when source_roots:read and workspace_locations:read are granted; missing host authority is reported in locationValidation.', inputSchema: WorkspaceGetInputSchema,
     outputSchema: ManagedWorkspaceSchema,

@@ -142,7 +142,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'run_node_placement_get') scope = 'run'
   if (name.startsWith('agent_chat_')) scope = 'resource'
   if (name.startsWith('operator_chat_controls_')) scope = 'global'
-  if (name === 'operator_get_capabilities') scope = 'caller'
+  if (name === 'operator_get_capabilities' || name === 'operator_tool_schema_get') scope = 'caller'
   if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile', 'codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile', 'claude_plugins_list', 'claude_plugin_change', 'claude_plugin_marketplace_add'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]

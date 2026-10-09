@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
@@ -80,12 +81,12 @@ it.each(startupCases)(
     expect(tool?.description).toContain('global settings:read')
     expect(tool?.description).toContain('controlled at startup by a person; MCP cannot change it')
     const readback = await client.callTool({ name: 'worker_execution_settings_get', arguments: {} })
-    expect(WorkerExecutionSettingsSchema.parse(readback.structuredContent)).toEqual(expected)
+    expect(WorkerExecutionSettingsSchema.parse(decodeMcpToolResult(readback))).toEqual(expected)
     expect(tools.filter(value => value.name.startsWith('worker_execution_settings_')).map(value => value.name))
       .toEqual(['worker_execution_settings_get'])
 
-    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({
       grants,
       tools: expect.arrayContaining(['worker_execution_settings_get']),
       requirements: expect.arrayContaining([{
@@ -119,7 +120,7 @@ it.each(startupCases)(
       arguments: { enabled: !enabled },
     })).rejects.toThrow()
     const unchanged = await client.callTool({ name: 'worker_execution_settings_get', arguments: {} })
-    expect(WorkerExecutionSettingsSchema.parse(unchanged.structuredContent)).toEqual(expected)
+    expect(WorkerExecutionSettingsSchema.parse(decodeMcpToolResult(unchanged))).toEqual(expected)
 
     const restarted = await settingsApp(environment)
     const persistedReader = await restarted.access.authenticate(reader.token)
@@ -127,7 +128,7 @@ it.each(startupCases)(
     expect(persistedReader.grants).toEqual(reader.principal.grants)
     const freshClient = await restarted.connect(reader.token)
     const readback = await freshClient.callTool({ name: 'worker_execution_settings_get', arguments: {} })
-    expect(WorkerExecutionSettingsSchema.parse(readback.structuredContent)).toEqual(expected)
+    expect(WorkerExecutionSettingsSchema.parse(decodeMcpToolResult(readback))).toEqual(expected)
     const settings = await database.pool.query('select count(*)::int count from application_settings')
     expect(settings.rows[0].count).toBe(0)
   },
@@ -156,8 +157,8 @@ it.each(['0', '1'])(
       expect(refused.isError).toBe(true)
       const body = refused.content.find((item) => item.type === 'text')
       expect(JSON.parse(body!.text as string)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
-      const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-      expect(capabilities.structuredContent).toMatchObject({
+      const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+      expect(decodeMcpToolResult(capabilities)).toMatchObject({
         grants,
         tools: expect.not.arrayContaining(['worker_execution_settings_get']),
       })

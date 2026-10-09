@@ -1,13 +1,14 @@
 import type { McpServer } from '@modelcontextprotocol/server'
 
-import { AgentGetInputSchema, AgentListInputSchema, ManagedAgentDetailSchema, ManagedAgentPageSchema } from '@foreman-code/contracts/management'
+import { AgentGetInputSchema, ManagedAgentDetailSchema, ManagedAgentPageSchema } from '@foreman-code/contracts/management'
+import { OperatorAgentListInputSchema } from '@foreman-code/contracts/operator-mcp'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
 
 export function registerAgentTools(server: McpServer, context: OperatorRequestContext): void {
   if (operatorToolAvailable(context, 'agent_list')) server.registerTool('agent_list', {
-    description: 'List authorized logical agents and metadata revisions.', inputSchema: AgentListInputSchema,
+    description: 'List authorized logical agents and metadata revisions (10 by default).', inputSchema: OperatorAgentListInputSchema,
     outputSchema: ManagedAgentPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'agent_list', () => context.services.agents.list(context.principal, input)))

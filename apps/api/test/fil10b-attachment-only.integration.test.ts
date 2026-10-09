@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -325,12 +326,12 @@ describe.skipIf(!postgresEnabled)('FIL-10b attachment-only admission and legacy 
       const sent = await writer.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: input } })
       expect(sent.isError).not.toBe(true); await settleAgent(id)
       const read = await writer.callTool({ name: 'agent_chat_read', arguments: { workspaceId: fixture.scope.workspaceId, query: query() } })
-      expect(AgentChatStateSchema.parse(read.structuredContent).messages.find((message) => message.requestId === input.requestId && message.role === 'user'))
+      expect(AgentChatStateSchema.parse(decodeMcpToolResult(read)).messages.find((message) => message.requestId === input.requestId && message.role === 'user'))
         .toMatchObject({ content: '', attachments: [file] })
       const stored = await persisted(id, input.requestId), before = nativeEffects()
       const replay = await writer.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: input } })
       expect(replay.isError).not.toBe(true)
-      expect(replay.structuredContent).toMatchObject({ replayed: true })
+      expect(decodeMcpToolResult(replay)).toMatchObject({ replayed: true })
       expect(await persisted(id, input.requestId)).toEqual(stored)
       const rejected = { ...input, requestId: randomUUID() }
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('agent_chat_send')

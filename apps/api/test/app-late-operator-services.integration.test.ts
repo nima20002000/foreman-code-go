@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -72,11 +73,11 @@ it('exposes late Operator services through authenticated MCP with denied callers
     const args = { workspaceId, definitionId: definition.id }
     const result = await client.callTool({ name: 'job_definition_get', arguments: args })
     expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual({ definition })
+    expect(decodeMcpToolResult(result)).toEqual({ definition })
     const http = await app.inject({ method: 'GET', url: `/api/management/workspaces/${workspaceId}/jobs/definitions/${definition.id}`,
       headers: { authorization: `Bearer ${owner.token}` } })
     expect(http.statusCode).toBe(200)
-    expect(http.json()).toEqual(result.structuredContent)
+    expect(http.json()).toEqual(decodeMcpToolResult(result))
     expect(await new JobService(pool, new PostgresCommandCoordinator(pool), ports)
       .getDefinition(owner.principal, workspaceId, definition.id)).toEqual(definition)
     expect((await pool.query('select record from job_definitions where id=$1', [definition.id])).rows[0]?.record).toEqual(definition)

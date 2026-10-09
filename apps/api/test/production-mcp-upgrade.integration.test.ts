@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { copyFile, link, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -134,8 +135,7 @@ it.each(cases)(
     const first = await start()
     const ownerClient = await connect(owner.token)
     const readerClient = await connect(reader.token)
-    const initial = (await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))
-      .structuredContent as { revision: number; value: Record<string, unknown> }
+    const initial = decodeMcpToolResult((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))) as { revision: number; value: Record<string, unknown> }
     const value = { ...initial.value, description: `production upgrade ${randomUUID()}` }
     const saved = await ownerClient.callTool({ name: 'workspace_defaults_update', arguments: {
       commandId: randomUUID(), expectedRevision: initial.revision, value,
@@ -150,9 +150,9 @@ it.each(cases)(
       expect(JSON.parse(body!.text as string)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
     }
     const assertReadback = async (settings: FoundationSettingsManagementService) => {
-      expect((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
+      expect(decodeMcpToolResult((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))))
         .toMatchObject({ value })
-      expect((await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
+      expect(decodeMcpToolResult((await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))))
         .toMatchObject({ value })
       await assertDeniedUpdate(readerClient)
       expect(await settings.getWorkspaceDefaults(owner.principal)).toMatchObject({ value })
@@ -170,7 +170,7 @@ it.each(cases)(
     await assertReadback(upgraded.settings)
     expect(upgraded.requests()).toBeGreaterThan(0)
     const renewedOwnerClient = await connect(owner.token)
-    expect((await renewedOwnerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
+    expect(decodeMcpToolResult((await renewedOwnerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))))
       .toMatchObject({ value })
     if (change === 'older-writer') {
       await runLauncherProcess({ kind: 'older-install', launcher: shared }, developmentRuntime)
@@ -209,7 +209,7 @@ it.each(cases)(
     }
     const restartedOwnerClient = await connect(owner.token)
     const restartedReaderClient = await connect(reader.token)
-    expect((await restartedOwnerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })).structuredContent)
+    expect(decodeMcpToolResult((await restartedOwnerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))))
       .toMatchObject({ value })
     await assertDeniedUpdate(restartedReaderClient)
     const digest = createHash('sha256').update(owner.token).digest('hex')

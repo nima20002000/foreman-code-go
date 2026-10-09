@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -84,7 +85,7 @@ async function fixture() {
         if (via === 'mcp') {
           const result = await client.callTool({ name: 'workflow_save_v3', arguments: saveInput })
           expect(result.isError, JSON.stringify(result)).not.toBe(true)
-          return CurrentWorkflowSaveResultSchema.parse(result.structuredContent).value
+          return CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(result)).value
         }
         const response = await app!.inject({ method: 'PUT', url: `${path}/definition`, headers, payload: saveInput })
         expect(response.statusCode).toBe(200)
@@ -94,7 +95,7 @@ async function fixture() {
         if (via === 'mcp') {
           const result = await client.callTool({ name: 'run_start', arguments: input })
           expect(result.isError).not.toBe(true)
-          return RunStartV3ResultSchema.parse(result.structuredContent)
+          return RunStartV3ResultSchema.parse(decodeMcpToolResult(result))
         }
         const response = await app!.inject({ method: 'POST', url: `${path}/runs`, headers, payload: input })
         expect(response.statusCode).toBe(202)
@@ -154,25 +155,25 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
         .toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       const result = await f.client.callTool({ name: 'workflow_save_v3', arguments: input })
       expect(result.isError).not.toBe(true)
-      const saved = CurrentWorkflowSaveResultSchema.parse(result.structuredContent).value
+      const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(result)).value
       expect(agentWorkflowNode(saved.version.definition.nodes[1])).not.toHaveProperty('placement')
       const scope = { workspaceId: input.workspaceId, workflowId: input.workflowId }
       const read = await f.client.callTool({ name: 'workflow_saved_get_v3', arguments: scope })
       expect(read.isError).not.toBe(true)
-      expect(CurrentWorkflowReadResultSchema.parse(read.structuredContent).version).toEqual(saved.version)
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(read)).version).toEqual(saved.version)
       const retry = await f.client.callTool({ name: 'workflow_save_v3', arguments: input })
-      expect(CurrentWorkflowSaveResultSchema.parse(retry.structuredContent))
+      expect(CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(retry)))
         .toEqual({ value: saved, replayed: true })
       const historical = await f.client.callTool({ name: 'workflow_saved_get_v3', arguments: {
         ...scope, workflowVersionId: original.version.id,
       } })
-      expect(CurrentWorkflowReadResultSchema.parse(historical.structuredContent).version).toEqual(original.version)
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(historical)).version).toEqual(original.version)
       const accepted = await f.start('mcp', startInput(f, saved))
       const placement = await f.client.callTool({ name: 'run_node_placement_get', arguments: {
         ...scope, runId: accepted.run.id, nodeId: clearedNode.id,
       } })
       expect(placement.isError).not.toBe(true)
-      expect(RunPlacementGetResultSchema.parse(placement.structuredContent).readback)
+      expect(RunPlacementGetResultSchema.parse(decodeMcpToolResult(placement)).readback)
         .toMatchObject({ evidence: 'accepted', placement: { labelAtAcceptance: 'Main',
           hostRef: f.placement.local.hostRef } })
     } finally { await f.close() }
@@ -209,7 +210,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
         workspaceId: input.workspaceId, workflowId: input.workflowId, runId: accepted.run.id, nodeId: node.id,
       } })
       expect(result.isError).not.toBe(true)
-      const read = RunPlacementGetResultSchema.parse(result.structuredContent)
+      const read = RunPlacementGetResultSchema.parse(decodeMcpToolResult(result))
       if (read.readback.evidence !== 'accepted') throw new Error('Accepted Main placement required')
       expect(read.readback.placement.hostRef).toEqual(f.placement.local.hostRef)
       expect(read.readback.placement.payload).toMatchObject({ kind: 'agent', artifactOutputs: node.artifactOutputs })
@@ -250,7 +251,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
         const read = RunPlacementGetResultSchema.parse(response.json())
         const tool = await f.client.callTool({ name: 'run_node_placement_get', arguments: scope })
         expect(tool.isError).not.toBe(true)
-        expect(RunPlacementGetResultSchema.parse(tool.structuredContent)).toEqual(read)
+        expect(RunPlacementGetResultSchema.parse(decodeMcpToolResult(tool))).toEqual(read)
         if (read.readback.evidence !== 'accepted') throw new Error('Expected accepted placement')
         const pin = read.readback.placement
         if (index === 0) expect(pin.labelAtAcceptance).toBe('Main')
@@ -270,7 +271,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
       const retained = await f.client.callTool({ name: 'run_node_placement_get', arguments: {
         workspaceId: input.workspaceId, workflowId: input.workflowId, runId: accepted.run.id, nodeId: local.id,
       } })
-      expect(RunPlacementGetResultSchema.parse(retained.structuredContent).readback)
+      expect(RunPlacementGetResultSchema.parse(decodeMcpToolResult(retained)).readback)
         .toMatchObject({ evidence: 'accepted', placement: readbacks[0] })
       expect(await f.start(via, input)).toEqual({ ...accepted, replayed: true })
       const reader = await f.base.access.issue({ name: 'Foreign workflow reader', audience: 'operator',
@@ -287,15 +288,15 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
         headers: { authorization: `Bearer ${reader.token}` }, payload: { ...input, commandId: randomUUID() } })).statusCode).toBe(403)
       expect((await f.app.inject({ method: 'GET', url: `${f.path}/runs/${accepted.run.id}/nodes/${local.id}/placement`,
         headers: { authorization: `Bearer ${reader.token}` } })).statusCode).toBe(403)
-      const capabilities = await f.client.callTool({ name: 'operator_get_capabilities', arguments: {
+      const capabilities = await f.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full',
         workspaceId: input.workspaceId, workflowId: input.workflowId, runId: accepted.run.id,
       } })
       expect(capabilities.isError).not.toBe(true)
-      expect(ScheduleOperatorCapabilitiesSchema.parse(capabilities.structuredContent).tools).toContain('run_node_placement_get')
+      expect(ScheduleOperatorCapabilitiesSchema.parse(decodeMcpToolResult(capabilities)).tools).toContain('run_node_placement_get')
       const read = await f.client.callTool({ name: 'workflow_saved_get_v3', arguments: {
         workspaceId: input.workspaceId, workflowId: input.workflowId,
       } })
-      expect(CurrentWorkflowReadResultSchema.parse(read.structuredContent).version).toEqual(saved.version)
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(read)).version).toEqual(saved.version)
       expect(f.base.provider.counts.sessions).toBe(0)
       stage = 'close'
     } finally { await f.close() }

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -158,8 +159,8 @@ describe.skipIf(!postgresEnabled).each(['http', 'mcp'] as const)('PR8 current ma
       async function save(value: typeof input) {
         if (source === 'mcp') {
           const response = await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: value })
-          if (response.isError) throw new Error(JSON.stringify(response.structuredContent))
-          return CurrentWorkflowSaveResultSchema.parse(response.structuredContent)
+          if (response.isError) throw new Error(JSON.stringify(decodeMcpToolResult(response)))
+          return CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(response))
         }
         const response = await f.app.inject({ method: 'PUT', url: `/api/management/workspaces/${value.workspaceId}/workflows/${value.workflowId}/definition`,
           headers: { authorization: `Bearer ${f.writer.token}` }, payload: value })
@@ -176,8 +177,8 @@ describe.skipIf(!postgresEnabled).each(['http', 'mcp'] as const)('PR8 current ma
       let run: { id: string }
       if (source === 'mcp') {
         const result = await f.client.callTool({ name: 'run_start', arguments: start })
-        expect(result.isError, JSON.stringify(result.structuredContent)).not.toBe(true)
-        run = (result.structuredContent as { run: { id: string } }).run
+        expect(result.isError, JSON.stringify(decodeMcpToolResult(result))).not.toBe(true)
+        run = (decodeMcpToolResult(result) as { run: { id: string } }).run
       } else {
         const result = await f.app.inject({ method: 'POST', url: `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/runs`,
           headers: { authorization: `Bearer ${f.writer.token}` }, payload: start })

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { RespondToInteractionResponseSchema, type InteractionResponseValue } from '@foreman-code/contracts'
 import { describe, expect, it } from 'vitest'
@@ -73,7 +74,7 @@ describe.skipIf(!postgresEnabled)('Codex workflow input delivery through authent
         for each row execute function fail_input_delivery()`)
       const first = await client.callTool({ name: 'interaction_respond', arguments: input })
       if (!first.isError) {
-        expect(RespondToInteractionResponseSchema.parse(first.structuredContent).interaction.deliveryState)
+        expect(RespondToInteractionResponseSchema.parse(decodeMcpToolResult(first)).interaction.deliveryState)
           .not.toBe('delivered')
       }
       const option = { ...interaction.responseOptions[0]!, response }
@@ -102,11 +103,10 @@ describe.skipIf(!postgresEnabled)('Codex workflow input delivery through authent
       await restarted.recover({ limit: 20 })
       const replay = await client.callTool({ name: 'interaction_respond', arguments: input })
       expect(replay.isError).not.toBe(true)
-      const delivered = RespondToInteractionResponseSchema.parse(replay.structuredContent).interaction
+      const delivered = RespondToInteractionResponseSchema.parse(decodeMcpToolResult(replay)).interaction
       expect(delivered).toMatchObject({ deliveryState: 'delivered', nativeResponse: { response } })
       const persisted = await f.repository.get(interaction.id)
-      expect((await client.callTool({ name: 'interaction_get', arguments: { interactionId: interaction.id } }))
-        .structuredContent).toMatchObject({ interaction: persisted })
+      expect(decodeMcpToolResult((await client.callTool({ name: 'interaction_get', arguments: { interactionId: interaction.id } })))).toMatchObject({ interaction: persisted })
       expect(await responses()).toHaveLength(1)
       await until(async () => (await f.runs.get(f.f.run.id))?.outcome === 'succeeded')
       expect(await f.receipts()).toHaveLength(1)

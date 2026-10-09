@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
@@ -82,16 +83,16 @@ describe('NEW-CLAUDE F-13 authenticated resumed query', () => {
                   expect(names).toContain('workspace_create')
                   const result = await query.transport!.callTool(create)
                   expect(result.isError).not.toBe(true)
-                  const id = (result.structuredContent as { value: { workspace: { id: string } } }).value.workspace.id
+                  const id = (decodeMcpToolResult(result) as { value: { workspace: { id: string } } }).value.workspace.id
                   createdId = id
                   const read = await query.transport!.callTool({ name: 'workspace_get', arguments: { workspaceId: id } })
-                  expect(read.structuredContent).toMatchObject({ workspace: { id, name: workspaceName } })
+                  expect(decodeMcpToolResult(read)).toMatchObject({ workspace: { id, name: workspaceName } })
                   expect((await f.db.pool.query('select record from workspaces where id=$1', [id])).rows[0]?.record).toMatchObject({ id, name: workspaceName })
                 } else {
                   expect(names).not.toContain('workspace_create')
                   await expectMcpAccessDenied(query.transport!.callTool(create))
                   const read = await query.transport!.callTool({ name: 'workspace_get', arguments: { workspaceId: createdId! } })
-                  expect(read.structuredContent).toMatchObject({ workspace: { id: createdId, name: workspaceName } })
+                  expect(decodeMcpToolResult(read)).toMatchObject({ workspace: { id: createdId, name: workspaceName } })
                 }
                 void frames.offer({ type: 'system', subtype: 'init', session_id: saved.nativeSessionId, claude_code_version: saved.providerVersion, cwd: '/work' })
                 void frames.offer({ type: 'assistant', uuid: 'reply', session_id: saved.nativeSessionId, user_message_uuid: message.uuid })

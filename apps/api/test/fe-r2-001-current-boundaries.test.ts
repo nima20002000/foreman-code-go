@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { describe, expect, it, vi } from 'vitest'
 import Fastify from 'fastify'
 import type { McpServer } from '@modelcontextprotocol/server'
@@ -58,7 +59,7 @@ describe('FE-R2-001 current V3 HTTP/MCP shared read boundaries', () => {
       expect(tool.definition.inputSchema).toBe(CanonicalRunGraphReadRequestSchema)
       expect(tool.definition.outputSchema).toBe(CanonicalRunGraphCurrentSchema)
       const mcp = await tool.invoke(f.request) as { structuredContent: unknown }
-      expect(CanonicalRunGraphCurrentSchema.parse(mcp.structuredContent)).toEqual(current)
+      expect(CanonicalRunGraphCurrentSchema.parse(decodeMcpToolResult(mcp))).toEqual(current)
       const events = await app.inject({ method: 'GET', headers, url: url('events') })
       expect(events.statusCode, events.body).toBe(200)
       const history = CanonicalRunGraphEventsResponseSchema.parse(events.json())

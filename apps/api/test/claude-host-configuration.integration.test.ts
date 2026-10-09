@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -120,10 +121,10 @@ it('discovers a saved Claude preset and configures and checks its host profile t
     const defaultsInput = { commandId: randomUUID(), expectedRevision: current.revision,
       defaults: { ...current.defaults, claude: configuration }, configure: ['claude'] }
     await expectMcpAccessDenied(reader.client.callTool({ name: 'harness_defaults_update', arguments: defaultsInput }))
-    const savedDefaults = HarnessDefaultsUpdateResultSchema.parse((await writer.client.callTool({
-      name: 'harness_defaults_update', arguments: defaultsInput })).structuredContent)
-    const inventory = HarnessRegistryReadbackSchema.parse((await reader.client.callTool({
-      name: 'harness_registry_get', arguments: hostRef })).structuredContent)
+    const savedDefaults = HarnessDefaultsUpdateResultSchema.parse(decodeMcpToolResult((await writer.client.callTool({
+      name: 'harness_defaults_update', arguments: defaultsInput }))))
+    const inventory = HarnessRegistryReadbackSchema.parse(decodeMcpToolResult((await reader.client.callTool({
+      name: 'harness_registry_get', arguments: hostRef }))))
     expect(await httpInventory()).toEqual(inventory)
     const preset = inventory.instances.find(item => item.driverId === 'claude')!
     expect(preset).toMatchObject({ instanceId: 'local-default:claude',
@@ -143,24 +144,24 @@ it('discovers a saved Claude preset and configures and checks its host profile t
       presetId: preset.instanceId, target, enabled: true,
       configuration: { ...configuration, configDirectory: '/recorded/different-profile' } }
     await expectMcpAccessDenied(reader.client.callTool({ name: 'harness_instance_save', arguments: saveInput }))
-    const saved = HostHarnessOverrideSaveResultSchema.parse((await writer.client.callTool({
-      name: 'harness_instance_save', arguments: saveInput })).structuredContent)
+    const saved = HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.client.callTool({
+      name: 'harness_instance_save', arguments: saveInput }))))
     expect(saved.value).toMatchObject({ configuration: saveInput.configuration, qualification: 'unqualified' })
-    expect(HostHarnessOverrideSaveResultSchema.parse((await writer.client.callTool({
-      name: 'harness_instance_save', arguments: saveInput })).structuredContent).replayed).toBe(true)
+    expect(HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.client.callTool({
+      name: 'harness_instance_save', arguments: saveInput })))).replayed).toBe(true)
     const checkInput = { commandId: randomUUID(), instanceId: saved.value.instanceId,
       expectedRevision: saved.value.revision, target }
     await expectMcpAccessDenied(reader.client.callTool({ name: 'harness_instance_check', arguments: checkInput }))
     expect(qualify).not.toHaveBeenCalled()
-    const checked = HostHarnessInstanceCheckResultSchema.parse((await writer.client.callTool({
-      name: 'harness_instance_check', arguments: checkInput })).structuredContent)
+    const checked = HostHarnessInstanceCheckResultSchema.parse(decodeMcpToolResult((await writer.client.callTool({
+      name: 'harness_instance_check', arguments: checkInput }))))
     expect(checked.value).toMatchObject({ configuration: saveInput.configuration, qualification: 'qualified' })
     const replay = await writer.client.callTool({ name: 'harness_instance_check', arguments: checkInput })
-    expect(HostHarnessInstanceCheckResultSchema.parse(replay.structuredContent).replayed).toBe(true)
+    expect(HostHarnessInstanceCheckResultSchema.parse(decodeMcpToolResult(replay)).replayed).toBe(true)
     expect(qualify).toHaveBeenCalledOnce()
     const readInput = { hostRef, applicationInstallationId: mainId }
-    const persisted = HostHarnessOverrideListSchema.parse((await reader.client.callTool({
-      name: 'harness_instances_list', arguments: readInput })).structuredContent)
+    const persisted = HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await reader.client.callTool({
+      name: 'harness_instances_list', arguments: readInput }))))
     expect(persisted.overrides).toEqual([checked.value])
     expect((await settings.getManagedHarnessDefaults()).defaults.claude).toEqual(configuration)
     const failedInspection = HarnessCatalogEntrySchema.parse((await reader.client.callTool({

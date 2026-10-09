@@ -1,3 +1,5 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { ManagedWorkspaceCommandResultSchema } from '@foreman-code/contracts/management'
 import { createHash, randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
@@ -159,9 +161,10 @@ it.each([
         expect(transport.results).toHaveLength(1)
         expect(transport.results[0]!.allowed).toBe(scenario !== 'denied-management')
         if (scenario === 'management') {
-          const result = transport.results[0]!.result as { isError?: boolean; structuredContent: { value: { workspace: { id: string } } } }
+          const result = transport.results[0]!.result as Parameters<typeof decodeMcpToolResult>[0] & { isError?: boolean }
           expect(result.isError).not.toBe(true)
-          const id = result.structuredContent.value.workspace.id
+          const created = ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(result))
+          const id = created.value.workspace.id
           const read = await graphRpc(app, owner.token, 'tools/call', { name: 'workspace_get', arguments: { workspaceId: id } })
           expect(graphRpcValue(read.result)).toMatchObject({ workspace: { id, name: arguments_.name } })
           expect((await pool.query('select record from workspaces where id=$1', [id])).rows[0]?.record)

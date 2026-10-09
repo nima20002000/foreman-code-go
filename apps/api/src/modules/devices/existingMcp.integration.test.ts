@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -47,7 +48,7 @@ it('serves device management through the existing authenticated API/MCP with den
     const ownerClient = await connect(owner.token), readerClient = await connect(reader.token), scopedClient = await connect(scoped.token)
     const toolNames = ['device_main_identity_get', 'devices_list', 'device_pairing_grant_create', 'device_revoke']
     expect((await ownerClient.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(toolNames))
-    const capability = (await ownerClient.callTool({ name: 'operator_get_capabilities', arguments: {} })).structuredContent as { tools: string[]; requirements: Array<{ name: string; actions: string[] }> }
+    const capability = decodeMcpToolResult((await ownerClient.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } }))) as { tools: string[]; requirements: Array<{ name: string; actions: string[] }> }
     expect(capability.tools).toEqual(expect.arrayContaining(toolNames))
     expect(capability.requirements.find(item => item.name === 'device_revoke')?.actions).toEqual(['settings:update'])
     expect((await readerClient.listTools()).tools.map(tool => tool.name)).not.toContain('device_revoke')
@@ -55,7 +56,7 @@ it('serves device management through the existing authenticated API/MCP with den
     const denied = await readerClient.callTool({ name: 'device_revoke', arguments: { deviceId: randomUUID(), expectedRevision: 1, commandId: randomUUID() } })
     expect(denied.isError).toBe(true)
     expect((await pool.query("select count(*)::int as count from management_audit where principal_id=$1 and source='mcp' and action='device_revoke' and outcome='denied'", [reader.principal.id])).rows[0].count).toBe(1)
-    const publicMain = MainDeviceIdentityPublicSchema.parse((await ownerClient.callTool({ name: 'device_main_identity_get', arguments: {} })).structuredContent)
+    const publicMain = MainDeviceIdentityPublicSchema.parse(decodeMcpToolResult((await ownerClient.callTool({ name: 'device_main_identity_get', arguments: {} }))))
     expect(publicMain.mainId).toBe(mainId)
     expect(publicMain.mainPublicKeyFingerprint).toBe(mainIdentity.publicKeyFingerprint)
     const httpMain = await app.inject({ method: 'GET', url: '/api/devices/main', headers: { authorization: `Bearer ${reader.token}` } })
@@ -65,20 +66,20 @@ it('serves device management through the existing authenticated API/MCP with den
     expect(explicitInvalid.statusCode).toBe(401)
     const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
     const grantInput = { workerInstallationId: randomUUID(), publicKey, expectedFingerprint: publicKeyFingerprint(publicKey), scopes: ['connect', 'heartbeat'], commandId: randomUUID() }
-    const issued = DevicePairingGrantResultSchema.parse((await ownerClient.callTool({ name: 'device_pairing_grant_create', arguments: grantInput })).structuredContent)
+    const issued = DevicePairingGrantResultSchema.parse(decodeMcpToolResult((await ownerClient.callTool({ name: 'device_pairing_grant_create', arguments: grantInput }))))
     const httpReplay = await app.inject({ method: 'POST', url: '/api/devices/pairing-grants', headers: { authorization: `Bearer ${owner.token}` }, payload: grantInput })
     expect(httpReplay.statusCode).toBe(200)
     expect(httpReplay.json()).toEqual(issued)
     const pairing = { mainId, workerInstallationId: grantInput.workerInstallationId, publicKey, grant: issued.grant, requestId: randomUUID() }
     const paired = await devices.pair({ ...pairing, signature: sign(null, Buffer.from(pairingProof(pairing)), keys.privateKey).toString('base64url') })
-    const readback = DeviceListResultSchema.parse((await ownerClient.callTool({ name: 'devices_list', arguments: {} })).structuredContent)
+    const readback = DeviceListResultSchema.parse(decodeMcpToolResult((await ownerClient.callTool({ name: 'devices_list', arguments: {} }))))
     expect(readback.devices).toEqual([paired.registration])
     expect(JSON.stringify(readback)).not.toContain(paired.credential)
     const httpRead = await app.inject({ method: 'GET', url: '/api/devices', headers: { authorization: `Bearer ${reader.token}` } })
     expect(httpRead.statusCode).toBe(200)
     expect(httpRead.json()).toEqual(readback)
     const revokeInput = { deviceId: paired.registration.deviceId, expectedRevision: 1, commandId: randomUUID() }
-    const revoked = (await ownerClient.callTool({ name: 'device_revoke', arguments: revokeInput })).structuredContent
+    const revoked = decodeMcpToolResult((await ownerClient.callTool({ name: 'device_revoke', arguments: revokeInput })))
     expect(revoked).toMatchObject({ status: 'revoked', authorizationRevision: 2 })
     const restart = new PostgresDeviceAccessService(pool, mainId)
     await expect(restart.authenticateDevice(paired.credential, 'connect')).rejects.toThrow()

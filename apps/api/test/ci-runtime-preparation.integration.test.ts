@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import pg from 'pg'
 import { randomUUID } from 'node:crypto'
@@ -143,7 +144,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       const unchanged = await f.call('build_computer_prepare_get', {
         workspaceId: fixture.workspaceId, profileId: 'p-unit',
       })
-      expect(BuildComputerPrepareStatusSchema.parse(unchanged.structuredContent).state).toBe('idle')
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(unchanged)).state).toBe('idle')
       expect((await f.call('build_computer_prepare', input, f.reader.token)).isError).toBe(true)
       expect(fixture.calls.prepare).toEqual([])
       expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
@@ -161,9 +162,9 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       expect(done.state).toBe('qualified')
       expect(done.preparationLimits).toEqual(ciPreparationLimits())
       const retry = await f.call('build_computer_prepare', input)
-      expect(BuildComputerPrepareStatusSchema.parse(retry.structuredContent)).toEqual(done)
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(retry))).toEqual(done)
       const read = await f.call('build_computer_prepare_get', { workspaceId: fixture.workspaceId, profileId: 'p-unit' }, f.reader.token)
-      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toEqual(done)
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(done)
       expect(fixture.calls.refresh).toHaveLength(1)
       expect(fixture.calls.saves).toHaveLength(2)
     } finally { stopped = true; release() }

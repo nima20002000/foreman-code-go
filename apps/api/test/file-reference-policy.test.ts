@@ -57,6 +57,22 @@ describe('FIL-36 management-only reference authority and transport schemas', () 
     assert.equal(fileReferenceToolAvailable(workspace, 'reference_file_add'), false)
     assert.equal(fileReferenceToolAvailable(context([{ actions: ['workspaces:read'], scope: { workspaceIds: [] } }]), 'reference_files_list'), false)
   })
+  it('checks selected reference scopes without borrowing grants from siblings or Runs', () => {
+    const scoped = context([
+      { actions: ['workflows:read'], scope: { workspaceIds: ['one'], workflowIds: ['a', 'b'] } },
+      { actions: ['workflows:update'], scope: { workspaceIds: ['one'], workflowIds: ['b'] } },
+    ])
+    const resource = { workspaceId: 'one', workflowId: 'b', runId: 'run' }
+    assert.equal(fileReferenceToolAvailable(scoped, 'reference_file_add', resource), true)
+    assert.equal(fileReferenceToolAvailable(scoped, 'reference_file_add', { ...resource, workflowId: 'a' }), false)
+    assert.equal(fileReferenceToolAvailable(scoped, 'reference_file_read', { ...resource, workflowId: 'a' }), true)
+    assert.equal(fileReferenceToolAvailable(scoped, 'reference_file_read', { ...resource, workspaceId: 'two' }), false)
+    assert.equal(fileReferenceToolAvailable(scoped, 'reference_file_read', { workspaceId: 'one' }), false)
+    const run = context([{ actions: ['workflows:read'], scope: { runIds: ['run'] } }])
+    assert.equal(fileReferenceToolAvailable(run, 'reference_file_read', resource), false)
+    const workspace = context([{ actions: ['workspaces:read'], scope: { workspaceIds: ['one'] } }])
+    assert.equal(fileReferenceToolAvailable(workspace, 'reference_file_read', resource), true)
+  })
   it('does not list capabilities for workers, revoked callers, or absent services', () => {
     const allowed = context([{ actions: ['workspaces:read', 'workspaces:update'], scope: {} }])
     assert.equal(fileReferenceToolAvailable({ ...allowed, principal: { ...allowed.principal, audience: 'worker' } }, 'reference_file_add'), false)

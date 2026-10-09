@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -47,21 +48,21 @@ describe.skipIf(!postgresEnabled)('Claude plugins through authenticated Operator
       return client
     }
     const operator = await connect(writer.token)
-    const read = async () => ClaudePluginListResultSchema.parse((await operator.callTool({
+    const read = async () => ClaudePluginListResultSchema.parse(decodeMcpToolResult((await operator.callTool({
       name: 'claude_plugins_list', arguments: {},
-    })).structuredContent)
+    }))))
     expect((await operator.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
       'claude_plugins_list', 'claude_plugin_change', 'claude_plugin_marketplace_add',
     ]))
     const marketplaceInput = { source: 'owner/official', commandId: randomUUID(), expectedRevision: (await read()).revision }
     const marketplace = await operator.callTool({ name: 'claude_plugin_marketplace_add', arguments: marketplaceInput })
-    expect(ClaudePluginMarketplaceAddResultSchema.parse(marketplace.structuredContent).marketplaces)
+    expect(ClaudePluginMarketplaceAddResultSchema.parse(decodeMcpToolResult(marketplace)).marketplaces)
       .toContainEqual({ name: 'official', source: 'owner/official' })
     const input = { pluginId: 'notes@official', action: 'install', commandId: randomUUID(), expectedRevision: (await read()).revision }
     const applied = await operator.callTool({ name: 'claude_plugin_change', arguments: input })
-    expect(ClaudePluginChangeResultSchema.parse(applied.structuredContent)).toMatchObject({ status: 'applied', plugin: { installed: true } })
+    expect(ClaudePluginChangeResultSchema.parse(decodeMcpToolResult(applied))).toMatchObject({ status: 'applied', plugin: { installed: true } })
     const replay = await operator.callTool({ name: 'claude_plugin_change', arguments: input })
-    expect(replay.structuredContent).toEqual(applied.structuredContent)
+    expect(decodeMcpToolResult(replay)).toEqual(decodeMcpToolResult(applied))
     expect(fake.changes.filter(change => change === 'install:notes@official')).toHaveLength(1)
     const stale = await operator.callTool({ name: 'claude_plugin_change', arguments: { ...input, commandId: randomUUID(), action: 'disable' } })
     expect(stale.isError).toBe(true)
@@ -83,15 +84,15 @@ describe.skipIf(!postgresEnabled)('Claude plugins through authenticated Operator
     }
     fake.installed.set('review@official', { version: '2.0.0', enabled: true })
     const refreshed = await operator.callTool({ name: 'claude_plugins_list', arguments: { refresh: true } })
-    expect(ClaudePluginListResultSchema.parse(refreshed.structuredContent).items[0]?.version).toBe('2.0.0')
+    expect(ClaudePluginListResultSchema.parse(decodeMcpToolResult(refreshed)).items[0]?.version).toBe('2.0.0')
     fake.installed.delete('review@official')
     await operator.callTool({ name: 'claude_plugins_list', arguments: { refresh: true } })
     const available = await operator.callTool({ name: 'claude_plugins_list', arguments: { view: 'available', query: 'review', limit: 1 } })
-    expect(ClaudePluginListResultSchema.parse(available.structuredContent).items.map(item => item.pluginId)).toEqual(['review@official'])
+    expect(ClaudePluginListResultSchema.parse(decodeMcpToolResult(available)).items.map(item => item.pluginId)).toEqual(['review@official'])
     const review = await operator.callTool({ name: 'claude_plugin_change', arguments: {
       ...input, pluginId: 'command@official', commandId: randomUUID(), expectedRevision: (await read()).revision,
     } })
-    expect(ClaudePluginChangeResultSchema.parse(review.structuredContent)).toMatchObject({ status: 'command_review' })
+    expect(ClaudePluginChangeResultSchema.parse(decodeMcpToolResult(review))).toMatchObject({ status: 'command_review' })
     expect(fake.installed.has('command@official')).toBe(false)
     const nativeRun = fake.ports.run
     let failReadback = false
@@ -106,9 +107,9 @@ describe.skipIf(!postgresEnabled)('Claude plugins through authenticated Operator
     }
     const recoveryInput = { ...input, commandId: randomUUID(), expectedRevision: (await read()).revision }
     const uncertain = await operator.callTool({ name: 'claude_plugin_change', arguments: recoveryInput })
-    expect(ClaudePluginChangeResultSchema.parse(uncertain.structuredContent).status).toBe('uncertain')
+    expect(ClaudePluginChangeResultSchema.parse(decodeMcpToolResult(uncertain)).status).toBe('uncertain')
     const recovered = await operator.callTool({ name: 'claude_plugin_change', arguments: recoveryInput })
-    expect(ClaudePluginChangeResultSchema.parse(recovered.structuredContent).status).toBe('applied')
+    expect(ClaudePluginChangeResultSchema.parse(decodeMcpToolResult(recovered)).status).toBe('applied')
     expect(fake.changes.filter(change => change === 'install:notes@official')).toHaveLength(2)
     await operator.callTool({ name: 'claude_plugin_change', arguments: {
       ...input, action: 'uninstall', commandId: randomUUID(), expectedRevision: (await read()).revision,

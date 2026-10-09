@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from 'vitest'
 import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
@@ -91,16 +92,16 @@ it('serves saved-node choices through production HTTP and authenticated Operator
   expect(read.headers.vary).toBe('Authorization, Cookie')
   const result = await rpc('tools/call', { name: 'workflow_node_placement_choices', arguments: input })
   expect(result.isError).not.toBe(true)
-  expect(result.structuredContent).toEqual(read.json())
+  expect(decodeMcpToolResult(result)).toEqual(read.json())
   expect(discover).toHaveBeenCalledWith(principal, input)
   const tools = await rpc('tools/list', {})
   expect(tools.tools).toContainEqual(expect.objectContaining({ name: 'workflow_node_placement_choices',
     inputSchema: expect.objectContaining({ required: expect.arrayContaining(Object.keys(input)) }) }))
-  const capabilities = await rpc('tools/call', { name: 'operator_get_capabilities', arguments: {
+  const capabilities = await rpc('tools/call', { name: 'operator_get_capabilities', arguments: { detail: 'full',
     workspaceId: input.workspaceId, workflowId: input.workflowId,
   } })
-  expect(capabilities.structuredContent.tools).toContain('workflow_node_placement_choices')
-  expect(capabilities.structuredContent.requirements).toContainEqual(expect.objectContaining({
+  expect(decodeMcpToolResult(capabilities).tools).toContain('workflow_node_placement_choices')
+  expect(decodeMcpToolResult(capabilities).requirements).toContainEqual(expect.objectContaining({
     name: 'workflow_node_placement_choices', actions: placementChoiceRequirements.map(item => item.action),
   }))
 })

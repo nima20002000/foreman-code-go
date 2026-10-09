@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import assert from 'node:assert/strict'
 import type pg from 'pg'
 import type { McpServer } from '@modelcontextprotocol/server'
@@ -160,14 +161,14 @@ describe('G4 readback and legacy receipt recovery', () => {
     assert.equal(options.annotations.readOnlyHint, true)
     const input = ReadAgentChatRequestSchema.parse({ workspaceId, query, history: { limit: 1, before: '3' }, receipts: { limit: 100 } })
     const response = await handle(input)
-    const output = ReadAgentChatResponseSchema.parse(response.structuredContent)
+    const output = ReadAgentChatResponseSchema.parse(decodeMcpToolResult(response))
     assert.deepEqual(output.history, history)
     assert.deepEqual(output.receipts, receipts)
     assert.equal(page.mock.calls[0]![2], 'chat-g4')
     assert.deepEqual(page.mock.calls[0]!.slice(3), ['3', 1])
     assert.deepEqual(turns.mock.calls[0]!.slice(3), [undefined, 100])
     const ordinary = await handle({ workspaceId, query })
-    assert.deepEqual(ordinary.structuredContent, state)
+    assert.deepEqual(decodeMcpToolResult(ordinary), state)
     assert.equal(page.mock.calls.length, 1)
     assert.equal(read.mock.calls.length, 2)
   })

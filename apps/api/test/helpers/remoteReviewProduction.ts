@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID, sign, X509Certificate } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -264,7 +265,7 @@ export async function remoteReviewProduction(options: {
       if (response.isError) {
         throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`)
       }
-      return response.structuredContent
+      return decodeMcpToolResult(response)
     }
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
     const mainHost = { kind: 'main' as const, mainId }

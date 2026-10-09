@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -144,12 +145,12 @@ describe('installed ordinary verification qualification through authenticated MC
       const saved = await operator.callTool({ name: 'job_runtime_profile_save', arguments: {
         workspaceId, commandId: randomUUID(), expectedRevision: null, name: 'Complete ordinary verification', spec } })
       expect(saved.isError, JSON.stringify(saved.content)).not.toBe(true)
-      const profile = JobVerificationProfileSchema.parse((saved.structuredContent as { profile: unknown }).profile)
+      const profile = JobVerificationProfileSchema.parse((decodeMcpToolResult(saved) as { profile: unknown }).profile)
       const request = { workspaceId, commandId: randomUUID(), profileId: profile.id, expectedRevision: profile.revision }
       expect((await readonly.callTool({ name: 'job_runtime_qualification_request', arguments: request })).isError).toBe(true)
       const pending = await operator.callTool({ name: 'job_runtime_qualification_request', arguments: request })
       expect(pending.isError, JSON.stringify(pending.content)).not.toBe(true)
-      const approvalId = (pending.structuredContent as { approval: { id: string } }).approval.id
+      const approvalId = (decodeMcpToolResult(pending) as { approval: { id: string } }).approval.id
       // The paired computer qualifies its captured candidate directly through MCP; no human step.
       const run = { workspaceId, approvalId, commandId: randomUUID() }
       expect((await readonly.callTool({ name: 'job_runtime_qualification_run', arguments: run })).isError).toBe(true)
@@ -157,7 +158,7 @@ describe('installed ordinary verification qualification through authenticated MC
         { timeout: 24 * 60 * 60 * 1000 })
       expect(qualified.isError, JSON.stringify(qualified.content)).not.toBe(true)
       const read = await operator.callTool({ name: 'job_runtime_qualification_get', arguments: { workspaceId, approvalId } })
-      const completed = JobRuntimeQualificationReadRecordSchema.parse(read.structuredContent)
+      const completed = JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(read))
       expect(completed.profile.status).toBe('qualified')
       expect(completed.measurement?.schemaVersion).toBe(2)
       expect(completed.readiness.ready).toBe(true)
@@ -170,18 +171,18 @@ describe('installed ordinary verification qualification through authenticated MC
         expect((await readonly.callTool({ name: 'job_get', arguments: args })).isError).toBe(true)
         const observed = await operator.callTool({ name: 'job_get', arguments: args })
         expect(observed.isError, JSON.stringify(observed.content)).not.toBe(true)
-        const diagnostic = JobExecutionRecordSchema.parse((observed.structuredContent as { execution: unknown }).execution)
+        const diagnostic = JobExecutionRecordSchema.parse((decodeMcpToolResult(observed) as { execution: unknown }).execution)
         expect(diagnostic.process.processStopped).toBe(true)
         expect(diagnostic.publication).toBe('complete')
         const listed = await operator.callTool({ name: 'job_artifacts_list', arguments: args })
-        expect((listed.structuredContent as { artifacts: unknown }).artifacts).toEqual(publication.artifacts)
+        expect((decodeMcpToolResult(listed) as { artifacts: unknown }).artifacts).toEqual(publication.artifacts)
         const summary = publication.artifacts.find(artifact => artifact.path.endsWith('/summary.json'))!
         const readArgs = { ...args, fileId: summary.fileId, revisionId: summary.revisionId }
         expect((await readonly.callTool({ name: 'job_artifact_read', arguments: readArgs })).isError).toBe(true)
         const content = await operator.callTool({ name: 'job_artifact_read', arguments: readArgs })
         expect(content.isError, JSON.stringify(content.content)).not.toBe(true)
         const report = JobVerificationReportSchema.parse(JSON.parse(Buffer.from(
-          (content.structuredContent as { content: string }).content, 'base64').toString('utf8')))
+          (decodeMcpToolResult(content) as { content: string }).content, 'base64').toString('utf8')))
         expect(report.executionId).toBe(diagnostic.id)
         expect(report.outcome).toBe(diagnostic.process.outcome === 'succeeded' ? 'passed' : diagnostic.process.outcome)
       }
@@ -191,7 +192,7 @@ describe('installed ordinary verification qualification through authenticated MC
       expect(settings.state).toBe('ready')
       const choicesRead = await operator.callTool({ name: 'job_choices_get', arguments: { workspaceId } })
       expect(choicesRead.isError, JSON.stringify(choicesRead.content)).not.toBe(true)
-      const choices = JobAuthoringChoicesRecordSchema.parse(choicesRead.structuredContent)
+      const choices = JobAuthoringChoicesRecordSchema.parse(decodeMcpToolResult(choicesRead))
       const template = choices.verificationTemplates!.find(item => item.profileId === profile.id && item.suite === 'install')!
       expect(template.ready).toBe(true)
       const saveDefinition = { workspaceId,
@@ -205,17 +206,17 @@ describe('installed ordinary verification qualification through authenticated MC
       expect((await readonly.callTool({ name: 'job_definition_save', arguments: saveDefinition })).isError).toBe(true)
       const savedDefinition = await operator.callTool({ name: 'job_definition_save', arguments: saveDefinition })
       expect(savedDefinition.isError, JSON.stringify(savedDefinition.content)).not.toBe(true)
-      const definition = JobDefinitionRecordSchema.parse((savedDefinition.structuredContent as { definition: unknown }).definition)
+      const definition = JobDefinitionRecordSchema.parse((decodeMcpToolResult(savedDefinition) as { definition: unknown }).definition)
       const definitionRead = await operator.callTool({ name: 'job_definition_get', arguments: {
         workspaceId, definitionId: definition.id } })
-      expect((definitionRead.structuredContent as { definition: unknown }).definition).toEqual(definition)
+      expect((decodeMcpToolResult(definitionRead) as { definition: unknown }).definition).toEqual(definition)
       expect((await readonly.callTool({ name: 'job_start', arguments: {
         workspaceId, commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision } })).isError).toBe(true)
       const started = await operator.callTool({ name: 'job_start', arguments: {
         workspaceId, commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision } },
       { timeout: template.policy.preparationTimeoutMs + 60000 })
       expect(started.isError, JSON.stringify(started.content)).not.toBe(true)
-      const admission = JobAdmissionResultSchema.parse((started.structuredContent as { admission: unknown }).admission)
+      const admission = JobAdmissionResultSchema.parse((decodeMcpToolResult(started) as { admission: unknown }).admission)
       let executionId: string
       if (admission.kind === 'pending-admission') executionId = admission.ticket.executionId
       else if (admission.kind === 'accepted') executionId = admission.executionId
@@ -230,7 +231,7 @@ describe('installed ordinary verification qualification through authenticated MC
             await runtime!.dispatch.wake(id)
             const read = await operator.callTool({ name: 'job_get', arguments: { workspaceId, executionId: id } })
             expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-            const value = JobExecutionRecordSchema.parse((read.structuredContent as { execution: unknown }).execution)
+            const value = JobExecutionRecordSchema.parse((decodeMcpToolResult(read) as { execution: unknown }).execution)
             if (ready(value)) return value
           }
           await new Promise(resolve => setTimeout(resolve, 1000))
@@ -244,7 +245,7 @@ describe('installed ordinary verification qualification through authenticated MC
         publication: 'complete', acceptedSpec: { target: { hostRef: { kind: 'main' } } } })
       const executionReadback = await operator.callTool({ name: 'job_get', arguments: { workspaceId, executionId: execution!.id } })
       expect(executionReadback.isError, JSON.stringify(executionReadback.content)).not.toBe(true)
-      expect((executionReadback.structuredContent as { execution: unknown }).execution).toEqual(execution)
+      expect((decodeMcpToolResult(executionReadback) as { execution: unknown }).execution).toEqual(execution)
       expect((await runtime.jobs.listArtifacts(owner.principal, workspaceId, execution!.id, 'mcp')).map(output => output.path).sort())
         .toEqual(template.outputs!.map(output => output.path).sort())
       const unitTemplate = choices.verificationTemplates!.find(item => item.profileId === profile.id && item.suite === 'unit')!
@@ -253,11 +254,11 @@ describe('installed ordinary verification qualification through authenticated MC
         spec: { ...saveDefinition.spec, argv: unitTemplate.argv, outputs: unitTemplate.outputs,
           verification: { ...saveDefinition.spec.verification, suite: 'unit', parameters: unitTemplate.parameters } } } })
       expect(unitSave.isError, JSON.stringify(unitSave.content)).not.toBe(true)
-      const unitDefinition = JobDefinitionRecordSchema.parse((unitSave.structuredContent as { definition: unknown }).definition)
+      const unitDefinition = JobDefinitionRecordSchema.parse((decodeMcpToolResult(unitSave) as { definition: unknown }).definition)
       const unitStart = await operator.callTool({ name: 'job_start', arguments: { workspaceId,
         commandId: randomUUID(), definitionId: unitDefinition.id, expectedRevision: unitDefinition.revision } })
       expect(unitStart.isError, JSON.stringify(unitStart.content)).not.toBe(true)
-      const unitAdmission = JobAdmissionResultSchema.parse((unitStart.structuredContent as { admission: unknown }).admission)
+      const unitAdmission = JobAdmissionResultSchema.parse((decodeMcpToolResult(unitStart) as { admission: unknown }).admission)
       let unitExecutionId: string
       if (unitAdmission.kind === 'pending-admission') unitExecutionId = unitAdmission.ticket.executionId
       else if (unitAdmission.kind === 'accepted') unitExecutionId = unitAdmission.executionId
@@ -272,18 +273,18 @@ describe('installed ordinary verification qualification through authenticated MC
       const cancelled = await waitForExecution(active.id, settled)
       expect(cancelled).toMatchObject({ process: { outcome: 'cancelled', processStopped: true }, publication: 'complete' })
       const reports = await operator.callTool({ name: 'job_artifacts_list', arguments: { workspaceId, executionId: active.id } })
-      const summary = (reports.structuredContent as { artifacts: Array<{ path: string; fileId: string; revisionId: string }> })
+      const summary = (decodeMcpToolResult(reports) as { artifacts: Array<{ path: string; fileId: string; revisionId: string }> })
         .artifacts.find(artifact => artifact.path.endsWith('/summary.json'))!
       const reportRead = await operator.callTool({ name: 'job_artifact_read', arguments: { workspaceId,
         executionId: active.id, fileId: summary.fileId, revisionId: summary.revisionId } })
       expect(reportRead.isError, JSON.stringify(reportRead.content)).not.toBe(true)
       const cancelledReport = JobVerificationReportSchema.parse(JSON.parse(Buffer.from(
-        (reportRead.structuredContent as { content: string }).content, 'base64').toString('utf8')))
+        (decodeMcpToolResult(reportRead) as { content: string }).content, 'base64').toString('utf8')))
       expect(cancelledReport).toMatchObject({ outcome: 'cancelled', executionId: active.id, attemptId: active.attemptId })
       expect((await readonly.callTool({ name: 'job_runtime_qualification_run', arguments: run })).isError).toBe(true)
       const replay = await operator.callTool({ name: 'job_runtime_qualification_run', arguments: run })
       expect(replay.isError).not.toBe(true)
-      expect((replay.structuredContent as { profile: unknown }).profile).toEqual(completed.profile)
+      expect((decodeMcpToolResult(replay) as { profile: unknown }).profile).toEqual(completed.profile)
       const restarted = createInstalledJobRuntimeHost({ identity: db.pool, configuration: location,
         reserve: async () => { throw new Error('Metadata restart cannot reserve native work.') } })
       expect(await restarted.currentMetadata(db.pool, completed.profile)).toBeNull()

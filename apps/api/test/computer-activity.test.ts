@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import pg from 'pg'
@@ -148,12 +149,12 @@ it('serves authenticated HTTP and MCP activity with persisted readback and permi
   try {
     const client = await f.connect('owner')
     expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_activity_list')
-    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
     expect(capabilities.isError, JSON.stringify(capabilities)).not.toBe(true)
-    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['computer_activity_list']) })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({ tools: expect.arrayContaining(['computer_activity_list']) })
     const read = await client.callTool({ name: 'computer_activity_list', arguments: {} })
     expect(read.isError).not.toBe(true)
-    const result = ComputerActivityListSchema.parse(read.structuredContent)
+    const result = ComputerActivityListSchema.parse(decodeMcpToolResult(read))
     expect(result.activityComplete).toBe(true)
     expect(result.computers[1]).toMatchObject({ target, online: true, jobs: [job('visible', 'allowed').activity,
       job('secret', 'private').activity], agents: [agent('visible', 'allowed').activity, agent('secret', 'private').activity] })
@@ -163,7 +164,7 @@ it('serves authenticated HTTP and MCP activity with persisted readback and permi
     f.jobs.splice(0)
     f.agents.splice(0)
     const idle = await client.callTool({ name: 'computer_activity_list', arguments: {} })
-    expect(ComputerActivityListSchema.parse(idle.structuredContent).computers[1]).toMatchObject({ jobs: [], agents: [] })
+    expect(ComputerActivityListSchema.parse(decodeMcpToolResult(idle)).computers[1]).toMatchObject({ jobs: [], agents: [] })
     expect((await f.app.inject({ url: '/api/management/computers/activity', headers: { authorization: 'Bearer unknown' } })).statusCode).toBe(401)
   } finally { await f.close() }
 })
@@ -179,7 +180,7 @@ it('denies hidden MCP and HTTP calls and filters workspace activity without impl
       headers: { authorization: 'Bearer denied' } })).statusCode).toBe(403)
     const scopedClient = await f.connect('scoped')
     const read = await scopedClient.callTool({ name: 'computer_activity_list', arguments: {} })
-    const result = ComputerActivityListSchema.parse(read.structuredContent)
+    const result = ComputerActivityListSchema.parse(decodeMcpToolResult(read))
     expect(result.activityComplete).toBe(false)
     expect(result.computers[1]?.jobs.map(value => value.id)).toEqual(['visible'])
     expect(result.computers[1]?.agents.map(value => value.id)).toEqual(['visible'])
@@ -209,20 +210,20 @@ it('supports revisioned build allowance and priority edits through authenticated
       buildPriority: 100, buildAllowancePercent: 60 }
     const save = await client.callTool({ name: 'build_computer_update', arguments: input })
     expect(save.isError).not.toBe(true)
-    const saved = BuildComputerStatusSchema.parse(save.structuredContent)
+    const saved = BuildComputerStatusSchema.parse(decodeMcpToolResult(save))
     expect(saved.preference).toMatchObject({ revision: 1, buildPriority: 100, buildAllowancePercent: 60 })
     expect(saved.preference).not.toHaveProperty('buildRole')
     const replay = await client.callTool({ name: 'build_computer_update', arguments: input })
-    expect(BuildComputerStatusSchema.parse(replay.structuredContent)).toEqual(saved)
+    expect(BuildComputerStatusSchema.parse(decodeMcpToolResult(replay))).toEqual(saved)
     const read = await client.callTool({ name: 'build_computer_get', arguments: { target } })
-    expect(BuildComputerStatusSchema.parse(read.structuredContent)).toEqual(saved)
+    expect(BuildComputerStatusSchema.parse(decodeMcpToolResult(read))).toEqual(saved)
     const conflict = await client.callTool({ name: 'build_computer_update', arguments: { ...input, commandId: 'stale-save' } })
     expect(conflict.isError).toBe(true)
     const reader = await f.connect('settings-reader')
     const deniedSave = await reader.callTool({ name: 'build_computer_update', arguments: { ...input, expectedRevision: 1 } })
     expect(deniedSave.isError).toBe(true)
     const persisted = await reader.callTool({ name: 'build_computer_get', arguments: { target } })
-    expect(BuildComputerStatusSchema.parse(persisted.structuredContent)).toEqual(saved)
+    expect(BuildComputerStatusSchema.parse(decodeMcpToolResult(persisted))).toEqual(saved)
   } finally { await f.close() }
 })
 
@@ -231,18 +232,18 @@ it('reads every computer signed-in account through HTTP and MCP, caching probes 
   try {
     const client = await f.connect('owner')
     expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_accounts_list')
-    const read = ComputerAccountsListSchema.parse((await client.callTool({ name: 'computer_accounts_list', arguments: {} })).structuredContent)
+    const read = ComputerAccountsListSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computer_accounts_list', arguments: {} }))))
     expect(read.computers.map(computer => computer.accounts?.accounts[0]?.account)).toEqual(['main@example.com', 'laptop@example.com'])
     const http = await f.app.inject({ url: '/api/management/computers/accounts', headers: { authorization: 'Bearer owner' } })
     expect(ComputerAccountsListSchema.parse(http.json())).toEqual(read)
     expect([f.mainProbes.calls, f.deviceAnswers.calls]).toEqual([1, 1])
     f.deviceAnswers.email = 'switched@example.com'
-    const refreshed = ComputerAccountsListSchema.parse((await client.callTool({ name: 'computer_accounts_list',
-      arguments: { refresh: true } })).structuredContent)
+    const refreshed = ComputerAccountsListSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computer_accounts_list',
+      arguments: { refresh: true } }))))
     expect(refreshed.computers[1]?.accounts?.accounts[0]?.account).toBe('switched@example.com')
     f.setPresence(null)
-    const offline = ComputerAccountsListSchema.parse((await client.callTool({ name: 'computer_accounts_list',
-      arguments: { refresh: true } })).structuredContent)
+    const offline = ComputerAccountsListSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computer_accounts_list',
+      arguments: { refresh: true } }))))
     expect(offline.computers[1]?.accounts).toBeNull()
     const reader = await f.connect('denied')
     expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_accounts_list')
@@ -258,13 +259,13 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
     const client = await f.connect('owner')
     const mainTarget = { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId, keyRevision: null, authorizationRevision: null }
     const startCall = await client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
-    const started = GitHubLoginStateSchema.parse(startCall.structuredContent)
+    const started = GitHubLoginStateSchema.parse(decodeMcpToolResult(startCall))
     expect(started).toMatchObject({ state: 'waiting', code: 'AB12-CD34' })
-    const done = GitHubLoginStateSchema.parse((await client.callTool({ name: 'computer_github_login_status',
-      arguments: { target, loginId: started.loginId } })).structuredContent)
+    const done = GitHubLoginStateSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computer_github_login_status',
+      arguments: { target, loginId: started.loginId } }))))
     expect(done).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
     const logout = await client.callTool({ name: 'computer_github_logout', arguments: { target } })
-    expect(GitHubLoginStateSchema.parse(logout.structuredContent).state).toBe('signed-out')
+    expect(GitHubLoginStateSchema.parse(decodeMcpToolResult(logout)).state).toBe('signed-out')
     expect(f.githubCalls.map(call => [call.where, call.request.operation])).toEqual([
       ['main', 'login-start'], ['device', 'login-status'], ['device', 'logout']])
     const stale = await client.callTool({ name: 'computer_github_login_start',
@@ -289,9 +290,9 @@ it('refreshes the server account cache after GitHub account changes through auth
     keyRevision: null, authorizationRevision: null }
   try {
     const client = await f.connect('owner')
-    const read = async () => ComputerAccountsListSchema.parse((await client.callTool({
+    const read = async () => ComputerAccountsListSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'computer_accounts_list', arguments: {},
-    })).structuredContent)
+    }))))
     expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.account).toBe('octo-owner')
     await client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
     await client.callTool({ name: 'computer_github_login_status', arguments: {
@@ -315,16 +316,16 @@ it('discovers Git setup retry through MCP and preserves write permission checks'
     const client = await f.connect('owner')
     const tools = (await client.listTools()).tools.map(tool => tool.name)
     expect(tools).toContain('computer_github_setup_git')
-    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['computer_github_setup_git']) })
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({ tools: expect.arrayContaining(['computer_github_setup_git']) })
     const input = { target: mainTarget, loginId: '66666666-6666-4666-8666-666666666666' }
     const status = await client.callTool({ name: 'computer_github_login_status', arguments: input })
-    expect(GitHubLoginStateSchema.parse(status.structuredContent)).toMatchObject({ state: 'git-setup-failed', account: 'octo-owner' })
+    expect(GitHubLoginStateSchema.parse(decodeMcpToolResult(status))).toMatchObject({ state: 'git-setup-failed', account: 'octo-owner' })
     const reader = await f.connect('settings-reader')
     expect((await reader.callTool({ name: 'computer_github_setup_git', arguments: input })).isError).toBe(true)
     expect(f.githubCalls).toHaveLength(1)
     const retry = await client.callTool({ name: 'computer_github_setup_git', arguments: input })
-    expect(GitHubLoginStateSchema.parse(retry.structuredContent)).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
+    expect(GitHubLoginStateSchema.parse(decodeMcpToolResult(retry))).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
     expect(f.audited).toHaveBeenCalledWith('owner', 'mcp', 'computer_github_setup_git', `main:${mainId}`, 'succeeded', { state: 'signed-in' })
   } finally { await f.close() }
 })
@@ -372,14 +373,14 @@ it('orders an authenticated MCP account switch after pending credential removal'
     const reader = await f.connect('settings-reader')
     expect((await reader.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })).isError).toBe(true)
     release()
-    expect(GitHubLoginStateSchema.parse((await logout).structuredContent).state).toBe('signed-out')
-    const waiting = GitHubLoginStateSchema.parse((await start).structuredContent)
+    expect(GitHubLoginStateSchema.parse(decodeMcpToolResult((await logout))).state).toBe('signed-out')
+    const waiting = GitHubLoginStateSchema.parse(decodeMcpToolResult((await start)))
     expect(events).toEqual(['logout', 'verified signed-out', 'login'])
     account = 'switched-owner'
     child.emit('exit', 0)
-    await vi.waitFor(async () => expect(GitHubLoginStateSchema.parse((await client.callTool({
+    await vi.waitFor(async () => expect(GitHubLoginStateSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'computer_github_login_status', arguments: { target: mainTarget, loginId: waiting.loginId },
-    })).structuredContent)).toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
+    }))))).toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
   } finally {
     release()
     runner.close()

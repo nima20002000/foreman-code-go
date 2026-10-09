@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
@@ -90,9 +91,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
     const readClient = await connect(reader.token)
     expect((await readClient.listTools()).tools.map((tool) => tool.name)).not.toContain('harness_qualification_run')
     await expectMcpAccessDenied(readClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } }))
-    const compatible = HarnessCompatibilityListSchema.parse((await readClient.callTool({
+    const compatible = HarnessCompatibilityListSchema.parse(decodeMcpToolResult((await readClient.callTool({
       name: 'harness_compatibility_list', arguments: {},
-    })).structuredContent)
+    }))))
     expect(compatible.harnesses[0]).toMatchObject({ installedVersion: '0.160.0', status: 'probe-passed', source: 'cache' })
     expect(compatible.canRetry).toBe(false)
     await expectMcpAccessDenied(readClient.callTool({ name: 'harness_compatibility_retry', arguments: { harness: 'codex' } }))
@@ -105,7 +106,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
     const started = await writeClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })
     expect(started.isError).not.toBe(true)
     await viWaitFor(async () => expect((await repository.list())[0]?.status).toBe('qualified'))
-    const listed = HarnessQualificationListSchema.parse((await readClient.callTool({ name: 'harness_qualifications_list', arguments: {} })).structuredContent)
+    const listed = HarnessQualificationListSchema.parse(decodeMcpToolResult((await readClient.callTool({ name: 'harness_qualifications_list', arguments: {} }))))
     expect(listed.qualifications[0]).toMatchObject({ harness: 'codex', version: '0.158.0', status: 'qualified', suiteRevision: 'fake-v1',
       checks: [{ id: 'static-compatibility', passed: true }, { id: 'protocol', passed: true }] })
     expect(await registry.trusted('codex', '0.158.0', listed.qualifications[0]!.binarySha256!)).toBe(true)

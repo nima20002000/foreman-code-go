@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { logArchive } from '../../../scripts/verification-reports.mjs'
 import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities, partitionUnitCapabilities }
   from '../../../scripts/integration-capabilities.mjs'
@@ -172,7 +173,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     const artifactArguments = { workspaceId: execution.workspaceId, executionId: execution.id,
       fileId: p.fileId, revisionId: p.revisionId }
     const result = await ownerClient.callTool({ name: 'job_artifact_read', arguments: artifactArguments })
-    expect(result.structuredContent).toMatchObject({ artifact: p, content: data.toString('base64') })
+    expect(decodeMcpToolResult(result)).toMatchObject({ artifact: p, content: data.toString('base64') })
     const deniedClient = new Client({ name: 'artifact-reader', version: '1' })
     clients.push(deniedClient)
     await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
@@ -259,17 +260,17 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
         if (allowed) {
           expect(http.rawPayload).toEqual(data)
           expect(mcp.isError).not.toBe(true)
-          expect(mcp.structuredContent).toMatchObject({ artifact: published.artifact, content: data.toString('base64') })
-          expect(list.structuredContent).toEqual({ artifacts: [published.artifact] })
+          expect(decodeMcpToolResult(mcp)).toMatchObject({ artifact: published.artifact, content: data.toString('base64') })
+          expect(decodeMcpToolResult(list)).toEqual({ artifacts: [published.artifact] })
           const firstResult = await client.callTool({ name: 'job_artifact_read',
             arguments: { ...input, offset: 0, limit: 4 } })
           expect(firstResult.isError).not.toBe(true)
-          const first = JobArtifactReadOutputSchema.parse(firstResult.structuredContent)
+          const first = JobArtifactReadOutputSchema.parse(decodeMcpToolResult(firstResult))
           expect(first).toMatchObject({ artifact: published.artifact, offset: 0, nextOffset: 4 })
           const lastResult = await client.callTool({ name: 'job_artifact_read',
             arguments: { ...input, offset: first.nextOffset } })
           expect(lastResult.isError).not.toBe(true)
-          const last = JobArtifactReadOutputSchema.parse(lastResult.structuredContent)
+          const last = JobArtifactReadOutputSchema.parse(decodeMcpToolResult(lastResult))
           expect(last).toMatchObject({ artifact: published.artifact, offset: 4, nextOffset: null })
           expect(Buffer.concat([Buffer.from(first.content, 'base64'), Buffer.from(last.content, 'base64')])).toEqual(data)
         } else {
@@ -449,11 +450,11 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     const run = { workspaceId, approvalId: approval.id, commandId: randomUUID() }
     const completed = await owner.callTool({ name: 'job_runtime_qualification_run', arguments: run })
     expect(completed.isError, JSON.stringify(completed.content)).not.toBe(true)
-    expect(completed.structuredContent).toMatchObject({ profile: { status: 'failed', measurement: null } })
+    expect(decodeMcpToolResult(completed)).toMatchObject({ profile: { status: 'failed', measurement: null } })
     await expect(readFile(join(workload, 'worker.log'))).rejects.toMatchObject({ code: 'ENOENT' })
     const status = await owner.callTool({ name: 'job_runtime_qualification_get',
       arguments: { workspaceId, approvalId: approval.id } })
-    const retained = JobRuntimeQualificationReadRecordSchema.parse(status.structuredContent)
+    const retained = JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(status))
     expect(retained.readiness).toMatchObject({ ready: false,
       reasons: [expect.stringContaining(`Reports: Job ${summary.executionId}.`)] })
     expect(retained.readiness.reasons[0]).toContain(`exit ${exitCode}`)
@@ -461,17 +462,17 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     const executionId = /Reports: Job ([^.]+)\./.exec(retained.readiness.reasons[0]!)![1]!
     const list = await owner.callTool({ name: 'job_artifacts_list', arguments: { workspaceId, executionId } })
     expect(list.isError, JSON.stringify(list.content)).not.toBe(true)
-    const saved = (list.structuredContent as { artifacts: Array<{ path: string; fileId: string; revisionId: string }> }).artifacts
+    const saved = (decodeMcpToolResult(list) as { artifacts: Array<{ path: string; fileId: string; revisionId: string }> }).artifacts
     expect(saved).toHaveLength(4)
     for (const artifact of saved) {
       const result = await owner.callTool({ name: 'job_artifact_read', arguments: { workspaceId, executionId,
         fileId: artifact.fileId, revisionId: artifact.revisionId } })
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-      const read = JobArtifactReadOutputSchema.parse(result.structuredContent)
+      const read = JobArtifactReadOutputSchema.parse(decodeMcpToolResult(result))
       expect(Buffer.from(read.content, 'base64')).toEqual(reports.get(artifact.path.split('/').at(-1)!))
     }
     const replay = await owner.callTool({ name: 'job_runtime_qualification_run', arguments: run })
-    expect(replay.structuredContent).toEqual(completed.structuredContent)
+    expect(decodeMcpToolResult(replay)).toEqual(decodeMcpToolResult(completed))
     expect(qualificationRuns).toBe(1)
     const denied = new Client({ name: 'denied qualification reader', version: '1' })
     clients.push(denied)
@@ -510,7 +511,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
         revisionId: published.artifact.revisionId,
       } })
       expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-      expect(Buffer.from((read.structuredContent as { content: string }).content, 'base64')).toEqual(data)
+      expect(Buffer.from((decodeMcpToolResult(read) as { content: string }).content, 'base64')).toEqual(data)
       const denied = new Client({ name: 'denied XML artifact reader', version: '1' })
       clients.push(denied)
       await denied.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),

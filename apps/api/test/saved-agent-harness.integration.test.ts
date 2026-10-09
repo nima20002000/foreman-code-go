@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
@@ -20,7 +21,7 @@ it('reports Claude preset availability equally through HTTP/MCP and preserves a 
   const call = async (name: string, input: Record<string, unknown>) => {
     const result = await f.client.callTool({ name, arguments: input })
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-    return result.structuredContent
+    return decodeMcpToolResult(result)
   }
   const http = async (path: string, token = f.writer.token) => {
     const response = await fetch(new URL(path, f.address), { headers: { authorization: `Bearer ${token}` } })
@@ -79,7 +80,7 @@ it('reports Claude preset availability equally through HTTP/MCP and preserves a 
     expect(AgentMutationResultSchema.parse(await call('agent_update', rename))).toEqual({ ...renamed, replayed: true })
     const readback = await denied.callTool({ name: 'agent_get', arguments: { workspaceId, agentId } })
     expect(readback.isError).not.toBe(true)
-    const persisted = ManagedAgentDetailSchema.parse(readback.structuredContent)
+    const persisted = ManagedAgentDetailSchema.parse(decodeMcpToolResult(readback))
     expect(persisted.agent).toEqual(renamed.value.agent)
     expect(ManagedAgentDetailSchema.parse(await http(
       `/api/management/workspaces/${workspaceId}/agents/${agentId}`, reader.token,

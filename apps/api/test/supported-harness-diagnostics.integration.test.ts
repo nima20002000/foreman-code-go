@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
 import { HarnessCompatibilityListSchema } from '@foreman-code/contracts'
@@ -42,7 +43,7 @@ it('reads only supported (Codex and Claude) diagnostics through authenticated MC
     expect(expected.harnesses.map(report => report.harness)).toEqual(['codex'])
     const result = await client.callTool({ name: 'harness_compatibility_list', arguments: {} })
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-    expect(HarnessCompatibilityListSchema.parse(result.structuredContent)).toEqual(expected)
+    expect(HarnessCompatibilityListSchema.parse(decodeMcpToolResult(result))).toEqual(expected)
     const deniedClient = await connect(denied.token)
     await expectMcpAccessDenied(deniedClient.callTool({ name: 'harness_compatibility_list', arguments: {} }))
     expect(inspect).not.toHaveBeenCalled()

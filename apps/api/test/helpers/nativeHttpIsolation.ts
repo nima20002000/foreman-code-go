@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
@@ -94,7 +95,7 @@ export async function nativeHttpIsolation(launch: (input: NativeHttpIsolationInp
     const observed = JSON.parse(result.stdout)
     expect(observed.statuses).toEqual(Array(8).fill(403))
     expect(observed.read.isError).not.toBe(true)
-    expect(observed.read.structuredContent).toEqual(before)
+    expect(decodeMcpToolResult(observed.read)).toEqual(before)
     expect(observed.mutationListed).toBe(false)
     if (observed.denied.rpcErrorCode !== undefined) {
       expect([-32601, -32602]).toContain(observed.denied.rpcErrorCode)

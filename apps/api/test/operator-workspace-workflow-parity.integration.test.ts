@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { callWorkspaceTool } from './helpers/workspaceMcp.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
@@ -71,7 +72,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     async function call<T>(name: string, schema: z.ZodType<T>, args: Record<string, unknown> = {}) {
       const response = await client.callTool({ name, arguments: args })
       expect(response.isError, JSON.stringify(response)).not.toBe(true)
-      return schema.parse(response.structuredContent)
+      return schema.parse(decodeMcpToolResult(response))
     }
     const toolNames = (await client.listTools()).tools.map((tool) => tool.name)
     expect(toolNames).toEqual(expect.arrayContaining(['workspace_create', 'workspace_update', 'workspace_defaults_update', 'workspace_location_set', 'workflow_create', 'workflow_update', 'workflow_defaults_update', 'workflow_validate_v3', 'workflow_save_v3', 'workspace_folder_undo']))
@@ -97,12 +98,13 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     } })
     expect(outsideDefault.isError).toBe(true)
 
-    const overview = await call('workspace_list', c.ManagedWorkspacePageSchema, {})
+    const overview = await call('workspace_list', c.ManagedWorkspacePageSchema, { detail: 'full' })
     expect(overview.items.find((item) => item.workspace.id === workspaceId)?.executionLocation).toEqual(workspace.executionLocation)
     const reader = await access.issue({ name: 'Metadata only', audience: 'operator',
       grants: [{ actions: ['workspaces:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
     const readerClient = await connect(reader.token)
-    const restrictedList = await callWorkspaceTool(readerClient, 'workspace_list', c.ManagedWorkspacePageSchema)
+    const restrictedList = await callWorkspaceTool(readerClient, 'workspace_list', c.ManagedWorkspacePageSchema,
+      { detail: 'full' })
     expect(restrictedList.items[0]?.locationValidation.status).toBe('restricted')
     expect(restrictedList.items[0]?.executionLocation).toBeNull()
     expect((await call('workspace_create', c.ManagedWorkspaceCommandResultSchema, create)).replayed).toBe(true)

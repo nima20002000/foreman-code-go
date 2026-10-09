@@ -7,8 +7,9 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import {
   WorkflowBatchArchiveInputSchema, WorkflowBatchArchiveResultSchema,
   WorkflowArchiveInputSchema, WorkflowGetInputSchema,
-  WorkflowListInputSchema, WorkflowUpdateInputSchema,
+  WorkflowUpdateInputSchema,
 } from '@foreman-code/contracts/management'
+import { OperatorWorkflowListInputSchema, WorkflowSummaryPageSchema } from '@foreman-code/contracts/operator-mcp'
 import { invokeOperatorTool } from '../invoke.js'
 import { operatorToolAvailable } from '../availability.js'
 import type { OperatorRequestContext } from '../types.js'
@@ -16,10 +17,17 @@ import type { OperatorRequestContext } from '../types.js'
 export function registerWorkflowTools(server: McpServer, context: OperatorRequestContext): void {
   registerCurrentWorkflowTools(server, context)
   if (operatorToolAvailable(context, 'workflow_list')) server.registerTool('workflow_list', {
-    description: 'List one cursor page of authorized workflows, including empty workflows. Pass pageInfo.nextCursor as cursor to load more; null means the end.', inputSchema: WorkflowListInputSchema,
-    outputSchema: ManagedWorkflowPageSchema,
+    description: 'List authorized workflow summaries, including empty workflows (10 by default). Use detail:full or workflow_get for the saved definition. Pass pageInfo.nextCursor as cursor; null means the end.', inputSchema: OperatorWorkflowListInputSchema,
+    outputSchema: WorkflowSummaryPageSchema.or(ManagedWorkflowPageSchema),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workflow_list', () => context.services.workflows.list(context.principal, input)))
+  }, async ({ detail, ...input }) => invokeOperatorTool(context, 'workflow_list', async () => {
+    const page = await context.services.workflows.list(context.principal, input)
+    if (detail === 'full') return page
+    return { detail: 'compact', pageInfo: page.pageInfo, items: page.items.map(({ workflow, ...item }) => ({
+      ...item, workflow: { id: workflow.id, workspaceId: workflow.workspaceId, name: workflow.name },
+      detailsOmitted: true,
+    })) }
+  }))
   if (operatorToolAvailable(context, 'workflow_get')) server.registerTool('workflow_get', {
     description: 'Read a workflow and its current saved version reference.', inputSchema: WorkflowGetInputSchema,
     outputSchema: ManagedWorkflowSchema,

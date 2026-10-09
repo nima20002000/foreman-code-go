@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { mkdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -326,12 +327,12 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
       const body = { ...scope, schedule: once, commandId: randomUUID(), expectedRevision: 0 }
       const result = await owner.callTool({ name: 'workflow_schedule_save', arguments: body })
       expect(result.isError).not.toBe(true)
-      const saved = ScheduleSaveResultSchema.parse(result.structuredContent).value
+      const saved = ScheduleSaveResultSchema.parse(decodeMcpToolResult(result)).value
       expect(await countRuns()).toBe(0)
       now = saved.nextOccurrenceAt!
       await dispatcher().dispatch(saved)
       const page = await readOnly.callTool({ name: 'workflow_schedule_occurrences_list', arguments: scope })
-      const facts = ScheduleOccurrencePageSchema.parse(page.structuredContent)
+      const facts = ScheduleOccurrencePageSchema.parse(decodeMcpToolResult(page))
       expect(facts.items[0]?.status).toBe('accepted')
       const root = `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/schedule`
       const http = await app.inject({ method: 'GET', url: `${root}/occurrences`, headers: { authorization: `Bearer ${reader.token}` } })

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -60,18 +61,18 @@ describe('CI over the authenticated unified MCP transport', () => {
       const input = { ...scope, suite: 'integration', commandId: 'integration-ci', placementOverride: { kind: 'auto' } }
       const response = await f.call('ci_run', input, token)
       expect(response.result.isError, JSON.stringify(response.result)).not.toBe(true)
-      const started = CiRunOutputSchema.parse(response.result.structuredContent)
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult(response.result))
       f.services.ci = f.createCi()
-      expect(CiRunOutputSchema.parse((await f.call('ci_run', input, token)).result.structuredContent)).toEqual(started)
+      expect(CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', input, token)).result))).toEqual(started)
       const read = await f.call('ci_get', { ...scope, ticketId: started.ticketId }, token)
-      expect(CiGetOutputSchema.parse(read.result.structuredContent).queue.definition.spec)
+      expect(CiGetOutputSchema.parse(decodeMcpToolResult(read.result)).queue.definition.spec)
         .toMatchObject({ verification: { suite: 'integration' } })
       const denied = await f.call('ci_run', { ...input, workspaceId: f.workspaceId, commandId: 'denied-integration' }, 'readonly')
       expect(JSON.stringify(denied.result)).toContain('ACCESS_DENIED')
       expect(f.counts().enqueues).toBe(1)
       f.complete()
       const completed = await f.call('ci_get', { ...scope, ticketId: started.ticketId }, token)
-      expect(CiGetOutputSchema.parse(completed.result.structuredContent)).toMatchObject({
+      expect(CiGetOutputSchema.parse(decodeMcpToolResult(completed.result))).toMatchObject({
         queue: { state: 'terminal' }, process: { outcome: 'succeeded' },
         summaryReport: { report: { suite: 'integration', outcome: 'passed' } },
       })
@@ -109,19 +110,19 @@ describe('CI over the authenticated unified MCP transport', () => {
       const input = { suite: 'unit', commandId: 'ci-command' }
       const first = await f.call('ci_run', input)
       expect(first.result.isError).not.toBe(true)
-      const started = CiRunOutputSchema.parse(first.result.structuredContent)
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult(first.result))
       f.advanceHead()
       f.services.ci = f.createCi()
       const retry = await f.call('ci_run', input)
-      expect(CiRunOutputSchema.parse(retry.result.structuredContent)).toEqual(started)
+      expect(CiRunOutputSchema.parse(decodeMcpToolResult(retry.result))).toEqual(started)
       expect(f.counts()).toEqual({ sourceCaptures: 1, enqueues: 1 })
       const waiting = await f.call('ci_get', { ticketId: started.ticketId })
-      expect(CiGetOutputSchema.parse(waiting.result.structuredContent)).toMatchObject({
+      expect(CiGetOutputSchema.parse(decodeMcpToolResult(waiting.result))).toMatchObject({
         queue: { state: 'waiting', waitingReasons: ['busy'], principalId: 'accepted-run-principal',
           definition: { spec: { source: { commit: 'b'.repeat(40) }, target: { kind: 'auto' } } } }, process: null,
       })
       f.complete()
-      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
+      const read = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call('ci_get', { ticketId: started.ticketId })).result))
       expect(read).toMatchObject({ queue: { state: 'terminal', terminalReason: 'completed',
         selectedComputer: { profileId: 'profile' } },
         process: { outcome: 'succeeded', exitCode: 0 }, publication: 'complete',
@@ -140,14 +141,14 @@ describe('CI over the authenticated unified MCP transport', () => {
       const f = await fixture()
       try {
         const start = await f.call('ci_run', { suite: 'unit', commandId: 'partial-results' })
-        const { ticketId } = CiRunOutputSchema.parse(start.result.structuredContent)
+        const { ticketId } = CiRunOutputSchema.parse(decodeMcpToolResult(start.result))
         f.complete({ publication, failed: true })
         f.services.ci = f.createCi()
         for (const token of ['worker', 'operator']) {
           const input = token === 'operator' ? { workspaceId: f.workspaceId, ticketId } : { ticketId }
           const read = await f.call('ci_get', input, token)
           expect(read.result.isError).not.toBe(true)
-          expect(CiGetOutputSchema.parse(read.result.structuredContent)).toMatchObject({
+          expect(CiGetOutputSchema.parse(decodeMcpToolResult(read.result))).toMatchObject({
             publication,
             resultIssue: publication === 'failed' ? 'publication_failed' : null,
             process: { outcome: 'build_failed', exitCode: 1 },
@@ -163,9 +164,9 @@ describe('CI over the authenticated unified MCP transport', () => {
   it('denies foreign workspace tickets, disabled Agent tools, readonly Operators and invalid credentials', async () => {
     const f = await fixture()
     try {
-      const started = CiRunOutputSchema.parse((await f.call('ci_run', {
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', {
         suite: 'unit', commandId: 'ci-command', commit: 'c'.repeat(40),
-      })).result.structuredContent)
+      })).result))
       const foreign = await f.call('ci_get', { ticketId: started.ticketId }, 'foreign')
       expect(JSON.stringify(foreign.result)).toContain('ACCESS_DENIED')
       const disabled = await f.call('ci_run', { suite: 'unit', commandId: 'other-command' }, 'disabled')
@@ -187,7 +188,7 @@ describe('CI over the authenticated unified MCP transport', () => {
       f.roots[1]!.refusing = true
       const result = await f.call('ci_run', { suite: 'unit', commandId: 'one-refuses' })
       expect(result.result.isError, JSON.stringify(result.result)).not.toBe(true)
-      CiRunOutputSchema.parse(result.result.structuredContent)
+      CiRunOutputSchema.parse(decodeMcpToolResult(result.result))
       expect(f.counts().enqueues).toBe(1)
     } finally { await f.app.close() }
   })
@@ -206,25 +207,25 @@ describe('CI over the authenticated unified MCP transport', () => {
     const f = await fixture()
     try {
       f.agentExecution.id = 'execution-agent'
-      const started = CiRunOutputSchema.parse((await f.call('ci_run', { suite: 'unit', commandId: 'agent-ci' })).result.structuredContent)
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', { suite: 'unit', commandId: 'agent-ci' })).result))
       expect(f.snapshotCalls).toEqual([{ hostRef: { kind: 'device', mainId: f.agent.mainId, deviceId: f.agent.deviceId },
         path: '/home/laptop/root/x/tree', baseCommit: 'b'.repeat(40) }])
       expect(f.approvals.at(-1)).toMatchObject({ snapshot: { commit: 'c'.repeat(40), baseCommit: 'b'.repeat(40) } })
       expect(f.enqueued.at(-1)).toMatchObject({ placementOverride: { kind: 'prefer',
         hostRef: { kind: 'device', mainId: f.agent.mainId, deviceId: f.agent.deviceId } } })
-      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
+      const read = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call('ci_get', { ticketId: started.ticketId })).result))
       expect(read.queue.definition.spec.source.commit).toBe('c'.repeat(40))
       const initiatingAgent = { workflowId: 'workflow', runId: 'run', agentId: 'agent', executionId: 'execution-agent' }
       expect(read.queue).toMatchObject({ workflow: null, initiatingAgent })
       f.services.ci = f.createCi()
-      const persisted = CiGetOutputSchema.parse((await f.call('ci_get', {
+      const persisted = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call('ci_get', {
         workspaceId: f.workspaceId, ticketId: started.ticketId,
-      }, 'operator')).result.structuredContent)
+      }, 'operator')).result))
       expect(persisted.queue.initiatingAgent).toEqual(initiatingAgent)
       f.complete()
-      const finished = CiGetOutputSchema.parse((await f.call('ci_get', {
+      const finished = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call('ci_get', {
         workspaceId: f.workspaceId, ticketId: started.ticketId,
-      }, 'operator')).result.structuredContent)
+      }, 'operator')).result))
       expect(finished.queue).toMatchObject({ state: 'terminal', terminalReason: 'completed', workflow: null, initiatingAgent })
 
 
@@ -273,12 +274,12 @@ describe('CI over the authenticated unified MCP transport', () => {
       f.services.ci.snapshots = snapshots
       const retry = await f.call('ci_run', input)
       expect(retry.result.isError, JSON.stringify(retry.result)).not.toBe(true)
-      const started = CiRunOutputSchema.parse(retry.result.structuredContent)
-      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult(retry.result))
+      const read = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call('ci_get', { ticketId: started.ticketId })).result))
       expect(read.queue.definition.spec.source.commit).toBe(snapshot.commit)
       expect(snapshots).toHaveBeenCalledTimes(1)
       expect(f.counts()).toEqual({ sourceCaptures: 1, enqueues: 1 })
-      expect(CiRunOutputSchema.parse((await f.call('ci_run', input)).result.structuredContent)).toEqual(started)
+      expect(CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', input)).result))).toEqual(started)
       expect(f.counts().enqueues).toBe(1)
     } finally {
       await f.app.close()
@@ -315,9 +316,9 @@ describe('CI over the authenticated unified MCP transport', () => {
       ])
       for (const [index, response] of responses.entries()) {
         expect(response.result.isError, JSON.stringify(response.result)).not.toBe(true)
-        const result = CiRunOutputSchema.parse(response.result.structuredContent)
+        const result = CiRunOutputSchema.parse(decodeMcpToolResult(response.result))
         const read = await f.call('ci_get', { workspaceId: f.workspaceId, ticketId: result.ticketId }, 'operator')
-        expect(CiGetOutputSchema.parse(read.result.structuredContent).queue.definition.name)
+        expect(CiGetOutputSchema.parse(decodeMcpToolResult(read.result)).queue.definition.name)
           .toBe(`CI: ${index === 0 ? 'unit' : 'lint'}`)
       }
       expect(bind).toHaveBeenCalledTimes(kind === 'same source' ? 2 : 3)
@@ -336,41 +337,41 @@ describe('CI over the authenticated unified MCP transport', () => {
       const input = { suite: 'unit', commandId: 'remote-files', placementOverride }
       const result = await f.call('ci_run', input)
       expect(result.result.isError, JSON.stringify(result.result)).not.toBe(true)
-      const started = CiRunOutputSchema.parse(result.result.structuredContent)
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult(result.result))
       expect(f.enqueued.at(-1)).toMatchObject({ placementOverride: input.placementOverride })
       expect(f.snapshotCalls[0]!.hostRef).toEqual({ kind: 'device', ...f.agent })
-      expect(CiRunOutputSchema.parse((await f.call('ci_run', input)).result.structuredContent)).toEqual(started)
+      expect(CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', input)).result))).toEqual(started)
       expect(f.counts()).toEqual({ sourceCaptures: 1, enqueues: 1 })
       const changed = kind === 'auto' ? { kind: 'prefer', hostRef: f.buildTarget.hostRef } : { kind: 'auto' }
       expect((await f.call('ci_run', { ...input, placementOverride: changed })).result.isError).toBe(true)
       f.services.ci = f.createCi()
-      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
+      const read = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call('ci_get', { ticketId: started.ticketId })).result))
       expect(read.queue.placement).toEqual(input.placementOverride)
       expect(read.queue.definition.spec.source.commit).toBe('c'.repeat(40))
-      expect((await f.call('ci_computers_list', {})).result.structuredContent.verificationTemplates).toEqual(f.templates)
+      expect(decodeMcpToolResult((await f.call('ci_computers_list', {})).result).verificationTemplates).toEqual(f.templates)
     } finally { await f.app.close() }
   })
 
   it('reads complete sequenced logs and immutable artifacts through Agent and Operator MCP', async () => {
     const f = await fixture()
     try {
-      const { ticketId } = CiRunOutputSchema.parse((await f.call('ci_run', {
+      const { ticketId } = CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', {
         suite: 'unit', commandId: 'read-ci-files',
-      })).result.structuredContent)
+      })).result))
       expect(JSON.stringify((await f.call('ci_logs_read', { ticketId })).result)).toContain('CI_NOT_ACCEPTED')
       f.complete()
       f.services.ci = f.createCi()
       for (const token of ['worker', 'operator']) {
         const scope = token === 'operator' ? { workspaceId: f.workspaceId, ticketId } : { ticketId }
-        const logs = CiLogsOutputSchema.parse((await f.call('ci_logs_read', scope, token)).result.structuredContent)
+        const logs = CiLogsOutputSchema.parse(decodeMcpToolResult((await f.call('ci_logs_read', scope, token)).result))
         expect(logs.chunks.map(chunk => chunk.text)).toEqual(['tests passed\n'])
         const next = await f.call('ci_logs_read', { ...scope, afterSequence: logs.nextCursor }, token)
-        expect(CiLogsOutputSchema.parse(next.result.structuredContent).chunks).toEqual([])
+        expect(CiLogsOutputSchema.parse(decodeMcpToolResult(next.result)).chunks).toEqual([])
         const listed = await f.call('ci_artifacts_list', scope, token)
-        const artifact = CiArtifactsOutputSchema.parse(listed.result.structuredContent).artifacts[0]!
+        const artifact = CiArtifactsOutputSchema.parse(decodeMcpToolResult(listed.result)).artifacts[0]!
         const bytes = await f.call('ci_artifact_read', { ...scope,
           fileId: artifact.fileId, revisionId: artifact.revisionId }, token)
-        const content = CiArtifactOutputSchema.parse(bytes.result.structuredContent)
+        const content = CiArtifactOutputSchema.parse(decodeMcpToolResult(bytes.result))
         expect(content.artifact).toEqual(artifact)
         expect(JSON.parse(Buffer.from(content.content, 'base64').toString('utf8')))
           .toMatchObject({ executionId: artifact.executionId, outcome: 'passed' })
@@ -392,21 +393,21 @@ describe('CI over the authenticated unified MCP transport', () => {
   it('reads artifacts larger than 1 MiB in bounded pages without an HTTP escape', async () => {
     const f = await fixture()
     try {
-      const { ticketId } = CiRunOutputSchema.parse((await f.call('ci_run', {
+      const { ticketId } = CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', {
         suite: 'unit', commandId: 'large-artifact',
-      })).result.structuredContent)
+      })).result))
       f.complete()
       const listed = await f.call('ci_artifacts_list', { ticketId })
-      const artifact = CiArtifactsOutputSchema.parse(listed.result.structuredContent).artifacts[0]!
+      const artifact = CiArtifactsOutputSchema.parse(decodeMcpToolResult(listed.result)).artifacts[0]!
       const bytes = Buffer.alloc(1024 * 1024 + 37, 42)
       vi.spyOn(f.jobs, 'readArtifact').mockResolvedValue({ artifact: { ...artifact, byteSize: bytes.length }, bytes })
       const input = { ticketId, fileId: artifact.fileId, revisionId: artifact.revisionId }
-      const first = CiArtifactOutputSchema.parse((await f.call('ci_artifact_read', input)).result.structuredContent)
+      const first = CiArtifactOutputSchema.parse(decodeMcpToolResult((await f.call('ci_artifact_read', input)).result))
       expect(Buffer.from(first.content, 'base64').byteLength).toBe(1024 * 1024)
       expect(first.nextOffset).toBe(1024 * 1024)
-      const last = CiArtifactOutputSchema.parse((await f.call('ci_artifact_read', {
+      const last = CiArtifactOutputSchema.parse(decodeMcpToolResult((await f.call('ci_artifact_read', {
         ...input, offset: first.nextOffset,
-      })).result.structuredContent)
+      })).result))
       expect(last.nextOffset).toBeNull()
       const restored = Buffer.concat([Buffer.from(first.content, 'base64'), Buffer.from(last.content, 'base64')])
       expect(createHash('sha256').update(restored).digest('hex')).toBe(createHash('sha256').update(bytes).digest('hex'))
@@ -418,17 +419,17 @@ describe('CI over the authenticated unified MCP transport', () => {
   it('cancels CI with revision checks, idempotent retries and denied-caller audit', async () => {
     const f = await fixture()
     try {
-      const { ticketId } = CiRunOutputSchema.parse((await f.call('ci_run', {
+      const { ticketId } = CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', {
         suite: 'unit', commandId: 'cancel-ci',
-      })).result.structuredContent)
+      })).result))
       const input = { ticketId, expectedRevision: 1, commandId: 'cancel-ticket' }
       const first = await f.call('ci_cancel', input)
       expect(first.result.isError).not.toBe(true)
-      const cancelled = CiCancelOutputSchema.parse(first.result.structuredContent)
+      const cancelled = CiCancelOutputSchema.parse(decodeMcpToolResult(first.result))
       expect(cancelled.ticket).toMatchObject({ state: 'terminal', terminalReason: 'cancelled', revision: 2 })
       f.services.ci = f.createCi()
-      expect(CiCancelOutputSchema.parse((await f.call('ci_cancel', input)).result.structuredContent)).toEqual(cancelled)
-      const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId })).result.structuredContent)
+      expect(CiCancelOutputSchema.parse(decodeMcpToolResult((await f.call('ci_cancel', input)).result))).toEqual(cancelled)
+      const read = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call('ci_get', { ticketId })).result))
       expect(read.queue).toEqual(cancelled.ticket)
       const stale = await f.call('ci_cancel', { ...input, commandId: 'stale-cancel' })
       expect(JSON.stringify(stale.result)).toContain('JOB_QUEUE_REVISION_CONFLICT')
@@ -445,9 +446,9 @@ describe('CI over the authenticated unified MCP transport', () => {
     const f = await fixture()
     try {
       const start = await f.call('ci_run', { workspaceId: f.workspaceId, suite: 'unit', commandId: 'operator-command' }, 'operator')
-      const result = CiRunOutputSchema.parse(start.result.structuredContent)
+      const result = CiRunOutputSchema.parse(decodeMcpToolResult(start.result))
       const get = await f.call('ci_get', { workspaceId: f.workspaceId, ticketId: result.ticketId }, 'operator')
-      expect(CiGetOutputSchema.parse(get.result.structuredContent).queue.principalId).toBe(f.operator.id)
+      expect(CiGetOutputSchema.parse(decodeMcpToolResult(get.result)).queue.principalId).toBe(f.operator.id)
     } finally { await f.app.close() }
   })
 })

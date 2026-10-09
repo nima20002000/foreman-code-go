@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -90,15 +91,15 @@ describe.skipIf(!url)('trusted connection action approval and delegated MCP appl
     expect((await c.callTool({ name: 'device_connection_configure', arguments: pending.action })).isError).toBe(true)
     await approve(pending.id)
     const applied = await c.callTool({ name: 'device_connection_configure', arguments: pending.action })
-    expect(applied.isError).not.toBe(true); expect(applied.structuredContent).toMatchObject({ revision: 1, approvedBy: owner.principal.id, grantsAgentPermissions: false, automaticSudo: false })
-    expect((await c.callTool({ name: 'device_connection_configure', arguments: pending.action })).structuredContent).toEqual(applied.structuredContent)
+    expect(applied.isError).not.toBe(true); expect(decodeMcpToolResult(applied)).toMatchObject({ revision: 1, approvedBy: owner.principal.id, grantsAgentPermissions: false, automaticSudo: false })
+    expect(decodeMcpToolResult((await c.callTool({ name: 'device_connection_configure', arguments: pending.action })))).toEqual(decodeMcpToolResult(applied))
     expect(await count(pending.id, 'device.trusted-connection.approval.consume')).toBe(1)
     expect(await count(f.deviceId, 'device.trusted-connection.configure')).toBe(1)
     const audit = await pool.query("select source,outcome from management_audit where principal_id=$1 and action='device.trusted-connection.configure' and outcome='succeeded'", [d.principal.id])
     expect(audit.rows).toEqual([{ source: 'mcp', outcome: 'succeeded' }])
     const http = await app.inject({ method: 'POST', url: '/api/devices/connection-read', headers: browser, payload: { deviceId: f.deviceId } })
-    expect(http.statusCode).toBe(200); expect(http.json().consent).toEqual(applied.structuredContent)
-    expect((await c.callTool({ name: 'device_connection_read', arguments: { deviceId: f.deviceId } })).structuredContent).toEqual(http.json())
+    expect(http.statusCode).toBe(200); expect(http.json().consent).toEqual(decodeMcpToolResult(applied))
+    expect(decodeMcpToolResult((await c.callTool({ name: 'device_connection_read', arguments: { deviceId: f.deviceId } })))).toEqual(http.json())
     const persisted = await app.inject({ method: 'GET', url: `/api/devices/connection-approvals/${pending.id}`, headers: browser })
     expect(persisted.json().state).toBe('consumed')
     expect((await c.callTool({ name: 'device_connection_configure', arguments: { ...pending.action, commandId: randomUUID(), expectedRevision: 1 } })).isError).toBe(true)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -83,22 +84,22 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
       return client
     }
     const operator = await connect(writer.token)
-    const listed = ComputerMaintenanceListSchema.parse((await operator.callTool({ name: 'computers_maintenance_status', arguments: { refresh: true } })).structuredContent)
+    const listed = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await operator.callTool({ name: 'computers_maintenance_status', arguments: { refresh: true } }))))
     expect(listed.computers.map(computer => computer.status?.harnesses[0]?.version)).toEqual(['0.161.0', '0.150.0'])
     const http = await app.inject({ url: '/api/management/computers/maintenance', headers: { authorization: `Bearer ${writer.token}` } })
     expect(http.statusCode).toBe(200)
     expect(ComputerMaintenanceListSchema.parse(http.json()).computers).toHaveLength(2)
 
     const update = { commandId: randomUUID(), task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } }
-    const started = ComputerMaintenanceStartResultSchema.parse((await operator.callTool({ name: 'computers_maintenance_start', arguments: update })).structuredContent)
+    const started = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult((await operator.callTool({ name: 'computers_maintenance_start', arguments: update }))))
     expect(started.computers.map(computer => computer.task?.kind)).toEqual(['update-harnesses', 'update-harnesses'])
     // The same command never starts the work twice.
     await operator.callTool({ name: 'computers_maintenance_start', arguments: update })
     expect(mainStarts).toHaveLength(1)
     expect(deviceStarts).toHaveLength(1)
 
-    const sync = ComputerMaintenanceStartResultSchema.parse((await operator.callTool({ name: 'computers_maintenance_start',
-      arguments: { commandId: randomUUID(), task: { kind: 'sync-mcp' } } })).structuredContent)
+    const sync = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult((await operator.callTool({ name: 'computers_maintenance_start',
+      arguments: { commandId: randomUUID(), task: { kind: 'sync-mcp' } } }))))
     expect(sync.computers.map(computer => computer.target.hostRef.kind)).toEqual(['device'])
     expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-mcp', servers: {
       codex: [{ transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: null }],
@@ -199,17 +200,17 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(starts).toHaveLength(0)
     const sync = async (kind: 'sync-mcp' | 'sync-plugins') => {
       const arguments_ = { commandId: randomUUID(), task: { kind }, targets }
-      const result = ComputerMaintenanceStartResultSchema.parse((await operator.callTool({
+      const result = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult((await operator.callTool({
         name: 'computers_maintenance_start', arguments: arguments_,
-      })).structuredContent)
+      }))))
       const count = starts.length
       await operator.callTool({ name: 'computers_maintenance_start', arguments: arguments_ })
       expect(starts).toHaveLength(count)
       expect(result.computers[0]?.task?.sourceFingerprint).toMatch(/^sha256:/u)
       await settle(computer)
-      const readback = ComputerMaintenanceListSchema.parse((await operator.callTool({
+      const readback = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await operator.callTool({
         name: 'computers_maintenance_status', arguments: { refresh: true },
-      })).structuredContent)
+      }))))
       return readback.computers.find(item => item.target.applicationInstallationId === device.workerInstallationId)
         ?.status?.tasks.find(task => task.id === result.computers[0]?.task?.id)
     }
@@ -265,9 +266,9 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     computer.maintenance = new ComputerMaintenance(computer.ports)
     await service.syncChangedSources()
     expect(starts).toHaveLength(count + 2)
-    const persisted = ComputerMaintenanceListSchema.parse((await operator.callTool({
+    const persisted = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await operator.callTool({
       name: 'computers_maintenance_status', arguments: { refresh: true },
-    })).structuredContent).computers.find(item => item.target.applicationInstallationId === device.workerInstallationId)
+    })))).computers.find(item => item.target.applicationInstallationId === device.workerInstallationId)
     for (const kind of ['sync-mcp', 'sync-plugins']) {
       expect(persisted?.status?.tasks.find(task => task.kind === kind)).toMatchObject({
         state: 'succeeded', sourceFingerprint: expect.stringMatching(/^sha256:/u),
@@ -360,8 +361,8 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
       requestInit: { headers: { authorization: `Bearer ${owner.token}` } },
     }))
-    const before = ComputerMaintenanceListSchema.parse((await client.callTool({ name: 'computers_maintenance_status',
-      arguments: { refresh: true } })).structuredContent)
+    const before = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computers_maintenance_status',
+      arguments: { refresh: true } }))))
     const main = before.computers.find(computer => computer.target.hostRef.kind === 'main')!
     expect(main.status?.system.packageUpdates).toBe(25)
     const started = await client.callTool({ name: 'computers_maintenance_start', arguments: {
@@ -369,12 +370,12 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     } })
     expect(started.isError).not.toBe(true)
     await expect.poll(async () => {
-      const current = ComputerMaintenanceListSchema.parse((await client.callTool({ name: 'computers_maintenance_status',
-        arguments: { refresh: true } })).structuredContent).computers.find(computer => computer.target.hostRef.kind === 'main')
+      const current = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computers_maintenance_status',
+        arguments: { refresh: true } })))).computers.find(computer => computer.target.hostRef.kind === 'main')
       return current?.status?.tasks[0]?.state
     }, POLL).toBe('succeeded')
-    const after = ComputerMaintenanceListSchema.parse((await client.callTool({ name: 'computers_maintenance_status',
-      arguments: { refresh: true } })).structuredContent).computers.find(computer => computer.target.hostRef.kind === 'main')!
+    const after = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computers_maintenance_status',
+      arguments: { refresh: true } })))).computers.find(computer => computer.target.hostRef.kind === 'main')!
     expect(after.status?.system.packageUpdates).toBe(23)
     expect(after.status?.tasks[0]?.summary).toContain('23 updates pending')
     expect(readbacks).toBeGreaterThan(0)
@@ -461,14 +462,14 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     }
     const operator = await connect(writer.token)
     const readOnly = await connect(reader.token)
-    const current = async () => ComputerMaintenanceListSchema.parse((await operator.callTool({
+    const current = async () => ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await operator.callTool({
       name: 'computers_maintenance_status', arguments: { refresh: true },
-    })).structuredContent).computers.find(computer => computer.target.hostRef.kind === 'main')!
+    })))).computers.find(computer => computer.target.hostRef.kind === 'main')!
     const main = await current()
     const codex = { commandId: randomUUID(), task: { kind: 'update-harnesses', harnesses: ['codex'] }, targets: [main.target] }
-    const start = async (input: typeof codex) => ComputerMaintenanceStartResultSchema.parse((await operator.callTool({
+    const start = async (input: typeof codex) => ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult((await operator.callTool({
       name: 'computers_maintenance_start', arguments: input,
-    })).structuredContent).computers[0]!.task!
+    })))).computers[0]!.task!
     expect((await readOnly.callTool({ name: 'computers_maintenance_start', arguments: codex })).isError).toBe(true)
     expect(installs).toBe(0)
     const first = await start(codex)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult, OperatorToolSchemaResultSchema } from '@foreman-code/contracts/operator-mcp'
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
@@ -20,8 +21,8 @@ type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 type Client = Fixture['client']
 function value(result: { isError?: boolean | undefined; structuredContent?: unknown }): unknown {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
-  expect(result.structuredContent).toBeDefined()
-  return result.structuredContent
+  expect(decodeMcpToolResult(result)).toBeDefined()
+  return decodeMcpToolResult(result)
 }
 function mcpError(result: unknown): string {
   const parsed = result as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
@@ -202,12 +203,20 @@ describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspectio
       const discovery = (await r.client.listTools()).tools
       for (const name of Object.values(RUN_INSPECTION_TOOLS)) {
         const tool = discovery.find((item) => item.name === name)
-        expect(tool?.outputSchema?.type).toBe('object')
+        expect(tool?.name).toBe(name)
+        expect(tool?.inputSchema.type).toBe('object')
+        expect(tool).not.toHaveProperty('outputSchema')
+        const schema = OperatorToolSchemaResultSchema.parse(value(await r.client.callTool({
+          name: 'operator_tool_schema_get', arguments: { name, includeOutputSchema: true },
+        })))
+        expect(schema.name).toBe(name)
+        expect(schema.inputSchema).toEqual(tool?.inputSchema)
+        expect(schema.outputSchema?.type).toBe('object')
         expect(tool?.annotations?.readOnlyHint).toBe(true)
         expect(tool?.description).toBeTruthy()
       }
       expect(discovery.map((item) => item.name)).not.toContain('run_start')
-      const capabilities = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: {} })) as {
+      const capabilities = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })) as {
         tools: string[]; requirements: Array<{ name: string; actions: string[] }> }
       expect(capabilities.tools).toEqual(expect.arrayContaining(Object.values(RUN_INSPECTION_TOOLS)))
       expect(capabilities.requirements.find((item) => item.name === RUN_INSPECTION_TOOLS.version)?.actions).toEqual(['runs:read', 'workflows:read'])

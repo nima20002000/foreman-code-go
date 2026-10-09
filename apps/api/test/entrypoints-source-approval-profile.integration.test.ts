@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { cp, mkdir, mkdtemp, realpath } from 'node:fs/promises'
@@ -116,7 +117,7 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
     const client = new Client({ name: 'Source approval profile', version: '1' }); clients.push(client)
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => owner.token } }))
     const retry = await client.callTool({ name: 'source_approve', arguments: input })
-    expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true); expect(retry.structuredContent).toEqual({ ...result, replayed: true })
+    expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true); expect(decodeMcpToolResult(retry)).toEqual({ ...result, replayed: true })
     expect((await db.pool.query('select record from source_snapshots')).rows).toEqual([{ record: result.value }])
     expect(metrics.snapshotInserts).toBe(1); expect(metrics.sqlCalls).toBeLessThan(75)
     const denied = await access.issue({ name: 'Denied profile caller', audience: 'operator', grants: [{ actions: ['sources:read', 'sources:approve', 'workspace_locations:read'], scope: { workspaceIds: ['foreign'] } }], expiresAt: new Date(Date.now() + 600_000) })

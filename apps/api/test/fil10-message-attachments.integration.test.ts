@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -386,7 +387,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
       const sent = await writer.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: input } })
       expect(sent.isError).not.toBe(true); await settleAgent(id)
       const read = await writer.callTool({ name: 'agent_chat_read', arguments: { workspaceId: fixture.scope.workspaceId, query: query() } })
-      expect(AgentChatStateSchema.parse(read.structuredContent).messages.find((message) => message.requestId === input.requestId)!.attachments).toEqual([file])
+      expect(AgentChatStateSchema.parse(decodeMcpToolResult(read)).messages.find((message) => message.requestId === input.requestId)!.attachments).toEqual([file])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('agent_chat_send')
       await expectMcpAccessDenied(denied.callTool({ name: 'agent_chat_send', arguments: { workspaceId: fixture.scope.workspaceId, request: input } }))
       expect((await agentSend(input, reader.token)).statusCode).toBe(403)

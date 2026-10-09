@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
@@ -128,7 +129,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     mcpClient=new Client({name:'job-output-fixture',version:'1.0.0'})
     await mcpClient.connect(new StreamableHTTPClientTransport(new URL('/device/mcp/job-outputs',address),{authProvider:{token:async()=>credential}}))
     const mcp=await mcpClient.callTool({name:'job_output_admit',arguments:input})
-    expect(mcp.isError,JSON.stringify(mcp)).not.toBe(true);expect(mcp.structuredContent).toEqual(intent)
+    expect(mcp.isError,JSON.stringify(mcp)).not.toBe(true);expect(decodeMcpToolResult(mcp)).toEqual(intent)
     const channel={request:async(_namespace:string,payload:unknown,options?:{bytes?:Uint8Array})=>actual.extension.handle!(payload,{binding,signal:AbortSignal.timeout(10000),...(options?.bytes?{bytes:options.bytes}:{})})}
     const sender=new ResumableByteTransferSender(new WorkerJobOutputReceiver(channel),{read:async(_intent,offset,length)=>body.subarray(offset,offset+length)},{current:async()=>outputTransferContext(binding),retryable:()=>false})
     const verified=await sender.send(intent,AbortSignal.timeout(10000));expect(verified.sha256).toBe(input.sha256)

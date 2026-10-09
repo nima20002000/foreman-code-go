@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -109,8 +110,8 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     await repository.finish(conversation.id, request.requestId, { outcome: 'succeeded' })
     const before = await repository.get(conversation.id)
     expect((await writer.client.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
-    const capabilities = await writer.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({ tools: expect.not.arrayContaining(['operator_chat_send']) })
+    const capabilities = await writer.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({ tools: expect.not.arrayContaining(['operator_chat_send']) })
 
     const fresh = { requestId: randomUUID(), content: 'A fresh request' }
     for (const command of [fresh, { ...request, recovery: 'receipt' as const }]) {
@@ -133,7 +134,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
       conversationId: conversation.id, request: { ...request, recovery: 'receipt' },
     } })
     expect(recovered.isError).not.toBe(true)
-    const result = SendOperatorMessageResponseSchema.parse(recovered.structuredContent)
+    const result = SendOperatorMessageResponseSchema.parse(decodeMcpToolResult(recovered))
     expect(result.replayed).toBe(true)
     expect(result.state.messages.map((message) => message.content)).toContain(request.content)
     expect(result.state.activities?.[0]?.output).toBe('Private tool output')
@@ -234,14 +235,14 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const snapshotReply = await owner.client.callTool({ name: 'operator_chat_get', arguments: {
       conversationId: conversation.id,
     } })
-    const snapshot = GetOperatorConversationResponseSchema.parse(snapshotReply.structuredContent)
+    const snapshot = GetOperatorConversationResponseSchema.parse(decodeMcpToolResult(snapshotReply))
     expect(snapshot.messages).toHaveLength(32)
     expect(snapshot.hasEarlierMessages).toBe(true)
     expect(snapshot.activities).toHaveLength(100)
     expect(snapshot.activityNextCursor).not.toBeNull()
     expect(snapshot.activityNextCursor).toBe(snapshot.activities![0]!.sequence)
-    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining([
+    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({ tools: expect.arrayContaining([
       'operator_chat_history_get', 'operator_chat_activity_get',
     ]) })
 
@@ -252,7 +253,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
         conversationId: conversation.id, limit: 7, ...(before ? { before } : {}),
       } })
       expect(reply.isError).not.toBe(true)
-      const page = OperatorConversationHistoryPageSchema.parse(reply.structuredContent)
+      const page = OperatorConversationHistoryPageSchema.parse(decodeMcpToolResult(reply))
       expect(page.revision).toBe(snapshot.revision)
       expect(page.entries.every((entry) => entry.receipt?.outcome === 'succeeded')).toBe(true)
       expect(page.nextCursor === null || page.nextCursor !== before).toBe(true)
@@ -272,7 +273,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
           conversationId: conversation.id, limit: 17, ...(activityBefore ? { before: activityBefore } : {}),
         } })
         expect(reply.isError).not.toBe(true)
-        const page = OperatorActivityPageSchema.parse(reply.structuredContent)
+        const page = OperatorActivityPageSchema.parse(decodeMcpToolResult(reply))
         expect(page.nextCursor === null || page.nextCursor !== activityBefore).toBe(true)
         activities.unshift(...page.activities.map(activity => activity.id))
         activityBefore = page.nextCursor
@@ -323,7 +324,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     // Discard the creation response; discovery must recover an empty conversation.
     expect((await create()).isError).not.toBe(true)
     const discovery = await owner.client.callTool({ name: 'operator_chat_list', arguments: {} })
-    const listed = ListOperatorConversationsResponseSchema.parse(discovery.structuredContent)
+    const listed = ListOperatorConversationsResponseSchema.parse(decodeMcpToolResult(discovery))
     expect(listed.conversations).toHaveLength(1)
     const original = listed.conversations[0]!
     expect(original.title).toBe(command.title)
@@ -340,7 +341,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const retries = await Promise.all([create(), create()])
     for (const retry of retries) {
       expect(retry.isError).not.toBe(true)
-      expect(CreateOperatorConversationResponseSchema.parse(retry.structuredContent).conversation).toEqual(original)
+      expect(CreateOperatorConversationResponseSchema.parse(decodeMcpToolResult(retry)).conversation).toEqual(original)
     }
     const httpRetry = await fetch(new URL('/api/operator/conversations', address), {
       method: 'POST',
@@ -350,7 +351,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(httpRetry.status).toBe(201)
     expect(CreateOperatorConversationResponseSchema.parse(await httpRetry.json()).conversation).toEqual(original)
     const read = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: original.id } })
-    expect(GetOperatorConversationResponseSchema.parse(read.structuredContent).conversation).toEqual(original)
+    expect(GetOperatorConversationResponseSchema.parse(decodeMcpToolResult(read)).conversation).toEqual(original)
     const conflict = await owner.client.callTool({ name: 'operator_chat_create', arguments: {
       ...command, title: 'Different title',
     } })
@@ -359,14 +360,14 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
 
     const another = await issue(['operator_chat:read', 'operator_chat:write'])
     const independent = await another.client.callTool({ name: 'operator_chat_create', arguments: command })
-    const other = CreateOperatorConversationResponseSchema.parse(independent.structuredContent).conversation
+    const other = CreateOperatorConversationResponseSchema.parse(decodeMcpToolResult(independent)).conversation
     expect(other.id).not.toBe(original.id)
     const ownList = await owner.client.callTool({ name: 'operator_chat_list', arguments: {} })
-    expect(ListOperatorConversationsResponseSchema.parse(ownList.structuredContent).conversations).toEqual([original])
+    expect(ListOperatorConversationsResponseSchema.parse(decodeMcpToolResult(ownList)).conversations).toEqual([original])
     const otherList = await another.client.callTool({ name: 'operator_chat_list', arguments: {} })
-    expect(ListOperatorConversationsResponseSchema.parse(otherList.structuredContent).conversations).toEqual([other])
-    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(['operator_chat_list']) })
+    expect(ListOperatorConversationsResponseSchema.parse(decodeMcpToolResult(otherList)).conversations).toEqual([other])
+    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({ tools: expect.arrayContaining(['operator_chat_list']) })
 
     const reader = await issue(['operator_chat:read'])
     const scoped = await issue(['operator_chat:write', 'operator_chat:read'], { workspaceIds: [randomUUID()] })
@@ -398,35 +399,35 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const call = (name: string, input: typeof deletion) => owner.client.callTool({ name, arguments: input })
     const names = ['operator_chat_delete', 'operator_chat_restore']
     expect((await owner.client.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(names))
-    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(names) })
+    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({ tools: expect.arrayContaining(names) })
 
     const delegated = await access.issue({ name: 'Chat credential', audience: 'operator',
       grants: [{ actions: ['capabilities:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     await database.pool.query('insert into operator_chat_credentials(principal_id,conversation_id) values($1,$2)',
       [delegated.principal.id, conversation.id])
-    expect((await call('operator_chat_delete', deletion)).structuredContent).toEqual({ conversationId: conversation.id })
+    expect(decodeMcpToolResult((await call('operator_chat_delete', deletion)))).toEqual({ conversationId: conversation.id })
     const deleted = await fresh.active(conversation.id)
     expect(deleted?.deleted_at).toBeTruthy()
     expect(Number(deleted!.revision)).toBe(initialRevision + 1)
     const list = await owner.client.callTool({ name: 'operator_chat_list', arguments: {} })
-    expect(ListOperatorConversationsResponseSchema.parse(list.structuredContent).conversations.map(item => item.id))
+    expect(ListOperatorConversationsResponseSchema.parse(decodeMcpToolResult(list)).conversations.map(item => item.id))
       .not.toContain(conversation.id)
     const missing = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
     expect(missing.isError).toBe(true)
     expect(JSON.stringify(missing.content)).toContain('CONVERSATION_NOT_FOUND')
     await expect(access.authenticate(delegated.token)).rejects.toThrow()
     for (const retry of await Promise.all([call('operator_chat_delete', deletion), call('operator_chat_delete', deletion)])) {
-      expect(retry.structuredContent).toEqual({ conversationId: conversation.id })
+      expect(decodeMcpToolResult(retry)).toEqual({ conversationId: conversation.id })
     }
     expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 1)
 
-    expect((await call('operator_chat_restore', restoration)).structuredContent).toEqual({ conversationId: conversation.id })
+    expect(decodeMcpToolResult((await call('operator_chat_restore', restoration)))).toEqual({ conversationId: conversation.id })
     expect((await fresh.active(conversation.id))?.deleted_at).toBeNull()
     expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 2)
     await expect(access.authenticate(delegated.token)).rejects.toThrow()
     const restored = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
-    expect(GetOperatorConversationResponseSchema.parse(restored.structuredContent).conversation).toEqual(conversation)
+    expect(GetOperatorConversationResponseSchema.parse(decodeMcpToolResult(restored)).conversation).toEqual(conversation)
     expect((await call('operator_chat_delete', deletion)).isError).not.toBe(true)
     expect((await fresh.active(conversation.id))?.deleted_at).toBeNull()
 
@@ -501,7 +502,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const created = await owner.client.callTool({ name: 'operator_chat_create', arguments: {
       commandId: randomUUID(), title: 'Keep the original configuration',
     } })
-    const conversation = CreateOperatorConversationResponseSchema.parse(created.structuredContent).conversation
+    const conversation = CreateOperatorConversationResponseSchema.parse(decodeMcpToolResult(created)).conversation
     const requestId = randomUUID()
     await repository.beginTurn(conversation.id, { requestId, content: 'Accepted on the original configuration' }, owner.principal.id)
     await repository.finish(conversation.id, requestId, { outcome: 'succeeded' })
@@ -515,7 +516,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const next = await operators.update(harness, original.configuration.id)
     const inspect = (args: Record<string, unknown>) => owner.client.callTool({ name: 'operator_mcp_setup_get', arguments: args })
     const publicSetup = await inspect({ harness: 'codex', expectedDefaultsRevision: moved.revision })
-    expect(OperatorChatSetupSchema.parse(publicSetup.structuredContent).configurationVersionId).toBe(next.configuration.id)
+    expect(OperatorChatSetupSchema.parse(decodeMcpToolResult(publicSetup)).configurationVersionId).toBe(next.configuration.id)
     for (const query of [
       { conversationId: conversation.id },
       { configurationVersionId: original.configuration.id },
@@ -524,7 +525,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     ]) {
       const result = await inspect(query)
       expect(result.isError).not.toBe(true)
-      expect(OperatorChatSetupSchema.parse(result.structuredContent)).toMatchObject({
+      expect(OperatorChatSetupSchema.parse(decodeMcpToolResult(result))).toMatchObject({
         configurationVersionId: original.configuration.id, harness: 'codex', status: 'configured',
       })
     }
@@ -557,7 +558,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
       await denied(caller.client, 'operator_mcp_setup_get', { conversationId: conversation.id })
     }
     const readback = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
-    expect(GetOperatorConversationResponseSchema.parse(readback.structuredContent).conversation.operatorConfigurationVersionId)
+    expect(GetOperatorConversationResponseSchema.parse(decodeMcpToolResult(readback)).conversation.operatorConfigurationVersionId)
       .toBe(original.configuration.id)
     expect((await repository.acceptedConfiguration(conversation.id, requestId))?.id).toBe(original.configuration.id)
     expect((await operators.ensure()).configuration.id).toBe(next.configuration.id)
