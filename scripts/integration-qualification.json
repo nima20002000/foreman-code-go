@@ -1,7 +1,7 @@
 {
-  "description": "Integration smoke subset a build computer runs to qualify its runtime: PostgreSQL startup and isolation, migrations, MCP, sources, Jobs and artifacts. CI Jobs always run the full suite.",
+  "description": "Integration smoke subset a build computer runs to qualify its runtime: PostgreSQL in the image, migrations, MCP, sources, Jobs and artifacts. CI Jobs always run the full suite.",
   "files": [
-    "apps/api/test/test-database-startup.integration.test.ts",
+    "apps/api/test/postgres.integration.test.ts",
     "apps/api/test/historical-database-upgrade.integration.test.ts",
     "apps/api/test/operator-mcp-comprehensive.integration.test.ts",
     "apps/api/test/source-admission-mcp.integration.test.ts",
