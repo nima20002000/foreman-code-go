@@ -14,6 +14,7 @@ import { CurrentEditReadResultSchema, CurrentWorkflowReadResultSchema,
   SavedManagedWorkflowCommandResultSchema, ManualRunStartResultSchema,
   SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { RunPlacementGetResultSchema } from '@foreman-code/contracts/placement-readback'
+import { listCiToolNames } from './helpers/crossComputerCiTools.js'
 
 // The integration runner supplies a disposable local application workspace with a
 // paired Dexter build computer and qualified verification runtime. No provider or job is mocked.
@@ -22,7 +23,7 @@ const InputSchema = z.object({
   token: z.string().min(1), deniedToken: z.string().min(1),
   buildTarget: JobTargetSchema,
 }).strict()
-const harness = { harness: 'codex' as const, model: 'gpt-5.6-luna', reasoningEffort: 'medium' as const,
+const harness = { harness: 'codex' as const, model: 'gpt-6.1-sol', reasoningEffort: 'xhigh' as const,
   serviceTier: 'standard' as const, sandbox: 'read-only' as const }
 
 async function connect(endpoint: string, token: string) {
@@ -45,7 +46,7 @@ async function expectDenied(client: Client, name: string, args: Record<string, u
   expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
 }
 
-it('real Codex medium runs current files on Dexter, reads logs and artifacts and reports the persisted build result', async () => {
+it('real Codex runs current files on Dexter, reads logs and artifacts and reports the persisted build result', async () => {
   const path = process.env.FOREMAN_CODE_REMOTE_CI_ACCEPTANCE_INPUT
   if (!path) throw new Error('Provide FOREMAN_CODE_REMOTE_CI_ACCEPTANCE_INPUT for the disposable local/Dexter fixture.')
   const input = InputSchema.parse(JSON.parse(await readFile(path, 'utf8')))
@@ -57,7 +58,7 @@ it('real Codex medium runs current files on Dexter, reads logs and artifacts and
   const denied = await connect(input.endpoint, input.deniedToken)
   let runId: string | undefined
   try {
-    const tools = (await writer.listTools()).tools.map(tool => tool.name)
+    const tools = await listCiToolNames(writer)
     expect(tools).toEqual(expect.arrayContaining(['ci_run', 'ci_get', 'ci_cancel', 'ci_logs_read',
       'ci_artifacts_list', 'ci_artifact_read', 'job_queue_list']))
     const workspace = ManagedWorkspaceSchema.parse(await call(writer, 'workspace_get', { workspaceId: input.workspaceId }))
@@ -89,7 +90,7 @@ it('real Codex medium runs current files on Dexter, reads logs and artifacts and
       + 'Report ticketId, executionId, selected computer deviceId, process outcome, one log line, '
       + 'and the summary artifact sha256. Do not run shell builds or change files.'
     const agent = AgentSchema.parse({ id: agentId, name: 'Remote build agent', productRole: 'coder', harness: 'codex',
-      model: 'gpt-5.6-luna', harnessConfiguration: harness, harnessProfileSelection: selector,
+      model: 'gpt-6.1-sol', harnessConfiguration: harness, harnessProfileSelection: selector,
       prompt: { system: 'Complete the requested MCP job and report the observed results.' }, assignedSkills: [],
       graphqlTools: ['context_get', 'ci_computers_list', 'ci_run', 'ci_get', 'ci_cancel',
         'ci_logs_read', 'ci_artifacts_list', 'ci_artifact_read'] })

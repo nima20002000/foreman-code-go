@@ -224,4 +224,4 @@ it('runs concurrent cross-computer CI with isolated workflow readback twice in a
     await persist()
   }
   expect(evidence.cleanupErrors).toEqual([])
-}, 4 * 60 * 60_000)
+}, 9 * 60 * 60_000)

@@ -133,7 +133,8 @@ async function observeWorkflow(client: Client, workflow: RunningCiWorkflow, obse
 
 export async function pollCiScenario(client: Client, workflows: RunningCiWorkflow[],
   observation: ScenarioObservation, persist: () => Promise<void>, input: CrossComputerCiInput) {
-  const deadline = Date.now() + 90 * 60_000
+  // Integration allows 150 minutes of execution plus queueing, preparation and publication.
+  const deadline = Date.now() + 4 * 60 * 60_000
   const expectedTickets = workflows.reduce((count, workflow) =>
     count + workflow.assignments.filter(agent => agent.suite !== null).length, 0)
   let nextCheckpoint = 0
@@ -158,7 +159,7 @@ export async function pollCiScenario(client: Client, workflows: RunningCiWorkflo
     if (runsFinished && ticketsFinished) return
     await delay(1000)
   }
-  throw new Error('Cross-computer CI exceeded its 90-minute round deadline.')
+  throw new Error('Cross-computer CI exceeded its four-hour round deadline.')
 }
 
 const AgentReportSchema = z.object({
