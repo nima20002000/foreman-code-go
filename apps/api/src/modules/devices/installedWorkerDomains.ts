@@ -59,7 +59,7 @@ import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
 import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
 import { CiRuntimeWorker } from '../jobs/ciRuntimeWorker.js'
 import { prepareCiRuntime } from '../jobs/ciRuntimePrepare.js'
-import { currentCiRuntimePaths, lastCiRuntimeRefresh, retainedCiRuntimeImages,
+import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurations,
   scheduleCiRuntimeRefresh } from '../jobs/ciRuntimeRefresh.js'
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
@@ -318,10 +318,12 @@ export async function createInstalledWorkerDomains(input: {
         const retained = await jobJournal()
         const executions = await retained.jobOperations()
         const qualifications = await retained.pendingQualifications()
-        const images = [...options.keepImages ?? [], ...await retainedCiRuntimeImages(input.stateDirectory),
+        const used = [...options.keepImages ?? [],
           ...executions.map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
           ...qualifications.map(receipt => receipt.candidate.fingerprint.imageDigest)]
-        return prepareCiRuntime({ ...options, keepImages: images })
+        const configurations = await retireCiRuntimeConfigurations(input.stateDirectory, used)
+        return prepareCiRuntime({ ...options, keepImages: [...used, ...configurations.images],
+          keepPaths: [...options.keepPaths ?? [], ...configurations.paths] })
       },
       refresh: async options => {
         try { return await scheduleCiRuntimeRefresh({ ...options, drain: () => runtimeDrain!.run() }) }

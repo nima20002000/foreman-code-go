@@ -14,6 +14,8 @@ export interface CiPreparationStepPorts {
   principal(): Promise<ManagementPrincipal>
   checkpoint(): Promise<void>
   device(request: CiRuntimeRequest): Promise<CiRuntimeWorkerState>
+  /** Images every current verification profile on this computer uses, across workspaces. */
+  deviceImages(): Promise<string[]>
   repository(workspaceId: string): Promise<string>
   deliverSource(repository: string): Promise<void>
   wait(): Promise<void>
@@ -47,7 +49,7 @@ export async function runCiPreparation(record: CiPreparationRecord, ports: CiPre
       repository, commit,
       review: { reviewedByPrincipalId: record.principal.id,
         decisionDigest: record.profile.approvalConfig.review!.decisionDigest },
-      keepImages: [record.profile.spec.policy.imageDigest] })
+      keepImages: [...new Set([record.profile.spec.policy.imageDigest, ...await ports.deviceImages()])] })
     while (state.state === 'preparing' && state.operationId === record.id) {
       await update('preparing', state.stage)
       await ports.wait()

@@ -28,6 +28,8 @@ export const dexter = '22222222-2222-4222-8222-222222222222'
 export const mana = '33333333-3333-4333-8333-333333333333'
 export const oldImage = `sha256:${'1'.repeat(64)}`
 export const newImage = `sha256:${'2'.repeat(64)}`
+/** A verification profile in another workspace still runs this image on Dexter. */
+export const otherWorkspaceImage = `sha256:${'3'.repeat(64)}`
 export const commit = 'c'.repeat(40)
 const uuid = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`
 const oldPin = { approvedSourceId: uuid('a'), snapshotId: uuid('b'), manifestDigest: 'a'.repeat(64) }
@@ -120,6 +122,11 @@ export async function ciPreparationFixture(options: {
         registration: profile.root.registration, mainInstallationId: mainId })
       return { rows: [{ target, revision: '1', build_enabled: !disabled, build_priority: 100,
         build_allowance_percent: 100 }] }
+    }
+    if (text.includes('from job_runtime_profiles')) {
+      const images = [...profiles.values()].filter(profile => profile.root.selection.hostRef.kind === 'device'
+        && profile.root.selection.hostRef.deviceId === values[0]).map(profile => profile.spec.policy.imageDigest)
+      return { rows: [...images, ...values[0] === dexter ? [otherWorkspaceImage] : []].map(image => ({ image })) }
     }
     if (text.includes('from workspaces')) return { rows: [{ record: { id: workspaceId, name: 'CI',
       repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' } } }] }

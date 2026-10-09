@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readdir } from 'node:fs/promises'
+import { lstat, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { z } from 'zod'
 import { DomainError } from '../errors.js'
@@ -19,7 +19,13 @@ export async function findRetainedRuntimeConfiguration<T>(
   const directory = dirname(location.path)
   const names = (await readdir(directory)).filter(name => /^job-runtime-[a-f0-9]{64}\.json$/u.test(name)).sort()
   for (const name of names) {
-    const bytes = await readProtectedRuntimeFile({ ...location, path: join(directory, name) }, maximumBytes)
+    const path = join(directory, name)
+    const bytes = await readProtectedRuntimeFile({ ...location, path }, maximumBytes).catch(async (error: unknown) => {
+      // Runtime preparation retires configurations nothing uses any more.
+      if (await lstat(path).then(() => true, (missing: NodeJS.ErrnoException) => missing.code !== 'ENOENT')) throw error
+      return null
+    })
+    if (!bytes) continue
     const digest = createHash('sha256').update(bytes).digest('hex')
     if (name !== `job-runtime-${digest}.json`) {
       throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'A retained runtime configuration changed.', 409)

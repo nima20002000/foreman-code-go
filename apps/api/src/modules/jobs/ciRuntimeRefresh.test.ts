@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PreparedCiRuntime } from '@foreman-code/contracts'
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { InstalledVerificationRuntimeConfigurationSchema } from './installedVerificationConfiguration.js'
-import { nextCaptureInput, recaptureCiTools, retainedCiRuntimeImages, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
+import { nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 
 const commands = vi.hoisted(() => ({ run: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
@@ -139,16 +139,22 @@ describe('CI runtime refresh', () => {
     }
   })
 
-  it('retains image references from previous protected configurations', async () => {
+  it('retires previous configurations whose image nothing still uses and keeps the current one', async () => {
     const f = fixture()
     const directory = await privateFixtureDirectory('ci-retention-')
     roots.push(directory)
+    const used = `sha256:${'c'.repeat(64)}`, unused = `sha256:${'d'.repeat(64)}`
+    const previous = (image: string, source: string) => JSON.stringify({ ...f.current,
+      machine: { ...f.current.machine, imageDigest: image },
+      qualificationSource: { ...f.current.qualificationSource, directory: source } })
     await writeFile(join(directory, 'job-runtime.json'), JSON.stringify(f.current))
-    await writeFile(join(directory, `job-runtime-${'b'.repeat(64)}.json`), JSON.stringify({ ...f.current,
-      machine: { ...f.current.machine, imageDigest: f.prepared.imageId } }))
-    expect((await retainedCiRuntimeImages(directory)).sort()).toEqual([
-      f.current.machine.imageDigest, f.prepared.imageId,
-    ].sort())
+    await writeFile(join(directory, `job-runtime-${'b'.repeat(64)}.json`), previous(used, '/ci/installer/qualification-source-used'))
+    await writeFile(join(directory, `job-runtime-${'e'.repeat(64)}.json`), previous(unused, '/ci/installer/qualification-source-old'))
+    const retained = await retireCiRuntimeConfigurations(directory, [used])
+    expect(retained.images.sort()).toEqual([f.current.machine.imageDigest, used].sort())
+    expect(retained.paths.sort()).toEqual([f.current.qualificationSource.directory,
+      '/ci/installer/qualification-source-used'].sort())
+    expect((await readdir(directory)).sort()).toEqual(['job-runtime.json', `job-runtime-${'b'.repeat(64)}.json`].sort())
   })
 
   it('schedules the Worker stop only after both its active Job and Agent session finish', async () => {

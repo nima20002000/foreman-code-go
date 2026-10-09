@@ -64,7 +64,7 @@ export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
     dataBase64: z.string().max(700 * 1024), complete: z.boolean() }).strict(),
   z.object({ operation: z.literal('prepare'), operationId: z.uuid(), repository: z.string().min(3).max(140), commit: CommitSchema,
     review: z.object({ reviewedByPrincipalId: IdSchema, decisionDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
-    keepImages: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).max(8) }).strict(),
+    keepImages: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).max(64) }).strict(),
   z.object({ operation: z.literal('status') }).strict(),
   /** `resources` are the verification profile's: the refreshed runtime reserves exactly what the profile requests. */
   z.object({ operation: z.literal('refresh'), operationId: z.uuid(), commit: CommitSchema, root: SourceRootRecordSchema, manifest: SourceManifestSchema,

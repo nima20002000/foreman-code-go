@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { copyFile, readFile, readdir, writeFile, chmod } from 'node:fs/promises'
+import { copyFile, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -104,16 +104,25 @@ export async function currentCiRuntimePaths(stateDirectory: string): Promise<str
   return typeof configuration.qualificationSource?.directory === 'string' ? [configuration.qualificationSource.directory] : []
 }
 
-/** Protected previous configurations remain recovery inputs after a refresh. */
-export async function retainedCiRuntimeImages(stateDirectory: string): Promise<string[]> {
-  const images: string[] = []
-  for (const name of await readdir(stateDirectory)) {
+/** Protected previous configurations remain recovery inputs after a refresh while something still uses their
+ * image: a current verification profile (`keepImages` from Main), an accepted Job or a pending qualification.
+ * Others are retired so their image and qualification source can be reclaimed; the current one always stays. */
+export async function retireCiRuntimeConfigurations(stateDirectory: string, keepImages: readonly string[]) {
+  const kept = new Set(keepImages)
+  const retained = { images: [] as string[], paths: [] as string[] }
+  for (const name of (await readdir(stateDirectory)).sort()) {
     if (!/^job-runtime(?:-[a-f0-9]{64})?\.json$/u.test(name)) continue
-    const configuration = InstalledJobRuntimeConfigurationRecordSchema.parse(
-      JSON.parse(await readFile(join(stateDirectory, name), 'utf8')))
-    images.push(configuration.schemaVersion === 2 ? configuration.machine.imageDigest : configuration.pins.imageDigest)
+    const raw = JSON.parse(await readFile(join(stateDirectory, name), 'utf8')) as { qualificationSource?: { directory?: unknown } }
+    const configuration = InstalledJobRuntimeConfigurationRecordSchema.parse(raw)
+    const image = configuration.schemaVersion === 2 ? configuration.machine.imageDigest : configuration.pins.imageDigest
+    if (name !== 'job-runtime.json' && !kept.has(image)) {
+      await rm(join(stateDirectory, name))
+      continue
+    }
+    retained.images.push(image)
+    if (typeof raw.qualificationSource?.directory === 'string') retained.paths.push(raw.qualificationSource.directory)
   }
-  return images
+  return retained
 }
 
 export async function recaptureCiTools(

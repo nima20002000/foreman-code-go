@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
-import { codexBinary, extractQualificationSource, prepareCiRuntime, pruneCiImages } from './ciRuntimePrepare.js'
+import { codexBinary, extractQualificationSource, prepareCiRuntime, pruneCiImages, reclaimInterruptedPreparation }
+  from './ciRuntimePrepare.js'
 import { PreparedCiRuntimeSchema } from '@foreman-code/contracts'
 
 const command = vi.hoisted(() => ({ run: vi.fn() }))
@@ -75,7 +76,7 @@ describe('CI runtime preparation boundaries', () => {
       versions: { '1.0.0': { dist: { integrity: 'sha512-fixture' } } },
     })))
     command.run.mockImplementation(async (_file, args: string[]) => {
-      if (args.includes('images')) return '[]'
+      if (args.includes('images') || args.includes('ps')) return '[]'
       if (args.includes('create')) return 'container'
       if (args.includes('cp')) {
         const destination = args.at(-1)!
@@ -120,6 +121,35 @@ describe('CI runtime preparation boundaries', () => {
       review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } }))
       .rejects.toThrow('Stopped at isolated image build')
     await expect(readFile(marker)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('reclaims build inputs and Buildah containers an interrupted preparation left, keeping used sources', async () => {
+    const f = await repository()
+    f.save()
+    const installer = join(f.root, 'installer')
+    await mkdir(installer, { mode: 0o700 })
+    const short = 'a'.repeat(12)
+    const source = join(installer, `source-${short}`)
+    execFileSync('git', ['-C', f.source, 'worktree', 'add', '--detach', source], { stdio: 'ignore' })
+    const leftovers = [`build-context-${short}`, `context-${short}`, `seed-${short}`, `qualification-source-${short}-AbC123`]
+    const kept = [`qualification-source-${'b'.repeat(12)}-XyZ789`, `seed-receipt-${short}.json`, `codex-${short}`, 'runtime-cache']
+    for (const name of [...leftovers, ...kept]) {
+      if (name.endsWith('.json') || name.startsWith('codex-')) await writeFile(join(installer, name), 'retained')
+      else await mkdir(join(installer, name, 'nested'), { recursive: true })
+    }
+    command.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('ps')) return JSON.stringify([
+        { Id: 'interrupted-build', State: 'storage', Command: ['buildah'] },
+        { Id: 'job-container', State: 'exited', Command: ['node'] },
+      ])
+      return ''
+    })
+    await reclaimInterruptedPreparation({ repository: f.source, installer, env: process.env,
+      keepPaths: [join(installer, kept[0]!)] })
+    expect((await readdir(installer)).sort()).toEqual([...kept].sort())
+    expect(command.run.mock.calls.filter(([, args]) => (args as string[]).includes('rm')).map(([, args]) => args))
+      .toEqual([['--remote=false', 'rm', '--force', 'interrupted-build']])
+    expect(execFileSync('git', ['-C', f.source, 'worktree', 'list'], { encoding: 'utf8' })).not.toContain(source)
   })
 
   it('extracts the locked Codex binary and reads its version without executing it on the host', async () => {

@@ -185,7 +185,8 @@ export class CiRuntimeProvisioner {
       await runCiPreparation(record, { profiles: this.profiles, sources: this.sources, principal, checkpoint,
         repository: workspaceId => this.projectRepository(workspaceId), now: this.timing.now,
         deliverSource: repository => this.deliverSource(record, repository, principal, signal),
-        wait: () => this.wait(signal), device: request => this.device(record, request, principal, signal) })
+        wait: () => this.wait(signal), device: request => this.device(record, request, principal, signal),
+        deviceImages: () => this.deviceImages(record.status.deviceId!) })
     } catch (error) {
       if (signal.aborted || error instanceof DomainError && error.code === 'JOB_OWNERSHIP_LOST') return
       record.status = { ...record.status, state: 'failed',
@@ -292,6 +293,15 @@ export class CiRuntimeProvisioner {
       throw new DomainError('BUILD_COMPUTER_PREPARE_UNSUPPORTED', 'Only reviewed verification profiles on paired computers are prepared automatically.', 409)
     }
     return { profile, deviceId: hostRef.deviceId }
+  }
+
+  /** Images the computer's current verification profiles still use, in every workspace. Its Worker retires
+   * other retained runtime configurations and their images; accepted Jobs keep theirs through its journal. */
+  private async deviceImages(deviceId: string): Promise<string[]> {
+    const rows = (await this.pool.query<{ image: string | null }>(`select record->'spec'->'policy'->>'imageDigest' as image
+      from job_runtime_profiles where record->'root'->'selection'->'hostRef'->>'deviceId'=$1
+      and record->>'status' <> 'revoked'`, [deviceId])).rows
+    return [...new Set(rows.flatMap(row => row.image ? [row.image] : []))]
   }
 
   private async projectRepository(workspaceId: string): Promise<string> {

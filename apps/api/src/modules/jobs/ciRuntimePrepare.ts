@@ -38,6 +38,8 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   if ((await run('git', ['-C', repository, 'cat-file', '-e', `${commit}^{commit}`], { env }).then(() => true, () => false)) === false) {
     await sh('git', ['-C', repository, 'fetch', '--no-tags', 'origin', commit])
   }
+  log('reclaim-interrupted-preparation')
+  await reclaimInterruptedPreparation({ repository, installer, keepPaths, env })
   log('checking-runtime-cache')
   const inputDigest = await ciRuntimeInputDigest({ repository, commit })
   const cached = await readCiRuntimeCache({ installer, inputDigest, imageExists: async imageId => {
@@ -254,6 +256,37 @@ const closed = (child: ChildProcess, name: string) => new Promise<void>((resolve
   child.once('error', reject)
   child.once('close', code => code === 0 ? resolve() : reject(new Error(`${name} exited ${code}`)))
 })
+
+/** Preparations run one at a time per computer and this installation's container store is theirs alone, so
+ * Buildah working containers and build inputs present when one starts were left by an earlier preparation
+ * that a Worker restart or an exhausted quota interrupted. Qualification sources still used stay in `keepPaths`. */
+export async function reclaimInterruptedPreparation({ repository, installer, keepPaths, env }: {
+  repository: string; installer: string; keepPaths: readonly string[]; env: NodeJS.ProcessEnv
+}) {
+  const containers = JSON.parse(await podmanOut(['ps', '--all', '--external', '--format', 'json'], env) || '[]') as
+    { Id: string; State?: string; Command?: string[] | null }[]
+  for (const container of containers) {
+    // Libpod Job containers are not external; Buildah's are reported in storage state only.
+    if (container.State === 'storage' && container.Command?.[0] === 'buildah') await podman(['rm', '--force', container.Id], env)
+  }
+  const kept = new Set(keepPaths)
+  const names = await readdir(installer).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [] as string[]
+    throw error
+  })
+  for (const name of names) {
+    const path = join(installer, name)
+    if (kept.has(path)) continue
+    if (/^source-[a-f0-9]{12}$/u.test(name)) {
+      // Another workspace's clone may own the worktree; its own next preparation prunes that record.
+      await run('git', ['-C', repository, 'worktree', 'remove', '--force', path], { env }).catch(() => undefined)
+      await rm(path, { recursive: true, force: true })
+    } else if (/^(?:build-context|context|seed)-[a-f0-9]{12}$|^qualification-source-[a-f0-9]{12}(?:-[A-Za-z0-9]{6})?$/u.test(name)) {
+      await rm(path, { recursive: true, force: true })
+    }
+  }
+  await run('git', ['-C', repository, 'worktree', 'prune'], { env }).catch(() => undefined)
+}
 
 export async function pruneCiImages(keep: readonly string[], env: NodeJS.ProcessEnv) {
   const kept = new Set(keep.map(id => id.replace(/^sha256:/u, '')))

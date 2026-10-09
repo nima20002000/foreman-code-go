@@ -11,7 +11,8 @@ import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/so
 import type { CiRuntimeProvisioner } from '../src/modules/jobs/ciRuntimeProvisioner.js'
 import { describe, expect, it } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
-import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, dexter, oldImage, newImage, commit, newPin }
+import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, dexter, oldImage, newImage, commit, newPin,
+  otherWorkspaceImage }
   from './helpers/ciPreparationFixture.js'
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
@@ -102,8 +103,9 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       const done = await f.settle('p-install')
       expect(done).toMatchObject({ state: 'qualified', commit, deviceId: dexter, message: null })
       expect(done.profiles.map(value => [value.profileId, value.status]).sort()).toEqual([['p-install', 'qualified'], ['p-unit', 'qualified']])
-      // The computer keeps the image and qualification source its current runtime still uses.
-      expect(f.calls.prepare).toEqual([{ repository: '/clones/octo/site', commit, installer: '/ci/managed/installer', keepImages: [oldImage],
+      // The computer keeps the images its profiles in every workspace and the qualification source its current runtime use.
+      expect(f.calls.prepare).toEqual([{ repository: '/clones/octo/site', commit, installer: '/ci/managed/installer',
+        keepImages: [oldImage, otherWorkspaceImage],
         keepPaths: ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'] }])
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin, expectedBindingRevision: 1, accessMode: 'exclusive-write' })])
       expect(f.calls.saves.map(value => [value.id, value.spec.bindingRevision, value.spec.policy.imageDigest]).sort())
