@@ -21,6 +21,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'repeat_run_get', action: 'runs:read' },
   { name: 'operator_mcp_setup_get', action: 'harnesses:read' },
   { name: 'operator_chat_create', action: 'operator_chat:write' },
+  { name: 'operator_chat_delete', action: 'operator_chat:write' },
+  { name: 'operator_chat_restore', action: 'operator_chat:write' },
   { name: 'operator_chat_controls_get', action: 'operator_chat:read' },
   { name: 'operator_chat_controls_update', action: 'operator_chat:write' },
   { name: 'operator_chat_list', action: 'operator_chat:read' },

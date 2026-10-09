@@ -284,11 +284,13 @@ export class OperatorChatService {
     this.assertOpen()
     return this.repository.create(operator.id, configuration, principal.id, title)
   }
-  async setDeleted(id: string, principal: ManagementPrincipal, deleted: boolean) {
+  async setDeleted(id: string, principal: ManagementPrincipal, deleted: boolean,
+    command?: { commandId: string; source: 'http' | 'mcp' }) {
     this.assertOpen()
     return this.control(id, async () => {
       const row = await this.assertAccess(id, principal, 'operator_chat:write', true)
-      await this.repository.setDeleted(id, row.owner_principal_id!, deleted)
+      await this.repository.setDeleted(id, row.owner_principal_id!, deleted,
+        command ? { ...command, principal } : undefined)
       return { conversationId: id }
     })
   }

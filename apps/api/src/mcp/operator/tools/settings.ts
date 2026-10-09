@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { IdSchema, OperatorActivityPageSchema, OperatorActivityQuerySchema,
   OperatorChatSetupSchema, OperatorChatSetupQuerySchema,
   CreateOperatorConversationRequestSchema, CreateOperatorConversationResponseSchema,
+  OperatorConversationDeletionInputSchema, DeleteOperatorConversationResponseSchema,
   ListOperatorConversationsResponseSchema,
   GetOperatorConversationResponseSchema, SendOperatorMessageRequestSchema, SendOperatorMessageResponseSchema } from '@foreman-code/contracts'
 import { OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuerySchema,
@@ -44,6 +45,26 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
   }, async ({ commandId, title }) => invokeOperatorTool(context, 'operator_chat_create', async () => ({
     conversation: await context.services.operatorChat!.create(context.principal, title, { commandId, source: 'mcp' }),
   })))
+  if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_delete')) server.registerTool('operator_chat_delete', {
+    description: 'Soft-delete an owned idle Operator chat, removing it from history and revoking its delegated '
+      + 'chat credentials. Stop an active turn first. Requires global operator_chat:write. Reuse commandId with '
+      + 'the same conversationId after an uncertain response; a replay does not delete the chat again after '
+      + 'restoration. Use operator_chat_restore to undo and operator_chat_list to read persisted history.',
+    inputSchema: OperatorConversationDeletionInputSchema,
+    outputSchema: DeleteOperatorConversationResponseSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, ({ conversationId, commandId }) => invokeOperatorTool(context, 'operator_chat_delete', () =>
+    context.services.operatorChat!.setDeleted(conversationId, context.principal, true, { commandId, source: 'mcp' })))
+  if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_restore')) server.registerTool('operator_chat_restore', {
+    description: 'Restore an owned deleted Operator chat to history. Previously revoked delegated chat credentials '
+      + 'stay revoked. Requires global operator_chat:write and an idle chat. Reuse commandId with the same '
+      + 'conversationId after an uncertain response; a replay does not restore the chat again after another deletion. '
+      + 'Read back with operator_chat_list or operator_chat_get, requiring operator_chat:read.',
+    inputSchema: OperatorConversationDeletionInputSchema,
+    outputSchema: DeleteOperatorConversationResponseSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, ({ conversationId, commandId }) => invokeOperatorTool(context, 'operator_chat_restore', () =>
+    context.services.operatorChat!.setDeleted(conversationId, context.principal, false, { commandId, source: 'mcp' })))
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_list')) {
     server.registerTool('operator_chat_list', {
       description: 'Rediscover this caller\'s persisted Operator conversations, including newly created empty chats. Returns only conversations owned by this principal and excludes deleted conversations. Requires global operator_chat:read.',

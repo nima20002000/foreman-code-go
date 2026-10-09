@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import {
   applyOperatorChatSettings, operatorChatSettings, ConversationSchema, MessageSchema, OperatorConfigurationVersionSchema, OperatorConversationStateSchema,
+  DeleteOperatorConversationResponseSchema,
   ExecutionResultSchema,
   OperatorConversationSummarySchema, type OperatorConversationSummary,
   type HarnessConfiguration, type Conversation, type ExecutionResult, type OperatorAgent, type OperatorConfigurationVersion, type RecordedAgentHarness,
@@ -399,23 +400,55 @@ export class PostgresOperatorConversationRepository {
       "select * from operator_conversations where active_request_id is not null and kind='operator' order by updated_at,id")).rows
   }
 
-  async setDeleted(id: string, ownerId: string, deleted: boolean): Promise<void> {
+  async setDeleted(id: string, ownerId: string, deleted: boolean,
+    command?: { commandId: string; source: 'http' | 'mcp'; principal: ManagementPrincipal }): Promise<void> {
+    if (command) {
+      await new PostgresCommandCoordinator(this.pool).execute({
+        principal: command.principal,
+        source: command.source,
+        operation: deleted ? 'operator_chat_delete' : 'operator_chat_restore',
+        commandId: command.commandId,
+        targetKey: id,
+        payload: { deleted },
+        authorize: async (client) => {
+          requireAuthorization(await readLiveManagementPrincipal(client, command.principal.id), 'operator_chat:write')
+          const row = await this.active(id, client)
+          if (!row || row.owner_principal_id !== command.principal.id) {
+            throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+          }
+        },
+        perform: async (client) => {
+          await this.setDeletedWithQuery(client, id, ownerId, deleted)
+          return { conversationId: id }
+        },
+        replayResult: (value) => DeleteOperatorConversationResponseSchema.parse(value),
+      })
+      return
+    }
     const client = await this.pool.connect()
     try {
       await client.query('begin')
-      const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
-      if (!row || row.owner_principal_id !== ownerId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
-      if (row.active_request_id || !['idle', 'error'].includes(row.turn_state)) {
-        throw new DomainError('CONVERSATION_TURN_ACTIVE', 'Stop the response before deleting this chat.', 409)
-      }
-      if (Boolean(row.deleted_at) !== deleted) {
-        await client.query('update operator_conversations set deleted_at=case when $2 then now() else null end, revision=revision+1 where id=$1', [id, deleted])
-        if (deleted) await client.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
-          where id in (select principal_id from operator_chat_credentials where conversation_id=$1)`, [id])
-      }
+      await this.setDeletedWithQuery(client, id, ownerId, deleted)
       await client.query('commit')
     } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
     finally { client.release() }
+  }
+
+  private async setDeletedWithQuery(client: pg.PoolClient, id: string, ownerId: string, deleted: boolean): Promise<void> {
+    const row = (await client.query<ConversationRow>(
+      'select * from operator_conversations where id=$1 for update', [id])).rows[0]
+    if (!row || row.owner_principal_id !== ownerId) {
+      throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
+    }
+    if (row.active_request_id || !['idle', 'error'].includes(row.turn_state)) {
+      throw new DomainError('CONVERSATION_TURN_ACTIVE', 'Stop the response before deleting this chat.', 409)
+    }
+    if (Boolean(row.deleted_at) === deleted) return
+    await client.query(
+      'update operator_conversations set deleted_at=case when $2 then now() else null end, revision=revision+1 where id=$1',
+      [id, deleted])
+    if (deleted) await client.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
+      where id in (select principal_id from operator_chat_credentials where conversation_id=$1)`, [id])
   }
 
   async harnessForMessage(configuration: OperatorConfigurationVersion, input: SendOperatorMessageRequest): Promise<HarnessConfiguration> {

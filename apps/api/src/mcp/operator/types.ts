@@ -49,7 +49,9 @@ export interface OperatorServices {
   runGraph?: RunGraphReadApi
   runPlacements?: import('../../modules/placement/readService.js').RunPlacementReadService
   placementChoices?: import('../../modules/placement/choicesService.js').NodePlacementChoicesService
-  operatorChat?: Pick<OperatorChatService, 'readSessionControls' | 'changeSessionControls' | 'setup' | 'create' | 'list' | 'get' | 'history' | 'activityPage' | 'send' | 'handoffHistory' | 'cancel' | 'respond'>
+  operatorChat?: Pick<OperatorChatService,
+    'readSessionControls' | 'changeSessionControls' | 'setup' | 'create' | 'list' | 'get' | 'history' | 'activityPage'
+    | 'send' | 'handoffHistory' | 'cancel' | 'respond' | 'setDeleted'>
   agentChat?: AgentChatService
   fileRetention?: FileRetentionService
   harnessSettings?: { mcp: HarnessMcpSettingsService; directories: HarnessDirectoryBrowser; plugins?: CodexPluginSettingsService; claudePlugins?: ClaudePluginSettingsService }
