@@ -26,7 +26,7 @@ export function fakeComputer() {
   const claudePlugins = new Map<string, boolean>()
   const files = new Map<string, string>()
   const calls: { binary: string; args: string[] }[] = []
-  let failure = (_binary: string, _args: string[]) => false
+  let failure: (binary: string, args: string[]) => boolean = () => false
   const result = (value: unknown = {}, code = 0) => ({ code, stdout: JSON.stringify(value), stderr: '' })
   const ports: MaintenancePorts = {
     environment: { HOME: '/fake/home' },
