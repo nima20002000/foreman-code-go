@@ -296,9 +296,24 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         [reader.principal.id],
       )
       expect(deniedAudit.rows[0]!.count).toBeGreaterThan(0)
+      const savedMain = WorkspaceBoundLocationReadbackSchema.parse(await call('workspace_root_location_get', {
+        workspaceId: f.workspaceId,
+      }))
+      if (savedMain.evidence !== 'bound') throw new Error('Expected the saved Main root binding.')
+      expect(savedMain.binding).toMatchObject({
+        rootPolicyId: policy.rootPolicyId, rootPolicyRevision: '2', hostRef: policy.hostRef,
+      })
       await f.base.db.pool.query(`update workspace_root_policies set revoked_at=now()
         where root_policy_id=$1 and root_policy_revision=$2`, [policy.rootPolicyId, policy.rootPolicyRevision])
       expect(await call('workspace_get', { workspaceId: f.workspaceId })).toMatchObject({
+        executionLocation: savedMain.executionLocation,
+        locationRevision: revision, locationValidation: { status: 'ready' },
+      })
+      await f.base.db.pool.query(`update workspace_root_policies set revoked_at=now()
+        where root_policy_id=$1 and root_policy_revision=$2`,
+      [savedMain.binding.rootPolicyId, savedMain.binding.rootPolicyRevision])
+      expect(await call('workspace_get', { workspaceId: f.workspaceId })).toMatchObject({
+        executionLocation: savedMain.executionLocation,
         locationRevision: revision, locationValidation: { status: 'unavailable' },
       })
       const remaining = await choices()
