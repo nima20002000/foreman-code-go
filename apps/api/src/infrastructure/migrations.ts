@@ -25,6 +25,7 @@ import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/in
 import { computerSyncMigration } from './computerSyncMigration.js'
 import { buildComputersMigration } from './buildComputersMigration.js'
 import { ciRuntimePreparationMigration } from './ciRuntimePreparationMigration.js'
+import { ciRuntimeMainComputerMigration } from './ciRuntimeMainComputerMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
 import { jobQueueCompletionMigration } from './jobQueueCompletionMigration.js'
@@ -878,6 +879,7 @@ export const migrations = [
   retiredHarnessCredentialsMigration,
   jobQueueCompletionMigration,
   agentCiActivityMigration,
+  ciRuntimeMainComputerMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
