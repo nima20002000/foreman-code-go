@@ -204,7 +204,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     const path = join(input.runtimeRoot, 'job-runtime.json')
     const exists = input.installedJobConfiguration ?? await lstat(path).then(() => ({ path, ownerUid: process.getuid!() }),
       error => { if (error.code === 'ENOENT') return null; throw error })
-    const pool = await installedSourceQuotaPool(exists, binding)
+    const pool = await installedSourceQuotaPool(exists, binding, { purpose: 'cleanup' })
     if (!pool) throw new DomainError('SOURCE_QUOTA_MISSING', 'The verification Job requires its original installed quota pool.', 409)
     return { pool }
   }

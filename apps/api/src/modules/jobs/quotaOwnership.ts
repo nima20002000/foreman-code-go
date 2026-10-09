@@ -97,10 +97,17 @@ const SourceQuotaConfigurationSchema = z.object({
   descriptor: z.object({ quotaPool: JobVerificationQuotaPoolSchema.optional() }).passthrough().optional(),
 }).passthrough()
 export async function installedSourceQuotaPool(configuration: InstalledRuntimeConfigurationLocation | null,
-  binding: RootBinding): Promise<JobVerificationQuotaPool | null> {
+  binding: RootBinding, options: { purpose: 'preparation' | 'cleanup' } = { purpose: 'preparation' }
+): Promise<JobVerificationQuotaPool | null> {
   if (!configuration) return null
   const installed = await readProtectedRuntimeConfiguration(configuration, SourceQuotaConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
-  if (installed.schemaVersion !== 2 || !isDeepStrictEqual(installed.root.binding, binding)) return null
+  // Cleanup retains the physical quota owner when CI rebinds source on the same root.
+  const expected = options.purpose === 'cleanup' ? { ...binding,
+    bindingRevision: installed.root.binding.bindingRevision,
+    snapshotId: installed.root.binding.snapshotId,
+    manifestDigest: installed.root.binding.manifestDigest,
+  } : binding
+  if (installed.schemaVersion !== 2 || !isDeepStrictEqual(installed.root.binding, expected)) return null
   if (!installed.descriptor?.quotaPool) {
     throw new DomainError('JOB_QUOTA_UNAVAILABLE', 'The verification installation has no per-Job quota pool.', 409)
   }
