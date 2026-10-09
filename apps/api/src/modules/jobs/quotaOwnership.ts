@@ -11,7 +11,8 @@ import { RootBindingSchema, type RootBinding, type SourceProjectQuotaSlot }
   from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
 import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
-import { readProtectedRuntimeConfiguration, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
+import { type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
+import { findRetainedRuntimeConfiguration } from './retainedRuntimeConfiguration.js'
 
 export const JobProjectQuotaReadbackSchema = z.object({
   filesystemUuid: z.uuid().optional(),
@@ -100,14 +101,16 @@ export async function installedSourceQuotaPool(configuration: InstalledRuntimeCo
   binding: RootBinding, options: { purpose: 'preparation' | 'cleanup' } = { purpose: 'preparation' }
 ): Promise<JobVerificationQuotaPool | null> {
   if (!configuration) return null
-  const installed = await readProtectedRuntimeConfiguration(configuration, SourceQuotaConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
-  // Cleanup retains the physical quota owner when CI rebinds source on the same root.
-  const expected = options.purpose === 'cleanup' ? { ...binding,
-    bindingRevision: installed.root.binding.bindingRevision,
-    snapshotId: installed.root.binding.snapshotId,
-    manifestDigest: installed.root.binding.manifestDigest,
-  } : binding
-  if (installed.schemaVersion !== 2 || !isDeepStrictEqual(installed.root.binding, expected)) return null
+  const installed = await findRetainedRuntimeConfiguration(configuration, SourceQuotaConfigurationSchema, candidate => {
+    // Cleanup retains the physical quota owner when CI rebinds source on the same root.
+    const expected = options.purpose === 'cleanup' ? { ...binding,
+      bindingRevision: candidate.root.binding.bindingRevision,
+      snapshotId: candidate.root.binding.snapshotId,
+      manifestDigest: candidate.root.binding.manifestDigest,
+    } : binding
+    return candidate.schemaVersion === 2 && isDeepStrictEqual(candidate.root.binding, expected)
+  }, MAX_VERIFICATION_CONFIGURATION_BYTES)
+  if (!installed) return null
   if (!installed.descriptor?.quotaPool) {
     throw new DomainError('JOB_QUOTA_UNAVAILABLE', 'The verification installation has no per-Job quota pool.', 409)
   }

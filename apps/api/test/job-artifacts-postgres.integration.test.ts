@@ -1,7 +1,7 @@
 import { logArchive } from '../../../scripts/verification-reports.mjs'
 import { AutoJobDefinitionSpecSchema, JobArtifactReadOutputSchema, jobPolicyRequirements } from '@foreman-code/contracts/jobs'
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -13,9 +13,12 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { JobExecutionRecordSchema, type JobExecutionRecord, VerificationJobExecutionSchema,
   JobVerificationReportSchema } from '@foreman-code/contracts/job-verification'
+import { JobRuntimeApprovalRecordSchema, JobRuntimeQualificationReadRecordSchema }
+  from '@foreman-code/contracts/job-verification-runtime'
 import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 import { verificationFixture } from './helpers/jobVerificationFixture.js'
 import { verificationRuntimeFixture } from './helpers/verificationRuntimeFixture.js'
+import { qualificationReportFixture } from './helpers/qualificationReportFixture.js'
 import { fileStorageMigration } from '../src/infrastructure/fileStorageMigration.js'
 import { fileToolsMigration } from '../src/modules/files/tools/migration.js'
 import { jobArtifactStorageMigration } from '../src/infrastructure/jobArtifactStorageMigration.js'
@@ -26,7 +29,13 @@ import { createCanonicalJobArtifactPort } from '../src/modules/files/jobs/factor
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { registerJobRoutes } from '../src/routes/jobs.js'
 import { registerJobTools, unavailableJobToolCall } from '../src/mcp/operator/tools/jobs.js'
+import { registerJobRuntimeTools, unavailableJobRuntimeToolCall } from '../src/mcp/operator/tools/jobRuntimeProfiles.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { createQualificationReportPublisher } from '../src/modules/jobs/qualificationReports.js'
+import { publishFailedQualification } from '../src/modules/jobs/qualificationExecution.js'
+import { JobRuntimeProfiles } from '../src/modules/jobs/runtimeProfiles.js'
+import type { PostgresSourceService } from '../src/modules/sources/service.js'
+import { jobDigest } from '../src/modules/jobs/digest.js'
 import { DomainError } from '../src/modules/errors.js'
 import { jobExecution, jobSpec } from './helpers/jobFixture.js'
 const databaseUrl=process.env.TEST_DATABASE_URL
@@ -39,6 +48,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
   let address: string
   const clients: Client[] = []
   let artifacts:ReturnType<typeof createCanonicalJobArtifactPort>
+  let jobRuntimeProfiles: JobRuntimeProfiles | undefined
   let execution: JobExecutionRecord = jobExecution()
   const ownerToken=`fixture-owner-${randomUUID()}`,deniedToken=`fixture-denied-${randomUUID()}`
   let data: Buffer = Buffer.from('{"build":"passed"}')
@@ -111,10 +121,13 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     registerJobRoutes(app,jobs)
     app.post('/mcp',async(request,reply)=>{
       const server=new McpServer({name:'ci-artifact-fixture',version:'1'})
-      const context={principal:request.operatorPrincipal!,services:{jobs,commands}}
+      const context={principal:request.operatorPrincipal!,services:{jobs,commands,
+        ...(jobRuntimeProfiles ? { jobRuntimeProfiles } : {})}}
       const unavailable=await unavailableJobToolCall(context,request.body)
+        ?? await unavailableJobRuntimeToolCall(context,request.body)
       if(unavailable)return reply.send(unavailable)
       registerJobTools(server,context)
+      registerJobRuntimeTools(server,context)
       const transport=new NodeStreamableHTTPServerTransport({sessionIdGenerator:undefined})
       reply.raw.once('close',()=>{void Promise.allSettled([transport.close(),server.close()])})
       await server.connect(transport);reply.hijack();await transport.handleRequest(request.raw,reply.raw,request.body)
@@ -253,6 +266,118 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     }
   })
   if (placementMode === 'verification') {
+  it('reads failed qualification diagnostics over authenticated MCP after workload cleanup', async () => {
+    const f = qualificationReportFixture()
+    const candidate = f.candidate
+    const profile = candidate.profile
+    const workspaceId = profile.workspaceId
+    const report = { ...f.report, terminal: { ...f.report.terminal, outcome: 'build_failed' as const, exitCode: 7 } }
+    const summary = JobVerificationReportSchema.parse({ schemaVersion: 1, ...report.context.identity,
+      startedAt: report.startedAt, finishedAt: report.terminal.finishedAt,
+      totals: { total: 1, passed: 0, failed: 1, skipped: 0 }, firstPassFailed: 1,
+      expectedPortions: 1, completedPortions: 1, disallowedSkipped: 0, completeness: 'complete', outcome: 'failed' })
+    const workload = join(root, 'failed-qualification-workload')
+    await mkdir(workload)
+    await writeFile(join(workload, 'worker.log'), 'approved_root_not_persistent: worker persistence test failed\n')
+    const reports = new Map([
+      ['summary.json', Buffer.from(JSON.stringify(summary))],
+      ['junit.xml', Buffer.from('<testsuites tests="1" failures="1"><testsuite name="worker" tests="1" failures="1">'
+        + '<testcase name="persistent root"><failure>approved_root_not_persistent</failure></testcase>'
+        + '</testsuite></testsuites>')],
+      ['vitest.json', Buffer.from(JSON.stringify({ success: false, numFailedTests: 1 }))],
+      ['logs.tar.gz', logArchive(workload, report.context.limits.logsArchiveBytes)],
+    ])
+    const approval = JobRuntimeApprovalRecordSchema.parse({ schemaVersion: 2, id: candidate.approvalId,
+      qualificationId: candidate.qualificationId, workspaceId, profileId: profile.id, profileRevision: 1,
+      fingerprint: candidate.fingerprint, fingerprintDigest: jobDigest(candidate.fingerprint),
+      requestedByPrincipalId: 'owner', status: 'captured', expiresAt: report.context.identity.profile.approvalExpiresAt,
+      requestedAt: new Date(Date.parse(report.context.identity.profile.approvalExpiresAt)
+        - candidate.fingerprint.approvalConfig.approvalLifetimeMs).toISOString() })
+    await pool.query(`create table workspaces(id text primary key,archived_at timestamptz);
+      create table job_runtime_profiles(id text primary key,workspace_id text,record jsonb);
+      create table job_runtime_qualification_approvals(id uuid primary key,workspace_id text,record jsonb,
+        measurement jsonb,run_result jsonb,native_admission jsonb,run_command_id text,run_principal_id text);
+      create table management_command_receipts(principal_id text,operation text,command_id text,target_key text,
+        input_hash text,result jsonb,primary key(principal_id,operation,command_id));
+      create table job_definitions(id text primary key,workspace_id text,revision bigint,version_id text,
+        record jsonb,updated_by text);
+      alter table job_definition_versions add column revision bigint;
+      alter table job_executions add column definition_version_id text,add column operation_id text,add column attempt_id text;`)
+    await pool.query('insert into workspaces values($1,null)', [workspaceId])
+    await pool.query('insert into job_runtime_profiles values($1,$2,$3::jsonb)',
+      [profile.id, workspaceId, JSON.stringify({ ...profile, status: 'captured' })])
+    await pool.query('insert into job_runtime_qualification_approvals(id,workspace_id,record) values($1,$2,$3::jsonb)',
+      [approval.id, workspaceId, JSON.stringify(approval)])
+    await pool.query('update management_principals set grants=$2::jsonb where id=$1', ['owner', JSON.stringify([
+      { actions: ['job_definitions:read', 'job_definitions:write', 'jobs:start', 'job_artifacts:read'],
+        scope: { workspaceIds: [workspaceId, execution.workspaceId] } },
+    ])])
+    const publish = createQualificationReportPublisher({ pool, storageRoot: root })
+    let qualificationRuns = 0
+    jobRuntimeProfiles = new JobRuntimeProfiles(pool, new PostgresCommandCoordinator(pool), {} as PostgresSourceService, {
+      capture: async () => { throw new Error('This fixture does not capture a runtime') },
+      revalidate: async () => ({ ready: false, reasons: ['Unqualified fixture'] }),
+      run: async () => {
+        qualificationRuns++
+        try {
+          return await publishFailedQualification({ suite: 'unit', exitCode: 7, stderr: '',
+            closeContainer: async () => true,
+            publish: async () => {
+              for (const [name, bytes] of reports) {
+                await publish(candidate, { ...report, path: `.logs/verification/${name}` as typeof report.path,
+                  sha256: digest(bytes), byteSize: bytes.length }, bytes, async () => {})
+              }
+              return summary
+            } })
+        } catch (error) {
+          if (!(error instanceof Error)) throw error
+          return { outcome: 'denied', closure: 'confirmed', reasons: [error.message] }
+        } finally { await rm(workload, { recursive: true }) }
+      },
+    })
+    const owner = new Client({ name: 'qualification diagnostic reader', version: '1' })
+    clients.push(owner)
+    await owner.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { authProvider: { token: async () => ownerToken } }))
+    const run = { workspaceId, approvalId: approval.id, commandId: randomUUID() }
+    const completed = await owner.callTool({ name: 'job_runtime_qualification_run', arguments: run })
+    expect(completed.isError, JSON.stringify(completed.content)).not.toBe(true)
+    expect(completed.structuredContent).toMatchObject({ profile: { status: 'failed', measurement: null } })
+    await expect(readFile(join(workload, 'worker.log'))).rejects.toMatchObject({ code: 'ENOENT' })
+    const status = await owner.callTool({ name: 'job_runtime_qualification_get',
+      arguments: { workspaceId, approvalId: approval.id } })
+    const retained = JobRuntimeQualificationReadRecordSchema.parse(status.structuredContent)
+    expect(retained.readiness).toMatchObject({ ready: false, reasons: [
+      `unit qualification failed (exit 7). Reports: Job ${summary.executionId}. `
+        + '1 failed checks; 1/1 portions complete (failed).',
+    ] })
+    const executionId = /Reports: Job ([^.]+)\./.exec(retained.readiness.reasons[0]!)![1]!
+    const list = await owner.callTool({ name: 'job_artifacts_list', arguments: { workspaceId, executionId } })
+    expect(list.isError, JSON.stringify(list.content)).not.toBe(true)
+    const saved = (list.structuredContent as { artifacts: Array<{ path: string; fileId: string; revisionId: string }> }).artifacts
+    expect(saved).toHaveLength(4)
+    for (const artifact of saved) {
+      const result = await owner.callTool({ name: 'job_artifact_read', arguments: { workspaceId, executionId,
+        fileId: artifact.fileId, revisionId: artifact.revisionId } })
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+      const read = JobArtifactReadOutputSchema.parse(result.structuredContent)
+      expect(Buffer.from(read.content, 'base64')).toEqual(reports.get(artifact.path.split('/').at(-1)!))
+    }
+    const replay = await owner.callTool({ name: 'job_runtime_qualification_run', arguments: run })
+    expect(replay.structuredContent).toEqual(completed.structuredContent)
+    expect(qualificationRuns).toBe(1)
+    const denied = new Client({ name: 'denied qualification reader', version: '1' })
+    clients.push(denied)
+    await denied.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { authProvider: { token: async () => deniedToken } }))
+    for (const request of [
+      { name: 'job_runtime_qualification_run', arguments: run },
+      { name: 'job_runtime_qualification_get', arguments: { workspaceId, approvalId: approval.id } },
+      { name: 'job_artifacts_list', arguments: { workspaceId, executionId } },
+      { name: 'job_artifact_read', arguments: { workspaceId, executionId,
+        fileId: saved[0]!.fileId, revisionId: saved[0]!.revisionId } },
+    ]) expect((await denied.callTool(request)).isError).toBe(true)
+  })
   it('publishes JUnit XML and reads the retained bytes through authenticated MCP', async () => {
     await pool.query('update job_fixture_owner set revoked=false')
     const path = '.logs/verification/junit.xml'

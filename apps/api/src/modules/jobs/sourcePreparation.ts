@@ -90,7 +90,8 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
           hostRef: profile.root.selection.hostRef,
           suite: suite.data, ready, policy: profile.spec.policy, resources: profile.spec.resources,
           maxUnitWorkers: Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers,
-            measuredSuite?.maxUnitWorkers ?? 1) })]
+            measuredSuite?.maxUnitWorkers ?? 1),
+          maxIntegrationShards: measuredSuite?.maxIntegrationShards ?? 1 })]
       })
     })
     return {sources,targets,policies,autoPolicies,verificationTemplates}

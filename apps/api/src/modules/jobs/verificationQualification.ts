@@ -8,15 +8,15 @@ import type { z } from 'zod'
 import type { FileHandle } from 'node:fs/promises'
 import { JobTargetSchema } from '@foreman-code/contracts/jobs'
 import { JobVerificationReportSchema } from '@foreman-code/contracts/job-verification'
-import { JOB_VERIFICATION_OWNER_CONFIGURATION, qualificationUnitWorkers } from '@foreman-code/contracts/job-verification-policy'
+import { JOB_VERIFICATION_OWNER_CONFIGURATION, qualificationUnitWorkers, qualificationIntegrationShards } from '@foreman-code/contracts/job-verification-policy'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { JobVerificationQualificationCandidateSchema, JobVerificationRepositoryContextSchema,
   JobVerificationRuntimeQualificationResultSchema, JobVerificationRuntimeMeasurementSchema,
   JobVerificationOfflineSeedReceiptSchema, JOB_VERIFICATION_BASE_CHECKS,
   type JobRuntimeNativeAdmissionRecord, type JobQualificationCandidateRecord }
   from '@foreman-code/contracts/job-verification-runtime'
-import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
-import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile,
+import { readInstalledVerificationConfiguration } from './installedVerificationRuntime.js'
+import { readProtectedRuntimeFile,
   type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
 import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks, type PodmanIsolationInput } from './executorPodman.js'
 import { assertJobRuntimeEntryContext, jobQualificationFingerprint, runQualificationCommand,
@@ -80,8 +80,7 @@ export async function qualifyVerificationRuntime(input: {
   const candidate = JobVerificationQualificationCandidateSchema.parse(input.candidate)
   if (!input.publishReport) throw new Error('Canonical qualification Job publication is unavailable.')
   const fingerprint = candidate.fingerprint
-  const configuration = await readProtectedRuntimeConfiguration(input.configuration,
-    InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
+  const configuration = await readInstalledVerificationConfiguration(input.configuration, candidate.profile)
   const approval = await input.authority.readApproval(candidate.approvalId)
   if (!approval || approval.status !== 'approved' || approval.fingerprint !== jobQualificationFingerprint(candidate)
     || Date.parse(approval.expiresAt) <= Date.now()) {
@@ -309,11 +308,13 @@ export async function qualifyVerificationRuntime(input: {
           definitionVersionId: `${fingerprint.profileId}:${fingerprint.profileRevision}:${candidate.qualificationId}:${suite}`,
           suite, executionId: `${candidate.operationId}:${suite}`, attemptId: `${candidate.qualificationId}:${suite}`, target,
           profile: profileIdentity, resources: fingerprint.resources,
-          parameters: { unitWorkers: qualificationUnitWorkers(fingerprint.resources.limits), integrationShards: 1 } },
+          parameters: { unitWorkers: qualificationUnitWorkers(fingerprint.resources.limits),
+            integrationShards: suite === 'integration' ? qualificationIntegrationShards(fingerprint.resources) : 1 } },
         requiredPortions: captureVerificationInventory(source.sourceRoot, suite),
         privateGit: source.privateGit, executionTimeoutMs: candidate.profile.spec.policy.executionTimeoutMs,
         cancellationTimeoutMs: Math.max(1, candidate.profile.spec.policy.cancellationGraceMs),
         qualifiedUnitWorkers: qualificationUnitWorkers(fingerprint.resources.limits),
+        qualifiedIntegrationShards: suite === 'integration' ? qualificationIntegrationShards(fingerprint.resources) : 1,
         limits: { summaryBytes: maxBytes, junitBytes: maxBytes, vitestBytes: maxBytes,
           logsArchiveBytes: maxBytes, logBytes: Math.min(maxBytes, candidate.profile.spec.policy.maxLogBytes) },
         mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',
@@ -329,7 +330,7 @@ export async function qualifyVerificationRuntime(input: {
         { context, startedAt, materialization, terminal: { outcome: 'build_failed', exitCode: null, signal: null, finishedAt: startedAt } }))
       await writeVerificationQualificationContext(inputRoot, JSON.stringify({ ...context,
         measurement: { mutableDirectory: '/job-scratch', cgroupDirectory: '/sys/fs/cgroup' } }))
-      const execution = await podman(['exec', containerId, 'node', 'scripts/verify-repository.mjs',
+      const execution = await podman(['exec', containerId, 'node', '/opt/graphql-ci/verification/verify-repository.mjs',
         '--context', `/workspace/${JOB_INPUT_DIRECTORY}/qualification-context.json`],
       context.executionTimeoutMs + context.cancellationTimeoutMs + candidate.profile.spec.policy.publicationTimeoutMs)
       if (execution.exitCode !== 0) {
@@ -403,7 +404,8 @@ export async function qualifyVerificationRuntime(input: {
     const evidence = { observation, quotas, quotaResult, quotaInodes, independence, suites, reports, failures, publications, containerId, closed }
     const measurement = JobVerificationRuntimeMeasurementSchema.parse({ schemaVersion: 2, fingerprint,
       identity: profileIdentity, origin: 'real-runtime', approvedAt: candidate.approvedAt, checkedAt, expiresAt, suites, publications,
-      checks: [...JOB_VERIFICATION_BASE_CHECKS, 'network-none'].map(id => ({ id, passed: true,
+      checks: [...JOB_VERIFICATION_BASE_CHECKS, 'network-none',
+        ...(suites.some(suite => suite.suite === 'integration') ? ['postgres-isolation'] : [])].map(id => ({ id, passed: true,
         evidenceDigest: jobDigest({ id, evidence }) })) })
     result = JobVerificationRuntimeQualificationResultSchema.parse({ outcome: 'qualified', measurement, runtime })
   } catch (error) {

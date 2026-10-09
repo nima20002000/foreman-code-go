@@ -47,15 +47,16 @@ export const JobVerificationPreseedFactsSchema = z.object({
 export const JobVerificationRepositoryContextSchema = z.object({
   identity: JobVerificationPassSchema.shape.expected,
   privateGit: JobVerificationPrivateGitSchema,
-  requiredPortions: z.array(z.object({ key: IdSchema, kind: z.enum(['command', 'bootstrap', 'vitest', 'node']),
+  requiredPortions: z.array(z.object({ key: IdSchema, kind: z.enum(['command', 'bootstrap', 'vitest', 'node', 'integration']),
     files: z.array(z.string().min(1)).min(1).optional() }).strict().superRefine((portion, context) => {
-      if (['vitest', 'node'].includes(portion.kind) && !portion.files) {
+      if (['vitest', 'node', 'integration'].includes(portion.kind) && !portion.files) {
         context.addIssue({ code: 'custom', message: 'Required test portions must retain their pre-launch file inventory.' })
       }
     })).min(1),
   executionTimeoutMs: DeviceSafeIntegerSchema.positive(),
   cancellationTimeoutMs: DeviceSafeIntegerSchema.positive(),
   qualifiedUnitWorkers: DeviceSafeIntegerSchema.min(1).max(256),
+  qualifiedIntegrationShards: DeviceSafeIntegerSchema.min(1).max(12).optional(),
   limits: z.object({ summaryBytes: DeviceSafeIntegerSchema.positive(), junitBytes: DeviceSafeIntegerSchema.positive(),
     vitestBytes: DeviceSafeIntegerSchema.positive(), logsArchiveBytes: DeviceSafeIntegerSchema.positive(),
     logBytes: DeviceSafeIntegerSchema.positive() }).strict(),

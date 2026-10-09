@@ -12,7 +12,7 @@ import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatab
 import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
-  readVitestReport, writeReport } from './verification-reports.mjs'
+  readVitestReport, privateDirectory, writeReport } from './verification-reports.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
@@ -368,7 +368,9 @@ async function main() {
   const tempRoot = createTestRoot(undefined, 'graphql-integration-')
   const retainedDirectory = join(root, '.logs', 'test-integration')
   mkdirSync(retainedDirectory, { recursive: true })
-  const failedLogs = createTestRoot(retainedDirectory).directory
+  const failedLogs = process.env.FOREMAN_CODE_VERIFICATION_REPORT_DIR
+    ? privateDirectory(join(process.env.FOREMAN_CODE_VERIFICATION_REPORT_DIR, 'parts', 'integration'))
+    : createTestRoot(retainedDirectory).directory
   const startedAt = new Date().toISOString()
   const firstPass = []
   const retestReports = []

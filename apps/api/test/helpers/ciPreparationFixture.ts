@@ -55,6 +55,11 @@ export function qualifiedPreparationProfile(profile: JobVerificationProfile): Jo
     network: profile.spec.policy.network, imageDigest: profile.spec.policy.imageDigest,
     imageConfigDigest: profile.spec.policy.imageDigest, imageManifestDigest: profile.spec.policy.imageDigest,
     toolchainDigest: profile.spec.policy.toolchainDigest, approvalConfig: profile.approvalConfig }
+  if (profile.spec.suites.includes('integration')) {
+    fingerprint.tools = [...fingerprint.tools, { kind: 'postgresql', executable: '/usr/lib/postgresql/17/bin/postgres',
+      version: '17.6', binarySha256: 'a'.repeat(64) }]
+    baseline.checks.push({ id: 'postgres-isolation', passed: true, evidenceDigest: 'a'.repeat(64) })
+  }
   return JobVerificationProfileSchema.parse({ ...profile, status: 'qualified', measurement: { ...baseline, fingerprint,
     identity: { ...baseline.identity, profileId: profile.id, profileRevision: profile.revision,
       fingerprintDigest: jobDigest(fingerprint), rootId: profile.root.binding.rootId,

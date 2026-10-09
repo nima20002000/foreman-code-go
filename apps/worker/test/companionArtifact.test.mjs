@@ -45,12 +45,14 @@ test(`packaged GUI serves CSP and keeps doctor read-only on ${storage} storage`,
   assert.equal(status.compatibility.supported, status.compatibility.mismatches.length === 0);
   assert.equal((await post('/api/service-enable', { confirm: true, planSha256: 'a'.repeat(64) })).status, 400);
   // Identity also requires the package's exact approved target runtime.
-  const canInitialize = persistent && status.compatibility.supported;
+  const persistentHost = status.persistentRoot && status.persistentHome && status.persistentState;
+  const canInitialize = persistentHost && status.compatibility.supported;
   const identity = await post('/api/identity-request');
   assert.equal(identity.status, canInitialize ? 200 : 400);
   if (canInitialize) assert.equal((await stat(join(state, 'identity.json'))).mode & 0o777, 0o600);
   else {
-    if (persistent) assert.deepEqual(await identity.json(), { error: 'target_runtime_mismatch' });
+    const error = persistentHost ? 'target_runtime_mismatch' : 'companion_command_failed';
+    assert.deepEqual(await identity.json(), { error });
     await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
   }
 });

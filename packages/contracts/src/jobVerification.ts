@@ -12,7 +12,7 @@ import {
   JobResourceRequestSchema, JobVerificationPolicySchema, JobVerificationPolicyRequirementsSchema,
   JobVerificationProfileIdentitySchema,
   JobVerificationLifecycleSchema, verificationJobLifecycle,
-  JOB_VERIFICATION_INITIAL_CONCURRENCY, JOB_VERIFICATION_OWNER_CONFIGURATION,
+  JOB_VERIFICATION_INITIAL_CONCURRENCY, JOB_VERIFICATION_OWNER_CONFIGURATION, qualificationIntegrationShards,
 } from './jobVerificationPolicy.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { JobDependencyBasisSchema } from './jobVerificationSeed.js'
@@ -57,7 +57,7 @@ export const JobVerificationRequestSchema = z.object({
   }
 })
 
-export const JobOrdinaryVerificationSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build'])
+export const JobOrdinaryVerificationSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build', 'integration'])
 export const JobVerificationTemplateSchema = z.object({
   profileId: IdSchema,
   hostRef: JobTargetSchema.shape.hostRef.optional(),
@@ -68,7 +68,8 @@ export const JobVerificationTemplateSchema = z.object({
   resources: JobResourceRequestSchema,
   parameters: JobVerificationParametersSchema,
   maxUnitWorkers: DeviceSafeIntegerSchema.min(1).max(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers),
-  argv: z.tuple([z.literal('node'), z.literal('scripts/verify-repository.mjs'),
+  maxIntegrationShards: DeviceSafeIntegerSchema.min(1).max(12).optional(),
+  argv: z.tuple([z.literal('node'), z.literal('/opt/graphql-ci/verification/verify-repository.mjs'),
     z.literal('--context'), z.literal('.graphql-job-inputs/verification.json')]),
   outputs: JobVerificationOutputsSchema.nullable(),
   setupIssue: z.literal('report_budget_insufficient').optional(),
@@ -81,6 +82,9 @@ export const JobVerificationTemplateSchema = z.object({
   if (value.outputs && value.outputs.reduce((bytes, output) => bytes + output.maxBytes, 0) > value.policy.maxOutputBytes) {
     context.addIssue({ code: 'custom', message: 'Template reports must fit the saved output budget.' })
   }
+  if (value.parameters.integrationShards > (value.maxIntegrationShards ?? 1)) {
+    context.addIssue({ code: 'custom', message: 'Template shards must fit the qualified integration allowance.' })
+  }
   if (value.parameters.unitWorkers > value.maxUnitWorkers) {
     context.addIssue({ code: 'custom', message: 'Template parameters must fit the qualified worker allowance.' })
   }
@@ -90,8 +94,10 @@ export type JobVerificationTemplate = z.infer<typeof JobVerificationTemplateSche
 export function jobVerificationTemplate(input: Omit<JobVerificationTemplate, 'argv' | 'outputs' | 'parameters' | 'setupIssue'>) {
   const reportBytes = Math.floor(input.policy.maxOutputBytes / 4)
   const parameters = { unitWorkers: JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers,
-    integrationShards: JOB_VERIFICATION_INITIAL_CONCURRENCY.integrationShards }
-  const argv = ['node', 'scripts/verify-repository.mjs', '--context', '.graphql-job-inputs/verification.json']
+    integrationShards: input.suite === 'integration'
+      ? Math.min(input.maxIntegrationShards ?? 1, qualificationIntegrationShards(input.resources))
+      : JOB_VERIFICATION_INITIAL_CONCURRENCY.integrationShards }
+  const argv = ['node', '/opt/graphql-ci/verification/verify-repository.mjs', '--context', '.graphql-job-inputs/verification.json']
   if (!reportBytes) return JobVerificationTemplateSchema.parse({ ...input, ready: false,
     setupIssue: 'report_budget_insufficient', parameters, argv, outputs: null })
   return JobVerificationTemplateSchema.parse({

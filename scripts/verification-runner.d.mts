@@ -1,7 +1,7 @@
 import type { JobVerificationRepositoryContextSchema } from '@foreman-code/contracts/job-verification-runtime'
 import type { JobVerificationReport } from '@foreman-code/contracts/job-verification'
 import type { z } from 'zod'
-export function captureVerificationInventory(root: string, suite: string): Array<{ key: string; kind: 'command' | 'bootstrap' | 'vitest' | 'node'; files?: string[] }>
+export function captureVerificationInventory(root: string, suite: string): Array<{ key: string; kind: 'command' | 'bootstrap' | 'vitest' | 'node' | 'integration'; files?: string[] }>
 export function expectedPortions(root: string, suite: string): Array<{ key: string; kind: string }>
 export function finalizeVerification(context: z.infer<typeof JobVerificationRepositoryContextSchema>, input: {
   root: string

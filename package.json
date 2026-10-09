@@ -27,6 +27,6 @@
     "test:files": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-command.mjs -- node scripts/test-files.mjs",
     "production:verify": "node scripts/heavy-job.mjs -- node scripts/verify-local-production.mjs",
     "verify:job": "node scripts/verify-repository.mjs",
-    "test:scripts": "node scripts/heavy-job.mjs -- node --test scripts/local-production.test.mjs scripts/heavy-job.test.mjs scripts/integration-process.test.mjs scripts/test-integration.test.mjs scripts/verification-reports.test.mjs scripts/verify-repository.test.mjs"
+    "test:scripts": "node scripts/heavy-job.mjs -- node --test scripts/local-production.test.mjs scripts/heavy-job.test.mjs scripts/integration-process.test.mjs scripts/test-integration.test.mjs scripts/verification-reports.test.mjs scripts/verify-repository.test.mjs scripts/project-verification.test.mjs scripts/build-computer/create-volume.test.mjs"
   }
 }
