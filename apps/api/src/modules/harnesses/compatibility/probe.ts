@@ -98,10 +98,14 @@ async function installationIdentity(binary: string, payloadPaths: readonly strin
 }
 
 /** Only fixed version/schema commands call this. No shell, credentials, stdin prompts, or server. */
-async function command(binary: string, args: string[], directory: string, environment: NodeJS.ProcessEnv, signal: AbortSignal, limit: number, processes: Set<DiagnosticProcess>, ownership?: CompatibilityProbeOwnership) {
+async function command(binary: string, args: string[], directory: string, environment: NodeJS.ProcessEnv,
+  signal: AbortSignal, limit: number, processes: Set<DiagnosticProcess>,
+  ownership?: CompatibilityProbeOwnership, timeoutMs?: number) {
   signal.throwIfAborted()
   await ownership?.beforeCommand(binary, signal)
   signal.throwIfAborted()
+  // Identity hashing must finish before the native command's launch budget starts.
+  if (timeoutMs !== undefined) signal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
   let rejectFailure: (error: unknown) => void = () => undefined
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject })
   void failure.catch(() => undefined)
@@ -183,7 +187,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
       const identity = await installationIdentity(resolved, payloadPaths, signal)
       const version = await isolated(source, directories, async (directory, environment) => {
         const output = await command(resolved, ['--version'], directory, environment,
-          AbortSignal.any([signal, AbortSignal.timeout(attempt === 1 ? inspectTimeoutMs : 10_000)]), 4096, processes, ownership)
+          signal, 4096, processes, ownership, attempt === 1 ? inspectTimeoutMs : Math.max(inspectTimeoutMs, 10_000))
         return parseInstalledVersion(output.stdout, output.stderr)
       })
       return { executable: resolved, identity, version, payloadPaths }

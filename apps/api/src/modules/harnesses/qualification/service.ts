@@ -62,7 +62,10 @@ export class HarnessQualificationService {
 
   begin(harness: CompatibilityHarness, force = false): Promise<HarnessQualification> {
     try { this.assertRunning(harness) } catch (error) { return Promise.reject(error) }
-    return this.track(this.prepare(harness, force))
+    return this.track(this.prepare(harness, force).catch((error: unknown) => {
+      if (error instanceof Error && error.name === 'TimeoutError') throw qualificationError(error)
+      throw error
+    }))
   }
 
   async verify(harness: CompatibilityHarness): Promise<HarnessQualification> {
@@ -137,16 +140,12 @@ export class HarnessQualificationService {
     this.assertRunning(harness)
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
     this.assertRunning()
-    const probe = this.probeFactory?.(harness, binary, 5000)
-      ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, 5000)
+    const probe = this.probeFactory?.(harness, binary, 30_000)
+      ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, 30_000)
     this.probes.add(probe)
     let version: string
     // The probe bounds the CLI command; installation checks and closure have separate ownership.
     try { version = (await probe.inspect(harness, this.cancellation.signal)).version }
-    catch (error) {
-      if (error instanceof Error && error.name === 'TimeoutError') throw qualificationError(error)
-      throw error
-    }
     finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()
@@ -250,7 +249,7 @@ export class HarnessQualificationService {
 
 async function checkStaticCompatibility(harness: CompatibilityHarness, binary: string, version: string, signal: AbortSignal, attempt: number, probes: Set<CompatibilityProbe>,
   probeFactory?: (harness: CompatibilityHarness, binary: string, timeoutMs: number) => CompatibilityProbe): Promise<string> {
-  const timeout = attempt === 1 ? 2000 : 10_000
+  const timeout = attempt === 1 ? 30_000 : 60_000
   const probe = probeFactory?.(harness, binary, timeout)
     ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, timeout)
   probes.add(probe)

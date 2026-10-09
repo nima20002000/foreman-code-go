@@ -26,7 +26,8 @@ function gate() {
   return { promise: new Promise<void>(done => { resolve = done }), release: () => resolve() }
 }
 
-function service(binary: string, factory: (timeoutMs: number) => CompatibilityProbe) {
+function service(binary: string, factory: (timeoutMs: number) => CompatibilityProbe,
+  refreshInstalled?: ConstructorParameters<typeof HarnessQualificationService>[9]) {
   const save = vi.fn(async () => undefined)
   const run = vi.fn(async () => ({ checks: [{ id: 'recorded', passed: true, detail: null }], evidence: {} }))
   const qualification = new HarnessQualificationService({ find: async () => null, save } as never,
@@ -35,7 +36,7 @@ function service(binary: string, factory: (timeoutMs: number) => CompatibilityPr
     { codex: { harness: 'codex', revision: 'recorded', run } },
     { codex: binary }, {} as never,
     { getManagedHarnessDefaults: async () => ({ revision: 0, defaults: DEFAULT_HARNESS_DEFAULTS }) },
-    async () => 'recorded-schema', undefined, (_harness, _binary, timeoutMs) => factory(timeoutMs))
+    async () => 'recorded-schema', undefined, (_harness, _binary, timeoutMs) => factory(timeoutMs), refreshInstalled)
   return { qualification, run, save }
 }
 
@@ -182,4 +183,59 @@ it('still stops a stalled version command at the native deadline without admitti
     await instance.qualification.shutdown()
     await removeFixtureDirectory(f.directory)
   }
-}, 10_000)
+}, 40_000)
+
+it('allows a cold native version command to load beyond five seconds', async () => {
+  const f = await binaryFixture("setTimeout(() => console.log('codex-cli 0.154.0'), 6000)")
+  const instance = service(f.binary, timeoutMs => nativeCompatibilityProbe(
+    { codex: f.binary }, f.directory, process.env, timeoutMs))
+  try {
+    await expect(instance.qualification.begin('codex')).resolves.toMatchObject({
+      version: '0.154.0', status: 'qualifying',
+    })
+    await instance.qualification.join()
+    expect(instance.run).toHaveBeenCalledOnce()
+    expect(instance.save).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'qualified' }),
+      expect.any(Object))
+  } finally {
+    await instance.qualification.shutdown()
+    await removeFixtureDirectory(f.directory)
+  }
+})
+
+it('reports inventory refresh timeouts as domain errors before admitting a suite', async () => {
+  const f = await binaryFixture("console.log('codex-cli 0.154.0')")
+  const factory = vi.fn((timeoutMs: number) => nativeCompatibilityProbe(
+    { codex: f.binary }, f.directory, process.env, timeoutMs))
+  const instance = service(f.binary, factory, async () => { throw new DOMException('Refresh timed out', 'TimeoutError') })
+  try {
+    await expect(instance.qualification.begin('codex')).rejects.toMatchObject({
+      name: 'DomainError', code: 'HARNESS_CHECK_TIMEOUT', status: 503,
+    })
+    expect(factory).not.toHaveBeenCalled()
+    expect(instance.run).not.toHaveBeenCalled()
+  } finally {
+    await instance.qualification.shutdown()
+    await removeFixtureDirectory(f.directory)
+  }
+})
+
+it('finishes the pre-launch identity check before starting the version-command deadline', async () => {
+  const f = await binaryFixture("console.log('codex-cli 0.154.0')")
+  const beforeCommand = vi.fn(async (_binary: string, signal: AbortSignal) => {
+    await delay(100)
+    signal.throwIfAborted()
+    throw new Error('Installation changed before launch')
+  })
+  const probe = nativeCompatibilityProbe({ codex: f.binary }, f.directory, process.env, 25, {
+    recovery: { root: f.directory, owner: 'identity-check' }, beforeCommand,
+  })
+  try {
+    await expect(probe.inspect('codex', new AbortController().signal))
+      .rejects.toThrow('Installation changed before launch')
+    expect(beforeCommand).toHaveBeenCalledOnce()
+  } finally {
+    await probe.close?.()
+    await removeFixtureDirectory(f.directory)
+  }
+})
