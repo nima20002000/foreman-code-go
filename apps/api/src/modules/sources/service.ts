@@ -151,6 +151,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
         let origin = await this.captureTransaction(async sql => {
           const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
           requireAuthorization(live.principal, 'workspace_locations:read', input)
+          // The location snapshot locks the workspace for update; lock it first so concurrent captures queue
+          // instead of deadlocking on a share-lock upgrade.
+          await sql.query('select 1 from workspaces where id=$1 for update', [input.workspaceId])
           await this.host(sql); await this.workspace(sql, input.workspaceId)
           const existing = (await sql.query<ApprovalRow>('select * from source_approvals where requested_by=$1 and command_id=$2 for update', [principal.id, input.commandId])).rows[0]
           if (existing) {
@@ -273,11 +276,13 @@ export class PostgresSourceService implements SourceAdmissionPort {
           throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
         }
         const location = await this.transaction(async sql => {
-          await this.workspace(sql, input.workspaceId)
+          // Lock exclusively first: the location snapshot below locks this row for update, and two concurrent
+          // approvals each holding a share lock would deadlock on that upgrade.
           const row = (await sql.query<{ location_revision: string }>(
-            'select location_revision from workspaces where id=$1 for share', [input.workspaceId])).rows[0]!
-          return repository ? this.repositoryOrigin(sql, input.workspaceId, Number(row.location_revision), repository)
-            : this.locations.snapshot(sql, input.workspaceId, Number(row.location_revision), 'read-only')
+            'select location_revision from workspaces where id=$1 for update', [input.workspaceId])).rows[0]
+          await this.workspace(sql, input.workspaceId)
+          return repository ? this.repositoryOrigin(sql, input.workspaceId, Number(row!.location_revision), repository)
+            : this.locations.snapshot(sql, input.workspaceId, Number(row!.location_revision), 'read-only')
         })
         commit ??= (await qualifiedGit(location.rootPath,
           ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim()
