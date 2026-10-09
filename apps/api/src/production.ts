@@ -175,6 +175,7 @@ import { ClaudePluginSettingsService } from './modules/harnesses/claudePlugins.j
 import { readClaudePlugins } from './modules/computers/claudePlugins.js'
 import { CodexPluginSettingsService } from './modules/harnesses/codexPluginSettings.js'
 import { NativeCodexPlugins } from './modules/harnesses/codexPlugins.js'
+import { MainCodexSelection } from './modules/computers/installedCodexSelection.js'
 import { workspaceStorageRoot } from './modules/workspaces/storage.js'
 import { HarnessDirectoryBrowser } from './modules/harnesses/directoryBrowser.js'
 import { CodexMcpConnections } from './modules/harnesses/codexMcpConnections.js'
@@ -267,6 +268,9 @@ export function buildProductionApp(
   qualificationSuites?: Record<CompatibilityHarness, QualificationSuite>,
   infrastructure?: ProductionHarnessInfrastructure,
 ) {
+  const mainCodex = new MainCodexSelection(config.harnesses.codexBinary,
+    resolve(config.harnesses.workspaceRoot, 'main-codex-selection.json'), systemMaintenancePorts())
+  const mainBinaries = { get codexBinary() { return mainCodex.binary } }
   const workerExecution = new WorkerExecutionPolicy(config.workerExecution)
   if (infrastructure?.mode === 'replay' && (!infrastructure.auxiliary
     || !infrastructure.auxiliary.compatibility || !infrastructure.auxiliary.plugins
@@ -569,7 +573,7 @@ export function buildProductionApp(
   const hostProfileEvidence = new HostHarnessProfileEvidenceRepository(database.pool)
   const claudeDiscovery = createClaudeProductionDiscovery({ registry: () => harnessRegistry, factories: () => nativeFactories,
     workingDirectory: config.harnesses.workspaceRoot })
-  const harnessRegistry = new ProductionHarnessRegistry(database.pool, config.harnesses,
+  const harnessRegistry = new ProductionHarnessRegistry(database.pool, mainBinaries,
     (client) => settings.getManagedHarnessDefaults(client), hostProfileEvidence,
     (deviceId) => { const view = deviceRuntime.presenceFor(deviceId); return view?.phase === 'ready' ? view.binding : null },
     process.env, infrastructure?.inventoryDiscovery ?? { launcher: discoverLauncher, payloads: passiveDriverPayloads,
@@ -602,7 +606,7 @@ export function buildProductionApp(
   }) : undefined
   const harnessQualifications = selectedSuites && qualificationRegistry ? new HarnessQualificationService(
     qualificationRepository, qualificationRegistry, selectedSuites,
-    { codex: config.harnesses.codexBinary }, commands, settings,
+    { get codex() { return mainCodex.binary } }, commands, settings,
     undefined, (harness) => harnessCompatibility.refreshAfterQualification(harness),
     (harness, binary, timeoutMs) => compatibilityProbe(timeoutMs, { harness, binary }),
     (harness, signal) => {
@@ -619,7 +623,7 @@ export function buildProductionApp(
     : config.host === '::' || config.host === '::1' ? '[::1]' : config.host
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
-  const nativeFactories = new NativeHarnessFactories({ codexBinary: config.harnesses.codexBinary, responseJournal,
+  const nativeFactories = new NativeHarnessFactories({ get codexBinary() { return mainCodex.binary }, responseJournal,
     refreshInstallations: signal => harnessRegistry.refreshMain(signal),
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
@@ -749,14 +753,21 @@ export function buildProductionApp(
     config.harnesses.codexBinary, config.harnesses.workspaceRoot, nativeFactories, claudeMetadata,
   )
   const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
-  const maintenancePorts = systemMaintenancePorts(process.env, { codex: config.harnesses.codexBinary })
+  const maintenancePorts = systemMaintenancePorts(process.env, { get codex() { return mainCodex.binary } })
+  maintenancePorts.selectInstalledCodex = async signal => {
+    const binary = await mainCodex.selectInstalled(signal)
+    await harnessRegistry.refreshMain(signal)
+    harnessCatalog.invalidateChecks()
+    nativeConfigurations.invalidateOptions()
+    return binary
+  }
   const harnessSettings = {
     claudePlugins: new ClaudePluginSettingsService(maintenancePorts, commands),
     directories: new HarnessDirectoryBrowser([projectRoot], database.pool),
-    plugins: new CodexPluginSettingsService(database.pool, infrastructure?.auxiliary?.plugins ?? new NativeCodexPlugins(config.harnesses.codexBinary, config.harnesses.workspaceRoot,
+    plugins: new CodexPluginSettingsService(database.pool, infrastructure?.auxiliary?.plugins ?? new NativeCodexPlugins(() => mainCodex.binary, config.harnesses.workspaceRoot,
       processRegistry.scope('settings:plugins:codex')), () => processRegistry.closeOwner('settings:plugins:codex')),
     mcp: new HarnessMcpSettingsService(database.pool, commands, {
-      codex: infrastructure?.auxiliary?.mcp.codex ?? new CodexMcpConnections(config.harnesses.codexBinary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:codex')),
+      codex: infrastructure?.auxiliary?.mcp.codex ?? new CodexMcpConnections(() => mainCodex.binary, config.harnesses.workspaceRoot, processRegistry.scope('settings:mcp:codex')),
     }, () => { harnessCatalog.invalidateChecks(); nativeConfigurations.invalidateOptions() }, async () => {
       await processRegistry.closeOwner('settings:mcp:codex')
     }, appMcpEndpoint),
@@ -1505,6 +1516,8 @@ export function buildProductionApp(
       assertOpen()
       await runtimeOwner.acquire()
       assertOpen()
+      if (infrastructure?.mode !== 'replay') await mainCodex.initialize()
+      assertOpen()
       const canonicalDirectory = await ensureOperatorRuntimeDirectory(config.harnesses.workspaceRoot)
       assertOpen()
       if (canonicalDirectory !== operatorWorkingDirectory) {
@@ -1678,13 +1691,13 @@ export function buildProductionApp(
           codexPlugins: async () => {
             if (!await maintenancePorts.find('codex')) return []
             const [plugins, marketplaces] = await Promise.all([
-              installedPlugins(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(120_000)),
-              pluginMarketplaces(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(60_000))])
+              installedPlugins(maintenancePorts, mainCodex.binary, AbortSignal.timeout(120_000)),
+              pluginMarketplaces(maintenancePorts, mainCodex.binary, AbortSignal.timeout(60_000))])
             const local = new Set(marketplaces.filter(marketplace => marketplace.local).map(marketplace => marketplace.name))
             return plugins.filter(pluginId => !local.has(pluginId.split('@').at(-1)!))
           },
           codexMarketplaces: async () => await maintenancePorts.find('codex')
-            ? (await pluginMarketplaces(maintenancePorts, config.harnesses.codexBinary, AbortSignal.timeout(60_000)))
+            ? (await pluginMarketplaces(maintenancePorts, mainCodex.binary, AbortSignal.timeout(60_000)))
               .flatMap(marketplace => marketplace.gitSource ? [{ name: marketplace.name, source: marketplace.gitSource }] : []) : [],
         })
       registerComputerMaintenanceRoutes(app, runtimeServices.computerMaintenance)

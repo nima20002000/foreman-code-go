@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
@@ -8,7 +11,8 @@ import {
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { FleetMaintenanceService } from '../src/modules/computers/fleet.js'
-import { ComputerMaintenance, type MaintenancePorts } from '../src/modules/computers/maintenance.js'
+import { ComputerMaintenance, systemMaintenancePorts, type MaintenancePorts } from '../src/modules/computers/maintenance.js'
+import { MainCodexSelection } from '../src/modules/computers/installedCodexSelection.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
@@ -24,11 +28,13 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
   let database: Awaited<ReturnType<typeof agent3Database>>
   const apps: ReturnType<typeof buildApp>[] = []
   const clients: Client[] = []
+  const homes: string[] = []
   beforeAll(async () => { database = await agent3Database() }, 60000)
   afterAll(async () => {
     await Promise.allSettled(clients.map(client => client.close()))
     await Promise.allSettled(apps.map(app => app.close()))
     await database?.close()
+    await Promise.all(homes.map(home => rm(home, { recursive: true, force: true })))
   })
 
   it('reads fleet status, starts updates and syncs Main\'s MCP servers and plugins, and denies a read-only caller', async () => {
@@ -316,6 +322,143 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(after.status?.system.packageUpdates).toBe(23)
     expect(after.status?.tasks[0]?.summary).toContain('23 updates pending')
     expect(readbacks).toBeGreaterThan(0)
+  })
+
+  it('queues distinct updates and reads persisted terminal and interrupted tasks on command replay', async () => {
+    const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const access = new PostgresAccessService(database.pool)
+    const issue = (name: string, write: boolean) => access.issue({ name, audience: 'operator',
+      expiresAt: new Date(Date.now() + 3600000),
+      grants: [{ actions: write ? ['settings:read', 'settings:update'] : ['settings:read'], scope: {} }] })
+    const writer = await issue('Lifecycle maintainer', true)
+    const reader = await issue('Lifecycle reader', false)
+    const home = await mkdtemp(join(tmpdir(), 'main-maintenance-'))
+    homes.push(home)
+    const installedBinary = join(home, '.local/lib/node_modules/@openai/codex/node_modules/@openai',
+      'codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex')
+    await mkdir(dirname(installedBinary), { recursive: true })
+    await writeFile(installedBinary, '#!/bin/sh\necho codex-cli 0.161.0\n', { mode: 0o755 })
+    const filesystem = systemMaintenancePorts({ HOME: home })
+    const selectionPath = join(home, 'main-codex.json')
+    let selection = new MainCodexSelection('/opt/main/codex', selectionPath, filesystem)
+    await selection.initialize()
+    const versions = { codex: '0.160.0', claude: '2.1.19' }
+    let releaseInstall!: () => void
+    let installGate = new Promise<void>(resolve => { releaseInstall = resolve })
+    let installs = 0
+    let claudeUpdates = 0
+    let versionReads = 0
+    const ports: MaintenancePorts = {
+      environment: { HOME: home },
+      find: async name => {
+        if (name === 'codex') return selection.binary
+        return ['claude', 'npm'].includes(name) ? `/fixture/${name}` : null
+      },
+      run: async (binary, args) => {
+        let stdout = ''
+        if (args[0] === '--version') {
+          versionReads++
+          const codex = binary === '/opt/main/codex' ? '0.160.0' : versions.codex
+          stdout = binary.endsWith('claude') ? versions.claude : `codex-cli ${codex}`
+        }
+        if (args[0] === 'view') stdout = args[1] === '@openai/codex' ? '0.161.0' : '2.1.294'
+        if (args[0] === 'install') {
+          installs++
+          await installGate
+          versions.codex = '0.161.0'
+        }
+        if (args[0] === 'update') {
+          claudeUpdates++
+          versions.claude = '2.1.294'
+        }
+        return { code: 0, stdout, stderr: '' }
+      },
+      exists: async () => false,
+      readText: filesystem.readText,
+      writePrivateText: filesystem.writePrivateText,
+      selectInstalledCodex: signal => selection.selectInstalled(signal),
+      disk: async () => null,
+      later: () => {},
+      now: () => new Date(),
+    }
+    let local = new ComputerMaintenance(ports)
+    const commands = new PostgresCommandCoordinator(database.pool)
+    const service = new FleetMaintenanceService(database.pool, mainId, () => undefined, commands, {
+      start: (request: MaintenanceTaskStart) => local.start(request),
+      status: (signal: AbortSignal) => local.status(signal),
+    } as ComputerMaintenance, {
+      codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}),
+      codexPlugins: async () => [], codexMarketplaces: async () => [],
+      claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
+    })
+    const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { computerMaintenance: service, commands } as unknown as OperatorServices } })
+    apps.push(app)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'maintenance-lifecycle-test', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      }))
+      return client
+    }
+    const operator = await connect(writer.token)
+    const readOnly = await connect(reader.token)
+    const current = async () => ComputerMaintenanceListSchema.parse((await operator.callTool({
+      name: 'computers_maintenance_status', arguments: { refresh: true },
+    })).structuredContent).computers.find(computer => computer.target.hostRef.kind === 'main')!
+    const main = await current()
+    const codex = { commandId: randomUUID(), task: { kind: 'update-harnesses', harnesses: ['codex'] }, targets: [main.target] }
+    const start = async (input: typeof codex) => ComputerMaintenanceStartResultSchema.parse((await operator.callTool({
+      name: 'computers_maintenance_start', arguments: input,
+    })).structuredContent).computers[0]!.task!
+    expect((await readOnly.callTool({ name: 'computers_maintenance_start', arguments: codex })).isError).toBe(true)
+    expect(installs).toBe(0)
+    const first = await start(codex)
+    await expect.poll(() => installs).toBe(1)
+    const sampledVersions = versionReads
+    let releaseDisk!: () => void
+    const diskGate = new Promise<null>(resolve => { releaseDisk = () => resolve(null) })
+    ports.disk = () => diskGate
+    const slowStatus = current()
+    await expect.poll(() => versionReads).toBe(sampledVersions + 2)
+    const both = { ...codex, commandId: randomUUID(), task: { kind: 'update-harnesses', harnesses: ['codex', 'claude'] } }
+    const broader = await start(both)
+    expect(broader.id).not.toBe(first.id)
+    expect((await start({ ...both, commandId: randomUUID(), task: {
+      kind: 'update-harnesses', harnesses: ['claude', 'codex'],
+    } })).id).toBe(broader.id)
+    releaseInstall()
+    ports.disk = async () => null
+    await expect.poll(async () => (await current()).status?.tasks.every(task => task.state === 'succeeded')).toBe(true)
+    releaseDisk()
+    const coherent = await slowStatus
+    expect(coherent.status?.tasks.every(task => task.state === 'succeeded')).toBe(true)
+    expect(coherent.status?.harnesses.map(entry => entry.version)).toEqual(['0.161.0', '2.1.294'])
+    expect((await current()).status?.harnesses.map(entry => entry.version)).toEqual(['0.161.0', '2.1.294'])
+    expect(selection.binary).toBe(installedBinary)
+    expect(claudeUpdates).toBe(1)
+    selection = new MainCodexSelection('/opt/main/codex', selectionPath, filesystem)
+    await selection.initialize()
+    expect(selection.binary).toBe(installedBinary)
+    local = new ComputerMaintenance(ports)
+    expect(await start(both)).toMatchObject({ id: broader.id, state: 'succeeded' })
+    expect(installs).toBe(2)
+
+    installGate = new Promise<void>(resolve => { releaseInstall = resolve })
+    const interruptedInput = { ...codex, commandId: randomUUID() }
+    const interrupted = await start(interruptedInput)
+    await expect.poll(() => installs).toBe(3)
+    const previousOwner = local
+    local = new ComputerMaintenance(ports)
+    expect((await current()).status?.tasks.find(task => task.id === interrupted.id)).toMatchObject({
+      state: 'failed', summary: expect.stringContaining('interrupted'),
+    })
+    expect(await start(interruptedInput)).toMatchObject({ id: interrupted.id, state: 'failed' })
+    expect(installs).toBe(3)
+    releaseInstall()
+    await expect.poll(async () => (await previousOwner.status(AbortSignal.timeout(1000))).tasks[0]?.state).toBe('succeeded')
   })
 
 })
