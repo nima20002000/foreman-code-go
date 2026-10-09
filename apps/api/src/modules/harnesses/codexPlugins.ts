@@ -31,7 +31,8 @@ export function validatePluginMutation(value: unknown, pluginId: string, action:
 }
 
 export class NativeCodexPlugins implements CodexPluginAdapter {
-  constructor(private readonly binary: string, private readonly directory: string, private readonly processRecovery?: NativeProcessRecovery) {}
+  constructor(private readonly binary: string | (() => string), private readonly directory: string,
+    private readonly processRecovery?: NativeProcessRecovery) {}
   get recoveryIdentity(): string {
     if (!this.processRecovery || process.platform !== 'linux') return ''
     return pluginHash([resolve(this.processRecovery.root), this.processRecovery.owner])
@@ -39,7 +40,8 @@ export class NativeCodexPlugins implements CodexPluginAdapter {
   private async command(args: string[], signal: AbortSignal, mutation = false) {
     const environment = pluginCommandEnvironment()
     if (mutation && (!this.processRecovery || process.platform !== 'linux')) throw new DomainError('CODEX_PLUGIN_RECOVERY_UNAVAILABLE', 'Persistent process recovery is required before changing plugins.', 503)
-    const qualified = await qualifyCodex(this.binary, this.directory, environment, true, signal)
+    const binary = typeof this.binary === 'string' ? this.binary : this.binary()
+    const qualified = await qualifyCodex(binary, this.directory, environment, true, signal)
     await assertCodexUnchanged(qualified)
     return runCommand(qualified.binary, args, this.directory, signal, environment,
       { maxOutputBytes: 8_000_000, ...(mutation && this.processRecovery ? { recovery: this.processRecovery } : {}) })
@@ -65,7 +67,8 @@ export class NativeCodexPlugins implements CodexPluginAdapter {
     }
   }
   async list(signal: AbortSignal): Promise<CodexPluginCatalog> {
-    const { result, configuration } = await inspectCodexPluginCatalog(this.binary, this.directory, signal)
+    const binary = typeof this.binary === 'string' ? this.binary : this.binary()
+    const { result, configuration } = await inspectCodexPluginCatalog(binary, this.directory, signal)
     if (result.exitCode !== 0) throw new DomainError('CODEX_PLUGIN_CATALOG_UNAVAILABLE', 'Codex could not list its plugin catalog.', 503)
     try {
       const native = NativePluginCatalogSchema.parse(JSON.parse(result.stdout))

@@ -3,6 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, open, readdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { z } from 'zod'
+import type { MaintenancePorts } from './maintenance.js'
 import {
   readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation,
 } from '../runs/remote/installedWorkflowConfiguration.js'
@@ -35,6 +38,40 @@ function reportedVersion(binary: string, signal: AbortSignal): Promise<string> {
         else resolve(version)
       })
   })
+}
+
+const MainSelectionSchema = z.object({
+  configuredBinary: z.string().min(1),
+  binary: z.string().startsWith('/'),
+}).strict()
+
+/** Main consumers share this selection; their existing qualification checks still inspect the selected binary. */
+export class MainCodexSelection {
+  private selected: string
+  constructor(private readonly configuredBinary: string, private readonly path: string,
+    private readonly ports: Pick<MaintenancePorts, 'environment' | 'readText' | 'writePrivateText'>) {
+    this.selected = configuredBinary
+  }
+
+  get binary(): string { return this.selected }
+
+  async initialize(): Promise<void> {
+    const text = await this.ports.readText(this.path)
+    if (!text) return
+    const saved = MainSelectionSchema.parse(JSON.parse(text))
+    if (saved.configuredBinary !== this.configuredBinary) return
+    await reportedVersion(saved.binary, AbortSignal.timeout(15_000))
+    this.selected = saved.binary
+  }
+
+  async selectInstalled(signal: AbortSignal): Promise<string> {
+    const home = this.ports.environment.HOME ?? homedir()
+    const binary = await installedNativeCodex(home)
+    await reportedVersion(binary, signal)
+    await this.ports.writePrivateText(this.path, `${JSON.stringify({ configuredBinary: this.configuredBinary, binary })}\n`)
+    this.selected = binary
+    return binary
+  }
 }
 
 /**

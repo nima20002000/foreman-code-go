@@ -18,11 +18,13 @@ export function codexMcpOwnership(layers: unknown[], userLayer: Record<string, u
 
 /** No workflow/Operator credentials, thread, model turn or legacy exec invocation. */
 export class CodexMcpConnections implements NativeMcpAdapter {
-  constructor(private readonly binary: string, private readonly directory: string, private readonly processRecovery?: NativeProcessRecovery) {}
+  constructor(private readonly binary: string | (() => string), private readonly directory: string,
+    private readonly processRecovery?: NativeProcessRecovery) {}
   private async control<T>(work: (transport: CodexStdioTransport, binary: string, environment: NodeJS.ProcessEnv) => Promise<T>, signal: AbortSignal): Promise<T> {
     const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
     for (const key of Object.keys(environment)) if (/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(key)) delete environment[key]
-    const qualified = await qualifyCodex(this.binary, this.directory, environment, true, signal)
+    const binary = typeof this.binary === 'string' ? this.binary : this.binary()
+    const qualified = await qualifyCodex(binary, this.directory, environment, true, signal)
     await assertCodexUnchanged(qualified)
     const transport = new CodexStdioTransport(qualified.binary, this.directory, environment, qualified.protocol,
       async () => { throw new DomainError('MCP_UNEXPECTED_INTERACTION', 'A configuration operation requested an unexpected interaction.', 409) },
