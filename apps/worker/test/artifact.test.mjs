@@ -8,8 +8,10 @@ import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { workerPath } from '../src/harnessPath.mjs';
+import { mockHostMounts, persistentHostMounts } from './fixtures/hostMounts.mjs';
 
 const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
+const persistentHostPreload = new URL('./fixtures/persistentHost.mjs', import.meta.url).href;
 test('packaged worker help and native initialization load current contracts without execution authority', { skip: !artifact }, async t => {
   const output = execFileSync(process.execPath, [join(artifact, 'src/cli.mjs'), '--help'], { encoding: 'utf8', timeout: 5000 });
   assert.match(output, /^Foreman Code worker\n/);
@@ -17,7 +19,7 @@ test('packaged worker help and native initialization load current contracts with
   const state = await mkdtemp(join(persistentFixtureRoot, 'worker-native-initialization-'));
   t.after(() => rm(state, { recursive: true, force: true }));
   const initialized = JSON.parse(execFileSync(process.execPath,
-    [join(artifact, 'src/cli.mjs'), 'initialize-native-runtime', '--state', state],
+    ['--import', persistentHostPreload, join(artifact, 'src/cli.mjs'), 'initialize-native-runtime', '--state', state],
     { encoding: 'utf8', timeout: 10000 }));
   assert.deepEqual(initialized, { nativeRuntime: 'initialized', executionAuthorized: false });
   const status = JSON.parse(execFileSync(process.execPath,
@@ -71,6 +73,7 @@ test('built worker factory accepts supplied real registration and rejects placeh
 });
 
 test('packaged Worker entry loads installed domains and releases an unpaired installation', { skip: !artifact }, async t => {
+  t.after(mockHostMounts(t.mock, persistentHostMounts));
   const { startConfiguredWorker } = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
   const state = await mkdtemp(join(persistentFixtureRoot, 'worker-unpaired-entry-'));
   t.after(() => rm(state, { recursive: true, force: true }));
@@ -98,6 +101,14 @@ test('packaged bytes match manifest and doctor import creates no worker authorit
   await assert.rejects(readFile(join(state, 'identity.json')), { code: 'ENOENT' });
   // This verified tmpfs state is intentionally unqualified.
   assert.equal(result.persistentState, false);
+  const initialization = spawnSync(process.execPath,
+    [join(artifact, 'src/cli.mjs'), 'initialize-native-runtime', '--state', state],
+    { encoding: 'utf8', timeout: 5000 });
+  assert.equal(initialization.status, 1);
+  assert.equal(initialization.stderr.trim(), 'nonpersistent_storage');
+  for (const name of ['workflow-operations.json', 'job-runtime-operations.json']) {
+    await assert.rejects(readFile(join(state, name)), { code: 'ENOENT' });
+  }
   const run = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(artifact, 'src/cli.mjs'), 'run', '--state', state], { encoding: 'utf8', timeout: 5000 });
   assert.equal(run.status, 1);
   assert.equal(run.stderr.trim(), 'nonpersistent_storage');

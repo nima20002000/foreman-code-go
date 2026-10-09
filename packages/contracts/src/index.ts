@@ -1026,6 +1026,7 @@ export const ActivityKindSchema = z.enum([
   "run_state_changed",
   "node_scheduled",
   "node_state_changed",
+  "ci_state_changed",
   "harness_session_started",
   "harness_output",
   "harness_session_finished",
@@ -1524,6 +1525,10 @@ export const CreateOperatorConversationRequestSchema = z.object({
   title: z.string().trim().min(1).optional(),
 }).strict();
 export const DeleteOperatorConversationResponseSchema = z.object({ conversationId: IdSchema }).strict();
+export const OperatorConversationDeletionInputSchema = z.object({
+  conversationId: IdSchema,
+  commandId: IdSchema,
+}).strict();
 export const CreateOperatorConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export const ListOperatorConversationsResponseSchema = z.object({ conversations: z.array(ConversationSchema) }).strict();
 export const GetOperatorConversationResponseSchema = OperatorConversationStateSchema;

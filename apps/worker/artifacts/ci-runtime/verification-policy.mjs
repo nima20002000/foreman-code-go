@@ -151,7 +151,7 @@ const TEST_DATABASE = 'FOREMAN_CODE_CI_TEST_DATABASE';
 /** `pnpm test` needs the disposable test server on 127.0.0.1:55439; nested pnpm calls reuse the outer one. */
 export function needsTestDatabase(argv, environment) {
   const script = argv[1] === 'run' ? argv[2] : argv[1];
-  return script === 'test' && environment[TEST_DATABASE] !== 'running';
+  return ['test', 'test:integration'].includes(script) && environment[TEST_DATABASE] !== 'running';
 }
 
 /** A private PostgreSQL in job scratch, with the ownership markers the repository's test resources require. */
@@ -185,7 +185,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     const { argv, env } = await prepareVerificationPnpm(process.argv.slice(2));
     const database = needsTestDatabase(argv, env) ? await startTestDatabase(env) : null;
-    const child = spawn(process.execPath, [corepack, ...argv], { env: database ? { ...env, [TEST_DATABASE]: 'running' } : env,
+    const child = spawn(process.execPath, [corepack, ...argv], { env: database ? { ...env, [TEST_DATABASE]: 'running',
+      TEST_DATABASE_URL: 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres' } : env,
       stdio: 'inherit', shell: false });
     for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
     child.once('error', error => { process.stderr.write(`${error.message}\n`); process.exitCode = 127; });

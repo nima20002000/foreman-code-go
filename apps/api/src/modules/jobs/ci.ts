@@ -15,6 +15,7 @@ import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { z } from 'zod'
 import { MaterializationReceiptSchema } from '@foreman-code/contracts/source-materialization'
 import type { ApprovedSourcePin, SourceRootRecord } from '@foreman-code/contracts/source-admission'
+import { jobQueueHasExecution } from '@foreman-code/contracts/job-admission'
 
 /** The few facts CI needs from an Agent's accepted native placement. */
 const AgentPlacementFacts = z.object({
@@ -187,7 +188,7 @@ export class CiService {
     actions: ManagementAction[]) {
     const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:read', ...actions])
     const ticket = await this.jobs.getQueueTicket(scope.principal, scope.workspaceId, input.ticketId, 'mcp')
-    if (ticket.state !== 'accepted') {
+    if (!jobQueueHasExecution(ticket)) {
       throw new DomainError('CI_NOT_ACCEPTED', 'This CI request has no accepted execution yet. Poll ci_get.', 409)
     }
     return { ...scope, executionId: ticket.executionId }
@@ -212,7 +213,7 @@ export class CiService {
   async get(caller: ManagementPrincipal, input: CiGetInput & { workspaceId?: string }) {
     const { principal, workspaceId } = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
     const queue = await this.jobs.getQueueTicket(principal, workspaceId, input.ticketId, 'mcp')
-    if (queue.state !== 'accepted') return CiGetOutputSchema.parse({ queue, executionId: null,
+    if (!jobQueueHasExecution(queue)) return CiGetOutputSchema.parse({ queue, executionId: null,
       process: null, publication: null, resultIssue: null, summaryReport: null,
       logTail: { text: '', truncated: false } })
     const execution = await this.jobs.getExecution(principal, workspaceId, queue.executionId, 'mcp')

@@ -102,8 +102,17 @@ describe('offline verification launch validation with structured physical observ
     expect(() => requireVerificationRuntime(request(12), f.measurement, f.runtime)).not.toThrow()
     expect(() => requireVerificationRuntime(request(16), f.measurement, f.runtime)).toThrow('matching measured')
   })
-  it('derives the trusted ordinary wrapper context from accepted identities, declared limits and qualified workers', () => {
+  it.each(['unit', 'integration'] as const)('derives the trusted %s wrapper context within qualified limits', suite => {
     const f = verificationRuntimeFixture()
+    if (suite === 'integration') {
+      f.spec.verification.suite = suite
+      f.spec.verification.parameters.integrationShards = 2
+      f.measurement.suites[0]!.suite = suite
+      f.measurement.suites[0]!.maxIntegrationShards = 2
+      f.measurement.fingerprint.tools.push({ kind: 'postgresql', executable: '/usr/lib/postgresql/17/bin/postgres',
+        version: '17.6', binarySha256: digest })
+      f.measurement.checks.push({ id: 'postgres-isolation', passed: true, evidenceDigest: digest })
+    }
     const paths = [
       ['suite-summary', 'summary.json', 'application/json'], ['junit', 'junit.xml', 'application/xml'],
       ['vitest-json', 'vitest.json', 'application/json'], ['logs-archive', 'logs.tar.gz', 'application/gzip'],
@@ -130,6 +139,12 @@ describe('offline verification launch validation with structured physical observ
     expect(context.identity).toMatchObject({ executionId: execution.id, attemptId: execution.attemptId,
       commit: f.spec.source.commit, profile: f.spec.profile, resources: f.spec.verification.resources })
     expect(context.qualifiedUnitWorkers).toBe(1)
+    expect(context.qualifiedIntegrationShards).toBe(suite === 'integration' ? 2 : 1)
+    expect(() => verificationRepositoryContext({ execution: { ...execution,
+      acceptedSpec: { ...execution.acceptedSpec, verification: { ...execution.acceptedSpec.verification,
+        parameters: { ...execution.acceptedSpec.verification.parameters, integrationShards: 3 } } } },
+      measurement: f.measurement, preseedFacts, gitMounts,
+      requiredPortions: [{ key: 'root:install', kind: 'command' }] })).toThrow('qualification required')
     expect(context.storeDirectory).toBe('/job-scratch/pnpm-store')
     expect(context.privateGit).toMatchObject({ generatedCommit: '4'.repeat(40), sourceCommit: spec.source.commit })
     expect(context.limits).toEqual({ summaryBytes: 1024, junitBytes: 1024, vitestBytes: 1024,

@@ -18,6 +18,18 @@ export const JOB_VERIFICATION_OWNER_CONFIGURATION = Object.freeze({
 export function qualificationUnitWorkers(limits: { cpuLimit: number }): number {
   return Math.max(1, Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers, Math.floor(limits.cpuLimit)))
 }
+/** Each integration slot runs an API process and disposable database within the saved Job reservation. */
+export function qualificationIntegrationShards(resources: {
+  limits: { cpuLimit: number; memoryBytes: number }; scratchBytes: number
+}): number {
+  const gib = 2 ** 30
+  const cpuSlots = Math.floor(resources.limits.cpuLimit)
+  const memorySlots = Math.floor((resources.limits.memoryBytes - gib) / (2 * gib))
+  const scratchSlots = Math.floor(resources.scratchBytes / (2 * gib))
+  return Math.max(1, Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.integrationShards,
+    cpuSlots, memorySlots, scratchSlots))
+}
+
 export const JOB_VERIFICATION_INITIAL_CONCURRENCY = Object.freeze({
   heavyJobs: 1,
   integrationShards: 1,

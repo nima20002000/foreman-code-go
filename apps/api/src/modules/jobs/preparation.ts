@@ -63,14 +63,17 @@ export class JobQueuePreparation {
     let recoveries: JobExecutionRecord[]
     const barriers: { id: string; hosts: string[]; claims: number }[] = []
     try {
+      await order.connection.transaction(sql => this.repository.finishCompletedQueueTickets(sql))
       const terminal = await order.connection.query<{ record: unknown }>(`select q.record
         from job_admission_queue q join job_computer_selections s on s.execution_id=q.execution_id
-        where q.record->>'state'='terminal' and s.released_at is null order by q.enqueue_sequence`)
+        where q.record->>'state'='terminal' and s.released_at is null
+          and not exists(select 1 from job_executions e where e.id=q.execution_id)
+        order by q.enqueue_sequence`)
       const pending = [...terminal.rows.map(row => JobQueueTicketSchema.parse(row.record)),
         ...await this.repository.pendingQueue(order.connection)]
       const accepted = await order.connection.query<{ record: unknown }>(`select e.record
         from job_admission_queue q join job_executions e on e.id=q.execution_id and e.workspace_id=q.workspace_id
-        where q.record->>'state'='accepted' and
+        where (q.record->>'state'='accepted' or q.record->>'terminalReason'='completed') and
           (e.record #>> '{process,phase}'<>'terminal'
             or e.record #> '{process,processStopped}'<>'true'::jsonb
             or e.record->>'publication' in ('pending','collecting')

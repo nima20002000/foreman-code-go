@@ -15,6 +15,7 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { ClaudePluginCatalog } from './claudePlugins.js'
 import type { ComputerMaintenance } from './maintenance.js'
+import { syncFingerprint } from './syncFingerprint.js'
 
 export interface MaintenanceEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
@@ -34,22 +35,28 @@ const RUNNING_CACHE_MS = 3_000
 const RETIRED_APP_SERVERS = ['graphql-app', 'graphql-operator', 'graphql-worker']
 
 /** Server definitions safe to copy: no inline secret values. Servers needing a login are set up per computer later. */
-export function syncableServers(entries: Record<string, unknown>): SyncedMcpServer[] {
+export function syncableServers(entries: Record<string, unknown>, skipped?: (name: string) => void): SyncedMcpServer[] {
   const servers: SyncedMcpServer[] = []
   for (const [name, raw] of Object.entries(entries)) {
     if ([...APP_MCP_SERVER_NAMES, ...RETIRED_APP_SERVERS].includes(name as never) || !raw || typeof raw !== 'object') continue
     const entry = raw as Record<string, unknown>
     const hasSecrets = ['env', 'headers', 'http_headers', 'env_http_headers'].some(key =>
       entry[key] && typeof entry[key] === 'object' && Object.keys(entry[key] as object).length > 0)
-    if (hasSecrets) continue
+    if (hasSecrets) {
+      skipped?.(name)
+      continue
+    }
     const url = typeof entry.url === 'string' ? entry.url : undefined
-    const candidate = url
-      ? { transport: 'http', name, url, bearerTokenEnvVar: typeof entry.bearer_token_env_var === 'string' ? entry.bearer_token_env_var : null }
-      : typeof entry.command === 'string'
-        ? { transport: 'stdio', name, command: entry.command, args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [], envVars: [] }
-        : undefined
+    let candidate: unknown
+    if (url) {
+      candidate = { transport: 'http', name, url,
+        bearerTokenEnvVar: typeof entry.bearer_token_env_var === 'string' ? entry.bearer_token_env_var : null }
+    } else if (typeof entry.command === 'string') {
+      candidate = { transport: 'stdio', name, command: entry.command, args: entry.args ?? [], envVars: [] }
+    }
     const parsed = candidate ? SyncedMcpServerSchema.safeParse(candidate) : undefined
     if (parsed?.success) servers.push(parsed.data)
+    else skipped?.(name)
   }
   return servers
 }
@@ -86,8 +93,9 @@ export class FleetMaintenanceService {
     if (input.task.kind === 'restart' && !input.targets) {
       throw new DomainError('COMPUTER_RESTART_TARGET_REQUIRED', 'Choose the computers to restart.', 400)
     }
-    return (await this.commands.execute({ principal, source, operation: 'computers.maintenance.start', commandId: input.commandId,
+    const result = await this.commands.execute({ principal, source, operation: 'computers.maintenance.start', commandId: input.commandId,
       targetKey: `computers-maintenance:${this.mainId}`, payload: input,
+      authorize: async sql => { requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update') },
       perform: async () => {
         const known = await this.targets(principal, 'settings:update')
         const selected = input.targets
@@ -106,7 +114,28 @@ export class FleetMaintenanceService {
         for (const target of targets) this.cache.delete(this.key(target))
         return ComputerMaintenanceStartResultSchema.parse({ computers })
       },
-    })).value
+    })
+    if (!result.replayed) return result.value
+    return this.readStartedTasks(principal, ComputerMaintenanceStartResultSchema.parse(result.value))
+  }
+
+  private async readStartedTasks(principal: ManagementPrincipal,
+    saved: ComputerMaintenanceStartResult): Promise<ComputerMaintenanceStartResult> {
+    const known = await this.targets(principal, 'settings:update')
+    return ComputerMaintenanceStartResultSchema.parse({ computers: await Promise.all(saved.computers.map(async computer => {
+      if (!computer.task) return computer
+      if (!known.some(target => sameDeviceProvisioningTarget(target, computer.target))) {
+        return { ...computer, task: null, error: 'This computer is no longer paired with this Main.' }
+      }
+      const taskId = computer.task.id
+      const status = await this.status(computer.target, true)
+      const task = status?.tasks.find(task => task.id === taskId)
+      if (task) return { ...computer, task }
+      if (computer.task.state !== 'running') return computer
+      return { ...computer, task: null, error: status
+        ? 'This maintenance task is no longer retained. Read current status before starting another command.'
+        : 'The computer is unavailable; this maintenance task could not be read back.' }
+    })) })
   }
 
   /** Background upkeep: current harnesses everywhere, then Main's MCP servers and plugins on every paired computer. */
@@ -127,43 +156,90 @@ export class FleetMaintenanceService {
     if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
   }
 
-  /** Main's MCP servers and plugins each computer last received, so a change reaches every computer promptly. */
-  private readonly delivered = new Map<string, string>()
+  private readonly deliveries = new Map<string, {
+    fingerprint: string; taskId: string; state: 'pending' | 'delivered'
+  }>()
   /**
    * Pushes Main's current MCP servers and plugins to every connected computer that has not received this exact set yet.
    * Runs every minute on Main, so installs and removals on Main reach the other computers within about a minute, and a
    * computer that was offline catches up when it is back.
    */
   async syncChangedSources(): Promise<void> {
-    const [mcp, plugins] = await Promise.all([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
-    const fingerprint = JSON.stringify([mcp, plugins])
+    const sources = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     const targets = (await this.allTargets()).filter(target => target.hostRef.kind !== 'main')
     await Promise.all(targets.map(async target => {
-      const key = `${target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'}:${target.applicationInstallationId}`
-      if (this.delivered.get(key) === fingerprint) return
-      try {
-        const asked = Date.now() - 1_000
-        // A sync of the same kind that is already running is returned instead of started; that run carries the older
-        // set, so this one counts as delivered only when the computer started a new task for it.
-        const started = await Promise.all([this.startOn(target, mcp), this.startOn(target, plugins)])
-        if (started.every(task => Date.parse(task.startedAt) >= asked)) this.delivered.set(key, fingerprint)
-      } catch { /* The computer is offline or busy; the next run retries. */ }
+      const pending = sources.some(source => source.status === 'fulfilled'
+        && this.deliveries.get(`${this.key(target)}:${source.value.kind}`)?.state === 'pending')
+      const status = pending ? await this.status(target, true) : null
+      await Promise.all(sources.map(async source => {
+        if (source.status === 'fulfilled') await this.syncSource(target, source.value, status)
+      }))
     }))
+    const failures = sources.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
+    if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
+  }
+
+  private async syncSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
+    status: MaintenanceStatus | null): Promise<void> {
+    const key = `${this.key(target)}:${source.kind}`
+    const fingerprint = syncFingerprint(source)
+    const delivery = this.deliveries.get(key)
+    if (delivery?.fingerprint === fingerprint) {
+      if (delivery.state === 'delivered') return
+      const task = status?.tasks.find(task => task.id === delivery.taskId && task.sourceFingerprint === fingerprint)
+      if (task?.state === 'succeeded') {
+        delivery.state = 'delivered'
+        return
+      }
+      if (task?.state === 'running' || !status) return
+    }
+    // A failed/missing task remains pending for retry, including after a Worker restart.
+    const result = await Promise.allSettled([this.startOn(target, source)])
+    const started = result[0]!
+    if (started.status !== 'fulfilled' || started.value.sourceFingerprint !== fingerprint) return
+    this.deliveries.set(key, { fingerprint, taskId: started.value.id,
+      state: started.value.state === 'succeeded' ? 'delivered' : 'pending' })
   }
 
   private async taskFor(task: ComputerMaintenanceStartInput['task']): Promise<MaintenanceTaskStart> {
     if (task.kind === 'sync-mcp') {
-      const [codex, claude] = await Promise.all([this.sources.codexUserMcpServers().catch(() => ({})), this.sources.claudeUserMcpServers().catch(() => ({}))])
-      return { kind: 'sync-mcp', servers: { codex: syncableServers(codex), claude: syncableServers(claude) } }
+      const catalogs = await Promise.allSettled([
+        this.sources.codexUserMcpServers(), this.sources.claudeUserMcpServers(),
+      ])
+      const servers: Extract<MaintenanceTaskStart, { kind: 'sync-mcp' }>['servers'] = {}
+      const warnings: string[] = []
+      for (const [index, harness] of (['codex', 'claude'] as const).entries()) {
+        const catalog = catalogs[index]!
+        if (catalog.status === 'rejected') warnings.push(`${harness} MCP catalog could not be read; skipped.`)
+        else servers[harness] = syncableServers(catalog.value,
+          name => { warnings.push(`${harness} MCP server ${name.slice(0, 100)} is unsafe or invalid; skipped.`) })
+      }
+      if (servers.codex === undefined && servers.claude === undefined) {
+        throw new Error('Main\'s MCP catalogs could not be read.')
+      }
+      return { kind: 'sync-mcp', servers, ...(warnings.length ? { warnings } : {}) }
     }
     if (task.kind === 'sync-plugins') {
-      const [plugins, marketplaces, claude] = await Promise.all([
-        this.sources.codexPlugins(), this.sources.codexMarketplaces(), this.sources.claudePlugins(),
+      const [codex, claude] = await Promise.allSettled([
+        Promise.all([this.sources.codexPlugins(), this.sources.codexMarketplaces()]), this.sources.claudePlugins(),
       ])
-      return { kind: 'sync-plugins', plugins, marketplaces,
-        claudePlugins: claude.plugins.filter(plugin => plugin.installed).map(({ pluginId, enabled }) => ({ pluginId, enabled })),
-        claudeMarketplaces: claude.marketplaces.flatMap(item => item.source ? [{ name: item.name, source: item.source }] : []),
+      if (codex.status === 'rejected' && claude.status === 'rejected') {
+        throw new Error('Main\'s plugin catalogs could not be read.')
       }
+      const request: Extract<MaintenanceTaskStart, { kind: 'sync-plugins' }> = { kind: 'sync-plugins' }
+      const warnings: string[] = []
+      if (codex.status === 'fulfilled') {
+        request.plugins = codex.value[0]
+        request.marketplaces = codex.value[1]
+      } else warnings.push('Codex plugin catalog could not be read; skipped.')
+      if (claude.status === 'fulfilled') {
+        request.claudePlugins = claude.value.plugins.filter(plugin => plugin.installed)
+          .map(({ pluginId, enabled }) => ({ pluginId, enabled }))
+        request.claudeMarketplaces = claude.value.marketplaces
+          .flatMap(item => item.source ? [{ name: item.name, source: item.source }] : [])
+      } else warnings.push('Claude plugin catalog could not be read; skipped.')
+      if (warnings.length) request.warnings = warnings
+      return request
     }
     return task
   }

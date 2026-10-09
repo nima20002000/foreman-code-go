@@ -79,18 +79,18 @@ export class CanonicalJobPreparationSources implements JobPreparationSources {
     }))
     const verificationTemplates = profiles.flatMap(profile => {
       if (profile.schemaVersion !== 2 || profile.status === 'revoked') return []
+      const ready = policies.some(policy => canonical(policy) === canonical(jobRuntimeProfilePolicy(profile)))
       return profile.spec.suites.flatMap(value => {
         const suite = JobOrdinaryVerificationSuiteSchema.safeParse(value)
         if (!suite.success) return []
         const measurement = profile.measurement
         const measuredSuite = measurement?.suites.find(item => item.suite === suite.data)
-        const ready = profile.status === 'qualified' && Boolean(measurement
-          && Date.parse(measurement.expiresAt) > Date.now())
         return [jobVerificationTemplate({ profileId: profile.id, profileRevision: profile.revision,
           hostRef: profile.root.selection.hostRef,
           suite: suite.data, ready, policy: profile.spec.policy, resources: profile.spec.resources,
           maxUnitWorkers: Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers,
-            measuredSuite?.maxUnitWorkers ?? 1) })]
+            measuredSuite?.maxUnitWorkers ?? 1),
+          maxIntegrationShards: measuredSuite?.maxIntegrationShards ?? 1 })]
       })
     })
     return {sources,targets,policies,autoPolicies,verificationTemplates}

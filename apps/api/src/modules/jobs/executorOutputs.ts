@@ -4,7 +4,7 @@ import { dirname, basename } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type { AcceptedJobSpec } from '@foreman-code/contracts'
 import type { RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
-import { JobVerificationPassSchema, JobVerificationReportSchema, VerificationJobExecutionSchema,
+import { JobOrdinaryVerificationSuiteSchema, JobVerificationPassSchema, JobVerificationReportSchema, VerificationJobExecutionSchema,
   type AcceptedVerificationJobSpec, type JobVerificationReport }
   from '@foreman-code/contracts/job-verification'
 import { z } from 'zod'
@@ -104,8 +104,9 @@ export function verificationRepositoryContext(input: {
   })
   const suite = measured.suites.find(value => value.suite === spec.verification.suite)
   if (!suite || !isDeepStrictEqual(spec.profile, measured.identity)
-    || !['install', 'typecheck', 'lint', 'unit', 'build'].includes(spec.verification.suite)
-    || spec.verification.parameters.unitWorkers > Math.min(suite.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers)) {
+    || !JobOrdinaryVerificationSuiteSchema.safeParse(spec.verification.suite).success
+    || spec.verification.parameters.unitWorkers > Math.min(suite.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers)
+    || spec.verification.parameters.integrationShards > suite.maxIntegrationShards) {
     throw new Error('Matching ordinary-suite qualification required for wrapper context.')
   }
   const output = (kind: string, path: string) => {
@@ -130,6 +131,7 @@ export function verificationRepositoryContext(input: {
     ...(codex ? { unitCodex: { executable: codex.executable, version: codex.version,
       binarySha256: codex.binarySha256 } } : {}), executionTimeoutMs: spec.policy.executionTimeoutMs,
     cancellationTimeoutMs: spec.policy.cancellationGraceMs, qualifiedUnitWorkers: Math.min(suite.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers),
+    qualifiedIntegrationShards: suite.maxIntegrationShards,
     limits: { summaryBytes, junitBytes, vitestBytes, logsArchiveBytes,
       logBytes: Math.min(spec.policy.maxLogBytes, logsArchiveBytes) },
     mutableDirectory: '/job-scratch', storeDirectory: '/job-scratch/pnpm-store',

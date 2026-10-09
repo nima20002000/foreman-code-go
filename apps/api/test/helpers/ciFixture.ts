@@ -232,23 +232,28 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
     pool, authority,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
     complete: (options: { publication?: 'collecting' | 'failed' | 'expired'; failed?: true } = {}) => {
-      if (!ticket) throw new Error('Missing queued ticket')
+      if (!ticket || !('verification' in ticket.definition.spec)) throw new Error('Missing queued verification ticket')
       execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2,
         id: ticket.executionId, initiatingAgent: ticket.initiatingAgent, attemptId: ticket.attemptId, operationId: ticket.operationId, workspaceId,
         acceptedSpec: { ...runtime.spec, definitionVersionId: ticket.definition.versionId,
+          verification: ticket.definition.spec.verification,
           source: { ...runtime.spec.source, ...ticket.definition.spec.source } },
         publication: options.publication ?? 'complete',
+        finishedAt: new Date().toISOString(),
         resultIssue: options.publication === 'failed' ? 'publication_failed' : null,
         process: { phase: 'terminal', outcome: options.failed ? 'build_failed' : 'succeeded',
           exitCode: options.failed ? 1 : 0, signal: null, processStopped: true } })
-      ticket = JobQueueTicketSchema.parse({ ...ticket, state: 'accepted', reservationId: ticket.id,
+      const publishing = options.publication === 'collecting'
+      ticket = JobQueueTicketSchema.parse({ ...ticket, state: publishing ? 'accepted' : 'terminal',
+        terminalReason: publishing ? null : 'completed', finishedAt: publishing ? null : execution.finishedAt,
+        reservationId: ticket.id, queuePosition: null,
         waitingReasons: [], selectedComputer: { target: runtime.spec.target,
           rootId: runtime.spec.profile.rootId, bindingRevision: 1, profileId: 'profile', profileRevision: 1 } })
       tickets.set(ticket.id, ticket)
       const spec = execution!.acceptedSpec
       summary = JobVerificationReportSchema.parse({ schemaVersion: 1, commit: spec.source.commit,
         manifestDigest: spec.source.manifestDigest, definitionVersionId: spec.definitionVersionId,
-        suite: 'unit', executionId: execution!.id, attemptId: execution!.attemptId, target: spec.target,
+        suite: spec.verification.suite, executionId: execution!.id, attemptId: execution!.attemptId, target: spec.target,
         profile: spec.profile, resources: spec.verification.resources, parameters: spec.verification.parameters,
         startedAt: ticket.enqueuedAt, finishedAt: new Date().toISOString(),
         totals: { total: 3, passed: options.failed ? 2 : 3, failed: options.failed ? 1 : 0, skipped: 0 },

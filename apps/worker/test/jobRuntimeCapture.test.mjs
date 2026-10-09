@@ -455,6 +455,9 @@ test('packaged capture refuses active worker ownership and unsupported overwrite
 
 test('verification starts one disposable test database for the outer pnpm test only', () => {
   assert.equal(needsTestDatabase(['pnpm', 'test'], {}), true);
+  assert.equal(needsTestDatabase(['pnpm', 'test:integration'], {}), true);
+  assert.equal(needsTestDatabase(['pnpm', 'run', 'test:integration'], {}), true);
+  assert.equal(needsTestDatabase(['pnpm', 'test:integration'], { FOREMAN_CODE_CI_TEST_DATABASE: 'running' }), false);
   assert.equal(needsTestDatabase(['pnpm', 'run', 'test'], {}), true);
   assert.equal(needsTestDatabase(['pnpm', 'test'], { FOREMAN_CODE_CI_TEST_DATABASE: 'running' }), false);
   assert.equal(needsTestDatabase(['pnpm', 'install', '--frozen-lockfile'], {}), false);

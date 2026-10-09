@@ -49,6 +49,37 @@ async function fixture() {
 }
 
 describe('CI over the authenticated unified MCP transport', () => {
+  it.each(['worker', 'operator'])('queues integration with %s grants and retains its suite after recreation', async token => {
+    const f = await fixture()
+    try {
+      f.templates.push(jobVerificationTemplate({ ...f.templates[0]!, suite: 'integration' }))
+      const scope = token === 'operator' ? { workspaceId: f.workspaceId } : {}
+      const tools = (await f.request('tools/list', {}, token)).result.tools
+      expect(tools.find((tool: { name: string }) => tool.name === 'ci_run').inputSchema.properties.suite.enum)
+        .toContain('integration')
+      const input = { ...scope, suite: 'integration', commandId: 'integration-ci', placementOverride: { kind: 'auto' } }
+      const response = await f.call('ci_run', input, token)
+      expect(response.result.isError, JSON.stringify(response.result)).not.toBe(true)
+      const started = CiRunOutputSchema.parse(response.result.structuredContent)
+      f.services.ci = f.createCi()
+      expect(CiRunOutputSchema.parse((await f.call('ci_run', input, token)).result.structuredContent)).toEqual(started)
+      const read = await f.call('ci_get', { ...scope, ticketId: started.ticketId }, token)
+      expect(CiGetOutputSchema.parse(read.result.structuredContent).queue.definition.spec)
+        .toMatchObject({ verification: { suite: 'integration' } })
+      const denied = await f.call('ci_run', { ...input, workspaceId: f.workspaceId, commandId: 'denied-integration' }, 'readonly')
+      expect(JSON.stringify(denied.result)).toContain('ACCESS_DENIED')
+      expect(f.counts().enqueues).toBe(1)
+      f.complete()
+      const completed = await f.call('ci_get', { ...scope, ticketId: started.ticketId }, token)
+      expect(CiGetOutputSchema.parse(completed.result.structuredContent)).toMatchObject({
+        queue: { state: 'terminal' }, process: { outcome: 'succeeded' },
+        summaryReport: { report: { suite: 'integration', outcome: 'passed' } },
+      })
+      expect((await f.call('ci_logs_read', { ...scope, ticketId: started.ticketId }, token)).result.isError).not.toBe(true)
+      expect((await f.call('ci_artifacts_list', { ...scope, ticketId: started.ticketId }, token)).result.isError).not.toBe(true)
+    } finally { await f.app.close() }
+  })
+
   it('retains the caller’s preparation grants and explicit runtime selection on the queued ticket', async () => {
     const f = await fixture()
     try {
@@ -91,7 +122,8 @@ describe('CI over the authenticated unified MCP transport', () => {
       })
       f.complete()
       const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
-      expect(read).toMatchObject({ queue: { state: 'accepted', selectedComputer: { profileId: 'profile' } },
+      expect(read).toMatchObject({ queue: { state: 'terminal', terminalReason: 'completed',
+        selectedComputer: { profileId: 'profile' } },
         process: { outcome: 'succeeded', exitCode: 0 }, publication: 'complete',
         summaryReport: { report: { outcome: 'passed', commit: 'b'.repeat(40), totals: { total: 3 } } },
         logTail: { text: 'tests passed\n', truncated: false } })
@@ -193,7 +225,7 @@ describe('CI over the authenticated unified MCP transport', () => {
       const finished = CiGetOutputSchema.parse((await f.call('ci_get', {
         workspaceId: f.workspaceId, ticketId: started.ticketId,
       }, 'operator')).result.structuredContent)
-      expect(finished.queue).toMatchObject({ state: 'accepted', workflow: null, initiatingAgent })
+      expect(finished.queue).toMatchObject({ state: 'terminal', terminalReason: 'completed', workflow: null, initiatingAgent })
 
 
       // An explicit commit is tested as given, still preferring the Agent's computer.

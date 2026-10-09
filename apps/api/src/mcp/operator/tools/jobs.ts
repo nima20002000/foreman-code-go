@@ -81,7 +81,7 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
     description: 'Read authorized CI sources, fixed computer/root choices, Auto runtime requirements and repository '
       + 'verification templates. Templates retain the saved resource envelope, qualified worker allowance, wrapper '
       + 'command and four required reports. Unqualified or offline profiles remain authorable; readiness is checked '
-      + 'at Start. No installation or provider login.',
+      + 'at Start. Each template ready flag reflects its current runtime readiness. No installation or provider login.',
     inputSchema: scope, outputSchema: JobAuthoringChoicesRecordSchema, annotations: read,
   }, input => invoke(context, 'job_choices_get', () => service.choices(context.principal, input.workspaceId, 'mcp')))
   if(jobToolAvailable(context,'job_workflow_execution_get')) server.registerTool('job_workflow_execution_get',{description:'Read the authoritative persisted relationship from an exact Run node execution to its JobExecutionRecord. IDs are never inferred or borrowed from another Run.',inputSchema:scope.extend({runId:z.string().min(1),nodeExecutionId:z.string().min(1)}),outputSchema:z.object({reference:JobWorkflowExecutionReferenceSchema}),annotations:read},input=>invoke(context,'job_workflow_execution_get',async()=>({reference:await service.getWorkflowExecutionReference(context.principal,input.workspaceId,input.runId,input.nodeExecutionId,'mcp')})))

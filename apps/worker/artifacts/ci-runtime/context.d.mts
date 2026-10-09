@@ -8,7 +8,7 @@ export function buildCiRuntimeContext(input: {
   offlineSeed?: {
     directory: string
     receiptPath: string
-    unitCodex: {
+    unitCodex?: {
       path: string
       binarySha256: string
       version: string

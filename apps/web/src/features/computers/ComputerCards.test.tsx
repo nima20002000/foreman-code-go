@@ -40,6 +40,41 @@ it('asks the Operator to fix a signed-out harness and drafts a settings change w
   expect(useOperatorChatStore.getState().request).toMatchObject({ content: 'On Main PC: ', send: false })
 })
 
+it.each(['null', 'absent'] as const)('shows unknown account observations without sign-in prompts (%s)', async observation => {
+  const accounts = observation === 'absent' ? [] : ['codex', 'claude', 'github'].map(tool => ({
+    tool, installed: true, signedIn: null, account: null, details: [],
+  }))
+  computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[registration]} />, [
+    http.get('*/api/management/computers/accounts', () => HttpResponse.json({ computers: [{ target: mainTarget,
+      accounts: { observedAt: new Date().toISOString(), accounts } }] })),
+    http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [{ target: mainTarget,
+      status: { observedAt: new Date().toISOString(), tasks: [],
+        harnesses: ['codex', 'claude'].map(harness => ({ harness, installed: true, version: '1.0', latest: '1.0' })),
+        system: { packageUpdates: null, rebootRequired: false, sudo: false, disk: null } } }] })),
+  ])
+  const card = await screen.findByRole('article', { name: 'Main PC' })
+  expect(await within(card).findByText('Codex 1.0 · account unknown')).toBeVisible()
+  expect(within(card).getByText('Claude 1.0 · account unknown')).toBeVisible()
+  expect(within(card).getByText('Account unknown')).toBeVisible()
+  expect(within(card).queryByText('Signed out')).not.toBeInTheDocument()
+  expect(within(card).queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument()
+})
+
+it('offers GitHub sign-in for an explicit signed-out observation', async () => {
+  computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[registration]} />, [
+    http.get('*/api/management/computers/accounts', () => HttpResponse.json({ computers: [{ target: mainTarget,
+      accounts: { observedAt: new Date().toISOString(), accounts: [
+        { tool: 'github', installed: true, signedIn: false, account: null, details: [] },
+      ] } }] })),
+  ])
+  const card = await screen.findByRole('article', { name: 'Main PC' })
+  expect(await within(card).findByText('Signed out')).toBeVisible()
+  await userEvent.click(within(card).getByRole('button', { name: 'Sign in' }))
+  expect(useOperatorChatStore.getState().request).toMatchObject({
+    content: 'Sign GitHub in on Main PC and set up git to use it.', send: true,
+  })
+})
+
 it.each([['pending', 'Pairing pending'], ['revoked', 'Access revoked']] as const)('shows a %s computer as a short registration card', async (status, label) => {
   const device: DeviceRegistration = { ...registration, status }
   computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[device]} />)

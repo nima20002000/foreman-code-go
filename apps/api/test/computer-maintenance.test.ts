@@ -82,7 +82,7 @@ describe('computer maintenance', () => {
   it('updates Codex through npm in the user prefix and Claude through its own updater', async () => {
     const fake = ports()
     const maintenance = new ComputerMaintenance(fake.value)
-    expect(maintenance.start({ kind: 'update-harnesses', harnesses: ['codex', 'claude'] }).state).toBe('running')
+    expect((await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex', 'claude'] })).state).toBe('running')
     const status = await settle(maintenance)
     expect(status.tasks[0]).toMatchObject({ kind: 'update-harnesses', state: 'succeeded', summary: 'Codex 0.160.0 → 0.161.0 · Claude 2.1.19 → 2.1.294' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/npm', args: ['install', '--global', '--prefix', '/home/owner/.local', '@openai/codex@latest'] })
@@ -92,12 +92,12 @@ describe('computer maintenance', () => {
   it('runs a non-interactive sudo apt upgrade and refuses OS work without passwordless sudo', async () => {
     const fake = ports()
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'update-system' })
+    await maintenance.start({ kind: 'update-system' })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: '2 packages upgraded · no pending updates' })
     const upgrade = fake.runs.find(run => run.binary === 'sudo' && run.args.includes('upgrade'))!
     expect(upgrade.args).toEqual(expect.arrayContaining(['-n', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-y', 'Dpkg::Options::=--force-confold', '--with-new-pkgs']))
     const locked = new ComputerMaintenance(ports({ sudo: false }).value)
-    locked.start({ kind: 'restart' })
+    await locked.start({ kind: 'restart' })
     expect((await settle(locked)).tasks[0]).toMatchObject({ state: 'failed', summary: 'This computer needs passwordless sudo for OS updates and restarts.' })
   })
 
@@ -110,7 +110,7 @@ describe('computer maintenance', () => {
     const maintenance = new ComputerMaintenance(ports({
       afterUpgrade: '0 upgraded, 0 newly installed, 0 to remove and 23 not upgraded.',
     }).value)
-    maintenance.start({ kind: 'update-system' })
+    await maintenance.start({ kind: 'update-system' })
     const result = await settle(maintenance)
     expect(result.system.packageUpdates).toBe(23)
     expect(result.tasks[0]).toMatchObject({ state: 'succeeded',
@@ -120,7 +120,7 @@ describe('computer maintenance', () => {
   it('does not claim verified success when installable packages remain or readback fails', async () => {
     for (const afterUpgrade of ['1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.', 'unreadable']) {
       const maintenance = new ComputerMaintenance(ports({ afterUpgrade }).value)
-      maintenance.start({ kind: 'update-system' })
+      await maintenance.start({ kind: 'update-system' })
       expect((await settle(maintenance)).tasks[0]?.state).toBe('failed')
     }
     const status = await new ComputerMaintenance(ports({ apt: 'unreadable' }).value).status(AbortSignal.timeout(1000))
@@ -133,7 +133,7 @@ describe('computer maintenance', () => {
     fake.value.run = async (binary, args, options) => args[0] === 'install'
       ? { code: 0, stdout: 'updated', stderr: '' } : run(binary, args, options)
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
       summary: 'Codex is still 0.160.0; latest published version is 0.161.0.' })
   })
@@ -141,7 +141,7 @@ describe('computer maintenance', () => {
   it('moves the Worker pinned Codex selection to the installed update before verifying it', async () => {
     const pinned = ports({ pinnedCodex: true })
     const unmoved = new ComputerMaintenance(pinned.value)
-    unmoved.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    await unmoved.start({ kind: 'update-harnesses', harnesses: ['codex'] })
     expect((await settle(unmoved)).tasks[0]).toMatchObject({ state: 'failed',
       summary: 'Codex is still 0.160.0; latest published version is 0.161.0.' })
     const fake = ports({ pinnedCodex: true })
@@ -151,7 +151,7 @@ describe('computer maintenance', () => {
       fake.versions.codex = 'codex-cli 0.161.0'
       return selections.at(-1)!
     } })
-    maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex 0.160.0 → 0.161.0' })
     expect(selections).toHaveLength(1)
   })
@@ -159,7 +159,7 @@ describe('computer maintenance', () => {
   it('updates Claude even when the Codex update fails, and reports both results', async () => {
     const fake = ports({ fail: run => run.binary.endsWith('npm') && run.args[0] === 'install' })
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'update-harnesses', harnesses: ['codex', 'claude'] })
+    await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex', 'claude'] })
     const task = (await settle(maintenance)).tasks[0]!
     expect(task.state).toBe('failed')
     expect(task.summary).toContain('Claude 2.1.19 → 2.1.294')
@@ -170,8 +170,8 @@ describe('computer maintenance', () => {
   it('answers before restarting and never starts the same kind twice at once', async () => {
     const fake = ports()
     const maintenance = new ComputerMaintenance(fake.value)
-    const first = maintenance.start({ kind: 'restart' })
-    expect(maintenance.start({ kind: 'restart' }).id).toBe(first.id)
+    const first = await maintenance.start({ kind: 'restart' })
+    expect((await maintenance.start({ kind: 'restart' })).id).toBe(first.id)
     await settle(maintenance)
     expect(fake.runs.some(run => run.args.includes('reboot'))).toBe(false)
     fake.later.forEach(run => run())
@@ -181,20 +181,20 @@ describe('computer maintenance', () => {
   it('adds only missing MCP servers and plugins and skips a harness that is not installed', async () => {
     const fake = ports({ versions: { claude: null }, codexMcp: ['docs'], plugins: ['pdf@openai'] })
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'sync-mcp', servers: {
+    await maintenance.start({ kind: 'sync-mcp', servers: {
       codex: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null },
         { transport: 'stdio', name: 'search', command: 'npx', args: ['search-mcp'], envVars: [] }],
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Added search · Claude: not installed, skipped' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['mcp', 'add', 'search', '--', 'npx', 'search-mcp'] })
-    maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
+    await maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Installed documents@openai · Claude: Nothing to sync' })
   })
 
   it('adds a missing Git marketplace before its plugins, and one plugin that cannot install does not stop the others', async () => {
     const fake = ports()
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['skill-creator@claude-plugins-official', 'lost@elsewhere', 'pdf@openai'],
+    await maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['skill-creator@claude-plugins-official', 'lost@elsewhere', 'pdf@openai'],
       marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
       summary: 'Claude: Nothing to sync · Codex: Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere' })
@@ -206,7 +206,7 @@ describe('fleet MCP sync with OAuth servers', () => {
   it('keeps an OAuth server that Codex saved, continues with the rest, and asks for sign-in on that computer', async () => {
     const fake = ports({ versions: { claude: null }, oauthMcp: ['linear'] })
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'sync-mcp', servers: {
+    await maintenance.start({ kind: 'sync-mcp', servers: {
       codex: [{ transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: null },
         { transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }], claude: [] } })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Added linear (sign in on this computer), docs' })
@@ -215,7 +215,7 @@ describe('fleet MCP sync with OAuth servers', () => {
   it('fails when Codex could not save the server', async () => {
     const fake = ports({ fail: run => run.args[1] === 'add' })
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'sync-mcp', servers: { codex: [{ transport: 'stdio', name: 'search', command: 'npx', args: ['search-mcp'], envVars: [] }], claude: [] } })
+    await maintenance.start({ kind: 'sync-mcp', servers: { codex: [{ transport: 'stdio', name: 'search', command: 'npx', args: ['search-mcp'], envVars: [] }], claude: [] } })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed', summary: 'codex mcp add search failed.' })
   })
 })
@@ -226,9 +226,9 @@ describe('fleet MCP sync source', () => {
     const maintenance = new ComputerMaintenance(fake.value)
     const server = (name: string) => ({ name, transport: 'http' as const, url: `https://${name}.example/mcp`, bearerTokenEnvVar: null })
     const sync = async (servers: string[], plugins: string[]) => {
-      maintenance.start({ kind: 'sync-mcp', servers: { codex: servers.map(server), claude: [] } })
+      await maintenance.start({ kind: 'sync-mcp', servers: { codex: servers.map(server), claude: [] } })
       await settle(maintenance)
-      maintenance.start({ kind: 'sync-plugins', plugins, marketplaces: [], claudePlugins: [], claudeMarketplaces: [] })
+      await maintenance.start({ kind: 'sync-plugins', plugins, marketplaces: [], claudePlugins: [], claudeMarketplaces: [] })
       return settle(maintenance)
     }
     await sync(['docs', 'linear'], ['shared@openai'])
@@ -241,7 +241,7 @@ describe('fleet MCP sync source', () => {
     expect(status.tasks.find(task => task.kind === 'sync-plugins')?.summary).toContain('Removed shared@openai')
     // The computer remembers what Main gave it, privately, across restarts of the maintenance owner.
     const restarted = new ComputerMaintenance(fake.value)
-    restarted.start({ kind: 'sync-mcp', servers: { codex: [], claude: [] } })
+    await restarted.start({ kind: 'sync-mcp', servers: { codex: [], claude: [] } })
     await settle(restarted)
     expect(fake.codexMcp).toEqual(['own-local'])
   })
@@ -249,12 +249,17 @@ describe('fleet MCP sync source', () => {
   it('records both MCP and plugin syncs when they run at the same time', async () => {
     const fake = ports()
     const maintenance = new ComputerMaintenance(fake.value)
-    maintenance.start({ kind: 'sync-mcp', servers: { codex: [{ name: 'docs', transport: 'http', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }], claude: [] } })
-    maintenance.start({ kind: 'sync-plugins', plugins: ['shared@openai'], marketplaces: [], claudePlugins: [], claudeMarketplaces: [] })
+    await maintenance.start({ kind: 'sync-mcp', servers: { codex: [{ name: 'docs', transport: 'http', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }], claude: [] } })
+    await maintenance.start({ kind: 'sync-plugins', plugins: ['shared@openai'], marketplaces: [], claudePlugins: [], claudeMarketplaces: [] })
     await settle(maintenance)
-    const ledger = JSON.parse(Object.values(fake.written)[0]!) as { mcp: { codex: string[] }; codexPlugins: string[] }
-    expect(ledger.mcp.codex).toEqual(['docs'])
-    expect(ledger.codexPlugins).toEqual(['shared@openai'])
+    const restarted = new ComputerMaintenance(fake.value)
+    await Promise.all([
+      restarted.start({ kind: 'sync-mcp', servers: { codex: [], claude: [] } }),
+      restarted.start({ kind: 'sync-plugins', plugins: [], marketplaces: [], claudePlugins: [], claudeMarketplaces: [] }),
+    ])
+    await settle(restarted)
+    expect(fake.codexMcp).toEqual([])
+    expect(fake.plugins).toEqual([])
   })
 
   it('copies servers without inline secrets and never the app MCP', () => {
@@ -263,6 +268,8 @@ describe('fleet MCP sync source', () => {
       linear: { url: 'https://mcp.linear.app/mcp', bearer_token_env_var: 'LINEAR_TOKEN' },
       search: { command: 'npx', args: ['search-mcp'] },
       secret: { command: 'npx', args: ['x'], env: { API_KEY: 'value' } },
+      querySecret: { url: 'https://example.test/mcp?token=secret' },
+      argumentSecret: { command: 'npx', args: ['x', '--token', 'secret'] },
       claude: { type: 'http', url: 'https://example.test/mcp', headers: { Authorization: 'Bearer x' } },
     })).toEqual([
       { transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: 'LINEAR_TOKEN' },

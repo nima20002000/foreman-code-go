@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
-import { rm } from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
+import { readFileSync } from 'node:fs'
+import { readFile, rm } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 
 import { describe, it } from 'vitest'
 
@@ -30,6 +35,47 @@ describe('Codex fixtures use the pinned protocol validator', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('Codex executable fixture protocol', () => {
+  it('persists the interrupted turn before emitting its acknowledgement', async () => {
+    const f = await fixture()
+    const lines = new EventEmitter()
+    const require = createRequire(import.meta.url)
+    const threadId = `thread-agent-a-${process.pid}-1`
+    let statusAtAcknowledgement: unknown
+    try {
+      const source = await readFile(new URL('./fixtures/codex-app-server.cjs', import.meta.url), 'utf8')
+      // Capture state synchronously at stdout emission so process scheduling cannot hide an early ACK.
+      runInNewContext(source, {
+        __dirname: f.directory,
+        require: (name: string) => name === 'node:readline' ? { createInterface: () => lines } : require(name),
+        process: {
+          argv: [process.execPath, f.binary, 'app-server'],
+          env: {},
+          pid: process.pid,
+          stdin: new EventEmitter(),
+          on: () => {},
+          cwd: () => f.directory,
+          stdout: { write: (frame: string) => {
+            const message = JSON.parse(frame) as JsonObject
+            if (message.id === 3) {
+              const snapshot = JSON.parse(readFileSync(join(f.directory, `state-${threadId}.json`),
+                'utf8')) as { turns: JsonObject[] }
+              statusAtAcknowledgement = snapshot.turns[0]!.status
+            }
+            return true
+          } },
+        },
+        setInterval: () => {},
+      })
+      lines.emit('line', JSON.stringify({ id: 1, method: 'thread/start', params: { cwd: f.directory } }))
+      lines.emit('line', JSON.stringify({ id: 2, method: 'turn/start', params: { threadId,
+        input: [{ type: 'text', text: 'wait', text_elements: [] }] } }))
+      lines.emit('line', JSON.stringify({ id: 3, method: 'turn/interrupt', params: { threadId, turnId: 'turn-1' } }))
+      assert.equal(statusAtAcknowledgement, 'interrupted')
+    } finally {
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
   it('publishes complete persisted snapshots while a thread receives repeated input', async () => {
     const f = await fixture()
     const transport = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, fixtureProtocol,

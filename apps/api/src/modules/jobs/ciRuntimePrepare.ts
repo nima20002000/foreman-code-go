@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { pipeline } from 'node:stream/promises'
 import { buildCiRuntimeContext, parseCiLock } from '../../../../worker/artifacts/ci-runtime/context.mjs'
+import { expectedPortions } from '../../../../../scripts/verification-runner.mjs'
+import type { PreparedCiRuntime } from '@foreman-code/contracts'
 
 const run = promisify(execFile)
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
@@ -16,11 +18,6 @@ const COMMIT = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u
  * image built without network, and the qualification source tree. Returns the facts Main
  * needs to capture and qualify the new runtime. Everything stays inside `installer`. */
 export interface CiRuntimeReview { reviewedByPrincipalId: string; decisionDigest: string }
-export interface PreparedCiRuntime {
-  commit: string; imageId: string; imageManifestDigest: string; seedReceiptPath: string; contextReceiptPath: string
-  qualificationSource: string
-  unitCodex: { executable: string; sourceExecutable: string; version: string; binarySha256: string }
-}
 export async function prepareCiRuntime({ repository, commit, installer, review, keepImages = [], keepPaths = [], environment = process.env, log = () => {} }: {
   repository: string; commit: string; installer: string; review: CiRuntimeReview
   /** Image ids referenced by protected configurations and retained execution records. */
@@ -72,7 +69,8 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
 
   // 2. Registry release evidence for the strict 48-hour policy, and the Codex binary the unit suite needs.
   log('seed-receipt')
-  const unitCodex = await codexBinary(buildTag, seedRoot, env)
+  const needsCodex = expectedPortions(source, 'unit').some(portion => portion.key === 'root:worker-artifact')
+  const unitCodex = needsCodex ? await codexBinary(buildTag, seedRoot, env) : undefined
   // pnpm records each project that installed from the store as a symlink; they are not package content.
   for (const version of await readdir(join(seed, 'pnpm-store'))) {
     await rm(join(seed, 'pnpm-store', version, 'projects'), { recursive: true, force: true })
@@ -80,9 +78,11 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   const receipt = await createSeedReceipt({ repository: source, seed, review })
   const receiptPath = join(seedRoot, 'seed-receipt.json')
   await writeFile(receiptPath, JSON.stringify(receipt), { mode: 0o600 })
-  const offlineSeed = { directory: seed, receiptPath,
-    unitCodex: { path: unitCodex.path, binarySha256: unitCodex.sha256, version: unitCodex.version,
-      review: receipt.review } }
+  const offlineSeed: NonNullable<Parameters<typeof buildCiRuntimeContext>[0]['offlineSeed']> = { directory: seed, receiptPath }
+  if (unitCodex) {
+    offlineSeed.unitCodex = { path: unitCodex.path, binarySha256: unitCodex.sha256, version: unitCodex.version,
+      review: receipt.review }
+  }
 
   // 3. The verification image runs Jobs without network.
   const context = join(installer, `context-${short}`)
@@ -106,15 +106,20 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   await writeFile(contextReceiptPath, await readFile(join(context, 'context-receipt.json')), { mode: 0o600 })
   // The refresh captures the unit suite's Codex from this copy; the checkout it came from is removed.
   const codex = join(installer, `codex-${short}`)
-  await writeFile(codex, await readFile(unitCodex.path), { mode: 0o700 })
+  if (unitCodex) await writeFile(codex, await readFile(unitCodex.path), { mode: 0o700 })
   for (const path of [context, buildContext, seedRoot]) {
     if (!keepPaths.includes(path)) await rm(path, { recursive: true, force: true })
   }
   await run('git', ['-C', repository, 'worktree', 'remove', '--force', source], { env }).catch(() => undefined)
-  return { commit, imageId: `sha256:${image.Id.replace(/^sha256:/u, '')}`, imageManifestDigest: image.Digest,
-    seedReceiptPath, contextReceiptPath,
-    qualificationSource, unitCodex: { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: codex,
-      version: unitCodex.version, binarySha256: unitCodex.sha256 } }
+  const prepared: PreparedCiRuntime = {
+    commit, imageId: `sha256:${image.Id.replace(/^sha256:/u, '')}`, imageManifestDigest: image.Digest,
+    seedReceiptPath, contextReceiptPath, qualificationSource,
+  }
+  if (unitCodex) {
+    prepared.unitCodex = { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: codex,
+      version: unitCodex.version, binarySha256: unitCodex.sha256 }
+  }
+  return prepared
 }
 
 export async function codexBinary(image: string, output: string, env: NodeJS.ProcessEnv) {

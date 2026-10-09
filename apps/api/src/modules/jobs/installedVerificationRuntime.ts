@@ -9,16 +9,34 @@ import { verifySourceManifest } from '../sources/manifest.js'
 import { openPrivateRoot } from '../sources/privateFilesystem.js'
 import { verifyMaterializedSourceTree } from '../sources/materialization.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
-import { JobVerificationRuntimeFingerprintSchema, JobVerificationOfflineSeedReceiptSchema,
+import { JobVerificationRuntimeFingerprintSchema, JobVerificationOfflineSeedReceiptSchema, JobVerificationQualificationCandidateSchema,
   type JobVerificationProfile, type JobQualificationCandidateRecord }
   from '@foreman-code/contracts/job-verification-runtime'
 import { DomainError } from '../errors.js'
 import { captureJobRuntimeConfiguration, fingerprintQualificationPath, qualificationMountId } from './qualification.js'
 import { readFile } from 'node:fs/promises'
-import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile, type InstalledRuntimeConfigurationLocation,
+import { readProtectedRuntimeFile, type InstalledRuntimeConfigurationLocation,
   type InstalledRuntimeObservedHost } from './installedRuntimeHost.js'
+import { findRetainedRuntimeConfiguration } from './retainedRuntimeConfiguration.js'
 
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
+
+export async function readInstalledVerificationConfiguration(
+  location: InstalledRuntimeConfigurationLocation | null, profile: JobVerificationProfile,
+): Promise<InstalledVerificationRuntimeConfiguration> {
+  const configuration = await findRetainedRuntimeConfiguration(location, InstalledVerificationRuntimeConfigurationSchema,
+    value => isDeepStrictEqual(value.root, profile.root)
+      && value.machine.sourceCommit === profile.sourceCommit
+      && value.machine.imageDigest === profile.spec.policy.imageDigest
+      && value.machine.toolchainDigest === profile.spec.policy.toolchainDigest
+      && isDeepStrictEqual(value.machine.resources, profile.spec.resources)
+      && isDeepStrictEqual(value.machine.network, profile.spec.policy.network)
+      && isDeepStrictEqual(value.machine.approvalConfig, profile.approvalConfig), MAX_VERIFICATION_CONFIGURATION_BYTES)
+  if (!configuration) {
+    throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'No protected runtime matches this project and profile.', 409)
+  }
+  return configuration
+}
 
 /** Reads installer-selected protected bytes; it does not run or qualify a runtime. */
 export async function captureInstalledVerificationRuntimeConfiguration(raw: InstalledVerificationRuntimeCaptureInput) {
@@ -97,8 +115,7 @@ export async function inspectInstalledVerificationRuntime(input: {
   profile: JobVerificationProfile
   host: InstalledRuntimeObservedHost
 }) {
-  const configuration = await readProtectedRuntimeConfiguration(input.configuration,
-    InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
+  const configuration = await readInstalledVerificationConfiguration(input.configuration, input.profile)
   const { descriptor, machine: recorded } = configuration
   const profile = input.profile
   await assertSeedReceipt(configuration, input.configuration!.ownerUid)
@@ -137,10 +154,8 @@ export async function inspectInstalledVerificationCandidate(input: {
   candidate: JobQualificationCandidateRecord
   host: InstalledRuntimeObservedHost
 }) {
-  const candidate = input.candidate
-  if (candidate.fingerprint.schemaVersion !== 3) throw new Error('Verification candidate required.')
-  const configuration = await readProtectedRuntimeConfiguration(input.configuration,
-    InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
+  const candidate = JobVerificationQualificationCandidateSchema.parse(input.candidate)
+  const configuration = await readInstalledVerificationConfiguration(input.configuration, candidate.profile)
   await assertSeedReceipt(configuration, input.configuration!.ownerUid)
   const observed = JobVerificationRuntimeFingerprintSchema.parse({ ...configuration.machine,
     schemaVersion: 3, profileId: candidate.fingerprint.profileId,

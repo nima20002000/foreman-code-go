@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { codexBinary, extractQualificationSource, prepareCiRuntime, pruneCiImages } from './ciRuntimePrepare.js'
+import { PreparedCiRuntimeSchema } from '@foreman-code/contracts'
 
 const command = vi.hoisted(() => ({ run: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
@@ -58,6 +59,43 @@ async function repository() {
 }
 
 describe('CI runtime preparation boundaries', () => {
+  it('prepares another project from its own dependency seed without requiring the Foreman Codex package', async () => {
+    const f = await repository()
+    await writeFile(join(f.source, 'package.json'), JSON.stringify({ name: 'ordinary-project',
+      packageManager: 'pnpm@11.27.0', scripts: { build: 'node build.mjs', lint: 'node lint.mjs', test: 'node --test' } }))
+    await writeFile(join(f.source, 'pnpm-lock.yaml'),
+      'lockfileVersion: 9\npackages:\n  fixture@1.0.0:\n    resolution:\n      integrity: sha512-fixture\n')
+    await writeFile(join(f.source, 'pnpm-workspace.yaml'),
+      'minimumReleaseAge: 2880\nminimumReleaseAgeStrict: true\nminimumReleaseAgeIgnoreMissingTime: false\n')
+    const commit = f.save()
+    const installer = join(f.root, 'installer')
+    await mkdir(installer)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      name: 'fixture', time: { '1.0.0': '2025-01-01T00:00:00.000Z' },
+      versions: { '1.0.0': { dist: { integrity: 'sha512-fixture' } } },
+    })))
+    command.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('images')) return '[]'
+      if (args.includes('create')) return 'container'
+      if (args.includes('cp')) {
+        const destination = args.at(-1)!
+        await mkdir(join(destination, 'v11'), { recursive: true })
+        await writeFile(join(destination, 'v11/package-bytes'), 'locked fixture content')
+      }
+      if (args.includes('inspect')) return JSON.stringify([{ Id: 'a'.repeat(64), Digest: `sha256:${'b'.repeat(64)}` }])
+      if (args.includes('run')) throw new Error('This project does not require a native harness')
+      return ''
+    })
+    const prepared = await prepareCiRuntime({ repository: f.source, commit, installer,
+      review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } })
+    expect(PreparedCiRuntimeSchema.parse(prepared).unitCodex).toBeUndefined()
+    expect(prepared.commit).toBe(commit)
+    const seed = JSON.parse(await readFile(prepared.seedReceiptPath, 'utf8')) as { packages: { name: string }[] }
+    expect(seed.packages.map(pkg => pkg.name)).toEqual(['fixture'])
+    expect(await readFile(join(prepared.qualificationSource, 'package.json'), 'utf8'))
+      .toBe(await readFile(join(f.source, 'package.json'), 'utf8'))
+  })
+
   it('does not execute the requested commit\'s context builder on the Worker host', async () => {
     const f = await repository()
     const marker = join(f.root, 'outside-installer')

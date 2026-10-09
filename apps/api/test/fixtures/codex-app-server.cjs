@@ -370,8 +370,8 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const owner = loadThread(params.threadId)
     if (!owner) { fail(message.id); return }
     const found = owner.turns.find((entry) => entry.id === params.turnId)
-    result(message.id, {})
     if (found) complete(owner.id, found.id, 'interrupted', '')
+    result(message.id, {})
   } else if (!message.method && message.id !== undefined) {
     const found = outstanding.get(message.id)
     if (found && message.result) {

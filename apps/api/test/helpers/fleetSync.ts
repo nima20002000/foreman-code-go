@@ -1,0 +1,130 @@
+import { randomUUID } from 'node:crypto'
+import type pg from 'pg'
+import {
+  COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceRequestSchema,
+  type MaintenanceTaskStart,
+} from '@foreman-code/contracts/computer-maintenance'
+import { ComputerMaintenance, type MaintenancePorts } from '../../src/modules/computers/maintenance.js'
+import { FleetMaintenanceService, type FleetSources } from '../../src/modules/computers/fleet.js'
+import type { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+
+export const server = (name: string) => ({
+  name, transport: 'http' as const, url: `https://${name}.example/mcp`, bearerTokenEnvVar: null,
+})
+export const mcpRequest = (names: string[]): MaintenanceTaskStart => ({
+  kind: 'sync-mcp', servers: { codex: names.map(server), claude: names.map(server) },
+})
+export const pluginRequest = (names: string[]): MaintenanceTaskStart => ({
+  kind: 'sync-plugins', plugins: names, marketplaces: [],
+  claudePlugins: names.map(pluginId => ({ pluginId, enabled: true })), claudeMarketplaces: [],
+})
+
+export function fakeComputer() {
+  const codexMcp = new Set<string>()
+  const claudeMcp = new Map<string, unknown>()
+  const codexPlugins = new Set<string>()
+  const claudePlugins = new Map<string, boolean>()
+  const files = new Map<string, string>()
+  const calls: { binary: string; args: string[] }[] = []
+  let failure: (binary: string, args: string[]) => boolean = () => false
+  const result = (value: unknown = {}, code = 0) => ({ code, stdout: JSON.stringify(value), stderr: '' })
+  const ports: MaintenancePorts = {
+    environment: { HOME: '/fake/home' },
+    find: async name => ['codex', 'claude'].includes(name) ? `/fake/${name}` : null,
+    run: async (binary, args) => {
+      calls.push({ binary, args })
+      if (failure(binary, args)) return result({}, 1)
+      if (args[0] === '--version') return { code: 0, stdout: '1.2.3', stderr: '' }
+      if (args[0] === 'mcp') {
+        if (args[1] === 'list') return result([...codexMcp].map(name => ({ name })))
+        if (args[1] === 'add') codexMcp.add(args[2]!)
+        if (args[1] === 'remove' && binary.endsWith('codex')) codexMcp.delete(args[2]!)
+        if (args[1] === 'add-json') claudeMcp.set(args[4]!, JSON.parse(args[5]!) as unknown)
+        if (args[1] === 'remove' && binary.endsWith('claude')) claudeMcp.delete(args[4]!)
+        return result()
+      }
+      if (args[0] === 'plugin' && binary.endsWith('codex')) {
+        if (args[1] === 'list') {
+          return result({ installed: [...codexPlugins].map(pluginId => ({ pluginId, installed: true })) })
+        }
+        if (args[1] === 'marketplace') {
+          return result({ marketplaces: [{ name: 'official', marketplaceSource: {
+            sourceType: 'git', source: 'owner/official',
+          } }] })
+        }
+        if (args[1] === 'add') codexPlugins.add(args[2]!)
+        if (args[1] === 'remove') codexPlugins.delete(args[2]!)
+        return result()
+      }
+      if (args[0] === 'plugin' && binary.endsWith('claude')) {
+        if (args[1] === 'list') return result({
+          installed: [...claudePlugins].map(([id, enabled]) => ({ id, scope: 'user', enabled })), available: [],
+        })
+        if (args[1] === 'marketplace' && args[2] === 'list') return result([])
+        if (args[1] === 'install') claudePlugins.set(args[2]!, true)
+        if (args[1] === 'uninstall') claudePlugins.delete(args[2]!)
+        if (args[1] === 'enable') claudePlugins.set(args[2]!, true)
+        if (args[1] === 'disable') claudePlugins.set(args[2]!, false)
+        return result({ outcome: 'ok' })
+      }
+      return result({}, 1)
+    },
+    exists: async () => false,
+    readText: async path => path.endsWith('/.claude.json')
+      ? JSON.stringify({ mcpServers: Object.fromEntries(claudeMcp) }) : files.get(path) ?? null,
+    writePrivateText: async (path, text) => { files.set(path, text) },
+    disk: async () => null,
+    later: () => {},
+    now: () => new Date(),
+  }
+  const maintenance = new ComputerMaintenance(ports)
+  return {
+    maintenance, ports, codexMcp, claudeMcp, codexPlugins, claudePlugins, calls, files,
+    fail: (predicate: typeof failure) => { failure = predicate },
+  }
+}
+
+export async function settle(computer: ReturnType<typeof fakeComputer>) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const status = await computer.maintenance.status(AbortSignal.timeout(1000))
+    if (status.tasks.every(task => task.state !== 'running')) return status
+    await new Promise(resolve => setTimeout(resolve, 1))
+  }
+  throw new Error('Fake maintenance did not settle')
+}
+
+export function fakeFleet(computer: ReturnType<typeof fakeComputer>) {
+  const mainId = randomUUID()
+  const registration = {
+    mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
+    authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'], publicKeyFingerprint: 'a'.repeat(64),
+  }
+  const registrations = [registration]
+  const pool = {
+    connect: async () => ({
+      query: async () => ({ rows: registrations.map(record => ({ record })) }), release: () => {},
+    }),
+  } as unknown as pg.Pool
+  const sources: FleetSources = {
+    codexUserMcpServers: async () => ({ docs: { url: 'https://docs.example/mcp' } }),
+    claudeUserMcpServers: async () => ({}),
+    codexPlugins: async () => [],
+    codexMarketplaces: async () => [],
+    claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
+  }
+  const requested: MaintenanceTaskStart[] = []
+  const endpoint = {
+    capabilities: () => [{ namespace: COMPUTER_MAINTENANCE_NAMESPACE, mainCanRequest: true }],
+    request: async (_device: string, _namespace: string, payload: unknown) => {
+      const request = MaintenanceRequestSchema.parse(payload)
+      if (request.operation === 'status') {
+        return { payload: { operation: 'status', status: await computer.maintenance.status(AbortSignal.timeout(1000)) } }
+      }
+      requested.push(request.task)
+      return { payload: { operation: 'start', task: await computer.maintenance.start(request.task) } }
+    },
+  }
+  const fleet = new FleetMaintenanceService(pool, mainId, () => endpoint,
+    {} as PostgresCommandCoordinator, computer.maintenance, sources)
+  return { fleet, sources, requested, endpoint, registrations }
+}

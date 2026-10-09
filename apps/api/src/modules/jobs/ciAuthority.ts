@@ -39,6 +39,11 @@ export class RunCiAuthority implements CiAuthority {
       let executionId: string | undefined
       let initiatingAgent: JobInitiatingAgent | undefined
       if (caller.audience === 'worker') {
+        // Credential admission locks the Run before its worker binding.
+        await sql.query(`select r.id from runs r join worker_credential_bindings b
+          on b.run_id=r.id and b.workspace_id=r.workspace_id
+          where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null
+          for share of r`, [caller.id, caller.agentId])
         await assertWave25WorkerBinding(sql, caller.id)
         const binding = (await sql.query<{ workspace_id: string; workflow_id: string; run_id: string;
           authorization_principal_id: string; execution_id: string | null }>(`select b.workspace_id,b.workflow_id,b.run_id,b.execution_id,

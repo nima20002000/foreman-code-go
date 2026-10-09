@@ -10,6 +10,7 @@ import { ResourceTelemetryService } from './service.js'
 import { DeviceApplicationChannel, extensionDescriptors } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { DomainError } from '../../errors.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -30,24 +31,43 @@ function batch(c: CollectionChallenge): TelemetryCollectedBatch {
       memory: { state: 'ok', value: { kind: 'host-used-estimate', bytes: 0, totalBytes: 1, availableBytes: 1, sharedPagesMayDoubleCount: false } } },
     owned: [], diagnostics: [], truncated: false }
 }
-function setup() {
+function setup(options: { delayFirstSample?: boolean; bindingReaderThrows?: boolean; collectorError?: Error } = {}) {
   const lifetime = new AbortController()
   let current: DeviceSessionBinding | null = binding, authorized = true
   const service = new ResourceTelemetryService({ clock: { monotonicMs: () => Date.now(), unixMs: () => Date.now() },
     sessions: { active: async () => authorized, presence: async () => 'online' },
     reads: { allow: async () => true, allowSharedOwner: async () => true }, ownership: { resolve: async () => null } })
-  const collectors: { signal: AbortSignal; close: ReturnType<typeof vi.fn> }[] = []
+  const collectors: { signal: AbortSignal; close: ReturnType<typeof vi.fn>;
+    offered: CollectionChallenge | undefined; push(value: TelemetryCollectedBatch): void }[] = []
   const createCollector = vi.fn(async (_identity: TelemetryIdentity, signal: AbortSignal) => {
     let pending: TelemetryCollectedBatch | undefined, stopped = false, wake: (() => void) | undefined
     const close = vi.fn(async () => { stopped = true; wake?.() })
-    collectors.push({ signal, close })
-    return { offer(c: CollectionChallenge) { pending = batch(c); wake?.(); return 'accepted' as const },
+    const delayed = options.delayFirstSample && collectors.length === 0
+    let sequence = 0
+    const collector = { signal, close, offered: undefined as CollectionChallenge | undefined,
+      push(value: TelemetryCollectedBatch) { pending = value; wake?.() } }
+    collectors.push(collector)
+    return { offer(c: CollectionChallenge) {
+      collector.offered = c
+      if (!delayed) collector.push({ ...batch(c), sequence: String(++sequence) })
+      return 'accepted' as const
+    },
       async *samples() { while (!stopped && !signal.aborted) {
         if (!pending) await new Promise<void>(resolve => { wake = resolve })
-        if (pending) { const value = pending; pending = undefined; yield value }
+        if (pending) {
+          if (options.collectorError) throw options.collectorError
+          const value = pending
+          pending = undefined
+          yield value
+        }
       } }, close }
   })
-  const worker = createWorkerResourceTelemetryExtension({ signal: lifetime.signal, currentBinding: () => current, createCollector })
+  const worker = createWorkerResourceTelemetryExtension({ signal: lifetime.signal, currentBinding: () => {
+    if (!current && options.bindingReaderThrows) {
+      throw new DomainError('WORKER_DOMAIN_UNAVAILABLE', 'The paired Main connection is unavailable.', 409)
+    }
+    return current
+  }, createCollector })
   const request = vi.fn(async (payload: unknown, options: { signal?: AbortSignal }) => worker.extension.handle!(payload,
     { binding, signal: options.signal ?? lifetime.signal }))
   const challenge = async () => {
@@ -60,6 +80,52 @@ function setup() {
 }
 afterEach(() => vi.useRealTimers())
 describe('authenticated W07 passive telemetry carrier', () => {
+  it.each([false, true])('keeps collecting after a retired binding delivers a late sample (reader throws: %s)', async bindingReaderThrows => {
+    vi.useFakeTimers()
+    const s = setup({ delayFirstSample: true, bindingReaderThrows })
+    const requestLifetime = new AbortController()
+    const challenge = await s.challenge()
+    const oldRequest = s.request({ operation: 'collect', challenge }, { signal: requestLifetime.signal })
+    const cancelled = expect(oldRequest).rejects.toThrow('cancelled')
+    await vi.waitFor(() => expect(s.collectors[0]?.offered).toBeDefined())
+    s.change(null)
+    requestLifetime.abort()
+    await cancelled
+    s.collectors[0]!.push(batch(challenge))
+    await vi.waitFor(() => expect(s.collectors[0]!.signal.aborted).toBe(true))
+    const replacement = { ...binding, connectionEpoch: randomUUID(), connectionGeneration: 2 }
+    s.change(replacement)
+    const request = vi.fn((payload: unknown, options: { signal?: AbortSignal }) => s.worker.extension.handle!(payload,
+      { binding: replacement, signal: options.signal ?? s.lifetime.signal }))
+    const session = await startRemoteTelemetrySession({ service: s.service, binding: replacement,
+      signal: s.lifetime.signal, request })
+    try {
+      await vi.waitFor(() => expect(s.collectors).toHaveLength(2))
+      const expected = { hostRef: { kind: 'device' as const, mainId: binding.mainId,
+        deviceId: binding.deviceId }, applicationInstallationId: binding.workerInstallationId,
+        bootId: binding.bootId, keyRevision: 1, authorizationRevision: 1 }
+      await vi.waitFor(async () => expect(await s.service.availableComputerMemory(expected, s.lifetime.signal)).toBe(1))
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2), { timeout: 4000 })
+      expect(s.collectors[0]!.close).toHaveBeenCalledTimes(1)
+      expect(await s.service.availableComputerMemory(expected, s.lifetime.signal)).toBe(1)
+    } finally {
+      s.lifetime.abort()
+      await session.close()
+      await s.worker.close()
+      await s.service.close()
+    }
+  })
+  it('reports unexpected collector failures to the session owner and joins the failed pump', async () => {
+    const s = setup({ collectorError: new Error('Collector capture failed') })
+    const session = await startRemoteTelemetrySession({ service: s.service, binding,
+      signal: s.lifetime.signal, request: s.request })
+    await expect(session.completion).rejects.toThrow('Collector capture failed')
+    s.lifetime.abort()
+    await session.close()
+    await expect(s.worker.close()).rejects.toThrow('Collector capture failed')
+    expect(s.collectors[0]!.close).toHaveBeenCalledOnce()
+    await s.service.close()
+  })
   it('starts fresh computer memory on the synchronized Main binding and joins it on loss', async () => {
     const s = setup()
     const mounted = createMainResourceTelemetryBindings(() => s.service)

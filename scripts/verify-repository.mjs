@@ -1,13 +1,11 @@
-import { resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { readReport, reportPaths } from './verification-reports.mjs'
-import { dirname } from 'node:path'
 import { validateVerificationContext, finalizeVerification, verifyRepository } from './verification-runner.mjs'
 export * from './verification-runner.mjs'
 
-const repository = fileURLToPath(new URL('..', import.meta.url))
-
 async function main(argv) {
+  const repository = process.cwd()
   if (argv[0] !== '--context' || !argv[1] || ![2, 4].includes(argv.length)
     || (argv.length === 4 && (argv[2] !== '--finalize'
       || !['cancelled', 'timed_out', 'failed', 'incomplete'].includes(argv[3])))) {
@@ -27,7 +25,7 @@ async function main(argv) {
     const cancel = () => controller.abort()
     process.on('SIGINT', cancel)
     process.on('SIGTERM', cancel)
-    try { summary = await verifyRepository(context, { signal: controller.signal }) }
+    try { summary = await verifyRepository(context, { root: repository, signal: controller.signal }) }
     finally { process.off('SIGINT', cancel); process.off('SIGTERM', cancel) }
   }
   console.log(JSON.stringify({ outcome: summary.outcome, completeness: summary.completeness, totals: summary.totals }))

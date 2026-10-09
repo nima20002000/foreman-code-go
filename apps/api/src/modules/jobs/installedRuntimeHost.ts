@@ -15,9 +15,9 @@ import { JobRuntimeFingerprintRecordSchema, InstalledJobRuntimeDescriptorRecordS
   type JobRuntimeProfileRecord, type JobRuntimeFingerprintRecord, type JobRuntimeNativeAdmissionRecord }
   from '@foreman-code/contracts/job-verification-runtime'
 import { inspectInstalledVerificationCandidate, inspectInstalledVerificationRuntime,
-  captureInstalledVerificationRuntimeConfiguration } from './installedVerificationRuntime.js'
+  captureInstalledVerificationRuntimeConfiguration, readInstalledVerificationConfiguration } from './installedVerificationRuntime.js'
 import { InstalledVerificationRuntimeConfigurationSchema, InstalledVerificationRuntimeCaptureInputSchema,
-  MAX_VERIFICATION_CONFIGURATION_BYTES, type InstalledVerificationRuntimeConfiguration }
+  type InstalledVerificationRuntimeConfiguration }
   from './installedVerificationConfiguration.js'
 import { qualifyVerificationRuntime } from './verificationQualification.js'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
@@ -256,10 +256,10 @@ export function createInstalledJobRuntimeHost(dependencies: InstalledRuntimeHost
     descriptor: ReturnType<typeof InstalledJobRuntimeDescriptorRecordSchema.parse>; fingerprint: JobRuntimeFingerprintRecord }>()
   const key = (profile: Pick<JobRuntimeProfileRecord, 'id' | 'revision'>) => `${profile.id}:${profile.revision}`
   async function current(sql: JobSql, profile: Parameters<InstalledJobRuntimeHost['descriptor']>[0]) {
+    snapshots.delete(key(profile))
     let snapshot
     if (profile.schemaVersion === 2) {
-      const configuration = await readProtectedRuntimeConfiguration(dependencies.configuration,
-        InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
+      const configuration = await readInstalledVerificationConfiguration(dependencies.configuration, profile)
       await installedIdentity(sql, { target: configuration.descriptor.target })
       const connection = profile.root.selection.hostRef.kind === 'main' ? null
         : await dependencies.currentConnection?.(sql, profile) ?? null

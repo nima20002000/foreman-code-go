@@ -17,7 +17,10 @@ import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { sourceBindingHash } from './bindingHash.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
 import { sourceCwdAttestationDigest } from './workingDirectory.js'
-import { SourceOperationWorkerService } from './operationWorker.js'
+import { SourceOperationWorkerService, type SourceOperationWorkerOptions } from './operationWorker.js'
+import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
+import type { SourceQuotaPool } from './materialization.js'
+import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 const directories: string[] = []
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 async function fixture() {
@@ -56,18 +59,20 @@ async function fixture() {
   const preparationNativeClosed = vi.fn(async () => true)
   const preparationTransfersClosed = vi.fn(async () => {})
   const preparationReconciled = vi.fn(async () => {})
+  const quotaPoolFor = vi.fn<NonNullable<SourceOperationWorkerOptions['quotaPoolFor']>>(
+    async (): Promise<SourceQuotaPool | undefined> => undefined)
   const currentReclamation = vi.fn(async (): Promise<SourceReservationReclamation> => {
     throw new Error('No reservation cleanup in this fixture')
   })
   const reclamationNativeClosed = vi.fn(async () => true)
   const service = new SourceOperationWorkerService({ authenticate: async () => {}, approvedRoots: readRoots, currentOwner,
     transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext,
-    nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
+    nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled, quotaPoolFor,
     currentReclamation, reclamationNativeClosed })
   const context = { binding, signal: new AbortController().signal }
   return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner,
     readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
-    currentReclamation, reclamationNativeClosed }
+    currentReclamation, reclamationNativeClosed, quotaPoolFor }
 }
 
 it('finds and removes an abandoned Worker materialization without Main preparation metadata', async () => {
@@ -168,6 +173,30 @@ it('confirms preparation cleanup only after native closure and transfer reservat
   expect(f.preparationTransfersClosed).toHaveBeenCalledTimes(2)
   if (response.operation !== 'sources.reconcile-preparation') throw new Error('Wrong cleanup response')
   expect(f.preparationReconciled).toHaveBeenCalledWith(response.closure)
+})
+
+it('closes an unmaterialized verification attempt using its installed quota after a source rebind', async () => {
+  const f = await fixture()
+  f.owner.preparationClosed = true
+  f.owner.quotaRequired = true
+  const profile = verificationCapacityFixture('main')
+  const pool = profile.measurement!.fingerprint.quotaPool!
+  const path = join(f.directory, 'job-runtime.json')
+  await writeFile(path, JSON.stringify({ schemaVersion: 2,
+    root: { binding: { ...f.root.binding, bindingRevision: 2, snapshotId: randomUUID(), manifestDigest: 'c'.repeat(64) } },
+    descriptor: { quotaPool: pool } }), { mode: 0o600 })
+  f.quotaPoolFor.mockImplementation(async (binding, options) => {
+    const selected = await installedSourceQuotaPool({ path, ownerUid: process.getuid!() }, binding, options)
+    return selected ? { pool: selected } : undefined
+  })
+  const response = await f.service.handle({ version: 1, operation: 'sources.reconcile-preparation',
+    reconciliationId: randomUUID() }, f.context)
+  expect(response).toMatchObject({ operation: 'sources.reconcile-preparation', closure: {
+    materializationId: null, operationId: f.owner.identity.operationId,
+    admissionClosed: true, childrenClosed: true, claimReleased: true,
+  } })
+  expect(f.preparationTransfersClosed).toHaveBeenCalledTimes(1)
+  expect(f.preparationReconciled).toHaveBeenCalledTimes(1)
 })
 
 async function continuationFixture() {

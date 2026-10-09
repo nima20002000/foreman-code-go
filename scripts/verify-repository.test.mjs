@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { groupUsed } from './integration-process.mjs'
-import { collectPortions, expectedPortions, finalizeVerification, prepareVerificationDirectory, runSuiteProcess,
+import { captureVerificationInventory, collectPortions, expectedPortions, finalizeVerification, prepareVerificationDirectory, runSuiteProcess,
   sampleVerificationResources, validateVerificationContext, verificationCommand, verifyOfflinePreseed,
   verifyPrivateGitHead, verificationScratchEnvironment } from './verify-repository.mjs'
 import { portionPath, readNodeReport, runVerificationCommand, suiteSummary, writeReport } from './verification-reports.mjs'
@@ -33,7 +33,7 @@ function context(suite = 'unit') {
   }, privateGit: { sourceCommit: 'b'.repeat(40), generatedCommit: 'c'.repeat(40),
     repositoryReceiptDigest: digest, configDigest: digest, indexDigest: digest },
   requiredPortions: [{ key: 'root:install', kind: 'command' }],
-  mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
+  mutableDirectory: '/mutable', storeDirectory: '/mutable/store', preseedReceipt: {}, qualifiedUnitWorkers: 1, qualifiedIntegrationShards: 1, executionTimeoutMs: 2000, cancellationTimeoutMs: 200,
   limits: { summaryBytes: 16384, junitBytes: 1024 * 1024, vitestBytes: 1024 * 1024,
     logsArchiveBytes: 65536, logBytes: 8192 } }
 }
@@ -116,7 +116,7 @@ test('a reserved empty summary permits launch but prior attempt results and syml
 })
 
 test('ordinary suites run their full root commands', () => {
-  for (const [suite, script] of [['typecheck', 'typecheck'], ['lint', 'lint'], ['unit', 'test'], ['build', 'build']]) {
+  for (const [suite, script] of [['typecheck', 'typecheck'], ['lint', 'lint'], ['unit', 'test'], ['build', 'build'], ['integration', 'test:integration']]) {
     assert.deepEqual(verificationCommand(context(suite)), ['corepack', 'pnpm', script])
   }
   const install = { ...context('install'), storeDirectory: '/mutable/store', requiredPortions: [{ key: 'root:install', kind: 'command' }],
@@ -295,7 +295,7 @@ test('an already cancelled request never starts its command', async () => {
 })
 
 test('unit inventory includes all package runners and both web/root smoke commands', () => {
-  const portions = expectedPortions('/unused', 'unit')
+  const portions = expectedPortions(new URL('..', import.meta.url).pathname, 'unit')
   assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'root:worker-artifact', 'packages/contracts:test', 'apps/api:test',
     'apps/web:test:unit', 'apps/web:test:run-graph-smoke', 'apps/worker:test', 'root:test:scripts'])
 })
@@ -347,7 +347,7 @@ test('a failed bootstrap is required for completeness without inventing unit cas
 test('unit completeness includes exact-source worker packaging without counting it as test cases', () => {
   const f = fixture()
   try {
-    const expected = expectedPortions('/unused', 'unit')
+    const expected = expectedPortions(new URL('..', import.meta.url).pathname, 'unit')
     const packaging = expected.find(portion => portion.key === 'root:worker-artifact')
     assert.equal(packaging.kind, 'bootstrap')
     const missing = collectPortions(f.directory, f.root, [packaging], context().limits)[0]
@@ -356,5 +356,51 @@ test('unit completeness includes exact-source worker packaging without counting 
     const complete = collectPortions(f.directory, f.root, [packaging], context().limits)[0]
     assert.equal(complete.complete, true)
     assert.equal(complete.totals.total, 0)
+  } finally { f.close() }
+})
+
+
+test('integration inventory requires every API integration file and no acceptance or unit tests', () => {
+  const f = fixture()
+  try {
+    writeFileSync(join(f.root, 'package.json'), JSON.stringify({ name: 'foreman-code' }))
+    mkdirSync(join(f.root, 'apps/api/test'), { recursive: true })
+    for (const name of ['one.integration.test.ts', 'two.integration.test.ts', 'unit.test.ts', 'native.acceptance.test.ts']) {
+      writeFileSync(join(f.root, 'apps/api/test', name), '')
+    }
+    const inventory = captureVerificationInventory(f.root, 'integration')
+    assert.deepEqual(inventory, [
+      { key: 'root:install', kind: 'bootstrap' },
+      { key: 'packages/contracts:build', kind: 'command' },
+      { key: 'root:test:integration', kind: 'integration', files: [
+        'apps/api/test/one.integration.test.ts', 'apps/api/test/two.integration.test.ts',
+      ] },
+    ])
+  } finally { f.close() }
+})
+
+test('integration collection preserves first-pass failures and refuses incomplete file coverage', () => {
+  const f = fixture()
+  const key = 'root:test:integration'
+  const file = 'apps/api/test/example.integration.test.ts'
+  const reportDirectory = join(f.directory, 'parts/integration')
+  try {
+    receipt(f.directory, key)
+    const totals = { total: 1, passed: 1, failed: 0, skipped: 0 }
+    const summary = { schemaVersion: 1, suite: 'integration', expectedPortions: 1, completedPortions: 1,
+      completeness: 'complete', outcome: 'passed', totals, firstPassFailed: 0, disallowedSkipped: 0,
+      files: [{ file, code: 0, complete: true, totals }] }
+    writeReport(join(reportDirectory, 'summary.json'), summary, 65536)
+    writeReport(join(reportDirectory, 'vitest.json'), { success: true, numTotalTests: 1, numPassedTests: 1,
+      numFailedTests: 0, numPendingTests: 0, numTotalTestSuites: 1, numPassedTestSuites: 1,
+      numFailedTestSuites: 0, numPendingTestSuites: 0, testResults: [{ name: join(f.root, file), status: 'passed', startTime: 1, endTime: 2,
+        assertionResults: [{ title: 'works', fullName: 'works', status: 'passed', failureMessages: [] }] }] }, 65536)
+    const portions = [{ key, kind: 'integration', files: [file] }]
+    assert.equal(collectPortions(f.directory, f.root, portions, context().limits)[0].complete, true)
+    assert.equal(collectPortions(f.directory, f.root, portions, context().limits)[0].failed, false)
+    writeReport(join(reportDirectory, 'summary.json'), { ...summary, outcome: 'failed', firstPassFailed: 1 }, 65536)
+    assert.equal(collectPortions(f.directory, f.root, portions, context().limits)[0].failed, true)
+    writeReport(join(reportDirectory, 'summary.json'), { ...summary, files: [] }, 65536)
+    assert.equal(collectPortions(f.directory, f.root, portions, context().limits)[0].complete, false)
   } finally { f.close() }
 })

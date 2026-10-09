@@ -101,6 +101,18 @@ export class JobRepository {
     return this.putQueueTicket(sql, { ...ticket, state: 'terminal', terminalReason: reason,
       finishedAt: now, waitingReasons: [], queuePosition: null, estimatedStartAt: null })
   }
+  async finishCompletedQueueTickets(sql: JobSql): Promise<void> {
+    const rows = await sql.query<{ record: unknown; execution: unknown }>(`select q.record,e.record as execution
+      from job_admission_queue q join job_executions e on e.id=q.execution_id and e.workspace_id=q.workspace_id
+      where q.record->>'state'='accepted' order by q.enqueue_sequence for update of q`)
+    for (const row of rows.rows) {
+      const ticket = JobQueueTicketSchema.parse(row.record)
+      const execution = JobExecutionRecordSchema.parse(row.execution)
+      if (execution.process.phase !== 'terminal' || !execution.process.processStopped
+        || ['pending', 'collecting'].includes(execution.publication) || !execution.finishedAt) continue
+      await this.finishQueueTicket(sql, ticket, 'completed', execution.finishedAt)
+    }
+  }
   async definition(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobDefinitionRecord> {
     const row = (await sql.query<{ record: unknown }>(`select record from job_definitions where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`, [workspaceId,id])).rows[0]
     if (!row) throw new DomainError('JOB_DEFINITION_NOT_FOUND', 'The job definition was not found in this workspace.', 404)

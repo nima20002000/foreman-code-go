@@ -9,19 +9,23 @@ const Path = z.string().min(1).max(4096).refine((value) => !value.includes('\0')
 const EnvironmentName = z.string().regex(/^[A-Z_][A-Z0-9_]{0,127}$/)
   .refine((name) => !/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PG|LD_|DYLD_|NODE_OPTIONS$|BASH_ENV$|ENV$)/.test(name),
     'Application credentials and process-control variables cannot be delegated to MCP servers.')
-const Endpoint = z.string().max(2048).url().superRefine((value, ctx) => {
+export const HarnessMcpEndpointSchema = z.string().max(2048).url().superRefine((value, ctx) => {
   const url = new URL(value)
   if (url.username || url.password || url.search || url.hash) ctx.addIssue({ code: 'custom', message: 'Use an endpoint without credentials, a query string or a fragment.' })
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
     ctx.addIssue({ code: 'custom', message: 'Use HTTPS, or HTTP on loopback for a local server.' })
   }
 })
-const Argument = z.string().max(2048).refine((value) => !value.includes('\0') && !/[\r\n]/.test(value), 'Arguments must be single lines.')
-  .refine((value) => !/(?:bearer\s|(?:token|password|secret|api[-_]?key)\s*=)/i.test(value), 'Use an environment-variable reference, not an inline credential.')
+const inlineCredential = /(?:bearer\s|(?:token|password|passwd|secret|api[-_]?key)\s*[=:])/i
+const credentialOption = /(?:^|\s)--?(?:[\w-]+-)?(?:token|password|passwd|secret|api[-_]?key)(?:\s|$)/i
+export const HarnessMcpArgumentSchema = z.string().max(2048)
+  .refine((value) => !value.includes('\0') && !/[\r\n]/.test(value), 'Arguments must be single lines.')
+  .refine((value) => !inlineCredential.test(value) && !credentialOption.test(value),
+    'Use an environment-variable reference, not an inline credential.')
 export const HarnessMcpConnectionSchema = z.discriminatedUnion('transport', [
-  z.object({ transport: z.literal('remote'), url: Endpoint, bearerTokenEnvironmentVariable: EnvironmentName.optional() }).strict(),
+  z.object({ transport: z.literal('remote'), url: HarnessMcpEndpointSchema, bearerTokenEnvironmentVariable: EnvironmentName.optional() }).strict(),
   z.object({ transport: z.literal('stdio'), executable: Path.refine((value) => value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value), 'Choose an already installed executable by its absolute path.'),
-    arguments: z.array(Argument).max(64).default([]), environmentVariables: z.array(EnvironmentName).max(32).default([]) }).strict(),
+    arguments: z.array(HarnessMcpArgumentSchema).max(64).default([]), environmentVariables: z.array(EnvironmentName).max(32).default([]) }).strict(),
 ])
 export type HarnessMcpConnection = z.infer<typeof HarnessMcpConnectionSchema>
 export const HarnessMcpChangeSchema = z.discriminatedUnion('kind', [

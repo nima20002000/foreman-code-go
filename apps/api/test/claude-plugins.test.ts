@@ -38,18 +38,20 @@ describe('Claude plugin catalog and fleet sync', () => {
       .rejects.toMatchObject({ code: 'CLAUDE_PLUGIN_CATALOG_INVALID' })
   })
 
-  it('syncs marketplaces, missing plugins and enabled state, then reads back the result', async () => {
+  it('syncs marketplaces, missing plugins and managed enabled state, then reads back the result', async () => {
     const fake = claudePluginPorts()
-    fake.installed.set('review@official', { version: '1.0.0', enabled: false })
     const maintenance = new ComputerMaintenance(fake.ports)
-    maintenance.start(syncRequest)
+    await maintenance.start({ ...syncRequest, claudePlugins: [{ pluginId: 'review@official', enabled: true }] })
+    expect(await settled(maintenance)).toMatchObject({ state: 'succeeded' })
+    fake.installed.set('review@official', { version: '1.0.0', enabled: false })
+    await maintenance.start(syncRequest)
     expect(await settled(maintenance)).toMatchObject({ state: 'succeeded' })
     const catalog = await readClaudePlugins(fake.ports, AbortSignal.timeout(1000))
     expect(catalog.plugins.filter(item => item.installed).map(item => ({ pluginId: item.pluginId, enabled: item.enabled })))
       .toEqual(expect.arrayContaining(syncRequest.claudePlugins))
     expect(catalog.marketplaces).toContainEqual({ name: 'official', source: 'owner/official' })
     const count = fake.changes.length
-    maintenance.start(syncRequest)
+    await maintenance.start(syncRequest)
     expect(await settled(maintenance)).toMatchObject({ state: 'succeeded' })
     expect(fake.changes.slice(count)).not.toContain('install:notes@official')
   })
@@ -57,7 +59,7 @@ describe('Claude plugin catalog and fleet sync', () => {
   it('continues past a command requiring approval without running it', async () => {
     const fake = claudePluginPorts()
     const maintenance = new ComputerMaintenance(fake.ports)
-    maintenance.start({ ...syncRequest, claudePlugins: [
+    await maintenance.start({ ...syncRequest, claudePlugins: [
       { pluginId: 'command@official', enabled: true }, { pluginId: 'review@official', enabled: true },
     ] })
     expect(await settled(maintenance)).toMatchObject({ state: 'failed', summary: expect.stringContaining('command@official') })

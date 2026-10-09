@@ -387,6 +387,115 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(audits.rows).toEqual([{ source: 'mcp', outcome: 'succeeded' }])
   })
 
+  it('deletes and restores owned chats with persisted readback, command replay and audits', async () => {
+    const owner = await issue(['operator_chat:read', 'operator_chat:write', 'capabilities:read'])
+    const conversation = await chat.create(owner.principal)
+    const otherChat = await chat.create(owner.principal)
+    const fresh = new PostgresOperatorConversationRepository(database.pool)
+    const initialRevision = Number((await fresh.active(conversation.id))!.revision)
+    const deletion = { conversationId: conversation.id, commandId: randomUUID() }
+    const restoration = { conversationId: conversation.id, commandId: randomUUID() }
+    const call = (name: string, input: typeof deletion) => owner.client.callTool({ name, arguments: input })
+    const names = ['operator_chat_delete', 'operator_chat_restore']
+    expect((await owner.client.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining(names))
+    const capabilities = await owner.client.callTool({ name: 'operator_get_capabilities', arguments: {} })
+    expect(capabilities.structuredContent).toMatchObject({ tools: expect.arrayContaining(names) })
+
+    const delegated = await access.issue({ name: 'Chat credential', audience: 'operator',
+      grants: [{ actions: ['capabilities:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
+    await database.pool.query('insert into operator_chat_credentials(principal_id,conversation_id) values($1,$2)',
+      [delegated.principal.id, conversation.id])
+    expect((await call('operator_chat_delete', deletion)).structuredContent).toEqual({ conversationId: conversation.id })
+    const deleted = await fresh.active(conversation.id)
+    expect(deleted?.deleted_at).toBeTruthy()
+    expect(Number(deleted!.revision)).toBe(initialRevision + 1)
+    const list = await owner.client.callTool({ name: 'operator_chat_list', arguments: {} })
+    expect(ListOperatorConversationsResponseSchema.parse(list.structuredContent).conversations.map(item => item.id))
+      .not.toContain(conversation.id)
+    const missing = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
+    expect(missing.isError).toBe(true)
+    expect(JSON.stringify(missing.content)).toContain('CONVERSATION_NOT_FOUND')
+    await expect(access.authenticate(delegated.token)).rejects.toThrow()
+    for (const retry of await Promise.all([call('operator_chat_delete', deletion), call('operator_chat_delete', deletion)])) {
+      expect(retry.structuredContent).toEqual({ conversationId: conversation.id })
+    }
+    expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 1)
+
+    expect((await call('operator_chat_restore', restoration)).structuredContent).toEqual({ conversationId: conversation.id })
+    expect((await fresh.active(conversation.id))?.deleted_at).toBeNull()
+    expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 2)
+    await expect(access.authenticate(delegated.token)).rejects.toThrow()
+    const restored = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
+    expect(GetOperatorConversationResponseSchema.parse(restored.structuredContent).conversation).toEqual(conversation)
+    expect((await call('operator_chat_delete', deletion)).isError).not.toBe(true)
+    expect((await fresh.active(conversation.id))?.deleted_at).toBeNull()
+
+    const secondDeletion = { ...deletion, commandId: randomUUID() }
+    expect((await call('operator_chat_delete', secondDeletion)).isError).not.toBe(true)
+    expect((await call('operator_chat_restore', restoration)).isError).not.toBe(true)
+    expect((await fresh.active(conversation.id))?.deleted_at).toBeTruthy()
+    expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 3)
+    const conflict = await call('operator_chat_delete', { ...deletion, conversationId: otherChat.id })
+    expect(conflict.isError).toBe(true)
+    expect(JSON.stringify(conflict.content)).toContain('COMMAND_ID_CONFLICT')
+    expect((await fresh.active(otherChat.id))?.deleted_at).toBeNull()
+
+    const audits = await database.pool.query(
+      `select source,action,outcome from management_audit where principal_id=$1
+        and action in ('operator_chat_delete','operator_chat_restore') and outcome='succeeded' order by sequence`,
+      [owner.principal.id])
+    expect(audits.rows).toEqual([
+      { source: 'mcp', action: 'operator_chat_delete', outcome: 'succeeded' },
+      { source: 'mcp', action: 'operator_chat_restore', outcome: 'succeeded' },
+      { source: 'mcp', action: 'operator_chat_delete', outcome: 'succeeded' },
+    ])
+    await database.pool.query('update management_principals set grants=$2::jsonb where id=$1', [
+      owner.principal.id, JSON.stringify([{ actions: ['operator_chat:read'], scope: {} }]),
+    ])
+    await denied(owner.client, 'operator_chat_delete', deletion)
+    await denied(owner.client, 'operator_chat_restore', restoration)
+    expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 3)
+    expect((await fresh.active(conversation.id))?.deleted_at).toBeTruthy()
+  })
+
+  it('denies read-only, scoped and other-owner callers and refuses chat changes during a turn', async () => {
+    const owner = await issue(['operator_chat:read', 'operator_chat:write'])
+    const conversation = await chat.create(owner.principal)
+    const reader = await issue(['operator_chat:read'])
+    const scoped = await issue(['operator_chat:read', 'operator_chat:write'], { workspaceIds: [randomUUID()] })
+    const stranger = await issue(['operator_chat:read', 'operator_chat:write'])
+    const input = { conversationId: conversation.id, commandId: randomUUID() }
+    for (const name of ['operator_chat_delete', 'operator_chat_restore']) {
+      await denied(reader.client, name, input)
+      await denied(scoped.client, name, input)
+      const notOwned = await stranger.client.callTool({ name, arguments: input })
+      expect(notOwned.isError).toBe(true)
+      expect(JSON.stringify(notOwned.content)).toContain('CONVERSATION_NOT_FOUND')
+    }
+    const request = { requestId: randomUUID(), content: 'An active response' }
+    await repository.beginTurn(conversation.id, request, owner.principal.id)
+    const activeRevision = Number((await repository.active(conversation.id))!.revision)
+    for (const name of ['operator_chat_delete', 'operator_chat_restore']) {
+      const active = await owner.client.callTool({ name, arguments: input })
+      expect(active.isError).toBe(true)
+      expect(JSON.stringify(active.content)).toContain('CONVERSATION_TURN_ACTIVE')
+    }
+    const persisted = await new PostgresOperatorConversationRepository(database.pool).active(conversation.id)
+    expect(persisted?.deleted_at).toBeNull()
+    expect(Number(persisted!.revision)).toBe(activeRevision)
+    await repository.finish(conversation.id, request.requestId, { outcome: 'succeeded', output: 'Done' })
+    expect((await owner.client.callTool({ name: 'operator_chat_delete', arguments: input })).isError).not.toBe(true)
+    const deniedAudits = await database.pool.query(
+      "select principal_id,action from management_audit where outcome='denied' and principal_id=any($1::text[])",
+      [[reader.principal.id, scoped.principal.id]])
+    expect(deniedAudits.rows).toEqual(expect.arrayContaining([
+      { principal_id: reader.principal.id, action: 'operator_chat_delete' },
+      { principal_id: reader.principal.id, action: 'operator_chat_restore' },
+      { principal_id: scoped.principal.id, action: 'operator_chat_delete' },
+      { principal_id: scoped.principal.id, action: 'operator_chat_restore' },
+    ]))
+  })
+
   it('inspects conversation and accepted-message pins after defaults change while retaining owner and configuration checks', async () => {
     const owner = await issue(['operator_chat:read', 'operator_chat:write', 'harnesses:read'])
     const created = await owner.client.callTool({ name: 'operator_chat_create', arguments: {

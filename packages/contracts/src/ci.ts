@@ -54,7 +54,7 @@ export const PreparedCiRuntimeSchema = z.object({
   commit: CommitSchema, imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/), imageManifestDigest: z.string().min(1).max(200),
   seedReceiptPath: AbsolutePathSchema, contextReceiptPath: AbsolutePathSchema, qualificationSource: AbsolutePathSchema,
   unitCodex: z.object({ executable: AbsolutePathSchema, sourceExecutable: AbsolutePathSchema, version: z.string().min(1).max(200),
-    binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+    binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
 }).strict()
 export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('source'), transferId: z.uuid(), repository: z.string().min(3).max(140),

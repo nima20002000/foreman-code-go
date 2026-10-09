@@ -5,7 +5,9 @@ node scripts/build-ci-runtime-context.mjs /new/private/context
 podman build --file /new/private/context/Containerfile --tag localhost/foreman-code-ci:reviewed /new/private/context
 ```
 
-The context contains only committed lockfile, workspace policy, package manifests and image controls. It excludes working-tree files, source credentials and caches. The base manifest, Node 22.23.3, Corepack 0.36.0 and pnpm 11.27.0 are pinned. Frozen-lock dependency fetching retains the repository's strict 48-hour release-age policy. The installed Corepack wrapper uses its fixed image cache and disables network acquisition at workload runtime.
+The context contains the project's committed lockfile, workspace policy and package manifests, plus image controls and verification scripts from the installed Foreman release. Project repositories do not supply image controls. It excludes other working-tree files, source credentials and caches. The base manifest, Node 22.23.3, Corepack 0.36.0 and pnpm 11.27.0 are pinned. Frozen-lock dependency fetching retains the repository's strict 48-hour release-age policy. The installed Corepack wrapper uses its fixed image cache and disables network acquisition at workload runtime.
+
+Other pnpm projects run their root `build`, `lint`, `test` (unit), `typecheck`, or `test:integration` script after the same frozen offline install. Reports count the script's exit status as one command result; they do not invent per-test counts. Missing scripts fail with logs. Foreman's own package retains its package-level test inventory and requires its qualified Codex binary for unit tests. Preparing a second project retains the first project's protected runtime configuration; runtime selection matches the requested project, image, source and resource policy before the existing qualification and execution checks.
 
 Build or pull during separately authorized image preparation. Record the actual immutable image ID and measured toolchain digest for runtime qualification; a rebuilt image must not reuse another build's receipt or tag as identity. This recipe does not provision worker cgroups, create approved roots, initialize operation journals, qualify the runtime, or authorize execution. Existing filesystem, no-new-privileges, network and descendant-containment guards remain mandatory.
 
@@ -62,8 +64,13 @@ controller-owned sentinel visibility. It cannot grant qualification. It must
 run through the existing native owner with the exact approved image, source,
 quota and resource configuration. Actual ordinary-suite cold-cache peaks,
 quota pressure, descendant cancellation and failure publication remain separate
-required measurements. Start measurements at one heavy Job, one unit worker
-and one integration shard; no higher allowance is inferred from this recipe.
+required measurements. Integration runs `scripts/test-integration.mjs` against
+PostgreSQL 17 in `/job-scratch/postgres`, listening only in the private container
+network. Qualification derives its shard count from the saved CPU, memory and
+scratch limits; dispatched shards cannot exceed that measured allowance.
+Use an integration profile with enough execution time and report storage for
+the full suite. Preparation budgets qualification for every suite plus its
+timeout and cancellation probes within the reviewed approval lifetime.
 
 Verification uses the separate fingerprint version 3 / measurement version 2.
 Build evidence is unchanged. Registry/public egress remains unavailable without

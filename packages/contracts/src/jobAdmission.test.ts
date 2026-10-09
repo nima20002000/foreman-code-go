@@ -101,6 +101,13 @@ describe('pending Job admission', () => {
     expect(JobQueueTicketSchema.parse(cancelled).reservationId).toBeNull()
     expect(JobQueueTicketSchema.safeParse({ ...cancelled, cancelRequestedAt: null }).success).toBe(false)
   })
+  it('retains a completed execution ticket with its original claim and completion time', () => {
+    const { ticket } = verificationFixture()
+    const completed = { ...ticket, state: 'terminal', terminalReason: 'completed',
+      reservationId: ticket.id, finishedAt: ticket.enqueuedAt, queuePosition: null }
+    expect(JobQueueTicketSchema.parse(completed)).toMatchObject(completed)
+    expect(JobQueueTicketSchema.safeParse({ ...completed, reservationId: null }).success).toBe(false)
+  })
 })
 
 describe('shared computer selection contract', () => {

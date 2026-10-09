@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -56,6 +57,36 @@ test('ordinary suites run their full root commands', () => {
     preseedReceipt: {} }
   assert.deepEqual(verificationCommand(install), ['corepack', 'pnpm', 'install', '--frozen-lockfile',
     '--offline', '--prod=false', '--store-dir', '/mutable/store'])
+})
+
+test('unit package commands honor configured worker limits and local defaults', () => {
+  const resolveWorkers = `
+    import { readFileSync } from 'node:fs'
+    import { createRequire } from 'node:module'
+    import { pathToFileURL } from 'node:url'
+    const [project, script] = process.argv.slice(1)
+    const require = createRequire(project + '/package.json')
+    const { parseCLI, resolveConfig } = await import(pathToFileURL(require.resolve('vitest/node')))
+    const { scripts } = JSON.parse(readFileSync(project + '/package.json', 'utf8'))
+    const { options } = parseCLI(scripts[script].split(' -- ').at(-1))
+    const config = await resolveConfig({ ...options, root: project })
+    process.stdout.write(String(config.test.maxWorkers))
+  `
+  const projects = [
+    ['apps/api', 'test', 4],
+    ['apps/web', 'test:unit', 4],
+    ['packages/contracts', 'test', 12],
+  ]
+  for (const [project, script, defaultWorkers] of projects) {
+    for (const configuredWorkers of [undefined, '1']) {
+      const env = { ...process.env }
+      if (configuredWorkers === undefined) delete env.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS
+      else env.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS = configuredWorkers
+      const output = execFileSync(process.execPath, ['--input-type=module', '-e', resolveWorkers,
+        join(new URL('..', import.meta.url).pathname, project), script], { env, encoding: 'utf8' })
+      assert.equal(Number(output), configuredWorkers === undefined ? defaultWorkers : Number(configuredWorkers), project)
+    }
+  }
 })
 
 test('missing policy inputs, excessive workers and report reservations fail closed', () => {
@@ -227,7 +258,7 @@ test('an already cancelled request never starts its command', async () => {
 })
 
 test('unit inventory includes all package runners and both web/root smoke commands', () => {
-  const portions = expectedPortions('/unused', 'unit')
+  const portions = expectedPortions(new URL('..', import.meta.url).pathname, 'unit')
   assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'root:worker-artifact', 'packages/contracts:test', 'apps/api:test',
     'apps/web:test:unit', 'apps/web:test:run-graph-smoke', 'apps/worker:test', 'root:test:scripts'])
 })

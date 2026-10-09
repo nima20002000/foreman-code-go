@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
-import { readVerificationQuotaPool, verifyJobQuotaOwnership, isKernelQuotaDenial, type JobQuotaReader } from './quotaOwnership.js'
+import { installedSourceQuotaPool, readVerificationQuotaPool, verifyJobQuotaOwnership,
+  isKernelQuotaDenial, type JobQuotaReader } from './quotaOwnership.js'
 import { constants } from 'node:os'
 
 const profile = verificationCapacityFixture('main')
@@ -15,6 +17,39 @@ function verify(read: JobQuotaReader) {
   return verifyJobQuotaOwnership({ pool, binding: profile.root.binding, slot,
     signal: new AbortController().signal, read })
 }
+const directories: string[] = []
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
+})
+
+async function installedQuota() {
+  const directory = await mkdtemp('/tmp/source-cleanup-quota-')
+  directories.push(directory)
+  const path = join(directory, 'runtime.json')
+  await writeFile(path, JSON.stringify({ schemaVersion: 2, root: profile.root, descriptor: { quotaPool: pool } }),
+    { mode: 0o600 })
+  return { path, ownerUid: process.getuid!() }
+}
+
+describe('source cleanup quota selection', () => {
+  it('closes a preparation after its source binding changed on the same installed physical root', async () => {
+    const configuration = await installedQuota()
+    const binding = { ...profile.root.binding, bindingRevision: profile.root.binding.bindingRevision + 1,
+      snapshotId: '22222222-2222-4222-8222-222222222222', manifestDigest: '2'.repeat(64) }
+    expect(await installedSourceQuotaPool(configuration, binding)).toBeNull()
+    expect(await installedSourceQuotaPool(configuration, binding, { purpose: 'cleanup' })).toEqual(pool)
+  })
+
+  it.each(['rootId', 'workspaceId', 'canonicalPath', 'locationRevision', 'filesystem', 'accessMode'] as const)(
+    'refuses cleanup with a changed physical root field: %s', async field => {
+      const configuration = await installedQuota()
+      const changed = { rootId: '22222222-2222-4222-8222-222222222222', workspaceId: 'another-workspace',
+        canonicalPath: '/another/root', locationRevision: profile.root.binding.locationRevision + 1,
+        filesystem: { ...profile.root.binding.filesystem, inode: '9999' }, accessMode: 'read-only' as const }
+      expect(await installedSourceQuotaPool(configuration, { ...profile.root.binding, [field]: changed[field] },
+        { purpose: 'cleanup' })).toBeNull()
+    })
+})
 describe('observed project quota ownership', () => {
   it('recognizes the kernel quota errno without accepting unrelated unknown or disk-full errors', () => {
     expect(isKernelQuotaDenial(-constants.errno.EDQUOT!)).toBe(true)
