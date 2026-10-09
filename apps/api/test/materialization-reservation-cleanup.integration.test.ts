@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -172,11 +173,11 @@ it('reclaims abandoned owned and preparing copies and restores placement through
     expectedRevision: definition.revision }
   const started = await client.callTool({ name: 'job_start', arguments: input })
   expect(started.isError, JSON.stringify(started)).not.toBe(true)
-  const pending = JobPendingAdmissionSchema.parse((started.structuredContent as { admission: unknown }).admission)
+  const pending = JobPendingAdmissionSchema.parse((decodeMcpToolResult(started) as { admission: unknown }).admission)
   await f.jobs.wakeQueue()
   const before = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: f.workspaceId, ticketId: pending.ticket.id } })
   expect(before.isError, JSON.stringify(before)).not.toBe(true)
-  expect(JobQueueTicketSchema.parse((before.structuredContent as { ticket: unknown }).ticket).waitingReasons).toEqual(['busy'])
+  expect(JobQueueTicketSchema.parse((decodeMcpToolResult(before) as { ticket: unknown }).ticket).waitingReasons).toEqual(['busy'])
   const denied = await f.access.issue({ name: 'Unscoped fixture reader', audience: 'operator',
     expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['jobs:read'], scope: { workspaceIds: ['another-workspace'] } }] })
   const readOnly = await f.connect(denied.token)
@@ -196,7 +197,7 @@ it('reclaims abandoned owned and preparing copies and restores placement through
   await f.jobs.wakeQueue()
   const after = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: f.workspaceId, ticketId: pending.ticket.id } })
   expect(after.isError, JSON.stringify(after)).not.toBe(true)
-  expect(JobQueueTicketSchema.parse((after.structuredContent as { ticket: unknown }).ticket))
+  expect(JobQueueTicketSchema.parse((decodeMcpToolResult(after) as { ticket: unknown }).ticket))
     .toMatchObject({ state: 'accepted', waitingReasons: [],
       selectedComputer: { rootId: f.root.binding.rootId, bindingRevision: f.root.binding.bindingRevision } })
   expect(f.accept).toHaveBeenCalledTimes(1)

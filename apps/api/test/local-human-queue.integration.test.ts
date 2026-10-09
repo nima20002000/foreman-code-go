@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -55,16 +56,16 @@ describe.skipIf(!postgresEnabled)('local human queue transport parity', () => {
     } })
     expect(read.isError).not.toBe(true)
     const persisted = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, ticketId)
-    expect(read.structuredContent).toEqual({ ticket: persisted })
+    expect(decodeMcpToolResult(read)).toEqual({ ticket: persisted })
     const listed = await client.callTool({ name: 'job_queue_list', arguments: { workspaceId: f.workspaceId } })
     expect(listed.isError).not.toBe(true)
     const localRead = await app.inject({ method: 'GET',
       url: `/api/management/workspaces/${f.workspaceId}/jobs/queue/${persisted.id}` })
     expect(localRead.statusCode, localRead.body).toBe(200)
-    expect(localRead.json()).toEqual(read.structuredContent)
+    expect(localRead.json()).toEqual(decodeMcpToolResult(read))
     const localList = await app.inject({ method: 'GET',
       url: `/api/management/workspaces/${f.workspaceId}/jobs/queue` })
     expect(localList.statusCode, localList.body).toBe(200)
-    expect(localList.json()).toEqual(listed.structuredContent)
+    expect(localList.json()).toEqual(decodeMcpToolResult(listed))
   })
 })

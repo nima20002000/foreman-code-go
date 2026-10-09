@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { isWorkflowStart } from '../../src/modules/harnesses/sessionStart.js'
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
@@ -43,10 +44,10 @@ async function waitGate(promise: Promise<void>, signal?: AbortSignal) {
   } finally { if (abort) signal?.removeEventListener('abort', abort) }
 }
 export function toolValue(result: { isError?: boolean | undefined; structuredContent?: unknown;
-  content?: unknown }) {
+  content?: readonly { type: string; text?: string | undefined }[] | undefined }) {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
-  expect(result.structuredContent, JSON.stringify(result)).toBeDefined()
-  return result.structuredContent
+  expect(decodeMcpToolResult(result), JSON.stringify(result)).toBeDefined()
+  return decodeMcpToolResult(result)
 }
 
 /** Public socket HTTP + authenticated Streamable HTTP Operator MCP. The existing

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
@@ -75,18 +76,18 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
       .then((result) => result.isError === true, () => true)
     expect(deniedUpdate).toBe(true)
     expect(native.refreshOptions).not.toHaveBeenCalled()
-    const before = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'codex' } })).structuredContent)
+    const before = HarnessOptionsResultSchema.parse(decodeMcpToolResult((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'codex' } }))))
     expect(before.models.map((model) => model.id)).toEqual(['provider/old-model'])
     const local = await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/refresh',
       headers: { authorization: `Bearer ${readerGrant.token}`, host: 'localhost' }, payload: {} })
     expect(local.statusCode).toBe(200)
     expect(HarnessOptionsResultSchema.parse(local.json()).models[0]?.id).toBe('provider/new-model')
     expect(native.refreshOptions).toHaveBeenLastCalledWith('codex', 'catalog')
-    const localMcp = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_refresh',
-      arguments: { harness: 'codex' } })).structuredContent)
+    const localMcp = HarnessOptionsResultSchema.parse(decodeMcpToolResult((await reader.callTool({ name: 'harness_options_refresh',
+      arguments: { harness: 'codex' } }))))
     expect(localMcp.models.map((model) => model.id)).toEqual(['provider/new-model'])
     expect(invalidateChecks).toHaveBeenCalledTimes(2)
-    const readback = HarnessOptionsResultSchema.parse((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'codex' } })).structuredContent)
+    const readback = HarnessOptionsResultSchema.parse(decodeMcpToolResult((await reader.callTool({ name: 'harness_options_get', arguments: { harness: 'codex' } }))))
     expect(readback.models.map((model) => model.id)).toEqual(['provider/new-model'])
     expect(JSON.parse(await readFile(cache, 'utf8'))).toEqual(['provider/new-model'])
   } finally {

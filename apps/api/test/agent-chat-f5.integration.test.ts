@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -112,11 +113,11 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
       assert.equal(response.statusCode, 200, response.body)
       assert.equal(AgentChatStateSchema.parse(response.json().state).pendingInteraction?.turn.nativeRequestId, 'approval-b')
       const readback = await f.mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query } })
-      assert.equal(AgentChatStateSchema.parse(readback.structuredContent).pendingInteraction?.turn.nativeRequestId, 'approval-b')
+      assert.equal(AgentChatStateSchema.parse(decodeMcpToolResult(readback)).pendingInteraction?.turn.nativeRequestId, 'approval-b')
       const second = await f.mcp.callTool({ name: 'agent_chat_respond', arguments: { workspaceId: f.workspaceId, conversationId: f.id,
         requestId: 'reply-b', nativeRequestId: 'approval-b', optionId: 'approve-once' } })
       assert.notEqual(second.isError, true)
-      assert.equal(AgentChatStateSchema.parse((second.structuredContent as { state: unknown } | undefined)?.state)
+      assert.equal(AgentChatStateSchema.parse((decodeMcpToolResult(second) as { state: unknown } | undefined)?.state)
         .pendingInteraction?.turn.nativeRequestId, 'approval-c')
       const httpRead = await f.app.inject({ method: 'GET', url: `${f.url}?${new URLSearchParams(f.query)}`, headers: f.headers })
       assert.equal(AgentChatStateSchema.parse(httpRead.json()).pendingInteraction?.turn.nativeRequestId, 'approval-c')
@@ -190,7 +191,7 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
         where conversation_id=$1 and delivery in ('queued','submitting','accepted','unknown') order by turn_sequence`, [f.id])).rows
       assert.deepEqual(state.turns.map((turn) => turn.requestId), authoritative.map((turn) => turn.request_id))
       const mcpState = await f.mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query } })
-      assert.deepEqual(AgentChatStateSchema.parse(mcpState.structuredContent).turns, state.turns)
+      assert.deepEqual(AgentChatStateSchema.parse(decodeMcpToolResult(mcpState)).turns, state.turns)
       const queued = state.turns.filter((turn) => turn.delivery === 'queued')
       for (const [index, turn] of queued.entries()) {
         if (index % 2) {

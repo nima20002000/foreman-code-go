@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
@@ -179,10 +180,10 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
     const call = async (client: Client, name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args })
     const created = await call(operator, 'skill_create', { workspaceId: workspaceB, commandId: 'mcp-create-0001', name: 'MCP skill', instructions: 'From MCP' })
     expect(created.isError).not.toBe(true)
-    const skill = c.SkillMutationResultSchema.parse(created.structuredContent).value.skill
+    const skill = c.SkillMutationResultSchema.parse(decodeMcpToolResult(created)).value.skill
     const updated = await call(operator, 'skill_update', { workspaceId: workspaceB, skillId: skill.skillId, commandId: 'mcp-update-0001',
       expectedRevision: 1, name: 'MCP skill', instructions: 'Edited by MCP' })
-    expect(c.SkillMutationResultSchema.parse(updated.structuredContent).value.version.version).toBe('2')
+    expect(c.SkillMutationResultSchema.parse(decodeMcpToolResult(updated)).value.version.version).toBe('2')
     // Persisted readback through the browser HTTP surface.
     const read = c.SkillGetResultSchema.parse((await http('GET', `/api/management/workspaces/${workspaceB}/skills/${skill.skillId}`, owner)).json)
     expect(read.version.instructions).toBe('Edited by MCP')
@@ -192,7 +193,7 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
 
     // Scoped to workspace A only: cannot read, list or write workspace B.
     const scoped = await mcp(await issue([{ actions: ['skills:read', 'skills:publish'], scope: { workspaceIds: [workspaceA] } }]))
-    const list = c.SkillPageSchema.parse((await call(scoped, 'skill_list', {})).structuredContent)
+    const list = c.SkillPageSchema.parse(decodeMcpToolResult((await call(scoped, 'skill_list', {}))))
     expect(list.items.length).toBeGreaterThan(0)
     expect(list.items.every((item) => item.workspaceId === workspaceA)).toBe(true)
     for (const [name, args] of [
@@ -289,8 +290,8 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
 
     // MCP parity: an authorized Operator creates a skill and assigns it while building an Agent.
     const operator = await mcp(owner)
-    const created = c.SkillMutationResultSchema.parse((await operator.callTool({ name: 'skill_create', arguments: {
-      workspaceId: workspaceA, commandId: 'mcp-assign-skill-1', name: 'Via MCP', instructions: 'Use MCP-created guidance.' } })).structuredContent).value.skill
+    const created = c.SkillMutationResultSchema.parse(decodeMcpToolResult((await operator.callTool({ name: 'skill_create', arguments: {
+      workspaceId: workspaceA, commandId: 'mcp-assign-skill-1', name: 'Via MCP', instructions: 'Use MCP-created guidance.' } })))).value.skill
     const viaMcp = await operator.callTool({ name: 'agent_create', arguments: { workspaceId: workspaceA, commandId: 'mcp-assign-agent-1', agentId: 'mcp-agent',
       name: 'MCP Agent', productRole: 'coder', configuration: codex, assignedSkills: [{ skillId: created.skillId, version: created.version }] } })
     expect(viaMcp.isError, JSON.stringify(viaMcp.content)).not.toBe(true)
@@ -316,7 +317,7 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
       `/api/management/workspaces/${workspaceId}/skills`, owner, { commandId: `create-${randomUUID()}`, name, instructions: `${name} rules.` })).json).value.skill
     const a = await make(workspaceA, 'Operator A'), b = await make(workspaceB, 'Operator B')
     const operator = await mcp(owner)
-    const read = async (client: Client) => c.ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+    const read = async (client: Client) => c.ManagedAgentDefaultsSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'agent_defaults_get', arguments: {} }))))
     const defaults = await read(operator)
     const value = { ...defaults.value, operator: { ...defaults.value.operator,
       assignedSkills: [{ workspaceId: workspaceB, skillId: b.skillId, version: '1' }, { workspaceId: workspaceA, skillId: a.skillId, version: '1' }] } }
@@ -361,7 +362,7 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
         [workspaceId, record.skillId])
     }
     const operator = await mcp(owner)
-    const defaults = c.ManagedAgentDefaultsSchema.parse((await operator.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+    const defaults = c.ManagedAgentDefaultsSchema.parse(decodeMcpToolResult((await operator.callTool({ name: 'agent_defaults_get', arguments: {} }))))
     const assignedSkills = [workspaceB, workspaceA].map((workspaceId) => ({ workspaceId, skillId: 'legacy-shared', version: '1' }))
     const saved = await operator.callTool({ name: 'agent_defaults_update', arguments: { commandId: 'operator-workspace-qualified',
       expectedRevision: defaults.revision, value: { ...defaults.value, operator: { ...defaults.value.operator, assignedSkills } } } })

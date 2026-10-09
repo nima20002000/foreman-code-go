@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
@@ -71,13 +72,13 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
       principal_id: reader.principal.id, source: 'mcp', action: 'harness_instance_check',
       target_key: 'mcp:harness_instance_check', outcome: 'denied',
     }])
-    const readiness = ExecutionReadinessSchema.parse((await denied.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } })).structuredContent)
+    const readiness = ExecutionReadinessSchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } }))))
     expect.soft(readiness).toMatchObject({ status: 'blocked', defaultsRevision: 1,
       reason: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE', message: expect.stringContaining('authorized host/profile credential delivery') } })
     const httpReadiness = await production.app.inject({ method: 'GET', url: '/api/management/harnesses/claude/execution-readiness', headers: { authorization: `Bearer ${reader.token}` } })
     expect(httpReadiness.statusCode).toBe(200)
     expect(ExecutionReadinessSchema.parse(httpReadiness.json())).toMatchObject({ status: readiness.status, defaultsRevision: readiness.defaultsRevision, reason: readiness.reason })
-    const catalog = HarnessCatalogEntrySchema.parse((await denied.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })).structuredContent)
+    const catalog = HarnessCatalogEntrySchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'harness_get', arguments: { harness: 'claude' } }))))
     expect(catalog.defaults).toEqual(harness)
     expect.soft(catalog).toMatchObject({ capability: null, discoveryError: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE' } })
     const proposed = await denied.callTool({ name: 'harness_configuration_check', arguments: { configuration: harness } })
@@ -96,26 +97,26 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
     // Preset persistence is independent of exact-host native qualification.
     const defaultsUpdate = await allowed.callTool({ name: 'harness_defaults_update', arguments: updateInput })
     expect(defaultsUpdate.isError).not.toBe(true)
-    const updated = HarnessDefaultsUpdateResultSchema.parse(defaultsUpdate.structuredContent)
+    const updated = HarnessDefaultsUpdateResultSchema.parse(decodeMcpToolResult(defaultsUpdate))
     expect(updated).toEqual({ value: { revision: 2, defaults: updateInput.defaults }, replayed: false })
-    expect(HarnessDefaultsUpdateResultSchema.parse((await allowed.callTool({ name: 'harness_defaults_update', arguments: updateInput })).structuredContent))
+    expect(HarnessDefaultsUpdateResultSchema.parse(decodeMcpToolResult((await allowed.callTool({ name: 'harness_defaults_update', arguments: updateInput })))))
       .toEqual({ ...updated, replayed: true })
     const staleUpdate = await allowed.callTool({ name: 'harness_defaults_update', arguments: { ...updateInput, commandId: randomUUID() } })
     expect(staleUpdate.isError).toBe(true)
     expect(JSON.stringify(staleUpdate.content)).toContain('REVISION_CONFLICT')
     expect(await new PostgresSettingsRepository(pool).getManagedHarnessDefaults()).toEqual(updated.value)
-    expect(HarnessCatalogEntrySchema.parse((await denied.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })).structuredContent))
+    expect(HarnessCatalogEntrySchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })))))
       .toMatchObject({ defaults: updateInput.defaults.claude, defaultsRevision: 2, capability: null,
         discoveryError: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE' } })
-    expect(ExecutionReadinessSchema.parse((await denied.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } })).structuredContent))
+    expect(ExecutionReadinessSchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } })))))
       .toMatchObject({ status: 'blocked', defaultsRevision: 2, reason: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE' } })
     expect((await pool.query("select source,action,outcome from management_audit where principal_id=$1 and action='harness.defaults.update'",
       [writer.principal.id])).rows).toContainEqual({ source: 'mcp', action: 'harness.defaults.update', outcome: 'succeeded' })
     const target = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
       harnessInstallationId: 'recorded-cli', installationFingerprint: 'recorded-payload' }
-    const saved = HostHarnessOverrideSaveResultSchema.parse((await allowed.callTool({ name: 'harness_instance_save', arguments: {
+    const saved = HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await allowed.callTool({ name: 'harness_instance_save', arguments: {
       commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0, target, presetId: 'recorded', enabled: true, configuration: harness,
-    } })).structuredContent)
+    } }))))
     expect(saved.value.qualification).toBe('unqualified')
     const proof: HostHarnessProfileEvidence = { target, instanceRevision: saved.value.instanceRevision,
       configurationFingerprint: saved.value.configurationFingerprint, driverId: 'claude', driverRevision: 'recorded',
@@ -127,7 +128,7 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
     // Replay the existing exact-profile evidence resolver to isolate the missing delivery gate.
     const readProof = vi.spyOn(ProductionHarnessRegistry.prototype, 'profileEvidence').mockImplementation((value, client) => proofs.latest(value.instanceId, value.revision, client))
     const listInput = { hostRef: target.hostRef, applicationInstallationId: mainId }
-    const listed = HostHarnessOverrideListSchema.parse((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })).structuredContent)
+    const listed = HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'harness_instances_list', arguments: listInput }))))
     expect.soft(listed.overrides[0]).toMatchObject({ revision: 1, configuration: harness, qualification: 'unqualified' })
     const checked = await allowed.callTool({ name: 'harness_instance_check', arguments: {
       commandId: randomUUID(), instanceId: saved.value.instanceId, expectedRevision: 1, target,

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -93,12 +94,12 @@ describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => 
     await storage.upload(owner, target, uploadId, Readable.from([bytes]))
     const uploaded = await storage.finalize(owner, target, uploadId)
     const source = { fileId: uploaded.value.file.fileId, revisionId: uploaded.value.revision.revisionId }
-    const copy = AgentFileCreateWorkingCopyResultSchema.parse((await client.callTool({ name: 'files.create_working_copy',
-      arguments: { commandId: randomUUID(), source, destination: accepted!.context.scope } })).structuredContent)
+    const copy = AgentFileCreateWorkingCopyResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'files.create_working_copy',
+      arguments: { commandId: randomUUID(), source, destination: accepted!.context.scope } }))))
     const args = { commandId: randomUUID(), artifactId: copy.value.artifactId, scope: accepted!.context.scope,
       filename: 'result.md', mediaType: 'text/markdown' }
-    const publication = AgentFilePublishResultSchema.parse((await client.callTool({ name: 'files.publish_result', arguments: args })).structuredContent)
-    const replay = AgentFilePublishResultSchema.parse((await client.callTool({ name: 'files.publish_result', arguments: args })).structuredContent)
+    const publication = AgentFilePublishResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'files.publish_result', arguments: args }))))
+    const replay = AgentFilePublishResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'files.publish_result', arguments: args }))))
     expect(replay.replayed).toBe(true)
     expect(replay.value).toEqual(publication.value)
     await service.sessions.revoke(token)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '../../packages/contracts/dist/operatorMcp.js'
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -318,13 +319,13 @@ try {
         conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}),
       } })
       assert.ok(!parity.isError)
-      assert.equal(parity.structuredContent.nativeSessionId, after.nativeSessionId)
-      assert.equal(parity.structuredContent.desiredMode, 'regular')
-      assert.deepEqual(parity.structuredContent.capabilities.contextBudgets, after.capabilities.contextBudgets)
-      assert.equal(parity.structuredContent.capabilities.contextBudgetReason, after.capabilities.contextBudgetReason)
+      assert.equal(decodeMcpToolResult(parity).nativeSessionId, after.nativeSessionId)
+      assert.equal(decodeMcpToolResult(parity).desiredMode, 'regular')
+      assert.deepEqual(decodeMcpToolResult(parity).capabilities.contextBudgets, after.capabilities.contextBudgets)
+      assert.equal(decodeMcpToolResult(parity).capabilities.contextBudgetReason, after.capabilities.contextBudgetReason)
       const target = { conversationId: row.conversationId, ...(row.workspaceId ? { workspaceId: row.workspaceId } : {}) }
       const write = await client.callTool({ name: `${row.role}_chat_controls_update`, arguments: { ...target,
-        request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: parity.structuredContent.revision } } })
+        request: { kind: 'mode', mode: 'plan', requestId: randomUUID(), expectedRevision: decodeMcpToolResult(parity).revision } } })
       assert.ok(!write.isError)
       assert.equal((await read(row)).desiredMode, 'plan')
       const restore = await read(row)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -61,22 +62,22 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     expect(deniedRequest.isError).toBe(true)
     expect(JSON.stringify(deniedRequest.content)).toContain('ACCESS_DENIED')
     const listed = async (harness: 'codex') => HarnessMcpListResultSchema.parse(
-      (await client.callTool({ name: 'harness_mcp_servers_list', arguments: { harness } })).structuredContent)
+      decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_servers_list', arguments: { harness } }))))
     for (const harness of ['codex'] as const) {
       for (const preset of ['graphql', 'linear'] as const) {
         const before = await listed(harness)
         expect(before.presets?.[preset]).toBe('missing')
         const args = { harness, preset, installed: true, expectedRevision: before.revision, commandId: randomUUID() }
         // The delegated Operator applies the preset itself: no human review step.
-        const applied = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args })).structuredContent)
+        const applied = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args }))))
         expect(applied).toMatchObject({ status: 'applied', managedPreset: preset })
-        expect(HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args })).structuredContent)).toEqual(applied)
+        expect(HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: args }))))).toEqual(applied)
         await expect(client.callTool({ name: 'harness_mcp_change_request', arguments: { harness, expectedRevision: before.revision,
           commandId: randomUUID(), change: { kind: 'add', name: 'graphql', connection: { transport: 'remote', url: endpoint } } } })).resolves.toMatchObject({ isError: true })
         const bearerDenied = await app.inject({ method: 'POST', url: '/api/management/harnesses/mcp/managed',
           headers: { authorization: `Bearer ${owner.token}` }, payload: args })
         expect(bearerDenied.statusCode).toBe(403)
-        expect(HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_change_get', arguments: { planId: applied.id } })).structuredContent).status).toBe('applied')
+        expect(HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_change_get', arguments: { planId: applied.id } })))).status).toBe('applied')
         const installedList = await listed(harness)
         expect(installedList.presets?.[preset]).toBe('installed')
         expect(installedList.servers.find((server) => server.name === (preset === 'graphql' ? 'foreman-code' : preset))?.endpoint)
@@ -87,7 +88,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         const original = structuredClone(snapshots[harness].user[name])
         for (const enabled of [false, true]) {
           const toggle = { harness, preset, enabled, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
-          const togglePlan = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: toggle })).structuredContent)
+          const togglePlan = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: toggle }))))
           expect(togglePlan.change).toEqual({ kind: 'enable', name, enabled })
           expect(togglePlan.status).toBe('applied')
           const toggled = await listed(harness)
@@ -96,7 +97,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
           expect(snapshots[harness].user[name]).toEqual({ ...original as object, enabled })
         }
         const removal = { harness, preset, installed: false, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
-        const removePlan = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: removal })).structuredContent)
+        const removePlan = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: removal }))))
         expect(removePlan).toMatchObject({ status: 'applied', change: { kind: 'remove' } })
         expect((await listed(harness)).presets?.[preset]).toBe('missing')
       }
@@ -106,8 +107,8 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       const before = await listed(harness)
       expect(before.presets?.graphql).toBe('legacy')
       expect(before.servers.find((server) => server.name === 'graphql-app')?.label).toBe('Legacy app connection · replaced by foreman-code')
-      const upgrade = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
-        harness, preset: 'graphql', installed: true, expectedRevision: before.revision, commandId: randomUUID() } })).structuredContent)
+      const upgrade = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
+        harness, preset: 'graphql', installed: true, expectedRevision: before.revision, commandId: randomUUID() } }))))
       expect(upgrade.status).toBe('applied')
       expect(Object.keys(snapshots[harness].user)).toEqual(['foreman-code'])
       expect((await listed(harness)).presets?.graphql).toBe('installed')
@@ -117,9 +118,9 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       snapshots[harness] = { ...snapshots[harness], user: oldUser, effective: structuredClone(oldUser),
         revision: fingerprint(oldUser), }
       expect((await listed(harness)).presets?.graphql).toBe('disabled')
-      const rename = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
+      const rename = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
         harness, preset: 'graphql', installed: true, expectedRevision: (await listed(harness)).revision, commandId: randomUUID(),
-      } })).structuredContent)
+      } }))))
       expect(rename).toMatchObject({ status: 'applied', change: { name: 'foreman-code' } })
       const renamed = await listed(harness)
       expect(renamed.presets?.graphql).toBe('disabled')

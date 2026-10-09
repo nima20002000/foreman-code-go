@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -118,18 +119,18 @@ it('saves one order through authenticated MCP, replays it and reads persisted se
     const readOnly = await f.connect('reader')
     const command = { commandId: 'save-order', updates: f.updates }
     expect((await client.listTools()).tools.map(tool => tool.name)).toContain('build_computers_update')
-    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({ requirements: expect.arrayContaining([
+    const capabilities = await client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({ requirements: expect.arrayContaining([
       expect.objectContaining({ name: 'build_computers_update', actions: ['settings:update'] }),
     ]) })
-    const saved = BuildComputerBatchResultSchema.parse((await client.callTool({
+    const saved = BuildComputerBatchResultSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'build_computers_update', arguments: command,
-    })).structuredContent)
+    }))))
     expect(saved.computers.map(status => status.preference)).toEqual(f.updates.map(({ expectedRevision, ...change }) => ({
       ...change, revision: expectedRevision + 1,
     })))
     const replay = await client.callTool({ name: 'build_computers_update', arguments: command })
-    expect(replay.structuredContent).toEqual(saved)
+    expect(decodeMcpToolResult(replay)).toEqual(saved)
     expect(f.changed).toHaveBeenCalledTimes(1)
     expect((await readOnly.listTools()).tools.map(tool => tool.name)).not.toContain('build_computers_update')
     const denied = await readOnly.callTool({ name: 'build_computers_update', arguments: command })
@@ -138,8 +139,7 @@ it('saves one order through authenticated MCP, replays it and reads persisted se
     const scopedClient = await f.connect('scoped')
     expect((await scopedClient.callTool({ name: 'build_computers_update', arguments: command })).isError).toBe(true)
     for (const status of saved.computers) {
-      expect((await readOnly.callTool({ name: 'build_computer_get', arguments: { target: status.preference.target } }))
-        .structuredContent).toEqual(status)
+      expect(decodeMcpToolResult((await readOnly.callTool({ name: 'build_computer_get', arguments: { target: status.preference.target } })))).toEqual(status)
     }
     expect(f.audits).toContainEqual({ principal: 'owner', source: 'mcp', action: 'build.computers.update', outcome: 'succeeded' })
     expect(f.audits).toContainEqual({ principal: 'reader', source: 'mcp', action: 'build_computers_update', outcome: 'denied' })

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
@@ -67,17 +68,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('saved workflow artifact declara
       expect(saveTool.description).toContain('canonical publication proof')
       const savedCall = await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input })
       expect(savedCall.isError, JSON.stringify(savedCall)).not.toBe(true)
-      const saved = CurrentWorkflowSaveResultSchema.parse(savedCall.structuredContent)
+      const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(savedCall))
       expect(saved.value.version.definition.nodes[0]).toMatchObject({ artifactOutputs: artifact })
       expect(saved.value.version.definition.edges[0]).toMatchObject({ artifactInputs: artifact })
-      const retry = CurrentWorkflowSaveResultSchema.parse((await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input })).structuredContent)
+      const retry = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult((await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: input }))))
       expect(retry.value).toEqual(saved.value); expect(retry.replayed).toBe(true)
       const headers = { authorization: `Bearer ${f.owner.token}` }
       const http = await app.inject({ method: 'GET', url: path, headers })
       expect(http.statusCode, http.body).toBe(200)
       const mcpRead = await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })
       expect(mcpRead.isError).not.toBe(true)
-      expect(CurrentWorkflowReadResultSchema.parse(mcpRead.structuredContent)).toEqual(http.json())
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(mcpRead))).toEqual(http.json())
       const editedArtifact = { version: 1 as const, outputKeys: ['report_v2'] }
       const edit = { ...input, commandId: randomUUID(), expectedRevision: saved.value.revision, expectedWorkflowVersionId: saved.value.currentVersionId,
         graph: { ...saved.value.version.definition, nodes: [{ ...graph.nodes[0]!, artifactOutputs: editedArtifact }, graph.nodes[1]!],
@@ -88,7 +89,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('saved workflow artifact declara
       expect(edited.value.currentVersionId).not.toBe(saved.value.currentVersionId)
       expect(edited.value.version.contentHash).not.toBe(saved.value.version.contentHash)
       const historical = await owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: { ...scope, workflowVersionId: saved.value.currentVersionId } })
-      expect(CurrentWorkflowReadResultSchema.parse(historical.structuredContent).version).toEqual(saved.value.version)
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(historical)).version).toEqual(saved.value.version)
       const foreign = await f.access.issue({ name: 'Foreign workspace writer', audience: 'operator', expiresAt: new Date(Date.now() + 60_000),
         grants: [{ actions: f.owner.principal.grants[0]!.actions, scope: { workspaceIds: ['foreign-workspace'] } }] })
       const foreignClient = await connect(foreign.token)
@@ -102,10 +103,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('saved workflow artifact declara
       expect((await reader.listTools()).tools.some(tool => tool.name === CURRENT_WORKFLOW_TOOLS.save)).toBe(false)
       expect((await app.inject({ method: 'PUT', url: path, headers: { authorization: `Bearer ${readOnly.token}` }, payload: edit })).statusCode).toBe(403)
       const readerResult = await reader.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })
-      expect(CurrentWorkflowReadResultSchema.parse(readerResult.structuredContent).version).toEqual(edited.value.version)
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(readerResult)).version).toEqual(edited.value.version)
       await f.db.pool.query('update management_principals set revoked_at=now() where id=$1', [f.owner.principal.id])
       await expect(owner.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })).rejects.toThrow()
-      expect(CurrentWorkflowReadResultSchema.parse((await reader.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })).structuredContent).version).toEqual(edited.value.version)
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult((await reader.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })))).version).toEqual(edited.value.version)
       expect((await f.db.pool.query('select record from workflow_versions where id=$1', [saved.value.currentVersionId])).rows[0].record).toEqual(saved.value.version)
     } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close(); await f.db.close() }
   }, 60_000)

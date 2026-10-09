@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, writeFile } from 'node:fs/promises'
@@ -78,17 +79,17 @@ it('lists, reads, installs and removes Codex plugins through authenticated MCP w
     const operator = await connect(delegated.token)
     expect((await operator.listTools()).tools.map((tool) => tool.name)).toContain('codex_plugin_change')
     const list = async (view: 'installed' | 'available') => CodexPluginListResultSchema.parse(
-      (await allowed.callTool({ name: 'codex_plugins_list', arguments: { view } })).structuredContent)
+      decodeMcpToolResult((await allowed.callTool({ name: 'codex_plugins_list', arguments: { view } }))))
     expect((await list('available')).items.map((plugin) => plugin.pluginId)).toEqual(['notes@trusted'])
-    expect(CodexPluginDetailResultSchema.parse((await allowed.callTool({ name: 'codex_plugin_get',
-      arguments: { pluginId: item.pluginId } })).structuredContent).contents).toEqual({ status: 'unknown' })
+    expect(CodexPluginDetailResultSchema.parse(decodeMcpToolResult((await allowed.callTool({ name: 'codex_plugin_get',
+      arguments: { pluginId: item.pluginId } })))).contents).toEqual({ status: 'unknown' })
     const before = await list('available')
     const input = { pluginId: item.pluginId, action: 'install' as const, expectedRevision: before.revision, artifactIdentity: (await plugins.get(owner.principal, item.pluginId)).artifactIdentity, commandId: randomUUID() }
     const readerChange = await allowed.callTool({ name: 'codex_plugin_change', arguments: input })
     expect(readerChange.isError).toBe(true)
     expect(JSON.stringify(readerChange.content)).toContain('ACCESS_DENIED')
     // The delegated Operator installs the plugin itself: no human browser step. The same command never repeats.
-    const change = async () => CodexPluginChangeResultSchema.parse((await operator.callTool({ name: 'codex_plugin_change', arguments: input })).structuredContent)
+    const change = async () => CodexPluginChangeResultSchema.parse(decodeMcpToolResult((await operator.callTool({ name: 'codex_plugin_change', arguments: input }))))
     expect((await change()).status).toBe('applied')
     expect((await change()).status).toBe('applied')
     expect(changes).toBe(1)
@@ -96,8 +97,8 @@ it('lists, reads, installs and removes Codex plugins through authenticated MCP w
     expect(audit.rows.length).toBeGreaterThan(0)
     expect(new Set(audit.rows.map((row) => row.source))).toEqual(new Set(['mcp']))
     expect((await list('installed')).items).toMatchObject([{ pluginId: item.pluginId, installed: true }])
-    expect(CodexPluginDetailResultSchema.parse((await allowed.callTool({ name: 'codex_plugin_get',
-      arguments: { pluginId: item.pluginId } })).structuredContent).contents).toEqual({ status: 'known', skills: ['summarize'], hooks: [], mcpServers: ['notes'], apps: [] })
+    expect(CodexPluginDetailResultSchema.parse(decodeMcpToolResult((await allowed.callTool({ name: 'codex_plugin_get',
+      arguments: { pluginId: item.pluginId } })))).contents).toEqual({ status: 'known', skills: ['summarize'], hooks: [], mcpServers: ['notes'], apps: [] })
     const removal = { pluginId: item.pluginId, action: 'remove' as const, expectedRevision: (await list('installed')).revision, artifactIdentity: (await plugins.get(owner.principal, item.pluginId)).artifactIdentity, commandId: randomUUID() }
     expect((await plugins.change(owner.principal, removal)).status).toBe('applied')
     expect((await list('available')).items).toHaveLength(1)

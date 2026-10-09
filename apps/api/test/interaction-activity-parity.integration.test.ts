@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../src/app.js'
@@ -40,7 +41,7 @@ it.skipIf(!postgresEnabled)('reads one persisted interaction activity through au
     const mcp = await client.callTool({ name: 'interaction_get', arguments: { interactionId: f.interaction.id } })
     expect(mcp.isError).not.toBe(true)
     const activity = http.json().activity
-    expect(mcp.structuredContent).toMatchObject({ activity })
+    expect(decodeMcpToolResult(mcp)).toMatchObject({ activity })
     const persisted = await f.repository.get(f.interaction.id)
     expect(activity).toMatchObject({ interactionId: persisted!.id, revision: String(persisted!.revision),
       phase: 'needs_answer', nativeDelivery: 'not_started', answerRecorded: false,

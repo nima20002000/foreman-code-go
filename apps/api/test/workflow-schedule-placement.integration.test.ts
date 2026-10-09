@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -51,23 +52,23 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       const input = { ...f.command(0), schedule: { ...sch11Once, localDate: '2099-01-01' } }
       const created = await owner.callTool({ name: 'workflow_schedule_save', arguments: input })
       expect(created.isError).not.toBe(true)
-      const saved = ScheduleSaveResultSchema.parse(created.structuredContent).value
+      const saved = ScheduleSaveResultSchema.parse(decodeMcpToolResult(created)).value
       const approved = await owner.callTool({ name: 'source_get', arguments: {
         workspaceId: f.scope.workspaceId, ...placement.source,
       } })
       expect(approved.isError).not.toBe(true)
-      expect(ApprovedSourceSchema.parse(approved.structuredContent).manifest.manifestDigest).toBe(placement.source.manifestDigest)
+      expect(ApprovedSourceSchema.parse(decodeMcpToolResult(approved)).manifest.manifestDigest).toBe(placement.source.manifestDigest)
       const bound = await owner.callTool({ name: 'source_root_get', arguments: {
         workspaceId: f.scope.workspaceId, rootId: placement.root.binding.rootId,
         bindingRevision: placement.root.binding.bindingRevision,
       } })
       expect(bound.isError).not.toBe(true)
-      expect(SourceRootRecordSchema.parse(bound.structuredContent)).toEqual(placement.root)
+      expect(SourceRootRecordSchema.parse(decodeMcpToolResult(bound))).toEqual(placement.root)
       const profiles = await owner.callTool({ name: 'harness_instances_list', arguments: {
         hostRef: placement.policy.hostRef, applicationInstallationId: placement.policy.applicationInstallationId,
       } })
       expect(profiles.isError).not.toBe(true)
-      expect(HostHarnessOverrideListSchema.parse(profiles.structuredContent).overrides).toHaveLength(placement.harness.settings.length)
+      expect(HostHarnessOverrideListSchema.parse(decodeMcpToolResult(profiles)).overrides).toHaveLength(placement.harness.settings.length)
       expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('source_get')
       const sourceOutsider = await f.issue(['sources:read', 'capabilities:read'], randomUUID())
       const sourceReader = await connect(sourceOutsider.token)
@@ -105,7 +106,7 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       await dispatcher.dispatch(saved)
       const history = await reader.callTool({ name: 'workflow_schedule_occurrences_list', arguments: f.scope })
       expect(history.isError).not.toBe(true)
-      const page = ScheduleOccurrencePageSchema.parse(history.structuredContent)
+      const page = ScheduleOccurrencePageSchema.parse(decodeMcpToolResult(history))
       expect(page.items).toEqual([expect.objectContaining({ dueAt: saved.nextOccurrenceAt,
         status: 'rejected', reason })])
       const http = await app.inject({ method: 'GET', url: `${root}/occurrences`,
@@ -115,7 +116,7 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       expect((await f.current())?.nextOccurrenceAt).toBeNull()
       const readback = await reader.callTool({ name: 'workflow_schedule_get', arguments: f.scope })
       expect(readback.isError).not.toBe(true)
-      expect(ScheduleGetResultSchema.parse(readback.structuredContent).schedule).toEqual(await f.current())
+      expect(ScheduleGetResultSchema.parse(decodeMcpToolResult(readback)).schedule).toEqual(await f.current())
       expect(await f.countRuns()).toBe(0)
       await f.dispatcher(async (principal, start, schedule) => {
         await admitRepeatRun(database.pool, f.locations, principal, 'schedule', start,

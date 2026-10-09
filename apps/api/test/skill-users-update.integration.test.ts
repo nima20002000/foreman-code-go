@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir } from 'node:fs/promises'
@@ -63,7 +64,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
     const call = async <T>(name: string, schemaValue: z.ZodType<T>, args: Record<string, unknown> = {}) => {
       const response = await client.callTool({ name, arguments: args })
       expect(response.isError, JSON.stringify(response)).not.toBe(true)
-      return schemaValue.parse(response.structuredContent)
+      return schemaValue.parse(decodeMcpToolResult(response))
     }
     const workspace = (await call('workspace_create', c.ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Skills' })).value
     const workspaceId = workspace.workspace.id

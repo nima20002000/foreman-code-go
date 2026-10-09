@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -158,12 +159,12 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     mcp(owner, 'tools/call', { name, arguments: input })
   function success(result: McpResult): unknown {
     assert.notEqual(result.isError, true, JSON.stringify(result))
-    assert.ok(result.structuredContent)
-    return result.structuredContent
+    assert.ok(decodeMcpToolResult(result))
+    return decodeMcpToolResult(result)
   }
   function failure(result: McpResult): string {
     assert.equal(result.isError, true, JSON.stringify(result))
-    assert.equal(result.structuredContent, undefined, 'Errors must not violate the success output schema')
+    assert.equal(decodeMcpToolResult(result), undefined, 'Errors must not violate the success output schema')
     const text = result.content?.find((item) => item.type === 'text')?.text
     assert.ok(text)
     return (JSON.parse(text) as { error: { code: string } }).error.code

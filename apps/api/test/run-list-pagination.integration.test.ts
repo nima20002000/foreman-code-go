@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -36,7 +37,7 @@ async function page(f: Fixture, r: Reader, input: ListInput) {
   expect(http.statusCode, http.body).toBe(200)
   const mcp = await r.client.callTool({ name: 'run_list', arguments: input })
   expect(mcp.isError, JSON.stringify(mcp)).not.toBe(true)
-  const result = SavedRunPageSchema.parse(mcp.structuredContent)
+  const result = SavedRunPageSchema.parse(decodeMcpToolResult(mcp))
   expect(http.json()).toEqual(result)
   expect(result.items.every((run) => run.executionLocation === undefined
     && run.authorizationPrincipalId === undefined)).toBe(true)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -101,7 +102,7 @@ describe.skipIf(!postgresEnabled)('trusted connections through the production Ma
       const client = await f.call(f.owner.token)
       const tools = (await client.listTools()).tools.map(tool => tool.name)
       for (const suffix of ['host_discover', 'read', 'inspect', 'check', 'configure']) expect(tools).toContain(`device_connection_${suffix}`)
-      expect((await client.callTool({ name: 'device_connection_read', arguments: { deviceId } })).structuredContent).toEqual(read.json())
+      expect(decodeMcpToolResult((await client.callTool({ name: 'device_connection_read', arguments: { deviceId } })))).toEqual(read.json())
       const outsider = await f.access.issue({ name: 'Denied scoped caller', audience: 'operator',
         grants: [{ actions: ['settings:read', 'settings:update'], scope: { workspaceIds: ['another-workspace'] } }], expiresAt: new Date(Date.now() + 600_000) })
       const reader = await f.access.issue({ name: 'Read-only caller', audience: 'operator',
@@ -126,17 +127,17 @@ describe.skipIf(!postgresEnabled)('trusted connections through the production Ma
       expect((await readerClient.callTool({ name: 'device_connection_configure', arguments: pending.action })).isError).toBe(true)
       const applied = await client.callTool({ name: 'device_connection_configure', arguments: pending.action })
       expect(applied.isError, JSON.stringify(applied.content)).not.toBe(true)
-      expect(applied.structuredContent).toMatchObject({ approvedBy: f.owner.principal.id, revision: 1, automaticSudo: false, grantsAgentPermissions: false })
-      expect((await client.callTool({ name: 'device_connection_configure', arguments: pending.action })).structuredContent).toEqual(applied.structuredContent)
+      expect(decodeMcpToolResult(applied)).toMatchObject({ approvedBy: f.owner.principal.id, revision: 1, automaticSudo: false, grantsAgentPermissions: false })
+      expect(decodeMcpToolResult((await client.callTool({ name: 'device_connection_configure', arguments: pending.action })))).toEqual(decodeMcpToolResult(applied))
       const persisted = await f.app.inject({ method: 'POST', url: '/api/devices/connection-read', headers: browser, payload: { deviceId } })
       expect(persisted.statusCode, persisted.body).toBe(200)
-      expect(persisted.json().consent).toEqual(applied.structuredContent)
-      expect((await client.callTool({ name: 'device_connection_read', arguments: { deviceId } })).structuredContent).toEqual(persisted.json())
+      expect(persisted.json().consent).toEqual(decodeMcpToolResult(applied))
+      expect(decodeMcpToolResult((await client.callTool({ name: 'device_connection_read', arguments: { deviceId } })))).toEqual(persisted.json())
       const approvalRead = await f.app.inject({ method: 'GET', url: `/api/devices/connection-approvals/${pending.id}`, headers: browser })
       expect(approvalRead.statusCode, approvalRead.body).toBe(200)
       expect(approvalRead.json().state).toBe('consumed')
       const receipts = await f.db.pool.query("select result from management_command_receipts where operation='device.trusted-connection.configure' and command_id=$1", [pending.action.commandId])
-      expect(receipts.rows).toEqual([{ result: applied.structuredContent }])
+      expect(receipts.rows).toEqual([{ result: decodeMcpToolResult(applied) }])
       const audit = await f.db.pool.query("select outcome from management_audit where action='device.trusted-connection.configure'")
       expect(audit.rows.filter(row => row.outcome === 'succeeded')).toHaveLength(1)
       expect(audit.rows.filter(row => row.outcome === 'failed')).toHaveLength(1)

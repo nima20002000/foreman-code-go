@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../src/app.js'
@@ -55,10 +56,10 @@ describe.skipIf(!postgresEnabled)('current review failure ownership and cleanup'
       expect((await forbidden.callTool({ name: 'run_get', arguments: input })).isError).toBe(true)
       const read = await allowed.callTool({ name: 'run_get', arguments: input })
       expect(read.isError).not.toBe(true)
-      expect(read.structuredContent).toMatchObject({ run: { stopCause: { reviewJobId: f.job.id } }, cleanupPending: true })
+      expect(decodeMcpToolResult(read)).toMatchObject({ run: { stopCause: { reviewJobId: f.job.id } }, cleanupPending: true })
       const detail = await allowed.callTool({ name: 'interaction_get', arguments: { interactionId: f.interaction.id } })
       expect(detail.isError).not.toBe(true)
-      expect(detail.structuredContent).toMatchObject({ review: { state: 'failed', reviewJobId: f.job.id, cleanupPending: true } })
+      expect(decodeMcpToolResult(detail)).toMatchObject({ review: { state: 'failed', reviewJobId: f.job.id, cleanupPending: true } })
     } finally { await Promise.allSettled(clients.map((c) => c.close())); await app.close(); await f.close(); await other.close() }
   }, 60000)
 

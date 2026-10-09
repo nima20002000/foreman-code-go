@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '../packages/contracts/dist/operatorMcp.js'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -253,8 +254,7 @@ async function main() {
   const call = async (client, name, args = {}) => {
     const result = await client.callTool({ name, arguments: args })
     assert.ok(!result.isError, `${name}: ${JSON.stringify(result.content)}`)
-    assert.ok(result.structuredContent, `${name} did not return structured content`)
-    return result.structuredContent
+    return decodeMcpToolResult(result)
   }
   let writer
   let writerCredential

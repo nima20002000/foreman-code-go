@@ -1,13 +1,11 @@
+import { decodeMcpToolResult } from '../../packages/contracts/dist/operatorMcp.js'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 
 function check(value, code) { if (!value) throw Object.assign(new Error('Acceptance check failed.'), { code }) }
 function payload(result) {
   check(!result.isError, 'MCP_READ_FAILED')
-  if (result.structuredContent !== undefined) return result.structuredContent
-  const text = result.content?.find((part) => part.type === 'text')?.text
-  check(typeof text === 'string', 'MCP_RESULT_MISSING')
-  return JSON.parse(text)
+  return decodeMcpToolResult(result)
 }
 function stableWorkspace(item) {
   return { workspace: item.workspace, revision: item.revision, archivedAt: item.archivedAt,

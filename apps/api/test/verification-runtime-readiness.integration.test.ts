@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { z } from 'zod'
@@ -43,7 +44,7 @@ it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consi
       },
     } })
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-    const profile = z.object({ profile: JobVerificationProfileSchema }).parse(result.structuredContent).profile
+    const profile = z.object({ profile: JobVerificationProfileSchema }).parse(decodeMcpToolResult(result)).profile
     const qualified = await f.qualify(profile)
     const fingerprint = qualified.measurement!.fingerprint
     const snapshots = async () => (await f.database.pool.query(
@@ -54,7 +55,7 @@ it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consi
     const choices = async () => {
       const response = await reader.callTool({ name: 'job_choices_get', arguments: { workspaceId } })
       expect(response.isError, JSON.stringify(response.content)).not.toBe(true)
-      const mcp = JobAuthoringChoicesRecordSchema.parse(response.structuredContent)
+      const mcp = JobAuthoringChoicesRecordSchema.parse(decodeMcpToolResult(response))
       const http = await app.inject({ method: 'GET', url: `/api/management/workspaces/${workspaceId}/jobs/choices`,
         headers: { authorization: `Bearer ${f.reader.token}` } })
       expect(http.statusCode, http.body).toBe(200)
@@ -67,7 +68,7 @@ it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consi
     expect(await choices()).toMatchObject({ ready: false })
     const read = await reader.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId } })
     expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-    expect(JobRuntimeProfileListRecordSchema.parse(read.structuredContent).profiles
+    expect(JobRuntimeProfileListRecordSchema.parse(decodeMcpToolResult(read)).profiles
       .find(value => value.profile.id === profile.id)).toEqual({
       profile: qualified, ready: false, reasons: ['context_changed'], sideEffects: false,
     })

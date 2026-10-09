@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { fork, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
@@ -202,7 +203,7 @@ describe('workspace project folder compensation through authenticated MCP', () =
       const [message] = await once(restarted, 'message')
       expect(message.phase).toBe('completed')
       expect(message.result.isError).not.toBe(true)
-      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(message.result))
       expect(saved.replayed).toBe(false)
       expect(saved.value.workspace.name).toBe(name)
       expect(await completion).toEqual([0, null])
@@ -287,7 +288,7 @@ publish().catch(error => { console.error(error); process.exitCode = 1 })
       const [message] = await once(restarted, 'message')
       expect(message.phase).toBe('completed')
       expect(message.result.isError).not.toBe(true)
-      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(message.result.structuredContent)
+      const saved = contracts.ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(message.result))
       expect(saved.value.workspace.name).toBe(name)
       expect(await completion).toEqual([0, null])
       expect((await f.pool.query('select id from workspace_project_provisioning')).rows).toEqual([])

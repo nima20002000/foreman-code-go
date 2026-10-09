@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -120,7 +121,7 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
     expect(stored).toMatchObject({ selectedOptionId: input.optionId, status: 'delivery_pending', deliveryState: 'pending' })
     const readback = await client.callTool({ name: 'interaction_get', arguments: { interactionId: interaction.id } })
     expect(readback.isError).not.toBe(true)
-    expect(JSON.stringify(readback.structuredContent)).toContain(input.optionId)
+    expect(JSON.stringify(decodeMcpToolResult(readback))).toContain(input.optionId)
     expect(f.counts().responses).toBe(previousReviewerId ? 1 : 0)
     const provider = f.providers.get(binding.execution.id)!
     provider.completeReview(job!.correlationId, job!.nativeSessionId)

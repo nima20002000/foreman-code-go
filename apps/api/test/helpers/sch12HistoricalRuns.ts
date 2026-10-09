@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -159,8 +160,8 @@ export async function openHistoricalApi(f: HistoricalFixture) {
 
 export function toolValue(result: { isError?: boolean | undefined; structuredContent?: unknown }): unknown {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
-  expect(result.structuredContent).toBeDefined()
-  return result.structuredContent
+  expect(decodeMcpToolResult(result)).toBeDefined()
+  return decodeMcpToolResult(result)
 }
 
 export function snapshotPath(target: RunTarget) {

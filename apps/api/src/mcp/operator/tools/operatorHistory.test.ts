@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
@@ -50,8 +51,8 @@ it('discovers and invokes owned chat deletion and restoration through authentica
     const names = ['operator_chat_delete', 'operator_chat_restore']
     const tools = (await ownerClient.listTools()).tools
     expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining(names))
-    const capabilities = await ownerClient.callTool({ name: 'operator_get_capabilities', arguments: {} })
-    expect(capabilities.structuredContent).toMatchObject({
+    const capabilities = await ownerClient.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })
+    expect(decodeMcpToolResult(capabilities)).toMatchObject({
       tools: expect.arrayContaining(names),
       requirements: expect.arrayContaining(names.map(name => expect.objectContaining({
         name, actions: ['operator_chat:write'],
@@ -61,7 +62,7 @@ it('discovers and invokes owned chat deletion and restoration through authentica
       const input = { conversationId: 'owned-chat', commandId: `${name}-command` }
       const result = await ownerClient.callTool({ name, arguments: input })
       expect(result.isError).not.toBe(true)
-      expect(result.structuredContent).toEqual({ conversationId: 'owned-chat' })
+      expect(decodeMcpToolResult(result)).toEqual({ conversationId: 'owned-chat' })
       expect(setDeleted).toHaveBeenLastCalledWith('owned-chat', owner, deleted, {
         commandId: input.commandId, source: 'mcp',
       })

@@ -17,6 +17,8 @@ import { registerSourceTools } from '../../modules/sources/mcp.js'
 import { registerFileReferenceTools } from './tools/fileReferences.js'
 import { McpServer } from '@modelcontextprotocol/server'
 import { paginateToolLists } from '../toolListPagination.js'
+import { installOperatorPresentation, type OperatorCatalog } from './presentation.js'
+import { registerToolSchemaLookup } from './tools/toolSchema.js'
 
 import type { OperatorRequestContext } from './types.js'
 import { registerAgentTools } from './tools/agents.js'
@@ -41,11 +43,12 @@ import { registerFileRetentionTools } from './tools/fileRetention.js'
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
   paginateToolLists(server)
-  registerOperatorTools(server, context)
+  const catalog = installOperatorPresentation(server)
+  registerOperatorTools(server, context, catalog)
   return server
 }
 
-export function registerOperatorTools(server: McpServer, context: OperatorRequestContext): void {
+export function registerOperatorTools(server: McpServer, context: OperatorRequestContext, catalog?: OperatorCatalog): void {
   if (context.services.resourceTelemetry) {
     const audit = (tool: string) => ({ record: (principalId: string, source: 'http' | 'mcp', selectorKey: string) =>
       context.services.commands.recordDenied(principalId, source, tool, selectorKey) })
@@ -63,7 +66,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerDeviceOperatorTools(server, context)
   if (context.services.trustedConnections) registerTrustedConnectionTools(server, context.services.trustedConnections, context.principal)
   registerFileReferenceTools(server, context)
-  registerContextTools(server, context)
+  registerContextTools(server, context, catalog)
   registerHarnessTools(server, context)
   registerHarnessMcpTools(server, context)
   registerClaudePluginTools(server, context)
@@ -88,4 +91,5 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   if (context.services.runGraph) registerRunGraphTools(server, context, context.services.runGraph)
   registerInteractionTools(server, context)
   registerExtendedOperatorTools(server, context)
+  registerToolSchemaLookup(server, context, catalog)
 }

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createHash, randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
@@ -161,7 +162,7 @@ it.each([
         if (scenario === 'management') {
           const result = transport.results[0]!.result as { isError?: boolean; structuredContent: { value: { workspace: { id: string } } } }
           expect(result.isError).not.toBe(true)
-          const id = result.structuredContent.value.workspace.id
+          const id = decodeMcpToolResult(result).value.workspace.id
           const read = await graphRpc(app, owner.token, 'tools/call', { name: 'workspace_get', arguments: { workspaceId: id } })
           expect(graphRpcValue(read.result)).toMatchObject({ workspace: { id, name: arguments_.name } })
           expect((await pool.query('select record from workspaces where id=$1', [id])).rows[0]?.record)

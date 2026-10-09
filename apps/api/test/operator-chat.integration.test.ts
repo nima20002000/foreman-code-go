@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SessionControlStore } from '../src/modules/conversations/sessionControls/store.js'
 import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { CLAUDE_FULL_ACCESS_REQUIRED, type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
@@ -272,7 +273,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
           { authProvider: { token: async () => writer.token } }))
         const mcp = await client.callTool({ name: 'operator_chat_controls_get', arguments: { conversationId: conversation.id } })
         expect(mcp.isError).not.toBe(true)
-        expect(SessionControlStateSchema.parse(mcp.structuredContent)).toEqual(SessionControlStateSchema.parse(http.json()))
+        expect(SessionControlStateSchema.parse(decodeMcpToolResult(mcp))).toEqual(SessionControlStateSchema.parse(http.json()))
         expect((await app.inject({ method: 'GET', url,
           headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
         await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
@@ -472,27 +473,27 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       await limited.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
         { authProvider: { token: async () => denied.token } }))
       const target = { conversationId: conversation.id }
-      const before = SessionControlStateSchema.parse((await client.callTool({
-        name: 'operator_chat_controls_get', arguments: target })).structuredContent)
+      const before = SessionControlStateSchema.parse(decodeMcpToolResult((await client.callTool({
+        name: 'operator_chat_controls_get', arguments: target }))))
       expect(before.context?.usedTokens).toBe(150000)
       const preferences = SessionPreferencesSchema.parse({ contextBudget: 100000 })
       const request = { kind: 'save-default', preferences, expectedRevision: before.revision, requestId: randomUUID() }
       const result = await client.callTool({ name: 'operator_chat_controls_update', arguments: { ...target, request } })
       expect(result.isError).not.toBe(true)
-      const saved = SessionControlStateSchema.parse(result.structuredContent)
+      const saved = SessionControlStateSchema.parse(decodeMcpToolResult(result))
       expect(saved.defaults).toEqual(preferences)
       expect(saved.desired).toEqual(before.desired)
-      const deniedBefore = SessionControlStateSchema.parse((await limited.callTool({
-        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } })).structuredContent)
+      const deniedBefore = SessionControlStateSchema.parse(decodeMcpToolResult((await limited.callTool({
+        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } }))))
       await expectMcpAccessDenied(limited.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: deniedConversation.id,
         request: { ...request, expectedRevision: 0, requestId: randomUUID(),
           preferences: SessionPreferencesSchema.parse({ contextBudget: 200000 }) } } }))
-      const deniedAfter = SessionControlStateSchema.parse((await limited.callTool({
-        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } })).structuredContent)
+      const deniedAfter = SessionControlStateSchema.parse(decodeMcpToolResult((await limited.callTool({
+        name: 'operator_chat_controls_get', arguments: { conversationId: deniedConversation.id } }))))
       expect(deniedAfter.defaults).toEqual(deniedBefore.defaults)
       expect(deniedAfter.revision).toBe(deniedBefore.revision)
-      const persisted = SessionControlStateSchema.parse((await client.callTool({
-        name: 'operator_chat_controls_get', arguments: target })).structuredContent)
+      const persisted = SessionControlStateSchema.parse(decodeMcpToolResult((await client.callTool({
+        name: 'operator_chat_controls_get', arguments: target }))))
       expect(persisted.defaults).toEqual(preferences)
       const headers = { authorization: `Bearer ${writer.token}` }
       const url = `/api/operator/conversations/${conversation.id}/session-controls`
@@ -617,7 +618,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         }))
         const recovered = await client.callTool({ name: 'operator_chat_controls_get', arguments: { conversationId: conversation.id } })
         expect(recovered.isError).not.toBe(true)
-        expect(SessionControlStateSchema.parse(recovered.structuredContent).compaction?.status).toBe('completed')
+        expect(SessionControlStateSchema.parse(decodeMcpToolResult(recovered)).compaction?.status).toBe('completed')
         const denied = await client.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: conversation.id,
           request: { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision } } })
         expect(denied.isError).toBe(true)
@@ -728,7 +729,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const request = { kind: 'compact', requestId: randomUUID(), expectedRevision: before.revision }
       const accepted = await client.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: conversation.id, request } })
       expect(accepted.isError).not.toBe(true)
-      const result = SessionControlStateSchema.parse(accepted.structuredContent)
+      const result = SessionControlStateSchema.parse(decodeMcpToolResult(accepted))
       expect(result.compaction?.status).toBe(testCase.status)
       expect(result.context).toMatchObject({ usedTokens: 100 })
       const refreshed = await app.inject({ method: 'GET', url: root, headers })
@@ -752,8 +753,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         const refusal = await deniedClient.callTool({ name: 'operator_chat_controls_update', arguments: { conversationId: conversation.id, request } })
         expect(refusal.isError).toBe(true)
       } finally { await deniedClient.close() }
-      const read = SessionControlStateSchema.parse((await client.callTool({ name: 'operator_chat_controls_get',
-        arguments: { conversationId: conversation.id } })).structuredContent)
+      const read = SessionControlStateSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'operator_chat_controls_get',
+        arguments: { conversationId: conversation.id } }))))
       expect(read.compaction?.status).toBe(testCase.status)
       const persisted = await pool.query<{ record: unknown }>(
         'select record from conversation_session_controls where conversation_id=$1', [conversation.id])
@@ -763,8 +764,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         await expect(chat.send(conversation.id, { requestId: randomUUID(), content: 'Too early' }, writer.principal))
           .rejects.toMatchObject({ code: 'SESSION_COMPACT_UNCONFIRMED' })
         confirmed = true
-        recovered = SessionControlStateSchema.parse((await client.callTool({ name: 'operator_chat_controls_get',
-          arguments: { conversationId: conversation.id } })).structuredContent)
+        recovered = SessionControlStateSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'operator_chat_controls_get',
+          arguments: { conversationId: conversation.id } }))))
         expect(recovered.compaction?.status).toBe('completed')
       }
       const plan = await chat.changeSessionControls(conversation.id,
@@ -908,7 +909,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const client = await connect(writer.token)
       const read = await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: source.id } })
       expect(read.isError, JSON.stringify(read)).not.toBe(true)
-      const state = read.structuredContent as OperatorConversationState
+      const state = decodeMcpToolResult(read) as OperatorConversationState
       expect(state.messages.map(message => [message.requestId, message.acceptedModel])).toEqual([
         [first.requestId, { harness: 'codex', model: first.settings.model }],
         [first.requestId, { harness: 'codex', model: first.settings.model }],
@@ -963,7 +964,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         return client
       }
       const client = await connect(['settings:read', 'settings:update', 'harnesses:read', 'harnesses:update'])
-      const read = async () => ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+      const read = async () => ManagedAgentDefaultsSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'agent_defaults_get', arguments: {} }))))
       const before = await read()
       const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
         operator: { ...before.value.operator, harness: configuration } } }
@@ -978,7 +979,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect(prepared).toHaveLength(0)
       const result = await client.callTool({ name: 'agent_defaults_update', arguments: input })
       expect(result.isError, JSON.stringify(result)).not.toBe(true)
-      const accepted = AgentDefaultsUpdateResultSchema.parse(result.structuredContent)
+      const accepted = AgentDefaultsUpdateResultSchema.parse(decodeMcpToolResult(result))
       expect((await read()).value.operator.harness).toEqual(configuration)
       expect((await read()).value.operator.harness).not.toHaveProperty('effort')
       expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'danger-full-access', tools: ['Read'] })
@@ -1116,11 +1117,11 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
         return client
       }
       client = await connect(['operator_chat:read', 'operator_chat:write', 'settings:read', 'settings:update', 'harnesses:read'])
-      const created = (await client.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })).structuredContent as { conversation: { id: string } }
+      const created = decodeMcpToolResult((await client.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } }))) as { conversation: { id: string } }
       sourceId = created.conversation.id
       await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId,
         request: { requestId: 'mcp-source', content: 'Remember the release details.' } } })
-      get = async (id: string) => (await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: id } })).structuredContent as OperatorConversationState
+      get = async (id: string) => decodeMcpToolResult((await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: id } }))) as OperatorConversationState
       await waitFor(async () => (await get(sourceId)).turnState === 'idle')
       source = await get(sourceId)
     })
@@ -1130,19 +1131,19 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     })
     it('offers the same fork through authenticated MCP with persisted readback and denied callers', async () => {
       expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['operator_chat_create', 'operator_chat_get', 'operator_chat_send']))
-      const defaults = (await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent as { revision: number; value: typeof DEFAULT_AGENT_DEFAULTS }
+      const defaults = decodeMcpToolResult((await client.callTool({ name: 'agent_defaults_get', arguments: {} }))) as { revision: number; value: typeof DEFAULT_AGENT_DEFAULTS }
       const target = { ...claudeConfiguration }
       const changed = await client.callTool({ name: 'agent_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: defaults.revision,
         value: { ...defaults.value, operator: { ...defaults.value.operator, harness: target } } } })
       expect(changed.isError).not.toBe(true)
       const request = { requestId: 'mcp-fork', content: 'Continue with Claude.', settings: operatorChatSettings(target), forkExpectedRevision: source.revision, defaultsRevision: defaults.revision + 1, configurationVersionId: source.conversation.operatorConfigurationVersionId }
-      const fork = (await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).structuredContent as { state: OperatorConversationState; replayed: boolean }
+      const fork = decodeMcpToolResult((await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } }))) as { state: OperatorConversationState; replayed: boolean }
       expect(fork.state.handoff?.parentConversationId).toBe(sourceId)
       expect(fork.state.conversation.id).toBe('operator-fork:mcp-fork')
       await waitFor(async () => (await get(fork.state.conversation.id)).turnState === 'idle')
       expect((await get(fork.state.conversation.id)).messages.some((message) => message.content === 'Continue with Claude.')).toBe(true)
       expect((await get(sourceId)).conversation.operatorConfigurationVersionId).toBe(source.conversation.operatorConfigurationVersionId)
-      expect(((await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } })).structuredContent as { replayed: boolean }).replayed).toBe(true)
+      expect((decodeMcpToolResult((await client.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } }))) as { replayed: boolean }).replayed).toBe(true)
       const delegated = await access.issue({ name: 'Bound handoff reader', audience: 'operator',
         grants: [{ actions: ['operator_handoff:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000) })
       await pool.query('insert into operator_chat_credentials(principal_id,conversation_id) values ($1,$2)',
@@ -1151,7 +1152,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => delegated.token } }))
       expect((await reader.listTools()).tools.map((tool) => tool.name)).toContain('operator_handoff_history_get')
       expect((await reader.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_chat_send')
-      const history = (await reader.callTool({ name: 'operator_handoff_history_get', arguments: {} })).structuredContent as { messages: Array<{ content: string }> }
+      const history = decodeMcpToolResult((await reader.callTool({ name: 'operator_handoff_history_get', arguments: {} }))) as { messages: Array<{ content: string }> }
       expect(history.messages.map((message) => message.content)).toContain('Remember the release details.')
       expect((await reader.callTool({ name: 'operator_handoff_history_get', arguments: { sourceConversationId: 'unrelated-chat' } })).isError).toBe(true)
       const denied = await connect(['operator_chat:read'])
@@ -1197,8 +1198,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       expect(await response.json()).toMatchObject({ status: 'configured', harness: 'claude', configurationVersionId: first.id })
       const client = new Client({ name: 'claude-setup-reader', version: '1' }); clients.push(client)
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => reader.token } }))
-      expect((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).structuredContent).toMatchObject({ status: 'configured', configurationVersionId: first.id })
-      const readback = ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })))).toMatchObject({ status: 'configured', configurationVersionId: first.id })
+      const readback = ManagedAgentDefaultsSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'agent_defaults_get', arguments: {} }))))
       expect(readback.value.operator.harnessProfileSelection).toEqual(selector)
       expect(readback.value.operator.harness).toMatchObject({ sandbox: 'danger-full-access' })
       const nextSelector = { ...selector, instanceId: randomUUID(), instanceRevision: '2' }
@@ -1403,22 +1404,22 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       }
       const client = await connect(['settings:read', 'settings:update', 'harnesses:read'])
       expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('operator_mcp_setup_get')
-      const read = async () => ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)
+      const read = async () => ManagedAgentDefaultsSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'agent_defaults_get', arguments: {} }))))
       const before = await read()
       expect(before.value.operator.harness).toMatchObject({ harness: 'codex', sandbox: 'danger-full-access' })
       expect(before.value.coder.harness).toMatchObject({ sandbox: 'read-only' })
       const input = { commandId: randomUUID(), expectedRevision: before.revision, value: { ...before.value,
         operator: { ...before.value.operator, showThinking: true,
           harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, model: 'gpt-5.4', reasoningEffort: 'high', sandbox: 'danger-full-access', serviceTier: 'priority' } } } }
-      const accepted = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent)
+      const accepted = AgentDefaultsUpdateResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'agent_defaults_update', arguments: input }))))
       expect(accepted.replayed).toBe(false)
       expect((await read()).value.operator).toEqual(accepted.value.value.operator)
       expect((await read()).value.operator.harness).toMatchObject({ sandbox: 'danger-full-access' })
       const conversation = await chat.create(owner)
       expect((await chat.get(conversation.id, owner)).settings).toEqual({ harness: 'codex', model: 'gpt-5.4', reasoningEffort: 'high', serviceTier: 'priority', showThinking: true })
-      expect(AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: input })).structuredContent).replayed).toBe(true)
+      expect(AgentDefaultsUpdateResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'agent_defaults_update', arguments: input })))).replayed).toBe(true)
       expect((await client.callTool({ name: 'agent_defaults_update', arguments: { ...input, commandId: randomUUID() } })).isError).toBe(true)
-      expect((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })).structuredContent).toMatchObject({ status: 'configured', harness: 'codex' })
+      expect(decodeMcpToolResult((await client.callTool({ name: 'operator_mcp_setup_get', arguments: {} })))).toMatchObject({ status: 'configured', harness: 'codex' })
       const denied = await connect(['settings:read'])
       expect((await denied.listTools()).tools.map((tool) => tool.name)).not.toContain('operator_mcp_setup_get')
       await expectMcpAccessDenied(denied.callTool({ name: 'operator_mcp_setup_get', arguments: {} }))
@@ -1985,7 +1986,7 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       const denied = await connect(reader.token)
       const created = await allowed.callTool({ name: 'operator_chat_create', arguments: { commandId: randomUUID() } })
       expect(created.isError, JSON.stringify(created)).not.toBe(true)
-      const conversationId = (created.structuredContent as { conversation: { id: string } }).conversation.id
+      const conversationId = (decodeMcpToolResult(created) as { conversation: { id: string } }).conversation.id
       const input = { requestId: 'mcp-terminal-request', content: 'Run once.' }
       const send = { name: 'operator_chat_send', arguments: { conversationId, request: input } }
       expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('operator_chat_send')
@@ -1996,12 +1997,12 @@ describe.skipIf(!connectionString)('Operator native terminal persistence', () =>
       void claude.result()
       await waitFor(async () => (await repository.active(conversationId))?.turn_state === 'uncertain')
       const get = () => allowed.callTool({ name: 'operator_chat_get', arguments: { conversationId } })
-      expect((await get()).structuredContent).toMatchObject({ activeRequestId: input.requestId, turnState: 'uncertain' })
+      expect(decodeMcpToolResult((await get()))).toMatchObject({ activeRequestId: input.requestId, turnState: 'uncertain' })
       expect((await repository.terminal(conversationId, input.requestId))?.closureState).toBe('closed')
-      expect((await allowed.callTool(send)).structuredContent).toMatchObject({ replayed: true })
+      expect(decodeMcpToolResult((await allowed.callTool(send)))).toMatchObject({ replayed: true })
       fault.mockRestore()
       await waitFor(async () => { await chat.reconcileActive(); return !(await repository.active(conversationId))?.active_request_id })
-      expect((await get()).structuredContent).toMatchObject({ activeRequestId: null,
+      expect(decodeMcpToolResult((await get()))).toMatchObject({ activeRequestId: null,
         lastResult: { outcome: 'succeeded', output: 'Saved native result.' } })
       const persisted = (await pool.query('select result from operator_conversation_turns where conversation_id=$1 and request_id=$2',
         [conversationId, input.requestId])).rows[0]?.result
@@ -2064,7 +2065,7 @@ describe.skipIf(!connectionString)('Operator chat Stop on Claude', () => {
       expect(claude.interrupts).toHaveLength(2)
       await waitFor(async () => { await chat.reconcileActive(); return !(await chat.get(conversation.id, owner)).activeRequestId })
       const read = await ownerClient.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
-      expect((read.structuredContent as OperatorConversationState).activeRequestId).toBeNull()
+      expect((decodeMcpToolResult(read) as OperatorConversationState).activeRequestId).toBeNull()
     } finally { await Promise.allSettled(clients.map(client => client.close())); await app.close() }
 
     await chat.send(conversation.id, { requestId: 'claude-after-stop', content: 'next' }, owner)

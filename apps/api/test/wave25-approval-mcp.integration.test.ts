@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -35,7 +36,7 @@ describe.skipIf(!postgresEnabled)('A4 authenticated App MCP with persisted Postg
     expect(replay.isError).not.toBe(true)
     const get = await client.callTool({ name: 'interaction_get', arguments: { interactionId: f.interaction.id } })
     expect(get.isError).not.toBe(true)
-    expect(JSON.stringify(get.structuredContent)).toContain(args.optionId)
+    expect(JSON.stringify(decodeMcpToolResult(get))).toContain(args.optionId)
     expect((await f.repository.get(f.interaction.id))?.revision).toBe(f.interaction.revision + 1)
     expect(f.writes()).toBe(0)
     const conflict = await client.callTool({ name: 'interaction_respond', arguments: { ...args, optionId: 'reject' } })

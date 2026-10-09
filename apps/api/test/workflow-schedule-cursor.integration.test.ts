@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -107,7 +108,7 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
     }
     const response = await caller.client.callTool({ name: `workflow_schedule_${operation}`, arguments: input })
     expect(response.isError).not.toBe(true)
-    return ScheduleSaveResultSchema.parse(response.structuredContent)
+    return ScheduleSaveResultSchema.parse(decodeMcpToolResult(response))
   }
   async function readBoth(client: Client) {
     const response = await app!.inject({
@@ -117,7 +118,7 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
     const result = ScheduleGetResultSchema.parse(response.json())
     const tool = await client.callTool({ name: 'workflow_schedule_get', arguments: f.scope })
     expect(tool.isError).not.toBe(true)
-    expect(ScheduleGetResultSchema.parse(tool.structuredContent)).toEqual(result)
+    expect(ScheduleGetResultSchema.parse(decodeMcpToolResult(tool))).toEqual(result)
     return result.schedule
   }
 
@@ -189,7 +190,7 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
         expect(await readBoth(reader)).toEqual({ ...changed.value, nextOccurrenceAt: nextDue(mode) })
         const page = await reader.callTool({ name: 'workflow_schedule_occurrences_list', arguments: f.scope })
         expect(page.isError).not.toBe(true)
-        expect(ScheduleOccurrencePageSchema.parse(page.structuredContent).items).toEqual(history)
+        expect(ScheduleOccurrencePageSchema.parse(decodeMcpToolResult(page)).items).toEqual(history)
         const httpHistory = await app!.inject({
           method: 'GET', url: `${root()}/occurrences`,
           headers: { authorization: `Bearer ${f.reader.token}` },
@@ -295,7 +296,7 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
     const reader = await connect(f.reader.token)
     const disabled = await caller.client.callTool({ name: 'workflow_schedule_disable', arguments: f.command(1) })
     expect(disabled.isError).not.toBe(true)
-    const paused = ScheduleSaveResultSchema.parse(disabled.structuredContent).value
+    const paused = ScheduleSaveResultSchema.parse(decodeMcpToolResult(disabled)).value
     expect(paused).toMatchObject({ enabled: false, nextOccurrenceAt: null, revision: 2 })
     const input = { ...f.command(2), ...(operation === 'save' ? { schedule: settings } : {}) }
     const before = await sch11DomainState(f)

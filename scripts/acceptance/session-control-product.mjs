@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '../../packages/contracts/dist/operatorMcp.js'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -33,7 +34,7 @@ export async function sessionControlProduct(input) {
       close: () => client.close(), tool: async (name, args, options = {}) => {
         const result = await client.callTool({ name, arguments: args }, { timeout: 360000, ...options })
         assert.ok(!result.isError, `Product tool ${name} failed.`)
-        return result.structuredContent
+        return decodeMcpToolResult(result)
       } }
   } catch (error) {
     try { await client.close() }

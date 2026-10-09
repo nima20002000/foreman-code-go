@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import assert from 'node:assert/strict'
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -329,7 +330,7 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
         throw new Error(`Product tool ${name} failed: ${failure.error?.code ?? 'UNKNOWN'}: ${failure.error?.message ?? 'No public error message.'}`
           + (issues ? ` ${JSON.stringify(issues)}` : ''))
       }
-      return result.structuredContent
+      return decodeMcpToolResult(result)
     }
     const deniedTool = (name: string, args: Record<string, unknown>) =>
       deniedClient!.callTool({ name, arguments: args }, { timeout: 180000 })

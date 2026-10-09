@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -61,7 +62,7 @@ describe.skipIf(!postgresEnabled)('computer account pagination through HTTP and 
     do {
       const result = await client.callTool({ name: 'computer_accounts_list', arguments: cursor ? { cursor } : {} })
       expect(result.isError).not.toBe(true)
-      const page = ComputerAccountsListSchema.parse(result.structuredContent)
+      const page = ComputerAccountsListSchema.parse(decodeMcpToolResult(result))
       const query = cursor ? `?cursor=${cursor}` : ''
       const http = await app.inject({ url: `/api/management/computers/accounts${query}`,
         headers: { authorization: `Bearer ${reader.token}` } })

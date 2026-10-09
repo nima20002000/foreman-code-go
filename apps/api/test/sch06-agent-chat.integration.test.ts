@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it, vi } from 'vitest'
@@ -112,8 +113,8 @@ async function setup() {
 type Fixture = Awaited<ReturnType<typeof setup>>
 function body(result: { isError?: boolean | undefined; structuredContent?: unknown }) {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
-  expect(result.structuredContent).toBeDefined()
-  return result.structuredContent
+  expect(decodeMcpToolResult(result)).toBeDefined()
+  return decodeMcpToolResult(result)
 }
 function path(target: SelectedRunChatTarget) {
   return `/api/workspaces/${encodeURIComponent(target.workspaceId)}/agent-chat/workflows/${encodeURIComponent(target.workflowId)}`

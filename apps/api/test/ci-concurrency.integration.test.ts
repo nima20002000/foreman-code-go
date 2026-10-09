@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import pg from 'pg'
 import { randomUUID } from 'node:crypto'
@@ -66,11 +67,11 @@ it('persists two concurrent same-suite MCP requests with pool.max=2 and replays 
     const ids = [randomUUID(), randomUUID()]
     const results = await Promise.all(ids.map(id => call(id)))
     expect(results.every(result => result.isError !== true)).toBe(true)
-    const started = results.map(result => CiRunOutputSchema.parse(result.structuredContent))
+    const started = results.map(result => CiRunOutputSchema.parse(decodeMcpToolResult(result)))
     expect(started[0]!.ticketId).not.toBe(started[1]!.ticketId)
     f.services.ci = createCi()
     for (const [index, commandId] of ids.entries()) {
-      expect(CiRunOutputSchema.parse((await call(commandId)).structuredContent)).toEqual(started[index])
+      expect(CiRunOutputSchema.parse(decodeMcpToolResult((await call(commandId))))).toEqual(started[index])
     }
     expect(f.counts().enqueues).toBe(2)
     const receipts = (await pool.query<{ result: unknown }>(

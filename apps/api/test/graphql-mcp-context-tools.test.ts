@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { sharedFolderId } from '../src/modules/computers/syncthingComputer.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../src/app.js'
@@ -102,9 +103,9 @@ it('returns the stable workspace directory through authenticated MCP and denies 
       { requestInit: { headers: { authorization: 'Bearer worker' } } }))
     const first = await client.callTool({ name: 'context_get', arguments: {} })
     expect(first.isError).not.toBe(true)
-    expect(first.structuredContent).toMatchObject({ sharedFiles: { provider: 'syncthing', path: expect.stringMatching(/^\/main\/shared\/workspace-[a-f0-9]{64}$/u) } })
+    expect(decodeMcpToolResult(first)).toMatchObject({ sharedFiles: { provider: 'syncthing', path: expect.stringMatching(/^\/main\/shared\/workspace-[a-f0-9]{64}$/u) } })
     name = 'Renamed workspace'
-    expect((await client.callTool({ name: 'context_get', arguments: {} })).structuredContent).toEqual(first.structuredContent)
+    expect(decodeMcpToolResult((await client.callTool({ name: 'context_get', arguments: {} })))).toEqual(decodeMcpToolResult(first))
     const denied = await app.inject({ method: 'POST', url: '/mcp', headers: {
       authorization: 'Bearer invalid', accept: 'application/json, text/event-stream', 'content-type': 'application/json',
     }, payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'context_get', arguments: {} } } })

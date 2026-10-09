@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -40,8 +41,8 @@ type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 type Client = Fixture['client']
 function value(result: { isError?: boolean | undefined; structuredContent?: unknown }): unknown {
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
-  expect(result.structuredContent).toBeDefined()
-  return result.structuredContent
+  expect(decodeMcpToolResult(result)).toBeDefined()
+  return decodeMcpToolResult(result)
 }
 function errorCode(result: unknown): string {
   const response = result as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
@@ -209,7 +210,7 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
         expect(tool?.outputSchema?.type).toBe('object'); expect(tool?.annotations?.readOnlyHint).toBe(true)
       }
       expect(discovery.map((tool) => tool.name)).not.toContain('run_start')
-      const caps = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: {} })) as {
+      const caps = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })) as {
         runtimeLimits: Array<{ feature: string; detail: string }> }
       expect(caps.runtimeLimits.find((item) => item.feature === 'run_board_history')?.detail).toContain('tools/list')
       expect((await f.app.inject({ method: 'GET', url: url(RUN_HISTORY_TOOLS.snapshot, args), headers: { authorization: 'Bearer invalid' } })).statusCode).toBe(401)

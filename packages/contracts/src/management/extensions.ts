@@ -243,5 +243,6 @@ export const InteractionSummaryResultSchema = z.object({
   pendingCount: Revision, pendingByWorkflow: z.record(z.string(), Revision),
 }).strict();
 export const OperatorCapabilityInputSchema = z.object({
+  detail: z.enum(['compact', 'full']).default('compact'),
   workspaceId: IdSchema.optional(), workflowId: IdSchema.optional(), runId: IdSchema.optional(),
 }).strict();

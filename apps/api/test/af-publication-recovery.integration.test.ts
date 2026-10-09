@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MessageAttachmentRef } from '@foreman-code/contracts/files'
@@ -141,11 +142,11 @@ describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', 
           : { workspaceId: f.workspaceId, query: f.context } })
         let readback
         if (f.selection) {
-          const selected = ReadSelectedRunChatResponseSchema.parse(result.structuredContent)
+          const selected = ReadSelectedRunChatResponseSchema.parse(decodeMcpToolResult(result))
           if (selected.kind !== 'selected') throw new Error('Expected the exact selected Run chat')
           expect(selected.selection).toEqual(f.selection)
           readback = selected.state
-        } else readback = AgentChatStateSchema.parse(result.structuredContent)
+        } else readback = AgentChatStateSchema.parse(decodeMcpToolResult(result))
         expect(readback.messages.find((message) => message.id === t.active.turn.messageId)?.attachments?.map((file) => ({
           fileId: file.file.fileId, revisionId: file.revision.revisionId,
         }))).toEqual(original)
@@ -232,7 +233,7 @@ describe.skipIf(!postgresEnabled)('AF-03 / AF-04 durable publication adoption', 
       expect(await f.publications(t.active.turn.messageId)).toHaveLength(12)
       if (count === 10) await withAfMcp(f, async (_writer, reader) => {
           const result = await reader.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.context } })
-        const readback = AgentChatStateSchema.parse(result.structuredContent).messages.find((message) => message.id === t.active.turn.messageId)!
+        const readback = AgentChatStateSchema.parse(decodeMcpToolResult(result)).messages.find((message) => message.id === t.active.turn.messageId)!
         expect(readback.attachments).toHaveLength(22)
       })
       await f.nextTurn()

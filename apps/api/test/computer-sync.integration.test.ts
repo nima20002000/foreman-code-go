@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -79,9 +80,9 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
       const reader = await f.connect(f.reader.token)
       expect((await client.listTools()).tools.map(tool => tool.name)).toContain('computer_sync_update')
       expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_sync_update')
-      const read = async () => ComputerSyncStatusSchema.parse((await client.callTool({
+      const read = async () => ComputerSyncStatusSchema.parse(decodeMcpToolResult((await client.callTool({
         name: 'computer_sync_status', arguments: { target: f.target },
-      })).structuredContent).folders.find(folder => folder.workspaceId === f.workspaceId)!
+      })))).folders.find(folder => folder.workspaceId === f.workspaceId)!
       expect((await read()).status?.path).toBe(`/worker/shared/${sharedFolderId(f.workspaceId)}`)
       const input = { target: f.target, workspaceId: f.workspaceId, enabled: false, expectedRevision: 0, commandId: randomUUID() }
       expect((await reader.callTool({ name: 'computer_sync_update', arguments: input })).isError).toBe(true)
@@ -131,11 +132,11 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
         target: f.target, workspaceId: f.workspaceId, enabled: false, expectedRevision: 0, commandId: randomUUID(),
       } })
       expect(saved.isError).not.toBe(true)
-      expect(ComputerSyncStatusSchema.parse(saved.structuredContent).folders
+      expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(saved)).folders
         .find(folder => folder.workspaceId === f.workspaceId)).toMatchObject({ enabled: false, revision: 1 })
       expect((await updater.callTool({ name: 'computer_sync_status', arguments: { target: f.target } })).isError).toBe(true)
       const persisted = await reader.callTool({ name: 'computer_sync_status', arguments: { target: f.target } })
-      expect(ComputerSyncStatusSchema.parse(persisted.structuredContent).folders
+      expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(persisted)).folders
         .find(folder => folder.workspaceId === f.workspaceId)).toMatchObject({ enabled: false, revision: 1 })
     } finally { await f.close() }
   })

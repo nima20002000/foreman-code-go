@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -416,7 +417,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           const client = await connect(writer.token)
           const launched = await client.callTool({ name: 'run_start', arguments: startInput })
           expect(launched.isError, JSON.stringify(launched)).not.toBe(true)
-          runId = ManualRunStartResultSchema.parse(launched.structuredContent).run.id
+          runId = ManualRunStartResultSchema.parse(decodeMcpToolResult(launched)).run.id
         } else {
           const started = await app.inject({ method: 'POST', headers,
             url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/runs`, payload: startInput })
@@ -600,7 +601,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             { authProvider: { token: async () => writer.token } }))
           const readback = await reader.callTool({ name: 'run_get', arguments: { workspaceId: workspace.id, runId } })
           expect(readback.isError, JSON.stringify(readback)).not.toBe(true)
-          expect(readback.structuredContent).toMatchObject({ run: { id: runId, outcome: 'succeeded' },
+          expect(decodeMcpToolResult(readback)).toMatchObject({ run: { id: runId, outcome: 'succeeded' },
             executions: [expect.objectContaining({ id: output.producer.executionId, state: 'completed' })] })
         }
         if (noRoute) {

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -113,10 +114,10 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     expect(tools.tools.some(tool => tool.name === 'job_workflow_list')).toBe(true)
     const firstMcp = await client.callTool({ name: 'job_workflow_list', arguments: input() })
     expect(firstMcp.isError).not.toBe(true)
-    expect(firstMcp.structuredContent).toEqual(first)
+    expect(decodeMcpToolResult(firstMcp)).toEqual(first)
     const second = await client.callTool({ name: 'job_workflow_list', arguments: { ...input(), cursor: first.nextCursor } })
     expect(second.isError).not.toBe(true)
-    const last = WorkflowJobPageSchema.parse(second.structuredContent)
+    const last = WorkflowJobPageSchema.parse(decodeMcpToolResult(second))
     expect(last.items).toHaveLength(2)
     expect(last.nextCursor).toBeNull()
     const ids = [...first.items, ...last.items].map(item => item.execution.id)
@@ -135,7 +136,7 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     const client = await connect(writer.token)
     const result = await client.callTool({ name: 'job_workflow_list', arguments: { ...input(), workflowId: emptyId } })
     const expected = { ...input(), workflowId: emptyId, items: [], nextCursor: null }
-    expect(result.structuredContent).toEqual(expected)
+    expect(decodeMcpToolResult(result)).toEqual(expected)
     const http = await app.inject({ method: 'GET',
       url: path().replace(workflow.run.workflowId, emptyId),
       headers: { authorization: `Bearer ${writer.token}` } })
@@ -154,13 +155,13 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
       expect(http.json()).toEqual({ execution })
       const mcp = await client.callTool({ name: 'job_get', arguments: arguments_ })
       expect(mcp.isError).not.toBe(true)
-      expect(mcp.structuredContent).toEqual(http.json())
+      expect(decodeMcpToolResult(mcp)).toEqual(http.json())
       for (const [suffix, tool] of [['/logs', 'job_logs_read'], ['/artifacts', 'job_artifacts_list']] as const) {
         const result = await app.inject({ method: 'GET', url: `${root}${suffix}`, headers: headers() })
         expect(result.statusCode).toBe(200)
         const read = await client.callTool({ name: tool, arguments: arguments_ })
         expect(read.isError).not.toBe(true)
-        expect(read.structuredContent).toEqual(result.json())
+        expect(decodeMcpToolResult(read)).toEqual(result.json())
       }
       for (const [suffix, tool] of [['', 'job_get'], ['/logs', 'job_logs_read'], ['/artifacts', 'job_artifacts_list']] as const) {
         const blocked = await app.inject({ method: 'GET', url: `${root}${suffix}`,

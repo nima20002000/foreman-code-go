@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HarnessCompatibilityListSchema, HarnessCompatibilitySchema } from '@foreman-code/contracts'
@@ -63,7 +64,7 @@ describe('compatibility through authenticated MCP', () => {
     for (const headers of [{}, { authorization: 'Bearer invalid' }]) {
       expect((await app.inject({ method: 'POST', url: '/mcp', headers, payload })).statusCode).toBe(401)
     }
-    const status = HarnessCompatibilityListSchema.parse((await client.callTool(listCall)).structuredContent)
+    const status = HarnessCompatibilityListSchema.parse(decodeMcpToolResult((await client.callTool(listCall))))
     expect(status.canRetry).toBe(true)
     expect(status.harnesses.map(report => report.harness)).toEqual(['codex'])
     expect(inspect).not.toHaveBeenCalled()
@@ -71,7 +72,7 @@ describe('compatibility through authenticated MCP', () => {
 
   it('reads status with a read-only grant and denies retries with an audit record', async () => {
     const { client, inspect, recordDenied } = await fixture(principal(['harnesses:read']))
-    const status = HarnessCompatibilityListSchema.parse((await client.callTool(listCall)).structuredContent)
+    const status = HarnessCompatibilityListSchema.parse(decodeMcpToolResult((await client.callTool(listCall))))
     expect(status.canRetry).toBe(false)
     expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain(retryCall.name)
     await expectMcpAccessDenied(client.callTool(retryCall))
@@ -81,10 +82,10 @@ describe('compatibility through authenticated MCP', () => {
 
   it('accepts an authorized retry and reads its result back', async () => {
     const { client, service, recordAudit } = await fixture()
-    const result = HarnessCompatibilitySchema.parse((await client.callTool(retryCall)).structuredContent)
+    const result = HarnessCompatibilitySchema.parse(decodeMcpToolResult((await client.callTool(retryCall))))
     expect(result).toMatchObject({ harness: 'codex', status: 'checking', scope: 'protocol-settings-diagnostic-only' })
     await service.checkAll()
-    const status = HarnessCompatibilityListSchema.parse((await client.callTool(listCall)).structuredContent)
+    const status = HarnessCompatibilityListSchema.parse(decodeMcpToolResult((await client.callTool(listCall))))
     expect(status.harnesses[0]).toMatchObject({ harness: 'codex', installedVersion: '99.0.0', status: 'probe-passed' })
     expect(recordAudit).toHaveBeenCalledWith('owner', 'mcp', 'harness.compatibility.retry', 'codex', 'succeeded')
   })

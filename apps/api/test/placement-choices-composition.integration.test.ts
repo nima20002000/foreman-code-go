@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -63,7 +64,7 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
       expect(http.json()).toEqual({ ...input, choices })
       const mcp = await operator.callTool({ name: 'workflow_node_placement_choices', arguments: input })
       expect(mcp.isError).not.toBe(true)
-      expect(mcp.structuredContent).toEqual(http.json())
+      expect(decodeMcpToolResult(mcp)).toEqual(http.json())
       const deniedHttp = await production.app.inject({ method: 'GET', url: path,
         headers: { authorization: `Bearer ${denied.token}` } })
       expect(deniedHttp.statusCode).toBe(403)
@@ -76,7 +77,7 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
 
       const scope = { workspaceId: input.workspaceId, workflowId: input.workflowId }
       const saved = await operator.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })
-      const before = CurrentWorkflowReadResultSchema.parse(saved.structuredContent)
+      const before = CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(saved))
       const savedNode = before.version.definition.nodes[0]!
       if (savedNode.kind === 'job') throw new Error('Expected the saved Agent node.')
       expect(savedNode.placement).toEqual(placement)
@@ -89,9 +90,9 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
         expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph }
       const cleared = await operator.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput })
       expect(cleared.isError, JSON.stringify(cleared)).not.toBe(true)
-      const result = CurrentWorkflowSaveResultSchema.parse(cleared.structuredContent)
+      const result = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(cleared))
       const readback = await operator.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })
-      const after = CurrentWorkflowReadResultSchema.parse(readback.structuredContent)
+      const after = CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(readback))
       expect(after.currentVersionId).toBe(result.value.currentVersionId)
       expect(after.version.definition.nodes[0]).not.toHaveProperty('placement')
       const persisted = (await db.pool.query('select record from workflow_versions where id=$1',
@@ -101,7 +102,7 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
         [before.currentVersionId])).rows[0].record
       expect(historical.definition.nodes[0].placement).toEqual(placement)
       const retry = await operator.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput })
-      expect(CurrentWorkflowSaveResultSchema.parse(retry.structuredContent).value).toEqual(result.value)
+      expect(CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(retry)).value).toEqual(result.value)
       await db.pool.query('update management_principals set revoked_at=now() where id=$1', [owner.principal.id])
       expect((await production.app.inject({ method: 'GET', url: path, headers })).statusCode).toBe(401)
     } finally {

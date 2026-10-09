@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
@@ -132,7 +133,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     const created = await mcp(credential.token, 'operator_chat_create', {
       commandId: randomUUID(), title: 'Implement attached spec',
     })
-    const conversation = CreateOperatorConversationResponseSchema.parse(created.structuredContent).conversation
+    const conversation = CreateOperatorConversationResponseSchema.parse(decodeMcpToolResult(created)).conversation
     const target = { kind: 'operator' as const, conversationId: conversation.id }
     const bytes = Buffer.from('# Spec workflow\nCreate a workflow named Spec workflow.\n')
     const uploadId = randomUUID()
@@ -144,7 +145,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     const request = { requestId: randomUUID(), content: 'Create the workflow described in the attached spec.', attachments: [ref] }
     const send = { conversationId: conversation.id, request }
     const accepted = SendOperatorMessageResponseSchema.parse(
-      (await mcp(credential.token, 'operator_chat_send', send)).structuredContent)
+      decodeMcpToolResult((await mcp(credential.token, 'operator_chat_send', send))))
     expect(accepted.replayed).toBe(false)
     await until(async () => {
       const state = await chat.get(conversation.id, credential.principal)
@@ -328,11 +329,11 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
       (entry.af02CredentialKeys as string[] | undefined)?.includes('GRAPHQL_MCP_TOKEN'))).toBe(true)
     const create = { workspaceId: workspace.id, commandId: randomUUID(), name: 'Spec workflow' }
     const created = SavedManagedWorkflowCommandResultSchema.parse(
-      (await nativeMcp(file.context.nativeSessionId, 'workflow_create', create)).structuredContent)
+      decodeMcpToolResult((await nativeMcp(file.context.nativeSessionId, 'workflow_create', create))))
     expect(created.replayed).toBe(false)
     expect(created.value.workflow.name).toBe('Spec workflow')
     expect(SavedManagedWorkflowCommandResultSchema.parse(
-      (await nativeMcp(file.context.nativeSessionId, 'workflow_create', create)).structuredContent))
+      decodeMcpToolResult((await nativeMcp(file.context.nativeSessionId, 'workflow_create', create)))))
       .toEqual({ ...created, replayed: true })
     const workflowId = created.value.workflow.id
     const deniedCommandId = randomUUID()
@@ -341,9 +342,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     }), 'ACCESS_DENIED')
     expectMcpError(await nativeMcp(file.context.nativeSessionId, 'workflow_update', { workspaceId: workspace.id, workflowId,
       commandId: randomUUID(), expectedRevision: created.value.revision + 1, name: 'Stale change' }), 'REVISION_CONFLICT')
-    const readback = SavedManagedWorkflowSchema.parse((await nativeMcp(file.context.nativeSessionId, 'workflow_get', {
+    const readback = SavedManagedWorkflowSchema.parse(decodeMcpToolResult((await nativeMcp(file.context.nativeSessionId, 'workflow_get', {
       workspaceId: workspace.id, workflowId,
-    })).structuredContent)
+    }))))
     expect(readback).toEqual(created.value)
     expect(await services.workflows.get(credential.principal, workspace.id, workflowId)).toEqual(readback)
     expect((await pool.query('select id from workflows where workspace_id=$1', [workspace.id])).rowCount).toBe(1)
@@ -355,7 +356,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     expect(audit.rows.filter((row) => row.action === 'workflow.create' && row.outcome === 'succeeded')).toHaveLength(1)
     expect(audit.rows.filter((row) => row.action === 'workflow_create' && row.outcome === 'denied')).toHaveLength(1)
     expect(SendOperatorMessageResponseSchema.parse(
-      (await mcp(credential.token, 'operator_chat_send', send)).structuredContent).replayed).toBe(true)
+      decodeMcpToolResult((await mcp(credential.token, 'operator_chat_send', send)))).replayed).toBe(true)
     expect(prepare).toHaveBeenCalledTimes(1)
     expect(issued).toHaveLength(1)
     await finish(f.directory, file.context.nativeSessionId)
@@ -363,13 +364,13 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     await until(async () => managers.size === 0, 10000)
     await expect(access.authenticate(managementToken)).rejects.toThrow()
     await expect(tools.sessions.authenticate(file.token)).rejects.toThrow()
-    const snapshot = GetOperatorConversationResponseSchema.parse((await mcp(credential.token, 'operator_chat_get', {
+    const snapshot = GetOperatorConversationResponseSchema.parse(decodeMcpToolResult((await mcp(credential.token, 'operator_chat_get', {
       conversationId: conversation.id,
-    })).structuredContent)
+    }))))
     expect(snapshot.messages.filter((message) => message.role === 'user')).toHaveLength(1)
-    expect(SavedManagedWorkflowSchema.parse((await mcp(credential.token, 'workflow_get', {
+    expect(SavedManagedWorkflowSchema.parse(decodeMcpToolResult((await mcp(credential.token, 'workflow_get', {
       workspaceId: workspace.id, workflowId,
-    })).structuredContent)).toEqual(readback)
+    }))))).toEqual(readback)
   }, 30000)
 
   it('Codex: attaching files preserves a management reader\'s write denial', async () => {
@@ -393,9 +394,9 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     expectMcpError(denied, 'ACCESS_DENIED')
     expect((await pool.query('select outcome from management_audit where principal_id=$1 and action=$2',
       [delegated.id, 'workflow_create'])).rows).toEqual([{ outcome: 'denied' }])
-    const page = SavedManagedWorkflowPageSchema.parse((await nativeMcp(file.context.nativeSessionId, 'workflow_list', {
+    const page = SavedManagedWorkflowPageSchema.parse(decodeMcpToolResult((await nativeMcp(file.context.nativeSessionId, 'workflow_list', {
       workspaceId: workspace.id,
-    })).structuredContent)
+    }))))
     expect(page.items).toEqual([])
     expect((await pool.query('select id from workflows where workspace_id=$1', [workspace.id])).rowCount).toBe(0)
     expect((await pool.query('select command_id from management_command_receipts where command_id=$1', [commandId])).rowCount).toBe(0)

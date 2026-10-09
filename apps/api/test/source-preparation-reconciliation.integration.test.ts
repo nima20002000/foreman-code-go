@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import type { SourceQuotaPool } from '../src/modules/sources/materialization.js'
 import { readdir, open } from 'node:fs/promises'
@@ -217,20 +218,20 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     for(const [i,row] of rows.entries()) {
       const before=await app.inject({method:'POST',url:sourceUrl()+'/get',headers:{authorization:`Bearer ${reader.token}`},payload:{operationId:row.operation_id}})
       expect(before.statusCode).toBe(200);expect(before.json().reservationState).toBe(i===0?'owned':'preparing')
-      expect((await operator.callTool({name:'source_preparation_get',arguments:{workspaceId,startCommandId:commandsToReconcile[i]!}})).structuredContent).toEqual(before.json())
+      expect(decodeMcpToolResult((await operator.callTool({name:'source_preparation_get',arguments:{workspaceId,startCommandId:commandsToReconcile[i]!}})))).toEqual(before.json())
       const command={operationId:row.operation_id,commandId:randomUUID()}
       const denied=await app.inject({method:'POST',url:sourceUrl()+'/reconcile',headers:{authorization:`Bearer ${reader.token}`},payload:command})
       expect(denied.statusCode).toBe(403)
       const result=await operator.callTool({name:'source_preparation_reconcile',arguments:{workspaceId,...command}})
       expect(result.isError).not.toBe(true)
-      const value=(result.structuredContent as {value:{reservationState:string;reservedBytes:number;closure:{materializationId:string|null}}}).value
+      const value=(decodeMcpToolResult(result) as {value:{reservationState:string;reservedBytes:number;closure:{materializationId:string|null}}}).value
       expect(value.reservationState).toBe('retained')
       expect(value.reservedBytes).toBe(value.closure.materializationId === null
         ? Math.min(before.json().reservedBytes, 16 * 1024) : before.json().reservedBytes)
       const stored = (await database.pool.query<{ reserved_bytes: string }>(
         'select reserved_bytes from source_storage_reservations where owner_id=$1', [row.operation_id])).rows[0]!
       expect(Number(stored.reserved_bytes)).toBe(value.reservedBytes)
-      expect((await operator.callTool({name:'source_preparation_get',arguments:{workspaceId,operationId:row.operation_id}})).structuredContent).toEqual(value)
+      expect(decodeMcpToolResult((await operator.callTool({name:'source_preparation_get',arguments:{workspaceId,operationId:row.operation_id}})))).toEqual(value)
       const replay=await app.inject({method:'POST',url:sourceUrl()+'/reconcile',headers:{authorization:`Bearer ${writer.token}`},payload:command})
       expect(replay.statusCode).toBe(200);expect(replay.json()).toEqual({value,replayed:true})
       if(value.closure.materializationId) expect(await readFile(join(root.binding.canonicalPath,value.closure.materializationId,'tree/source.txt'),'utf8')).toBe('original immutable source')
@@ -487,22 +488,22 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     const operator = await client(cleanup.token)
     const result = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
     expect(result.isError).not.toBe(true)
-    const value = (result.structuredContent as { value: { reservationState: string; executionId: string;
+    const value = (decodeMcpToolResult(result) as { value: { reservationState: string; executionId: string;
       closure: { quotaReclaimed: boolean } } }).value
     expect(value).toMatchObject({ reservationState: 'reclaimed', executionId: ticket.executionId,
       closure: { quotaReclaimed: true } })
     const readback = await operator.callTool({ name: 'source_preparation_get',
       arguments: { workspaceId, operationId: ticket.operationId } })
-    expect(readback.structuredContent).toEqual(value)
+    expect(decodeMcpToolResult(readback)).toEqual(value)
     const replay = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
-    expect(replay.structuredContent).toMatchObject({ value, replayed: true })
+    expect(decodeMcpToolResult(replay)).toMatchObject({ value, replayed: true })
     const refreshed = await operator.callTool({ name: 'source_preparation_reconcile',
       arguments: { ...command, commandId: randomUUID() } })
     expect(refreshed.isError, JSON.stringify(refreshed)).not.toBe(true)
-    const refreshedValue = (refreshed.structuredContent as { value: typeof value }).value
+    const refreshedValue = (decodeMcpToolResult(refreshed) as { value: typeof value }).value
     expect(refreshedValue).toMatchObject({ reservationState: 'reclaimed', executionId: ticket.executionId })
     expect(refreshedValue.closure).not.toEqual(value.closure)
-    expect((await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })).structuredContent)
+    expect(decodeMcpToolResult((await operator.callTool({ name: 'source_preparation_reconcile', arguments: command }))))
       .toMatchObject({ value, replayed: true })
     expect((await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)).acceptedSpec).toEqual(execution.acceptedSpec)
     const persisted = (await database.pool.query<{ owner: { identity: { expiresAt: string } }; status: string }>(
@@ -536,7 +537,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const read = await operator.callTool({ name: 'source_preparation_get',
         arguments: { workspaceId, operationId: ticket.operationId } })
       expect(read.isError).not.toBe(true)
-      expect(read.structuredContent).toMatchObject({ reservationState: 'retained', closure: {
+      expect(decodeMcpToolResult(read)).toMatchObject({ reservationState: 'retained', closure: {
         materializationId: null, admissionClosed: true, childrenClosed: true, claimReleased: true,
       } })
       const denied = await client(reader.token)

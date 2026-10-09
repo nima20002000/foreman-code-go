@@ -110,7 +110,12 @@ function fixtureServices({ saved, workspacePage, workspaceDefaults }, DomainErro
   return {
     commands: { recordDenied: async () => {} },
     workspaces: {
-      storageFolders: {}, list: async () => workspacePage,
+      storageFolders: {}, list: async (_principal, { limit, cursor }) => {
+        const offset = cursor === undefined ? 0 : Number(cursor)
+        const nextOffset = offset + limit
+        return { items: workspacePage.items.slice(offset, nextOffset),
+          pageInfo: { nextCursor: nextOffset < workspacePage.items.length ? String(nextOffset) : null } }
+      },
       get: async () => { throw new DomainError('ACCESS_DENIED', 'The resource is outside the caller scope.', 403) },
     },
     workflows: { current: { read: async () => saved }, schedules: {} },
@@ -161,9 +166,16 @@ async function fixture() {
   return {
     transport, close: () => server.close(),
     calls: [
-      { label: 'capabilities-full-owner', name: 'operator_get_capabilities', arguments: {} },
+      { label: 'capabilities-full-owner', name: 'operator_get_capabilities', arguments: { detail: 'full' } },
+      { label: 'capabilities-compact-owner', name: 'operator_get_capabilities', arguments: {} },
       { label: 'workspace-creation-defaults', name: 'workspace_defaults_get', arguments: {} },
-      { label: 'workspace-list-50', name: 'workspace_list', arguments: { limit: 50 } },
+      { label: 'workspace-list-50', name: 'workspace_list', arguments: { limit: 50, detail: 'full' } },
+      { label: 'workspace-list-compact-50', name: 'workspace_list', arguments: { limit: 50 } },
+      { label: 'workspace-list-default', name: 'workspace_list', arguments: {} },
+      { label: 'selected-tool-input', name: 'operator_tool_schema_get', arguments: { name: CURRENT_WORKFLOW_TOOLS.saved } },
+      { label: 'selected-tool-output', name: 'operator_tool_schema_get', arguments: {
+        name: CURRENT_WORKFLOW_TOOLS.saved, includeOutputSchema: true,
+      } },
       { label: 'saved-workflow-4-agents', name: CURRENT_WORKFLOW_TOOLS.saved, arguments: {
         workspaceId: graph.scope.workspaceId, workflowId: graph.scope.workflowId,
       } },

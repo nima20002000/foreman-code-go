@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -69,10 +70,10 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       const started = await client.callTool({ name: 'job_start', arguments: { workspaceId,
         commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision } })
       expect(started.isError).not.toBe(true)
-      const admission = z.object({ admission: JobPendingAdmissionSchema }).parse(started.structuredContent).admission
+      const admission = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(started)).admission
       const scope = { workspaceId, ticketId: admission.ticket.id }
       await jobs.wakeQueue()
-      const waiting = CiGetOutputSchema.parse((await client.callTool({ name: 'ci_get', arguments: scope })).structuredContent)
+      const waiting = CiGetOutputSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'ci_get', arguments: scope }))))
       expect(waiting.queue.state).toBe('waiting')
       const cancel = { ...scope, expectedRevision: waiting.queue.revision, commandId: randomUUID() }
       const denied = await readonly.callTool({ name: 'ci_cancel', arguments: cancel })
@@ -81,16 +82,16 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       expect((await jobs.getQueueTicket(writer.principal, workspaceId, scope.ticketId)).cancelRequestedAt).toBeNull()
       const result = await client.callTool({ name: 'ci_cancel', arguments: cancel })
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-      const stopped = CiCancelOutputSchema.parse(result.structuredContent).ticket
+      const stopped = CiCancelOutputSchema.parse(decodeMcpToolResult(result)).ticket
       expect(stopped).toMatchObject({ state: 'terminal', terminalReason: 'cancelled' })
       await jobs.closeQueue()
       jobs = queue.createService()
       services.jobs = jobs
       services.ci = new CiService(database.pool, queue.commands, new RunCiAuthority(database.pool), ciFixture().sources, jobs)
       const replay = await client.callTool({ name: 'ci_cancel', arguments: cancel })
-      expect(CiCancelOutputSchema.parse(replay.structuredContent).ticket).toEqual(stopped)
+      expect(CiCancelOutputSchema.parse(decodeMcpToolResult(replay)).ticket).toEqual(stopped)
       const readback = await client.callTool({ name: 'ci_get', arguments: scope })
-      expect(CiGetOutputSchema.parse(readback.structuredContent).queue).toEqual(stopped)
+      expect(CiGetOutputSchema.parse(decodeMcpToolResult(readback)).queue).toEqual(stopped)
       expect(await jobs.getQueueTicket(writer.principal, workspaceId, scope.ticketId)).toEqual(stopped)
       const audits = await database.pool.query(
         "select outcome from management_audit where principal_id=$1 and action='ci_cancel'", [reader.principal.id])
@@ -112,11 +113,11 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
     const execution = await jobs.getExecution(reader.principal, workspaceId, ticket.executionId)
     const client=await connect(writer.token)
     const replay=await client.callTool({name:'job_start',arguments:{workspaceId,...command}})
-    expect(replay.isError).not.toBe(true);expect(replay.structuredContent).toEqual({admission:{kind:'accepted',ticketId,executionId:execution.id}})
+    expect(replay.isError).not.toBe(true);expect(decodeMcpToolResult(replay)).toEqual({admission:{kind:'accepted',ticketId,executionId:execution.id}})
     const edited=await app.inject({method:'POST',url:`${root()}/definitions`,headers:{authorization:`Bearer ${writer.token}`},payload:{commandId:randomUUID(),id:definition.id,expectedRevision:1,name:'Version two',spec:{...queue.computers[0]!.candidate.spec,argv:['node','different.mjs']}}})
     expect(edited.statusCode).toBe(200)
     const historic=await client.callTool({name:'job_definition_version_get',arguments:{workspaceId,definitionId:definition.id,versionId:definition.versionId}})
-    expect(historic.structuredContent).toEqual({definition})
+    expect(decodeMcpToolResult(historic)).toEqual({definition})
     const historicHttp=await app.inject({method:'GET',url:`${root()}/definitions/${definition.id}/versions/${definition.versionId}`,headers:{authorization:`Bearer ${reader.token}`}})
     expect(historicHttp.statusCode).toBe(200);expect(historicHttp.json()).toEqual({definition})
     const foreignVersion=await client.callTool({name:'job_definition_version_get',arguments:{workspaceId:'foreign',definitionId:definition.id,versionId:definition.versionId}})
@@ -124,7 +125,7 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
     const conflict=await client.callTool({name:'job_start',arguments:{workspaceId,...command,expectedRevision:2}})
     expect(conflict.isError).toBe(true);expect(JSON.stringify(conflict.content)).toContain('COMMAND_ID_CONFLICT')
     const read=await client.callTool({name:'job_get',arguments:{workspaceId,executionId:execution.id}})
-    expect(read.structuredContent).toEqual({execution})
+    expect(decodeMcpToolResult(read)).toEqual({execution})
     const fresh=await jobs.repository.execution(database.pool,workspaceId,execution.id)
     expect(fresh.acceptedSpec.definitionRevision).toBe(1);expect(fresh.acceptedSpec.argv).toEqual(queue.computers[0]!.candidate.spec.argv)
     expect(Number((await database.pool.query('select count(*) from job_executions where workspace_id=$1',[workspaceId])).rows[0].count)).toBe(1)
@@ -174,7 +175,7 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
         expect(http.json()).toEqual({ execution: persisted })
         const mcp = await client.callTool({ name: 'job_get', arguments: input })
         expect(mcp.isError).not.toBe(true)
-        expect(mcp.structuredContent).toEqual({ execution: persisted })
+        expect(decodeMcpToolResult(mcp)).toEqual({ execution: persisted })
       }
       const denied = await access.issue({ name: 'Job reader outside this workspace', audience: 'operator',
         expiresAt: new Date(Date.now() + 3600000), grants: [
@@ -214,7 +215,7 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       expect(retained).toHaveLength(1)
       const mcp=await client.callTool({name:'job_start',arguments:{workspaceId,...command}})
       expect(mcp.isError).not.toBe(true)
-      const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(mcp.structuredContent)
+      const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(mcp))
       expect(pending.admission).toMatchObject({kind:'pending-admission',ticket:{id:ticketId,state:'claimed'}})
       await expect(jobs.wakeQueue()).rejects.toMatchObject({code:error.code})
       expect((await database.pool.query('select execution_id,attempt_id,operation_id from job_preparations where principal_id=$1 and command_id=$2',[writer.principal.id,command.commandId])).rows).toEqual(retained)
@@ -228,11 +229,11 @@ describe.skipIf(!postgresEnabled)('CI authenticated job persistence and denied M
       await jobs.wakeQueue()
       const resumed=await client.callTool({name:'job_start',arguments:{workspaceId,...command}})
       expect(resumed.isError).not.toBe(true)
-      const accepted = z.object({ admission: JobAdmissionResultSchema }).parse(resumed.structuredContent)
+      const accepted = z.object({ admission: JobAdmissionResultSchema }).parse(decodeMcpToolResult(resumed))
       expect(accepted.admission).toEqual({kind:'accepted',ticketId,executionId:retained[0].execution_id})
       const read=await client.callTool({name:'job_get',arguments:{workspaceId,executionId:retained[0].execution_id}})
       expect(read.isError).not.toBe(true)
-      const { execution } = z.object({ execution: JobExecutionSchema }).parse(read.structuredContent)
+      const { execution } = z.object({ execution: JobExecutionSchema }).parse(decodeMcpToolResult(read))
       expect(execution).toMatchObject({id:retained[0].execution_id,attemptId:retained[0].attempt_id,operationId:retained[0].operation_id})
       expect((await database.pool.query('select result from management_command_receipts where principal_id=$1 and command_id=$2',[writer.principal.id,command.commandId])).rows).toHaveLength(1)
     } finally {queue.accept.mockImplementation(originalAccept)}
@@ -280,11 +281,11 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
         },
       } })
       expect(profileResult.isError, JSON.stringify(profileResult.content)).not.toBe(true)
-      const profile = z.object({ profile: JobVerificationProfileSchema }).parse(profileResult.structuredContent).profile
+      const profile = z.object({ profile: JobVerificationProfileSchema }).parse(decodeMcpToolResult(profileResult)).profile
       const getChoices = async () => {
         const result = await writer.callTool({ name: 'job_choices_get', arguments: { workspaceId } })
         expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-        return JobAuthoringChoicesRecordSchema.parse(result.structuredContent)
+        return JobAuthoringChoicesRecordSchema.parse(decodeMcpToolResult(result))
       }
       const choices = await getChoices()
       expect(choices.policies).toContainEqual(f.retained.spec.policy)
@@ -297,17 +298,17 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
         verification: { suite: template.suite, resources: template.resources,
           parameters: template.parameters, credentialRefs: [] } })
       const validation = await writer.callTool({ name: 'job_validate', arguments: { workspaceId, spec } })
-      expect(validation.structuredContent).toEqual({ valid: true, reasons: [], sideEffects: false })
+      expect(decodeMcpToolResult(validation)).toEqual({ valid: true, reasons: [], sideEffects: false })
       const saveInput = { workspaceId, commandId: randomUUID(), expectedRevision: null,
         name: 'Repository unit', spec }
       const saved = await writer.callTool({ name: 'job_definition_save', arguments: saveInput })
       expect(saved.isError, JSON.stringify(saved.content)).not.toBe(true)
-      const definition = z.object({ definition: JobDefinitionRecordSchema }).parse(saved.structuredContent).definition
+      const definition = z.object({ definition: JobDefinitionRecordSchema }).parse(decodeMcpToolResult(saved)).definition
       expect(definition).toMatchObject({ schemaVersion: 2, spec })
       const historic = await writer.callTool({ name: 'job_definition_version_get', arguments: {
         workspaceId, definitionId: definition.id, versionId: definition.versionId,
       } })
-      expect(historic.structuredContent).toEqual({ definition })
+      expect(decodeMcpToolResult(historic)).toEqual({ definition })
       const deniedSave = await readonly.callTool({ name: 'job_definition_save', arguments: {
         ...saveInput, commandId: randomUUID(),
       } })
@@ -318,7 +319,7 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
       } })
       expect(editableResult.isError, JSON.stringify(editableResult.content)).not.toBe(true)
       const editable = z.object({ definition: JobDefinitionRecordSchema })
-        .parse(editableResult.structuredContent).definition
+        .parse(decodeMcpToolResult(editableResult)).definition
       const editedLimits = { ...spec.limits, cpuLimit: spec.limits.cpuLimit + 1,
         memoryBytes: spec.limits.memoryBytes * 2 }
       const editedSpec = AutoVerificationJobSpecSchema.parse({ ...spec, limits: editedLimits,
@@ -328,25 +329,25 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
       const editedValidation = await writer.callTool({ name: 'job_validate', arguments: {
         workspaceId, spec: editedSpec,
       } })
-      expect(editedValidation.structuredContent).toEqual({ valid: true, reasons: [], sideEffects: false })
+      expect(decodeMcpToolResult(editedValidation)).toEqual({ valid: true, reasons: [], sideEffects: false })
       const editInput = { workspaceId, commandId: randomUUID(), id: editable.id,
         expectedRevision: editable.revision, name: editable.name, spec: editedSpec }
       const deniedEdit = await readonly.callTool({ name: 'job_definition_save', arguments: editInput })
       expect(deniedEdit.isError).toBe(true)
       const editedResult = await writer.callTool({ name: 'job_definition_save', arguments: editInput })
       expect(editedResult.isError, JSON.stringify(editedResult.content)).not.toBe(true)
-      const edited = z.object({ definition: JobDefinitionRecordSchema }).parse(editedResult.structuredContent).definition
+      const edited = z.object({ definition: JobDefinitionRecordSchema }).parse(decodeMcpToolResult(editedResult)).definition
       expect(edited).toMatchObject({ id: editable.id, revision: 2, spec: editedSpec })
       const editRetry = await writer.callTool({ name: 'job_definition_save', arguments: editInput })
-      expect(editRetry.structuredContent).toEqual({ definition: edited })
+      expect(decodeMcpToolResult(editRetry)).toEqual({ definition: edited })
       const editedReadback = await readonly.callTool({ name: 'job_definition_get', arguments: {
         workspaceId, definitionId: editable.id,
       } })
-      expect(editedReadback.structuredContent).toEqual({ definition: edited })
+      expect(decodeMcpToolResult(editedReadback)).toEqual({ definition: edited })
       const originalReadback = await readonly.callTool({ name: 'job_definition_version_get', arguments: {
         workspaceId, definitionId: editable.id, versionId: editable.versionId,
       } })
-      expect(originalReadback.structuredContent).toEqual({ definition: editable })
+      expect(decodeMcpToolResult(originalReadback)).toEqual({ definition: editable })
       const command = { workspaceId, commandId: randomUUID(), definitionId: definition.id,
         expectedRevision: definition.revision }
       const deniedStart = await readonly.callTool({ name: 'job_start', arguments: command })
@@ -367,14 +368,14 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
         target: choices.targets[0]!.target, policy: jobRuntimeProfilePolicy(qualified),
         verification: { ...spec.verification, parameters: { ...spec.verification.parameters, unitWorkers: 16 } } }
       const tooManyWorkers = await writer.callTool({ name: 'job_validate', arguments: { workspaceId, spec: fixedSpec } })
-      expect(tooManyWorkers.structuredContent).toEqual({ valid: false, reasons: ['JOB_SUITE_UNQUALIFIED'], sideEffects: false })
+      expect(decodeMcpToolResult(tooManyWorkers)).toEqual({ valid: false, reasons: ['JOB_SUITE_UNQUALIFIED'], sideEffects: false })
 
       const started = await writer.callTool({ name: 'job_start', arguments: command })
       expect(started.isError, JSON.stringify(started.content)).not.toBe(true)
-      const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(started.structuredContent).admission
+      const pending = z.object({ admission: JobPendingAdmissionSchema }).parse(decodeMcpToolResult(started)).admission
       await jobs.wakeQueue()
       const queued = await writer.callTool({ name: 'job_queue_get', arguments: { workspaceId, ticketId: pending.ticket.id } })
-      const ticket = z.object({ ticket: JobQueueTicketSchema }).parse(queued.structuredContent).ticket
+      const ticket = z.object({ ticket: JobQueueTicketSchema }).parse(decodeMcpToolResult(queued)).ticket
       expect(ticket).toMatchObject({ state: 'waiting', waitingReasons: ['busy'], definition,
         resources: template.resources, reservationId: null })
       for (const client of clients.splice(0)) await client.close()
@@ -388,14 +389,14 @@ describe.skipIf(!postgresEnabled)('verification Job authenticated MCP authoring'
       const restartedDefinition = await restarted.callTool({ name: 'job_definition_get', arguments: {
         workspaceId, definitionId: edited.id,
       } })
-      expect(restartedDefinition.structuredContent).toEqual({ definition: edited })
+      expect(decodeMcpToolResult(restartedDefinition)).toEqual({ definition: edited })
       const read = await restarted.callTool({ name: 'job_queue_get', arguments: { workspaceId, ticketId: ticket.id } })
-      expect(read.structuredContent).toEqual({ ticket })
+      expect(decodeMcpToolResult(read)).toEqual({ ticket })
       const replay = await restarted.callTool({ name: 'job_start', arguments: command })
-      expect(replay.structuredContent).toEqual({ admission: { kind: 'pending-admission', ticket } })
+      expect(decodeMcpToolResult(replay)).toEqual({ admission: { kind: 'pending-admission', ticket } })
       const cancelled = await restarted.callTool({ name: 'job_queue_cancel', arguments: { workspaceId,
         commandId: randomUUID(), ticketId: ticket.id, expectedRevision: ticket.revision } })
-      const cancelledTicket = z.object({ ticket: JobQueueTicketSchema }).parse(cancelled.structuredContent).ticket
+      const cancelledTicket = z.object({ ticket: JobQueueTicketSchema }).parse(decodeMcpToolResult(cancelled)).ticket
       expect(cancelledTicket).toMatchObject({ state: 'terminal', terminalReason: 'cancelled', definition,
         resources: template.resources })
       expect(await jobs.getQueueTicket(f.writer.principal, workspaceId, ticket.id)).toEqual(cancelledTicket)

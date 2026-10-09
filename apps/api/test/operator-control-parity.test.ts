@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { OperatorConversationStateSchema } from '@foreman-code/contracts'
@@ -48,7 +49,7 @@ describe('mounted Operator control parity source ports', () => {
       const response = await app.inject({ method: 'POST', url: '/api/operator/conversations/conversation/cancel', payload: input })
       expect(response.statusCode).toBe(200); expect(response.json()).toEqual({ state })
       expect(chat.cancel.mock.calls).toEqual([['conversation', input.requestId, owner, input.commandId]])
-      expect((await tools.get('operator_chat_cancel')!({ conversationId: 'conversation', request: input })).structuredContent).toEqual({ state })
+      expect(decodeMcpToolResult((await tools.get('operator_chat_cancel')!({ conversationId: 'conversation', request: input })))).toEqual({ state })
       expect(chat.cancel.mock.calls[1]).toEqual(['conversation', input.requestId, owner, input.commandId, 'mcp'])
     } finally { await app.close() }
   })
@@ -62,7 +63,7 @@ describe('mounted Operator control parity source ports', () => {
       const response = await app.inject({ method: 'POST', url: '/api/operator/conversations/conversation/responses', payload: input })
       expect(response.statusCode).toBe(200); expect(response.json()).toEqual({ state })
       expect(chat.respond.mock.calls).toEqual([['conversation', input, owner]])
-      expect((await tools.get('operator_chat_respond')!({ conversationId: 'conversation', request: input })).structuredContent).toEqual({ state })
+      expect(decodeMcpToolResult((await tools.get('operator_chat_respond')!({ conversationId: 'conversation', request: input })))).toEqual({ state })
       expect(chat.respond.mock.calls[1]).toEqual(['conversation', input, owner, 'mcp'])
     } finally { await app.close() }
   })

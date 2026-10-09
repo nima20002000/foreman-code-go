@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -147,7 +148,7 @@ describe.skipIf(!postgresEnabled)('Retired Operator conversation history', () =>
     for (const [index, message] of before.messages.entries()) expect(state.messages[index]).toMatchObject(message.record)
     const mcp = await client.callTool({ name: 'operator_chat_get', arguments: { conversationId } })
     expect(mcp.isError, JSON.stringify(mcp.content)).not.toBe(true)
-    expect(GetOperatorConversationResponseSchema.parse(mcp.structuredContent)).toEqual(state)
+    expect(GetOperatorConversationResponseSchema.parse(decodeMcpToolResult(mcp))).toEqual(state)
     expect(await repository.configuration(configurationId)).toEqual(before.configuration)
 
     const controlsResponse = await app.inject({ method: 'GET',
@@ -160,7 +161,7 @@ describe.skipIf(!postgresEnabled)('Retired Operator conversation history', () =>
     }
     const mcpControls = await client.callTool({ name: 'operator_chat_controls_get', arguments: { conversationId } })
     expect(mcpControls.isError, JSON.stringify(mcpControls.content)).not.toBe(true)
-    expect(SessionControlStateSchema.parse(mcpControls.structuredContent)).toEqual(controls)
+    expect(SessionControlStateSchema.parse(decodeMcpToolResult(mcpControls))).toEqual(controls)
     expect(await savedFacts()).toEqual(before)
     expect(nativeFactories.allocate).not.toHaveBeenCalled()
     expect(processRegistry.scope).not.toHaveBeenCalled()

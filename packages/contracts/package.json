@@ -5,6 +5,7 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./operator-mcp": { "types": "./dist/operatorMcp.d.ts", "import": "./dist/operatorMcp.js" },
     "./local-client-node": {
       "types": "./dist/localClientNode.d.ts",
       "import": "./dist/localClientNode.js"

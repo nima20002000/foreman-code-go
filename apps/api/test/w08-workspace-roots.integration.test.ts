@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -73,18 +74,18 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
       const baseUrl = `/api/management/workspaces/${workspaceId}`
       const choices = await app.inject({ method: 'GET', url: `${baseUrl}/root-policies`, headers: auth })
       expect(choices.statusCode).toBe(200); expect(choices.json().allowlists[0]).toEqual(allowlist)
-      expect((await client.callTool({ name: 'workspace_root_choices_list', arguments: { workspaceId } })).structuredContent).toEqual(choices.json())
+      expect(decodeMcpToolResult((await client.callTool({ name: 'workspace_root_choices_list', arguments: { workspaceId } })))).toEqual(choices.json())
       const selection = { workspaceId, hostRef: allowlist.hostRef, allowedBaseId: allowlist.bases[0]!.baseId, configurationRevision: '1',
         relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 0, expectedRootPolicyRevision: 0 }
       const validation = await client.callTool({ name: 'workspace_root_location_validate', arguments: selection })
       expect(validation.isError).not.toBe(true)
-      expect((validation.structuredContent as { attestation: { canonicalProjectRoot: string } }).attestation.canonicalProjectRoot).toBe(join(basePath, 'project'))
+      expect((decodeMcpToolResult(validation) as { attestation: { canonicalProjectRoot: string } }).attestation.canonicalProjectRoot).toBe(join(basePath, 'project'))
       const input = { ...selection, commandId: randomUUID() }
       const saved = await app.inject({ method: 'PUT', url: `${baseUrl}/root-location`, headers: auth, payload: input })
       expect(saved.statusCode).toBe(200); expect(saved.json().value).toMatchObject({ evidence: 'bound', workspaceId, locationRevision: 1,
         executionLocation: { runnerId: 'runner-local', rootPath: join(basePath, 'project') } })
       const replay = await client.callTool({ name: 'workspace_root_location_set', arguments: input })
-      expect(replay.isError).not.toBe(true); expect(replay.structuredContent).toEqual({ ...saved.json(), replayed: true })
+      expect(replay.isError).not.toBe(true); expect(decodeMcpToolResult(replay)).toEqual({ ...saved.json(), replayed: true })
       expect((await service.get(owner.principal, { workspaceId }))).toEqual(saved.json().value)
       const fresh = new WorkspaceBoundLocationService(db.pool, new PostgresCommandCoordinator(db.pool), new PostgresWorkspaceRootPolicies(mainId, hosts))
       expect(await fresh.get(owner.principal, { workspaceId })).toEqual(saved.json().value)

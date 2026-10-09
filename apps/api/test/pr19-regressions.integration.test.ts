@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
@@ -288,7 +289,7 @@ describe('PR19 durable admission, authentication and native-session regressions'
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       const history = await client.callTool({ name: 'operator_handoff_history_get', arguments: {} })
       expect(history.isError).not.toBe(true)
-      expect((history.structuredContent as { messages: Array<{ content: string }> }).messages.map((message) => message.content)).toContain('Remember the release context.')
+      expect((decodeMcpToolResult(history) as { messages: Array<{ content: string }> }).messages.map((message) => message.content)).toContain('Remember the release context.')
       const narrowed = owner.grants.map((grant) => ({ ...grant, actions: grant.actions.filter((action) => action !== 'operator_chat:read') }))
       await pool.query('update management_principals set grants=$2::jsonb where id=$1', [owner.id, JSON.stringify(narrowed)])
       expect((await access.authenticate(token)).grants.flatMap((grant) => grant.actions)).not.toContain('operator_handoff:read')

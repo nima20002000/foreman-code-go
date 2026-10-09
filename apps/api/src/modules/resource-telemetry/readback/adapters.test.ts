@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -68,7 +69,7 @@ describe('authenticated HTTP/Operator MCP ResourceTelemetry parity', () => {
             payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: RESOURCE_TELEMETRY_READ_TOOL, arguments: selector } } })
           const result = mcp.json().result
           expect(result).toBeDefined()
-          expect(result.structuredContent).toEqual(http.json())
+          expect(decodeMcpToolResult(result)).toEqual(http.json())
           if (credential === 'denied') { expect(http.statusCode).toBe(403); expect(result.isError).toBe(true); expect(http.json().lastKnown).toBeUndefined() }
           else {
             expect(http.statusCode).toBe(200)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -69,7 +70,7 @@ it.each(['unshared-replacement', 'shared-replacement', 'no-replacement', 'incomp
         const mcp = await app.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${credential}`,
           accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2025-06-18' },
           payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: RESOURCE_TELEMETRY_READ_TOOL, arguments: telemetryOwnedFixture } } })
-        expect(mcp.json().result.structuredContent).toEqual(http.json())
+        expect(decodeMcpToolResult(mcp.json().result)).toEqual(http.json())
         if (credential === 'denied') {
           expect(http.statusCode).toBe(403); expect(mcp.json().result.isError).toBe(true)
           expect(http.json().sample).toBeUndefined(); expect(http.json().lastKnown).toBeUndefined()

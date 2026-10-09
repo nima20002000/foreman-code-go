@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, stat } from 'node:fs/promises'
@@ -13,7 +14,7 @@ function value(result: { isError?: boolean | undefined; structuredContent?: unkn
   // SDK optional properties can be present with undefined. Success retains its
   // structured body; an error's text-only envelope is diagnostic, not success.
   expect(result.isError, JSON.stringify(result)).not.toBe(true)
-  return result.structuredContent as Record<string, unknown>
+  return decodeMcpToolResult(result) as Record<string, unknown>
 }
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration', () => {
@@ -119,7 +120,7 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       await expect(stat(rootPath)).rejects.toMatchObject({ code: 'ENOENT' })
       expect(value(await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId: ids[1] } })))
         .toMatchObject({ executionLocation: { rootPath }, locationValidation: { status: 'unavailable' } })
-      const listed = value(await f.client.callTool({ name: 'workspace_list', arguments: { limit: 100 } }))
+      const listed = value(await f.client.callTool({ name: 'workspace_list', arguments: { detail: 'full', limit: 100 } }))
       expect((listed.items as Array<{ workspace: { id: string } }>).map((item) => item.workspace.id)).toEqual(expect.arrayContaining(ids))
     } finally { await f.close() }
   }, 60000)

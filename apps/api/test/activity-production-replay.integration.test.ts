@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -301,7 +302,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(JSON.stringify(bounded).length).toBeLessThan(400000)
     const mcpHistory = await f.call('agent_chat_read', { workspaceId, ...(selection ? { selection } : { query }), history: { limit: 1 } })
     expect(mcpHistory.isError).not.toBe(true)
-    expect((mcpHistory.structuredContent as { history: unknown }).history).toEqual(largeHistory)
+    expect((decodeMcpToolResult(mcpHistory) as { history: unknown }).history).toEqual(largeHistory)
     expect(f.replay.starts.length).toBe(calls)
     f.replay.complete(native.sessionId, native.turnId!, '')
     const finished = await eventually(read, (state) => state.activeTurn === null)
@@ -322,7 +323,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(cold.messages.some((entry) => entry.content.includes('late stale delta'))).toBe(false)
     const mcp = await f.call('agent_chat_read', { workspaceId, ...(selection ? { selection } : { query }) })
     expect(mcp.isError).not.toBe(true)
-    const mcpState = selected ? ReadSelectedRunChatResponseSchema.parse(mcp.structuredContent) : AgentChatStateSchema.parse(mcp.structuredContent)
+    const mcpState = selected ? ReadSelectedRunChatResponseSchema.parse(decodeMcpToolResult(mcp)) : AgentChatStateSchema.parse(decodeMcpToolResult(mcp))
     const equivalent = 'kind' in mcpState ? (mcpState.kind === 'selected' ? mcpState.state : undefined) : mcpState
     expect(equivalent?.activitySnapshot).toEqual(cold.activitySnapshot)
     const denied = await f.call('agent_chat_read', { workspaceId, ...(selection ? { selection } : { query }) }, f.denied.token)
@@ -406,7 +407,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(waiting.activitySnapshot!.pendingInteractions[0]!.providerAcknowledged).toBe(false)
     const readback = await f.call('operator_chat_get', { conversationId: id })
     expect(readback.isError).not.toBe(true)
-    expect(OperatorConversationStateSchema.parse(readback.structuredContent).activitySnapshot).toEqual(waiting.activitySnapshot)
+    expect(OperatorConversationStateSchema.parse(decodeMcpToolResult(readback)).activitySnapshot).toEqual(waiting.activitySnapshot)
     f.replay.disconnect(native.sessionId)
     const lost = await eventually(read, (state) => state.responseAvailability?.available === false)
     expect(lost.pendingInteraction).toEqual(waiting.pendingInteraction)
@@ -538,7 +539,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(new Set(message.attachments!.map((attachment) => attachment.file.fileId)).size).toBe(13)
     const mcp = await f.call('operator_chat_get', { conversationId: id })
     expect(mcp.isError).not.toBe(true)
-    expect(OperatorConversationStateSchema.parse(mcp.structuredContent).activitySnapshot).toEqual(finished.activitySnapshot)
+    expect(OperatorConversationStateSchema.parse(decodeMcpToolResult(mcp)).activitySnapshot).toEqual(finished.activitySnapshot)
     await f.restart()
     const retained = await read()
     expect(retained.messages.find((entry) => entry.id === message.id)?.attachments).toEqual(message.attachments)
@@ -613,12 +614,12 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(detail.activitySnapshot!.active).toEqual([])
     const readback = await f.call('run_get', { workspaceId: detail.run.workspaceId, runId: detail.run.id })
     expect(readback.isError).not.toBe(true)
-    expect(SavedRunDetailsSchema.parse(readback.structuredContent).activitySnapshot).toEqual(detail.activitySnapshot)
+    expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(readback)).activitySnapshot).toEqual(detail.activitySnapshot)
     const activity = await f.call('run_activities_get_v1', { workspaceId: detail.run.workspaceId, runId: detail.run.id, limit: 10 })
     expect(activity.isError).not.toBe(true)
-    expect(activity.structuredContent).toMatchObject({ scope: { workspaceId: detail.run.workspaceId,
+    expect(decodeMcpToolResult(activity)).toMatchObject({ scope: { workspaceId: detail.run.workspaceId,
       workflowId: detail.run.workflowId, runId: detail.run.id, workflowVersionId: detail.run.workflowVersionId } })
-    expect(activity.structuredContent).not.toHaveProperty('activitySnapshot')
+    expect(decodeMcpToolResult(activity)).not.toHaveProperty('activitySnapshot')
     const denied = await f.call('run_get', { workspaceId: detail.run.workspaceId, runId: detail.run.id }, f.denied.token)
     expect(denied.isError).toBe(true)
     await f.access.revoke(f.writer.principal.id)

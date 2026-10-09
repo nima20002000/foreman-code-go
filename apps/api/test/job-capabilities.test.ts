@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -29,9 +30,9 @@ async function fixture(actor=principal(),mounted=true,profiles=true) {
   const client=new Client({name:'job-capability-tests',version:'1'})
   connections.push({client,close:()=>server.close()});await client.connect(clientTransport)
   const capabilities=async(workspaceId?:string)=>{
-    const result=await client.callTool({name:'operator_get_capabilities',arguments:workspaceId?{workspaceId}:{}})
+    const result=await client.callTool({name:'operator_get_capabilities',arguments:{ ...workspaceId?{workspaceId}:{}, detail: 'full' }})
     expect(result.isError,JSON.stringify(result)).not.toBe(true)
-    return ScheduleOperatorCapabilitiesSchema.parse(result.structuredContent)
+    return ScheduleOperatorCapabilitiesSchema.parse(decodeMcpToolResult(result))
   }
   return {client,context,capabilities,choices,listProfiles,recordDenied}
 }

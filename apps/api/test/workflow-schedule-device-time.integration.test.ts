@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -41,7 +42,7 @@ describe.skipIf(!postgresEnabled)('device-time and seconds authenticated HTTP/MC
     const mcp = await client.callTool({ name: 'workflow_schedule_get', arguments: f.scope })
     expect(mcp.isError).not.toBe(true)
     const result = ScheduleGetResultSchema.parse(http.json())
-    expect(ScheduleGetResultSchema.parse(mcp.structuredContent)).toEqual(result)
+    expect(ScheduleGetResultSchema.parse(decodeMcpToolResult(mcp))).toEqual(result)
     return result.schedule!
   }
 
@@ -54,12 +55,12 @@ describe.skipIf(!postgresEnabled)('device-time and seconds authenticated HTTP/MC
     const saved = ScheduleSaveResultSchema.parse(first.json())
     expect(saved.value).toMatchObject({ timezone: 'UTC', localDate: '2099-08-24', time: '15:30', nextOccurrenceAt: '2099-08-24T15:30:00.000Z' })
     const replay = await owner.callTool({ name: 'workflow_schedule_save', arguments: { ...f.scope, ...body } })
-    expect(ScheduleSaveResultSchema.parse(replay.structuredContent)).toEqual({ value: saved.value, replayed: true })
+    expect(ScheduleSaveResultSchema.parse(decodeMcpToolResult(replay))).toEqual({ value: saved.value, replayed: true })
     expect(await readBoth(reader)).toEqual(saved.value)
     const edited = await owner.callTool({ name: 'workflow_schedule_save', arguments: { ...f.command(1),
       schedule: { ...body.schedule, timezone: 'America/Los_Angeles', localDate: '2099-08-24', time: '08:30' } } })
     expect(edited.isError).not.toBe(true)
-    const second = ScheduleSaveResultSchema.parse(edited.structuredContent).value
+    const second = ScheduleSaveResultSchema.parse(decodeMcpToolResult(edited)).value
     expect(second).toEqual({ ...saved.value, revision: 2 })
     expect(scheduleUtcToLocalTime(second.nextOccurrenceAt!, 'Asia/Tokyo')).toEqual({ localDate: '2099-08-25', time: '00:30' })
     expect(scheduleUtcToLocalTime(second.nextOccurrenceAt!, 'America/Los_Angeles')).toEqual({ localDate: '2099-08-24', time: '08:30' })
@@ -84,11 +85,11 @@ describe.skipIf(!postgresEnabled)('device-time and seconds authenticated HTTP/MC
     const input = { ...f.command(0), schedule }
     const savedTool = await owner.callTool({ name: 'workflow_schedule_save', arguments: input })
     expect(savedTool.isError).not.toBe(true)
-    const saved = ScheduleSaveResultSchema.parse(savedTool.structuredContent).value
+    const saved = ScheduleSaveResultSchema.parse(decodeMcpToolResult(savedTool)).value
     expect(saved).toMatchObject({ every: 1, unit: 'second', anchorAt: '2099-08-24T15:30:17.250Z', nextOccurrenceAt: '2099-08-24T15:30:17.250Z' })
     expect(await readBoth(reader)).toEqual(saved)
     const replay = await owner.callTool({ name: 'workflow_schedule_save', arguments: input })
-    expect(ScheduleSaveResultSchema.parse(replay.structuredContent)).toEqual({ value: saved, replayed: true })
+    expect(ScheduleSaveResultSchema.parse(decodeMcpToolResult(replay))).toEqual({ value: saved, replayed: true })
     const edit = await app!.inject({ method: 'PUT', url: root(), headers: { authorization: `Bearer ${f.writer.token}` },
       payload: { commandId: randomUUID(), expectedRevision: 1, schedule: { ...schedule, every: 2 } } })
     expect(edit.statusCode).toBe(200)

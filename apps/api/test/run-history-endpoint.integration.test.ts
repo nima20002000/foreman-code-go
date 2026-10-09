@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
@@ -52,7 +53,7 @@ describe.skipIf(!postgresEnabled)('saved current Run HTTP/MCP parity', () => {
       expect(names).toContain('run_get'); expect(names).not.toContain('run_history_get_v1')
       const remote = await client.callTool({ name: 'run_get', arguments: input() })
       expect(remote.isError).not.toBe(true)
-      expect(SavedRunDetailsSchema.parse(remote.structuredContent)).toEqual(detail)
+      expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(remote))).toEqual(detail)
       expect(detail.run.workflowVersionId).toBe(fixture.saved.value.currentVersionId)
       expect(detail.run.workflowVersionId).not.toBe(fixture.newer.value.currentVersionId)
       expect(detail.run.executionSemanticsVersion).toBe(3)

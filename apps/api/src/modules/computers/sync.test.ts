@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -136,14 +137,14 @@ it('serves authenticated Agent context while optional shared-file installation i
       structuredContent: expect.objectContaining({ principal: expect.objectContaining({ id: worker.id }) }),
     })) })
     await read
-    expect(readback.mock.calls[0]![0].structuredContent).not.toHaveProperty('sharedFiles')
+    expect(decodeMcpToolResult(readback.mock.calls[0]![0])).not.toHaveProperty('sharedFiles')
   } finally {
     release()
     await setup
     await read
   }
   const available = await client.callTool({ name: 'context_get', arguments: {} })
-  expect(available.structuredContent).toMatchObject({ sharedFiles: { provider: 'syncthing',
+  expect(decodeMcpToolResult(available)).toMatchObject({ sharedFiles: { provider: 'syncthing',
     path: `/computer-0/shared/${sharedFolderId('workspace-a')}` } })
 })
 
@@ -241,17 +242,17 @@ it('supports authenticated MCP discovery, denied callers and persisted readback 
     headers: { authorization: 'Bearer reader' }, payload: input })
   expect(denied.statusCode, JSON.stringify(denied.json())).toBe(403)
   const saved = await writer.callTool({ name: 'computer_sync_update', arguments: input })
-  expect(ComputerSyncStatusSchema.parse(saved.structuredContent).folders[0]).toMatchObject({ enabled: false, revision: 1 })
+  expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(saved)).folders[0]).toMatchObject({ enabled: false, revision: 1 })
   const persisted = await reader.callTool({ name: 'computer_sync_status', arguments: { target: f.targets[1] } })
-  expect(ComputerSyncStatusSchema.parse(persisted.structuredContent).folders[0]).toMatchObject({ enabled: false, revision: 1 })
+  expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(persisted)).folders[0]).toMatchObject({ enabled: false, revision: 1 })
   const enabled = await updateOnly.callTool({ name: 'computer_sync_update', arguments: {
     ...input, expectedRevision: 1, enabled: true, commandId: randomUUID(),
   } })
   expect(enabled.isError).not.toBe(true)
-  expect(ComputerSyncStatusSchema.parse(enabled.structuredContent).folders[0]).toMatchObject({ enabled: true, revision: 2 })
+  expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(enabled)).folders[0]).toMatchObject({ enabled: true, revision: 2 })
   expect((await updateOnly.callTool({ name: 'computer_sync_status', arguments: { target: f.targets[1] } })).isError).toBe(true)
   const enabledReadback = await reader.callTool({ name: 'computer_sync_status', arguments: { target: f.targets[1] } })
-  expect(ComputerSyncStatusSchema.parse(enabledReadback.structuredContent).folders[0])
+  expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(enabledReadback)).folders[0])
     .toMatchObject({ enabled: true, revision: 2 })
   f.principals.set('writer', { ...f.writer, grants: [] })
   await expect(f.service.update(f.writer, 'mcp', { ...input, expectedRevision: 2, enabled: false,

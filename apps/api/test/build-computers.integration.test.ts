@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { JobSql } from '../src/modules/jobs/repository.js'
 import { randomUUID } from 'node:crypto'
@@ -129,11 +130,11 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     const response = await client.callTool({ name: 'build_computer_update', arguments: input })
     expect(response.isError).not.toBe(true)
     const replay = await client.callTool({ name: 'build_computer_update', arguments: input })
-    expect(replay.structuredContent).toEqual(response.structuredContent)
+    expect(decodeMcpToolResult(replay)).toEqual(decodeMcpToolResult(response))
     const readback = await client.callTool({ name: 'build_computer_get', arguments: { target } })
-    expect(readback.structuredContent).toEqual(response.structuredContent)
+    expect(decodeMcpToolResult(readback)).toEqual(decodeMcpToolResult(response))
     const restarted = new BuildComputerSettings(database.pool, commands, async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
-    expect(await restarted.read(writer.principal, { target })).toEqual(response.structuredContent)
+    expect(await restarted.read(writer.principal, { target })).toEqual(decodeMcpToolResult(response))
     const stale = await client.callTool({ name: 'build_computer_update', arguments: { ...input, commandId: randomUUID() } })
     expect(stale.isError).toBe(true)
     expect(JSON.stringify(stale.content)).toContain('REVISION_CONFLICT')
@@ -159,19 +160,18 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       target: computer.target, expectedRevision: 0, buildEnabled: true, buildPriority: index * 50,
       buildAllowancePercent: 60,
     })) }
-    const saved = BuildComputerBatchResultSchema.parse((await client.callTool({
+    const saved = BuildComputerBatchResultSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'build_computers_update', arguments: command,
-    })).structuredContent)
+    }))))
     expect(saved.computers.map(status => status.preference.revision)).toEqual([1, 1, 1])
-    expect((await client.callTool({ name: 'build_computers_update', arguments: command })).structuredContent).toEqual(saved)
+    expect(decodeMcpToolResult((await client.callTool({ name: 'build_computers_update', arguments: command })))).toEqual(saved)
     const denied = await readOnly.callTool({ name: 'build_computers_update', arguments: {
       ...command, commandId: randomUUID(), updates: command.updates.map(change => ({ ...change, expectedRevision: 1 })),
     } })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     for (const status of saved.computers) {
-      expect((await readOnly.callTool({ name: 'build_computer_get', arguments: { target: status.preference.target } }))
-        .structuredContent).toEqual(status)
+      expect(decodeMcpToolResult((await readOnly.callTool({ name: 'build_computer_get', arguments: { target: status.preference.target } })))).toEqual(status)
     }
     const restarted = new BuildComputerSettings(database.pool, new PostgresCommandCoordinator(database.pool),
       async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
@@ -190,13 +190,13 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     await expect(f.jobs.start(writer.principal, 'http', f.workspaceId, start)).rejects.toMatchObject({
       code: 'JOB_NO_BUILD_COMPUTER', details: { reasons: ['request_exceeds_maximum'] },
     })
-    const expanded = BuildComputerBatchResultSchema.parse((await client.callTool({
+    const expanded = BuildComputerBatchResultSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'build_computers_update', arguments: {
         commandId: randomUUID(), updates: command.updates.map(change => ({
           ...change, expectedRevision: 1, buildAllowancePercent: 100,
         })),
       },
-    })).structuredContent)
+    }))))
     expect(expanded.computers.map(status => status.preference)).toEqual(saved.computers.map(status => ({
       ...status.preference, revision: 2, buildAllowancePercent: 100,
     })))
@@ -260,10 +260,10 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     const writerClient = await f.connect(writer.token)
     const saved = await writerClient.callTool({ name: 'build_computer_update', arguments: input })
     expect(saved.isError).not.toBe(true)
-    const status = BuildComputerStatusSchema.parse(saved.structuredContent)
+    const status = BuildComputerStatusSchema.parse(decodeMcpToolResult(saved))
     expect(status.preference).toMatchObject({ target, buildEnabled: true, buildPriority: 45 })
     const client = await f.connect(reader.token)
-    expect((await client.callTool({ name: 'build_computer_get', arguments: { target } })).structuredContent)
+    expect(decodeMcpToolResult((await client.callTool({ name: 'build_computer_get', arguments: { target } }))))
       .toEqual(status)
     const denied = await client.callTool({ name: 'build_computer_update',
       arguments: { ...input, commandId: randomUUID(), expectedRevision: status.preference.revision } })
@@ -307,7 +307,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       name: 'MCP automatic build', spec: f.computers[0]!.auto,
     } })
     expect(saved.isError).not.toBe(true)
-    const { definition } = z.object({ definition: JobDefinitionSchema }).parse(saved.structuredContent)
+    const { definition } = z.object({ definition: JobDefinitionSchema }).parse(decodeMcpToolResult(saved))
     const command = { workspaceId: f.workspaceId, commandId: randomUUID(),
       definitionId: definition.id, expectedRevision: definition.revision }
     const readOnly = await f.connect(reader.token)
@@ -317,7 +317,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(f.accept).not.toHaveBeenCalled()
     const started = await client.callTool({ name: 'job_start', arguments: command })
     expect(started.isError).not.toBe(true)
-    const { admission } = z.object({ admission: JobAdmissionResultSchema }).parse(started.structuredContent)
+    const { admission } = z.object({ admission: JobAdmissionResultSchema }).parse(decodeMcpToolResult(started))
     expect(admission.kind).not.toBe('retained-execution')
     await f.jobs.wakeQueue()
     let ticketId = ''
@@ -327,12 +327,12 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(ticket.state).toBe('accepted')
     const execution = JobExecutionSchema.parse(await f.jobs.getExecution(writer.principal, f.workspaceId, ticket.executionId))
     expect(execution.acceptedSpec.computerSelection).toMatchObject({ mode: 'auto', buildPriority: 100 })
-    expect((await client.callTool({ name: 'job_start', arguments: command })).structuredContent).toEqual({
+    expect(decodeMcpToolResult((await client.callTool({ name: 'job_start', arguments: command })))).toEqual({
       admission: { kind: 'accepted', ticketId, executionId: execution.id },
     })
-    expect((await readOnly.callTool({ name: 'job_get', arguments: {
+    expect(decodeMcpToolResult((await readOnly.callTool({ name: 'job_get', arguments: {
       workspaceId: f.workspaceId, executionId: execution.id,
-    } })).structuredContent).toEqual({ execution })
+    } })))).toEqual({ execution })
     expect((await f.jobs.getExecution(writer.principal, f.workspaceId, execution.id)).acceptedSpec).toEqual(execution.acceptedSpec)
     expect(f.accept).toHaveBeenCalledTimes(1)
   })
@@ -361,7 +361,7 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(await f.jobs.getDefinition(writer.principal, f.workspaceId, definition.id)).toEqual(definition)
     const updated = await client.callTool({ name: 'job_definition_save', arguments: edit })
     expect(updated.isError).not.toBe(true)
-    const { definition: saved } = z.object({ definition: JobDefinitionSchema }).parse(updated.structuredContent)
+    const { definition: saved } = z.object({ definition: JobDefinitionSchema }).parse(decodeMcpToolResult(updated))
     expect(saved.revision).toBe(definition.revision + 1)
     const staleEdit = await client.callTool({ name: 'job_definition_save', arguments: {
       ...edit, commandId: randomUUID(),
@@ -375,9 +375,9 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
     expect(staleStart.isError).toBe(true)
     expect(JSON.stringify(staleStart.content)).toContain('REVISION_CONFLICT')
     expect(f.accept).not.toHaveBeenCalled()
-    expect((await client.callTool({ name: 'job_definition_get', arguments: {
+    expect(decodeMcpToolResult((await client.callTool({ name: 'job_definition_get', arguments: {
       workspaceId: f.workspaceId, definitionId: saved.id,
-    } })).structuredContent).toEqual(updated.structuredContent)
+    } })))).toEqual(decodeMcpToolResult(updated))
     const start = { workspaceId: f.workspaceId, commandId: randomUUID(), definitionId: saved.id,
       expectedRevision: saved.revision }
     const accepted = await client.callTool({ name: 'job_start', arguments: start })

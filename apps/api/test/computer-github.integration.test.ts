@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { EventEmitter } from 'node:events'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -77,26 +78,26 @@ it.skipIf(!postgresEnabled).each(['structured', 'text'])('verifies GitHub accoun
     const writer = await connect(['settings:read', 'settings:update', 'capabilities:read'])
     const reader = await connect(['settings:read', 'capabilities:read'])
     const account = async () => {
-      const result = ComputerAccountsListSchema.parse((await writer.callTool({ name: 'computer_accounts_list', arguments: {} })).structuredContent)
+      const result = ComputerAccountsListSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'computer_accounts_list', arguments: {} }))))
       return result.computers[0]!.accounts!.accounts.find(value => value.tool === 'github')
     }
     expect((await account())?.account).toBe('previous-owner')
-    const started = GitHubLoginStateSchema.parse((await writer.callTool({ name: 'computer_github_login_start', arguments: { target } })).structuredContent)
+    const started = GitHubLoginStateSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'computer_github_login_start', arguments: { target } }))))
     await writeFile(credentialPath, JSON.stringify('signed-in-owner'))
     loginChild!.emit('exit', 0)
     const input = { target, loginId: started.loginId }
-    await vi.waitFor(async () => expect(GitHubLoginStateSchema.parse((await writer.callTool({
+    await vi.waitFor(async () => expect(GitHubLoginStateSchema.parse(decodeMcpToolResult((await writer.callTool({
       name: 'computer_github_login_status', arguments: input,
-    })).structuredContent)).toMatchObject({ state: 'git-setup-failed', account: 'signed-in-owner' }))
+    }))))).toMatchObject({ state: 'git-setup-failed', account: 'signed-in-owner' }))
     expect((await account())?.account).toBe('signed-in-owner')
     expect((await reader.listTools()).tools.map(tool => tool.name)).not.toContain('computer_github_setup_git')
     expect((await reader.callTool({ name: 'computer_github_setup_git', arguments: input })).isError).toBe(true)
     setupFails = false
-    expect(GitHubLoginStateSchema.parse((await writer.callTool({ name: 'computer_github_setup_git', arguments: input })).structuredContent)
+    expect(GitHubLoginStateSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'computer_github_setup_git', arguments: input }))))
       .state).toBe('signed-in')
     expect((await reader.callTool({ name: 'computer_github_logout', arguments: { target } })).isError).toBe(true)
     expect((await account())?.signedIn).toBe(true)
-    expect(GitHubLoginStateSchema.parse((await writer.callTool({ name: 'computer_github_logout', arguments: { target } })).structuredContent)
+    expect(GitHubLoginStateSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'computer_github_logout', arguments: { target } }))))
       .state).toBe('signed-out')
     expect((await account())?.signedIn).toBe(false)
     expect((await probeComputerAccounts(probe)).accounts.find(value => value.tool === 'github')?.signedIn).toBe(false)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -106,12 +107,12 @@ describe.skipIf(!postgresEnabled)('build readiness matches admission through HTT
     const client = await connect(writer.token)
     const input = { target, commandId: randomUUID(), expectedRevision: 0,
       buildEnabled: true, buildPriority: 50, buildAllowancePercent: 100 }
-    const saved = BuildComputerStatusSchema.parse((await client.callTool({
-      name: 'build_computer_update', arguments: input })).structuredContent)
+    const saved = BuildComputerStatusSchema.parse(decodeMcpToolResult((await client.callTool({
+      name: 'build_computer_update', arguments: input }))))
     expect(saved.state).toBe('ready')
     async function readback() {
-      const mcp = BuildComputerStatusSchema.parse((await client.callTool({
-        name: 'build_computer_get', arguments: { target } })).structuredContent)
+      const mcp = BuildComputerStatusSchema.parse(decodeMcpToolResult((await client.callTool({
+        name: 'build_computer_get', arguments: { target } }))))
       const http = await app.inject({ method: 'POST', url: '/api/management/settings/build-computers/read',
         headers: { authorization: `Bearer ${writer.token}` }, payload: { target } })
       expect(http.statusCode, http.body).toBe(200)
@@ -127,8 +128,8 @@ describe.skipIf(!postgresEnabled)('build readiness matches admission through HTT
     expect(await readback()).toMatchObject({ state: 'busy',
       reasons: ['More available memory is required before another build can start.'] })
     memory = 14 * 2 ** 30
-    const reduced = BuildComputerStatusSchema.parse((await client.callTool({ name: 'build_computer_update',
-      arguments: { ...input, commandId: randomUUID(), expectedRevision: 1, buildAllowancePercent: 10 } })).structuredContent)
+    const reduced = BuildComputerStatusSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'build_computer_update',
+      arguments: { ...input, commandId: randomUUID(), expectedRevision: 1, buildAllowancePercent: 10 } }))))
     expect(reduced).toMatchObject({ preference: { buildAllowancePercent: 10, revision: 2 },
       state: 'setup-required', reasons: ['The build allowance is too small for this runtime. Increase the allowance.'] })
     expect(await readback()).toEqual(reduced)

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { describe, expect, it } from 'vitest'
 import { CODEX_INTERACTION_SUPPORT } from '@foreman-code/contracts'
 import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema } from '@foreman-code/contracts/management'
@@ -19,10 +20,10 @@ describe.skipIf(!postgresEnabled)('Codex interaction capability readback', () =>
       expect(tools.find((tool) => tool.name === 'harness_get')?.description).toContain('data-entry forms')
       const get = await f.client.callTool({ name: 'harness_get', arguments: { harness: 'codex' } })
       expect(get.isError).not.toBe(true)
-      expect(HarnessCatalogEntrySchema.parse(get.structuredContent)).toEqual(entry)
+      expect(HarnessCatalogEntrySchema.parse(decodeMcpToolResult(get))).toEqual(entry)
       const list = await f.client.callTool({ name: 'harness_list', arguments: {} })
       expect(list.isError).not.toBe(true)
-      expect(HarnessCatalogResultSchema.parse(list.structuredContent).items.find((item) => item.harness === 'codex'))
+      expect(HarnessCatalogResultSchema.parse(decodeMcpToolResult(list)).items.find((item) => item.harness === 'codex'))
         .toEqual(entry)
       expect((await f.services.harnesses.get(f.writer.principal, 'codex')).defaults).toEqual(entry.defaults)
 

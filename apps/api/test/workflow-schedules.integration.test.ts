@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import type pg from 'pg'
@@ -386,16 +387,16 @@ describe.skipIf(!postgresEnabled)('SCH-03 PostgreSQL persistence and authenticat
       const listed = await owner.listTools()
       for (const name of WORKFLOW_SCHEDULE_TOOLS) expect(listed.tools.map((tool) => tool.name)).toContain(name)
       expect((await readOnly.listTools()).tools.map((tool) => tool.name)).not.toContain('workflow_schedule_save')
-      const caps = await owner.callTool({ name: 'operator_get_capabilities', arguments: scope })
+      const caps = await owner.callTool({ name: 'operator_get_capabilities', arguments: { ...scope, detail: 'full' } })
       expect(caps.isError).not.toBe(true)
-      expect(ScheduleOperatorCapabilitiesSchema.parse(caps.structuredContent).tools).toEqual(expect.arrayContaining([...WORKFLOW_SCHEDULE_TOOLS]))
+      expect(ScheduleOperatorCapabilitiesSchema.parse(decodeMcpToolResult(caps)).tools).toEqual(expect.arrayContaining([...WORKFLOW_SCHEDULE_TOOLS]))
       const body = { commandId: randomUUID(), expectedRevision: 0, schedule: weekly }
       const created = await owner.callTool({ name: 'workflow_schedule_save', arguments: { ...scope, ...body } })
       expect(created.isError).not.toBe(true)
-      const saved = ScheduleSaveResultSchema.parse(created.structuredContent)
+      const saved = ScheduleSaveResultSchema.parse(decodeMcpToolResult(created))
       expect(saved).toMatchObject({ replayed: false, value: { revision: 1 } })
       const persisted = await readOnly.callTool({ name: 'workflow_schedule_get', arguments: scope })
-      expect(ScheduleGetResultSchema.parse(persisted.structuredContent)).toEqual({ schedule: saved.value })
+      expect(ScheduleGetResultSchema.parse(decodeMcpToolResult(persisted))).toEqual({ schedule: saved.value })
       const http = await app.inject({ method: 'GET', url: root, headers: { authorization: `Bearer ${reader.token}` } })
       expect(http.statusCode).toBe(200)
       expect(http.headers['cache-control']).toBe('no-store')
@@ -430,18 +431,18 @@ describe.skipIf(!postgresEnabled)('SCH-03 PostgreSQL persistence and authenticat
       expect(pastOnce.isError).toBe(true)
       expect(JSON.stringify(pastOnce.content)).toContain('INVALID_REQUEST')
       const disabled = await owner.callTool({ name: 'workflow_schedule_disable', arguments: command(1) })
-      expect(ScheduleSaveResultSchema.parse(disabled.structuredContent).value).toMatchObject({ revision: 2, enabled: false, nextOccurrenceAt: null })
+      expect(ScheduleSaveResultSchema.parse(decodeMcpToolResult(disabled)).value).toMatchObject({ revision: 2, enabled: false, nextOccurrenceAt: null })
       const enabled = await owner.callTool({ name: 'workflow_schedule_enable', arguments: command(2) })
-      expect(ScheduleSaveResultSchema.parse(enabled.structuredContent).value).toMatchObject({ revision: 3, enabled: true })
+      expect(ScheduleSaveResultSchema.parse(decodeMcpToolResult(enabled)).value).toMatchObject({ revision: 3, enabled: true })
       const dueAt = '2000-01-01T00:00:00.000Z'
       const history = ScheduleOccurrenceSchema.parse({ ...occurrence(dueAt, 'rejected'), scheduleRevision: 3 })
       await record(history)
       const page = await readOnly.callTool({ name: 'workflow_schedule_occurrences_list', arguments: { ...scope, limit: 1 } })
-      expect(ScheduleOccurrencePageSchema.parse(page.structuredContent).items).toEqual([history])
+      expect(ScheduleOccurrencePageSchema.parse(decodeMcpToolResult(page)).items).toEqual([history])
       const clear = await owner.callTool({ name: 'workflow_schedule_clear', arguments: command(3) })
-      expect(ScheduleClearResultSchema.parse(clear.structuredContent)).toEqual({ value: null, replayed: false })
+      expect(ScheduleClearResultSchema.parse(decodeMcpToolResult(clear))).toEqual({ value: null, replayed: false })
       const cleared = await readOnly.callTool({ name: 'workflow_schedule_get', arguments: scope })
-      expect(ScheduleGetResultSchema.parse(cleared.structuredContent)).toEqual({ schedule: null })
+      expect(ScheduleGetResultSchema.parse(decodeMcpToolResult(cleared))).toEqual({ schedule: null })
       const audit = await database.pool.query(`select 1 from management_audit where principal_id=$1
         and source='mcp' and action='workflow_schedule_save' and outcome='denied'`, [reader.principal.id])
       expect(audit.rows.length).toBeGreaterThan(0)

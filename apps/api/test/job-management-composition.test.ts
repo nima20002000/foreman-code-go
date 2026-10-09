@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { ManagementPrincipalSchema } from '@foreman-code/contracts/management'
@@ -45,7 +46,7 @@ it('mounts supplied Jobs through shared management composition with authenticate
     const read = await app.inject({ method: 'GET', url: `${root}/definitions`, headers })
     expect(read.statusCode).toBe(200)
     expect(read.json()).toEqual({ definitions: [] })
-    expect((await rpc('job_definition_list', { workspaceId: 'workspace-fixture' })).result.structuredContent).toEqual(read.json())
+    expect(decodeMcpToolResult((await rpc('job_definition_list', { workspaceId: 'workspace-fixture' })).result)).toEqual(read.json())
     const acceptedReads = connect.mock.calls.length
     const input = { commandId: 'denied-save', expectedRevision: null, name: 'Denied', spec: jobSpec() }
     expect((await app.inject({ method: 'POST', url: `${root}/definitions`, headers, payload: input })).statusCode).toBe(403)

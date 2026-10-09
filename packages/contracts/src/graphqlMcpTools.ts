@@ -42,8 +42,9 @@ export const GRAPHQL_AGENT_TOOLS = {
 
 /** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */
 export const GRAPHQL_OPERATOR_TOOLS = {
+  operator_tool_schema_get: { label: 'Read Operator tool schema', description: 'Read one caller-available tool’s input schema and instructions; output schema is opt-in.', roles: ['operator'], action: 'read-operator-tool-schema', actions: ['capabilities:read'], scope: 'caller', readOnly: true },
   workspace_root_configuration_adopt: { label: "Adopt protected root configuration", description: "Audit adoption of the selected host's existing approved roots; no caller paths or execution authority.", roles: ["operator"], action: "adopt-workspace-root-configuration", actions: ["source_roots:bind", "workspace_locations:update"], scope: "workspace", readOnly: false },
-} as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[]; action: string; actions: readonly string[]; scope: "run" | "workspace"; readOnly: boolean }>;
+} as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[]; action: string; actions: readonly string[]; scope: "run" | "workspace" | "caller"; readOnly: boolean }>;
 
 export const GraphqlAgentToolSchema = z.enum(
   Object.keys(GRAPHQL_AGENT_TOOLS) as [keyof typeof GRAPHQL_AGENT_TOOLS, ...(keyof typeof GRAPHQL_AGENT_TOOLS)[]],

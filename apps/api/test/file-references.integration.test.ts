@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -293,30 +294,30 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
   })
   for (const kind of ['workspace_reference', 'workflow_reference'] as const) it(`MCP ${kind}: add/list/range read/remove/readback share HTTP persistence, retries and audit`, async () => {
     const scope = kind === 'workspace_reference' ? workspace : workflow
-    const capabilities = await tool(owner.token, 'operator_get_capabilities', {})
-    assert.ok((capabilities.result.structuredContent as { runtimeLimits: { feature: string; detail: string }[] }).runtimeLimits
+    const capabilities = await tool(owner.token, 'operator_get_capabilities', { detail: 'full' })
+    assert.ok((decodeMcpToolResult(capabilities.result) as { runtimeLimits: { feature: string; detail: string }[] }).runtimeLimits
       .some((limit) => limit.feature === 'permanent_reference_files' && limit.detail.includes('tools/list')))
     const args = { scope, upload: { requestId: randomUUID(), ...metadata() }, contentBase64: text.toString('base64') }
     const added = await tool(owner.token, 'reference_file_add', args)
     assert.equal(added.result.isError, undefined, JSON.stringify(added))
-    const result = added.result.structuredContent as { value: FileWithRevision; replayed: boolean }
+    const result = decodeMcpToolResult(added.result) as { value: FileWithRevision; replayed: boolean }
     const row = FileWithRevisionSchema.parse(result.value); assert.equal(row.file.state, 'ready')
     const replay = await tool(owner.token, 'reference_file_add', args)
-    assert.equal((replay.result.structuredContent as { replayed: boolean }).replayed, true)
+    assert.equal((decodeMcpToolResult(replay.result) as { replayed: boolean }).replayed, true)
     const list = await tool(reader.token, 'reference_files_list', { scope })
-    assert.ok(FilePageSchema.parse(list.result.structuredContent).items.some((item) => item.file.fileId === row.file.fileId))
+    assert.ok(FilePageSchema.parse(decodeMcpToolResult(list.result)).items.some((item) => item.file.fileId === row.file.fileId))
     const readInput = { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId, offset: 2, length: 8 }
     const read = await tool(reader.token, 'reference_file_read', readInput)
-    const value = (read.result.structuredContent as { value: { status: string; contentBase64: string; byteLength: number } }).value
+    const value = (decodeMcpToolResult(read.result) as { value: { status: string; contentBase64: string; byteLength: number } }).value
     assert.equal(value.status, 'ready'); assert.equal(value.byteLength, 8)
     assert.deepEqual(Buffer.from(value.contentBase64, 'base64'), text.subarray(2, 10))
     const http = await app.inject({ method: 'GET', url: `${pinned(scope, row)}/content`, headers: headers(reader.token) })
     assert.deepEqual(http.rawPayload, text)
     const removeInput = { scope, fileId: row.file.fileId, revisionId: row.revision.revisionId, commandId: randomUUID() }
     const removed = await tool(owner.token, 'reference_file_remove', removeInput)
-    assert.equal((removed.result.structuredContent as { value: FileWithRevision }).value.file.state, 'removed')
-    assert.equal(((await tool(owner.token, 'reference_file_remove', removeInput)).result.structuredContent as { replayed: boolean }).replayed, true)
-    const gone = (await tool(reader.token, 'reference_file_read', readInput)).result.structuredContent as { value: { status: string; reason: string } }
+    assert.equal((decodeMcpToolResult(removed.result) as { value: FileWithRevision }).value.file.state, 'removed')
+    assert.equal((decodeMcpToolResult((await tool(owner.token, 'reference_file_remove', removeInput)).result) as { replayed: boolean }).replayed, true)
+    const gone = decodeMcpToolResult((await tool(reader.token, 'reference_file_read', readInput)).result) as { value: { status: string; reason: string } }
     assert.deepEqual(gone.value.status, 'unavailable'); assert.equal(gone.value.reason, 'removed')
     const audit = await database.pool.query<{ action: string }>("select action from management_audit where source='mcp' and target_key=$1", [`file:${row.file.fileId}`])
     assert.ok(audit.rows.some((item) => item.action === 'reference_file.add'))
@@ -349,10 +350,10 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     const bytes = Buffer.alloc(MAX_FILE_BYTES, 97)
     const result = await tool(owner.token, 'reference_file_add', { scope: workflow, upload: { requestId: randomUUID(), ...metadata(bytes) }, contentBase64: bytes.toString('base64') })
     assert.equal(result.result.isError, undefined, JSON.stringify(result))
-    const row = FileWithRevisionSchema.parse((result.result.structuredContent as { value: unknown }).value)
+    const row = FileWithRevisionSchema.parse((decodeMcpToolResult(result.result) as { value: unknown }).value)
     assert.equal(row.revision.byteSize, MAX_FILE_BYTES)
     const read = await tool(reader.token, 'reference_file_read', { scope: workflow, fileId: row.file.fileId, revisionId: row.revision.revisionId })
-    const value = (read.result.structuredContent as { value: { byteLength: number; eof: boolean; contentBase64: string } }).value
+    const value = (decodeMcpToolResult(read.result) as { value: { byteLength: number; eof: boolean; contentBase64: string } }).value
     assert.equal(value.byteLength, MAX_FILE_READ_BYTES); assert.equal(value.eof, false)
     assert.deepEqual(Buffer.from(value.contentBase64, 'base64'), bytes.subarray(0, MAX_FILE_READ_BYTES))
   }, 60_000)

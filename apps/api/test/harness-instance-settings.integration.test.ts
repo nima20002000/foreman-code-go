@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
@@ -83,11 +84,11 @@ it('refuses non-full Claude host profiles and persists explicit Full access thro
       expect(JSON.stringify(rejected.content)).toContain(CLAUDE_FULL_ACCESS_REQUIRED)
     }
     expect((await scenarioPool.query('select instance_id from harness_instance_settings where instance_id=$1', [instanceId])).rows).toEqual([])
-    const saved = HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({ name: 'harness_instance_save', arguments: args })).structuredContent)
+    const saved = HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'harness_instance_save', arguments: args }))))
     expect(saved.value.configuration).toEqual(configuration)
-    const readback = HostHarnessOverrideListSchema.parse((await reader.callTool({ name: 'harness_instances_list', arguments: {
+    const readback = HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await reader.callTool({ name: 'harness_instances_list', arguments: {
       hostRef: target.hostRef, applicationInstallationId: mainId,
-    } })).structuredContent)
+    } }))))
     expect(readback.overrides.find(item => item.instanceId === instanceId)?.configuration).toEqual(configuration)
   } finally {
     await Promise.all(clients.map(client => client.close()))
@@ -157,29 +158,29 @@ it('persists host overrides through authenticated MCP with denial, CAS, replay, 
     const hostRef = { kind: 'device', mainId, deviceId }
     const args = { commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0, target: { hostRef, applicationInstallationId: workerInstallationId, harnessInstallationId: 'codex-native', installationFingerprint: 'sha' }, presetId: 'local-default:codex', enabled: true,
       configuration: { harness: 'codex', model: 'test', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' } }
-    const first = HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({ name: 'harness_instance_save', arguments: args })).structuredContent)
+    const first = HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'harness_instance_save', arguments: args }))))
     expect(first).toMatchObject({ replayed: false, value: { revision: 1, qualification: 'unqualified' } })
-    const replay = HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({ name: 'harness_instance_save', arguments: args })).structuredContent)
+    const replay = HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'harness_instance_save', arguments: args }))))
     expect(replay.value).toEqual(first.value); expect(replay.replayed).toBe(true)
     const secondArgs = { ...args, commandId: randomUUID(), expectedRevision: 1, configuration: { ...args.configuration, model: 'changed' } }
-    expect(HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({ name: 'harness_instance_save', arguments: secondArgs })).structuredContent).value.revision).toBe(2)
+    expect(HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'harness_instance_save', arguments: secondArgs })))).value.revision).toBe(2)
     expect((await writer.callTool({ name: 'harness_instance_save', arguments: { ...secondArgs, commandId: randomUUID() } })).isError).toBe(true)
     expect((await writer.callTool({ name: 'harness_instance_save', arguments: { ...secondArgs, commandId: randomUUID(), expectedRevision: 2, target: { ...args.target, hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId } } })).isError).toBe(true)
     expect((await pool.query('select count(*)::int as count from harness_instance_settings')).rows[0].count).toBe(2)
     const listInput = { hostRef, applicationInstallationId: workerInstallationId }
     await service.closeChecks()
     service = createService()
-    const listed = HostHarnessOverrideListSchema.parse((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })).structuredContent)
+    const listed = HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'harness_instances_list', arguments: listInput }))))
     expect(listed.overrides[0]).toMatchObject({ revision: 2, configuration: { model: 'changed' }, qualification: 'unqualified' })
     const checkInput = { commandId: randomUUID(), instanceId: args.instanceId, expectedRevision: 2, target: args.target }
-    const checked = HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({ name: 'harness_instance_check', arguments: checkInput })).structuredContent)
+    const checked = HostHarnessInstanceCheckResultSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'harness_instance_check', arguments: checkInput }))))
     expect(checked).toMatchObject({ replayed: false, value: { revision: 2, qualification: 'qualified' }, proof: { instanceRevision: '2', qualified: true } })
-    expect(HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({ name: 'harness_instance_check', arguments: checkInput })).structuredContent).replayed).toBe(true)
+    expect(HostHarnessInstanceCheckResultSchema.parse(decodeMcpToolResult((await writer.callTool({ name: 'harness_instance_check', arguments: checkInput })))).replayed).toBe(true)
     expect(nativeReplay).toHaveBeenCalledTimes(1)
     expect((await pool.query('select count(*)::int as count from harness_instance_profile_evidence')).rows[0].count).toBe(1)
     expect((await denied.callTool({ name: 'harness_instance_check', arguments: checkInput })).isError).toBe(true)
     currentEnvironment = 'fixture-env-2'
-    expect(HostHarnessOverrideListSchema.parse((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })).structuredContent).overrides[0]?.qualification).toBe('unqualified')
+    expect(HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'harness_instances_list', arguments: listInput })))).overrides[0]?.qualification).toBe('unqualified')
     expect(nativeReplay).toHaveBeenCalledTimes(1) // Reading stale evidence never starts a replacement native check.
     expect((await denied.callTool({ name: 'harness_instance_save', arguments: args })).isError).toBe(true)
     expect((await pool.query("select count(*)::int as count from management_audit where outcome='denied' and source='mcp' and action='harness_instance_save'")).rows[0].count).toBe(2)
@@ -189,20 +190,20 @@ it('persists host overrides through authenticated MCP with denial, CAS, replay, 
       configuration: { harness: 'claude', model: 'profile-model', authMode: 'subscription',
         configDirectory: '/worker/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [],
         instructions: '', mcpServers: {} } }
-    const claudeSaved = HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({
-      name: 'harness_instance_save', arguments: claudeArgs })).structuredContent)
+    const claudeSaved = HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.callTool({
+      name: 'harness_instance_save', arguments: claudeArgs }))))
     const claudeCheck = { commandId: randomUUID(), instanceId: claudeSaved.value.instanceId,
       expectedRevision: claudeSaved.value.revision, target: claudeSaved.value.target }
     expect((await denied.callTool({ name: 'harness_instance_check', arguments: claudeCheck })).isError).toBe(true)
     expect(nativeReplay).toHaveBeenCalledTimes(1)
-    const claudeChecked = HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({
-      name: 'harness_instance_check', arguments: claudeCheck })).structuredContent)
+    const claudeChecked = HostHarnessInstanceCheckResultSchema.parse(decodeMcpToolResult((await writer.callTool({
+      name: 'harness_instance_check', arguments: claudeCheck }))))
     expect(claudeChecked).toMatchObject({ value: { configuration: { harness: 'claude' }, qualification: 'qualified' },
       proof: { driverId: 'claude', target: claudeArgs.target } })
     await service.closeChecks()
     service = createService()
-    const cold = HostHarnessOverrideListSchema.parse((await denied.callTool({
-      name: 'harness_instances_list', arguments: listInput })).structuredContent)
+    const cold = HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await denied.callTool({
+      name: 'harness_instances_list', arguments: listInput }))))
     expect(cold.overrides.find(value => value.instanceId === claudeArgs.instanceId)).toEqual(claudeChecked.value)
     expect(nativeReplay).toHaveBeenCalledTimes(2)
     await pool.query('update device_registrations set record=$2::jsonb where id=$1', [deviceId, JSON.stringify({ ...registration, status: 'revoked', authorizationRevision: 2 })])

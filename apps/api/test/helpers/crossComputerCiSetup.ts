@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -45,7 +46,7 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
       continue
     }
     expect(result.isError, `Public MCP operation ${name} failed${code ? ` (${code})` : ''}`).not.toBe(true)
-    return result.structuredContent
+    return decodeMcpToolResult(result)
   }
   throw new Error('The activity read retry budget was exhausted.')
 }

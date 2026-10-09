@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { childHistoryEvent } from '../src/modules/subagents/nativeReadback.js'
 import { randomUUID } from 'node:crypto'
@@ -140,7 +141,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       expect(continued.isError).not.toBe(true)
       const detail = await until(async () => {
         const result = await writer.callTool({ name: 'run_subagent_get_v1', arguments: childInput })
-        const value = RunSubagentDetailSchema.parse(result.structuredContent)
+        const value = RunSubagentDetailSchema.parse(decodeMcpToolResult(result))
         return value.pendingInteraction ? value : undefined
       })
       expect(detail.pendingInteraction!.session.nativeSessionId).toBe('native-child')
@@ -154,7 +155,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       expect(invalid.isError).toBe(true)
       const result = await writer.callTool({ name: 'run_subagent_respond_v1', arguments: command })
       expect(result.isError).not.toBe(true)
-      const receipt = RunSubagentCommandReceiptSchema.parse(result.structuredContent)
+      const receipt = RunSubagentCommandReceiptSchema.parse(decodeMcpToolResult(result))
       expect(receipt).toMatchObject({ state: 'acknowledged', nativeTurnId: turnId,
         response: { option: { response: command.response } } })
       await until(async () => journal.read(detail.pendingInteraction!.session, receipt.response!))
@@ -172,7 +173,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
         subagents: new RunSubagentService(pool, productionSubagentControls(replacementManagers)),
       } as OperatorServices['runs']
       const replay = await writer.callTool({ name: 'run_subagent_respond_v1', arguments: command })
-      const recovered = RunSubagentCommandReceiptSchema.parse(replay.structuredContent)
+      const recovered = RunSubagentCommandReceiptSchema.parse(decodeMcpToolResult(replay))
       expect(recovered).toMatchObject({ id: receipt.id, state: 'acknowledged', response: receipt.response })
       const url = `/api/management/workspaces/${f.input.workspaceId}/runs/${f.input.runId}/subagents/${saved.id}/responses`
       const http = await app.inject({ method: 'POST', url, payload: command,
@@ -501,7 +502,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
           expect(receipt).toMatchObject({ subagentId: child.id, state: 'acknowledged', nativeTurnId: 'child-turn' })
           const mcp = await allowed.callTool({ name, arguments: command })
           expect(mcp.isError).not.toBe(true)
-          expect(RunSubagentCommandReceiptSchema.parse(mcp.structuredContent)).toEqual(receipt)
+          expect(RunSubagentCommandReceiptSchema.parse(decodeMcpToolResult(mcp))).toEqual(receipt)
         }
         const deniedHttp = await app.inject({ method: 'POST', url: `${base}/${operation}`, payload: command,
           headers: { ...headers, authorization: `Bearer ${f.reader.token}` } })
@@ -511,9 +512,9 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
         expect((await foreign.callTool({ name, arguments: command })).isError).toBe(true)
       }
       const detail = RunSubagentDetailSchema.parse((await app.inject({ method: 'GET', url: base, headers })).json())
-      const listed = RunSubagentsPageSchema.parse((await reader.callTool({
+      const listed = RunSubagentsPageSchema.parse(decodeMcpToolResult((await reader.callTool({
         name: 'run_subagents_list_v1', arguments: f.input,
-      })).structuredContent).items[0]!
+      })))).items[0]!
       for (const record of [detail, listed]) {
         expect(record.availableActions).toEqual({ sendInput: record === detail, interrupt: record === detail,
           blockedReason: record === detail ? null : 'SUBAGENT_ACTION_NOT_PERMITTED' })
@@ -526,9 +527,9 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       expect(RunSubagentMessagesPageSchema.parse((await app.inject({
         method: 'GET', url: `${base}/messages`, headers,
       })).json()).items).toMatchObject([{ text: 'Readable child history' }])
-      expect(RunSubagentMessagesPageSchema.parse((await reader.callTool({
+      expect(RunSubagentMessagesPageSchema.parse(decodeMcpToolResult((await reader.callTool({
         name: 'run_subagent_messages_list_v1', arguments: childInput,
-      })).structuredContent).items).toMatchObject([{ text: 'Readable child history' }])
+      })))).items).toMatchObject([{ text: 'Readable child history' }])
       expect((await pool.query('select record from run_subagents where id=$1', [child.id])).rows[0].record).toEqual(saved)
       expect((await pool.query('select count(*)::int as count from run_subagent_command_receipts where subagent_id=$1',
         [child.id])).rows[0].count).toBe(2)
@@ -570,9 +571,9 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       const deniedWrite = await reader.callTool({ name: 'run_subagent_input_v1', arguments: f.command })
       expect(deniedWrite.isError).toBe(true)
       expect((await denied.callTool({ name: 'run_subagents_list_v1', arguments: f.input })).isError).toBe(true)
-      const listed = RunSubagentsPageSchema.parse((await reader.callTool({ name: 'run_subagents_list_v1', arguments: f.input })).structuredContent)
+      const listed = RunSubagentsPageSchema.parse(decodeMcpToolResult((await reader.callTool({ name: 'run_subagents_list_v1', arguments: f.input }))))
       expect(listed.items[0]!.subagent.id).toBe(f.child.id)
-      const receipt = RunSubagentCommandReceiptSchema.parse((await allowed.callTool({ name: 'run_subagent_input_v1', arguments: f.command })).structuredContent)
+      const receipt = RunSubagentCommandReceiptSchema.parse(decodeMcpToolResult((await allowed.callTool({ name: 'run_subagent_input_v1', arguments: f.command }))))
       expect(receipt.state).toBe('acknowledged')
       const persisted = RunSubagentCommandReceiptSchema.parse((await pool.query('select record from run_subagent_command_receipts where id=$1', [receipt.id])).rows[0].record)
       expect(persisted).toEqual(receipt)
@@ -583,7 +584,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       const deniedAudit = await pool.query('select count(*)::int as count from management_audit where principal_id=$1 and outcome=\'denied\'', [f.reader.principal.id])
       expect(deniedAudit.rows[0].count).toBeGreaterThanOrEqual(1)
       expect(RunSubagentSchema.parse((await f.service.get(f.reader.principal, { ...f.input, subagentId: f.child.id })).subagent).id).toBe(f.child.id)
-      expect(RunSubagentMessagesPageSchema.parse((await reader.callTool({ name: 'run_subagent_messages_list_v1', arguments: { ...f.input, subagentId: f.child.id } })).structuredContent).items).toEqual([])
+      expect(RunSubagentMessagesPageSchema.parse(decodeMcpToolResult((await reader.callTool({ name: 'run_subagent_messages_list_v1', arguments: { ...f.input, subagentId: f.child.id } })))).items).toEqual([])
     } finally { for (const client of clients) await client.close(); await app.close() }
   }, 30000)
 })

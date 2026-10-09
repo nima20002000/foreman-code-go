@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { JobRuntimeFingerprintSchema, JobRuntimeProfileListSchema } from '@foreman-code/contracts/job-runtime'
@@ -160,7 +161,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
         const response = await client.callTool({ name: 'job_runtime_profile_save',
           arguments: { workspaceId: f.workspaceId, ...input } })
         expect(response.isError, JSON.stringify(response.content)).not.toBe(true)
-        saved = verificationSaveResult.parse(response.structuredContent).profile
+        saved = verificationSaveResult.parse(decodeMcpToolResult(response)).profile
       }
       expect(saved.spec).toEqual(input.spec)
       expect(saved).toMatchObject({ schemaVersion: 2, revision: 1, status: 'unqualified', measurement: null,
@@ -168,13 +169,13 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
           review: { authority: 'repository-owner', decisionId: 'offline-verification', reviewedOn: '2026-10-05' } } })
       const retry = await client.callTool({ name: 'job_runtime_profile_save', arguments: { workspaceId: f.workspaceId, ...input } })
       expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true)
-      expect(verificationSaveResult.parse(retry.structuredContent).profile).toEqual(saved)
+      expect(verificationSaveResult.parse(decodeMcpToolResult(retry)).profile).toEqual(saved)
       const persisted = (await f.db.pool.query('select record from job_runtime_profiles where id=$1', [saved.id])).rows[0].record
       expect(persisted).toEqual(saved)
       const versions = (await f.db.pool.query('select record from job_runtime_profile_versions where profile_id=$1', [saved.id])).rows
       expect(versions).toEqual([{ record: saved }])
       const read = await client.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId: f.workspaceId } })
-      const result = JobRuntimeProfileListRecordSchema.parse(read.structuredContent)
+      const result = JobRuntimeProfileListRecordSchema.parse(decodeMcpToolResult(read))
       expect(result.profiles.find(item => item.profile.id === saved.id)).toEqual({ profile: saved, ready: false,
         reasons: ['runtime_setup_required'], sideEffects: false })
       const http = await f.app.inject({ method: 'GET', url: `${f.base}/runtime-profiles`, headers: f.auth })
@@ -185,7 +186,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const pending = await client.callTool({ name: 'job_runtime_qualification_request', arguments: {
         workspaceId: f.workspaceId, profileId: saved.id, commandId: randomUUID(), expectedRevision: saved.revision } })
       expect(pending.isError, JSON.stringify(pending.content)).not.toBe(true)
-      const approval = (pending.structuredContent as { approval: { id: string } }).approval
+      const approval = (decodeMcpToolResult(pending) as { approval: { id: string } }).approval
       expect(f.producer.capture).toHaveBeenCalledWith(saved)
       // A paired, authorized computer qualifies its captured candidate directly; there is no approval route.
       const approve = await f.app.inject({ method: 'POST', url: `${f.base}/runtime-qualifications/${approval.id}/approve`,
@@ -195,19 +196,19 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const run = await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
         workspaceId: f.workspaceId, approvalId: approval.id, commandId: runCommandId } })
       expect(run.isError, JSON.stringify(run.content)).not.toBe(true)
-      const qualified = JobVerificationProfileSchema.parse((run.structuredContent as { profile: unknown }).profile)
+      const qualified = JobVerificationProfileSchema.parse((decodeMcpToolResult(run) as { profile: unknown }).profile)
       expect(qualified.status).toBe('qualified')
       expect(qualified.measurement?.suites.map(item => item.suite)).toEqual(saved.spec.suites)
       const qualification = await client.callTool({ name: 'job_runtime_qualification_get', arguments: {
         workspaceId: f.workspaceId, approvalId: approval.id } })
-      const completed = JobRuntimeQualificationReadRecordSchema.parse(qualification.structuredContent)
+      const completed = JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(qualification))
       expect(completed).toMatchObject({ profile: qualified, approval: { status: 'complete' },
         readiness: { ready: true, reasons: [], sideEffects: false } })
       expect((await f.db.pool.query('select record from job_runtime_profiles where id=$1', [saved.id])).rows[0].record)
         .toEqual(qualified)
-      expect((await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
-        workspaceId: f.workspaceId, approvalId: approval.id, commandId: runCommandId } })).structuredContent)
-        .toEqual(run.structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name: 'job_runtime_qualification_run', arguments: {
+        workspaceId: f.workspaceId, approvalId: approval.id, commandId: runCommandId } }))))
+        .toEqual(decodeMcpToolResult(run))
       expect(f.producer.run).toHaveBeenCalledOnce()
 
       const reader = await f.access.issue({ name: 'Verification reader', audience: 'operator',
@@ -217,7 +218,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       expect((await readonly.callTool({ name: 'job_runtime_profile_save',
         arguments: { workspaceId: f.workspaceId, ...input, commandId: randomUUID() } })).isError).toBe(true)
       const readback = await readonly.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId: f.workspaceId } })
-      expect(JobRuntimeProfileListRecordSchema.parse(readback.structuredContent).profiles.find(item => item.profile.id === saved.id))
+      expect(JobRuntimeProfileListRecordSchema.parse(decodeMcpToolResult(readback)).profiles.find(item => item.profile.id === saved.id))
         .toEqual({ profile: qualified, ready: true, reasons: [], sideEffects: false })
       for (const name of ['job_runtime_qualification_request', 'job_runtime_qualification_run']) {
         const args = name.endsWith('request') ? { profileId: saved.id, expectedRevision: 1 } : { approvalId: approval.id }
@@ -242,12 +243,12 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const client = await f.connect()
       const created = await client.callTool({ name: 'job_runtime_profile_save', arguments: { workspaceId: f.workspaceId, ...input } })
       expect(created.isError, JSON.stringify(created.content)).not.toBe(true)
-      const first = verificationSaveResult.parse(created.structuredContent).profile
+      const first = verificationSaveResult.parse(decodeMcpToolResult(created)).profile
       const edit = { ...input, commandId: randomUUID(), id: first.id, expectedRevision: first.revision,
         name: 'Install and unit verification', spec: { ...input.spec, suites: ['install', 'unit'] } }
       const updated = await client.callTool({ name: 'job_runtime_profile_save', arguments: { workspaceId: f.workspaceId, ...edit } })
       expect(updated.isError, JSON.stringify(updated.content)).not.toBe(true)
-      const second = verificationSaveResult.parse(updated.structuredContent).profile
+      const second = verificationSaveResult.parse(decodeMcpToolResult(updated)).profile
       expect(second.revision).toBe(2)
       expect(second.spec.suites).toEqual(['install', 'unit'])
       expect(second.createdAt).toBe(first.createdAt)
@@ -319,13 +320,13 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       expect(read.statusCode, read.body).toBe(200)
       expect(read.json()).toMatchObject({ profile: { status: 'recovery-required', measurement: null }, approval: { status: 'recovery-required' },
         measurement: null, readiness: { ready: false, reasons: ['JOB_RUNTIME_QUALIFICATION_FAILED'], sideEffects: false } })
-      expect((await client.callTool({ name: 'job_runtime_qualification_get', arguments: { workspaceId: f.workspaceId, approvalId: f.approval.id } })).structuredContent).toEqual(read.json())
+      expect(decodeMcpToolResult((await client.callTool({ name: 'job_runtime_qualification_get', arguments: { workspaceId: f.workspaceId, approvalId: f.approval.id } })))).toEqual(read.json())
       const stored = (await f.db.pool.query('select run_command_id,run_principal_id,run_result from job_runtime_qualification_approvals where id=$1', [f.approval.id])).rows[0]
       expect(stored).toEqual({ run_command_id: commandId, run_principal_id: f.owner.principal.id,
         run_result: { outcome: 'denied', closure: 'unconfirmed', reasons: ['JOB_RUNTIME_QUALIFICATION_FAILED'] } })
       const retry = await client.callTool({ name: 'job_runtime_qualification_run', arguments: { workspaceId: f.workspaceId, approvalId: f.approval.id, commandId } })
       expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true)
-      expect(retry.structuredContent).toMatchObject({ profile: { status: 'recovery-required', measurement: null } })
+      expect(decodeMcpToolResult(retry)).toMatchObject({ profile: { status: 'recovery-required', measurement: null } })
       expect(f.producer.run).toHaveBeenCalledOnce()
     } finally { await f.close() }
   }, 120_000)
@@ -340,7 +341,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       expect(expected.profiles).toHaveLength(1); expect(expected.approvals).toEqual([f.approval])
       const read = await client.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId: f.workspaceId } })
       expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-      expect(JobRuntimeProfileListSchema.parse(read.structuredContent)).toEqual(expected)
+      expect(JobRuntimeProfileListSchema.parse(decodeMcpToolResult(read))).toEqual(expected)
       const persisted = (await f.db.pool.query('select record from job_runtime_profiles where id=$1', [f.profile.id])).rows[0].record
       expect(expected.profiles[0]?.profile).toEqual(persisted)
       const outsider = await f.access.issue({ name: 'Foreign scope reader', audience: 'operator',

@@ -71,7 +71,7 @@ describe('production Claude approval composition', () => {
       await client.connect(new StreamableHTTPClientTransport(new URL(endpoint.url), {
         authProvider: { token: async () => 'synthetic-scoped-token' },
       }))
-      const result = await client.callTool({ name: 'workspace_list', arguments: {} })
+      const result = await client.callTool({ name: 'workspace_list', arguments: { detail: 'full' } })
       expect(result.isError).not.toBe(true)
       expect(endpoint.list).toHaveBeenCalledOnce()
       await call.options.hooks!.PostToolUse![0]!.hooks[0]!({ ...call.hookInput, hook_event_name: 'PostToolUse',

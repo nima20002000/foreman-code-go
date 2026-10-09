@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { AgentHarnessSchema } from '@foreman-code/contracts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -141,7 +142,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
         const mcp = await f.mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query,
           history: { limit: 50, ...(before ? { before } : {}) } } })
         assert.notEqual(mcp.isError, true)
-        assert.deepEqual(ReadAgentChatResponseSchema.parse(mcp.structuredContent).history, page)
+        assert.deepEqual(ReadAgentChatResponseSchema.parse(decodeMcpToolResult(mcp)).history, page)
         messages.unshift(...page.messages)
         if (!page.nextCursor) break
         assert.notEqual(page.nextCursor, before)
@@ -154,7 +155,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
       assert.equal(deniedHttp.statusCode, 403)
       const denied = await f.denied.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query, history: {} } })
       assert.equal(denied.isError, true)
-      assert.equal(denied.structuredContent, undefined)
+      assert.equal(decodeMcpToolResult(denied), undefined)
       assert.deepEqual(await f.repository.get(f.id), prior)
       assert.equal(f.native.prompts.length, 0)
     } finally { await f.close() }
@@ -192,7 +193,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
       const command = { workspaceId: f.workspaceId, conversationId: f.id, turnRequestId: 'g4-106', requestId: 'g4-mcp-cancel' }
       const mcpCanceled = await f.mcp.callTool({ name: 'agent_chat_cancel_queued', arguments: command })
       assert.notEqual(mcpCanceled.isError, true)
-      assert.equal(AgentChatStateResponseSchema.parse(mcpCanceled.structuredContent).state.hasMoreTurns, true)
+      assert.equal(AgentChatStateResponseSchema.parse(decodeMcpToolResult(mcpCanceled)).state.hasMoreTurns, true)
       assert.equal((await f.repository.turn(f.id, 'g4-106'))?.delivery, 'canceled')
       const receipt = async () => (await pool.query(`select target_key,input_hash,result from management_command_receipts
         where principal_id=$1 and operation='agent_chat_control' and command_id=$2`, [writer.id, command.requestId])).rows
@@ -206,8 +207,8 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
       assert.equal(advanced.statusCode, 200)
       const replay = await f.mcp.callTool({ name: 'agent_chat_cancel_queued', arguments: command })
       assert.notEqual(replay.isError, true)
-      const replayState = AgentChatStateResponseSchema.parse(replay.structuredContent).state
-      assert.ok(replayState.revision > AgentChatStateResponseSchema.parse(mcpCanceled.structuredContent).state.revision)
+      const replayState = AgentChatStateResponseSchema.parse(decodeMcpToolResult(replay)).state
+      assert.ok(replayState.revision > AgentChatStateResponseSchema.parse(decodeMcpToolResult(mcpCanceled)).state.revision)
       assert.equal(replayState.conversation!.id, f.id)
       assert.deepEqual(await receipt(), originalReceipt)
       assert.deepEqual(await audit(), originalAudit)
@@ -215,7 +216,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
       const stopped = await f.mcp.callTool({ name: 'agent_chat_interrupt', arguments: {
         workspaceId: f.workspaceId, conversationId: f.id, requestId: 'g4-stop', expectedNativeTurnId: 'turn-g4' } })
       assert.notEqual(stopped.isError, true)
-      const after = AgentChatStateResponseSchema.parse(stopped.structuredContent).state
+      const after = AgentChatStateResponseSchema.parse(decodeMcpToolResult(stopped)).state
       assert.equal(after.hasMoreTurns, undefined)
       assert.equal(after.turns.some((entry) => entry.delivery === 'queued'), false)
       assert.equal((await f.repository.turn(f.id, 'g4-1'))?.delivery, 'unknown')
@@ -247,7 +248,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
         const mcp = await f.mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query,
           receipts: { limit: 37, ...(before ? { before } : {}) } } })
         assert.notEqual(mcp.isError, true)
-        assert.deepEqual(ReadAgentChatResponseSchema.parse(mcp.structuredContent).receipts, page)
+        assert.deepEqual(ReadAgentChatResponseSchema.parse(decodeMcpToolResult(mcp)).receipts, page)
         ids.unshift(...page.turns.map((entry) => entry.requestId))
         if (!page.nextCursor) break
         before = page.nextCursor

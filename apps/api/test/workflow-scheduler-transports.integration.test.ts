@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -58,7 +59,7 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     const tool = await client.callTool({ name: 'workflow_schedule_get', arguments: f.scope })
     expect(tool.isError).not.toBe(true)
     const value = ScheduleGetResultSchema.parse(response.json())
-    expect(ScheduleGetResultSchema.parse(tool.structuredContent)).toEqual(value)
+    expect(ScheduleGetResultSchema.parse(decodeMcpToolResult(tool))).toEqual(value)
     return value
   }
 
@@ -95,7 +96,7 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
       name: 'workflow_schedule_occurrences_list', arguments: { ...f.scope, limit: 1 },
     })
     expect(result.isError).not.toBe(true)
-    expect(ScheduleOccurrencePageSchema.parse(result.structuredContent)).toEqual(page)
+    expect(ScheduleOccurrencePageSchema.parse(decodeMcpToolResult(result))).toEqual(page)
     const unchanged = await fetch(new URL(root(), address), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...body, commandId: randomUUID(), expectedRevision: 1 }),
@@ -142,7 +143,7 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
       if (status === 'skipped') expect(page.items[0]).toMatchObject({ reason: 'overlap' })
       const result = await reader.callTool({ name: 'workflow_schedule_occurrences_list', arguments: { ...f.scope, limit: 1 } })
       expect(result.isError).not.toBe(true)
-      expect(ScheduleOccurrencePageSchema.parse(result.structuredContent)).toEqual(page)
+      expect(ScheduleOccurrencePageSchema.parse(decodeMcpToolResult(result))).toEqual(page)
       expect(await readback(reader)).toMatchObject({ schedule: { enabled: true, nextOccurrenceAt: null } })
       expect(await f.countRuns()).toBe(status === 'accepted' || status === 'skipped' ? 1 : 0)
 
@@ -172,14 +173,14 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     expect(saved).toMatchObject({ replayed: false, value: { enabled: false, revision: 1, nextOccurrenceAt: null } })
     const replay = await owner.callTool({ name: 'workflow_schedule_save', arguments: { ...f.scope, ...body } })
     expect(replay.isError).not.toBe(true)
-    expect(ScheduleSaveResultSchema.parse(replay.structuredContent)).toEqual({ value: saved.value, replayed: true })
+    expect(ScheduleSaveResultSchema.parse(decodeMcpToolResult(replay))).toEqual({ value: saved.value, replayed: true })
     expect(await readback(reader)).toEqual({ schedule: saved.value })
     expect(await f.countRuns()).toBe(0)
 
     const enable = { commandId: randomUUID(), expectedRevision: 1 }
     const enabledTool = await owner.callTool({ name: 'workflow_schedule_enable', arguments: { ...f.scope, ...enable } })
     expect(enabledTool.isError).not.toBe(true)
-    const enabled = ScheduleSaveResultSchema.parse(enabledTool.structuredContent)
+    const enabled = ScheduleSaveResultSchema.parse(decodeMcpToolResult(enabledTool))
     expect(enabled).toMatchObject({ replayed: false, value: { enabled: true, revision: 2, nextOccurrenceAt: '2099-01-01T10:00:00.000Z' } })
     const enabledReplay = await http('POST', '/enable', enable)
     expect(enabledReplay.statusCode).toBe(200)
@@ -191,14 +192,14 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     await f.dispatcher().dispatch(enabled.value)
     const pageTool = await reader.callTool({ name: 'workflow_schedule_occurrences_list', arguments: { ...f.scope, limit: 1 } })
     expect(pageTool.isError).not.toBe(true)
-    const page = ScheduleOccurrencePageSchema.parse(pageTool.structuredContent)
+    const page = ScheduleOccurrencePageSchema.parse(decodeMcpToolResult(pageTool))
     expect(page.items).toEqual([expect.objectContaining({ status: 'accepted', scheduleRevision: 2 })])
     const pageHttp = await http('GET', '/occurrences?limit=1', undefined, f.reader.token)
     expect(pageHttp.statusCode).toBe(200); expect(pageHttp.json()).toEqual(page)
 
     const disabledTool = await owner.callTool({ name: 'workflow_schedule_disable', arguments: f.command(2) })
     expect(disabledTool.isError).not.toBe(true)
-    const disabled = ScheduleSaveResultSchema.parse(disabledTool.structuredContent)
+    const disabled = ScheduleSaveResultSchema.parse(decodeMcpToolResult(disabledTool))
     expect(disabled.value).toMatchObject({ enabled: false, revision: 3, nextOccurrenceAt: null })
     expect(await readback(reader)).toEqual({ schedule: disabled.value })
     const clear = { commandId: randomUUID(), expectedRevision: 3 }
@@ -207,13 +208,13 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     expect(ScheduleClearResultSchema.parse(cleared.json())).toEqual({ value: null, replayed: false })
     const clearReplay = await owner.callTool({ name: 'workflow_schedule_clear', arguments: { ...f.scope, ...clear } })
     expect(clearReplay.isError).not.toBe(true)
-    expect(ScheduleClearResultSchema.parse(clearReplay.structuredContent)).toEqual({ value: null, replayed: true })
+    expect(ScheduleClearResultSchema.parse(decodeMcpToolResult(clearReplay))).toEqual({ value: null, replayed: true })
     expect(await readback(reader)).toEqual({ schedule: null })
     const recreated = await owner.callTool({ name: 'workflow_schedule_save', arguments: {
       ...f.scope, ...body, commandId: randomUUID(),
     } })
     expect(recreated.isError).not.toBe(true)
-    const current = ScheduleSaveResultSchema.parse(recreated.structuredContent).value
+    const current = ScheduleSaveResultSchema.parse(decodeMcpToolResult(recreated)).value
     expect(current.revision).toBe(5) // clear consumes the tombstone revision
     expect(await readback(reader)).toEqual({ schedule: current })
     const after = await http('GET', '/occurrences?limit=1', undefined, f.reader.token)

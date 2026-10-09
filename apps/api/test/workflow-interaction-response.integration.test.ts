@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { RespondToInteractionResponseSchema } from '@foreman-code/contracts'
@@ -69,13 +70,13 @@ it.skipIf(!postgresEnabled)('authorizes workflow Operator responses, persists re
 
     const accepted = await client.callTool({ name: 'interaction_respond', arguments: input })
     expect(accepted.isError).not.toBe(true)
-    const result = RespondToInteractionResponseSchema.parse(accepted.structuredContent)
+    const result = RespondToInteractionResponseSchema.parse(decodeMcpToolResult(accepted))
     expect(result.interaction).toMatchObject({ selectedOptionId: input.optionId,
       selectedSemantic: 'approve_once', status: 'delivered', deliveryState: 'delivered' })
     const readback = await client.callTool({ name: 'interaction_get', arguments: { interactionId: interaction.id } })
     expect(readback.isError).not.toBe(true)
     const persisted = await f.repository.get(interaction.id)
-    expect(readback.structuredContent).toMatchObject({ interaction: persisted })
+    expect(decodeMcpToolResult(readback)).toMatchObject({ interaction: persisted })
     const http = await app.inject({ method: 'GET', url: `/api/management/interactions/${interaction.id}`,
       headers: { authorization: `Bearer ${writer.token}` } })
     expect(http.statusCode).toBe(200)

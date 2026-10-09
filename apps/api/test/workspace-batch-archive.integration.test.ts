@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -95,14 +96,14 @@ it('batch archives workspaces through authenticated MCP with atomic conflicts, a
     const completed = WorkflowRunV3Schema.parse({ ...run, executionState: 'completed', outcome: 'canceled',
       result: { outcome: 'canceled' }, finishedAt: new Date().toISOString() })
     await pool.query("update runs set execution_state='completed',record=$2::jsonb where id=$1", [run.id, JSON.stringify(completed)])
-    const result = c.WorkspaceBatchArchiveResultSchema.parse((await client.callTool({ name: 'workspace_batch_archive', arguments: input })).structuredContent)
+    const result = c.WorkspaceBatchArchiveResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workspace_batch_archive', arguments: input }))))
     expect(result.replayed).toBe(false)
     expect(result.value.workspaceIds.sort()).toEqual([first.workspace.id, second.workspace.id].sort())
-    const replay = c.WorkspaceBatchArchiveResultSchema.parse((await client.callTool({ name: 'workspace_batch_archive', arguments: input })).structuredContent)
+    const replay = c.WorkspaceBatchArchiveResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workspace_batch_archive', arguments: input }))))
     expect(replay.replayed).toBe(true)
-    const listing = c.ManagedWorkspacePageSchema.parse((await client.callTool({ name: 'workspace_list', arguments: {} })).structuredContent)
+    const listing = c.ManagedWorkspacePageSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workspace_list', arguments: { detail: 'full' } }))))
     expect(listing.items).toEqual([])
-    const readback = c.ManagedWorkspaceSchema.parse((await client.callTool({ name: 'workspace_get', arguments: { workspaceId: first.workspace.id } })).structuredContent)
+    const readback = c.ManagedWorkspaceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'workspace_get', arguments: { workspaceId: first.workspace.id } }))))
     expect(readback.archivedAt).not.toBeNull(); expect(readback.revision).toBe(first.revision + 1)
     expect((await pool.query('select count(*) from workflows')).rows[0].count).toBe('1')
     expect((await pool.query('select count(*) from runs')).rows[0].count).toBe('1')
