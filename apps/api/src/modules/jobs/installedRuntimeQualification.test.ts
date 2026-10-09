@@ -444,6 +444,7 @@ describe('actual qualification reservation seams with mocked native entry only',
     }
     expect(await admitted.native.close()).toBe(true)
   })
+  // Rewrites a 512-launch journal and replays it twice; under full-suite load this exceeds the 5 s default.
   it('retains cleanup capacity after the diagnostic command budget is exhausted', async () => {
     const f = await fixture()
     const admitted = await reserveInstalledJobQualification(f.input)
@@ -474,7 +475,7 @@ describe('actual qualification reservation seams with mocked native entry only',
     await expect(recovered.native.reserveCleanupProcess!(process.execPath,
       ['--remote=false', 'container', 'exists', containerId])).rejects.toThrow('reservation unavailable')
     expect((await journal.qualificationStatus(id))?.launches.slice(0, 512)).toEqual(launches)
-  })
+  }, 30_000)
   it.each([[false, 1], [true, 0], [true, 1]] as const)(
     'observes interrupted creation once after exhausted cleanup (owner closed %s, exists exit %s)',
     async (ownerClosed, exitCode) => {

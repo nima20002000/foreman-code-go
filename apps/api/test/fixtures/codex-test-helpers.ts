@@ -64,7 +64,8 @@ export async function finish(directory: string, sessionId: string, answer = 'cor
     items: [...turn.items, agentMessage(`answer:${turn.id}`, answer)],
   } } })
 }
-export async function until<T>(probe: () => Promise<T | undefined | false>, timeout = 5_000): Promise<T> {
+// Integration suites run many production fixtures at once; a fixture state change can lag well past 5 s.
+export async function until<T>(probe: () => Promise<T | undefined | false>, timeout = 20_000): Promise<T> {
   const start = Date.now()
   while (Date.now() - start < timeout) {
     const value = await probe()

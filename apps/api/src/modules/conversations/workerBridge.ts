@@ -28,7 +28,7 @@ export interface WorkerConversationCallbacks {
 }
 export interface WorkerConversationChannel {
   binding: Readonly<DeviceSessionBinding>
-  request(payload: unknown, options?: { signal?: AbortSignal }): Promise<DeviceApplicationResult>
+  request(payload: unknown, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<DeviceApplicationResult>
 }
 interface Admission {
   request: WorkerConversationRpcRequest
@@ -42,6 +42,7 @@ interface Admission {
   claudeGeneration?: string
   files?: MainWorkerFiles
 }
+const NATIVE_REQUEST_TIMEOUT_MS = 120_000
 function denied(): never {
   throw new DomainError('WORKER_CONVERSATION_CALLBACK_DENIED', 'The original admitted worker chat request is unavailable.', 403)
 }
@@ -90,7 +91,8 @@ export class MainWorkerConversationBridge {
       admissionId,
       async request(signal?: AbortSignal) {
         await assertCurrent(signal)
-        const reply = await admission.channel.request(request, signal ? { signal } : {})
+        // Opening a native session starts the harness on the Worker; the 30 s channel default is too short under load.
+        const reply = await admission.channel.request(request, { ...(signal ? { signal } : {}), timeoutMs: NATIVE_REQUEST_TIMEOUT_MS })
         await assertCurrent(signal)
         if (reply.bytes !== undefined) denied()
         return reply.payload
