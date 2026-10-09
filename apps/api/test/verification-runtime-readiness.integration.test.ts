@@ -68,9 +68,8 @@ it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consi
     const read = await reader.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId } })
     expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
     expect(JobRuntimeProfileListRecordSchema.parse(read.structuredContent).profiles
-      .find(value => value.profile.id === profile.id)).toMatchObject({
-      profile: qualified, ready: false,
-      reasons: [state === 'unavailable' ? 'runtime_context_unavailable' : 'runtime_context_changed'],
+      .find(value => value.profile.id === profile.id)).toEqual({
+      profile: qualified, ready: false, reasons: ['context_changed'], sideEffects: false,
     })
     const denied = await f.access.issue({ name: 'Caller without job access', audience: 'operator',
       grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
