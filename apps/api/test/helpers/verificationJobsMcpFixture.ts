@@ -54,7 +54,7 @@ export async function verificationJobsMcpFixture() {
       decisionDigest: jobDigest(policy) } }, retained.mainId)
   const ports = { preparation, placement, dispatch: runtime.dispatch, artifacts: runtime.artifacts, queue, workerExecution }
   const createJobs = () => new JobService(database.pool, retained.commands, ports)
-  return { database, access, writer, reader, retained, profiles, seed, runtime, createJobs,
+  return { database, access, writer, reader, retained, profiles, seed, runtime, createJobs, runtimeMetadata: metadata,
     qualify: (profile: JobVerificationProfile) => seedQualifiedMetadata(database, metadata, profile, seed, writer.principal.id) }
 }
 

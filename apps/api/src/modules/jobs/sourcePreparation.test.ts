@@ -5,6 +5,36 @@ import { CanonicalJobPreparationSources } from './sourcePreparation.js'
 import { preparationProfile, qualifiedPreparationProfile, dexter, mana, oldImage, newImage, mainId }
   from '../../../test/helpers/ciPreparationFixture.js'
 import { ciFixture } from '../../../test/helpers/ciFixture.js'
+import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
+import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+
+it.each([true, false])('uses the currently ready policy inventory for verification templates (available: %s)', async available => {
+  const profile = verificationCapacityFixture('device')
+  const saved = structuredClone(profile)
+  const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator',
+    expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
+    grants: [{ actions: ['sources:read', 'source_roots:read'], scope: {} }] }
+  const sql = { query: async (text: string) => {
+    if (text.includes('select id,name,audience,grants')) return { rows: [{ ...principal,
+      expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] }
+    if (text.includes('with recursive owners')) return { rows: [{ id: principal.id }] }
+    if (text.includes('select record from job_runtime_profiles')) return { rows: [{ record: profile }] }
+    return { rows: [] }
+  } } as unknown as JobSql
+  const policy = jobRuntimeProfilePolicy(profile)
+  const runtime = { choices: vi.fn(async () => available ? [policy] : []), revalidate: vi.fn() }
+  const sources = new CanonicalJobPreparationSources({} as never, runtime,
+    {} as never, {} as never, {} as never)
+  const choices = await sources.choices(sql, principal, profile.workspaceId)
+  expect(choices.policies).toEqual(available ? [policy] : [])
+  expect(choices.verificationTemplates).toHaveLength(1)
+  expect(choices.verificationTemplates![0]).toMatchObject({
+    hostRef: profile.root.selection.hostRef, ready: available,
+  })
+  expect(runtime.revalidate).not.toHaveBeenCalled()
+  expect(profile).toEqual(saved)
+})
 
 it('discovers both computers when CI resolves their reviewed images at admission', async () => {
   const caller = ciFixture().operator
