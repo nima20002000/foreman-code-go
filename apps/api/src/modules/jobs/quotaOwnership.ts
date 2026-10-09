@@ -98,16 +98,16 @@ const SourceQuotaConfigurationSchema = z.object({
   descriptor: z.object({ quotaPool: JobVerificationQuotaPoolSchema.optional() }).passthrough().optional(),
 }).passthrough()
 export async function installedSourceQuotaPool(configuration: InstalledRuntimeConfigurationLocation | null,
-  binding: RootBinding, options: { purpose: 'preparation' | 'cleanup' } = { purpose: 'preparation' }
+  binding: RootBinding,
 ): Promise<JobVerificationQuotaPool | null> {
   if (!configuration) return null
   const installed = await findRetainedRuntimeConfiguration(configuration, SourceQuotaConfigurationSchema, candidate => {
-    // Cleanup retains the physical quota owner when CI rebinds source on the same root.
-    const expected = options.purpose === 'cleanup' ? { ...binding,
+    // Quota slots belong to the installed physical root across source snapshots.
+    const expected = { ...binding,
       bindingRevision: candidate.root.binding.bindingRevision,
       snapshotId: candidate.root.binding.snapshotId,
       manifestDigest: candidate.root.binding.manifestDigest,
-    } : binding
+    }
     return candidate.schemaVersion === 2 && isDeepStrictEqual(candidate.root.binding, expected)
   }, MAX_VERIFICATION_CONFIGURATION_BYTES)
   if (!installed) return null
