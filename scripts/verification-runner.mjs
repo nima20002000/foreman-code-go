@@ -65,10 +65,14 @@ export function offlineInstallCommand(context) {
     '--store-dir', context.storeDirectory]
 }
 
-export function verificationCommand(context) {
+export function verificationCommand(context, root = process.cwd()) {
   validateVerificationContext(context)
   if (context.identity.suite === 'install') return offlineInstallCommand(context)
-  return ['corepack', 'pnpm', rootCommands[context.identity.suite]]
+  const command = ['corepack', 'pnpm', rootCommands[context.identity.suite]]
+  // A qualification's integration smoke subset runs only its listed files; CI Jobs run the whole suite.
+  const integration = context.requiredPortions.find(portion => portion.kind === 'integration')
+  if (integration && integration.files.length < integrationTestFiles(root).length) command.push('--files', ...integration.files)
+  return command
 }
 
 export function verifyOfflinePreseed(root, receipt) {
@@ -146,7 +150,15 @@ export function expectedPortions(root, suite) {
   return portions
 }
 
-export function captureVerificationInventory(root, suite) {
+const QUALIFICATION_SUBSET = 'scripts/integration-qualification.json'
+const integrationTestFiles = root => existsSync(join(root, 'apps/api/test'))
+  ? readdirSync(join(root, 'apps/api/test')).filter(name => name.endsWith('.integration.test.ts'))
+    .map(name => `apps/api/test/${name}`).sort()
+  : []
+
+/** `qualification` selects the commit's committed integration smoke subset when it has one: qualification proves
+ * the computer's runtime (PostgreSQL startup and isolation, migrations, MCP, sources, Jobs), not the whole suite. */
+export function captureVerificationInventory(root, suite, { qualification = false } = {}) {
   const portions = expectedPortions(root, suite)
   if (portions.every(portion => ['command', 'bootstrap'].includes(portion.kind))) return portions
   const files = []
@@ -164,6 +176,13 @@ export function captureVerificationInventory(root, suite) {
     let selected
     if (portion.kind === 'integration') {
       selected = files.filter(path => /^apps\/api\/test\/.*\.integration\.test\.ts$/.test(path))
+      if (qualification && existsSync(join(root, QUALIFICATION_SUBSET))) {
+        const subset = JSON.parse(readFileSync(join(root, QUALIFICATION_SUBSET), 'utf8')).files
+        if (!Array.isArray(subset) || !subset.length || subset.some(path => !selected.includes(path))) {
+          throw new Error(`${QUALIFICATION_SUBSET} must list existing integration test files`)
+        }
+        selected = subset
+      }
     } else if (portion.kind === 'vitest') {
       const prefix = portion.key.split(':')[0] + '/'
       selected = files.filter(path => path.startsWith(prefix) && /\.(test|spec)\.[cm]?[jt]sx?$/.test(path)
@@ -441,7 +460,7 @@ export async function verifyRepository(context, { root = process.cwd(), signal }
       }
       if (result.terminalOutcome === 'passed') {
         const startedAt = new Date().toISOString()
-        result = await execute(verificationCommand(context), 'root')
+        result = await execute(verificationCommand(context, root), 'root')
         const key = portionKey('', rootCommands[context.identity.suite])
         if (context.requiredPortions.some(portion => portion.key === key
           && ['command', 'integration'].includes(portion.kind))) {

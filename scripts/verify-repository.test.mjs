@@ -404,3 +404,27 @@ test('integration collection preserves first-pass failures and refuses incomplet
     assert.equal(collectPortions(f.directory, f.root, portions, context().limits)[0].complete, false)
   } finally { f.close() }
 })
+
+test('qualification runs the committed integration smoke subset while CI Jobs run the whole suite', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'integration-qualification-'))
+  try {
+    mkdirSync(join(root, 'apps/api/test'), { recursive: true })
+    mkdirSync(join(root, 'scripts'))
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'foreman-code' }))
+    const all = ['a', 'b', 'c'].map(name => `apps/api/test/${name}.integration.test.ts`)
+    for (const file of all) writeFileSync(join(root, file), '')
+    const inventory = options => captureVerificationInventory(root, 'integration', options)
+      .find(portion => portion.kind === 'integration').files
+    assert.deepEqual(inventory({ qualification: true }), all)
+    writeFileSync(join(root, 'scripts/integration-qualification.json'), JSON.stringify({ files: [all[1]] }))
+    assert.deepEqual(inventory(), all)
+    assert.deepEqual(inventory({ qualification: true }), [all[1]])
+    const integration = files => ({ ...context('integration'), requiredPortions: [{ key: 'root:install', kind: 'bootstrap' },
+      { key: 'root:test:integration', kind: 'integration', files }] })
+    assert.deepEqual(verificationCommand(integration([all[1]]), root),
+      ['corepack', 'pnpm', 'test:integration', '--files', all[1]])
+    assert.deepEqual(verificationCommand(integration(all), root), ['corepack', 'pnpm', 'test:integration'])
+    writeFileSync(join(root, 'scripts/integration-qualification.json'), JSON.stringify({ files: ['apps/api/test/gone.integration.test.ts'] }))
+    assert.throws(() => inventory({ qualification: true }), /must list existing integration test files/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

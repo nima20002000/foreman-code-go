@@ -314,7 +314,7 @@ export async function qualifyVerificationRuntime(input: {
           profile: profileIdentity, resources: fingerprint.resources,
           parameters: { unitWorkers: qualificationUnitWorkers(fingerprint.resources.limits),
             integrationShards: suite === 'integration' ? qualificationIntegrationShards(fingerprint.resources) : 1 } },
-        requiredPortions: captureVerificationInventory(source.sourceRoot, suite),
+        requiredPortions: captureVerificationInventory(source.sourceRoot, suite, { qualification: true }),
         privateGit: source.privateGit, executionTimeoutMs: candidate.profile.spec.policy.executionTimeoutMs,
         cancellationTimeoutMs: Math.max(1, candidate.profile.spec.policy.cancellationGraceMs),
         qualifiedUnitWorkers: qualificationUnitWorkers(fingerprint.resources.limits),

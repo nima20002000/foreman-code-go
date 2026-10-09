@@ -155,7 +155,8 @@ export async function prepareCiWorkflow(client: Client, workspace: ScenarioWorks
     if (!selected) throw new Error(`No approved ready source/root placement for ${assignment.name}.`)
     assignment.placement = selected.placement
   }
-  const { graph } = buildCrossComputerCiGraph(created.workflow, assignments)
+  // The placement edit builds on the definition the first save published, with its version stamp.
+  const { graph } = buildCrossComputerCiGraph(first.version.definition, assignments)
   const saved = await saveGraph(client, {
     graph, revision: first.revision, versionId: first.version.id,
     locationRevision: managed.locationRevision, configurations: first.version.agentConfigurationVersionIds,
