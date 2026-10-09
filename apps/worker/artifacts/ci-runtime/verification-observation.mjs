@@ -13,6 +13,23 @@ export async function probeExecutableScratch(directory) {
   } finally { await unlink(path); }
 }
 
+export function imageToolPath(tool) {
+  const installedPostgres = tool.kind === 'postgresql'
+    && tool.executable === '/usr/lib/postgresql/17/bin/postgres';
+  if ((!tool.executable?.startsWith('/opt/graphql-ci/tools/') && !installedPostgres)
+    || tool.executable.includes('..')) {
+    throw new Error('Image-owned qualification tool path required.');
+  }
+  return tool.executable;
+}
+
+export function imageToolVersion(kind, output) {
+  if (kind !== 'postgresql') return output;
+  const version = /PostgreSQL\)\s+(\S+)/u.exec(output)?.[1];
+  if (!version) throw new Error('Image tool returned an unsupported version.');
+  return version;
+}
+
 /** Runs inside the admitted verification container. It reports observations, never a qualification flag. */
 export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [] }) {
   if (!Array.isArray(ownerSentinelPaths) || !ownerSentinelPaths.length
@@ -43,13 +60,12 @@ export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [
     pnpm: version('corepack', ['pnpm', '--version']), git: version('git'), flock: version('flock') };
   const measuredTools = [];
   for (const tool of tools) {
-    if (!tool.executable?.startsWith('/opt/graphql-ci/tools/') || tool.executable.includes('..')) {
-      throw new Error('Image-owned qualification tool path required.');
-    }
+    imageToolPath(tool);
     const bytes = await readFile(tool.executable);
     if (bytes.length > 256 * 1024 * 1024) throw new Error('Image tool exceeds its capture bound.');
+    const toolVersion = imageToolVersion(tool.kind, version(tool.executable));
     measuredTools.push({ kind: tool.kind, executable: tool.executable,
-      version: version(tool.executable), binarySha256: createHash('sha256').update(bytes).digest('hex') });
+      version: toolVersion, binarySha256: createHash('sha256').update(bytes).digest('hex') });
   }
   const writeError = async path => {
     try { await writeFile(path, 'qualification write'); return null; }
