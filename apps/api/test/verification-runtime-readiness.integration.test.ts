@@ -7,7 +7,6 @@ import { JOB_VERIFICATION_APPROVAL_LIFETIME_MS } from '@foreman-code/contracts/j
 import { JobRuntimeProfileListRecordSchema, JobVerificationProfileSchema }
   from '@foreman-code/contracts/job-verification-runtime'
 import { buildApp } from '../src/app.js'
-import { registerJobRoutes } from '../src/routes/jobs.js'
 import { registerJobRuntimeProfileRoutes } from '../src/routes/jobRuntimeProfiles.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
@@ -22,7 +21,6 @@ it.each(['unavailable', 'changed'] as const)('reports %s runtime templates consi
     operator: { access: f.access, services: { commands: f.retained.commands, jobs,
       jobRuntimeProfiles: f.profiles } as unknown as OperatorServices },
   })
-  registerJobRoutes(app, jobs)
   registerJobRuntimeProfileRoutes(app, f.profiles)
   const clients: Client[] = []
   try {
