@@ -1798,6 +1798,9 @@ export function buildProductionApp(
       // Fill the settings status and model caches in the background so first reads do not wait on native checks.
       void Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'), nativeConfigurations.options('claude'),
         harnessSettings.mcp.warmup(['codex']), harnessSettings.plugins.warmup(), harnessSettings.claudePlugins.warmup()])
+      // Main's live harness evidence ends with its process; restore a Codex binary it had qualified before.
+      if (harnessQualifications) void harnessQualifications.restore('codex').catch((error: unknown) =>
+        app.log.warn({ err: error }, 'Main Codex requalification after restart failed'))
     })
     // On failure the startup caller closes the app. Only the shared shutdown
     // barrier may release the owner, after any already-admitted work drains.

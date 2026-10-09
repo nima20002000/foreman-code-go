@@ -27,10 +27,10 @@ function gate() {
 }
 
 function service(binary: string, factory: (timeoutMs: number) => CompatibilityProbe,
-  refreshInstalled?: ConstructorParameters<typeof HarnessQualificationService>[9]) {
+  refreshInstalled?: ConstructorParameters<typeof HarnessQualificationService>[9], previous: unknown = null) {
   const save = vi.fn(async () => undefined)
   const run = vi.fn(async () => ({ checks: [{ id: 'recorded', passed: true, detail: null }], evidence: {} }))
-  const qualification = new HarnessQualificationService({ find: async () => null, save } as never,
+  const qualification = new HarnessQualificationService({ find: async () => previous, save } as never,
     { inspectBinary: async () => ({ binary, sha256: createHash('sha256')
       .update(await readFile(binary)).digest('hex') }), trusted: async () => true } as never,
     { codex: { harness: 'codex', revision: 'recorded', run } },
@@ -239,3 +239,21 @@ it('finishes the pre-launch identity check before starting the version-command d
     await removeFixtureDirectory(f.directory)
   }
 })
+
+it.each([['qualified', 1], ['failed', 0], [null, 0]] as const)(
+  'after a restart re-runs the live suite only for a binary previously %s', async (status, runs) => {
+    const f = await binaryFixture("console.log('codex-cli 0.154.0')")
+    const instance = service(f.binary, timeoutMs => nativeCompatibilityProbe({ codex: f.binary }, f.directory,
+      process.env, timeoutMs), undefined, status ? { harness: 'codex', version: '0.154.0', status, checks: [] } : null)
+    try {
+      const restored = await instance.qualification.restore('codex')
+      if (runs) expect(restored).toMatchObject({ version: '0.154.0', status: 'qualifying' })
+      else expect(restored).toBeNull()
+      await instance.qualification.join()
+      expect(instance.run).toHaveBeenCalledTimes(runs)
+      if (runs) expect(instance.save).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'qualified' }), expect.any(Object))
+    } finally {
+      await instance.qualification.shutdown()
+      await removeFixtureDirectory(f.directory)
+    }
+  })

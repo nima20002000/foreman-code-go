@@ -68,6 +68,17 @@ export class HarnessQualificationService {
     }))
   }
 
+  /** Main's live evidence is fenced to its process, so a restart leaves Main-hosted Agents without admission.
+   * Re-run the live suite in the background for a binary this Main had already qualified; a binary without a
+   * qualified record still waits for an explicit run. Resolves with the restarted run, or null when none applies. */
+  restore(harness: CompatibilityHarness): Promise<HarnessQualification | null> {
+    try { this.assertRunning(harness) } catch (error) { return Promise.reject(error) }
+    return this.track(this.prepare(harness, true, true).catch((error: unknown) => {
+      if (error instanceof Error && error.name === 'TimeoutError') throw qualificationError(error)
+      throw error
+    }))
+  }
+
   async verify(harness: CompatibilityHarness): Promise<HarnessQualification> {
     const state = await this.begin(harness)
     await this.flights.get(harness)
@@ -134,7 +145,9 @@ export class HarnessQualificationService {
     this.directories.delete(directory)
   }
 
-  private async prepare(harness: CompatibilityHarness, force: boolean): Promise<HarnessQualification> {
+  private async prepare(harness: CompatibilityHarness, force: boolean, onlyQualified: true): Promise<HarnessQualification | null>
+  private async prepare(harness: CompatibilityHarness, force: boolean, onlyQualified?: false): Promise<HarnessQualification>
+  private async prepare(harness: CompatibilityHarness, force: boolean, onlyQualified = false): Promise<HarnessQualification | null> {
     const suite = this.suites[harness]
     await this.refreshInstalled?.(harness, this.cancellation.signal)
     this.assertRunning(harness)
@@ -150,6 +163,7 @@ export class HarnessQualificationService {
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()
     this.assertRunning(harness)
+    if (onlyQualified && previous?.status !== 'qualified') return null
     if (!force && (previous?.status === 'qualified' || previous?.status === 'failed')) return previous
     if (!this.flights.has(harness)) {
       const task = this.track(Promise.resolve().then(() => this.execute(harness, suite, binary, sha256, version)), true)
