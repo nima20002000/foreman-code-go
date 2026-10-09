@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Build computer CI preparation no longer fails at the offline package install when the CI image holds a node_modules layout from another lockfile.
+
 ## [0.0.54] - 2026-10-09
 
 Known issues: under heavy parallel load, Main can shut down before a completed remote Agent session has closed, leaving its Run for reconciliation (seen only in the computer-workflow-save test). A reboot that changes a Worker's storage device identity requires its approved roots to be re-approved. Computers status can briefly show harness versions read before an update finished.

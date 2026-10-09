@@ -128,7 +128,8 @@ export async function codexBinary(image: string, output: string, env: NodeJS.Pro
     cpSync('/opt/graphql-ci/corepack-cache', '/tmp/corepack', { recursive: true });
     execFileSync('/usr/local/bin/node', ['/usr/local/lib/node_modules/corepack/dist/corepack.js',
       'pnpm', 'install', '--offline', '--frozen-lockfile', '--ignore-scripts', '--store-dir', '/tmp/store'],
-      { cwd: '/tmp/source', env: { ...process.env, COREPACK_HOME: '/tmp/corepack', COREPACK_ENABLE_NETWORK: '0' },
+      // CI: this disposable copy may carry a node_modules layout from another lockfile; pnpm purges it only non-interactively.
+      { cwd: '/tmp/source', env: { ...process.env, CI: 'true', COREPACK_HOME: '/tmp/corepack', COREPACK_ENABLE_NETWORK: '0' },
       stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
     const api = createRequire('/tmp/source/apps/api/package.json');
     const launcher = api.resolve('@openai/codex/bin/codex.js');
