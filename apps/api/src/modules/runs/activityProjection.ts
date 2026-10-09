@@ -5,6 +5,7 @@ import { safeNodeName } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
 import { codexUnsupportedInteractionMessage } from '@foreman-code/contracts'
+import { JobOrdinaryVerificationSuiteSchema } from '@foreman-code/contracts/job-verification'
 
 export interface ActivityReadRow {
   sequence: string; source: string; kind: string; occurred_at: Date;
@@ -13,6 +14,8 @@ export interface ActivityReadRow {
   execution_attempt: number | null; work_activation_id: string | null;
   job_execution_id?: string | null; job_attempt_id?: string | null; job_operation_id?: string | null;
   node_execution_id?: string | null; job_definition_id?: string | null;
+  ci_ticket_id?: string | null; ci_execution_id?: string | null;
+  ci_attempt_id?: string | null; ci_operation_id?: string | null;
   job_definition_revision?: number | null; job_definition_version_id?: string | null;
   result_outcome: string | null;
   safe_payload: Record<string, unknown>; native: Record<string, unknown> | null;
@@ -58,7 +61,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const node = version.definition.nodes.find((item) => item.id === row.execution_node_id)
   const actorKind = new Set(['node_scheduled','node_state_changed','harness_session_started',
     'harness_output','harness_session_finished','result_recorded','work_result_accepted',
-    'work_handoff_accepted','work_handoff_returned','work_handoff_denied','work_rerouted'])
+    'work_handoff_accepted','work_handoff_returned','work_handoff_denied','work_rerouted','ci_state_changed'])
   const jobActor = node?.kind === 'job' && row.job_execution_id && row.node_execution_id === row.job_execution_id
     && row.job_definition_id === node.jobDefinitionId && row.job_definition_revision === node.jobDefinitionRevision
     && row.job_definition_version_id === node.jobDefinitionVersionId
@@ -84,6 +87,8 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const requesterNode = id(payload.requesterNodeId)
   const destinationNode = id(payload.destinationNodeId)
   const refs = {
+    ...(row.ci_ticket_id && row.ci_execution_id ? { jobExecutionId: row.ci_execution_id,
+      jobAttemptId: id(row.ci_attempt_id), jobOperationId: id(row.ci_operation_id) } : {}),
     ...(jobActor ? { executionId: row.job_execution_id, jobExecutionId: row.job_execution_id,
       jobAttemptId: id(row.job_attempt_id), jobOperationId: id(row.job_operation_id), nodeExecutionId: row.node_execution_id } : {}),
     ...(!jobActor && row.harness_execution_id && row.execution_node_id ? { executionId: row.harness_execution_id } : {}),
@@ -118,6 +123,28 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   let summary: string
   let detail: string | undefined
   switch (row.kind) {
+    case 'ci_state_changed': {
+      kind = 'job_work'
+      if (!row.ci_ticket_id || !refs.jobExecutionId || !actor) {
+        status = 'unknown'
+        summary = 'CI activity details unavailable'
+        break
+      }
+      const state = string(payload.state)
+      const outcome = string(payload.outcome)
+      const suite = JobOrdinaryVerificationSuiteSchema.safeParse(payload.suite)
+      const name = suite.success ? `CI ${suite.data}` : 'CI'
+      if (state === 'terminal') {
+        status = 'failed'
+        if (outcome === 'succeeded') status = 'completed'
+        else if (outcome === 'cancelled') status = 'canceled'
+        else if (!outcome || outcome === 'completed') status = 'unknown'
+      } else if (state === 'running') status = 'running'
+      else if (state === 'preparing') status = 'starting'
+      else status = 'queued'
+      summary = `${name} ${status}`
+      break
+    }
     case 'run_state_changed': {
       kind = 'run'
       const state = string(payload.executionState)

@@ -1,15 +1,32 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile, open } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { constants } from 'node:fs';
 import { parse } from 'yaml';
 import { readSeedFile, readSeedFileEntry, validateSeedReceipt, verifySeedFiles } from './seed-policy.mjs';
 
 export const parseCiLock = text => parse(text);
 
-const controlRoot = 'apps/worker/artifacts/ci-runtime';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+async function installedRuntimeFiles(offlineSeed) {
+  const modulePath = fileURLToPath(import.meta.url);
+  const bundled = basename(modulePath) !== 'context.mjs';
+  const controls = bundled ? join(dirname(modulePath), '../artifacts/ci-runtime') : dirname(modulePath);
+  const scripts = bundled ? join(dirname(modulePath), '../artifacts/verification')
+    : join(dirname(modulePath), '../../../../scripts');
+  const controlNames = ['Containerfile', 'corepack'];
+  if (offlineSeed) controlNames.push('seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs');
+  const entries = controlNames.map(name => ({ root: controls, name, destination: name }));
+  for (const name of ['verification-runner.mjs', 'verify-repository.mjs', 'verification-reports.mjs', 'integration-process.mjs']) {
+    entries.push({ root: scripts, name, destination: `verification/${name}` });
+  }
+  return Promise.all(entries.map(async entry => ({ ...entry,
+    bytes: await readSeedFile(entry.root, entry.name, 1024 * 1024) })));
+}
+
 export async function buildCiRuntimeContext({ repository, commit = 'HEAD', output, offlineSeed }) {
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
   const git = (...args) => execFileSync('git', args, { cwd: repository, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -21,14 +38,12 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
   });
   const paths = tree.filter(entry => ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].includes(entry.path)
     || /^(?:apps|packages)\/[^/]+\/package\.json$/.test(entry.path));
-  const controlNames = ['Containerfile', 'corepack'];
-  if (offlineSeed) controlNames.push('seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs');
-  const controls = controlNames.map(name => ({ name, entry: tree.find(entry => entry.path === `${controlRoot}/${name}`) }));
   if (!paths.some(entry => entry.path === 'pnpm-lock.yaml') || !paths.some(entry => entry.path === 'pnpm-workspace.yaml')) throw new Error('Committed CI lockfile and workspace policy required');
-  const entries = [...paths, ...controls.map(control => control.entry)];
+  const entries = paths;
   if (entries.some(entry => !entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)
     || entry.path.split('/').some(part => !part || part === '.' || part === '..'))) throw new Error('CI context requires regular committed inputs');
   const snapshots = new Map(entries.map(entry => [entry.path, { ...entry, bytes: git('show', `${captured}:${entry.path}`) }]));
+  const runtimeFiles = await installedRuntimeFiles(offlineSeed);
   let seed;
   let seedUsage;
   if (offlineSeed) {
@@ -76,8 +91,15 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
     await writeFile(destination, snapshots.get(entry.path).bytes, { mode: 0o600, flag: 'wx' });
   }
-  for (const { name, entry } of controls) await writeFile(join(output, name), snapshots.get(entry.path).bytes, { mode: name === 'corepack' ? 0o700 : 0o600, flag: 'wx' });
-  const receipt = { sourceCommit: captured, files: [...snapshots.values()].map(({ path, blob, bytes }) => ({ path, gitBlobSha1: blob, sha256: hash(bytes) })).sort((a, b) => a.path.localeCompare(b.path)) };
+  await mkdir(join(output, 'verification'), { mode: 0o700 });
+  for (const { destination, bytes } of runtimeFiles) {
+    await writeFile(join(output, destination), bytes, { mode: destination === 'corepack' ? 0o700 : 0o600, flag: 'wx' });
+  }
+  const receipt = { sourceCommit: captured,
+    files: [...snapshots.values()].map(({ path, blob, bytes }) => ({ path, gitBlobSha1: blob, sha256: hash(bytes) }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+    runtimeFiles: runtimeFiles.map(({ destination, bytes }) => ({ path: destination, sha256: hash(bytes) })),
+  };
   if (seed) {
     for (const file of seed.files) {
       const { bytes, executable } = await readSeedFileEntry(offlineSeed.directory, file.path, file.bytes);

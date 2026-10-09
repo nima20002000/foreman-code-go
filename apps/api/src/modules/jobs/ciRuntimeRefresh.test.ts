@@ -68,6 +68,46 @@ function fixture() {
 }
 
 describe('CI runtime refresh', () => {
+  it('captures a project runtime without claiming a Codex binary that it does not contain', async () => {
+    const f = fixture()
+    delete f.prepared.unitCodex
+    const directory = await privateFixtureDirectory('ci-project-tools-')
+    roots.push(directory)
+    commands.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('create')) return 'container'
+      if (args.includes('cp')) await writeFile(args.at(-1)!, 'image tool')
+      if (args.includes('run')) return 'postgres (PostgreSQL) 17.2'
+      return ''
+    })
+    const tools = await recaptureCiTools(f.current.machine.tools, f.prepared, directory, process.env)
+    expect(tools.some(tool => tool.kind === 'codex')).toBe(false)
+    const next = nextCaptureInput(f.current, f.prepared, { root: f.current.root,
+      manifest: f.current.qualificationSource.manifest, seedReceiptPath: f.prepared.seedReceiptPath,
+      resources: f.current.machine.resources })
+    expect(next.toolSources.some(tool => tool.kind === 'codex')).toBe(false)
+  })
+
+  it('captures PostgreSQL from the image when the previous unit-only runtime had no database identity', async () => {
+    const f = fixture()
+    const directory = await privateFixtureDirectory('ci-integration-tools-')
+    roots.push(directory)
+    commands.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('create')) return 'container'
+      if (args.includes('cp')) await writeFile(args.at(-1)!, 'postgres-image-binary')
+      if (args.includes('run')) return 'postgres (PostgreSQL) 17.6'
+      return ''
+    })
+    const sources = await recaptureCiTools(f.current.machine.tools.filter(tool => tool.kind === 'codex'),
+      f.prepared, directory, process.env)
+    const database = sources.find(tool => tool.kind === 'postgresql')
+    expect(database).toMatchObject({ executable: '/usr/lib/postgresql/17/bin/postgres', version: '17.6' })
+    expect(await readFile(database!.sourceExecutable, 'utf8')).toBe('postgres-image-binary')
+    const next = nextCaptureInput(f.current, f.prepared, { root: f.current.root,
+      manifest: f.current.qualificationSource.manifest, seedReceiptPath: f.prepared.seedReceiptPath,
+      resources: f.current.machine.resources, toolSources: sources })
+    expect(next.toolSources).toContainEqual(database)
+  })
+
   it('retains the identities needed by integration, browser and native suites in the capture input', () => {
     const f = fixture()
     const next = nextCaptureInput(f.current, f.prepared, { root: f.current.root,

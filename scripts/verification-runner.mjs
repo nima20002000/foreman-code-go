@@ -2,14 +2,12 @@ import { execFileSync, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, readdirSync, statfsSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { groupUsed, stopGroup } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, portionKey, portionPath,
   positiveInteger, privateDirectory, readNodeReport, readReport, readVitestReport, reportPaths,
   suiteSummary, writeReport } from './verification-reports.mjs'
 
-const repository = fileURLToPath(new URL('..', import.meta.url))
-const rootCommands = { typecheck: 'typecheck', lint: 'lint', unit: 'test', build: 'build' }
+const rootCommands = { typecheck: 'typecheck', lint: 'lint', unit: 'test', build: 'build', integration: 'test:integration' }
 const limitNames = ['summaryBytes', 'junitBytes', 'vitestBytes', 'logsArchiveBytes', 'logBytes']
 
 export function validateVerificationContext(context) {
@@ -35,6 +33,10 @@ export function validateVerificationContext(context) {
   positiveInteger(context.qualifiedUnitWorkers, 'Qualified unit workers', 12)
   positiveInteger(identity.parameters.unitWorkers, 'Unit workers', context.qualifiedUnitWorkers)
   positiveInteger(identity.parameters.integrationShards, 'Integration shards', 12)
+  if (identity.suite === 'integration') {
+    positiveInteger(context.qualifiedIntegrationShards, 'Qualified integration shards', 12)
+    positiveInteger(identity.parameters.integrationShards, 'Integration shards', context.qualifiedIntegrationShards)
+  }
   for (const name of limitNames) positiveInteger(context.limits?.[name], name)
   const outputBytes = context.limits.summaryBytes + context.limits.junitBytes
     + context.limits.vitestBytes + context.limits.logsArchiveBytes
@@ -42,8 +44,8 @@ export function validateVerificationContext(context) {
     throw new Error('Report limits exceed the accepted report reservation')
   }
   if (!Array.isArray(context.requiredPortions) || !context.requiredPortions.length
-    || context.requiredPortions.some(portion => !portion.key || !['command', 'bootstrap', 'vitest', 'node'].includes(portion.kind)
-      || ['vitest', 'node'].includes(portion.kind) && (!Array.isArray(portion.files) || !portion.files.length))) {
+    || context.requiredPortions.some(portion => !portion.key || !['command', 'bootstrap', 'vitest', 'node', 'integration'].includes(portion.kind)
+      || ['vitest', 'node', 'integration'].includes(portion.kind) && (!Array.isArray(portion.files) || !portion.files.length))) {
     throw new Error('Protected command and test inventory required')
   }
   if (!context.storeDirectory || !context.mutableDirectory || !context.preseedReceipt
@@ -114,6 +116,15 @@ export function prepareVerificationDirectory(root) {
 export function expectedPortions(root, suite) {
   if (suite === 'install') return [{ key: 'root:install', kind: 'command' }]
   const bootstrap = { key: 'root:install', kind: 'bootstrap' }
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  if (manifest.name !== 'foreman-code') {
+    if (!rootCommands[suite]) throw new Error(`Unsupported verification suite: ${suite}`)
+    return [bootstrap, { key: portionKey('', rootCommands[suite]), kind: 'command' }]
+  }
+  if (suite === 'integration') return [bootstrap,
+    { key: portionKey('packages/contracts', 'build'), kind: 'command' },
+    { key: portionKey('', 'test:integration'), kind: 'integration' },
+  ]
   if (suite === 'unit') return [bootstrap, { key: 'root:worker-artifact', kind: 'bootstrap' },
     { key: portionKey('packages/contracts', 'test'), kind: 'vitest' },
     { key: portionKey('apps/api', 'test'), kind: 'vitest' },
@@ -136,6 +147,8 @@ export function expectedPortions(root, suite) {
 }
 
 export function captureVerificationInventory(root, suite) {
+  const portions = expectedPortions(root, suite)
+  if (portions.every(portion => ['command', 'bootstrap'].includes(portion.kind))) return portions
   const files = []
   const visit = directory => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -145,11 +158,13 @@ export function captureVerificationInventory(root, suite) {
       else if (entry.isFile()) files.push(relative(root, path).split(sep).join('/'))
     }
   }
-  if (suite === 'unit') visit(root)
-  return expectedPortions(root, suite).map(portion => {
-    if (!['vitest', 'node'].includes(portion.kind)) return portion
+  if (suite === 'unit' || suite === 'integration') visit(root)
+  return portions.map(portion => {
+    if (!['vitest', 'node', 'integration'].includes(portion.kind)) return portion
     let selected
-    if (portion.kind === 'vitest') {
+    if (portion.kind === 'integration') {
+      selected = files.filter(path => /^apps\/api\/test\/.*\.integration\.test\.ts$/.test(path))
+    } else if (portion.kind === 'vitest') {
       const prefix = portion.key.split(':')[0] + '/'
       selected = files.filter(path => path.startsWith(prefix) && /\.(test|spec)\.[cm]?[jt]sx?$/.test(path)
         && !/\.(integration|acceptance)\.test\./.test(path)
@@ -200,6 +215,7 @@ export function collectPortions(directory, root, expected, limits) {
         throw new Error('Missing or corrupt test inventory')
       }
       const options = { root, expectedFiles, maxBytes: limits.vitestBytes }
+      if (kind === 'integration') return collectIntegrationPortion(directory, key, receipt, options)
       const report = kind === 'node'
         ? readNodeReport(portionPath(directory, key, 'node.ndjson'), options)
         : readVitestReport(portionPath(directory, key, 'vitest.json'), options)
@@ -209,6 +225,25 @@ export function collectPortions(directory, root, expected, limits) {
       return { key, complete: false, failed: Boolean(receipt && receipt.code !== 0), totals: emptyCounts(), files: [], error: error.message }
     }
   })
+}
+
+function collectIntegrationPortion(directory, key, receipt, options) {
+  const reports = join(directory, 'parts', 'integration')
+  const summary = JSON.parse(readReport(join(reports, 'summary.json'), options.maxBytes))
+  const report = readVitestReport(join(reports, 'vitest.json'), options)
+  const reportedFiles = summary.files?.map(file => file.file)
+  const covered = Array.isArray(reportedFiles) && reportedFiles.length === options.expectedFiles.length
+    && new Set(reportedFiles).size === reportedFiles.length
+    && options.expectedFiles.every(file => reportedFiles.includes(file))
+  const totalsMatch = Object.keys(report.totals).every(name => summary.totals?.[name] === report.totals[name])
+  const complete = covered && totalsMatch && summary.schemaVersion === 1 && summary.suite === 'integration'
+    && summary.expectedPortions === options.expectedFiles.length
+    && summary.completedPortions === summary.expectedPortions && summary.completeness === 'complete'
+    && ['passed', 'failed'].includes(summary.outcome) && summary.files.every(file => file.complete)
+    && Number.isSafeInteger(summary.firstPassFailed) && summary.firstPassFailed >= 0
+  return { key, ...report, complete: report.complete && complete && Boolean(receipt),
+    failed: report.failed || summary.firstPassFailed > 0 || summary.outcome === 'failed'
+      || Boolean(receipt && receipt.code !== 0) }
 }
 
 function ownedGroups(token) {
@@ -338,7 +373,7 @@ export function verificationScratchEnvironment(context, base) {
   return environment
 }
 
-export async function verifyRepository(context, { root = repository, signal } = {}) {
+export async function verifyRepository(context, { root = process.cwd(), signal } = {}) {
   validateVerificationContext(context)
   const directory = prepareVerificationDirectory(root)
   const state = { identity: context.identity, startedAt: new Date().toISOString(),
@@ -348,6 +383,10 @@ export async function verifyRepository(context, { root = repository, signal } = 
     FOREMAN_CODE_VERIFICATION_REPORT_DIR: directory, FOREMAN_CODE_VERIFICATION_LOG_BYTES: String(context.limits.logBytes),
     FOREMAN_CODE_VERIFICATION_REPORT_BYTES: String(context.limits.vitestBytes),
     FOREMAN_CODE_VERIFICATION_UNIT_WORKERS: String(context.identity.parameters.unitWorkers), COREPACK_ENABLE_NETWORK: '0' }
+  if (context.identity.suite === 'integration') {
+    environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS = String(context.identity.parameters.integrationShards)
+    environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS = String(context.qualifiedIntegrationShards)
+  }
   let result = { terminalOutcome: 'incomplete', processStopped: true }
   let measurementTimer
   try {
@@ -383,7 +422,7 @@ export async function verifyRepository(context, { root = repository, signal } = 
     if (result.terminalOutcome === 'passed' && context.identity.suite !== 'install') {
       verifyOfflinePreseed(root, context.preseedReceipt)
       verifyEffectivePackagePolicy(root, environment)
-      if (context.identity.suite === 'unit') {
+      if (context.requiredPortions.some(portion => portion.key === 'root:worker-artifact')) {
         const tool = context.unitCodex
         if (tool?.executable !== '/opt/graphql-ci/tools/codex'
           || createHash('sha256').update(readFileSync(tool.executable)).digest('hex') !== tool.binarySha256) {
@@ -400,7 +439,16 @@ export async function verifyRepository(context, { root = repository, signal } = 
           key: 'root:worker-artifact', startedAt, finishedAt: new Date().toISOString(), code: result.code ?? 1,
         }, context.limits.logBytes)
       }
-      if (result.terminalOutcome === 'passed') result = await execute(verificationCommand(context), 'root')
+      if (result.terminalOutcome === 'passed') {
+        const startedAt = new Date().toISOString()
+        result = await execute(verificationCommand(context), 'root')
+        const key = portionKey('', rootCommands[context.identity.suite])
+        if (context.requiredPortions.some(portion => portion.key === key
+          && ['command', 'integration'].includes(portion.kind))) {
+          writeReport(portionPath(directory, key, 'command.json'), { key, startedAt,
+            finishedAt: new Date().toISOString(), code: result.code ?? 1, error: result.error }, context.limits.logBytes)
+        }
+      }
     }
     if (context.measurement) {
       sample()

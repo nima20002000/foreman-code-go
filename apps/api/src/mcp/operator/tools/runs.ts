@@ -44,6 +44,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     () => context.services.runs.handoffs.read(context.principal, input)))
   if (operatorToolAvailable(context, 'run_activities_get_v1')) server.registerTool('run_activities_get_v1', {
     description: 'Read a bounded, redacted public Activities page for an exact authorized Run. '
+      + 'Includes the Run’s Agent-requested CI queue and process states with Job execution references and initiating Agents. '
       + 'Pages may return fewer items than limit to fit the 128 KiB public-page budget; follow the returned cursors. '
       + 'Use run_get for execution and normalized activity snapshots. '
       + 'Use nextCursor for incremental catch-up and olderCursor for earlier retained history; '

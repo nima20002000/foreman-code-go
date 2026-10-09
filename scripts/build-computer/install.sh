@@ -29,8 +29,7 @@ grep -q "^$user:" /etc/subgid || usermod --add-subgids 100000-165535 "$user"
 # The Worker measures the backing file at capture: its directory stays traversable, not listable.
 [ -d "$(dirname "$backing")" ] || install -d -m 0711 "$(dirname "$backing")"
 if [ ! -f "$backing" ]; then
-  fallocate -l "${size}G" "$backing"
-  mkfs.ext4 -q -O quota,project -E quotatype=prjquota "$backing"
+  sh "$(dirname "$0")/create-volume.sh" "$backing" "${size}G"
 fi
 for directory in "$home/.local/share/foreman-code" "$base" "$volume"; do
   [ -d "$directory" ] || install -d -m 0700 -o "$user" -g "$(id -gn "$user")" "$directory"

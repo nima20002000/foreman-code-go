@@ -16,6 +16,8 @@ import { toolFailure, toolResult } from './results.js'
 import { logOperatorToolFailure } from '../operator/invoke.js'
 
 export const CI_CAPABILITY_DETAIL = 'ci_run captures tracked files at the requested commit, the Agent’s accepted worktree, or Main project HEAD, '
+  + 'supports install, typecheck, lint, unit, build and integration. '
+  + 'Integration uses isolated offline PostgreSQL and qualified shard limits. It '
   + 'reuses a workspace/suite Auto verification definition and queues build capacity. Retrying commandId returns the original ticket. '
   + 'ci_get returns queue reasons, selected computer, process, publication, digest-verified summary and a 32 KiB log tail. '
   + 'Completed tickets are terminal; their execution, logs and published artifacts remain readable. '

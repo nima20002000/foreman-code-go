@@ -1,5 +1,6 @@
 import { acceptedJobSpecDigests } from '@foreman-code/contracts/jobs-node'
-import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
+import { AcceptedVerificationJobSpecSchema, VerificationJobExecutionSchema,
+  type JobVerificationReport } from '@foreman-code/contracts/job-verification'
 import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
 import { JobVerificationQualificationCandidateSchema,
   type JobQualificationReport, type JobQualificationCandidateRecord }
@@ -13,11 +14,22 @@ export async function publishFailedQualification(input: {
   exitCode: number
   stderr: string
   closeContainer(): Promise<boolean>
-  publish(): Promise<unknown>
+  publish(): Promise<JobVerificationReport>
 }): Promise<never> {
   if (!await input.closeContainer()) throw new Error('Failed verification descendants are still active.')
-  await input.publish()
-  throw new Error(`Complete ${input.suite} qualification failed: ${input.stderr.slice(0, 300)}`)
+  const failure = `${input.suite} qualification failed (exit ${input.exitCode}).`
+  const diagnostic = input.stderr.trim().slice(0, 300)
+  let report: JobVerificationReport
+  try {
+    report = await input.publish()
+  } catch (error) {
+    const publication = error instanceof Error ? error.message : 'Reports are unavailable'
+    throw new Error(`${failure} Report publication failed: ${publication.slice(0, 160)}. ${diagnostic}`.trim()
+      .slice(0, 500), { cause: error })
+  }
+  const retained = `Reports: Job ${report.executionId}. ${report.totals.failed} failed checks; `
+    + `${report.completedPortions}/${report.expectedPortions} portions complete (${report.outcome}).`
+  throw new Error(`${failure} ${retained} ${diagnostic}`.trim().slice(0, 500))
 }
 
 /** Qualification has human diagnostic admission; it does not borrow a qualified Job grant. */
@@ -42,8 +54,10 @@ export function qualificationExecution(raw: JobQualificationCandidateRecord,
     materializationDigest: sourceMaterializationDigest(report.materialization) }
   const definitionId = `qualification:${identity.executionId}`
   const interruption = identity.executionId.endsWith(':cancelled') || identity.executionId.endsWith(':timed_out')
-  const argv = interruption ? ['node', '-e', QUALIFICATION_PRESSURE_DRIVER,
-    '/workspace/.graphql-job-inputs/qualification-context.json'] : ['node', 'scripts/verify-repository.mjs', '--context', '.graphql-job-inputs/qualification-context.json']
+  const argv = interruption
+    ? ['node', '-e', QUALIFICATION_PRESSURE_DRIVER, '/workspace/.graphql-job-inputs/qualification-context.json']
+    : ['node', '/opt/graphql-ci/verification/verify-repository.mjs', '--context',
+      '.graphql-job-inputs/qualification-context.json']
   const spec = { schemaVersion: 2, source, target: identity.target, argv,
     inputs: [], outputs, policy, workflowInput: null, definitionId, definitionRevision: 1,
     definitionVersionId: identity.definitionVersionId, profile: identity.profile,

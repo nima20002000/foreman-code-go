@@ -30,7 +30,7 @@ test('CI context captures committed manifests and policy without working bytes, 
   const receipt = await buildCiRuntimeContext({ repository: f.repository, commit: f.captured, output: f.output });
   assert.equal(receipt.sourceCommit, f.captured);
   assert.equal(await readFile(join(f.output, 'source-lock/package.json'), 'utf8'), '{"packageManager":"pnpm@11.27.0"}');
-  assert.equal(receipt.files.length, 6);
+  assert.equal(receipt.files.length, 4);
   assert.ok(receipt.files.every(file => !file.path.includes('.env') && !file.path.includes('local-cache')));
   for (const file of receipt.files) {
     const bytes = execFileSync('git', ['show', `${f.captured}:${file.path}`], { cwd: f.repository, env: fixtureGitEnvironment });
@@ -51,4 +51,15 @@ test('CI context refuses to overwrite an existing directory', async t => {
   const f = await fixture(t); await mkdir(f.output); await writeFile(join(f.output, 'keep'), 'original');
   await assert.rejects(buildCiRuntimeContext({ repository: f.repository, commit: f.captured, output: f.output }), { code: 'EEXIST' });
   assert.equal(await readFile(join(f.output, 'keep'), 'utf8'), 'original');
+});
+
+test('another project uses installed runtime controls without copying project build controls', async t => {
+  const f = await fixture(t);
+  await rm(join(f.repository, 'apps/worker'), { recursive: true });
+  const captured = f.commit();
+  const receipt = await buildCiRuntimeContext({ repository: f.repository, commit: captured, output: f.output });
+  assert.equal(receipt.sourceCommit, captured);
+  assert.equal(await readFile(join(f.output, 'source-lock/package.json'), 'utf8'), '{"packageManager":"pnpm@11.27.0"}');
+  assert.ok((await readFile(join(f.output, 'Containerfile'))).length > 0);
+  assert.ok((await readFile(join(f.output, 'verification/verify-repository.mjs'))).length > 0);
 });

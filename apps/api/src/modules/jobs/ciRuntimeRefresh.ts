@@ -33,8 +33,7 @@ export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, 
       ...configuration.machine.tools.filter(tool => tool.kind !== 'codex').map(tool => ({
         kind: tool.kind, executable: tool.executable, sourceExecutable: tool.executable, version: tool.version,
       })),
-      { kind: 'codex', executable: prepared.unitCodex.executable,
-        sourceExecutable: prepared.unitCodex.sourceExecutable, version: prepared.unitCodex.version },
+      ...preparedCodexSource(prepared),
     ],
   })
 }
@@ -121,13 +120,15 @@ export async function recaptureCiTools(
   tools: InstalledVerificationRuntimeConfiguration['machine']['tools'],
   prepared: PreparedCiRuntime, directory: string, environment: NodeJS.ProcessEnv,
 ): Promise<InstalledVerificationRuntimeCaptureInput['toolSources']> {
-  const sources: InstalledVerificationRuntimeCaptureInput['toolSources'] = [{ kind: 'codex',
-    executable: prepared.unitCodex.executable, sourceExecutable: prepared.unitCodex.sourceExecutable,
-    version: prepared.unitCodex.version }]
+  const sources = preparedCodexSource(prepared)
+  const imageTools = tools.filter(tool => tool.kind !== 'codex').map(({ kind, executable }) => ({ kind, executable }))
+  if (!imageTools.some(tool => tool.kind === 'postgresql')) {
+    imageTools.push({ kind: 'postgresql', executable: '/usr/lib/postgresql/17/bin/postgres' })
+  }
   const container = (await run('podman', ['--remote=false', 'create', prepared.imageId, 'true'],
     { env: environment })).stdout.trim()
   try {
-    for (const tool of tools.filter(tool => tool.kind !== 'codex')) {
+    for (const tool of imageTools) {
       const sourceExecutable = join(directory, `ci-tool-${tool.kind}-${prepared.commit.slice(0, 12)}`)
       await run('podman', ['--remote=false', 'cp', `${container}:${tool.executable}`, sourceExecutable], { env: environment })
       await chmod(sourceExecutable, 0o700)
@@ -142,4 +143,10 @@ export async function recaptureCiTools(
     await run('podman', ['--remote=false', 'rm', container], { env: environment })
   }
   return sources
+}
+
+function preparedCodexSource(prepared: PreparedCiRuntime): InstalledVerificationRuntimeCaptureInput['toolSources'] {
+  if (!prepared.unitCodex) return []
+  return [{ kind: 'codex', executable: prepared.unitCodex.executable,
+    sourceExecutable: prepared.unitCodex.sourceExecutable, version: prepared.unitCodex.version }]
 }

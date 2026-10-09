@@ -8,7 +8,7 @@ import {
 } from './jobVerification.js'
 import {
   JOB_VERIFICATION_APPROVAL_LIFETIME_MS, JobNetworkPolicySchema, JobResourceRequestSchema,
-  JobVerificationApprovalConfigInputSchema, JobVerificationApprovalConfigSchema, JobVerificationDispatchValiditySchema,
+  qualificationIntegrationShards, JobVerificationApprovalConfigInputSchema, JobVerificationApprovalConfigSchema, JobVerificationDispatchValiditySchema,
 } from './jobVerificationPolicy.js'
 import { JobVerificationGateResultSchema } from './jobVerificationGate.js'
 import { verificationFixture, verificationId, verificationTime, verificationDigest } from '../tests/helpers/jobVerification.js'
@@ -17,11 +17,11 @@ describe('verification placement and policy', () => {
   it('authors every ordinary suite from the saved resource envelope with the actual wrapper and four bounded reports', () => {
     const { spec, resources } = verificationFixture()
     const policy = jobPolicyRequirementsRecord(spec.policy)
-    for (const suite of ['install', 'typecheck', 'lint', 'unit', 'build'] as const) {
+    for (const suite of ['install', 'typecheck', 'lint', 'unit', 'build', 'integration'] as const) {
       const template = jobVerificationTemplate({ profileId: spec.policy.isolationPolicyId,
         profileRevision: spec.policy.isolationPolicyRevision, suite, ready: false,
         policy, resources, maxUnitWorkers: 12 })
-      expect(template.argv).toEqual(['node', 'scripts/verify-repository.mjs', '--context',
+      expect(template.argv).toEqual(['node', '/opt/graphql-ci/verification/verify-repository.mjs', '--context',
         '.graphql-job-inputs/verification.json'])
       expect(template.outputs).not.toBeNull()
       if (!template.outputs) throw new Error('A sufficient saved budget requires its report configuration.')
@@ -38,6 +38,18 @@ describe('verification placement and policy', () => {
         autoPolicies: [{ policy, limits: resources.limits }], verificationTemplates: [template] }).verificationTemplates)
         .toEqual([template])
     }
+  })
+  it('sizes integration shards within CPU, database memory, scratch and measured qualification limits', () => {
+    const { spec, resources } = verificationFixture()
+    const large = { ...resources, scratchBytes: 16 * 2 ** 30,
+      limits: { ...resources.limits, cpuLimit: 8, memoryBytes: 9 * 2 ** 30, diskBytes: 32 * 2 ** 30 } }
+    expect(qualificationIntegrationShards(large)).toBe(4)
+    expect(qualificationIntegrationShards({ ...large, limits: { ...large.limits, cpuLimit: 2 } })).toBe(2)
+    expect(qualificationIntegrationShards({ ...large, scratchBytes: 2 * 2 ** 30 })).toBe(1)
+    const template = jobVerificationTemplate({ profileId: spec.policy.isolationPolicyId,
+      profileRevision: 1, suite: 'integration', ready: true, policy: jobPolicyRequirementsRecord(spec.policy),
+      resources: large, maxUnitWorkers: 8, maxIntegrationShards: 3 })
+    expect(template.parameters.integrationShards).toBe(3)
   })
   it('keeps all choices readable when a saved unqualified report allowance cannot fit four declarations', () => {
     const { spec, resources, build } = verificationFixture()

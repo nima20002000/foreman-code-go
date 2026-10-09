@@ -232,10 +232,11 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
     pool, authority,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },
     complete: (options: { publication?: 'collecting' | 'failed' | 'expired'; failed?: true } = {}) => {
-      if (!ticket) throw new Error('Missing queued ticket')
+      if (!ticket || !('verification' in ticket.definition.spec)) throw new Error('Missing queued verification ticket')
       execution = VerificationJobExecutionSchema.parse({ ...jobExecution(), schemaVersion: 2,
         id: ticket.executionId, initiatingAgent: ticket.initiatingAgent, attemptId: ticket.attemptId, operationId: ticket.operationId, workspaceId,
         acceptedSpec: { ...runtime.spec, definitionVersionId: ticket.definition.versionId,
+          verification: ticket.definition.spec.verification,
           source: { ...runtime.spec.source, ...ticket.definition.spec.source } },
         publication: options.publication ?? 'complete',
         finishedAt: new Date().toISOString(),
@@ -252,7 +253,7 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
       const spec = execution!.acceptedSpec
       summary = JobVerificationReportSchema.parse({ schemaVersion: 1, commit: spec.source.commit,
         manifestDigest: spec.source.manifestDigest, definitionVersionId: spec.definitionVersionId,
-        suite: 'unit', executionId: execution!.id, attemptId: execution!.attemptId, target: spec.target,
+        suite: spec.verification.suite, executionId: execution!.id, attemptId: execution!.attemptId, target: spec.target,
         profile: spec.profile, resources: spec.verification.resources, parameters: spec.verification.parameters,
         startedAt: ticket.enqueuedAt, finishedAt: new Date().toISOString(),
         totals: { total: 3, passed: options.failed ? 2 : 3, failed: options.failed ? 1 : 0, skipped: 0 },

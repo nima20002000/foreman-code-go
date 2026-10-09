@@ -8,7 +8,7 @@ export const QUALIFICATION_PRESSURE_DRIVER = `const fs=require('node:fs'),{spawn
 const quotaErrno=-require('node:os').constants.errno.EDQUOT;
 const context=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
 const log=context.identity.suite==='install'?'install':'root';
-const child=spawn('node',['scripts/verify-repository.mjs','--context',process.argv[1]],{stdio:'ignore'});
+const child=spawn('node',['/opt/graphql-ci/verification/verify-repository.mjs','--context',process.argv[1]],{stdio:'ignore'});
 child.on('error',()=>process.exit(2));
 const poll=setInterval(()=>{
 if(!fs.existsSync('.logs/verification/parts/'+log+'.log'))return;

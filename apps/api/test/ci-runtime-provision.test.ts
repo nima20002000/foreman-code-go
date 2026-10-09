@@ -11,10 +11,35 @@ import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/so
 import type { CiRuntimeProvisioner } from '../src/modules/jobs/ciRuntimeProvisioner.js'
 import { describe, expect, it } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
-import { ciPreparationFixture as fixture, qualifiedPreparationProfile, dexter, oldImage, newImage, commit, newPin }
+import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, dexter, oldImage, newImage, commit, newPin }
   from './helpers/ciPreparationFixture.js'
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
+  it('automatically prepares integration profiles and retains the longer suite budget through MCP readback', async () => {
+    const f = await fixture()
+    try {
+      const base = f.profiles.get('p-unit')!
+      const profile = preparationProfile('p-integration', 'Dexter integration', dexter,
+        base.root.binding.rootId, ['integration'])
+      profile.spec.policy.executionTimeoutMs = 9_000_000
+      f.profiles.set(profile.id, profile)
+      const start = await f.call('build_computer_prepare', { workspaceId: f.workspaceId,
+        profileId: profile.id, commandId: 'prepare-integration' })
+      expect(start.isError).not.toBe(true)
+      expect(await f.settle(profile.id)).toMatchObject({ state: 'qualified', commit })
+      const saved = f.profiles.get(profile.id)!
+      expect(saved.spec.suites).toEqual(['integration'])
+      expect(saved.spec.policy.executionTimeoutMs).toBe(9_000_000)
+      expect(saved.measurement?.suites.map(value => value.suite)).toEqual(['integration'])
+      expect(f.calls.qualified).toContain(profile.id)
+      const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId,
+        profileId: profile.id }, 'reader')
+      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent).profiles).toContainEqual({
+        profileId: profile.id, revision: 4, status: 'qualified',
+      })
+    } finally { await f.app.close() }
+  })
+
   it('reports draining through MCP and delays qualification until the Worker finishes its active work', async () => {
     let finish!: () => void
     const refreshGate = new Promise<void>(resolve => { finish = resolve })
