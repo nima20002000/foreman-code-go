@@ -28,6 +28,7 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
+import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { runWithReadOnlyQualification, requireHarnessQualification } from '../src/modules/harnesses/qualification/gate.js'
 import type { QualificationSuite } from '../src/modules/harnesses/qualification/types.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -108,6 +109,30 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
     expect(listed.qualifications[0]).toMatchObject({ harness: 'codex', version: '0.158.0', status: 'qualified', suiteRevision: 'fake-v1',
       checks: [{ id: 'static-compatibility', passed: true }, { id: 'protocol', passed: true }] })
     expect(await registry.trusted('codex', '0.158.0', listed.qualifications[0]!.binarySha256!)).toBe(true)
+    const stalledBinary = join(home, 'stalled-codex')
+    await writeFile(stalledBinary, `#!${process.execPath}\nsetInterval(() => {}, 1000)\n`, { mode: 0o700 })
+    const stalledService = new HarnessQualificationService(repository, registry, { codex: suite },
+      { codex: stalledBinary }, commands, settings, staticCheck, undefined,
+      () => nativeCompatibilityProbe({ codex: stalledBinary }, home, process.env, 100))
+    services.harnessQualifications = stalledService
+    try {
+      await expectMcpAccessDenied(readClient.callTool({
+        name: 'harness_qualification_run', arguments: { harness: 'codex' },
+      }))
+      const timedOut = await writeClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })
+      expect(timedOut).toMatchObject({ isError: true, content: [{ type: 'text', text: JSON.stringify({
+        error: { code: 'HARNESS_CHECK_TIMEOUT', message: 'The native check timed out. Try again.' },
+      }) }] })
+      await stalledService.join()
+      const afterTimeout = HarnessQualificationListSchema.parse((await readClient.callTool({
+        name: 'harness_qualifications_list', arguments: {},
+      })).structuredContent)
+      expect(afterTimeout).toEqual(listed)
+      expect(suite.run).toHaveBeenCalledOnce()
+    } finally {
+      services.harnessQualifications = service
+      await stalledService.shutdown()
+    }
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
     expect(await registry.trusted('codex', '0.158.0', '0'.repeat(64))).toBe(false)
     await writeFile(binary, '#!/bin/sh\n# another binary, same version\necho "codex-cli 0.158.0"\n')

@@ -1,12 +1,25 @@
 import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { appendFile, chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
+import { setTimeout as delay } from 'node:timers/promises'
 import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { nativeCompatibilityProbe, type CompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
+import { passiveDriverPayloads } from '../src/modules/harnesses/payloadDiscovery.js'
+
+vi.mock('node:fs', async original => {
+  const fs = await original<typeof import('node:fs')>()
+  return { ...fs, createReadStream: vi.fn(fs.createReadStream) }
+})
+vi.mock('../src/modules/harnesses/payloadDiscovery.js', async original => {
+  const payloads = await original<typeof import('../src/modules/harnesses/payloadDiscovery.js')>()
+  return { ...payloads, passiveDriverPayloads: vi.fn(payloads.passiveDriverPayloads) }
+})
 
 function gate() {
   let resolve!: () => void
@@ -100,12 +113,68 @@ it('refuses a binary replacement after version inspection before admitting its s
   }
 })
 
+it('qualifies after slow payload hashing and still detects payload replacement', async () => {
+  const f = await binaryFixture("console.log('codex-cli 0.154.0')")
+  const payload = join(f.directory, 'native-payload')
+  await writeFile(payload, 'native payload bytes')
+  const hashing = gate()
+  const hashed = gate()
+  const fs = await vi.importActual<typeof import('node:fs')>('node:fs')
+  const installations: Awaited<ReturnType<CompatibilityProbe['inspect']>>[] = []
+  const instance = service(f.binary, timeoutMs => {
+    const raw = nativeCompatibilityProbe({ codex: f.binary }, f.directory, process.env, timeoutMs)
+    return { ...raw, async inspect(harness, signal) {
+      const installation = await raw.inspect(harness, signal)
+      installations.push(installation)
+      return installation
+    } }
+  })
+  vi.mocked(passiveDriverPayloads).mockResolvedValueOnce({ complete: true, paths: [payload] })
+  vi.mocked(createReadStream).mockImplementation((path, options) => {
+    if (path !== payload) return fs.createReadStream(path, options)
+    return Readable.from((async function* () {
+      hashing.release()
+      await hashed.promise
+      yield* fs.createReadStream(path, options)
+    })()) as ReturnType<typeof createReadStream>
+  })
+  const result = instance.qualification.begin('codex').then(value => ({ value }), error => ({ error }))
+  try {
+    await hashing.promise
+    await delay(6000)
+    hashed.release()
+    expect(await result).toMatchObject({ value: { version: '0.154.0', status: 'qualifying' } })
+    await instance.qualification.join()
+    expect(instance.run).toHaveBeenCalledOnce()
+    expect(instance.save).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'qualified' }),
+      expect.any(Object))
+    const probe = nativeCompatibilityProbe({ codex: f.binary }, f.directory)
+    try {
+      await probe.assertUnchanged(installations[0]!, new AbortController().signal)
+      await appendFile(payload, 'replacement bytes')
+      await expect(probe.assertUnchanged(installations[0]!, new AbortController().signal))
+        .rejects.toMatchObject({ code: 'CLI_CHANGED' })
+    } finally {
+      await probe.close?.()
+    }
+  } finally {
+    hashed.release()
+    await result
+    vi.mocked(createReadStream).mockImplementation(fs.createReadStream)
+    await instance.qualification.shutdown()
+    await removeFixtureDirectory(f.directory)
+  }
+})
+
 it('still stops a stalled version command at the native deadline without admitting a suite', async () => {
   const f = await binaryFixture('setInterval(() => {}, 1000)')
   const instance = service(f.binary, timeoutMs => nativeCompatibilityProbe(
     { codex: f.binary }, f.directory, process.env, timeoutMs))
   try {
-    await expect(instance.qualification.begin('codex')).rejects.toMatchObject({ name: 'TimeoutError' })
+    await expect(instance.qualification.begin('codex')).rejects.toMatchObject({
+      name: 'DomainError', code: 'HARNESS_CHECK_TIMEOUT', status: 503,
+      message: 'The native check timed out. Try again.',
+    })
     await instance.qualification.join()
     expect(instance.run).not.toHaveBeenCalled()
     expect(instance.save).not.toHaveBeenCalled()

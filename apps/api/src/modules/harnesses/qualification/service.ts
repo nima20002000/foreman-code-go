@@ -12,6 +12,7 @@ import { DomainError } from '../../errors.js'
 import type { PostgresSettingsRepository } from '../../settings/postgres.js'
 import { QUALIFICATION_TARGET_PROFILE } from './profiles.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe } from '../compatibility/probe.js'
+import { qualificationError } from '../qualificationErrors.js'
 import type { HarnessQualificationRepository } from './repository.js'
 import type { HarnessQualificationRegistry } from './registry.js'
 import type { QualificationSuite } from './types.js'
@@ -142,6 +143,10 @@ export class HarnessQualificationService {
     let version: string
     // The probe bounds the CLI command; installation checks and closure have separate ownership.
     try { version = (await probe.inspect(harness, this.cancellation.signal)).version }
+    catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError') throw qualificationError(error)
+      throw error
+    }
     finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()
