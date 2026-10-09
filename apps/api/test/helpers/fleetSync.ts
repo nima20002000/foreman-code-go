@@ -99,8 +99,11 @@ export function fakeFleet(computer: ReturnType<typeof fakeComputer>) {
     mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
     authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'], publicKeyFingerprint: 'a'.repeat(64),
   }
+  const registrations = [registration]
   const pool = {
-    connect: async () => ({ query: async () => ({ rows: [{ record: registration }] }), release: () => {} }),
+    connect: async () => ({
+      query: async () => ({ rows: registrations.map(record => ({ record })) }), release: () => {},
+    }),
   } as unknown as pg.Pool
   const sources: FleetSources = {
     codexUserMcpServers: async () => ({ docs: { url: 'https://docs.example/mcp' } }),
@@ -123,5 +126,5 @@ export function fakeFleet(computer: ReturnType<typeof fakeComputer>) {
   }
   const fleet = new FleetMaintenanceService(pool, mainId, () => endpoint,
     {} as PostgresCommandCoordinator, computer.maintenance, sources)
-  return { fleet, sources, requested, endpoint }
+  return { fleet, sources, requested, endpoint, registrations }
 }

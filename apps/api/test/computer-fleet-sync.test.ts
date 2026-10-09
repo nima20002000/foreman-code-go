@@ -264,9 +264,16 @@ describe('fleet source propagation', () => {
       const status = await readStatus(signal)
       return { ...status, harnesses: status.harnesses.map(entry => ({ ...entry, latest: '9.0.0' })) }
     }
-    const { fleet, sources, requested } = fakeFleet(computer)
+    const { fleet, sources, requested, registrations } = fakeFleet(computer)
+    const [worker] = registrations.splice(0)
     sources.codexPlugins = async () => { throw new Error('Codex plugin catalog unavailable') }
     sources.claudePlugins = async () => { throw new Error('Claude plugin catalog unavailable') }
+    await expect(fleet.keepCurrent()).rejects.toThrow('Some fleet settings could not be read.')
+    const mainOnly = await settle(computer)
+    expect(mainOnly.tasks.map(task => task.kind)).toEqual(['update-harnesses'])
+    expect(requested).toEqual([])
+    expect([...computer.codexMcp]).toEqual([])
+    registrations.push(worker!)
     await expect(fleet.keepCurrent()).rejects.toThrow('Some fleet settings could not be read.')
     await settle(computer)
     expect(requested.map(task => task.kind)).toEqual(['update-harnesses', 'sync-mcp'])
