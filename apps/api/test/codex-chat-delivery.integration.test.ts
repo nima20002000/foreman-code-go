@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, it } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings,
@@ -19,6 +22,7 @@ import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js
 import { createAdmittedNativeManager } from '../src/modules/harnesses/admittedManager.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { CodexChatFiles } from '../src/modules/harnesses/codexFiles/runtime.js'
+import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { deliveryFixture } from './fixtures/codex-delivery.js'
 import { agentMessage, calls, emit, finish, state, until } from './fixtures/codex-test-helpers.js'
@@ -57,6 +61,54 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   beforeEach(async () => {
     database = await agent3Database()
     native = await deliveryFixture()
+    const source = await readFile(native.binary, 'utf8')
+    await writeFile(native.binary, source
+      .replace("setTimeout(() => replyThread(owner, message.id, params), 800)",
+        "replyOrHold('late-creation', () => replyThread(owner, message.id, params))")
+      .replace("if (flag('late-reject-thread-start')) { setTimeout(() => fail(message.id), 800); return }",
+        "if (flag('late-reject-thread-start')) { replyOrHold('late-creation-rejection', () => fail(message.id)); return }")
+      .replace("if (prompt === 'late-reject' || flag('late-reject-turn-start')) { setTimeout(() => fail(message.id), 800); return }",
+        "if (prompt === 'late-reject' || flag('late-reject-turn-start')) { replyOrHold('late-turn-rejection', () => fail(message.id)); return }"))
+    for (const kind of ['late-creation', 'late-creation-rejection', 'late-turn-rejection']) {
+      await native.flag(`hold-${kind}`)
+    }
+    const makeManager = (files?: CodexChatFiles) => native.makeManager(files, {
+      transport: (...args) => {
+        // Healthy RPCs use the production deadline; faults follow observed native input.
+        args[7] = undefined
+        return new class extends CodexStdioTransport {
+          override async request(...input: Parameters<CodexStdioTransport['request']>): Promise<unknown> {
+            const [method, params, signal, late] = input
+            const flagged = (flag: string) => existsSync(join(native.directory, flag))
+            const faults = [
+              { method: 'thread/start', flag: 'late-reject-thread-start', reply: 'late-creation-rejection' },
+              { method: 'thread/start', flag: 'late-thread-start', reply: 'late-creation' },
+              { method: 'turn/start', flag: 'late-reject-turn-start', reply: 'late-turn-rejection' },
+            ]
+            const fault = faults.find(candidate => candidate.method === method && flagged(candidate.flag))?.reply
+            if (!fault) return super.request(...input)
+            const count = (await native.wire(method)).length
+            const controller = new AbortController()
+            const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+            const response = super.request(method, params, requestSignal, late)
+            const observed = until(async () => controller.signal.aborted
+              || (await native.wire(method)).length > count || undefined)
+            try {
+              return await Promise.race([response, observed.then(() => {
+                controller.abort(new Error('Fixture response is held after native input.'))
+                return response
+              })])
+            } catch (error) {
+              // The reply follows uncertainty, regardless of scheduler or database load.
+              await native.flag(`release-${fault}`)
+              throw error
+            } finally {
+              controller.abort()
+            }
+          }
+        }(...args)
+      },
+    })
     operatorFiles = undefined
     agentFiles = undefined
     const fixture = makeCurrentWorkflowFixture(`delivery-${randomUUID()}`, 'single')
@@ -85,7 +137,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     factory = (id) => {
       let owner = agentOwners.get(id)
       if (!owner) {
-        owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(agentFiles) })).manager
+        owner = createAdmittedNativeManager('codex', async () => ({ manager: makeManager(agentFiles) })).manager
         agentOwners.set(id, owner)
       }
       return owner
@@ -101,7 +153,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     resolver = (_configuration, id) => {
       let owner = operatorOwners.get(id)
       if (!owner) {
-        owner = createAdmittedNativeManager('codex', async () => ({ manager: native.makeManager(operatorFiles) })).manager
+        owner = createAdmittedNativeManager('codex', async () => ({ manager: makeManager(operatorFiles) })).manager
         operatorOwners.set(id, owner)
       }
       return owner
