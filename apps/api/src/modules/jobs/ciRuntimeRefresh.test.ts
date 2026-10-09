@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PreparedCiRuntime } from '@foreman-code/contracts'
@@ -7,6 +7,7 @@ import { verificationRuntimeFixture } from '../../../test/helpers/verificationRu
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { InstalledVerificationRuntimeConfigurationSchema } from './installedVerificationConfiguration.js'
 import { nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
+import { refreshMainJobRuntime } from '../../cli/refreshMainJobRuntime.js'
 
 const commands = vi.hoisted(() => ({ run: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
@@ -24,6 +25,12 @@ vi.mock('node:fs/promises', async importOriginal => {
     ? Promise.resolve('0::/user.slice/worker.service\n')
     : actual.readFile(path, ...(options as [])) }
 })
+
+const capture = vi.hoisted(() => ({ record: vi.fn() }))
+vi.mock('./installedRuntimeHost.js', async importOriginal => ({
+  ...await importOriginal<typeof import('./installedRuntimeHost.js')>(),
+  captureInstalledRuntimeConfigurationRecord: capture.record,
+}))
 
 const roots: string[] = []
 afterEach(async () => {
@@ -137,6 +144,47 @@ describe('CI runtime refresh', () => {
       expect(createHash('sha256').update(bytes).digest('hex'))
         .not.toBe(f.current.machine.tools.find(value => value.kind === tool.kind)!.binarySha256)
     }
+  })
+
+  describe('Main refresh', () => {
+    async function mainRefresh(change?: 'configuration' | 'target') {
+      const f = fixture()
+      const directory = await privateFixtureDirectory('ci-main-refresh-')
+      roots.push(directory)
+      const current = { ...f.current, descriptor: { ...f.current.descriptor, runtimeRoot: directory } }
+      const currentBytes = Buffer.from(JSON.stringify(current))
+      await writeFile(join(directory, 'job-runtime.json'), currentBytes, { mode: 0o600 })
+      const captureInput = nextCaptureInput(current, f.prepared, { root: current.root,
+        manifest: current.qualificationSource.manifest, seedReceiptPath: '/ci/installed-seed.json',
+        resources: current.descriptor.resources })
+      if (change === 'target') captureInput.descriptor.target = { ...captureInput.descriptor.target, mainInstallationId: 'other-main' }
+      const captured = { ...current, machine: { ...current.machine, imageDigest: f.prepared.imageId } }
+      capture.record.mockResolvedValue(captured)
+      const inputPath = join(directory, 'reviewed.json')
+      await writeFile(inputPath, JSON.stringify({ expectedConfigurationSha256: createHash('sha256').update(currentBytes).digest('hex'),
+        captureInput }), { mode: 0o600 })
+      if (change === 'configuration') await writeFile(join(directory, 'job-runtime.json'), `${currentBytes}\n`, { mode: 0o600 })
+      return { directory, inputPath, currentBytes, captured, captureInput }
+    }
+
+    it('captures the next protected configuration and keeps the previous one for accepted Jobs', async () => {
+      const r = await mainRefresh()
+      const result = await refreshMainJobRuntime({ stateDirectory: r.directory, inputPath: r.inputPath })
+      expect(capture.record).toHaveBeenCalledWith(r.captureInput)
+      const digest = createHash('sha256').update(r.currentBytes).digest('hex')
+      expect(result.previousConfigurationPath).toBe(join(r.directory, `job-runtime-${digest}.json`))
+      expect(await readFile(result.previousConfigurationPath)).toEqual(r.currentBytes)
+      expect(JSON.parse(await readFile(join(r.directory, 'job-runtime.json'), 'utf8'))).toEqual(r.captured)
+      expect(((await stat(join(r.directory, 'job-runtime.json'))).mode & 0o777)).toBe(0o600)
+    })
+
+    it.each(['configuration', 'target'] as const)('refuses a refresh after a changed %s', async change => {
+      const r = await mainRefresh(change)
+      const before = await readFile(join(r.directory, 'job-runtime.json'))
+      await expect(refreshMainJobRuntime({ stateDirectory: r.directory, inputPath: r.inputPath })).rejects.toThrow()
+      expect(await readFile(join(r.directory, 'job-runtime.json'))).toEqual(before)
+      expect((await readdir(r.directory)).sort()).toEqual(['job-runtime.json', 'reviewed.json'])
+    })
   })
 
   it('retires previous configurations whose image nothing still uses and keeps the current one', async () => {

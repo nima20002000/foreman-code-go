@@ -6,6 +6,7 @@ import { createMainJobExecutionHost } from './mainExecution.js'
 import { createQualificationReportPublisher } from './qualificationReports.js'
 import { createVerificationSystemInput } from './verificationSystemInput.js'
 import { openMainJobJournal } from './mainJobJournal.js'
+import { createMainCiRuntime } from './mainCiRuntime.js'
 import { jobCleanupOptions } from './lifecycle.js'
 import { JobExecutionRecordSchema } from '@foreman-code/contracts/job-verification'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
@@ -196,6 +197,11 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       configuration: installedConfiguration, registry: input.nativeRegistry, journal: getMainJournal,
       application: () => application, inputs: () => canonicalInputs.local, publication: () => publication,
     }) : undefined)
+  const mainCiLifetime = new AbortController()
+  // Main prepares its own CI runtime once it has an installed one, like a paired build computer.
+  const mainCiRuntime = installedConfiguration && !input.infrastructure?.installedConfiguration
+    ? createMainCiRuntime({ runtimeRoot: input.runtimeRoot, journal: getMainJournal, signal: mainCiLifetime.signal })
+    : undefined
   const publishQualificationReport = createQualificationReportPublisher({ pool: input.pool, storageRoot: input.storageRoot })
   const localHost = createInstalledJobRuntimeHost({ identity: input.pool,
     publishReport: async (candidate, report, bytes) => {
@@ -367,8 +373,9 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   return { ...source, jobs, ci: new CiService(input.pool, input.commands, new RunCiAuthority(input.pool), source.sources, jobs),
     buildComputers, profiles, dispatch, artifacts, outputs, inputs, application, workflow, host, qualificationExtension: qualification.extension,
     queueConfiguration: reviewedQueue,
-    requestQueueWake,
+    requestQueueWake, mainCiRuntime,
     async close() {
+      mainCiLifetime.abort()
       const failures: unknown[] = []
       const resources = [() => jobs.closeQueue(), () => metadataRecovery.close(),
         async () => { await localExecution?.shutdown() }, () => dispatch.close(), () => outputs.close(), () => localHost.shutdown(),

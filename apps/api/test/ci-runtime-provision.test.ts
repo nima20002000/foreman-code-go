@@ -12,10 +12,41 @@ import type { CiRuntimeProvisioner } from '../src/modules/jobs/ciRuntimeProvisio
 import { describe, expect, it } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
 import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, dexter, oldImage, newImage, commit, newPin,
-  otherWorkspaceImage }
+  otherWorkspaceImage, mainId }
   from './helpers/ciPreparationFixture.js'
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
+  it('prepares Main as its own build computer, restarting Main around its runtime refresh', async () => {
+    const f = await fixture({ main: 'installed' })
+    try {
+      const input = { workspaceId: f.workspaceId, profileId: 'p-main', commandId: 'prepare-main' }
+      expect((await f.call('build_computer_prepare', input, 'reader')).isError).toBe(true)
+      expect(f.calls.prepare).toEqual([])
+      const started = await f.call('build_computer_prepare', input)
+      expect(started.isError).not.toBe(true)
+      expect(await f.settle('p-main')).toMatchObject({ state: 'qualified', commit, deviceId: mainId,
+        profiles: [{ profileId: 'p-main', status: 'qualified' }] })
+      expect(f.calls.prepare).toEqual([expect.objectContaining({ installer: '/main/runtime/installer', keepImages: [oldImage] })])
+      expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin,
+        selection: expect.objectContaining({ hostRef: { kind: 'main', mainId } }) })])
+      expect(f.calls.saves.map(value => [value.id, value.spec.policy.imageDigest])).toEqual([['p-main', newImage]])
+      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/main/runtime' })])
+      const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-main' }, 'reader')
+      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toMatchObject({ state: 'qualified', deviceId: mainId })
+    } finally { await f.app.close() }
+  })
+
+  it('reports that Main without an installed CI runtime cannot be prepared', async () => {
+    const f = await fixture({ main: 'absent' })
+    try {
+      const result = await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-main',
+        commandId: 'prepare-main-absent' })
+      expect(result.isError).toBe(true)
+      expect(result.content?.[0]?.text).toContain('BUILD_COMPUTER_PREPARE_UNSUPPORTED')
+      expect(f.calls.prepare).toEqual([])
+    } finally { await f.app.close() }
+  })
+
   it('reuses a valid qualification for new source while preserving its saved facts', async () => {
     const f = await fixture({ reusedImage: true })
     try {

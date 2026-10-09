@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { copyFile, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -38,19 +38,25 @@ export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, 
   })
 }
 
-/** Writes the reviewed refresh input and restarts this Worker around `refresh-job-runtime`, which needs the
- * Worker stopped. Runs as a separate user unit so it survives the Worker's own stop. */
+/** Writes the reviewed refresh input and restarts this service around its refresh command, which needs the
+ * service stopped. Runs as a separate user unit so it survives the service's own stop. A Worker runs its
+ * `refresh-job-runtime`; Main passes its own `cli` and a private `workDirectory`. */
 export async function scheduleCiRuntimeRefresh(input: {
   operationId: string
   stateDirectory: string; prepared: PreparedCiRuntime; root: SourceRootRecord; manifest: SourceManifest
   resources: JobResourceRequest; environment?: NodeJS.ProcessEnv
+  /** Where refresh inputs, logs and the last outcome live; defaults to the Worker installation directory. */
+  workDirectory?: string
+  /** The refresh command, before its `--state` and `--input` arguments. */
+  cli?: readonly string[]
   drain(): Promise<void>
 }): Promise<{ unit: string; workerUnit: string }> {
   await input.drain()
   const environment = input.environment ?? process.env
   const configurationPath = join(input.stateDirectory, 'job-runtime.json')
   const currentBytes = await readFile(configurationPath)
-  const base = dirname(input.stateDirectory)
+  const base = input.workDirectory ?? dirname(input.stateDirectory)
+  await mkdir(base, { recursive: true, mode: 0o700 })
   const short = input.operationId
   const seedReceiptPath = join(base, `installed-seed-receipt-${short}.json`)
   await copyFile(input.prepared.seedReceiptPath, seedReceiptPath)
@@ -67,20 +73,21 @@ export async function scheduleCiRuntimeRefresh(input: {
   const log = join(base, `refresh-${short}.log`)
   await writeFile(join(base, LAST_REFRESH), JSON.stringify({ operationId: input.operationId,
     commit: input.prepared.commit, log }), { mode: 0o600 })
-  const script = `systemctl --user stop "$1"; "$2" "$3" refresh-job-runtime --state "$4" --input "$5" > "$6" 2>&1;`
-    + ` echo "exit=$?" >> "$6"; systemctl --user start "$1"`
+  const cli = input.cli ?? [process.execPath, process.argv[1]!, 'refresh-job-runtime']
+  const script = 'unit=$1; log=$2; shift 2; systemctl --user stop "$unit"; "$@" > "$log" 2>&1;'
+    + ' echo "exit=$?" >> "$log"; systemctl --user start "$unit"'
   await run('systemd-run', ['--user', '--collect', `--unit=${unit}`, `--setenv=PATH=${environment.PATH ?? '/usr/bin:/bin'}`,
-    '/bin/sh', '-c', script, 'refresh', workerUnit, process.execPath, process.argv[1]!, input.stateDirectory, refreshPath, log],
-  { env: environment })
+    `--working-directory=${process.cwd()}`, '/bin/sh', '-c', script, 'refresh', workerUnit, log,
+    ...cli, '--state', input.stateDirectory, '--input', refreshPath], { env: environment })
   return { unit, workerUnit }
 }
 
 const LAST_REFRESH = 'ci-runtime-last-refresh.json'
 /** The outcome of the last refresh, read by the restarted Worker: null while none ran. */
-export async function lastCiRuntimeRefresh(stateDirectory: string): Promise<{
+export async function lastCiRuntimeRefresh(stateDirectory: string, workDirectory = dirname(stateDirectory)): Promise<{
   operationId: string | null; commit: string; ok: boolean; log: string
 } | null> {
-  const recorded = await readFile(join(dirname(stateDirectory), LAST_REFRESH), 'utf8').catch(() => null)
+  const recorded = await readFile(join(workDirectory, LAST_REFRESH), 'utf8').catch(() => null)
   if (!recorded) return null
   const { operationId, commit, log } = JSON.parse(recorded) as { operationId?: string; commit: string; log: string }
   const text = await readFile(log, 'utf8').catch(() => '')

@@ -1743,7 +1743,8 @@ export function buildProductionApp(
       }
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
       runtimeServices.ciRuntime = new CiRuntimeProvisioner(database.pool, jobRuntime.profiles, jobRuntime.sources,
-        () => deviceRuntime.endpointForDomains(), commands, { changed: () => jobRuntime?.jobs.requestQueueWake() })
+        () => deviceRuntime.endpointForDomains(), commands, { changed: () => jobRuntime?.jobs.requestQueueWake(),
+          main: () => jobRuntime?.mainCiRuntime })
       jobRuntime.jobs.runtimePreparation = runtimeServices.ciRuntime
       await runtimeServices.ciRuntime.recover()
       jobRuntime.jobs.requestQueueWake()

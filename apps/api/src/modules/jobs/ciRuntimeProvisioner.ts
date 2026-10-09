@@ -21,6 +21,7 @@ import { CI_PREPARATION_ACTIONS } from './ciAuthority.js'
 import { CiPreparationRecordSchema, PostgresCiPreparationRepository,
   type CiPreparationRecord, type CiPreparationRepository } from './ciPreparationRepository.js'
 import { runCiPreparation } from './ciPreparationSteps.js'
+import type { CiRuntimeWorker } from './ciRuntimeWorker.js'
 import { temporaryCiConnectionError } from './ciRuntimeErrors.js'
 import { JobOwnership } from './ownership.js'
 import type { JobRuntimeProfiles } from './runtimeProfiles.js'
@@ -38,6 +39,8 @@ interface PreparationPorts {
   acquire?: typeof JobOwnership.acquire
   changed?(): void
   timing?: { pollMs: number; wait(ms: number): Promise<void>; now(): Date }
+  /** Main's own CI runtime, when Main has an installed one; Main is then a build computer too. */
+  main?(): Pick<CiRuntimeWorker, 'handle'> | undefined
 }
 
 /** Main persists each input before its command and resumes the same operation under one computer owner. */
@@ -119,10 +122,10 @@ export class CiRuntimeProvisioner {
       if (profile.schemaVersion !== 2 || profile.status === 'revoked' || !profile.spec.suites.includes(suite as never)) continue
       if (request && (!matchesRuntimePolicy(request, profile) || !('verification' in request)
         || canonical(request.verification.resources) !== canonical(profile.spec.resources))) continue
-      const hostRef = profile.root.selection.hostRef
-      if (hostRef.kind !== 'device' || devices.has(hostRef.deviceId)) continue
+      const computer = this.computerId(profile)
+      if (!computer || devices.has(computer)) continue
       const preference = await readBuildComputerPreference(this.pool, this.profileTarget(profile))
-      if (preference.buildEnabled) devices.set(hostRef.deviceId, profile)
+      if (preference.buildEnabled) devices.set(computer, profile)
     }
     for (const [deviceId, profile] of devices) {
       const latest = await this.repository.latestForDevice(deviceId)
@@ -186,7 +189,7 @@ export class CiRuntimeProvisioner {
         repository: workspaceId => this.projectRepository(workspaceId), now: this.timing.now,
         deliverSource: repository => this.deliverSource(record, repository, principal, signal),
         wait: () => this.wait(signal), device: request => this.device(record, request, principal, signal),
-        deviceImages: () => this.deviceImages(record.status.deviceId!) })
+        deviceImages: () => this.deviceImages(record.profile.root.selection.hostRef) })
     } catch (error) {
       if (signal.aborted || error instanceof DomainError && error.code === 'JOB_OWNERSHIP_LOST') return
       record.status = { ...record.status, state: 'failed',
@@ -217,6 +220,11 @@ export class CiRuntimeProvisioner {
         : Date.parse(record.refreshStartedAt!) + 15 * 60_000
       if (this.timing.now().getTime() > deadline) throw new DomainError('CI_RUNTIME_TIMEOUT', 'The runtime preparation timed out.', 504)
       try {
+        if (record.profile.root.selection.hostRef.kind === 'main') {
+          const main = this.ports.main?.()
+          if (!main) throw new DomainError('BUILD_COMPUTER_PREPARE_UNSUPPORTED', 'Main has no installed CI runtime to prepare.', 409)
+          return await main.handle(request)
+        }
         const endpoint = this.endpoint()
         if (!endpoint?.capabilities(record.status.deviceId!).some(value => value.namespace === CI_RUNTIME_NAMESPACE && value.mainCanRequest)) {
           throw new DomainError('COMPUTER_OFFLINE', 'The build computer is offline; preparation will reconcile when it reconnects.', 409)
@@ -288,19 +296,27 @@ export class CiRuntimeProvisioner {
     if (profile.workspaceId !== workspaceId) {
       throw new DomainError('JOB_RUNTIME_PROFILE_SCOPE_CONFLICT', 'The verification profile belongs to another workspace.', 403)
     }
-    const hostRef = profile.root.selection.hostRef
-    if (profile.schemaVersion !== 2 || hostRef.kind !== 'device' || !profile.approvalConfig.review) {
-      throw new DomainError('BUILD_COMPUTER_PREPARE_UNSUPPORTED', 'Only reviewed verification profiles on paired computers are prepared automatically.', 409)
+    const deviceId = profile.schemaVersion === 2 ? this.computerId(profile) : null
+    if (profile.schemaVersion !== 2 || !deviceId || !profile.approvalConfig.review) {
+      throw new DomainError('BUILD_COMPUTER_PREPARE_UNSUPPORTED', 'Only reviewed verification profiles on Main or paired computers are prepared automatically.', 409)
     }
-    return { profile, deviceId: hostRef.deviceId }
+    return { profile, deviceId }
+  }
+
+  /** The computer that prepares this profile's runtime: a paired Worker, or Main under its installation id (the
+   * canonical alias Main uses for itself as a computer). */
+  private computerId(profile: JobVerificationProfile): string | null {
+    const hostRef = profile.root.selection.hostRef
+    if (hostRef.kind === 'device') return hostRef.deviceId
+    return this.ports.main?.() ? hostRef.mainId : null
   }
 
   /** Images the computer's current verification profiles still use, in every workspace. Its Worker retires
    * other retained runtime configurations and their images; accepted Jobs keep theirs through its journal. */
-  private async deviceImages(deviceId: string): Promise<string[]> {
+  private async deviceImages(hostRef: JobVerificationProfile['root']['selection']['hostRef']): Promise<string[]> {
     const rows = (await this.pool.query<{ image: string | null }>(`select record->'spec'->'policy'->>'imageDigest' as image
-      from job_runtime_profiles where record->'root'->'selection'->'hostRef'->>'deviceId'=$1
-      and record->>'status' <> 'revoked'`, [deviceId])).rows
+      from job_runtime_profiles where record->'root'->'selection'->'hostRef'=$1::jsonb
+      and record->>'status' <> 'revoked'`, [JSON.stringify(hostRef)])).rows
     return [...new Set(rows.flatMap(row => row.image ? [row.image] : []))]
   }
 

@@ -34,17 +34,19 @@ export const commit = 'c'.repeat(40)
 const uuid = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`
 const oldPin = { approvedSourceId: uuid('a'), snapshotId: uuid('b'), manifestDigest: 'a'.repeat(64) }
 export const newPin = { approvedSourceId: uuid('d'), snapshotId: uuid('e'), manifestDigest: 'd'.repeat(64) }
-const dexterRoot = uuid('4'), manaRoot = uuid('5')
+const dexterRoot = uuid('4'), manaRoot = uuid('5'), mainRoot = uuid('6')
 
-function root(deviceId: string, rootId: string, bindingRevision: number, source = oldPin) {
-  return { version: 1 as const, source, selection: { hostRef: { kind: 'device' as const, mainId, deviceId },
+/** `deviceId` null is Main itself. */
+function root(deviceId: string | null, rootId: string, bindingRevision: number, source = oldPin) {
+  return { version: 1 as const, source, selection: { hostRef: deviceId ? { kind: 'device' as const, mainId, deviceId }
+    : { kind: 'main' as const, mainId },
     rootPolicyId: 'root-policy', rootPolicyRevision: '1', locationRevision: '2' },
     binding: { version: 1 as const, mainId, deviceId, workerInstallationId: deviceId, workspaceId: 'workspace-fixture',
       rootId, bindingRevision, locationRevision: 2, canonicalPath: '/ci/workspaces/project',
       filesystem: { device: '1', inode: '2', mountId: '3' }, accessMode: 'exclusive-write' as const,
       snapshotId: source.snapshotId, manifestDigest: source.manifestDigest },
     ownerPrincipalId: 'owner', authorizedByPrincipalId: 'owner',
-    registration: { workerInstallationId: deviceId, keyRevision: 1, authorizationRevision: 1 },
+    registration: deviceId ? { workerInstallationId: deviceId, keyRevision: 1, authorizationRevision: 1 } : null,
     attestationId: 'attestation', attestationDigest: '7'.repeat(64), boundAt: '2026-10-07T00:00:00.000Z' }
 }
 
@@ -71,7 +73,7 @@ export function qualifiedPreparationProfile(profile: JobVerificationProfile): Jo
   } })
 }
 
-export function preparationProfile(id: string, name: string, deviceId: string, rootId: string,
+export function preparationProfile(id: string, name: string, deviceId: string | null, rootId: string,
   suites: JobVerificationProfile['spec']['suites'], memoryBytes = 6 * 2 ** 30): JobVerificationProfile {
   const baseline = verificationCapacityFixture('device')
   const resources = { ...baseline.spec.resources, limits: { ...baseline.spec.resources.limits, cpuLimit: 4, memoryBytes } }
@@ -84,6 +86,8 @@ export function preparationProfile(id: string, name: string, deviceId: string, r
 type Stage = 'source' | 'source-transfer' | 'root' | 'profile' | 'refresh' | 'capture' | 'qualify'
 export async function ciPreparationFixture(options: {
   reusedImage?: boolean; staleQualification?: boolean
+  /** A Main verification profile; 'installed' also gives Main its own CI runtime. */
+  main?: 'installed' | 'absent'
   prepareFails?: boolean; disabled?: boolean; statusDrops?: number; loseRefreshAck?: boolean
   refreshGate?: Promise<void>
   loseSourceAck?: 'first' | 'complete'
@@ -98,6 +102,7 @@ export async function ciPreparationFixture(options: {
     ['p-unit', preparationProfile('p-unit', 'Dexter unit', dexter, dexterRoot, ['install', 'unit'])],
     ['p-mana', preparationProfile('p-mana', 'Mana install', mana, manaRoot, ['install'])],
     ['p-small', preparationProfile('p-small', 'Dexter small', dexter, dexterRoot, ['install'], 2 ** 30)],
+    ...options.main ? [['p-main', preparationProfile('p-main', 'Main unit', null, mainRoot, ['install', 'unit'])] as const] : [],
   ])
   const calls = { prepare: [] as unknown[], bind: [] as unknown[],
     saves: [] as Array<{ id: string; spec: { bindingRevision: number; policy: { imageDigest: string } } }>,
@@ -117,16 +122,18 @@ export async function ciPreparationFixture(options: {
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [] }
     }
     if (text.includes('from build_computer_preferences')) {
-      const profile = [...profiles.values()].find(value => `${mainId}:${value.root.binding.deviceId}` === values[0])!
+      const profile = [...profiles.values()].find(value => `${mainId}:${value.root.binding.deviceId}` === values[0]
+        || value.root.binding.deviceId === null && values[0] === `${mainId}:main`)!
       const target = buildComputerTarget({ hostRef: profile.root.selection.hostRef,
         registration: profile.root.registration, mainInstallationId: mainId })
       return { rows: [{ target, revision: '1', build_enabled: !disabled, build_priority: 100,
         build_allowance_percent: 100 }] }
     }
     if (text.includes('from job_runtime_profiles')) {
-      const images = [...profiles.values()].filter(profile => profile.root.selection.hostRef.kind === 'device'
-        && profile.root.selection.hostRef.deviceId === values[0]).map(profile => profile.spec.policy.imageDigest)
-      return { rows: [...images, ...values[0] === dexter ? [otherWorkspaceImage] : []].map(image => ({ image })) }
+      const hostRef = JSON.parse(String(values[0])) as { kind: string; deviceId?: string }
+      const images = [...profiles.values()].filter(profile => JSON.stringify(profile.root.selection.hostRef)
+        === JSON.stringify(hostRef)).map(profile => profile.spec.policy.imageDigest)
+      return { rows: [...images, ...hostRef.deviceId === dexter ? [otherWorkspaceImage] : []].map(image => ({ image })) }
     }
     if (text.includes('from workspaces')) return { rows: [{ record: { id: workspaceId, name: 'CI',
       repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' } } }] }
@@ -211,7 +218,8 @@ export async function ciPreparationFixture(options: {
     input: { commandId: string; approvalId?: string },
     perform: () => Promise<T>) => (await commands.execute({ principal, source: 'mcp', operation,
       commandId: input.commandId, targetKey: workspaceId, payload: input, perform })).value
-  const currentRoots = new Map([[dexterRoot, root(dexter, dexterRoot, 1)], [manaRoot, root(mana, manaRoot, 1)]])
+  const currentRoots = new Map([[dexterRoot, root(dexter, dexterRoot, 1)], [manaRoot, root(mana, manaRoot, 1)],
+    [mainRoot, root(null, mainRoot, 1)]])
   const sources = {
     approveProject: async (principal: ManagementPrincipal, input: { commandId: string; commit?: string }) => {
       const approved = await command(principal, 'fixture.source', input,
@@ -225,13 +233,14 @@ export async function ciPreparationFixture(options: {
     },
     rootList: async () => ({ items: [...currentRoots.values()].map(value => structuredClone(value)) }),
     bindRoot: async (principal: ManagementPrincipal, _source: unknown,
-      input: { commandId: string; expectedBindingRevision: number; selection: { hostRef: { deviceId: string } } }) => {
+      input: { commandId: string; expectedBindingRevision: number; selection: { hostRef: { deviceId?: string } } }) => {
       const result = await command(principal, 'fixture.root', input, async () => {
         calls.bind.push(input)
-        const current = currentRoots.get(dexterRoot)!
+        const host = input.selection.hostRef.deviceId ?? null, rootId = host ? dexterRoot : mainRoot
+        const current = currentRoots.get(rootId)!
         if (current.binding.bindingRevision !== input.expectedBindingRevision) throw new DomainError('REVISION_CONFLICT', 'changed', 409)
-        const value = root(dexter, dexterRoot, current.binding.bindingRevision + 1, acceptedPin)
-        currentRoots.set(dexterRoot, value)
+        const value = root(host, rootId, current.binding.bindingRevision + 1, acceptedPin)
+        currentRoots.set(rootId, value)
         return { value }
       })
       await options.pause?.('root')
@@ -276,8 +285,19 @@ export async function ciPreparationFixture(options: {
       return result
     },
   }
+  // Main's own CI runtime restarts with Main after its refresh, like a Worker.
+  const mainPorts = { ...workerPorts, managedRuntimeRoot: async () => '/main/runtime' }
+  let mainRuntime = new CiRuntimeWorker('/main/runtime', mainPorts as never, new AbortController().signal)
+  let mainRestartedOperation: string | undefined
+  const main = options.main === 'installed' ? () => ({ handle: async (payload: unknown) => {
+    if (refreshRecord && mainRestartedOperation !== refreshRecord.operationId) {
+      mainRestartedOperation = refreshRecord.operationId
+      mainRuntime = new CiRuntimeWorker('/main/runtime', mainPorts as never, new AbortController().signal)
+    }
+    return mainRuntime.handle(payload)
+  } }) : undefined
   const createProvisioner = () => new CiRuntimeProvisioner(pool, profileService as never, sources as never,
-    () => endpoint, commands, { ...memory, timing: { pollMs: 0,
+    () => endpoint, commands, { ...memory, ...main ? { main } : {}, timing: { pollMs: 0,
       wait: () => new Promise(resolve => setImmediate(resolve)), now: () => new Date() } })
   const ciRuntime = createProvisioner()
   const services = { ...data.services, commands, jobRuntimeProfiles: profileService, ciRuntime } as unknown as OperatorServices
