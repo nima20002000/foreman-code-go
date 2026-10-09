@@ -38,10 +38,12 @@ describe('Claude plugin catalog and fleet sync', () => {
       .rejects.toMatchObject({ code: 'CLAUDE_PLUGIN_CATALOG_INVALID' })
   })
 
-  it('syncs marketplaces, missing plugins and enabled state, then reads back the result', async () => {
+  it('syncs marketplaces, missing plugins and managed enabled state, then reads back the result', async () => {
     const fake = claudePluginPorts()
-    fake.installed.set('review@official', { version: '1.0.0', enabled: false })
     const maintenance = new ComputerMaintenance(fake.ports)
+    maintenance.start({ ...syncRequest, claudePlugins: [{ pluginId: 'review@official', enabled: true }] })
+    expect(await settled(maintenance)).toMatchObject({ state: 'succeeded' })
+    fake.installed.set('review@official', { version: '1.0.0', enabled: false })
     maintenance.start(syncRequest)
     expect(await settled(maintenance)).toMatchObject({ state: 'succeeded' })
     const catalog = await readClaudePlugins(fake.ports, AbortSignal.timeout(1000))

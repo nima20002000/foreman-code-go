@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SyncedMcpServerSchema } from './computerMaintenance.js'
+import { MaintenanceTaskStartSchema, SyncedMcpServerSchema } from './computerMaintenance.js'
 import { HarnessMcpConnectionSchema } from './management/harnessSettings.js'
 
 describe('fleet MCP credential restrictions', () => {
@@ -32,3 +32,20 @@ describe('fleet MCP credential restrictions', () => {
   })
 })
 
+describe('fleet source availability', () => {
+  it('accepts an available empty catalog while omitting an unavailable harness', () => {
+    expect(MaintenanceTaskStartSchema.parse({ kind: 'sync-mcp', servers: { codex: [] } }))
+      .toEqual({ kind: 'sync-mcp', servers: { codex: [] } })
+    expect(MaintenanceTaskStartSchema.parse({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [] }))
+      .toEqual({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [] })
+  })
+
+  it('rejects missing or incomplete source catalogs', () => {
+    for (const task of [
+      { kind: 'sync-mcp', servers: {} },
+      { kind: 'sync-plugins' },
+      { kind: 'sync-plugins', plugins: [], claudePlugins: [], claudeMarketplaces: [] },
+      { kind: 'sync-plugins', plugins: [], marketplaces: [], claudeMarketplaces: [] },
+    ]) expect(MaintenanceTaskStartSchema.safeParse(task).success).toBe(false)
+  })
+})

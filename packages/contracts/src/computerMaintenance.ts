@@ -28,13 +28,21 @@ export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('update-harnesses'), harnesses: z.array(MaintainedHarnessSchema).min(1).max(2) }).strict(),
   z.object({ kind: z.literal('update-system') }).strict(),
   z.object({ kind: z.literal('restart') }).strict(),
-  z.object({ kind: z.literal('sync-mcp'), servers: z.object({ codex: z.array(SyncedMcpServerSchema).max(100),
-    claude: z.array(SyncedMcpServerSchema).max(100) }).strict() }).strict(),
-  z.object({ kind: z.literal('sync-plugins'), plugins: z.array(z.string().regex(/^[^\s@]+@[^\s@]+$/u)).max(200),
+  // An omitted harness is unavailable; an empty list is a successfully read empty catalog.
+  z.object({ kind: z.literal('sync-mcp'), servers: z.object({ codex: z.array(SyncedMcpServerSchema).max(100).optional(),
+    claude: z.array(SyncedMcpServerSchema).max(100).optional() }).strict()
+    .refine(servers => servers.codex !== undefined || servers.claude !== undefined, 'Include an available MCP catalog.'),
+    warnings: z.array(z.string().max(300)).max(202).optional() }).strict(),
+  z.object({ kind: z.literal('sync-plugins'), plugins: z.array(z.string().regex(/^[^\s@]+@[^\s@]+$/u)).max(200).optional(),
     /** Main's Git plugin marketplaces; a computer adds the ones it lacks before installing plugins from them. */
-    marketplaces: z.array(SyncedMarketplaceSchema).max(50),
-    claudePlugins: z.array(z.object({ pluginId: z.string().regex(/^[^\s@]+@[^\s@]+$/u), enabled: z.boolean() }).strict()).max(200),
-    claudeMarketplaces: z.array(SyncedMarketplaceSchema).max(50) }).strict(),
+    marketplaces: z.array(SyncedMarketplaceSchema).max(50).optional(),
+    claudePlugins: z.array(z.object({ pluginId: z.string().regex(/^[^\s@]+@[^\s@]+$/u), enabled: z.boolean() }).strict()).max(200).optional(),
+    claudeMarketplaces: z.array(SyncedMarketplaceSchema).max(50).optional(),
+    warnings: z.array(z.string().max(300)).max(202).optional() }).strict().refine(task =>
+      (task.plugins !== undefined || task.claudePlugins !== undefined)
+      && (task.plugins === undefined) === (task.marketplaces === undefined)
+      && (task.claudePlugins === undefined) === (task.claudeMarketplaces === undefined),
+    'Include plugins and marketplaces together for each available harness.'),
 ])
 export type MaintenanceTaskStart = z.infer<typeof MaintenanceTaskStartSchema>
 
@@ -47,6 +55,8 @@ export type MaintenanceRequest = z.infer<typeof MaintenanceRequestSchema>
 export const MaintenanceTaskSchema = z.object({
   id: z.uuid(),
   kind: MaintenanceTaskKindSchema,
+  /** Identifies the requested sync payload, independently of either computer's clock. */
+  sourceFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
   state: z.enum(['running', 'succeeded', 'failed']),
   startedAt: z.string().datetime(),
   finishedAt: z.string().datetime().nullable(),
