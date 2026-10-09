@@ -159,7 +159,8 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
         return sourceServers()
       },
       claudeUserMcpServers: sourceServers,
-      codexPlugins: async () => names.map(name => `${name}@official`), codexMarketplaces: async () => [],
+      codexPlugins: async () => names.map(name => `${name}@official`),
+      codexMarketplaces: async () => [{ source: 'owner/official', name: 'official' }],
       claudePlugins: async () => ({ marketplaces: [], plugins: names.map(name => ({
         pluginId: `${name}@official`, name, marketplaceName: 'official', description: null, version: null,
         installed: true, enabled: true, installCount: null,
@@ -222,6 +223,21 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect([...computer.claudeMcp]).toEqual([['local', localDefinition]])
     expect([...computer.codexPlugins]).toEqual(['local@official'])
     expect([...computer.claudePlugins]).toEqual([['local@official', false]])
+
+    const count = starts.length
+    await service.syncChangedSources()
+    await settle(computer)
+    computer.maintenance = new ComputerMaintenance(computer.ports)
+    await service.syncChangedSources()
+    expect(starts).toHaveLength(count + 2)
+    const persisted = ComputerMaintenanceListSchema.parse((await operator.callTool({
+      name: 'computers_maintenance_status', arguments: { refresh: true },
+    })).structuredContent).computers.find(item => item.target.applicationInstallationId === device.workerInstallationId)
+    for (const kind of ['sync-mcp', 'sync-plugins']) {
+      expect(persisted?.status?.tasks.find(task => task.kind === kind)).toMatchObject({
+        state: 'succeeded', sourceFingerprint: expect.stringMatching(/^sha256:/u),
+      })
+    }
   })
 
   it('shows a running task\'s progress within seconds instead of the settled-status cache', async () => {
