@@ -48,7 +48,7 @@ describe('Operator MCP presentation', () => {
 
   it('keeps SDK output validation and sends one complete JSON text body with distinct content', async () => {
     const f = await fixture()
-    const value = { items: ['first', 'last'], description: 'x'.repeat(270000), nullable: null }
+    const value = { items: ['first', 'last'], description: 'x'.repeat(1000), nullable: null }
     f.server.registerTool('read', {
       inputSchema: z.object({}), outputSchema: z.object({
         items: z.array(z.string()), description: z.string(), nullable: z.null(),
@@ -76,6 +76,32 @@ describe('Operator MCP presentation', () => {
       const invalid = await f.client.callTool({ name: 'invalid', arguments: {} })
       expect(invalid.isError).toBe(true)
       expect(JSON.stringify(invalid.content)).toContain('Output validation error')
+    } finally { await f.close() }
+  })
+
+  it('keeps large escaped data in one structured payload and preserves distinct content', async () => {
+    const f = await fixture()
+    const value = { prompt: { system: '"'.repeat(255000) }, nullable: null }
+    const json = JSON.stringify(value)
+    f.server.registerTool('read_large', {
+      inputSchema: z.object({}),
+      outputSchema: z.object({ prompt: z.object({ system: z.string() }), nullable: z.null() }),
+    }, async () => ({ structuredContent: value, content: [
+      { type: 'text', text: json },
+      { type: 'text', text: 'Distinct instructions.' },
+      { type: 'image', data: 'AA==', mimeType: 'image/png' },
+    ] }))
+    await f.connect()
+    try {
+      const result = await f.client.callTool({ name: 'read_large', arguments: {} })
+      expect(result.isError).not.toBe(true)
+      expect(result.structuredContent).toEqual(value)
+      expect(result.content).toEqual([
+        { type: 'text', text: 'Distinct instructions.' },
+        { type: 'image', data: 'AA==', mimeType: 'image/png' },
+      ])
+      expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThan(1_000_000)
+      expect(decodeMcpToolResult(result)).toEqual(value)
     } finally { await f.close() }
   })
 

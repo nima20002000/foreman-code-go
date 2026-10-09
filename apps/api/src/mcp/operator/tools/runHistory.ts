@@ -4,7 +4,7 @@ import {
   RunBoardSnapshotGetInputSchema, RunBoardSnapshotGetResultSchema,
   RunDropdownListInputSchema, RunDropdownPageSchema,
 } from '@foreman-code/contracts/run-snapshots'
-import { hasAction } from '../../../modules/access/policy.js'
+import { hasAction, isAuthorized, type AuthorizedResource } from '../../../modules/access/policy.js'
 import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'
 import { invokeOperatorTool } from '../invoke.js'
@@ -19,6 +19,15 @@ export function runHistoryToolsAvailable(context: OperatorRequestContext): boole
   return !!context.services.runs?.history && hasAction(context.principal, 'runs:read')
     && context.principal.grants.some((grant) => grant.actions.includes('runs:read')
       && !Object.values(grant.scope).some((ids) => ids?.length === 0))
+}
+
+export function runHistoryToolAvailable(context: OperatorRequestContext, name: RunHistoryToolName,
+  resource: AuthorizedResource): boolean {
+  if (!runHistoryToolsAvailable(context)) return false
+  if (isAuthorized(context.principal, 'runs:read', resource)) return true
+  if (name !== RUN_HISTORY_TOOLS.list || !resource.workspaceId || !resource.workflowId || resource.runId) return false
+  return context.principal.grants.some((grant) => grant.scope.runIds?.some((runId) =>
+    isAuthorized(context.principal, 'runs:read', { ...resource, runId })))
 }
 
 export function registerRunHistoryTools(server: McpServer, context: OperatorRequestContext): void {

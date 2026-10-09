@@ -1,4 +1,4 @@
-import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { decodeMcpToolResult, OperatorCompactCapabilitiesSchema } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -29,6 +29,8 @@ import { FileReferenceService } from '../src/modules/files/references/service.js
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { FILE_REFERENCE_TOOL_NAMES } from '../src/mcp/operator/tools/fileReferences.js'
+import { FileReferenceReadResultSchema } from '../src/modules/files/references/requests.js'
 import { agent3Database, postgresEnabled, deferred } from './helpers/wave25Agent3.js'
 
 /** Real credentials, PostgreSQL, disk storage and authenticated /mcp. No harness or paid model. */
@@ -125,6 +127,56 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
   }
   const tool = (token: string, name: string, args: unknown) => rpc(token, 'tools/call', { name, arguments: args })
   const errorCode = (result: Awaited<ReturnType<typeof rpc>>['result']) => JSON.parse(result.content?.find((part) => part.type === 'text')?.text ?? '{}').error?.code
+
+  it('filters compact reference capabilities by the selected hierarchy and preserves scoped readback', async () => {
+    if (workflow.kind !== 'workflow_reference' || sibling.kind !== 'workflow_reference') {
+      throw new Error('Workflow reference scopes are required')
+    }
+    const editor = await access.issue({ name: 'Scoped reference editor', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600000), grants: [
+        { actions: ['capabilities:read'], scope: {} },
+        { actions: ['workflows:read', 'workflows:update'], scope: {
+          workspaceIds: [workflow.workspaceId], workflowIds: [workflow.workflowId],
+        } },
+      ] })
+    const capabilities = async (resource: Record<string, unknown>) => {
+      const response = await tool(editor.token, 'operator_get_capabilities', resource)
+      assert.notEqual(response.result.isError, true)
+      return OperatorCompactCapabilitiesSchema.parse(decodeMcpToolResult(response.result))
+    }
+    const resource = { workspaceId: workflow.workspaceId, workflowId: workflow.workflowId, runId: 'selected-run' }
+    for (const input of [{}, resource]) {
+      const result = await capabilities(input)
+      for (const name of FILE_REFERENCE_TOOL_NAMES) assert.ok(result.tools.includes(name))
+    }
+    for (const input of [{ ...resource, workspaceId: otherWorkspace.workspaceId },
+      { ...resource, workflowId: sibling.workflowId }, { workspaceId: workflow.workspaceId }]) {
+      const result = await capabilities(input)
+      for (const name of FILE_REFERENCE_TOOL_NAMES) assert.ok(!result.tools.includes(name))
+    }
+    const requestId = randomUUID()
+    const added = await tool(editor.token, 'reference_file_add', { scope: workflow,
+      upload: { requestId, ...metadata() }, contentBase64: text.toString('base64') })
+    assert.notEqual(added.result.isError, true)
+    const row = FileWithRevisionSchema.parse(decodeMcpToolResult(added.result).value)
+    const listed = await tool(editor.token, 'reference_files_list', { scope: workflow })
+    const page = FilePageSchema.parse(decodeMcpToolResult(listed.result))
+    assert.ok(page.items.some((item) => item.file.fileId === row.file.fileId))
+    const readback = FileReferenceReadResultSchema.parse(decodeMcpToolResult(
+      (await tool(editor.token, 'reference_file_read', { scope: workflow,
+        fileId: row.file.fileId, revisionId: row.revision.revisionId, offset: 0, length: text.length })).result,
+    )).value
+    assert.equal(readback.status, 'ready')
+    if (readback.status !== 'ready') throw new Error('Reference bytes must be ready')
+    assert.equal(readback.contentBase64, text.toString('base64'))
+    assert.deepEqual(readback.revision, row.revision)
+    assert.deepEqual((await repository.read(row.file.fileId, row.revision.revisionId))?.value, row)
+    const denied = await tool(editor.token, 'reference_files_list', { scope: sibling })
+    assert.equal(denied.result.isError, true)
+    assert.equal(errorCode(denied.result), 'ACCESS_DENIED')
+    assert.deepEqual(FilePageSchema.parse(decodeMcpToolResult(
+      (await tool(editor.token, 'reference_files_list', { scope: workflow })).result)), page)
+  })
 
   for (const kind of ['workspace_reference', 'workflow_reference'] as const) {
     it(`${kind}: add/list/download/remove and retained metadata`, async () => {

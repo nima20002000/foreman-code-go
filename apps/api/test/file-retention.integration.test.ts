@@ -1,4 +1,4 @@
-import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { decodeMcpToolResult, OperatorCompactCapabilitiesSchema } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -327,6 +327,37 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     const audit = await database.pool.query('select source,outcome from management_audit where principal_id=$1 and action=$2',
       [owner.principal.id, 'file_retention_save'])
     assert.ok(audit.rows.some((row: { source: string; outcome: string }) => row.source === 'mcp' && row.outcome === 'succeeded'))
+  })
+
+  it('keeps owner retention capabilities under resource selection without broadening scoped settings grants', async () => {
+    const capabilityGrant: ManagementGrant = { actions: ['capabilities:read'], scope: {} }
+    const owner = await newOwner([...grants, capabilityGrant])
+    const reader = await newOwner([capabilityGrant, { actions: ['settings:read'], scope: {} }])
+    const scoped = await newOwner([capabilityGrant,
+      { actions: ['settings:read', 'settings:update'], scope: { workspaceIds: ['workspace'] } }])
+    const resource = { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run' }
+    const names = ['file_retention_get', 'file_retention_preview', 'file_retention_save']
+    for (const input of [{}, resource]) {
+      const ownerCapabilities = OperatorCompactCapabilitiesSchema.parse(success(
+        await call(owner, 'operator_get_capabilities', input),
+      ))
+      for (const name of names) assert.ok(ownerCapabilities.tools.includes(name))
+      const readerCapabilities = OperatorCompactCapabilitiesSchema.parse(success(
+        await call(reader, 'operator_get_capabilities', input),
+      ))
+      assert.ok(readerCapabilities.tools.includes('file_retention_get'))
+      assert.ok(readerCapabilities.tools.includes('file_retention_preview'))
+      assert.ok(!readerCapabilities.tools.includes('file_retention_save'))
+      const deniedCapabilities = OperatorCompactCapabilitiesSchema.parse(success(
+        await call(scoped, 'operator_get_capabilities', input),
+      ))
+      for (const name of names) assert.ok(!deniedCapabilities.tools.includes(name))
+    }
+    const saved = FileRetentionSaveResultSchema.parse(success(await call(owner, 'file_retention_save', payload(7200))))
+    assert.deepEqual(FileRetentionGetResultSchema.parse(success(await call(owner, 'file_retention_get'))).preference,
+      saved.value.preference)
+    assert.equal(failure(await call(scoped, 'file_retention_save', payload(7200))), 'ACCESS_DENIED')
+    assert.deepEqual(await get(owner), saved.value.preference)
   })
 
   it('denies read-only and scoped callers through authenticated HTTP/MCP, and audits hidden-tool calls', async () => {

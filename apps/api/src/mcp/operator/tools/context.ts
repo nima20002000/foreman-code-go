@@ -1,4 +1,6 @@
-import { runHistoryCapabilityLimit } from './runHistory.js'
+import { RUN_HISTORY_TOOLS, runHistoryCapabilityLimit, runHistoryToolAvailable } from './runHistory.js'
+import { FILE_REFERENCE_TOOL_NAMES, fileReferenceToolAvailable } from './fileReferences.js'
+import { FILE_RETENTION_TOOL_NAMES, fileRetentionToolAvailable } from './fileRetention.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { OperatorCompactCapabilitiesSchema } from '@foreman-code/contracts/operator-mcp'
 import { OperatorCapabilityInputSchema } from '@foreman-code/contracts/management'
@@ -52,8 +54,20 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
     const tools = await catalog?.(callbackContext)
     const selectedResource = input.workspaceId || input.workflowId || input.runId
     const names = tools?.map((tool) => tool.name) ?? capabilities.tools
+    const scopedNames = new Set<string>(capabilities.tools)
+    if (selectedResource) {
+      for (const name of Object.values(RUN_HISTORY_TOOLS)) {
+        if (runHistoryToolAvailable(context, name, capabilities.requestedResource)) scopedNames.add(name)
+      }
+      for (const name of FILE_REFERENCE_TOOL_NAMES) {
+        if (fileReferenceToolAvailable(context, name, capabilities.requestedResource)) scopedNames.add(name)
+      }
+      for (const name of FILE_RETENTION_TOOL_NAMES) {
+        if (fileRetentionToolAvailable(context, name)) scopedNames.add(name)
+      }
+    }
     return { ...compact, detail: 'compact' as const,
-      tools: selectedResource ? names.filter((name) => capabilities.tools.some((tool) => tool === name)) : names,
+      tools: selectedResource ? names.filter((name) => scopedNames.has(name)) : names,
       detailsTool: 'operator_tool_schema_get' as const, fullDetailArguments: { detail: 'full' as const },
       runtimeLimits: capabilities.runtimeLimits.map((entry) => ({ ...entry,
         detail: compactRuntimeDetails[entry.feature] ?? entry.detail,
@@ -124,6 +138,7 @@ const compactRuntimeDetails: Record<string, string> = {
   checkpoint_resume: 'Automatic continuation requires accepted native approvals; no manual bypass.',
   process_exit_confirmation: 'Stop acceptance does not confirm native process exit.',
   historical_runs: 'Restore history into a new validated version before running; historical versions stay immutable.',
+  run_board_history: 'Run history needs composed services and live runs:read. Run-only grants read their Runs; legacy Runs may lack snapshots.',
   resource_deletion: 'Archive retains history. Folder deletion protects registered locations, active runs, defaults and links.',
   remote_runners_and_host_browsing: 'Explicit local workspace provisioning or approved computers only; no arbitrary host browsing.',
   approval_reassignment: 'Only the accepted handler can respond to a running approval.',

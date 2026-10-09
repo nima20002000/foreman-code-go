@@ -1,4 +1,4 @@
-import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { decodeMcpToolResult, OperatorToolSchemaResultSchema } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it, vi } from 'vitest'
@@ -298,7 +298,14 @@ describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQ
       const discovery = (await test.mcp.listTools()).tools.find((tool) => tool.name === 'agent_chat_read')!
       expect(discovery.inputSchema.properties?.selection).toBeDefined()
       expect(discovery.inputSchema.properties?.history).toBeDefined()
-      expect(discovery.outputSchema?.type).toBe('object')
+      expect(discovery.name).toBe('agent_chat_read')
+      expect(discovery).not.toHaveProperty('outputSchema')
+      const schema = OperatorToolSchemaResultSchema.parse(body(await test.mcp.callTool({
+        name: 'operator_tool_schema_get', arguments: { name: 'agent_chat_read', includeOutputSchema: true },
+      })))
+      expect(schema.name).toBe('agent_chat_read')
+      expect(schema.inputSchema).toEqual(discovery.inputSchema)
+      expect(schema.outputSchema?.type).toBe('object')
       expect(discovery.annotations?.readOnlyHint).toBe(true)
       expect((await read(test, targets[0]!)).kind).toBe('selected')
       expect(test.native.size).toBe(0)

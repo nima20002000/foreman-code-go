@@ -61,7 +61,7 @@ export const OperatorToolSchemaResultSchema = z.object({
   }).strict(),
 }).strict()
 
-/** Operator delivers one JSON text body; other MCP roles may deliver structured data. */
+/** Operator uses JSON text for small payloads and structured data for large payloads. */
 export function decodeMcpToolResult(result: {
   structuredContent?: unknown;
   content?: readonly { type: string; text?: string | undefined }[] | undefined;

@@ -3,13 +3,64 @@ import {
   decodeMcpToolResult, OperatorCompactCapabilitiesSchema, OperatorToolSchemaResultSchema,
   WorkspaceSummaryPageSchema, WorkflowSummaryPageSchema,
 } from '@foreman-code/contracts/operator-mcp'
-import { ManagedWorkspacePageSchema, ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
+import {
+  AgentMutationResultSchema, ManagedAgentDetailSchema, ManagedWorkspacePageSchema, ManagedWorkspaceSchema,
+} from '@foreman-code/contracts/management'
 import { SavedManagedWorkflowPageSchema, SavedManagedWorkflowSchema } from '@foreman-code/contracts/wave25'
 import { describe, expect, it, vi } from 'vitest'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { selectedMainMcpForward } from '../src/modules/placement/workerMcpRelay.js'
 
 describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () => {
+  it('forwards a complete large escaped Agent read through the bounded selected Main relay', async () => {
+    const f = await currentOperatorIntegration({ agentManagement: true })
+    try {
+      const workspaceId = f.f.scope.workspaceId
+      const created = AgentMutationResultSchema.parse(decodeMcpToolResult(await f.client.callTool({
+        name: 'agent_create', arguments: {
+          workspaceId, agentId: randomUUID(), commandId: randomUUID(), name: 'Large prompt',
+          configuration: { harness: 'codex', model: 'fixture', reasoningEffort: 'low',
+            sandbox: 'read-only', serviceTier: 'standard' },
+          prompt: { system: '"'.repeat(255000) },
+        },
+      })))
+      const args = { workspaceId, agentId: created.value.agent.id }
+      const persisted = await f.services.agents.get(f.writer.principal, workspaceId, args.agentId)
+      expect(persisted.agent.prompt?.system).toBe('"'.repeat(255000))
+      const doubleEscaped = { content: [{ type: 'text', text: JSON.stringify(persisted) }] }
+      expect(Buffer.byteLength(JSON.stringify(doubleEscaped), 'utf8')).toBeGreaterThan(1_000_000)
+
+      const reader = await f.access.issue({ name: 'Relay reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000),
+        grants: [{ actions: ['agents:read'], scope: { workspaceIds: [workspaceId] } }] })
+      const outsider = await f.access.issue({ name: 'Relay outsider', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000),
+        grants: [{ actions: ['agents:read'], scope: { workspaceIds: ['other-workspace'] } }] })
+      const forward = selectedMainMcpForward(f.app)
+      async function read(token: string) {
+        const response = await forward.request({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+          params: { name: 'agent_get', arguments: args } }, token, '2025-11-25')
+        expect(response.statusCode).toBe(200)
+        expect(Buffer.byteLength(response.body, 'utf8')).toBeLessThan(1_000_000)
+        const data = response.contentType === 'text/event-stream'
+          ? response.body.split('\n').find((line) => line.startsWith('data:'))!.slice(5) : response.body
+        return JSON.parse(data).result as Parameters<typeof decodeMcpToolResult>[0] & { isError?: boolean }
+      }
+      const result = await read(reader.token)
+      expect(result.isError).not.toBe(true)
+      expect(result.content).toEqual([])
+      expect(ManagedAgentDetailSchema.parse(decodeMcpToolResult(result))).toEqual(persisted)
+      const denied = await read(outsider.token)
+      expect(denied.isError).toBe(true)
+      expect(decodeMcpToolResult(denied)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+      expect(await f.services.agents.get(f.writer.principal, workspaceId, args.agentId)).toEqual(persisted)
+      const audit = await f.db.pool.query('select sequence from management_audit where principal_id=$1',
+        [outsider.principal.id])
+      expect(audit.rowCount).toBeGreaterThan(0)
+    } finally { await f.close() }
+  }, 60000)
+
   it('looks up available schemas without prior discovery, rejects denied targets and audits denied callers', async () => {
     const f = await currentOperatorIntegration()
     try {
