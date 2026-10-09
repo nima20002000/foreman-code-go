@@ -740,6 +740,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   it('withdraws unsent preparation without interrupting the previous completed turn', async () => {
     const uncredentialed = structuredClone(source)
     delete uncredentialed.environment
+    const { CodexStdioTransport } = await import('../src/modules/harnesses/codexStdioTransport.js')
     let preparing!: () => void
     const prepared = new Promise<void>((resolve) => { preparing = resolve })
     const fileManager = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none', {
@@ -750,6 +751,23 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
           signal.addEventListener('abort', () => { reject(signal.reason) }, { once: true })
         })
         return undefined
+      },
+    }, {
+      mode: 'native',
+      transport: (...args) => {
+        const readyId = randomUUID()
+        args[2] = { ...args[2], TEST_CODEX_TRANSPORT_READY: readyId }
+        return new class extends CodexStdioTransport {
+          override async request(
+            ...input: Parameters<InstanceType<typeof CodexStdioTransport>['request']>
+          ): Promise<unknown> {
+            if (input[0] === 'initialize') {
+              // Start the RPC deadline after the fixture has installed its input handler.
+              await until(async () => (await calls(f.directory)).some(call => call.nativeReady === readyId))
+            }
+            return super.request(...input)
+          }
+        }(...args)
       },
     })
     managers.push(fileManager)

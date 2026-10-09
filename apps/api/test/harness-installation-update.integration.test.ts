@@ -165,7 +165,7 @@ describe('installed harness updates', () => {
         'unavailable intermediate inventory')
         await waitForRemoteReview(() => profiles(fixture, reader), values => values.every(value =>
           value.qualification === 'unqualified' && value.qualificationFailure !== undefined), 'unavailable profile readback')
-        await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_UNAVAILABLE')
+        await expect(fixture.start()).rejects.toThrow('HARNESS_INSTALLATION_INVALID')
         expect(process.kill(turn.pid, 0)).toBe(true)
         await fixture.provider.updatePayload()
         await waitForRemoteReview(() => profiles(fixture, reader), values => values.every(value =>

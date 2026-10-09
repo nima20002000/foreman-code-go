@@ -31,7 +31,7 @@ it('inspects an explicit launch override without reserving and permits an offlin
   const placementOverride = { kind: 'explicit' as const, target: candidate.spec.target }
   expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, placementOverride))
     .toEqual({ valid: false, canQueue: true, reasons: ['offline'], sideEffects: false })
-  expect(candidates).toHaveBeenCalledWith(sql, principal, 'workspace-fixture', auto, placementOverride)
+  expect(candidates).toHaveBeenCalledWith(sql, principal, 'workspace-fixture', auto, placementOverride, {})
   expect(query).toHaveBeenCalledTimes(1)
   candidate.reasons = ['AUTH_REVOKED']
   expect(await selection.validateRequest(sql, principal, 'workspace-fixture', auto, placementOverride))

@@ -436,3 +436,4 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     result(message.id, {}); process.stdin.pause(); fs.closeSync(0)
   }
 })
+if (process.env.TEST_CODEX_TRANSPORT_READY) log({ nativeReady: process.env.TEST_CODEX_TRANSPORT_READY })

@@ -30,7 +30,12 @@ describe('original installed Job qualification composition, no native entry', ()
     const qualification = ports.qualification.mock.calls[0]![0] as { journal(): Promise<RemoteOperationJournal>; registry: { snapshot(): unknown } }
     const journal = await qualification.journal()
     expect(await qualification.journal()).toBe(journal)
-    expect(ports.open).toHaveBeenCalledExactlyOnceWith('/original-worker-state/job-runtime-operations.json', undefined)
+    expect(ports.open).toHaveBeenCalledExactlyOnceWith('/original-worker-state/job-runtime-operations.json', {
+      now: expect.any(Function), retentionNow: expect.any(Function),
+    })
+    const clock = ports.open.mock.calls[0]![1] as { now(): number; retentionNow(): number | undefined }
+    expect(clock.now()).toBeTypeOf('number')
+    expect(clock.retentionNow()).toBeUndefined()
     expect(qualification.registry.snapshot()).toMatchObject({ launches: [] })
     await mounted.close(); await mounted.close()
     expect(ports.close).toHaveBeenCalledTimes(1)
@@ -49,9 +54,13 @@ it('recovers the original Job host before routing an authenticated Job frame, wi
   ports.jobs.mockReturnValue({ recover: ports.recover, handle: ports.handle, shutdown: ports.shutdown })
   ports.open.mockResolvedValue({ close: ports.close, pendingQualifications: async () => [] } as unknown as RemoteOperationJournal)
   ports.qualification.mockReturnValue({ namespace: 'job-runtime-qualification-v1', version: 1, role: 'duplex', maxJsonBytes: 1, maxBinaryBytes: 0, drain: async () => {} })
+  const mainTime = Date.now() + 60_000
+  let connected = true
   const mounted = await createInstalledWorkerDomains({ stateDirectory: '/original-worker-state', pairing, bootId: binding.bootId, configuration: null,
     jobConfiguration: { path: '/original-worker-state/job-runtime.json', ownerUid: 1000 }, approvedRoots: async () => ({} as ApprovedRootAllowlist),
-    connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined, mainNow: Date.now }),
+    connection: () => connected
+      ? { currentBinding: () => binding, captureRequest: () => undefined, mainNow: () => mainTime }
+      : undefined,
     codexSuiteRevision: 'unit-suite' })
   expect(ports.jobs).not.toHaveBeenCalled()
   const job = jobExecution()
@@ -69,8 +78,16 @@ it('recovers the original Job host before routing an authenticated Job frame, wi
   expect(calls).toEqual(['recover', 'handle', 'handle'])
   expect(ports.jobs).toHaveBeenCalledTimes(1)
   expect(ports.jobs.mock.calls[0]![0]).toMatchObject({ connection: binding, journal: await ports.open.mock.results[0]!.value })
-  expect(ports.open).toHaveBeenCalledExactlyOnceWith('/original-worker-state/job-runtime-operations.json', undefined)
+  expect(ports.open).toHaveBeenCalledExactlyOnceWith('/original-worker-state/job-runtime-operations.json', {
+    now: expect.any(Function), retentionNow: expect.any(Function),
+  })
+  const clock = ports.open.mock.calls[0]![1] as { now(): number; retentionNow(): number | undefined }
+  expect(clock.now()).toBe(mainTime)
+  expect(clock.retentionNow()).toBe(mainTime)
   await expect(execution.handle!(request, { ...context, binding: { ...binding, connectionGeneration: 4 } })).rejects.toThrow('actual authenticated')
+  connected = false
+  expect(clock.retentionNow()).toBeUndefined()
+  expect(clock.now()).toBeTypeOf('number')
   await mounted.close()
   expect(ports.shutdown).toHaveBeenCalledOnce()
   vi.restoreAllMocks()

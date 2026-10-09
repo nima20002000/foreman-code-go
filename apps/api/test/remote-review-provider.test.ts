@@ -9,6 +9,7 @@ import { expect, it, vi } from 'vitest'
 
 it('finishes the native review after its decision is recorded while delivery is still pending', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'review-provider-'))
+  await writeFile(join(directory, 'codex'), 'review provider executable fixture', { mode: 0o700 })
   const token = 'unit-fixture-token'
   const client = join(directory, 'client.mjs')
   await writeFile(client, `

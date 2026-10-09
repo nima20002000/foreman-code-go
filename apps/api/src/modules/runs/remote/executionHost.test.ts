@@ -258,12 +258,13 @@ describe('actual worker native-port adapter', () => {
     }
   })
 
-  it('production reports failed remote detachment and keeps runtime ownership', async () => {
+  it('retains remote managers and channels after failed detachment and retries before releasing ownership', async () => {
     const f = await setup()
+    let historyUnavailable = true
     const proxy = new RemoteNativeSessionManager({
       intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
       transport: { request: (method, frame) => {
-        if (method === 'history') throw new Error('Original history unavailable')
+        if (historyUnavailable && method === 'history') throw new Error('Original history unavailable')
         return f.host.handle(frame)
       } },
       observeReceipt: async () => {}, controlFor: async () => { throw new Error('No control is requested') },
@@ -274,9 +275,15 @@ describe('actual worker native-port adapter', () => {
     runtime.managerDispose.mockImplementation(() => proxy.dispose())
     try {
       await expect(runtime.production.shutdown()).rejects.toThrow('runtime ownership was not released')
-      expect(runtime.channels).toHaveBeenCalledOnce()
+      expect(runtime.managerDispose).not.toHaveBeenCalled()
+      expect(runtime.channels).not.toHaveBeenCalled()
       expect(runtime.ownerClose).not.toHaveBeenCalled()
       await expect(proxy.dispose()).rejects.toThrow('disposal is unconfirmed')
+      historyUnavailable = false
+      await runtime.production.shutdown()
+      expect(runtime.managerDispose).toHaveBeenCalledOnce()
+      expect(runtime.channels).toHaveBeenCalledOnce()
+      expect(runtime.ownerClose).toHaveBeenCalledOnce()
       expect(f.state).toMatchObject({ starts: 1, turns: 0, cancels: 0 })
     } finally { await runtime.close() }
   })

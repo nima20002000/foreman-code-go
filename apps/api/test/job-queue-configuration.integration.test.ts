@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { JobBuildQueueConfiguration, JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { ResolvedJobDefinitionSpecSchema } from '@foreman-code/contracts/jobs'
+import { WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { JobService, jobDigest } from '../src/modules/jobs/service.js'
 import { createProductionJobs, createReviewedBuildQueueConfiguration,
@@ -252,6 +253,35 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
       bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
     const retained = jobRuntimeMetadataFixture(computer.candidate.profile, binding.bootId)
     const profile = retained.profile
+    const root = profile.root
+    const destination = computer.candidate.spec.target.destination
+    const rootPolicy = WorkspaceRootPolicySchema.parse({
+      schemaVersion: 1,
+      rootPolicyId: root.selection.rootPolicyId,
+      rootPolicyRevision: root.selection.rootPolicyRevision,
+      workspaceId: f.workspaceId,
+      hostRef: root.selection.hostRef,
+      applicationInstallationId: computer.registration.workerInstallationId,
+      registration: root.registration,
+      locationRevision: root.selection.locationRevision,
+      ownerPrincipalId: principal.id,
+      allowedBaseId: root.binding.rootId,
+      configurationRevision: '1',
+      relativePath: 'project',
+      accessMode: 'read-write',
+      canonicalProjectRoot: root.binding.canonicalPath,
+      filesystem: root.binding.filesystem,
+      directoryIdentityHash: destination.directoryIdentityHash,
+      managedRuntimeRoot: destination.managedRuntimeRoot,
+      runtimeFilesystem: root.binding.filesystem,
+      attestationId: root.attestationId,
+      attestationDigest: root.attestationDigest,
+    })
+    await database.pool.query(`insert into workspace_root_policies
+      (root_policy_id,root_policy_revision,workspace_id,host_scope,location_revision,record)
+      values($1,$2,$3,$4,$5,$6::jsonb)`, [rootPolicy.rootPolicyId, rootPolicy.rootPolicyRevision,
+      f.workspaceId, `main:${config.mainId}:device:${computer.registration.deviceId}`,
+      rootPolicy.locationRevision, JSON.stringify(rootPolicy)])
     await database.pool.query('update job_runtime_profiles set record=$2::jsonb where id=$1',
       [profile.id, JSON.stringify(profile)])
     const measurement = profile.measurement!
@@ -304,6 +334,11 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
           await vi.waitFor(() => { expect(inspections).toContain(3) })
           expect(await runtime.profiles.readiness(database.pool, profile))
             .toEqual({ ready: false, reasons: ['context_changed'] })
+          await database.pool.query(`update workspace_root_policies set revoked_at=now()
+            where root_policy_id=$1 and root_policy_revision=$2`,
+          [rootPolicy.rootPolicyId, rootPolicy.rootPolicyRevision])
+          expect(await runtime.profiles.readiness(database.pool, profile))
+            .toEqual({ ready: false, reasons: ['root_context_changed'] })
         }
       } finally { await runtime.close() }
     }

@@ -192,13 +192,33 @@ it('keeps fresh inspection separate from the first admitted Claude message owner
   })
   const allocate = vi.fn(async () => ({ ...base, start: nativeStart }))
   f.ports.allocate = allocate
+  const startInitialTurn = f.manager.startInitialTurn.bind(f.manager)
+  const nativeCompleted = new Promise<void>((resolve, reject) => {
+    f.manager.startInitialTurn = async function* (start, input) {
+      try {
+        yield* startInitialTurn(start, input)
+        resolve()
+      } catch (error) {
+        reject(error)
+        throw error
+      }
+    }
+  })
   await f.request({ method: 'conversation.capabilities', configuration: f.configuration })
   expect(allocate).not.toHaveBeenCalled()
   expect(f.manager.creates).toBe(0)
-  const value = await f.request({ method: 'conversation.initial-turn', operationId: 'message-creation',
-    correlationId: 'actual-native-message', configuration: f.configuration, prompt: 'One admitted task' })
+  const [value] = await Promise.all([
+    f.request({ method: 'conversation.initial-turn', operationId: 'message-creation',
+      correlationId: 'actual-native-message', configuration: f.configuration, prompt: 'One admitted task' }),
+    nativeCompleted,
+  ])
   expect(receipt(value).creation?.operationId).toBe('message-creation')
-  await vi.waitFor(() => expect(f.manager.prompts).toEqual(['One admitted task']))
+  expect(f.manager.prompts).toEqual(['One admitted task'])
+  expect(f.observed.sessions).toEqual([f.session])
+  expect((await f.journal.conversations.read(f.binding))?.turns[0]?.nativeSubmission).toMatchObject({
+    nativeSessionId: f.session.nativeSessionId, nativeMessageId: 'observed-message',
+    clientCorrelationId: 'actual-native-message',
+  })
   expect(nativeStart).toHaveBeenCalledWith({ correlationId: 'actual-native-message', instructionsDelivered: false })
   expect(allocate).toHaveBeenCalledOnce()
   expect(closeInspection).toHaveBeenCalledOnce()

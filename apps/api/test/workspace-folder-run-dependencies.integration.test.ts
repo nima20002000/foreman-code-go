@@ -21,9 +21,10 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
   it('protects the original folder after a rebind, restores native continuation, and retries cleanup after settlement',
     async () => {
       const definition = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
-      const approvalNode = definition.version.definition.nodes[1]!
+      // Request approval on the first turn, before any predecessor needs to settle.
+      const approvalNodeId = definition.version.entryNodeId
       const f = await currentOperatorIntegration({ fixture: definition, insertRun: false,
-        approvalNodeIds: [approvalNode.id] })
+        approvalNodeIds: [approvalNodeId] })
       try {
         // This scenario uses real directory identities; only the external provider is deterministic.
         vi.mocked(f.locations.revalidateSnapshot).mockRestore()
@@ -68,7 +69,9 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
         const executions = await readCurrentExecutions(f.runs, runId)
         const pending = (await f.repository.list({ runId, limit: 100 })).find(item => item.status === 'pending')!
         expect(pending).toBeDefined()
+        expect(pending.nativeRequestType).toBe('item/commandExecution/requestApproval')
         const waiting = executions.find(execution => execution.id === pending.executionId)!
+        expect(waiting.workflowNodeId).toBe(approvalNodeId)
         expect(waiting.workingDirectory).toBe(project)
         await continuationValidator(f.db.pool, f.locations)(waiting.id)
         expect(await readFile(join(waiting.workingDirectory!, 'input.txt'), 'utf8')).toBe('original Run input')

@@ -1486,12 +1486,9 @@ export function buildProductionApp(
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
       { name: 'Foreman Code MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
-        // Ordinary restart must persist the exact retained Worker/reviewer
-        // closes before raw disposal loses their manager lifetime identities.
-        // Still dispose all allocations after a receipt failure, but propagate
-        // that failure so shutdown cannot release runtime ownership.
+        // A failed close must retain managers and authenticated channels for retry.
+        await approvals.closeForRestart()
         const errors: unknown[] = []
-        try { await approvals.closeForRestart() } catch (error) { errors.push(error) }
         try { await managers.dispose() } catch (error) { errors.push(error) }
         // Remote session disposition still needs the authenticated device channels.
         try { await deviceRuntime.drain() } catch (error) { errors.push(error) }

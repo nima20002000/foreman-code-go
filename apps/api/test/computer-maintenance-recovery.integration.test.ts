@@ -93,7 +93,7 @@ describe.skipIf(!postgresEnabled)('maintenance command recovery through authenti
       expect((await denied.callTool({ name: 'computers_maintenance_start', arguments: input })).isError).toBe(true)
       expect(wireCommands).toEqual([])
       await database.pool.query(`alter table management_command_receipts add constraint maintenance_result_fault
-        check (operation <> 'computers.maintenance.start')`)
+        check (operation <> 'computers.maintenance.start') not valid`)
       const first = await connect(commands, writer.token)
       expect((await first.callTool({ name: 'computers_maintenance_start', arguments: input })).isError).toBe(true)
       await settle(computer)
@@ -137,7 +137,7 @@ describe.skipIf(!postgresEnabled)('maintenance command recovery through authenti
         keyRevision: null, authorizationRevision: null,
       }, ...input.targets] }
       await database.pool.query(`alter table management_command_receipts add constraint maintenance_result_fault
-        check (operation <> 'computers.maintenance.start')`)
+        check (operation <> 'computers.maintenance.start') not valid`)
       const waiting = first.callTool({ name: 'computers_maintenance_start', arguments: restart })
       await expect.poll(() => mainRestart.callbacks.length).toBe(1)
       await expect.poll(() => workerRestart.callbacks.length).toBe(1)

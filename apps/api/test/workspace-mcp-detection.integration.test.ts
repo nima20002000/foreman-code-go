@@ -76,7 +76,7 @@ it('validates the persisted workspace identity before HTTP and authenticated MCP
     expect((await http(denied.token)).statusCode).toBe(403)
     const refused = await deniedClient.callTool({ name: 'harness_mcp_detection_get', arguments: args })
     expect(refused.isError).toBe(true)
-    expect(JSON.stringify(refused.content)).toContain('ACCESS_DENIED')
+    expect(decodeMcpToolResult(refused)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
     expect(inspect).toHaveBeenCalledTimes(calls)
     const saved = (await database.pool.query(
       'select execution_location,execution_location_identity,location_revision from workspaces where id=$1', [workspace.id],
@@ -86,10 +86,10 @@ it('validates the persisted workspace identity before HTTP and authenticated MCP
     await mkdir(rootPath)
     const replaced = await http()
     expect(replaced.statusCode).toBe(409)
-    expect(replaced.json()).toMatchObject({ code: 'WORKSPACE_LOCATION_CHANGED' })
+    expect(replaced.json()).toMatchObject({ error: { code: 'WORKSPACE_LOCATION_CHANGED' } })
     const replacedMcp = await mcp()
     expect(replacedMcp.isError).toBe(true)
-    expect(JSON.stringify(replacedMcp.content)).toContain('WORKSPACE_LOCATION_CHANGED')
+    expect(decodeMcpToolResult(replacedMcp)).toMatchObject({ error: { code: 'WORKSPACE_LOCATION_CHANGED' } })
     expect(inspect).toHaveBeenCalledTimes(calls)
     expect((await database.pool.query(
       'select execution_location,execution_location_identity,location_revision from workspaces where id=$1', [workspace.id],
@@ -98,10 +98,10 @@ it('validates the persisted workspace identity before HTTP and authenticated MCP
     await database.pool.query('update workspaces set execution_location_identity=null where id=$1', [workspace.id])
     const unbound = await http()
     expect(unbound.statusCode).toBe(409)
-    expect(unbound.json()).toMatchObject({ code: 'WORKSPACE_LOCATION_UNCONFIGURED' })
+    expect(unbound.json()).toMatchObject({ error: { code: 'WORKSPACE_LOCATION_UNCONFIGURED' } })
     const unboundMcp = await mcp()
     expect(unboundMcp.isError).toBe(true)
-    expect(JSON.stringify(unboundMcp.content)).toContain('WORKSPACE_LOCATION_UNCONFIGURED')
+    expect(decodeMcpToolResult(unboundMcp)).toMatchObject({ error: { code: 'WORKSPACE_LOCATION_UNCONFIGURED' } })
     expect(inspect).toHaveBeenCalledTimes(calls)
 
     await locations.set(owner.principal, 'mcp', { workspaceId: workspace.id, commandId: randomUUID(),

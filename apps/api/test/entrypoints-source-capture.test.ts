@@ -16,7 +16,9 @@ it('captures this complete committed repository into real private storage within
   const gitDirectory = (await git('git', ['rev-parse', '--absolute-git-dir'], { cwd: repository })).stdout.trim()
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
   const root = await privateFixtureDirectory('repository-capture-')
-  await git('git', ['clone', '--quiet', '--no-hardlinks', gitDirectory, root], { env: environment })
+  // Capture reads the committed tree directly; history and a checkout are unnecessary fixture work.
+  await git('git', ['clone', '--quiet', '--no-local', '--depth=1', '--single-branch', '--no-checkout',
+    gitDirectory, root], { env: environment })
   const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
   const approvedPaths = (await qualifiedGit(root, ['ls-tree', '-r', '--name-only', '-z', commit])).toString().split('\0').filter(Boolean)
   const directory = await privateFixtureDirectory('entrypoints-source-capture-')

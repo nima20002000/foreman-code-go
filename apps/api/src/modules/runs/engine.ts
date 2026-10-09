@@ -286,9 +286,8 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       // failed intent retains the owner for the same shutdown retry.
       if (this.restartIntent) await this.restartIntent
       // Wait only for captured native closure, never shutdownTask (which drains
-      // this drive). A rejected closure is explicit uncertainty reported by
-      // shutdown; release still drains G1 writes without rewriting Run history.
-      if (this.restartClosure) await this.restartClosure.catch(() => undefined)
+      // this drive). Failed closure retains the original owner for its retry.
+      if (this.restartClosure) await this.restartClosure
       // Drains in-flight G1 writes. Old captures cannot write after release.
       if (this.activeOwners.get(runId) === owner) this.activeOwners.delete(runId)
       await owner.release()

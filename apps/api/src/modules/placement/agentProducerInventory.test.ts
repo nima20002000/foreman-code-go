@@ -37,7 +37,7 @@ function fixture(kind: 'agent' | 'job', refresh: (
     (hosts, signal) => { expect(transaction).toBe(false); return refresh(hosts, signal) })
   const input = RunStartV3InputSchema.parse({ workspaceId: version.workspaceId, workflowId: version.workflowId,
     workflowVersionId: version.id, expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
-    commandId: 'start', executionSemanticsVersion: 3, expectedWorkflowRevision: 1,
+    commandId: 'start-inventory', executionSemanticsVersion: 3, expectedWorkflowRevision: 1,
     expectedLocationRevision: 1, input: {} })
   const principal = { id: 'operator', name: 'Operator', audience: 'operator' as const,
     grants: [], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }

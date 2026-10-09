@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, open, readFile, writeFile, rm, mkdir, rmdir, rename, symlink } from 'node:fs/promises'
+import { mkdtemp, open, readFile, writeFile, rm, mkdir, rmdir, rename, symlink, lstat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { TransferIntent } from '@foreman-code/contracts/byte-transfer'
@@ -75,6 +75,41 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
         await rmdir(lock)
         await rename(retainedLock, lock)
       })
+    } finally { await f.dispose() }
+  })
+
+  it('uses the latest receiver when a removed lock inode is reused, including after reopening', async () => {
+    const f = await fixture()
+    try {
+      const lock = join(f.root, `${f.intent.transferId}.lock`)
+      const old = f.ownership.access(f.intent, f.binding, 'receiver')
+      await old.run(async () => {
+        await mkdir(lock, { mode: 0o700 })
+        old.captureLock()
+      })
+      await old.close()
+      await rmdir(lock)
+      const receiver = f.ownership.access(f.intent, f.binding, 'receiver')
+      await receiver.run(async () => {
+        await mkdir(lock, { mode: 0o700 })
+        receiver.captureLock()
+      })
+      const previous = readRecord(f.ownerPath(old.reference, 'lock')) as Record<string, unknown>
+      const captured = readRecord(f.ownerPath(receiver.reference, 'lock')) as Record<string, unknown>
+      writeRecord(f.ownerPath(old.reference, 'lock'), { ...previous, lock: captured.lock })
+      const reopened = new RsyncWriterOwnership(f.root, () => f.binding)
+      expect(() => f.ownership.assertLock(f.intent)).not.toThrow()
+      expect(() => reopened.assertLock(f.intent)).not.toThrow()
+      await receiver.close()
+      await rename(lock, `${lock}-original`)
+      await mkdir(lock, { mode: 0o700 })
+      const replacement = await lstat(lock, { bigint: true })
+      writeRecord(f.ownerPath(old.reference, 'lock'), { ...previous,
+        lock: { device: replacement.dev.toString(), inode: replacement.ino.toString() } })
+      expect(() => reopened.assertLock(f.intent)).toThrow('lock ownership unavailable')
+      await rmdir(lock)
+      await rename(`${lock}-original`, lock)
+      expect(() => reopened.assertLock(f.intent)).not.toThrow()
     } finally { await f.dispose() }
   })
 

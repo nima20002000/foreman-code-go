@@ -545,8 +545,13 @@ export class RsyncWriterOwnership {
         if (controller.signal.aborted && !pending.size) throw new Error('Rsync byte access closed')
         handles.add(handle)
       },
-      captureLock: () => writeRecord(`${path}.lock`, { version: 1, ...ref, root: this.rootIdentity,
-        lock: certificate(join(this.root, `${row.intent.transferId}.lock`)) }, true),
+      captureLock: () => {
+        if (row.role !== 'receiver') throw new Error('Only the original receiver can capture its writer lock')
+        writeRecord(`${path}.lock`, { version: 1, ...ref, root: this.rootIdentity,
+          lock: certificate(join(this.root, `${row.intent.transferId}.lock`)) }, true)
+        // A removed lock's inode may be reused by the next receiver.
+        writeRecord(join(this.directory(row.intent), 'receiver-lock.json'), ref)
+      },
       close: (signal = AbortSignal.timeout(5000)) => {
         controller.abort(new Error('Rsync byte access closed'))
         if (!draining) {
@@ -581,8 +586,11 @@ export class RsyncWriterOwnership {
       }
       return
     }
+    const current = readRecord(join(this.directory(i), 'receiver-lock.json'))
+    const references = current === undefined ? this.references(i) : [Reference.parse(current)]
     let matches = 0
-    for (const ref of this.references(i)) {
+    for (const ref of references) {
+      if (ref.transferId !== i.transferId) throw new Error('Rsync writer lock owner conflicts')
       const { path } = this.read(ref), raw = readRecord(`${path}.lock`)
       if (raw === undefined) continue
       const lock = Lock.parse(raw)

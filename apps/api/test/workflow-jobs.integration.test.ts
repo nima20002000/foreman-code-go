@@ -6,6 +6,7 @@ import type { HarnessExecution } from '@foreman-code/contracts'
 import { WorkflowJobPageSchema, type JobDefinitionRecord, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { JobAdmissionResultSchema, JobQueuePageSchema, JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
 import { JobWorkflowExecutionReferenceSchema, type JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
+import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -51,6 +52,13 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     writer = await access.issue({ name: 'Job author', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ scope: {},
         actions: ['job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:read', 'jobs:cancel', 'settings:read', 'settings:update'] }] })
+    const acceptedRun = AcceptedWorkflowRunV3Schema.parse({ ...workflow.run,
+      authorizationPrincipalId: writer.principal.id,
+      executionLocation: { runnerId: 'fixture-runner', rootPath: '/synthetic/workflow-jobs',
+        locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` },
+    })
+    await database.pool.query('update runs set record=$2::jsonb where id=$1',
+      [acceptedRun.id, JSON.stringify(acceptedRun)])
     reader = await access.issue({ name: 'Workflow history reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['jobs:read', 'job_logs:read', 'job_artifacts:read', 'capabilities:read'],
         scope: { workspaceIds: [workflow.run.workspaceId], workflowIds: [workflow.run.workflowId] } }] })

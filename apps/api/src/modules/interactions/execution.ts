@@ -194,10 +194,33 @@ export class ApprovalExecutionCoordinator {
       if (acquired) await owner.release()
     }
   }
+  private async closeUnboundWorkflowSession(owned: OwnedNativeSession): Promise<void> {
+    const generation = owned.generation
+    const registration = owned.closureRegistration
+    const closureGeneration = await registration
+    const assertCurrent = () => {
+      if (this.ownedSessions.get(owned.execution.id) !== owned || owned.generation !== generation
+        || owned.opening || owned.session || owned.execution.nativeSessionId
+        || owned.closureRegistration !== registration) {
+        throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
+          'The unbound native manager changed during disposal.', 409)
+      }
+    }
+    assertCurrent()
+    await owned.manager.dispose()
+    assertCurrent()
+    if (closureGeneration) {
+      if (!this.workflowClosures) throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
+        'The native lifetime reservation cannot record its disposal.', 409)
+      await this.workflowClosures.recordUnbound(owned.execution, closureGeneration, assertCurrent)
+      assertCurrent()
+    }
+    this.closedExecutions.add(owned.execution.id)
+  }
+
   private async closeWorkflowSessionOwned(owned: OwnedNativeSession, restart: boolean): Promise<void> {
     const session = owned.session
-    if (!session) throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
-      'The native connection is not ready for an exact close receipt.', 409)
+    if (!session) return this.closeUnboundWorkflowSession(owned)
     const generation = owned.generation
     if (restart) await owned.manager.closeForRestart(session)
     else await owned.manager.close(session)
@@ -1099,13 +1122,10 @@ export class ApprovalExecutionCoordinator {
           // A failed drain can leave cleanup or create/attach in flight. Observe
           // its actual completion; an abort/timeout is never a closure receipt.
           await owned.cleanup
-          await owned.opening
+          // A rejected opening still requires positive disposal of its manager.
+          if (owned.opening) await Promise.allSettled([owned.opening])
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
-          // Opening has settled without a session: this manager never launched
-          // native work, so there is nothing to close. Durable launch-reservation
-          // evidence lets cold recovery settle the execution after restart.
-          if (!owned.session) return
           await this.closeWorkflowSession(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)

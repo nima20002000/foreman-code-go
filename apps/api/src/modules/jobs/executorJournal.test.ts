@@ -424,8 +424,8 @@ describe('completed runtime journal retention', () => {
     expect((await reopened.jobNativeOwner(f.execution.operationId))?.qualificationOperationId)
       .toBe(original.admission.operationId)
     const operationId = randomUUID()
-    await expect(reopened.qualificationAccept({ ...original.admission, operationId },
-      { ...original.candidate, operationId })).rejects.toThrow('identity already bound')
+    await expect(reopened.qualificationAccept({ ...original.admission, operationId, qualificationId: operationId },
+      { ...original.candidate, operationId, qualificationId: operationId })).rejects.toThrow('identity already bound')
     expect(await reopened.pendingQualifications()).toEqual([])
   })
 })

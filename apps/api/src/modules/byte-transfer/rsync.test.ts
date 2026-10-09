@@ -239,6 +239,7 @@ describe('rsync transport composition', () => {
     try {
       const transport = new RsyncStagingTransport(f.config, { authorize: async () => {} }, f.ports, f.executor)
       await expect(transport.stage(f.i, async () => context(f.i))).rejects.toThrow('source changed')
+      expect(f.snapshot.close).toHaveBeenCalledOnce()
       const retry = await f.store.receive(f.i, signal()); await retry.interrupt()
     } finally { await f.dispose() }
   })

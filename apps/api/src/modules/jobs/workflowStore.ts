@@ -26,9 +26,9 @@ import {
 } from '@foreman-code/contracts/wave25'
 import type { RunOwnership } from '../runs/ownership.js'
 import { beforeGraphCommit,type GraphTransactionSql } from '../run-graph/connection.js'
-import { openRunGraphPublication } from '../run-graph/publication.js'
+import { currentRunGraphPublication } from '../run-graph/publication.js'
 import { canonicalRepeatEffect,canonicalRepeatEffectReceipt } from '../run-graph/repeatPublication.js'
-import { assertRepeatCanonicalReceiptLocked,requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
+import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import {
   readRepeatAcceptedResultLocked,
   readRepeatExecutionLocked,
@@ -86,7 +86,7 @@ export interface WorkflowJobStorePublication {
 export function workflowJobStorePublication():WorkflowJobStorePublication {
   return {
     async effect(sql,owner,scope,version,effect,mutate,facts){
-      const publication=await openRunGraphPublication(sql,scope)
+      const publication=currentRunGraphPublication(sql,scope)
       const receipt=canonicalRepeatEffectReceipt(scope,effect)
       const result=await publication.repeatChange({evidence:receipt.evidence,sourceDigest:receipt.sourceDigest,effect:canonicalRepeatEffect(scope,effect)},owner,mutate,async()=>{
         const values=[...await facts()];if(!values.length)values.push({type:'repeat.run.state',state:await readRepeatRunStateLocked(sql,scope)});validateRepeatGraphFactsV3(version,scope,values);return values
@@ -95,7 +95,7 @@ export function workflowJobStorePublication():WorkflowJobStorePublication {
       if(nodeFacts.length)await publication.source({evidence:{sourceKind:'input_binding',sourceId:repeatId('job-public-effect',effect.kind,effect.entityId,effect.digest),sourceRevision:'1'},sourceDigest:graphSourceDigest(nodeFacts),facts:nodeFacts},async()=>undefined)
       requireRepeatCanonicalReceiptBeforeCommit(sql,canonicalRepeatEffectReceipt(scope,effect,result.semanticDigest))
     },
-    async assertReceipt(sql,scope,effect){await assertRepeatCanonicalReceiptLocked(sql,canonicalRepeatEffectReceipt(scope,effect))},
+    async assertReceipt(sql,scope,effect){requireRepeatCanonicalReceiptBeforeCommit(sql,canonicalRepeatEffectReceipt(scope,effect))},
     observe:publishWorkflowJobStateReadbackLocked,
   }
 }

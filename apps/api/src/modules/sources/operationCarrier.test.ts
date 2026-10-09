@@ -97,7 +97,8 @@ it('keeps a Worker retained-tree measurement bound to the original materializati
   const f = fixture()
   const treeId = randomUUID()
   const record = SourceMaterializationRecordSchema.parse({ ...f.record,
-    receipt: { ...f.record.receipt, sharedTree: { id: treeId, referenceIdentity: f.record.receipt.binding.filesystem } } })
+    receipt: { ...f.record.receipt, claimScope: 'execution',
+      sharedTree: { id: treeId, referenceIdentity: f.record.receipt.binding.filesystem } } })
   const payload = { version: 1, operation: 'sources.release', materializationId: record.receipt.materializationId,
     operationId: record.operationId, released: true, retainedBytes: 2 * 1024 * 1024 * 1024,
     sharedTree: { id: treeId, bytes: 4096 } }

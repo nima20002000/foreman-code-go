@@ -293,14 +293,15 @@ describe('actual qualification reservation seams with mocked native entry only',
   })
   it.each(['timeout', 'disconnect', 'expiry'] as const)('retains only original-container cleanup authority after %s', async reason => {
     const f = await fixture()
+    let now = Date.now()
     const controller = new AbortController()
-    const admitted = await reserveInstalledJobQualification({ ...f.input, signal: controller.signal })
+    const admitted = await reserveInstalledJobQualification({ ...f.input, signal: controller.signal, now: () => now })
     const containerId = 'b'.repeat(64)
     await admitted.ownership.reserveContainerIntent(`graphql-ci-qualification-${id}`, f.admission.fingerprintDigest)
     await admitted.ownership.bindContainer(`graphql-ci-qualification-${id}`, containerId)
     if (reason === 'timeout') controller.abort()
     if (reason === 'disconnect') f.input.assertAdmission.mockRejectedValue(new Error('channel closed'))
-    if (reason === 'expiry') vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.admission.expiresAt) + 1)
+    if (reason === 'expiry') now = Date.parse(f.admission.expiresAt) + 1
     await expect(admitted.native.reserveProcess(process.execPath, ['--remote=false', 'info'])).rejects.toThrow()
     const cleanup = await admitted.native.reserveCleanupProcess!(process.execPath,
       ['--remote=false', 'container', 'inspect', containerId])
