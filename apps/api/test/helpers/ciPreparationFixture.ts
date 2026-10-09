@@ -81,6 +81,7 @@ export function preparationProfile(id: string, name: string, deviceId: string, r
 
 type Stage = 'source' | 'source-transfer' | 'root' | 'profile' | 'refresh' | 'capture' | 'qualify'
 export async function ciPreparationFixture(options: {
+  reusedImage?: boolean; staleQualification?: boolean
   prepareFails?: boolean; disabled?: boolean; statusDrops?: number; loseRefreshAck?: boolean
   refreshGate?: Promise<void>
   loseSourceAck?: 'first' | 'complete'
@@ -149,7 +150,8 @@ export async function ciPreparationFixture(options: {
         keepImages: input.keepImages, keepPaths: input.keepPaths })
       input.log?.('fetch-packages')
       if (options.prepareFails) throw new Error('podman build failed: no space left on device')
-      return { ...prepared, commit: input.commit }
+      return { ...prepared, commit: input.commit,
+        ...(options.reusedImage ? { imageId: oldImage, reusedImage: true } : {}) }
     },
     refresh: async (input: { operationId: string; prepared: PreparedCiRuntime }) => {
       calls.refresh.push(input)
@@ -232,7 +234,8 @@ export async function ciPreparationFixture(options: {
   const profileService = {
     list: async (_principal: unknown, scope: string) => ({ profiles: [...profiles.values()]
       .filter(profile => profile.workspaceId === scope).map(profile => ({ profile: structuredClone(profile),
-      ready: true, reasons: [], sideEffects: false })), approvals: [] }),
+      ready: !options.staleQualification || calls.qualified.includes(profile.id),
+      reasons: [], sideEffects: false })), approvals: [] }),
     save: async (principal: ManagementPrincipal, _source: unknown, scope: string,
       input: { id: string; commandId: string; expectedRevision: number; name: string; spec: JobVerificationProfile['spec'] }) => {
       const saved = await command(principal, 'fixture.profile', input, async () => {

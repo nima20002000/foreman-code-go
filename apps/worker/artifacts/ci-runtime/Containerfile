@@ -21,7 +21,6 @@ COPY verification/ /opt/graphql-ci/verification/
 COPY seed-receipt.json /opt/graphql-ci/seed-receipt.json
 COPY seed-policy.mjs verification-policy.mjs verification-observation.mjs /opt/graphql-ci/
 RUN --network=none node /opt/graphql-ci/seed-policy.mjs /opt/graphql-ci/seed /opt/graphql-ci/seed-receipt.json \
- && chmod -R a+rX /opt/graphql-ci \
  && rm /usr/local/bin/corepack \
  && rm -f /usr/local/bin/pnpm /usr/local/bin/pnpx
 COPY corepack /usr/local/bin/corepack
@@ -40,10 +39,10 @@ RUN test "$(node --version)" = v22.23.3 \
  && git --version && flock --version \
  && COREPACK_HOME=/opt/graphql-ci/corepack-cache corepack install --global pnpm@11.27.0 \
  && COREPACK_HOME=/opt/graphql-ci/corepack-cache corepack pnpm fetch --frozen-lockfile --store-dir /opt/graphql-ci/pnpm-store \
+ && chmod -R a+rX /opt/graphql-ci/corepack-cache /opt/graphql-ci/pnpm-store \
  && rm /usr/local/bin/corepack
 COPY corepack /usr/local/bin/corepack
 RUN chmod 0755 /usr/local/bin/corepack \
- && chmod -R a+rX /opt/graphql-ci/corepack-cache /opt/graphql-ci/pnpm-store \
  && test "$(corepack pnpm --version)" = 11.27.0
 WORKDIR /workspace
 ENTRYPOINT []

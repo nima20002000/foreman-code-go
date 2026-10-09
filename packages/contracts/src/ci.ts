@@ -53,6 +53,7 @@ export const CI_RUNTIME_NAMESPACE = 'ci-runtime-v1'
 export const PreparedCiRuntimeSchema = z.object({
   commit: CommitSchema, imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/), imageManifestDigest: z.string().min(1).max(200),
   seedReceiptPath: AbsolutePathSchema, contextReceiptPath: AbsolutePathSchema, qualificationSource: AbsolutePathSchema,
+  reusedImage: z.boolean().optional(),
   unitCodex: z.object({ executable: AbsolutePathSchema, sourceExecutable: AbsolutePathSchema, version: z.string().min(1).max(200),
     binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
 }).strict()
@@ -82,6 +83,8 @@ export const BuildComputerPrepareStatusSchema = z.object({
   profileId: IdSchema, deviceId: IdSchema.nullable(),
   state: z.enum(['idle', 'approving', 'preparing', 'binding', 'refreshing', 'qualifying', 'qualified', 'failed']),
   commit: CommitSchema.nullable(), stage: z.string().max(80).nullable(), message: z.string().max(2000).nullable(),
+  reuse: z.object({ image: z.boolean(), qualification: z.boolean(),
+    qualificationSourceCommit: CommitSchema.nullable() }).strict().optional(),
   profiles: z.array(z.object({ profileId: IdSchema, revision: z.number().int().positive(), status: z.string().max(40) }).strict()).max(20),
   startedAt: z.string().datetime().nullable(), updatedAt: z.string().datetime().nullable(),
 }).strict()

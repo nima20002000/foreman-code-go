@@ -59,6 +59,21 @@ export async function runCiPreparation(record: CiPreparationRecord, ports: CiPre
     record.prepared = state.prepared
     await ports.checkpoint()
   }
+  if (record.prepared.reusedImage) {
+    const listed = await ports.profiles.list(await ports.principal(), record.input.workspaceId)
+    const reusable = listed.profiles.find(value => value.profile.id === record.profile.id
+      && value.profile.revision === record.profile.revision && value.ready)
+    if (reusable?.profile.schemaVersion === 2 && reusable.profile.status === 'qualified'
+      && reusable.profile.spec.policy.imageDigest === record.prepared.imageId) {
+      record.status = { ...record.status, state: 'qualified', stage: null, message: null,
+        profiles: [{ profileId: reusable.profile.id, revision: reusable.profile.revision, status: 'qualified' }],
+        reuse: { image: true, qualification: true, qualificationSourceCommit: reusable.profile.sourceCommit ?? null } }
+      await ports.checkpoint()
+      return
+    }
+  }
+  record.status.reuse = { image: record.prepared.reusedImage ?? false,
+    qualification: false, qualificationSourceCommit: null }
   if (!record.root) {
     await update('binding')
     await bindPreparedRoot(record, ports)

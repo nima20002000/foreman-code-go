@@ -16,3 +16,4 @@ export function buildCiRuntimeContext(input: {
     }
   }
 }): Promise<unknown>
+export function ciRuntimeInputDigest(input: { repository: string; commit: string }): Promise<string>

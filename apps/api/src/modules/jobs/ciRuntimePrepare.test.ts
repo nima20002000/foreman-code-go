@@ -69,7 +69,7 @@ describe('CI runtime preparation boundaries', () => {
       'minimumReleaseAge: 2880\nminimumReleaseAgeStrict: true\nminimumReleaseAgeIgnoreMissingTime: false\n')
     const commit = f.save()
     const installer = join(f.root, 'installer')
-    await mkdir(installer)
+    await mkdir(installer, { mode: 0o700 })
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       name: 'fixture', time: { '1.0.0': '2025-01-01T00:00:00.000Z' },
       versions: { '1.0.0': { dist: { integrity: 'sha512-fixture' } } },
@@ -111,7 +111,7 @@ describe('CI runtime preparation boundaries', () => {
     for (const name of ['Containerfile', 'corepack']) await writeFile(join(control, name), 'fixture')
     const commit = f.save()
     const installer = join(f.root, 'installer')
-    await mkdir(installer)
+    await mkdir(installer, { mode: 0o700 })
     command.run.mockImplementation(async (_file, args: string[]) => {
       if (args.includes('build')) throw new Error('Stopped at isolated image build')
       return '[]'

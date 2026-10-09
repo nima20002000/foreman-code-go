@@ -15,6 +15,39 @@ import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparati
   from './helpers/ciPreparationFixture.js'
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
+  it('reuses a valid qualification for new source while preserving its saved facts', async () => {
+    const f = await fixture({ reusedImage: true })
+    try {
+      const original = structuredClone(f.profiles.get('p-unit')!)
+      const input = { workspaceId: f.workspaceId, profileId: original.id, commit, commandId: 'reuse-runtime' }
+      expect((await f.call('build_computer_prepare', input, 'reader')).isError).toBe(true)
+      expect(f.calls.prepare).toEqual([])
+      expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
+      expect(await f.settle(original.id)).toMatchObject({ state: 'qualified', commit,
+        reuse: { image: true, qualification: true, qualificationSourceCommit: original.sourceCommit } })
+      expect(f.profiles.get(original.id)).toEqual(original)
+      expect(f.calls.bind).toEqual([])
+      expect(f.calls.saves).toEqual([])
+      expect(f.calls.refresh).toEqual([])
+      expect(f.calls.qualified).toEqual([])
+      const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId,
+        profileId: original.id }, 'reader')
+      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent).reuse?.qualification).toBe(true)
+    } finally { await f.app.close() }
+  })
+
+  it('requalifies a reused image when the machine qualification is stale', async () => {
+    const f = await fixture({ reusedImage: true, staleQualification: true })
+    try {
+      await f.call('build_computer_prepare', { workspaceId: f.workspaceId,
+        profileId: 'p-unit', commit, commandId: 'refresh-stale-qualification' })
+      expect(await f.settle('p-unit')).toMatchObject({ state: 'qualified',
+        reuse: { image: true, qualification: false, qualificationSourceCommit: null } })
+      expect(f.calls.refresh).toHaveLength(1)
+      expect(f.calls.qualified).toContain('p-unit')
+    } finally { await f.app.close() }
+  })
+
   it('automatically prepares integration profiles and retains the longer suite budget through MCP readback', async () => {
     const f = await fixture()
     try {

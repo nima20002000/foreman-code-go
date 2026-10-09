@@ -5,9 +5,10 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'n
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { pipeline } from 'node:stream/promises'
-import { buildCiRuntimeContext, parseCiLock } from '../../../../worker/artifacts/ci-runtime/context.mjs'
+import { buildCiRuntimeContext, ciRuntimeInputDigest, parseCiLock } from '../../../../worker/artifacts/ci-runtime/context.mjs'
 import { expectedPortions } from '../../../../../scripts/verification-runner.mjs'
 import type { PreparedCiRuntime } from '@foreman-code/contracts'
+import { readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
 
 const run = promisify(execFile)
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex')
@@ -34,12 +35,29 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
     const result = await run(file, args, { env, maxBuffer: 64 * 1024 * 1024, ...options })
     return result.stdout
   }
+  if ((await run('git', ['-C', repository, 'cat-file', '-e', `${commit}^{commit}`], { env }).then(() => true, () => false)) === false) {
+    await sh('git', ['-C', repository, 'fetch', '--no-tags', 'origin', commit])
+  }
+  log('checking-runtime-cache')
+  const inputDigest = await ciRuntimeInputDigest({ repository, commit })
+  const cached = await readCiRuntimeCache({ installer, inputDigest, imageExists: async imageId => {
+    try {
+      await podman(['image', 'exists', imageId], env)
+      return true
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 1) return false
+      throw error
+    }
+  } })
+  if (cached) {
+    log('reusing-runtime-image')
+    const qualificationSource = await extractQualificationSource(repository, commit,
+      join(installer, `qualification-source-${short}`), env)
+    return { ...cached, commit, qualificationSource, reusedImage: true }
+  }
   const source = join(installer, `source-${short}`)
   if (!await exists(source)) {
     log('checkout')
-    if ((await run('git', ['-C', repository, 'cat-file', '-e', `${commit}^{commit}`], { env }).then(() => true, () => false)) === false) {
-      await sh('git', ['-C', repository, 'fetch', '--no-tags', 'origin', commit])
-    }
     await sh('git', ['-C', repository, 'worktree', 'add', '--detach', source, commit])
   }
   const head = (await sh('git', ['-C', source, 'rev-parse', 'HEAD'])).trim()
@@ -88,6 +106,8 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
   const context = join(installer, `context-${short}`)
   await rm(context, { recursive: true, force: true })
   await buildCiRuntimeContext({ repository: source, commit, output: context, offlineSeed })
+  // The verified build context now owns the seed copy needed by the image.
+  await rm(seed, { recursive: true, force: true })
   const tag = `localhost/foreman-code-verification:${short}`
   log('build-image')
   // The image's own pnpm check runs through the verification policy, which needs a finite memory reservation.
@@ -119,6 +139,7 @@ export async function prepareCiRuntime({ repository, commit, installer, review, 
     prepared.unitCodex = { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: codex,
       version: unitCodex.version, binarySha256: unitCodex.sha256 }
   }
+  await writeCiRuntimeCache({ installer, inputDigest, prepared })
   return prepared
 }
 

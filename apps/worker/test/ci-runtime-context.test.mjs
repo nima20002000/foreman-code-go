@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { buildCiRuntimeContext } from '../../../scripts/build-ci-runtime-context.mjs';
+import { ciRuntimeInputDigest } from '../artifacts/ci-runtime/context.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(join(persistentFixtureRoot, 'ci-image-context-')), repository = join(root, 'repo'), output = join(root, 'context');
@@ -62,4 +63,16 @@ test('another project uses installed runtime controls without copying project bu
   assert.equal(await readFile(join(f.output, 'source-lock/package.json'), 'utf8'), '{"packageManager":"pnpm@11.27.0"}');
   assert.ok((await readFile(join(f.output, 'Containerfile'))).length > 0);
   assert.ok((await readFile(join(f.output, 'verification/verify-repository.mjs'))).length > 0);
+});
+
+
+test('runtime cache identity survives source-only commits and changes with dependency inputs', async t => {
+  const f = await fixture(t);
+  const initial = await ciRuntimeInputDigest({ repository: f.repository, commit: f.captured });
+  await writeFile(join(f.repository, 'app.js'), 'export const result = 42;');
+  const sourceCommit = f.commit();
+  assert.notEqual(sourceCommit, f.captured);
+  assert.equal(await ciRuntimeInputDigest({ repository: f.repository, commit: sourceCommit }), initial);
+  await writeFile(join(f.repository, 'apps/web/package.json'), '{"name":"web","dependencies":{"example":"1.0.0"}}');
+  assert.notEqual(await ciRuntimeInputDigest({ repository: f.repository, commit: f.commit() }), initial);
 });

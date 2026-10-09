@@ -11,12 +11,13 @@ export const parseCiLock = text => parse(text);
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
+const modulePath = fileURLToPath(import.meta.url);
+const bundled = basename(modulePath) !== 'context.mjs';
+const controls = bundled ? join(dirname(modulePath), '../artifacts/ci-runtime') : dirname(modulePath);
+const scripts = bundled ? join(dirname(modulePath), '../artifacts/verification')
+  : join(dirname(modulePath), '../../../../scripts');
+
 async function installedRuntimeFiles(offlineSeed) {
-  const modulePath = fileURLToPath(import.meta.url);
-  const bundled = basename(modulePath) !== 'context.mjs';
-  const controls = bundled ? join(dirname(modulePath), '../artifacts/ci-runtime') : dirname(modulePath);
-  const scripts = bundled ? join(dirname(modulePath), '../artifacts/verification')
-    : join(dirname(modulePath), '../../../../scripts');
   const controlNames = ['Containerfile', 'corepack'];
   if (offlineSeed) controlNames.push('seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs');
   const entries = controlNames.map(name => ({ root: controls, name, destination: name }));
@@ -27,7 +28,7 @@ async function installedRuntimeFiles(offlineSeed) {
     bytes: await readSeedFile(entry.root, entry.name, 1024 * 1024) })));
 }
 
-export async function buildCiRuntimeContext({ repository, commit = 'HEAD', output, offlineSeed }) {
+async function committedDependencies(repository, commit) {
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
   const git = (...args) => execFileSync('git', args, { cwd: repository, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
   const captured = git('rev-parse', `${commit}^{commit}`).toString().trim();
@@ -43,6 +44,21 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
   if (entries.some(entry => !entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)
     || entry.path.split('/').some(part => !part || part === '.' || part === '..'))) throw new Error('CI context requires regular committed inputs');
   const snapshots = new Map(entries.map(entry => [entry.path, { ...entry, bytes: git('show', `${captured}:${entry.path}`) }]));
+  return { captured, paths, snapshots };
+}
+
+export async function ciRuntimeInputDigest({ repository, commit }) {
+  const { snapshots } = await committedDependencies(repository, commit);
+  const runtimeFiles = await installedRuntimeFiles(true);
+  const builder = await readSeedFile(controls, 'context.mjs', 1024 * 1024);
+  return hash(JSON.stringify({ platform: process.platform, architecture: process.arch, builder: hash(builder),
+    dependencies: [...snapshots].map(([path, entry]) => [path, hash(entry.bytes)]),
+    controls: runtimeFiles.map(entry => [entry.destination, hash(entry.bytes)]),
+  }));
+}
+
+export async function buildCiRuntimeContext({ repository, commit = 'HEAD', output, offlineSeed }) {
+  const { captured, paths, snapshots } = await committedDependencies(repository, commit);
   const runtimeFiles = await installedRuntimeFiles(offlineSeed);
   let seed;
   let seedUsage;
@@ -84,16 +100,16 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
     unitCodex = { tool, bytes };
   }
   await mkdir(output, { mode: 0o700 });
-  await mkdir(join(output, 'tools'), { mode: 0o700 });
-  if (unitCodex) await writeFile(join(output, 'tools/codex'), unitCodex.bytes, { mode: 0o700, flag: 'wx' });
+  await mkdir(join(output, 'tools'), { mode: 0o755 });
+  if (unitCodex) await writeFile(join(output, 'tools/codex'), unitCodex.bytes, { mode: 0o755, flag: 'wx' });
   for (const entry of paths) {
     const destination = join(output, 'source-lock', entry.path);
-    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-    await writeFile(destination, snapshots.get(entry.path).bytes, { mode: 0o600, flag: 'wx' });
+    await mkdir(dirname(destination), { recursive: true, mode: 0o755 });
+    await writeFile(destination, snapshots.get(entry.path).bytes, { mode: 0o644, flag: 'wx' });
   }
-  await mkdir(join(output, 'verification'), { mode: 0o700 });
+  await mkdir(join(output, 'verification'), { mode: 0o755 });
   for (const { destination, bytes } of runtimeFiles) {
-    await writeFile(join(output, destination), bytes, { mode: destination === 'corepack' ? 0o700 : 0o600, flag: 'wx' });
+    await writeFile(join(output, destination), bytes, { mode: destination === 'corepack' ? 0o755 : 0o644, flag: 'wx' });
   }
   const receipt = { sourceCommit: captured,
     files: [...snapshots.values()].map(({ path, blob, bytes }) => ({ path, gitBlobSha1: blob, sha256: hash(bytes) }))
@@ -105,11 +121,11 @@ export async function buildCiRuntimeContext({ repository, commit = 'HEAD', outpu
       const { bytes, executable } = await readSeedFileEntry(offlineSeed.directory, file.path, file.bytes);
       if (bytes.length !== file.bytes || hash(bytes) !== file.sha256) throw new Error('Reviewed offline seed changed during copy.');
       const destination = join(output, 'seed', file.path);
-      await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-      await writeFile(destination, bytes, { mode: executable ? 0o700 : 0o600, flag: 'wx' });
+      await mkdir(dirname(destination), { recursive: true, mode: 0o755 });
+      await writeFile(destination, bytes, { mode: executable ? 0o755 : 0o644, flag: 'wx' });
     }
     const seedBytes = Buffer.from(`${JSON.stringify(seed)}\n`);
-    await writeFile(join(output, 'seed-receipt.json'), seedBytes, { mode: 0o600, flag: 'wx' });
+    await writeFile(join(output, 'seed-receipt.json'), seedBytes, { mode: 0o644, flag: 'wx' });
     receipt.offlineSeed = { receiptSha256: hash(seedBytes), ...seedUsage, platform: seed.platform,
       packageManager: seed.packageManager, provenanceDigest: seed.provenanceDigest,
       releaseAge: { minimumMinutes: 2880, strict: true, rejectMissingTime: true, packages: seed.packages.length } };

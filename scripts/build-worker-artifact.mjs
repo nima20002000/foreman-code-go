@@ -94,7 +94,7 @@ await writeFile(join(output, 'artifacts/graphql.svg'), snapshotSource('apps/web/
 await writeFile(join(output, 'artifacts/graphql-mcp.mjs'), snapshotSource('scripts/graphql-mcp.mjs'), { mode: 0o600 });
 await writeFile(join(output, 'artifacts/graphql-worker.service.in'), snapshotSource('apps/worker/artifacts/graphql-worker.service.in'), { mode: 0o600 });
 await writeFile(join(output, 'artifacts/companion.html'), snapshotSource('apps/worker/artifacts/companion.html'), { mode: 0o600 });
-const ciRuntimeControls = ['Containerfile', 'corepack', 'seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs'];
+const ciRuntimeControls = ['Containerfile', 'corepack', 'context.mjs', 'seed-policy.mjs', 'verification-policy.mjs', 'verification-observation.mjs'];
 await mkdir(join(output, 'artifacts/ci-runtime'));
 for (const name of ciRuntimeControls) {
   await writeFile(join(output, 'artifacts/ci-runtime', name), snapshotSource(`apps/worker/artifacts/ci-runtime/${name}`),
