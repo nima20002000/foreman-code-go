@@ -48,6 +48,8 @@ export function createJobQualificationCarrier(input: { pool: pg.Pool; sources: P
     return { response: JobRuntimeQualificationRpcResponseRecordSchema.parse(reply.payload), binding: captured!.binding }
   }
   const inspect = async (profile: JobRuntimeProfileRecord) => {
+    // A fresh inspection supersedes the cached snapshot, including when it fails.
+    snapshots.delete(key(profile))
     const { response, binding } = await exchange(profile, { version: profile.schemaVersion === 2 ? 3 : 1, operation: 'inspect', profile })
     if (response.operation !== 'inspect' || response.fingerprint.profileId !== profile.id || response.fingerprint.profileRevision !== profile.revision
       || response.fingerprint.specDigest !== profile.specDigest || response.fingerprint.bootId !== binding.bootId
