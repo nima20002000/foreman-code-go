@@ -127,6 +127,30 @@ export class FleetMaintenanceService {
     if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
   }
 
+  /** Main's MCP servers and plugins each computer last received, so a change reaches every computer promptly. */
+  private readonly delivered = new Map<string, string>()
+  /**
+   * Pushes Main's current MCP servers and plugins to every connected computer that has not received this exact set yet.
+   * Runs every minute on Main, so installs and removals on Main reach the other computers within about a minute, and a
+   * computer that was offline catches up when it is back.
+   */
+  async syncChangedSources(): Promise<void> {
+    const [mcp, plugins] = await Promise.all([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
+    const fingerprint = JSON.stringify([mcp, plugins])
+    const targets = (await this.allTargets()).filter(target => target.hostRef.kind !== 'main')
+    await Promise.all(targets.map(async target => {
+      const key = `${target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'main'}:${target.applicationInstallationId}`
+      if (this.delivered.get(key) === fingerprint) return
+      try {
+        const asked = Date.now() - 1_000
+        // A sync of the same kind that is already running is returned instead of started; that run carries the older
+        // set, so this one counts as delivered only when the computer started a new task for it.
+        const started = await Promise.all([this.startOn(target, mcp), this.startOn(target, plugins)])
+        if (started.every(task => Date.parse(task.startedAt) >= asked)) this.delivered.set(key, fingerprint)
+      } catch { /* The computer is offline or busy; the next run retries. */ }
+    }))
+  }
+
   private async taskFor(task: ComputerMaintenanceStartInput['task']): Promise<MaintenanceTaskStart> {
     if (task.kind === 'sync-mcp') {
       const [codex, claude] = await Promise.all([this.sources.codexUserMcpServers().catch(() => ({})), this.sources.claudeUserMcpServers().catch(() => ({}))])

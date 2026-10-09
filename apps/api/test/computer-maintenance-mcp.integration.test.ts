@@ -169,7 +169,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
         if (args.includes('upgrade')) upgraded = true
         return { code: 0, stdout: '2 upgraded, 0 newly installed, 0 to remove and 23 not upgraded.', stderr: '' }
       },
-      exists: async () => false, readText: async () => null, disk: async () => null,
+      exists: async () => false, readText: async () => null, writePrivateText: async () => undefined, disk: async () => null,
       later: () => {}, now: () => new Date(),
     }
     const commands = new PostgresCommandCoordinator(database.pool)

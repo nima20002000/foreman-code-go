@@ -36,6 +36,7 @@ export function claudePluginPorts() {
     },
     exists: async () => false,
     readText: async () => null,
+    writePrivateText: async () => undefined,
     disk: async () => ({ freeBytes: 50, totalBytes: 100 }),
     later: () => {},
     now: () => new Date(),

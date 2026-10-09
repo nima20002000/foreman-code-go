@@ -10,6 +10,7 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
   const codexMcp = [...overrides.codexMcp ?? []]
   let aptOutput = overrides.apt ?? '2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
   const runs: Run[] = []
+  const written: Record<string, string> = {}
   const later: Array<() => void> = []
   const versions: Record<string, string | null> = { codex: 'codex-cli 0.160.0', claude: '2.1.19 (Claude Code)', ...overrides.versions }
   const value: MaintenancePorts = {
@@ -41,6 +42,8 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
         marketplaces.push(args[3]!.split('/').at(-1)!.replace(/\.git$/u, ''))
         return { code: 0, stdout: '', stderr: '' }
       }
+      if (name === 'codex' && args[0] === 'mcp' && args[1] === 'remove') { codexMcp.splice(codexMcp.indexOf(args[2]!), 1); return { code: 0, stdout: '', stderr: '' } }
+      if (name === 'codex' && args[0] === 'plugin' && args[1] === 'remove') { plugins.splice(plugins.indexOf(args[2]!), 1); return { code: 0, stdout: '', stderr: '' } }
       if (name === 'codex' && args[0] === 'plugin' && args[1] === 'add') {
         if (!marketplaces.includes(args[2]!.split('@')[1]!)) return { code: 1, stdout: '', stderr: 'plugin was not found in marketplace' }
         plugins.push(args[2]!)
@@ -48,12 +51,13 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
       return { code: 0, stdout: '', stderr: '' }
     },
     exists: async path => path === '/var/run/reboot-required' && Boolean(overrides.files?.[path]),
-    readText: async path => overrides.files?.[path] ?? null,
+    readText: async path => written[path] ?? overrides.files?.[path] ?? null,
+    writePrivateText: async (path, text) => { written[path] = text },
     disk: async () => ({ freeBytes: 50, totalBytes: 100 }),
     later: fn => { later.push(fn) },
     now: () => new Date('2026-10-08T12:00:00.000Z'),
   }
-  return { value, runs, later, versions }
+  return { value, runs, later, versions, written, codexMcp, plugins }
 }
 async function settle(maintenance: ComputerMaintenance) {
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -217,6 +221,31 @@ describe('fleet MCP sync with OAuth servers', () => {
 })
 
 describe('fleet MCP sync source', () => {
+  it('removes servers and plugins Main removed, but never ones the computer has on its own', async () => {
+    const fake = ports({ codexMcp: ['own-local'], plugins: ['own@openai'] })
+    const maintenance = new ComputerMaintenance(fake.value)
+    const server = (name: string) => ({ name, transport: 'http' as const, url: `https://${name}.example/mcp`, bearerTokenEnvVar: null })
+    const sync = async (servers: string[], plugins: string[]) => {
+      maintenance.start({ kind: 'sync-mcp', servers: { codex: servers.map(server), claude: [] } })
+      await settle(maintenance)
+      maintenance.start({ kind: 'sync-plugins', plugins, marketplaces: [], claudePlugins: [], claudeMarketplaces: [] })
+      return settle(maintenance)
+    }
+    await sync(['docs', 'linear'], ['shared@openai'])
+    expect(fake.codexMcp.sort()).toEqual(['docs', 'linear', 'own-local'])
+    expect(fake.plugins.sort()).toEqual(['own@openai', 'shared@openai'])
+    const status = await sync(['docs'], [])
+    expect(fake.codexMcp.sort()).toEqual(['docs', 'own-local'])
+    expect(fake.plugins).toEqual(['own@openai'])
+    expect(status.tasks.find(task => task.kind === 'sync-mcp')?.summary).toContain('Removed linear')
+    expect(status.tasks.find(task => task.kind === 'sync-plugins')?.summary).toContain('Removed shared@openai')
+    // The computer remembers what Main gave it, privately, across restarts of the maintenance owner.
+    const restarted = new ComputerMaintenance(fake.value)
+    restarted.start({ kind: 'sync-mcp', servers: { codex: [], claude: [] } })
+    await settle(restarted)
+    expect(fake.codexMcp).toEqual(['own-local'])
+  })
+
   it('copies servers without inline secrets and never the app MCP', () => {
     expect(syncableServers({
       'foreman-code': { command: 'foreman-mcp' }, graphql: { url: 'http://127.0.0.1:3000/mcp' },

@@ -1686,8 +1686,11 @@ export function buildProductionApp(
         const upkeep = () => { void runtimeServices.computerMaintenance!.keepCurrent().catch(error => app.log.warn({ err: error }, 'Computer upkeep failed')) }
         const firstUpkeep = setTimeout(upkeep, 120_000)
         const upkeepTimer = setInterval(upkeep, 6 * 60 * 60_000)
-        firstUpkeep.unref(); upkeepTimer.unref()
-        app.addHook('onClose', async () => { clearTimeout(firstUpkeep); clearInterval(upkeepTimer) })
+        // MCP server and plugin changes on Main reach the other computers within about a minute.
+        const sourceSync = setInterval(() => { void runtimeServices.computerMaintenance!.syncChangedSources()
+          .catch(error => app.log.warn({ err: error }, 'Fleet MCP and plugin sync failed')) }, 60_000)
+        firstUpkeep.unref(); upkeepTimer.unref(); sourceSync.unref()
+        app.addHook('onClose', async () => { clearTimeout(firstUpkeep); clearInterval(upkeepTimer); clearInterval(sourceSync) })
       }
       runtimeServices.computerGitHub = new ComputerGitHubService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands, {
