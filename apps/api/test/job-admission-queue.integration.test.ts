@@ -124,6 +124,23 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     } })
     expect(forged.isError).toBe(true)
     expect(await restarted.listQueue(scopedReader.principal, f.workspaceId)).toEqual([ticket])
+    await f.complete(execution.id)
+    await restarted.wakeQueue()
+    const completed = await restarted.getQueueTicket(scopedReader.principal, f.workspaceId, id)
+    expect(completed).toMatchObject({ state: 'terminal', terminalReason: 'completed', cleanupStatus: 'complete',
+      executionId: execution.id, definition: ticket.definition, reservationId: ticket.reservationId })
+    const terminalRead = await client.callTool({ name: 'job_queue_get', arguments: {
+      workspaceId: f.workspaceId, ticketId: id,
+    } })
+    expect(terminalRead.structuredContent).toEqual({ ticket: completed })
+    expect(await restarted.getAdmission(scopedReader.principal, f.workspaceId, id))
+      .toEqual({ kind: 'accepted', ticketId: id, executionId: execution.id })
+    expect((await restarted.getExecution(scopedReader.principal, f.workspaceId, execution.id)).acceptedSpec)
+      .toEqual(execution.acceptedSpec)
+    const deniedTerminal = await client.callTool({ name: 'job_queue_get', arguments: {
+      workspaceId: 'foreign-workspace', ticketId: id,
+    } })
+    expect(deniedTerminal.isError).toBe(true)
   }, 60000)
   it('serializes five concurrent requests on one heavy slot and advances only after closure and publication', async () => {
     const f = await fixture()
@@ -137,7 +154,8 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     for (let index = 0; index < original.length; index++) {
       await f.jobs.wakeQueue()
       const tickets = await ordered(f)
-      expect(tickets.filter(ticket => ticket.state === 'accepted')).toHaveLength(index + 1)
+      expect(tickets.filter(ticket => ticket.state === 'accepted')).toHaveLength(1)
+      expect(tickets.filter(ticket => ticket.terminalReason === 'completed')).toHaveLength(index)
       expect(tickets[index]!.executionId).toBe(original[index]!.executionId)
       expect(tickets.slice(index + 1).every(ticket => ticket.state === 'waiting')).toBe(true)
       const execution = await f.jobs.getExecution(reader.principal, f.workspaceId, tickets[index]!.executionId)
@@ -154,6 +172,8 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
       await f.complete(execution.id)
     }
     expect(f.accept).toHaveBeenCalledTimes(5)
+    await f.jobs.wakeQueue()
+    expect((await ordered(f)).every(ticket => ticket.state === 'terminal' && ticket.terminalReason === 'completed')).toBe(true)
     expect(new Set(f.accept.mock.calls.map(call => call[4].operationId)).size).toBe(5)
   })
   it('replays concurrent duplicate submissions as one ticket and rejects conflicting payloads', async () => {
@@ -171,6 +191,45 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     await f.jobs.enqueue(f.principal, 'mcp', f.workspaceId, input)
     expect(f.accept).toHaveBeenCalledTimes(1)
     expect(await f.jobs.listExecutions(reader.principal, f.workspaceId)).toHaveLength(1)
+  })
+  it('requires stopped process and settled publication before completing the original queue ticket', async () => {
+    const f = await fixture()
+    f.online()
+    const ticket = await submit(f, await f.save())
+    await f.jobs.wakeQueue()
+    const accepted = await f.jobs.getQueueTicket(f.principal, f.workspaceId, ticket.id)
+    const execution = await f.jobs.getExecution(f.principal, f.workspaceId, accepted.executionId)
+    const finishedAt = new Date().toISOString()
+    const finish = async () => {
+      const sql = await database.pool.connect()
+      try {
+        await sql.query('begin')
+        const current = await f.jobs.repository.queueTicket(sql, f.workspaceId, accepted.id, true)
+        await f.jobs.repository.finishQueueTicket(sql, current, 'completed', finishedAt)
+        await sql.query('commit')
+      } finally {
+        await sql.query('rollback')
+        sql.release()
+      }
+    }
+    await expect(finish()).rejects.toMatchObject({ message: 'JOB_QUEUE_COMPLETION_UNCONFIRMED' })
+    const fence = { attemptId: execution.attemptId, owner: execution.owner }
+    await f.worker.settleProcess(f.workspaceId, execution.id, fence, {
+      process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true },
+      startedAt: execution.createdAt, finishedAt,
+    })
+    await expect(finish()).rejects.toMatchObject({ message: 'JOB_QUEUE_COMPLETION_UNCONFIRMED' })
+    await f.worker.publication(f.workspaceId, execution.id, fence, { state: 'complete', issue: null })
+    await f.jobs.wakeQueue()
+    const completed = await f.jobs.getQueueTicket(f.principal, f.workspaceId, accepted.id)
+    expect(completed).toMatchObject({ state: 'terminal', terminalReason: 'completed', finishedAt,
+      cleanupStatus: 'pending', executionId: execution.id, definition: accepted.definition })
+    await f.complete(execution.id)
+    await f.jobs.wakeQueue()
+    expect(await f.jobs.getQueueTicket(f.principal, f.workspaceId, accepted.id))
+      .toMatchObject({ revision: completed.revision, state: 'terminal', cleanupStatus: 'complete' })
+    expect((await f.jobs.getExecution(f.principal, f.workspaceId, execution.id)).acceptedSpec)
+      .toEqual(execution.acceptedSpec)
   })
   it('uses the existing dispatch wake path for waiting admission without contacting a worker', async () => {
     const f = await fixture()

@@ -119,7 +119,7 @@ export const JobQueueTicketSchema = z.object({
   estimatedStartAt: TimestampSchema.nullable(),
   reservationId: z.uuid().nullable(),
   cancelRequestedAt: TimestampSchema.nullable(),
-  terminalReason: z.enum(['cancelled', 'timed_out', 'authorization_revoked', 'request_exceeds_maximum']).nullable(),
+  terminalReason: z.enum(['cancelled', 'timed_out', 'authorization_revoked', 'request_exceeds_maximum', 'completed']).nullable(),
   finishedAt: TimestampSchema.nullable(),
   cleanupStatus: z.enum(['none', 'pending', 'complete']).optional(),
   selectedComputer: z.object({
@@ -146,6 +146,7 @@ export const JobQueueTicketSchema = z.object({
   const terminal = value.state === 'terminal'
   if (terminal !== (value.terminalReason !== null) || terminal !== (value.finishedAt !== null)
     || (value.terminalReason === 'cancelled' && value.cancelRequestedAt === null)
+    || (value.terminalReason === 'completed' && value.reservationId === null)
     || (['claimed', 'accepted'].includes(value.state) && value.reservationId === null)
     || (['waiting', 'blocked'].includes(value.state) && value.reservationId !== null)) {
     context.addIssue({ code: 'custom', message: 'Ticket state must retain claim, cancellation and terminal facts.' })
@@ -247,6 +248,9 @@ export const JobBuildQueueConfigurationSchema = JobBuildQueuePolicySchema.safeEx
 })
 export type JobBuildQueueConfiguration = z.infer<typeof JobBuildQueueConfigurationSchema>
 export type JobQueueTicket = z.infer<typeof JobQueueTicketSchema>
+export function jobQueueHasExecution(ticket: JobQueueTicket): boolean {
+  return ticket.state === 'accepted' || ticket.state === 'terminal' && ticket.terminalReason === 'completed'
+}
 export type JobResourceReservation = z.infer<typeof JobResourceReservationSchema>
 export type JobComputerEligibility = z.infer<typeof JobComputerEligibilitySchema>
 

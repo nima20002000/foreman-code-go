@@ -91,7 +91,8 @@ describe('CI over the authenticated unified MCP transport', () => {
       })
       f.complete()
       const read = CiGetOutputSchema.parse((await f.call('ci_get', { ticketId: started.ticketId })).result.structuredContent)
-      expect(read).toMatchObject({ queue: { state: 'accepted', selectedComputer: { profileId: 'profile' } },
+      expect(read).toMatchObject({ queue: { state: 'terminal', terminalReason: 'completed',
+        selectedComputer: { profileId: 'profile' } },
         process: { outcome: 'succeeded', exitCode: 0 }, publication: 'complete',
         summaryReport: { report: { outcome: 'passed', commit: 'b'.repeat(40), totals: { total: 3 } } },
         logTail: { text: 'tests passed\n', truncated: false } })
@@ -193,7 +194,7 @@ describe('CI over the authenticated unified MCP transport', () => {
       const finished = CiGetOutputSchema.parse((await f.call('ci_get', {
         workspaceId: f.workspaceId, ticketId: started.ticketId,
       }, 'operator')).result.structuredContent)
-      expect(finished.queue).toMatchObject({ state: 'accepted', workflow: null, initiatingAgent })
+      expect(finished.queue).toMatchObject({ state: 'terminal', terminalReason: 'completed', workflow: null, initiatingAgent })
 
 
       // An explicit commit is tested as given, still preferring the Agent's computer.

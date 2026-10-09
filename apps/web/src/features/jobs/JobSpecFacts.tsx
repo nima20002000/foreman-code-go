@@ -1,12 +1,13 @@
 import { isAutoJobSpecRecord, type JobDefinitionSpecRecord, type JobAcceptedSpecRecord } from '@foreman-code/contracts/job-verification'
-import type { JobPlacementIntent, JobQueueTicket } from '@foreman-code/contracts/job-admission'
+import { jobQueueHasExecution, type JobPlacementIntent, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { CodeBlock } from '../../shared/ui/nocturne'
 import { jobNetworkLabel, queueLabel } from './model'
 
 export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
   const awaitingAssignment = ticket.placement.kind === 'auto' && ['waiting', 'blocked'].includes(ticket.state)
+  const accepted = jobQueueHasExecution(ticket)
   let computer = ticket.reservationId ? 'Computer reserved; concrete facts appear in the accepted execution' : 'Not assigned'
-  if (ticket.state === 'accepted') computer = 'See original execution for the accepted computer'
+  if (accepted) computer = 'See original execution for the accepted computer'
   if (awaitingAssignment) computer = 'Waiting for an eligible computer'
   if (ticket.placement.kind === 'explicit') {
     const { target } = ticket.placement
@@ -23,7 +24,7 @@ export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
         ? ticket.placement.hostRef.deviceId : `Main computer (${ticket.placement.hostRef.mainId})`}</dd>
       <dt>Fallback policy</dt><dd>Then try eligible computers in build priority order.</dd>
     </>}
-    <dt>{ticket.state === 'accepted' ? 'Accepted computer' : 'Computer assignment'}</dt><dd>{computer}</dd>
+    <dt>{accepted ? 'Accepted computer' : 'Computer assignment'}</dt><dd>{computer}</dd>
     {ticket.selectedComputer && <>
       <dt>Reserved root</dt><dd>{ticket.selectedComputer.target.destination.canonicalProjectRoot}</dd>
       <dt>Root binding</dt><dd>{ticket.selectedComputer.rootId} · revision {ticket.selectedComputer.bindingRevision}</dd>

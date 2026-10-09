@@ -20,8 +20,10 @@ const execution: Exclude<RunExecutionSummary, { kind: 'job' }> = {
 const initiatingAgent = { workflowId: scope.workflowId, runId: scope.runId,
   agentId: execution.agentId, executionId: execution.executionId }
 const jobsRoot = '*/api/management/workspaces/:workspaceId/jobs/executions/:executionId'
-function responses(origin = initiatingAgent) {
-  const ticket = { ...autoQueueTicket, initiatingAgent, state: 'accepted', executionId: job.id,
+function responses(origin = initiatingAgent, state: 'accepted' | 'terminal' = 'accepted') {
+  const ticket = { ...autoQueueTicket, initiatingAgent, state,
+    terminalReason: state === 'terminal' ? 'completed' : null,
+    finishedAt: state === 'terminal' ? job.createdAt : null, executionId: job.id,
     reservationId: autoQueueTicket.id, selectedComputer: { target: definition.spec.target,
       rootId: '11111111-1111-4111-8111-111111111111', bindingRevision: 1, profileId: 'profile', profileRevision: 1 } }
   let filter: string | null = null
@@ -43,8 +45,9 @@ function mount() {
   </QueryClientProvider>)
   return { ...view, client }
 }
-it('shows CI accepted computer, logs, artifacts and a parent Run link using separate Agent provenance', async () => {
-  const filter = responses()
+it.each(['accepted', 'terminal'] as const)(
+  'shows %s CI results, logs, artifacts and parent Run using separate Agent provenance', async state => {
+  const filter = responses(initiatingAgent, state)
   const { client, unmount } = mount()
   try {
     expect(await screen.findByText('Process: build failed')).toBeInTheDocument()
