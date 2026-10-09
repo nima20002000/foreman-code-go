@@ -155,7 +155,9 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
       assert.equal(deniedHttp.statusCode, 403)
       const denied = await f.denied.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query, history: {} } })
       assert.equal(denied.isError, true)
-      assert.equal(decodeMcpToolResult(denied), undefined)
+      const deniedResult = decodeMcpToolResult(denied) as { error: { code: string } }
+      assert.equal(deniedResult.error.code, 'ACCESS_DENIED')
+      assert.deepEqual(Object.keys(deniedResult), ['error'])
       assert.deepEqual(await f.repository.get(f.id), prior)
       assert.equal(f.native.prompts.length, 0)
     } finally { await f.close() }

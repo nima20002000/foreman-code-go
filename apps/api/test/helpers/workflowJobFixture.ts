@@ -21,7 +21,10 @@ export async function workflowJobFixture(db: Awaited<ReturnType<typeof currentDa
   let definition: Awaited<ReturnType<Awaited<ReturnType<typeof buildQueueFixture>>['save']>> | undefined
   let job: JobWorkflowNode | undefined
   const f = await workflowSettlementFixture(db, async (graph, writer) => {
-    queue = await buildQueueFixture(db.pool, writer.writer.principal, { workspaceId: writer.input.workspaceId })
+    const settings = await writer.credential([{ actions: ['settings:update'], scope: {} }])
+    queue = await buildQueueFixture(db.pool, writer.writer.principal, {
+      workspaceId: writer.input.workspaceId, settingsPrincipal: settings.principal,
+    })
     queue.online()
     definition = await queue.save(queue.computers[0]!.candidate.spec)
     job = { kind: 'job', id: 'build', name: 'Build', jobDefinitionId: definition.id,

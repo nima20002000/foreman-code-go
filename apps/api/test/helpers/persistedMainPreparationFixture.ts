@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { BuildComputerPrepareStatusSchema, type CiRuntimeRequest } from '@foreman-code/contracts'
 import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { buildApp } from '../../src/app.js'
@@ -77,7 +78,7 @@ export async function persistedMainPreparationFixture(database: Awaited<ReturnTy
           workspaceId: fixture.workspaceId, profileId: 'p-main',
         }, reader.token)
         if (response.isError) throw new Error(JSON.stringify(response))
-        return BuildComputerPrepareStatusSchema.parse(response.structuredContent)
+        return BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(response))
       }
       const httpRead = () => fetch(`${origin}${path}`, { headers: { authorization: `Bearer ${reader.token}` } })
       const httpStart = (input: { commandId: string; commit?: string }, token = writer.token) =>

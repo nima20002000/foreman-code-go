@@ -176,24 +176,24 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     const httpRefresh = await app.inject({ url: '/api/management/harnesses/codex/mcp',
       headers: { authorization: `Bearer ${owner.token}` } })
     expect(httpRefresh.statusCode).toBe(503)
-    expect(httpRefresh.json()).toMatchObject({ code: 'HARNESS_QUALIFICATION_FAILED' })
+    expect(httpRefresh.json()).toMatchObject({ error: { code: 'HARNESS_QUALIFICATION_FAILED' } })
     const beforeDenied = reads
     expect((await deniedReader.callTool({ name: 'harness_mcp_servers_list', arguments: { harness: 'codex' } })).isError)
       .toBe(true)
     expect(reads).toBe(beforeDenied)
     inspectionFails = false
-    const recovered = HarnessMcpListResultSchema.parse((await client.callTool({
+    const recovered = HarnessMcpListResultSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'harness_mcp_servers_list', arguments: { harness: 'codex' },
-    })).structuredContent)
+    }))))
     expect(recovered.servers.map(server => server.name)).toEqual(['foreman-code'])
     expect(recovered.servers[0]?.enabled).toBe(false)
     const audits = await pool.query<{ principal_id: string; source: string }>("select principal_id,source from management_audit where action='harness.mcp.apply'")
     expect(audits.rows.length).toBeGreaterThan(0)
     expect(new Set(audits.rows.map((row) => `${row.principal_id}:${row.source}`))).toEqual(new Set([`${delegated.principal.id}:mcp`]))
     vi.restoreAllMocks()
-    const removal = HarnessMcpPlanSchema.parse((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
+    const removal = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
       harness: 'codex', preset: 'graphql', installed: false, expectedRevision: recovered.revision, commandId: randomUUID(),
-    } })).structuredContent)
+    } }))))
     expect(removal.status).toBe('applied')
     const missing = await listed('codex')
     held = await heldLauncher()
@@ -205,11 +205,11 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     await installing
     expect(await Promise.race([pending.then(() => 'finished'), delay(30, 'waiting')])).toBe('waiting')
     await mcp.shutdown()
-    const canceled = HarnessMcpPlanSchema.parse((await pending).structuredContent)
+    const canceled = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await pending)))
     expect(canceled).toMatchObject({ status: 'pending', managedPreset: 'graphql' })
-    const persisted = HarnessMcpPlanSchema.parse((await client.callTool({
+    const persisted = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'harness_mcp_change_get', arguments: { planId: canceled.id },
-    })).structuredContent)
+    }))))
     expect(persisted).toEqual(canceled)
     expect(persisted.error).toContain('not attempted')
     expect(snapshots.codex.user).toEqual({})

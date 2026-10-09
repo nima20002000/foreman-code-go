@@ -106,7 +106,7 @@ describe('installed Worker preparation host boundary', () => {
       const mounted = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId: binding.bootId,
         configuration: null, jobConfiguration: { path: join(stateDirectory, 'job-runtime.json'), ownerUid: process.getuid!() },
         approvedRoots: async () => approved,
-        connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined }),
+        connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined, mainNow: Date.now }),
         codexSuiteRevision: 'fixture' })
       try {
         const handler = mounted.extensions.find(extension => extension.namespace === CI_RUNTIME_NAMESPACE)!

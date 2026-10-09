@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { chmod, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -13,6 +14,7 @@ import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.
 import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
 import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { assertCodexUnchanged, qualifyCodex } from '../src/modules/harnesses/codexProtocol.js'
+import * as nativeProcess from '../src/modules/harnesses/process.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { withCodexNativeHome } from './helpers/codexNativeHome.js'
@@ -36,6 +38,9 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
     const faultFile = join(home, 'fault.json')
     const eventsFile = join(home, 'events.jsonl')
     const proxy = join(home, 'codex-proxy.cjs')
+    const authBinary = join(home, 'codex-auth.cjs')
+    const authSource = await readFile(new URL('./fixtures/codex-app-server.cjs', import.meta.url), 'utf8')
+    await writeFile(authBinary, `#!${process.execPath}\n${authSource}`, { mode: 0o700 })
     const source = await readFile(new URL('./fixtures/codex-config-fault-proxy.cjs', import.meta.url), 'utf8')
     await writeFile(proxy, `#!${process.execPath}\n${source}`, { mode: 0o700 })
     await chmod(proxy, 0o700)
@@ -66,6 +71,12 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
     let scenarioFailure: { error: unknown } | undefined
     const cleanupFailures: unknown[] = []
     const clients: Client[] = []
+    const runCommand = nativeProcess.runCommand
+    // Use fixture authentication while retaining native configuration and schema operations.
+    const authentication = vi.spyOn(nativeProcess, 'runCommand').mockImplementation((command, args, ...rest) => {
+      const authProbe = args.length === 2 && args[0] === 'login' && args[1] === 'status'
+      return runCommand(authProbe ? authBinary : command, args, ...rest)
+    })
     try {
       const qualified = await qualifyCodex(binary, home, { ...process.env }, true, AbortSignal.timeout(120_000))
       vi.stubEnv('NATIVE_CONFIG_BINARY', qualified.binary)
@@ -102,13 +113,13 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
       const request = { name: 'harness_mcp_change_request', arguments: input }
       expect((await denied.callTool(request)).isError).toBe(true)
       expect((await events()).filter(event => event.kind === 'write-request')).toHaveLength(0)
-      const result = HarnessMcpPlanSchema.parse((await ownerClient.callTool(request, { timeout: 150_000 })).structuredContent)
+      const result = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await ownerClient.callTool(request, { timeout: 150_000 }))))
       expect(result.status).toBe(fault === 'none' ? 'applied' : 'uncertain')
-      const readPlan = async () => HarnessMcpPlanSchema.parse((await ownerClient.callTool({
+      const readPlan = async () => HarnessMcpPlanSchema.parse(decodeMcpToolResult((await ownerClient.callTool({
         name: 'harness_mcp_change_get', arguments: { planId: result.id },
-      })).structuredContent)
+      }))))
       expect(await readPlan()).toEqual(result)
-      expect(HarnessMcpPlanSchema.parse((await ownerClient.callTool(request)).structuredContent)).toEqual(result)
+      expect(HarnessMcpPlanSchema.parse(decodeMcpToolResult((await ownerClient.callTool(request))))).toEqual(result)
       expect((await events()).filter(event => event.kind === 'write-request')).toHaveLength(1)
       const backups = (await readdir(home)).filter(name => name.endsWith('.bak'))
       expect(backups).toHaveLength(1)
@@ -134,9 +145,9 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
       address = await app.listen({ host: '127.0.0.1', port: 0 })
       ownerClient = await connect(owner.token)
       expect(await readPlan()).toEqual(result)
-      const readback = HarnessMcpListResultSchema.parse((await ownerClient.callTool({
+      const readback = HarnessMcpListResultSchema.parse(decodeMcpToolResult((await ownerClient.callTool({
         name: 'harness_mcp_servers_list', arguments: { harness: 'codex' },
-      }, { timeout: 150_000 })).structuredContent)
+      }, { timeout: 150_000 }))))
       expect(readback.revision).toBe(observed.revision)
       expect(readback.servers.some(server => server.name === 'docs')).toBe(hasDocs)
       if (result.status === 'uncertain') {
@@ -146,16 +157,16 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
         const reconcileRequest = { name: 'harness_mcp_change_reconcile', arguments: reconcile }
         const settled = await ownerClient.callTool(reconcileRequest, { timeout: 150_000 })
         if (matches) {
-          const settlement = HarnessMcpPlanResultSchema.parse(settled.structuredContent)
+          const settlement = HarnessMcpPlanResultSchema.parse(decodeMcpToolResult(settled))
           expect(settlement.value.status).toBe('applied')
-          const replay = HarnessMcpPlanResultSchema.parse((await ownerClient.callTool(reconcileRequest)).structuredContent)
+          const replay = HarnessMcpPlanResultSchema.parse(decodeMcpToolResult((await ownerClient.callTool(reconcileRequest))))
           expect(replay).toEqual({ ...settlement, replayed: true })
         } else {
           expect(settled.isError).toBe(true)
           expect((await readPlan()).status).toBe('uncertain')
           const accepted = await ownerClient.callTool({ name: 'harness_mcp_change_reconcile',
             arguments: { ...reconcile, commandId: randomUUID(), acceptObservedState: true } }, { timeout: 150_000 })
-          expect(HarnessMcpPlanResultSchema.parse(accepted.structuredContent).value.status).toBe('reconciled')
+          expect(HarnessMcpPlanResultSchema.parse(decodeMcpToolResult(accepted)).value.status).toBe('reconciled')
         }
         expect((await readPlan()).status).toBe(matches ? 'applied' : 'reconciled')
         const audit = await pool.query<{ source: string; details: { nativeWriteRepeated: boolean } }>(
@@ -175,6 +186,7 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
       cleanup.push(...await Promise.allSettled([pool?.end()]))
       if (schemaCreated) cleanup.push(...await Promise.allSettled([dropFixtureSchema(admin, schema)]))
       cleanup.push(...await Promise.allSettled([admin.end()]))
+      authentication.mockRestore()
       vi.unstubAllEnvs()
       cleanupFailures.push(...cleanup.flatMap(result => result.status === 'rejected' ? [result.reason as unknown] : []))
     }

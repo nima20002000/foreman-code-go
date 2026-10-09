@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import Fastify from 'fastify'
 import pg from 'pg'
 import { McpServer } from '@modelcontextprotocol/server'
@@ -106,7 +107,7 @@ describe('computer registry MCP read parity',()=>{
     try {
       await server.connect(serverTransport);await client.connect(clientTransport)
       const result=await client.callTool({name:'harness_registry_get',arguments:{kind:'main',mainId}})
-      expect(result.isError).not.toBe(true);expect(result.structuredContent).toEqual(await f.registry.get(caller,{kind:'main',mainId}))
+      expect(result.isError).not.toBe(true);expect(decodeMcpToolResult(result)).toEqual(await f.registry.get(caller,{kind:'main',mainId}))
       const denied=new McpServer({name:'denied-registry',version:'1'}),deniedClient=new Client({name:'denied-reader',version:'1'})
       registerHarnessRegistryTools(denied,f.registry,principal(['settings:read']))
       const [deniedClientTransport,deniedTransport]=InMemoryTransport.createLinkedPair()

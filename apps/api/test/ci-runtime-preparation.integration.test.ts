@@ -107,9 +107,9 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
     expect(readerTools.some(tool => tool.name === 'build_computer_prepare')).toBe(false)
     expect((await f.call('build_computer_prepare', { workspaceId: fixture.workspaceId,
       profileId: 'p-unit', commit, commandId: randomUUID() }, f.reader.token)).isError).toBe(true)
-    expect((await f.call('build_computer_prepare_get', {
+    expect(decodeMcpToolResult((await f.call('build_computer_prepare_get', {
       workspaceId: fixture.workspaceId, profileId: 'p-unit',
-    }, f.reader.token)).structuredContent).toMatchObject({ state: 'idle' })
+    }, f.reader.token)))).toMatchObject({ state: 'idle' })
     expect(fixture.calls.prepare).toEqual([])
   })
 
@@ -245,7 +245,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       const read = await f.call('build_computer_prepare_get', {
         workspaceId: fixture.workspaceId, profileId: 'p-unit',
       }, f.reader.token)
-      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent).state).toBe('idle')
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read)).state).toBe('idle')
     })
 
   it.each(['continuation', 'recovery'] as const)(
@@ -291,7 +291,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
         const read = await f.call('build_computer_prepare_get', {
           workspaceId: fixture.workspaceId, profileId: 'p-unit',
         }, f.reader.token)
-        expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toEqual(done)
+        expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(done)
         expect((await f.call('build_computer_prepare', { ...input, commandId: randomUUID() })).isError).toBe(true)
         expect((await database.pool.query('select id from ci_runtime_preparations')).rows).toEqual([original])
       } finally {
@@ -331,7 +331,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       const pending = await f.call('build_computer_prepare_get', {
         workspaceId: fixture.workspaceId, profileId: 'p-unit',
       }, f.reader.token)
-      expect(BuildComputerPrepareStatusSchema.parse(pending.structuredContent).state).toBe('qualifying')
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(pending)).state).toBe('qualifying')
       fixture.profileService.qualify = originalQualify
       const recovered = f.create()
       f.services.ciRuntime = recovered
@@ -341,7 +341,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       const read = await f.call('build_computer_prepare_get', {
         workspaceId: fixture.workspaceId, profileId: 'p-unit',
       }, f.reader.token)
-      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toEqual(done)
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(done)
       expect((await database.pool.query('select id,active from ci_runtime_preparations')).rows)
         .toEqual([{ id: interrupted.id, active: false }])
       expect(fixture.calls.refresh).toHaveLength(1)
@@ -378,9 +378,9 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
     const read = await f.call('build_computer_prepare_get', {
       workspaceId: fixture.workspaceId, profileId: 'p-unit',
     }, f.reader.token)
-    expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toEqual(failed)
+    expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(failed)
     const replay = await f.call('build_computer_prepare', input)
-    expect(BuildComputerPrepareStatusSchema.parse(replay.structuredContent)).toEqual(failed)
+    expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(replay))).toEqual(failed)
     expect((await database.pool.query('select id,active from ci_runtime_preparations')).rows)
       .toEqual([{ id: saved.id, active: false }])
     expect(fixture.calls.prepare).toHaveLength(1)

@@ -83,6 +83,8 @@ it('preserves retired qualification profiles through HTTP and MCP and reports th
       grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const deniedClient = await connect(denied.token)
     await expectMcpAccessDenied(deniedClient.callTool({ name: 'job_runtime_profile_list', arguments: { workspaceId } }))
+    await expectMcpAccessDenied(deniedClient.callTool({ name: 'job_runtime_qualification_get',
+      arguments: { workspaceId, approvalId } }))
     const deniedResponse = await app.inject({ method: 'GET',
       url: `/api/management/workspaces/${workspaceId}/jobs/runtime-profiles`,
       headers: { authorization: `Bearer ${denied.token}` } })
@@ -94,9 +96,16 @@ it('preserves retired qualification profiles through HTTP and MCP and reports th
     const oldQualification = await client.callTool({ name: 'job_runtime_qualification_get',
       arguments: { workspaceId, approvalId } })
     expect(oldQualification.isError, JSON.stringify(oldQualification.content)).not.toBe(true)
-    expect(JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(oldQualification))).toMatchObject({
-      profile: qualified, approval, measurement, readiness: { ready: false, reasons: ['HARNESS_RETIRED'] },
+    const historicalRead = JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(oldQualification))
+    // Readiness describes the current profile while the requested qualification retains its historical measurement.
+    expect(historicalRead).toMatchObject({
+      profile: qualified, approval, measurement, readiness: { ready: true, reasons: [], sideEffects: false },
     })
+    const historicalHttp = await app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${workspaceId}/jobs/runtime-qualifications/${approvalId}`,
+      headers: { authorization: `Bearer ${f.reader.token}` } })
+    expect(historicalHttp.statusCode, historicalHttp.body).toBe(200)
+    expect(JobRuntimeQualificationReadRecordSchema.parse(historicalHttp.json())).toEqual(historicalRead)
     expect(await snapshots()).toEqual(supportedCurrent)
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))

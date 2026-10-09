@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -27,7 +28,7 @@ describe.skipIf(!postgresEnabled)('workflow execution refunds', () => {
       const input = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
       const readback = await f.client.callTool({ name: 'run_get', arguments: input })
       expect(readback.isError).not.toBe(true)
-      expect(readback.structuredContent).toMatchObject({ executions: [expect.objectContaining({
+      expect(decodeMcpToolResult(readback)).toMatchObject({ executions: [expect.objectContaining({
         id: execution.id, state: 'completed', result: { outcome: 'canceled' },
       })] })
       const denied = await f.access.issue({ name: 'Other workspace reader', audience: 'operator',

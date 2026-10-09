@@ -346,10 +346,10 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       { authProvider: { token: async () => ownerToken } }))
     const listed = await owner.callTool({ name: 'job_artifacts_list', arguments: listInput })
     expect(listed.isError, JSON.stringify(listed.content)).not.toBe(true)
-    expect(listed.structuredContent).toMatchObject({ artifacts: [published.artifact] })
+    expect(decodeMcpToolResult(listed)).toMatchObject({ artifacts: [published.artifact] })
     const result = await owner.callTool({ name: 'job_artifact_read', arguments: input })
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-    const retained = JobArtifactReadOutputSchema.parse(result.structuredContent)
+    const retained = JobArtifactReadOutputSchema.parse(decodeMcpToolResult(result))
     const bytes = Buffer.from(retained.content, 'base64')
     expect(bytes).toEqual(archive)
     const summary = JSON.parse(execFileSync('tar', ['-xzOf', '-', 'logs/0-summary.json'], {

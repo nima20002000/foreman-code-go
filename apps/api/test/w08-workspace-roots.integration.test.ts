@@ -98,13 +98,13 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
       const overlapping = await overlappingSave
       attestationSpy.mockRestore()
       expect(overlapping.isError).not.toBe(true)
-      expect(overlapping.structuredContent).toEqual({ ...saved.json(), replayed: true })
+      expect(decodeMcpToolResult(overlapping)).toEqual({ ...saved.json(), replayed: true })
       expect(saved.statusCode).toBe(200); expect(saved.json().value).toMatchObject({ evidence: 'bound', workspaceId, locationRevision: 1,
         executionLocation: { runnerId: 'runner-local', rootPath: join(basePath, 'project') } })
       const replay = await client.callTool({ name: 'workspace_root_location_set', arguments: input })
       expect(replay.isError).not.toBe(true); expect(decodeMcpToolResult(replay)).toEqual({ ...saved.json(), replayed: true })
       expect((await service.get(owner.principal, { workspaceId }))).toEqual(saved.json().value)
-      expect((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))))
         .toMatchObject({ executionLocation: saved.json().value.executionLocation, locationValidation: { status: 'ready' } })
       const legacyInput = { workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
         runnerId: 'runner-local', rootPath: join(basePath, 'project') }
@@ -150,7 +150,7 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
       expect(deniedMissing.isError).toBe(true)
       expect(deniedMissing.content).toEqual([{ type: 'text', text: expect.stringContaining('ACCESS_DENIED') }])
       expect(await fresh.get(owner.principal, { workspaceId })).toEqual(saved.json().value)
-      expect((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))))
         .toMatchObject({ executionLocation: saved.json().value.executionLocation, locationValidation: { status: 'ready' } })
 
       await rename(join(basePath, 'project'), join(basePath, 'original-project'))
@@ -159,7 +159,7 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
         ...invalid, commandId: randomUUID(), relativePath: 'project',
       } })
       expect(repaired.isError).not.toBe(true)
-      const replacement = (repaired.structuredContent as { value: { binding: { directoryIdentityHash: string } } }).value
+      const replacement = (decodeMcpToolResult(repaired) as { value: { binding: { directoryIdentityHash: string } } }).value
       expect(replacement.binding.directoryIdentityHash).not.toBe(saved.json().value.binding.directoryIdentityHash)
       expect(await fresh.get(owner.principal, { workspaceId })).toEqual(replacement)
       const history = await db.pool.query<{ record: unknown }>(
@@ -203,7 +203,7 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
       expect(raceResult.isError).not.toBe(true)
       expect(await cleanupOutcome).toMatchObject({ error: { code: 'WORKSPACE_FOLDER_CLEANUP_FAILED' } })
       expect((await lstat(projectPath)).isDirectory()).toBe(true)
-      expect((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name: 'workspace_get', arguments: { workspaceId } }))))
         .toMatchObject({ locationRevision: 4, locationValidation: { status: 'ready' } })
       expect((await db.pool.query('select count(*)::int as count from workflows')).rows[0]?.count).toBe(0)
       expect((await db.pool.query('select count(*)::int as count from agents')).rows[0]?.count).toBe(0)

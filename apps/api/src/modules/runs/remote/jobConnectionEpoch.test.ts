@@ -59,7 +59,8 @@ it('journals the complete authenticated Worker connection used by the installed 
     await rename(join(directory, 'operations.json'), join(directory, 'job-runtime-operations.json'))
     const mounted = await createInstalledWorkerDomains({ stateDirectory: directory, pairing, bootId: connection.bootId, configuration: null,
       jobConfiguration: { path: join(directory, 'unconfigured-job-runtime.json'), ownerUid: process.getuid!() }, approvedRoots: async () => approved,
-      connection: () => ({ currentBinding: () => connection, captureRequest: namespace => ({ binding: connection, request: async raw => {
+      connection: () => ({ currentBinding: () => connection, mainNow: Date.now,
+        captureRequest: namespace => ({ binding: connection, request: async raw => {
         const frame = raw as { method: string; action: string }
         expect(namespace).toBe('execution-v1'); expect(frame).toMatchObject({ method: 'job-authorize', action: 'read' })
         return { payload: { authorized: true, operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash, owner: intent.owner } }

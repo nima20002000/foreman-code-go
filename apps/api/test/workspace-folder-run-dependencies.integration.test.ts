@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -35,7 +36,7 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
           commandId: randomUUID(), name: 'Owned folder', parentPath: parent,
         } })
         expect(created.isError, JSON.stringify(created)).not.toBe(true)
-        const owner = ManagedWorkspaceCommandResultSchema.parse(created.structuredContent).value
+        const owner = ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(created)).value
         const project = owner.executionLocation!.rootPath
         await writeFile(join(project, 'input.txt'), 'original Run input')
         const workspaceId = f.f.scope.workspaceId
@@ -44,13 +45,13 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
           runnerId: f.locations.runnerId, rootPath: project,
         } })
         expect(selected.isError, JSON.stringify(selected)).not.toBe(true)
-        const before = ManagedWorkspaceSchema.parse((await f.client.callTool({ name: 'workspace_get',
-          arguments: { workspaceId } })).structuredContent)
+        const before = ManagedWorkspaceSchema.parse(decodeMcpToolResult((await f.client.callTool({ name: 'workspace_get',
+          arguments: { workspaceId } }))))
         const savedResult = await f.client.callTool({ name: 'workflow_save_v3', arguments: {
           ...await f.create(), expectedLocationRevision: before.locationRevision,
         } })
         expect(savedResult.isError, JSON.stringify(savedResult)).not.toBe(true)
-        const saved = CurrentWorkflowSaveResultSchema.parse(savedResult.structuredContent).value
+        const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(savedResult)).value
         const start = {
           workspaceId, workflowId: saved.workflowId, workflowVersionId: saved.currentVersionId,
           executionSemanticsVersion: 3, commandId: randomUUID(), expectedWorkflowRevision: saved.revision,
@@ -59,7 +60,7 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
         }
         const started = await f.client.callTool({ name: 'run_start', arguments: start })
         expect(started.isError, JSON.stringify(started)).not.toBe(true)
-        const runId = RunStartV3ResultSchema.parse(started.structuredContent).run.id
+        const runId = RunStartV3ResultSchema.parse(decodeMcpToolResult(started)).run.id
         await vi.waitFor(async () => {
           expect(await f.runs.get(runId)).toMatchObject({ executionState: 'waiting' })
         }, { timeout: 10_000 })
@@ -86,21 +87,21 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
         await expectMcpAccessDenied(denied.callTool({ name: 'workspace_archive', arguments: archive }))
         const unchangedOwner = await f.client.callTool({ name: 'workspace_get',
           arguments: { workspaceId: owner.workspace.id } })
-        expect(ManagedWorkspaceSchema.parse(unchangedOwner.structuredContent).archivedAt).toBeNull()
+        expect(ManagedWorkspaceSchema.parse(decodeMcpToolResult(unchangedOwner)).archivedAt).toBeNull()
         const blocked = await f.client.callTool({ name: 'workspace_archive', arguments: archive })
         expect(blocked.isError).toBe(true)
         expect(JSON.stringify(blocked.content)).toContain('WORKSPACE_FOLDER_CLEANUP_FAILED')
         expect(await readFile(join(project, 'input.txt'), 'utf8')).toBe('original Run input')
         const archivedOwner = await f.client.callTool({ name: 'workspace_get',
           arguments: { workspaceId: owner.workspace.id } })
-        expect(ManagedWorkspaceSchema.parse(archivedOwner.structuredContent).archivedAt).not.toBeNull()
+        expect(ManagedWorkspaceSchema.parse(decodeMcpToolResult(archivedOwner)).archivedAt).not.toBeNull()
         const ownership = await f.db.pool.query<{ created_project_folder: { rootPath: string } }>(
           'select created_project_folder from workspaces where id=$1', [owner.workspace.id],
         )
         expect(ownership.rows[0]!.created_project_folder.rootPath).toBe(project)
         const read = await f.client.callTool({ name: 'workspace_get', arguments: { workspaceId } })
         expect(read.isError).not.toBe(true)
-        expect(ManagedWorkspaceSchema.parse(read.structuredContent)).toMatchObject({
+        expect(ManagedWorkspaceSchema.parse(decodeMcpToolResult(read))).toMatchObject({
           executionLocation: { rootPath: replacement }, locationRevision: before.locationRevision + 1,
         })
         expect((await f.runs.getRepeatSnapshot(runId)).run.executionLocation).toEqual(original.executionLocation)
@@ -135,7 +136,7 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
         expect(await runtime.runs.hasPendingCleanup(runId)).toBe(false)
         const retried = await f.client.callTool({ name: 'workspace_archive', arguments: archive })
         expect(retried.isError, JSON.stringify(retried)).not.toBe(true)
-        expect(ManagedWorkspaceCommandResultSchema.parse(retried.structuredContent).replayed).toBe(true)
+        expect(ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(retried)).replayed).toBe(true)
         await expect(lstat(project)).rejects.toMatchObject({ code: 'ENOENT' })
         expect((await runtime.runs.getRepeatSnapshot(runId)).run.executionLocation).toEqual(original.executionLocation)
         expect((await runtime.runs.getRepeatSnapshot(runId)).version).toEqual(saved.version)

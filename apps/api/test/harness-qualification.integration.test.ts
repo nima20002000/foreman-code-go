@@ -125,9 +125,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
         error: { code: 'HARNESS_CHECK_TIMEOUT', message: 'The native check timed out. Try again.' },
       }) }] })
       await stalledService.join()
-      const afterTimeout = HarnessQualificationListSchema.parse((await readClient.callTool({
+      const afterTimeout = HarnessQualificationListSchema.parse(decodeMcpToolResult((await readClient.callTool({
         name: 'harness_qualifications_list', arguments: {},
-      })).structuredContent)
+      }))))
       expect(afterTimeout).toEqual(listed)
       expect(suite.run).toHaveBeenCalledOnce()
     } finally {

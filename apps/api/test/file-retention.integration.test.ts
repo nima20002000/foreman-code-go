@@ -164,10 +164,12 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
   }
   function failure(result: McpResult): string {
     assert.equal(result.isError, true, JSON.stringify(result))
-    assert.equal(decodeMcpToolResult(result), undefined, 'Errors must not violate the success output schema')
+    const decoded = decodeMcpToolResult(result) as { error: { code: string } }
+    assert.deepEqual(Object.keys(decoded), ['error'])
     const text = result.content?.find((item) => item.type === 'text')?.text
     assert.ok(text)
-    return (JSON.parse(text) as { error: { code: string } }).error.code
+    assert.deepEqual(decoded, JSON.parse(text))
+    return decoded.error.code
   }
 
   it('returns default revision 0, allocates seven days, and snapshots a non-default for future files only', async () => {

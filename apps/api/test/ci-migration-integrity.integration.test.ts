@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
@@ -161,10 +162,16 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
         await createPreparation(database, original)
         await expect(createPreparation(database, seeded.record(seeded.main)))
           .rejects.toMatchObject({ code: 'CI_RUNTIME_BUSY' })
-        await expect(createPreparation(database, { ...seeded.record(),
-          input: { ...original.input, workspaceId: 'missing-workspace' } })).rejects.toMatchObject({ code: '23503' })
-        await expect(createPreparation(database, { ...seeded.record(),
-          principal: { ...original.principal, id: 'missing-principal' } })).rejects.toMatchObject({ code: '23503' })
+        const missingWorkspace = seeded.record()
+        await expect(createPreparation(database, { ...missingWorkspace,
+          input: { ...missingWorkspace.input, workspaceId: 'missing-workspace' } })).rejects.toMatchObject({
+          code: '23503', constraint: 'ci_runtime_preparations_workspace_id_fkey',
+        })
+        const missingPrincipal = seeded.record()
+        await expect(createPreparation(database, { ...missingPrincipal,
+          principal: { ...missingPrincipal.principal, id: 'missing-principal' } })).rejects.toMatchObject({
+          code: '23503', constraint: 'ci_runtime_preparations_principal_id_fkey',
+        })
         const repository = new PostgresCiPreparationRepository(database.pool)
         const finished = { ...original, status: { ...original.status, state: 'failed' as const, message: 'Finished' } }
         await withExclusiveGraphConnection(database.pool,
@@ -219,13 +226,13 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
           const accepted = { ...input, expectedRevision: 8, commandId: randomUUID() }
           const response = await call('build_computer_update', accepted)
           expect(response.isError).not.toBe(true)
-          const result = BuildComputerStatusSchema.parse(response.structuredContent)
+          const result = BuildComputerStatusSchema.parse(decodeMcpToolResult(response))
           expect(result.preference).toMatchObject({ revision: 9, buildPriority: 75, buildAllowancePercent: 60 })
-          expect(BuildComputerStatusSchema.parse((await call('build_computer_update', accepted)).structuredContent))
+          expect(BuildComputerStatusSchema.parse(decodeMcpToolResult((await call('build_computer_update', accepted)))))
             .toEqual(result)
-          expect(BuildComputerStatusSchema.parse((await call('build_computer_get', {
+          expect(BuildComputerStatusSchema.parse(decodeMcpToolResult((await call('build_computer_get', {
             target: seeded.target(),
-          }, reader.token)).structuredContent)).toEqual(result)
+          }, reader.token))))).toEqual(result)
           expect((await settings.read(writer.principal, { target: seeded.target() })).preference)
             .toEqual(result.preference)
         } finally {

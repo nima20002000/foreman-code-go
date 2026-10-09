@@ -473,7 +473,12 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     const ticket = await f.enqueue()
     const snapshotId = randomUUID()
     const approvedSourceId = randomUUID()
-    const manifestDigest = 'c'.repeat(64)
+    const captured = await sources.get(writer.principal, 'http', { workspaceId, ...root.source })
+    const advancedCommit = '4'.repeat(40)
+    const manifest = createSourceManifest({ ...captured.manifest, snapshotId, approvedSourceId,
+      git: { ...captured.manifest.git!, commit: advancedCommit } })
+    const manifestDigest = manifest.manifestDigest
+    const snapshot = { ...captured, manifest, approvedAt: new Date().toISOString() }
     const advanced = { ...root, attestationId: randomUUID(), source: { approvedSourceId, snapshotId, manifestDigest },
       binding: { ...root.binding, bindingRevision: 2, snapshotId, manifestDigest } }
     try {
@@ -482,11 +487,16 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
         values($1,$2,$3,$4,$4,$5,$6,'approved','{}','{}')`,
       [approvedSourceId, snapshotId, workspaceId, writer.principal.id, randomUUID(), manifestDigest])
       await database.pool.query(`insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record)
-        values($1,$2,$3,$4,'{}')`, [snapshotId, approvedSourceId, workspaceId, manifestDigest])
+        values($1,$2,$3,$4,$5::jsonb)`,
+      [snapshotId, approvedSourceId, workspaceId, manifestDigest, JSON.stringify(snapshot)])
       await database.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
         values($1,2,$2,$3,$4::jsonb)`, [root.binding.rootId, workspaceId, snapshotId, JSON.stringify(advanced)])
       await database.pool.query('update source_root_catalog set current_binding_revision=2 where root_id=$1',
         [root.binding.rootId])
+      expect((await sources.rootList(writer.principal, 'http', { workspaceId })).items).toContainEqual(advanced)
+      const head = await sources.get(writer.principal, 'http', { workspaceId, ...advanced.source })
+      expect(head.manifest.git?.commit).toBe(advancedCommit)
+      expect(head.manifest.git?.commit).not.toBe(f.definition.spec.source.commit)
       await f.jobs.wakeQueue()
       const execution = await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)
       expect(execution.acceptedSpec.source.commit).toBe(f.definition.spec.source.commit)
@@ -496,16 +506,13 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const input = { workspaceId, executionId: ticket.executionId }
       const readback = await operator.callTool({ name: 'job_get', arguments: input })
       expect(readback.isError, JSON.stringify(readback)).not.toBe(true)
-      expect(readback.structuredContent).toMatchObject({ execution: { acceptedSpec: execution.acceptedSpec } })
+      expect(decodeMcpToolResult(readback)).toMatchObject({ execution: { acceptedSpec: execution.acceptedSpec } })
       const denied = await client(reader.token)
       expect((await denied.callTool({ name: 'job_get', arguments: input })).isError).toBe(true)
     } finally {
       await database.pool.query('update source_root_catalog set current_binding_revision=1 where root_id=$1',
         [root.binding.rootId])
-      await database.pool.query('delete from source_root_bindings where root_id=$1 and binding_revision=2',
-        [root.binding.rootId])
-      await database.pool.query('delete from source_snapshots where snapshot_id=$1', [snapshotId])
-      await database.pool.query('delete from source_approvals where approved_source_id=$1', [approvedSourceId])
+      // Immutable snapshot and binding records remain until the fixture database is dropped.
     }
   })
   it('audits fresh bounded MCP recovery of a stopped admitted Job and denies a caller without Job cancellation authority', async () => {

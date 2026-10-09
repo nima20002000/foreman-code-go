@@ -362,33 +362,52 @@ it('retains a completed capture and frees its preparing slot after adoption lose
     .toBe(true)
   const read = await client.callTool({ name: 'source_list', arguments: { workspaceId: f.workspaceId } })
   expect(read.isError).not.toBe(true)
-  expect(SourceListResultSchema.parse(read.structuredContent).items).toEqual([])
+  expect(SourceListResultSchema.parse(decodeMcpToolResult(read)).items).toEqual([])
 }, 60_000)
 
 it.each([false, true])('recovers an unadopted capture after restart (expired caller: %s)', async expired => {
   fixture = await setup()
   const f = fixture
-  const approved = await f.approve()
-  const snapshotId = approved.source.manifest.snapshotId
-  // Recreate the persisted crash gap between filesystem commit and adoption.
-  await f.pool.query('delete from source_snapshots where snapshot_id=$1', [snapshotId])
-  await f.pool.query("update source_approvals set state='capturing' where snapshot_id=$1", [snapshotId])
-  await f.pool.query("update source_storage_reservations set state='preparing' where owner_id=$1", [snapshotId])
-  await f.pool.query("delete from management_command_receipts where principal_id=$1 and command_id=$2",
-    [f.owner.principal.id, approved.input.commandId])
+  const input = { ...f.approval, commandId: randomUUID() }
+  const connect = vi.spyOn(f.pool, 'connect')
+  const commit = f.store.commit.bind(f.store)
+  const capture = vi.spyOn(f.store, 'commit').mockImplementationOnce(async manifest => {
+    await commit(manifest)
+    // Lose database access after filesystem commit, including failure bookkeeping.
+    connect.mockImplementation(() => {
+      throw new Error('Database unavailable after capture commit')
+    })
+  })
+  try {
+    const response = await f.client.callTool({ name: 'source_approve', arguments: input })
+    expect(response.isError).toBe(true)
+  } finally {
+    connect.mockRestore()
+    capture.mockRestore()
+  }
+  const approval = (await f.pool.query<{ snapshot_id: string; state: string }>(
+    'select snapshot_id,state from source_approvals where command_id=$1', [input.commandId])).rows[0]!
+  const snapshotId = approval.snapshot_id
+  expect(approval.state).toBe('capturing')
+  expect((await f.pool.query('select 1 from source_snapshots where snapshot_id=$1', [snapshotId])).rows).toEqual([])
+  expect((await f.pool.query('select 1 from management_command_receipts where principal_id=$1 and command_id=$2',
+    [f.owner.principal.id, input.commandId])).rows).toEqual([])
+  const manifest = await f.store.manifest(snapshotId)
   if (expired) await f.pool.query('update management_principals set expires_at=clock_timestamp() where id=$1',
     [f.owner.principal.id])
   const report = (error: unknown): never => { throw error }
   await reconcileFailedCaptures(f.pool, new PrivateSourceSnapshotStore(f.canonical), report)
-  const reservation = await f.reservation(approved.source)
+  const reservation = (await f.pool.query<{ state: string }>(
+    "select state from source_storage_reservations where owner_kind='capture' and owner_id=$1", [snapshotId])).rows[0]!
   expect(reservation.state).toBe(expired ? 'retained' : 'preparing')
-  expect(await f.store.manifest(snapshotId)).toEqual(approved.source.manifest)
+  expect(await f.store.manifest(snapshotId)).toEqual(manifest)
   if (!expired) {
     const writing = vi.spyOn(f.store, 'write')
-    const replay = await f.client.callTool({ name: 'source_approve', arguments: approved.input })
+    const replay = await f.client.callTool({ name: 'source_approve', arguments: input })
     expect(replay.isError, JSON.stringify(replay.content)).not.toBe(true)
-    expect(SourceApproveResultSchema.parse(replay.structuredContent).value.manifest).toEqual(approved.source.manifest)
+    const source = SourceApproveResultSchema.parse(decodeMcpToolResult(replay)).value
+    expect(source.manifest).toEqual(manifest)
     expect(writing).not.toHaveBeenCalled()
-    expect((await f.read(approved.source)).manifest).toEqual(approved.source.manifest)
+    expect((await f.read(source)).manifest).toEqual(manifest)
   }
 }, 60_000)

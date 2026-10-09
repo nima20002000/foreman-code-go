@@ -433,19 +433,37 @@ it.each([false, true])('ignores an unrelated historical host key during cleanup 
   const f = fixture
   const orphan = await f.orphan('preparing')
   const workspaceId = otherWorkspace ? randomUUID() : f.workspaceId
-  if (otherWorkspace) await f.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
-    [workspaceId, JSON.stringify({ id: workspaceId, name: 'Historical roots' })])
+  const manifest = otherWorkspace
+    ? createSourceManifest({ ...f.manifest, snapshotId: randomUUID(), approvedSourceId: randomUUID() })
+    : f.manifest
+  if (otherWorkspace) {
+    await f.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+      [workspaceId, JSON.stringify({ id: workspaceId, name: 'Historical roots' })])
+    await f.pool.query(`insert into source_approvals
+      (approved_source_id,snapshot_id,workspace_id,owner_principal_id,requested_by,command_id,input_hash,state,origin,request)
+      values($1,$2,$3,$4,$4,$5,$6,'approved','{}','{}')`,
+      [manifest.approvedSourceId, manifest.snapshotId, workspaceId, f.writer.principal.id,
+        randomUUID(), 'f'.repeat(64)])
+    await f.pool.query(`insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record)
+      select $1,$2,$3,$4,record || jsonb_build_object('workspaceId',$3::text,'manifest',$5::jsonb)
+      from source_snapshots where snapshot_id=$6`,
+      [manifest.snapshotId, manifest.approvedSourceId, workspaceId, manifest.manifestDigest,
+        JSON.stringify(manifest), f.manifest.snapshotId])
+  }
   const rootId = randomUUID()
   const old = SourceRootRecordSchema.parse({ ...f.root,
+    source: { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
+      manifestDigest: manifest.manifestDigest },
     registration: { ...f.root.registration!, keyRevision: 2 },
-    binding: { ...f.root.binding, rootId, workspaceId } })
+    binding: { ...f.root.binding, rootId, workspaceId, snapshotId: manifest.snapshotId,
+      manifestDigest: manifest.manifestDigest } })
   const current = SourceRootRecordSchema.parse({ ...old, registration: f.root.registration,
     binding: { ...old.binding, bindingRevision: 2 } })
   await f.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
     values($1,$2,$3,2)`, [rootId, workspaceId, randomUUID()])
   for (const root of [old, current]) await f.pool.query(`insert into source_root_bindings
     (root_id,binding_revision,workspace_id,snapshot_id,record) values($1,$2,$3,$4,$5::jsonb)`,
-    [rootId, root.binding.bindingRevision, workspaceId, f.manifest.snapshotId, JSON.stringify(root)])
+    [rootId, root.binding.bindingRevision, workspaceId, manifest.snapshotId, JSON.stringify(root)])
   expect(await f.cleanup.reconcile()).toBe(1)
   expect(f.reclaim.mock.calls[0]![0].roots).toEqual([f.root])
   expect((await f.pool.query('select state from source_storage_reservations where reservation_id=$1',

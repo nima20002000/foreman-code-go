@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { JobRuntimeApprovalRecordSchema, JobVerificationProfileSchema, JobVerificationRuntimeMeasurementSchema,
@@ -72,7 +73,8 @@ async function seedQualifiedMetadata(database: Awaited<ReturnType<typeof current
       slots: original.fingerprint.quotaPool.slots.map(slot => ({ ...slot,
         filesystem: { ...profile.root.binding.filesystem, inode: slot.filesystem.inode } })) } } : {}) }
   const measurement = JobVerificationRuntimeMeasurementSchema.parse({ ...original, fingerprint,
-    identity: { ...original.identity, profileId: profile.id, profileRevision: profile.revision,
+    identity: { ...original.identity, approvalId: randomUUID(), qualificationId: randomUUID(),
+      profileId: profile.id, profileRevision: profile.revision,
       rootId: profile.root.binding.rootId, bindingRevision: profile.root.binding.bindingRevision,
       fingerprintDigest: jobDigest(fingerprint), approvalExpiresAt },
     suites: original.suites.map(suite => ({ ...suite, maxUnitWorkers: 16 })),

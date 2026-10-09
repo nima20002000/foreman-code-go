@@ -22,11 +22,14 @@ import { verifiedSourceWorkingTree } from '../../src/modules/sources/nativeStamp
 import { PostgresSourceReservations } from '../../src/modules/sources/reservations.js'
 
 /** Seeds accepted facts and a physical source claim; production owns all later closure and control. */
-export async function retainedJobFixture(pool: pg.Pool, directory: string, principal: ManagementPrincipal) {
+export async function retainedJobFixture(pool: pg.Pool, directory: string, principal: ManagementPrincipal,
+  options: { workspaceId?: string } = {}) {
   const mainId = (await pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
-  const workspaceId = randomUUID()
-  await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
-    [workspaceId, JSON.stringify({ id: workspaceId, name: 'Retained build' })])
+  const workspaceId = options.workspaceId ?? randomUUID()
+  if (!options.workspaceId) {
+    await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+      [workspaceId, JSON.stringify({ id: workspaceId, name: 'Retained build' })])
+  }
   const computer = buildComputerFixture(mainId, workspaceId)
   const runtimeRoot = join(directory, randomUUID())
   const root = computer.candidate.profile.root

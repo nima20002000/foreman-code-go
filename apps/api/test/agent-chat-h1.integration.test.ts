@@ -323,7 +323,10 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
       const noWrite = await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${readerToken}` }, payload: input })
       assert.equal(noWrite.statusCode, 403)
       const deniedTool = await denied.callTool({ name: 'agent_chat_send', arguments: { workspaceId: f.workspaceId, request: input } })
-      assert.equal(deniedTool.isError, true); assert.equal(decodeMcpToolResult(deniedTool), undefined)
+      assert.equal(deniedTool.isError, true)
+      const deniedResult = decodeMcpToolResult(deniedTool) as { error: { code: string } }
+      assert.equal(deniedResult.error.code, 'ACCESS_DENIED')
+      assert.deepEqual(Object.keys(deniedResult), ['error'])
       const conflict = await app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${writerToken}` }, payload: { ...input, content: 'different' } })
       assert.equal(conflict.statusCode, 409); assert.match(conflict.body, /AGENT_CHAT_REQUEST_CONFLICT/)
       const conflictTool = await mcp.callTool({ name: 'agent_chat_send', arguments: { workspaceId: f.workspaceId, request: { ...input, intent: 'next_turn' } } })

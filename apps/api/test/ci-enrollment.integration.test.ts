@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { BuildComputerPrepareStatusSchema, CiEnrollmentStateSchema, type BuildComputerPrepareInput,
@@ -192,7 +193,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       const client = await f.connect()
       const result = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-      const state = CiEnrollmentStateSchema.parse(result.structuredContent)
+      const state = CiEnrollmentStateSchema.parse(decodeMcpToolResult(result))
       expect(state.computers[1]).toMatchObject({ target, state: 'storage-required', profileIds: [],
         templates: [{ templateId: f.stored.id, profileId: null, state: 'storage-required',
           message: 'The installed CI volume is too small for this template’s disk or inode budget.' }] })
@@ -232,7 +233,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
         const client = await f.connect(reader.token)
         const read = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
         expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-        const state = CiEnrollmentStateSchema.parse(read.structuredContent)
+        const state = CiEnrollmentStateSchema.parse(decodeMcpToolResult(read))
         for (const computer of state.computers) {
           expect(computer.state).toBe('partial')
           expect(computer.templates).toContainEqual({ templateId: ordinary.id, profileId: null,
@@ -254,7 +255,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
         expect(forbiddenRead.isError).toBe(true)
         expect(JSON.stringify(forbiddenRead.content)).toContain('ACCESS_DENIED')
         const readback = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
-        expect(CiEnrollmentStateSchema.parse(readback.structuredContent)).toEqual(state)
+        expect(CiEnrollmentStateSchema.parse(decodeMcpToolResult(readback))).toEqual(state)
         const persisted = (await f.db.pool.query('select state from ci_enrollment_computers where workspace_id=$1',
           [f.workspaceId])).rows.map(row => row.state)
         expect(persisted).toEqual(expect.arrayContaining(state.computers))
@@ -276,7 +277,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       const client = await f.connect()
       const read = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
       expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-      const state = CiEnrollmentStateSchema.parse(read.structuredContent)
+      const state = CiEnrollmentStateSchema.parse(decodeMcpToolResult(read))
       for (const computer of state.computers) {
         expect(computer.state).toBe('partial')
         expect(computer.profileIds).toHaveLength(1)
@@ -318,7 +319,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       const client = await f.connect()
       const read = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
       expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
-      const state = CiEnrollmentStateSchema.parse(read.structuredContent)
+      const state = CiEnrollmentStateSchema.parse(decodeMcpToolResult(read))
       for (const computer of state.computers) {
         expect(computer.state).toBe('partial')
         const failure = computer.templates.find(result => result.templateId === failing.id)!
@@ -660,7 +661,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       expect(await queue.jobs.getQueueTicket(f.owner.principal, f.workspaceId, started.ticket.id))
         .toMatchObject({ state: 'accepted', executionId: started.ticket.executionId })
       const readback = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
-      expect(CiEnrollmentStateSchema.parse(readback.structuredContent).computers
+      expect(CiEnrollmentStateSchema.parse(decodeMcpToolResult(readback)).computers
         .find(value => buildComputerKey(value.target) === buildComputerKey(computer.target)))
         .toMatchObject({ enabled: false, revision: persisted ? 2 : 1, state: 'disabled' })
       const next = await queue.jobs.enqueue(f.owner.principal, 'mcp', f.workspaceId, {
@@ -703,9 +704,9 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       const client = await f.connect()
       const tools = (await client.listTools()).tools.map(tool => tool.name)
       expect(tools).toEqual(expect.arrayContaining(['ci_enrollment_get', 'ci_enrollment_update']))
-      const discovery = await client.callTool({ name: 'operator_get_capabilities', arguments: { workspaceId: f.workspaceId } })
+      const discovery = await client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full', workspaceId: f.workspaceId } })
       expect(discovery.isError, JSON.stringify(discovery.content)).not.toBe(true)
-      const capabilities = OperatorCapabilitiesSchema.parse(discovery.structuredContent)
+      const capabilities = OperatorCapabilitiesSchema.parse(decodeMcpToolResult(discovery))
       expect(capabilities.tools).toEqual(expect.arrayContaining(['ci_enrollment_get', 'ci_enrollment_update']))
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({
         name: 'ci_enrollment_update', actions: CI_ENROLLMENT_ACTIONS,
@@ -714,7 +715,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
         commandId: randomUUID(), expectedRevision: 0, enabled: false }
       const changed = await client.callTool({ name: 'ci_enrollment_update', arguments: input })
       expect(changed.isError, JSON.stringify(changed.content)).not.toBe(true)
-      const disabled = CiEnrollmentStateSchema.parse(changed.structuredContent).computers[0]!
+      const disabled = CiEnrollmentStateSchema.parse(decodeMcpToolResult(changed)).computers[0]!
       expect(disabled).toMatchObject({ enabled: false, revision: 1, state: 'disabled' })
       expect((await client.callTool({ name: 'ci_enrollment_update', arguments: input })).isError).not.toBe(true)
       const restarted = new CiEnrollment(f.db.pool, f.commands, f.profiles, f.preparation, f.inventory)
@@ -740,7 +741,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       expect(denied.isError).toBe(true)
       expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
       const read = await readonly.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
-      expect(CiEnrollmentStateSchema.parse(read.structuredContent).computers[0])
+      expect(CiEnrollmentStateSchema.parse(decodeMcpToolResult(read)).computers[0])
         .toMatchObject({ target: disabled.target, enabled: false, revision: 1, state: 'disabled' })
       const outsider = await f.access.issue({ name: 'Other workspace CI owner', audience: 'operator',
         grants: [{ actions: CI_ENROLLMENT_ACTIONS, scope: { workspaceIds: [randomUUID()] } }],
@@ -761,7 +762,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment', () => {
       expect(enabled.isError, JSON.stringify(enabled.content)).not.toBe(true)
       await f.enrollment.close()
       const readback = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
-      const computer = CiEnrollmentStateSchema.parse(readback.structuredContent).computers[0]!
+      const computer = CiEnrollmentStateSchema.parse(decodeMcpToolResult(readback)).computers[0]!
       expect(computer).toMatchObject({ revision: 2, enabled: true })
       expect((await f.db.pool.query(`select revision,enabled from ci_enrollment_computers
         where workspace_id=$1 and host_key=$2`, [f.workspaceId, buildComputerKey(input.target)])).rows[0])

@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -93,7 +94,7 @@ async function verifyWorkspaceIsolation(client: Client, running: RunningCiWorkfl
       workspaceId: foreign.workspace.workspaceId, runId: workflow.runId,
     } }, { timeout: 30_000 })
     expect(result.isError, 'A Run cannot be read through another workspace').toBe(true)
-    expect(result.structuredContent ?? {}).not.toHaveProperty('run')
+    expect(decodeMcpToolResult(result)).not.toHaveProperty('run')
     const tickets = [...observation.tickets.values()].filter(ticket => ticket.runId === workflow.runId)
     for (const ticket of tickets) {
       for (const name of ['ci_get', 'ci_logs_read', 'ci_artifacts_list']) {
@@ -102,7 +103,7 @@ async function verifyWorkspaceIsolation(client: Client, running: RunningCiWorkfl
         } }, { timeout: 30_000 })
         expect(otherWorkspace.isError, `${name} must preserve the ticket workspace`).toBe(true)
         for (const field of ['queue', 'chunks', 'artifacts']) {
-          expect(otherWorkspace.structuredContent ?? {}).not.toHaveProperty(field)
+          expect(decodeMcpToolResult(otherWorkspace)).not.toHaveProperty(field)
         }
       }
     }

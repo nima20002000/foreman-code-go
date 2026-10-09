@@ -164,20 +164,20 @@ it('discovers a saved Claude preset and configures and checks its host profile t
       name: 'harness_instances_list', arguments: readInput }))))
     expect(persisted.overrides).toEqual([checked.value])
     expect((await settings.getManagedHarnessDefaults()).defaults.claude).toEqual(configuration)
-    const failedInspection = HarnessCatalogEntrySchema.parse((await reader.client.callTool({
+    const failedInspection = HarnessCatalogEntrySchema.parse(decodeMcpToolResult((await reader.client.callTool({
       name: 'harness_get', arguments: { harness: 'claude' },
-    })).structuredContent)
+    }))))
     expect(failedInspection.discoveryError).toMatchObject({ code: 'HARNESS_CHECK_TIMEOUT' })
     expect(inspectConfiguration).toHaveBeenCalledOnce()
-    const afterFailure = HarnessRegistryReadbackSchema.parse((await reader.client.callTool({
+    const afterFailure = HarnessRegistryReadbackSchema.parse(decodeMcpToolResult((await reader.client.callTool({
       name: 'harness_registry_get', arguments: hostRef,
-    })).structuredContent)
+    }))))
     expect(afterFailure.installations).toEqual(inventory.installations)
     expect(await httpInventory()).toEqual(afterFailure)
     expect(discovery.claude).toHaveBeenCalledOnce()
-    expect(HostHarnessOverrideListSchema.parse((await reader.client.callTool({
+    expect(HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await reader.client.callTool({
       name: 'harness_instances_list', arguments: readInput,
-    })).structuredContent).overrides).toEqual([checked.value])
+    })))).overrides).toEqual([checked.value])
     const audit = await pool.query('select action,outcome from management_audit where source=$1', ['mcp'])
     expect(audit.rows).toEqual(expect.arrayContaining([
       { action: 'harness_instance_save', outcome: 'denied' },

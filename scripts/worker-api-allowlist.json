@@ -19,6 +19,7 @@
   "apps/api/src/modules/computers/githubLogin.ts",
   "apps/api/src/modules/computers/installedCodexSelection.ts",
   "apps/api/src/modules/computers/maintenance.ts",
+  "apps/api/src/modules/computers/maintenanceCommandStore.ts",
   "apps/api/src/modules/computers/maintenanceTaskStore.ts",
   "apps/api/src/modules/computers/syncExtension.ts",
   "apps/api/src/modules/computers/syncFingerprint.ts",

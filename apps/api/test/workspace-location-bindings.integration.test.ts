@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it } from 'vitest'
@@ -182,7 +183,7 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
       const call = async (name: string, args: Record<string, unknown>) => {
         const result = await f.client.callTool({ name, arguments: args })
         expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-        return result.structuredContent
+        return decodeMcpToolResult(result)
       }
       const choices = () => call('workflow_node_placement_choices', f.input)
         .then(value => NodePlacementChoicesResultSchema.parse(value))
@@ -270,7 +271,7 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['workspaces:read', 'workspace_locations:read', 'source_roots:read'],
           scope: { workspaceIds: [f.workspaceId] } }] })
       const denied = await f.connect(reader.token)
-      expect((await denied.callTool({ name: 'workspace_get', arguments: { workspaceId: f.workspaceId } })).structuredContent)
+      expect(decodeMcpToolResult((await denied.callTool({ name: 'workspace_get', arguments: { workspaceId: f.workspaceId } }))))
         .toMatchObject({ locationRevision: revision, locationValidation: { status: 'ready' } })
       const policy = f.originalPolicies.find(policy => policy.hostRef.kind === 'main')!
       const forbidden = await denied.callTool({ name: 'workspace_root_location_set', arguments: {

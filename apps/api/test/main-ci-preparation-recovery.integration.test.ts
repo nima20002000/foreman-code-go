@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
@@ -73,7 +74,7 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
           profiles: [{ profileId: 'p-main', revision: 4, status: 'qualified' }] })
         expect(await readBoth(recovered)).toEqual(completed)
         const replay = await recovered.call('build_computer_prepare', request)
-        expect(BuildComputerPrepareStatusSchema.parse(replay.structuredContent)).toEqual(completed)
+        expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(replay))).toEqual(completed)
         const replayHttp = await recovered.httpStart({ commandId: request.commandId, commit })
         expect(replayHttp.status).toBe(200)
         expect(BuildComputerPrepareStatusSchema.parse(await replayHttp.json())).toEqual(completed)
@@ -190,7 +191,7 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
       expect(f.fixture.calls.qualified).toEqual([])
       expect((await recovered.call('build_computer_prepare', request, f.reader.token)).isError).toBe(true)
       expect(BuildComputerPrepareStatusSchema.parse(
-        (await recovered.call('build_computer_prepare', request)).structuredContent)).toEqual(completed)
+        decodeMcpToolResult((await recovered.call('build_computer_prepare', request))))).toEqual(completed)
       expect(await f.repository.get(pending.id)).toMatchObject({ status: completed })
     } finally {
       interrupted = true
@@ -213,7 +214,7 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
     expect(initial.state).toBe('qualified')
     const original = (await f.repository.latestForDevice(mainId))!
     const same = await runtime.call('build_computer_prepare', first)
-    expect(BuildComputerPrepareStatusSchema.parse(same.structuredContent)).toEqual(initial)
+    expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(same))).toEqual(initial)
     expect(f.fixture.calls.refresh).toHaveLength(1)
     const second = input(f)
     expect((await runtime.call('build_computer_prepare', second)).isError).not.toBe(true)

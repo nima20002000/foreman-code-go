@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
@@ -14,7 +15,7 @@ async function profiles(fixture: Fixture, token = fixture.writer.token) {
   const result = await fixture.call('harness_instances_list', { hostRef: fixture.hostRef,
     applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId }, token)
   expect(result.isError).not.toBe(true)
-  return HostHarnessOverrideListSchema.parse(result.structuredContent).overrides
+  return HostHarnessOverrideListSchema.parse(decodeMcpToolResult(result)).overrides
 }
 
 async function latestEvidence(fixture: Fixture) {

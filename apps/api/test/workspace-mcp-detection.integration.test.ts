@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -69,7 +70,7 @@ it('validates the persisted workspace identity before HTTP and authenticated MCP
     expect((await http()).statusCode).toBe(200)
     const initial = await mcp()
     expect(initial.isError).not.toBe(true)
-    expect(ScopedMcpDetectionSchema.parse(initial.structuredContent).workingDirectory).toBe(rootPath)
+    expect(ScopedMcpDetectionSchema.parse(decodeMcpToolResult(initial)).workingDirectory).toBe(rootPath)
     expect(inspect.mock.calls.length).toBeGreaterThan(0)
     const calls = inspect.mock.calls.length
     expect((await http(denied.token)).statusCode).toBe(403)

@@ -14,6 +14,7 @@ import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { jobRuntimeMetadataFixture } from './helpers/jobRuntimeMetadataFixture.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
+import { workerClockReason } from '../src/modules/devices/workerClock.js'
 
 describe.skipIf(!postgresEnabled)('build queue persistence and owner configuration', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -267,6 +268,7 @@ describe.skipIf(!postgresEnabled)('build queue persistence and owner configurati
     const inspections: number[] = []
     const endpoint = {
       currentBinding: () => binding,
+      clockReason: () => workerClockReason(1_000_000, 1_000_000),
       captureRequest: () => ({ binding: structuredClone(binding), request: async () => {
         inspections.push(binding.connectionGeneration)
         return { payload: { version: 1, operation: 'inspect', descriptor: retained.descriptor,

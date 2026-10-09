@@ -33,7 +33,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.saves.map(value => [value.id, value.spec.policy.imageDigest])).toEqual([['p-main', newImage]])
       expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/main/runtime' })])
       const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-main' }, 'reader')
-      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toMatchObject({ state: 'qualified', deviceId: mainId })
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toMatchObject({ state: 'qualified', deviceId: mainId })
     } finally { await f.app.close() }
   })
 
@@ -65,7 +65,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.qualified).toEqual([])
       const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId,
         profileId: original.id }, 'reader')
-      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent).reuse?.qualification).toBe(true)
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read)).reuse?.qualification).toBe(true)
     } finally { await f.app.close() }
   })
 

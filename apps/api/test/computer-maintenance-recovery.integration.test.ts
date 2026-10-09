@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it } from 'vitest'
@@ -103,25 +104,25 @@ describe.skipIf(!postgresEnabled)('maintenance command recovery through authenti
       computer.maintenance = new ComputerMaintenance(computer.ports)
       catalog = 'changed-after-crash'
       const recovered = await connect(commands, writer.token)
-      const replay = ComputerMaintenanceStartResultSchema.parse((await recovered.callTool({
+      const replay = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult((await recovered.callTool({
         name: 'computers_maintenance_start', arguments: input,
-      })).structuredContent)
+      }))))
       expect(replay.computers[0]?.task).toMatchObject({ id: input.commandId, state: 'succeeded' })
       expect(wireCommands).toEqual([input.commandId, input.commandId])
       expect([...computer.codexMcp]).toEqual(['original'])
       expect(computer.calls.filter(call => call.args[0] === 'mcp' && call.args[1] === 'add')).toHaveLength(1)
-      const readback = ComputerMaintenanceListSchema.parse((await recovered.callTool({
+      const readback = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await recovered.callTool({
         name: 'computers_maintenance_status', arguments: { refresh: true },
-      })).structuredContent)
+      }))))
       expect(readback.computers.find(value => value.target.applicationInstallationId === device.workerInstallationId)
         ?.status?.tasks.find(task => task.id === input.commandId)).toMatchObject({ state: 'succeeded' })
       const persisted = await database.pool.query<{ result: unknown }>(`select result from management_command_receipts
         where operation='computers.maintenance.start' and command_id=$1`, [input.commandId])
       expect(ComputerMaintenanceStartResultSchema.parse(persisted.rows[0]?.result)).toEqual(replay)
       legacy = true
-      const incompatible = ComputerMaintenanceStartResultSchema.parse((await recovered.callTool({
+      const incompatible = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult((await recovered.callTool({
         name: 'computers_maintenance_start', arguments: { ...input, commandId: randomUUID() },
-      })).structuredContent)
+      }))))
       expect(incompatible.computers[0]).toMatchObject({ task: null,
         error: expect.stringContaining('without maintenance support') })
       expect(wireCommands).toHaveLength(2)
@@ -152,9 +153,9 @@ describe.skipIf(!postgresEnabled)('maintenance command recovery through authenti
       main.maintenance = new ComputerMaintenance(main.ports)
       computer.maintenance = new ComputerMaintenance(computer.ports)
       const afterRestart = await connect(commands, writer.token)
-      const restarted = ComputerMaintenanceStartResultSchema.parse((await afterRestart.callTool({
+      const restarted = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult((await afterRestart.callTool({
         name: 'computers_maintenance_start', arguments: restart,
-      })).structuredContent)
+      }))))
       expect(restarted.computers).toHaveLength(2)
       expect(restarted.computers.every(value => value.task?.state === 'succeeded')).toBe(true)
       expect(mainRestart.reboots()).toBe(1)

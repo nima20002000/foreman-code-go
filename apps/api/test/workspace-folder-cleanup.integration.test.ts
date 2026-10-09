@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -54,7 +55,7 @@ describe.skipIf(!postgresEnabled)('workspace folder cleanup across computers', (
         name: 'Owned project', parentPath: parent, commandId: randomUUID(),
       } })
       expect(created.isError).not.toBe(true)
-      const workspace = ManagedWorkspaceCommandResultSchema.parse(created.structuredContent).value
+      const workspace = ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(created)).value
       const projectPath = workspace.executionLocation!.rootPath
       const otherId = randomUUID()
       const otherLocation = { runnerId, rootPath: projectPath }
@@ -74,11 +75,11 @@ describe.skipIf(!postgresEnabled)('workspace folder cleanup across computers', (
         await expect(lstat(projectPath)).rejects.toMatchObject({ code: 'ENOENT' })
         const replay = await client.callTool({ name: 'workspace_archive', arguments: input })
         expect(replay.isError).not.toBe(true)
-        expect(ManagedWorkspaceCommandResultSchema.parse(replay.structuredContent).replayed).toBe(true)
+        expect(ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(replay)).replayed).toBe(true)
       }
       const readback = await client.callTool({ name: 'workspace_get', arguments: { workspaceId: otherId } })
       expect(readback.isError).not.toBe(true)
-      expect(readback.structuredContent).toMatchObject({ executionLocation: otherLocation, archivedAt: null })
+      expect(decodeMcpToolResult(readback)).toMatchObject({ executionLocation: otherLocation, archivedAt: null })
       const retained = await db.pool.query<{ created_project_folder: unknown }>(
         'select created_project_folder from workspaces where id=$1', [workspace.workspace.id],
       )

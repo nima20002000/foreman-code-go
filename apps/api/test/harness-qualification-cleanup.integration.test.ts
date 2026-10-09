@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -114,12 +115,12 @@ it('reports failed Main reservation through authenticated MCP, then checks and p
     const denied = await connect(reader.token)
     const target = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
       harnessInstallationId: 'recorded-codex', installationFingerprint: 'recorded-payload' }
-    const saved = HostHarnessOverrideSaveResultSchema.parse((await writer.callTool({
+    const saved = HostHarnessOverrideSaveResultSchema.parse(decodeMcpToolResult((await writer.callTool({
       name: 'harness_instance_save', arguments: { commandId: randomUUID(), instanceId: randomUUID(),
         expectedRevision: 0, target, presetId: 'local-default:codex', enabled: true,
         configuration: withAdvancedDefaults({ harness: 'codex', model: 'recorded-model',
           reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard' }) },
-    })).structuredContent)
+    }))))
     const checkInput = { commandId: randomUUID(), instanceId: saved.value.instanceId,
       expectedRevision: saved.value.revision, target }
     const rejected = await denied.callTool({ name: 'harness_instance_check', arguments: checkInput })
@@ -143,9 +144,9 @@ it('reports failed Main reservation through authenticated MCP, then checks and p
     expect(close).not.toHaveBeenCalled()
     expect(abandon).not.toHaveBeenCalled()
     expect(registry.snapshot().launches).toEqual([])
-    const checked = HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({
+    const checked = HostHarnessInstanceCheckResultSchema.parse(decodeMcpToolResult((await writer.callTool({
       name: 'harness_instance_check', arguments: checkInput,
-    })).structuredContent)
+    }))))
     expect(checked.value.qualification).toBe('qualified')
     expect(checked.proof).toMatchObject({ authenticated: true, compatible: true, qualified: true })
     expect(checked.replayed).toBe(false)
@@ -155,13 +156,13 @@ it('reports failed Main reservation through authenticated MCP, then checks and p
     expect(close).toHaveBeenCalledExactlyOnceWith(recovery)
     expect(await registry.closeOwner(recovery.owner)).toBe(true)
     expect(await proofs.latest(saved.value.instanceId, saved.value.revision)).toEqual(checked.proof)
-    const readback = HostHarnessOverrideListSchema.parse((await denied.callTool({
+    const readback = HostHarnessOverrideListSchema.parse(decodeMcpToolResult((await denied.callTool({
       name: 'harness_instances_list', arguments: { hostRef: target.hostRef, applicationInstallationId: mainId },
-    })).structuredContent)
+    }))))
     expect(readback.overrides).toEqual([checked.value])
-    const replay = HostHarnessInstanceCheckResultSchema.parse((await writer.callTool({
+    const replay = HostHarnessInstanceCheckResultSchema.parse(decodeMcpToolResult((await writer.callTool({
       name: 'harness_instance_check', arguments: checkInput,
-    })).structuredContent)
+    }))))
     expect(replay.replayed).toBe(true)
     expect(replay.proof).toEqual(checked.proof)
     expect(qualifier.qualify).toHaveBeenCalledTimes(2)

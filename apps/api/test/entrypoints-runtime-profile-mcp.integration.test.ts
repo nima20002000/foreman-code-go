@@ -162,12 +162,12 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
           suites:['unit'],approvalConfig:{ approvalLifetimeMs:JOB_VERIFICATION_APPROVAL_LIFETIME_MS },
         } } })
       expect(response.isError,JSON.stringify(response.content)).not.toBe(true)
-      const saved = verificationSaveResult.parse(response.structuredContent).profile
+      const saved = verificationSaveResult.parse(decodeMcpToolResult(response)).profile
       const capture = async (using = client) => {
         const result = await using.callTool({ name:'job_runtime_qualification_request',arguments:{ workspaceId:f.workspaceId,
           profileId:saved.id,expectedRevision:saved.revision,commandId:randomUUID() } })
         expect(result.isError,JSON.stringify(result.content)).not.toBe(true)
-        return (result.structuredContent as { approval:JobRuntimeApprovalRecord }).approval
+        return (decodeMcpToolResult(result) as { approval:JobRuntimeApprovalRecord }).approval
       }
       const older = await capture()
       let started!: () => void
@@ -185,14 +185,14 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const completed = await second.callTool({ name:'job_runtime_qualification_run',arguments:{ workspaceId:f.workspaceId,
         approvalId:newer.id,commandId:randomUUID() } })
       expect(completed.isError,JSON.stringify(completed.content)).not.toBe(true)
-      const qualified = verificationSaveResult.parse(completed.structuredContent).profile
+      const qualified = verificationSaveResult.parse(decodeMcpToolResult(completed)).profile
       finish()
       const denied = await pending
       expect(denied.isError,JSON.stringify(denied.content)).not.toBe(true)
-      expect(denied.structuredContent).toEqual({ profile:qualified })
+      expect(decodeMcpToolResult(denied)).toEqual({ profile:qualified })
       const read = await client.callTool({ name:'job_runtime_qualification_get',arguments:{
         workspaceId:f.workspaceId,approvalId:older.id } })
-      expect(JobRuntimeQualificationReadRecordSchema.parse(read.structuredContent)).toMatchObject({
+      expect(JobRuntimeQualificationReadRecordSchema.parse(decodeMcpToolResult(read))).toMatchObject({
         approval:{ id:older.id,status:'failed' },measurement:null,profile:qualified,readiness:{ ready:true,sideEffects:false },
       })
       expect((await f.db.pool.query('select record from job_runtime_profiles where id=$1',[saved.id])).rows[0].record)
@@ -228,12 +228,12 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
         .toBe(true)
       const recovered = await client.callTool({ name:'job_runtime_qualification_run',arguments:args })
       expect(recovered.isError,JSON.stringify(recovered.content)).not.toBe(true)
-      expect(recovered.structuredContent).toMatchObject({ profile:{ status:'failed',measurement:null } })
-      expect((await client.callTool({ name:'job_runtime_qualification_run',arguments:args })).structuredContent)
-        .toEqual(recovered.structuredContent)
+      expect(decodeMcpToolResult(recovered)).toMatchObject({ profile:{ status:'failed',measurement:null } })
+      expect(decodeMcpToolResult((await client.callTool({ name:'job_runtime_qualification_run',arguments:args }))))
+        .toEqual(decodeMcpToolResult(recovered))
       const readback = await readonly.callTool({ name:'job_runtime_qualification_get',
         arguments:{ workspaceId:f.workspaceId,approvalId:f.approval.id } })
-      expect(readback.structuredContent).toMatchObject({ approval:{ status:'failed' },profile:{ status:'failed' } })
+      expect(decodeMcpToolResult(readback)).toMatchObject({ approval:{ status:'failed' },profile:{ status:'failed' } })
       const row = (await f.db.pool.query(`select run_command_id,run_principal_id,run_result
         from job_runtime_qualification_approvals where id=$1`,[f.approval.id])).rows[0]
       expect(row).toEqual({ run_command_id:commandId,run_principal_id:f.owner.principal.id,
@@ -267,8 +267,8 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const persisted = (await f.db.pool.query('select record from job_runtime_profiles where id=$1',[f.profile.id])).rows[0].record
       if (change === 'edited') expect(persisted).toEqual(current)
       else expect(persisted).toMatchObject({ status:'failed',measurement:null })
-      expect((await client.callTool({ name:'job_runtime_qualification_get',
-        arguments:{ workspaceId:f.workspaceId,approvalId:f.approval.id } })).structuredContent)
+      expect(decodeMcpToolResult((await client.callTool({ name:'job_runtime_qualification_get',
+        arguments:{ workspaceId:f.workspaceId,approvalId:f.approval.id } }))))
         .toMatchObject({ approval:{ status:'failed' },profile:persisted })
       expect(f.producer.run).toHaveBeenCalledOnce()
       expect(f.producer.reconcile).toHaveBeenCalledOnce()
@@ -290,7 +290,7 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
       const readonly = await f.connect(reader.token)
       const listed = await readonly.callTool({ name:'job_runtime_profile_list',arguments:{ workspaceId:f.workspaceId } })
       expect(listed.isError,JSON.stringify(listed.content)).not.toBe(true)
-      const result = JobRuntimeProfileListRecordSchema.parse(listed.structuredContent)
+      const result = JobRuntimeProfileListRecordSchema.parse(decodeMcpToolResult(listed))
       expect(result.approvals).toEqual([{ ...record,runCommandId:commandId,runPrincipalId:f.owner.principal.id }])
       const http = await f.app.inject({ method:'GET',url:`${f.base}/runtime-profiles`,
         headers:{ authorization:`Bearer ${reader.token}` } })

@@ -240,7 +240,7 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     expect(waiting.tickets.some(ticket => ticket.id === foreign.id)).toBe(false)
     const waitingMcp = await client.callTool({ name: 'job_queue_list', arguments: input() })
     expect(waitingMcp.isError).not.toBe(true)
-    expect(waitingMcp.structuredContent).toEqual(waiting)
+    expect(decodeMcpToolResult(waitingMcp)).toEqual(waiting)
     const writerClient = await connect(writer.token)
     const cancelled = await writerClient.callTool({ name: 'job_queue_cancel', arguments: {
       workspaceId: workflow.run.workspaceId, ticketId: first.id, expectedRevision: waiting.tickets[0]!.revision,
@@ -251,7 +251,7 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     await queue.jobs.wakeQueue()
     const retained = await client.callTool({ name: 'job_queue_list', arguments: input() })
     expect(retained.isError).not.toBe(true)
-    const page = JobQueuePageSchema.parse(retained.structuredContent)
+    const page = JobQueuePageSchema.parse(decodeMcpToolResult(retained))
     expect(page.tickets.map(ticket => ticket.id)).toEqual([second.id, first.id])
     expect(page.tickets.map(ticket => ticket.terminalReason)).toEqual(['timed_out', 'cancelled'])
     for (const ticket of page.tickets) {
@@ -263,8 +263,8 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
         workspaceId: workflow.run.workspaceId, ticketId: ticket.id,
       } })
       expect(read.isError).not.toBe(true)
-      expect(JobQueueTicketSchema.parse((read.structuredContent as { ticket: unknown }).ticket)).toEqual(ticket)
-      expect(read.structuredContent).toEqual(http.json())
+      expect(JobQueueTicketSchema.parse((decodeMcpToolResult(read) as { ticket: unknown }).ticket)).toEqual(ticket)
+      expect(decodeMcpToolResult(read)).toEqual(http.json())
     }
     const deniedClient = await connect(denied.token)
     expect((await app.inject({ method: 'GET', url: `${root}?workflowId=${workflow.run.workflowId}`,
@@ -310,26 +310,26 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
       expect(queueHttp.statusCode).toBe(200)
       const listed = await client.callTool({ name: 'job_queue_list', arguments: queueInput })
       expect(listed.isError).not.toBe(true)
-      expect(listed.structuredContent).toEqual(queueHttp.json())
-      const page = JobQueuePageSchema.parse(listed.structuredContent)
+      expect(decodeMcpToolResult(listed)).toEqual(queueHttp.json())
+      const page = JobQueuePageSchema.parse(decodeMcpToolResult(listed))
       expect(page.tickets.some(ticket => ticket.id === ticketId)).toBe(true)
       for (const ticket of page.tickets) {
         const read = await client.callTool({ name: 'job_queue_get', arguments: {
           workspaceId: workflow.run.workspaceId, ticketId: ticket.id,
         } })
         expect(read.isError).not.toBe(true)
-        expect((read.structuredContent as { ticket: unknown }).ticket).toEqual(ticket)
+        expect((decodeMcpToolResult(read) as { ticket: unknown }).ticket).toEqual(ticket)
       }
       const referenceHttp = await app.inject({ method: 'GET', url: referencePath, headers })
       expect(referenceHttp.statusCode).toBe(200)
       const reference = await client.callTool({ name: 'job_workflow_execution_get', arguments: referenceInput })
       expect(reference.isError).not.toBe(true)
-      expect(reference.structuredContent).toEqual({ reference: jobReference })
-      expect(reference.structuredContent).toEqual(referenceHttp.json())
+      expect(decodeMcpToolResult(reference)).toEqual({ reference: jobReference })
+      expect(decodeMcpToolResult(reference)).toEqual(referenceHttp.json())
       const persisted = await database.pool.query<{ reference: unknown }>(
         'select reference from workflow_job_executions where run_id=$1 and node_execution_id=$2',
         [workflow.run.id, jobReference.nodeExecutionId])
-      expect(reference.structuredContent).toEqual({ reference: persisted.rows[0]!.reference })
+      expect(decodeMcpToolResult(reference)).toEqual({ reference: persisted.rows[0]!.reference })
     }
     for (const token of [denied.token, otherRun.token]) {
       const client = await connect(token)

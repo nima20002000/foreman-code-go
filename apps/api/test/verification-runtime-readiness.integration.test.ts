@@ -12,6 +12,7 @@ import { registerJobRuntimeProfileRoutes } from '../src/routes/jobRuntimeProfile
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { verificationJobsMcpFixture } from './helpers/verificationJobsMcpFixture.js'
+import { retainedJobFixture } from './helpers/retainedJobFixture.js'
 
 it.each(['unavailable', 'changed','root-revoked'] as const)('reports %s runtime templates consistently through HTTP and MCP', async state => {
   const f = await verificationJobsMcpFixture()
@@ -36,15 +37,18 @@ it.each(['unavailable', 'changed','root-revoked'] as const)('reports %s runtime 
     }
     const writer = await connect(f.writer.token)
     const reader = await connect(f.reader.token)
-    const result = await writer.callTool({ name: 'job_runtime_profile_save', arguments: {
-      workspaceId, commandId: randomUUID(), expectedRevision: null, name: 'Runtime readback profile', spec: {
-        rootId: f.retained.root.binding.rootId, bindingRevision: f.retained.root.binding.bindingRevision,
-        resources: f.seed.spec.verification.resources, policy: jobPolicyRequirementsRecord(f.seed.spec.policy),
-        suites: ['unit'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS },
-      },
-    } })
-    expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-    const profile = z.object({ profile: JobVerificationProfileSchema }).parse(decodeMcpToolResult(result)).profile
+    const saveProfile = async (root: typeof f.retained.root) => {
+      const result = await writer.callTool({ name: 'job_runtime_profile_save', arguments: {
+        workspaceId, commandId: randomUUID(), expectedRevision: null, name: 'Runtime readback profile', spec: {
+          rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
+          resources: f.seed.spec.verification.resources, policy: jobPolicyRequirementsRecord(f.seed.spec.policy),
+          suites: ['unit'], approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS },
+        },
+      } })
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+      return z.object({ profile: JobVerificationProfileSchema }).parse(decodeMcpToolResult(result)).profile
+    }
+    const profile = await saveProfile(f.retained.root)
     const qualified = await f.qualify(profile)
     const fingerprint = qualified.measurement!.fingerprint
     const snapshots = async () => (await f.database.pool.query(
@@ -52,7 +56,7 @@ it.each(['unavailable', 'changed','root-revoked'] as const)('reports %s runtime 
        from job_runtime_profiles p join job_runtime_qualification_approvals a on a.profile_id=p.id
        where p.id=$1 and a.id=$2`, [profile.id, qualified.measurement!.identity.approvalId])).rows[0]
     const saved = await snapshots()
-    const choices = async () => {
+    const choices = async (profileId = profile.id) => {
       const response = await reader.callTool({ name: 'job_choices_get', arguments: { workspaceId } })
       expect(response.isError, JSON.stringify(response.content)).not.toBe(true)
       const mcp = JobAuthoringChoicesRecordSchema.parse(decodeMcpToolResult(response))
@@ -60,7 +64,7 @@ it.each(['unavailable', 'changed','root-revoked'] as const)('reports %s runtime 
         headers: { authorization: `Bearer ${f.reader.token}` } })
       expect(http.statusCode, http.body).toBe(200)
       expect(JobAuthoringChoicesRecordSchema.parse(http.json())).toEqual(mcp)
-      return mcp.verificationTemplates!.find(template => template.profileId === profile.id)
+      return mcp.verificationTemplates!.find(template => template.profileId === profileId)
     }
     expect(await choices()).toMatchObject({ ready: true })
     if (state === 'unavailable') f.runtimeMetadata.delete(profile.id)
@@ -85,10 +89,16 @@ it.each(['unavailable', 'changed','root-revoked'] as const)('reports %s runtime 
       headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
     expect(await snapshots()).toEqual(saved)
     f.runtimeMetadata.set(profile.id, fingerprint)
-    if (state === 'root-revoked') await f.database.pool.query(`update workspace_root_policies
-      set revoked_at=null where workspace_id=$1 and root_policy_id=$2 and root_policy_revision=$3`,
-    [workspaceId,profile.root.selection.rootPolicyId,profile.root.selection.rootPolicyRevision])
-    expect(await choices()).toMatchObject({ ready: true })
+    if (state === 'root-revoked') {
+      const replacement = await retainedJobFixture(f.database.pool, f.database.directory, f.writer.principal,
+        { workspaceId })
+      const replacementProfile = await saveProfile(replacement.root)
+      await f.qualify(replacementProfile)
+      expect(await choices(replacementProfile.id)).toMatchObject({ ready: true })
+      expect(await choices()).toMatchObject({ ready: false })
+    } else {
+      expect(await choices()).toMatchObject({ ready: true })
+    }
     expect(await snapshots()).toEqual(saved)
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))

@@ -84,7 +84,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     const started = await starter.callTool({ name: 'job_start', arguments: { workspaceId: f.workspaceId, ...input } })
     expect(started.isError).not.toBe(true)
     const admission = JobPendingAdmissionSchema.parse(
-      (started.structuredContent as { admission: unknown }).admission)
+      (decodeMcpToolResult(started) as { admission: unknown }).admission)
     const id = admission.ticket.id
     f.online()
     await f.jobs.wakeQueue()
@@ -111,7 +111,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
       { requestInit: { headers: { authorization: `Bearer ${scopedReader.token}` } } }))
     const read = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: f.workspaceId, ticketId: id } })
-    expect(JobQueueTicketSchema.parse((read.structuredContent as { ticket: unknown }).ticket)).toEqual(waiting)
+    expect(JobQueueTicketSchema.parse((decodeMcpToolResult(read) as { ticket: unknown }).ticket)).toEqual(waiting)
     const denied = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: 'foreign-workspace', ticketId: id } })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
@@ -126,7 +126,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue', () => {
     expect(f.accept).toHaveBeenCalledTimes(2)
     const acceptedRead = await client.callTool({ name: 'job_queue_get',
       arguments: { workspaceId: f.workspaceId, ticketId: id } })
-    expect(JobQueueTicketSchema.parse((acceptedRead.structuredContent as { ticket: unknown }).ticket)).toEqual(accepted)
+    expect(JobQueueTicketSchema.parse((decodeMcpToolResult(acceptedRead) as { ticket: unknown }).ticket)).toEqual(accepted)
   })
   it('persists Agent CI origin separately from graph membership and reads it through authenticated MCP', async () => {
     const f = await fixture()
