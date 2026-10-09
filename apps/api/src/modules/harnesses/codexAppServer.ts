@@ -218,6 +218,8 @@ interface Prepared {
   environment: NodeJS.ProcessEnv
   qualified: QualifiedCodex
   disabledAppMcpServerNames: readonly string[]
+  /** The App MCP server whose tools a workflow Agent calls without native prompts; app grants still authorize each call. */
+  approvedAppMcpServerName?: string
   effectiveSandbox?: CodexNativeOutputSandbox
 }
 interface Creation {
@@ -340,7 +342,7 @@ function configOverrides(value: CodexHarnessConfiguration): JsonObject {
   }
   return config
 }
-function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledAppMcpServerNames'>, resume = false): JsonObject {
+function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledAppMcpServerNames' | 'approvedAppMcpServerName'>, resume = false): JsonObject {
   const value = prepared.harnessConfiguration
   const draft = advanced(value)
   return {
@@ -356,6 +358,10 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
       ...(prepared.input.sessionPreferences?.autoCompactTokens != null
         ? { model_auto_compact_token_limit: prepared.input.sessionPreferences.autoCompactTokens } : {}),
       ...Object.fromEntries(prepared.disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
+      // Codex 0.16x prompts for every MCP tool call under on-request approval; an unattended workflow Agent would
+      // wait on its own App tools (ci_run, context_get) forever. Each call is still authorized by the Agent's grants.
+      ...(prepared.approvedAppMcpServerName
+        ? { [`mcp_servers.${prepared.approvedAppMcpServerName}.default_tools_approval_mode`]: 'approve' } : {}),
       ...(prepared.input.kind === 'operator' ? { model_reasoning_summary: prepared.input.configuration.showThinking ? 'auto' : 'none' } : {}),
     },
     // A resumed or forked thread already carries its accepted developer instructions.
@@ -1896,6 +1902,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     let scopedCredentialVariable: string | undefined
     let excludedCredentialVariable: string | undefined
     let disabledAppMcpServerNames: readonly string[] = []
+    let approvedAppMcpServerName: string | undefined
     if (this.appMcpAccess === 'none') {
       const listed = await io.runCommand(qualified.binary, ['mcp', 'list', '--json'], workingDirectory, signal, environment)
       let entries: unknown
@@ -1910,7 +1917,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     try {
       const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal, io)
       excludedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
-      if (this.appMcpAccess !== 'none' && mcp.configured.enabled) scopedCredentialVariable = excludedCredentialVariable
+      if (this.appMcpAccess !== 'none' && mcp.configured.enabled) {
+        scopedCredentialVariable = excludedCredentialVariable
+        if (isWorkflowStart(input)) approvedAppMcpServerName = mcp.serverName
+      }
     } catch (error) {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
@@ -1933,6 +1943,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, strippedCredentialVariable, environment: scopedEnvironment, qualified,
       disabledAppMcpServerNames, contextBudgetLimit: typeof modelFacts === 'object' ? modelFacts.contextWindow ?? undefined : undefined,
+      ...(approvedAppMcpServerName ? { approvedAppMcpServerName } : {}),
     }
   }
 

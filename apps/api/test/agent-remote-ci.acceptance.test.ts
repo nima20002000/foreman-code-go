@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, it } from 'vitest'
 import { z } from 'zod'
-import { AgentSchema, CiGetOutputSchema, CiArtifactsOutputSchema } from '@foreman-code/contracts'
+import { AgentSchema, CiGetOutputSchema, CiArtifactsOutputSchema, withAdvancedDefaults } from '@foreman-code/contracts'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { JobTargetSchema } from '@foreman-code/contracts/jobs'
 import { JobQueuePageSchema } from '@foreman-code/contracts/job-admission'
@@ -75,7 +75,7 @@ it('real Codex medium runs current files on Dexter, reads logs and artifacts and
       commandId: randomUUID(), instanceId: savedProfile.instanceId, expectedRevision: savedProfile.revision, target,
     }))
     expect(checked.proof.qualified).toBe(true)
-    expect(checked.value.configuration).toEqual(harness)
+    expect(checked.value.configuration).toEqual(withAdvancedDefaults(harness))
     const selector = { instanceId: checked.value.instanceId, instanceRevision: checked.value.instanceRevision, target }
     const created = SavedManagedWorkflowCommandResultSchema.parse(await call(writer, 'workflow_create', {
       workspaceId: input.workspaceId, commandId: randomUUID(), name: 'Agent remote build acceptance', executionSemanticsVersion: 3,

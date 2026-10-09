@@ -224,6 +224,20 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     completeTestResourceCleanup(invocation, scratchCleanupId)
   })
 
+  it('lets an unattended workflow Agent call only its App MCP tools without native prompts', async () => {
+    await manager.createSession(source)
+    const chats = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none')
+    managers.push(chats)
+    await chats.createSession({ kind: 'agent-chat', conversationId: 'attended-chat', workflowId: 'saved-workflow',
+      workflowNodeId: 'chat-node', correlationId: 'chat-request', configuration: source.request.configuration,
+      workingDirectory: f.directory })
+    const [workflow, chat] = (await wire('thread/start')).map(frame => (frame.params as JsonObject).config as JsonObject)
+    assert.equal(workflow!['mcp_servers.graphql.default_tools_approval_mode'], 'approve')
+    assert.deepEqual(Object.keys(workflow!).filter(key => key.endsWith('.default_tools_approval_mode')),
+      ['mcp_servers.graphql.default_tools_approval_mode'])
+    assert.equal(chat!['mcp_servers.graphql.default_tools_approval_mode'], undefined)
+  })
+
   it('owns two node chats independently with one Agent configuration and no workflow execution descriptor', async () => {
     const chats = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none')
     managers.push(chats)

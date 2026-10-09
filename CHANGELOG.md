@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Workflow Agents on Codex 0.16x no longer stop at a native approval prompt for each of their own Foreman Code MCP tools (for example `ci_run`); each call is still authorized by the Agent's grants.
 - Build computer CI preparation no longer fails at the offline package install when the CI image holds a node_modules layout from another lockfile.
 - Build computer CI preparation no longer fails with "Premature close" when tar finishes reading the qualification source before git writes its trailing padding.
 - Build computer CI preparation streams the unit suite's Codex binary instead of buffering it, so it no longer fails on Codex releases larger than about 190 MB.
