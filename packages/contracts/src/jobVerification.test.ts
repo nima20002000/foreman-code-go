@@ -99,7 +99,7 @@ describe('verification placement and policy', () => {
     expect(ResolvedVerificationJobSpecSchema.safeParse({ ...spec,
       policy: { ...spec.policy, environmentScopeRefs: ['owner-environment'] } }).success).toBe(false)
     expect(ResolvedVerificationJobSpecSchema.safeParse({ ...spec,
-      verification: { ...spec.verification, parameters: { unitWorkers: 1, integrationShards: 13 } } }).success).toBe(false)
+      verification: { ...spec.verification, parameters: { unitWorkers: 1, integrationShards: 65 } } }).success).toBe(false)
   })
   it('requires fixed report paths, roles, media types and bounded declared publication', () => {
     const { spec } = verificationFixture()

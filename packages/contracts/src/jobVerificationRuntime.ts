@@ -56,7 +56,7 @@ export const JobVerificationRepositoryContextSchema = z.object({
   executionTimeoutMs: DeviceSafeIntegerSchema.positive(),
   cancellationTimeoutMs: DeviceSafeIntegerSchema.positive(),
   qualifiedUnitWorkers: DeviceSafeIntegerSchema.min(1).max(256),
-  qualifiedIntegrationShards: DeviceSafeIntegerSchema.min(1).max(12).optional(),
+  qualifiedIntegrationShards: DeviceSafeIntegerSchema.min(1).max(64).optional(),
   limits: z.object({ summaryBytes: DeviceSafeIntegerSchema.positive(), junitBytes: DeviceSafeIntegerSchema.positive(),
     vitestBytes: DeviceSafeIntegerSchema.positive(), logsArchiveBytes: DeviceSafeIntegerSchema.positive(),
     logBytes: DeviceSafeIntegerSchema.positive() }).strict(),
@@ -186,7 +186,7 @@ export const RecordedJobVerificationRuntimeMeasurementSchema = z.object({
     coldCachePeakInodes: DeviceSafeIntegerSchema.positive(),
     maxConcurrentHeavyJobs: DeviceSafeIntegerSchema.positive(),
     maxUnitWorkers: DeviceSafeIntegerSchema.min(1).max(256),
-    maxIntegrationShards: DeviceSafeIntegerSchema.min(1).max(12),
+    maxIntegrationShards: DeviceSafeIntegerSchema.min(1).max(64),
     evidenceDigest: DeviceDigestSchema,
   }).strict()).min(1).max(9),
   publications: z.array(z.object({ executionId: IdSchema, artifacts: z.array(JobArtifactSchema).min(1).max(4) })

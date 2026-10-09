@@ -277,8 +277,9 @@ test('integration defaults to twelve slots and bounds explicit overrides', () =>
   assert.equal(integrationShardLimit(undefined), 12)
   assert.equal(integrationShardLimit('8'), 8)
   assert.equal(integrationShardLimit('12'), 12)
-  assert.throws(() => integrationShardLimit('0'), /integer from 1 to 12/)
-  assert.throws(() => integrationShardLimit('13'), /integer from 1 to 12/)
+  assert.equal(integrationShardLimit('16'), 16)
+  assert.throws(() => integrationShardLimit('0'), /integer from 1 to 64/)
+  assert.throws(() => integrationShardLimit('65'), /integer from 1 to 64/)
 })
 
 test('process deadlines allow long progressing files and cannot be disabled by overrides', () => {

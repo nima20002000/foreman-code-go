@@ -211,7 +211,7 @@ export function integrationReport(selected, firstPass, retests, { startedAt, fin
 
 export function integrationShardLimit(value) {
   const limit = value === undefined ? 12 : Number(value)
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 12) throw new Error('Integration shards must be an integer from 1 to 12')
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) throw new Error('Integration shards must be an integer from 1 to 64')
   return limit
 }
 

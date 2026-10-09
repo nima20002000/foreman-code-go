@@ -23,7 +23,7 @@ export const JOB_VERIFICATION_SUITES = [
 export const JobVerificationSuiteSchema = z.enum(JOB_VERIFICATION_SUITES)
 export const JobVerificationParametersSchema = z.object({
   unitWorkers: DeviceSafeIntegerSchema.min(1).max(256),
-  integrationShards: DeviceSafeIntegerSchema.min(1).max(12),
+  integrationShards: DeviceSafeIntegerSchema.min(1).max(64),
 }).strict()
 export const JobVerificationOutputSchema = JobOutputSpecSchema.extend({
   kind: z.enum(['suite-summary', 'junit', 'vitest-json', 'logs-archive', 'traces-archive']),
@@ -68,7 +68,7 @@ export const JobVerificationTemplateSchema = z.object({
   resources: JobResourceRequestSchema,
   parameters: JobVerificationParametersSchema,
   maxUnitWorkers: DeviceSafeIntegerSchema.min(1).max(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers),
-  maxIntegrationShards: DeviceSafeIntegerSchema.min(1).max(12).optional(),
+  maxIntegrationShards: DeviceSafeIntegerSchema.min(1).max(64).optional(),
   argv: z.tuple([z.literal('node'), z.literal('/opt/graphql-ci/verification/verify-repository.mjs'),
     z.literal('--context'), z.literal('.graphql-job-inputs/verification.json')]),
   outputs: JobVerificationOutputsSchema.nullable(),
