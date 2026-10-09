@@ -193,9 +193,11 @@ describe('canonical Job artifact projection', () => {
       owner: { grantId: 'grant', epoch: '1' }, outputSpecDigest: '1'.repeat(64), specDigest: '2'.repeat(64),
       path: 'result.bin', inputHash: '3'.repeat(64), ref: { fileId: value.file.fileId, revisionId: value.revision.revisionId }, createdAt: instant.toISOString() }
     const principal = { ...owner, grants: [{ actions: ['job_artifacts:read' as const], scope: {} }] }
-    const query = vi.fn().mockResolvedValue({ rows: [{ id: principal.id, name: principal.name, audience: principal.audience,
-      grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }], rowCount: 1,
-      command: 'SELECT', oid: 0, fields: [] })
+    const principalRow = { id: principal.id, name: principal.name, audience: principal.audience,
+      grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }
+    // A standalone Job has no persisted workflow or Agent origin to authorize against.
+    const query = vi.fn(async (sql: string) => ({ rows: sql.includes('from job_executions') ? [] : [principalRow],
+      rowCount: sql.includes('from job_executions') ? 0 : 1, command: 'SELECT', oid: 0, fields: [] }) as unknown as pg.QueryResult)
     const files = new CanonicalJobArtifactPort(new pg.Pool(), f.service, {
       link: async () => { throw new Error('Listing must not mutate a publication receipt') },
       list: async () => [{ link, value }],
@@ -204,7 +206,9 @@ describe('canonical Job artifact projection', () => {
     assert.deepEqual(await files.list({ query }, principal, 'workspace', 'job'), [{ executionId: 'job', publicationId: metadata.requestId,
       path: 'result.bin', fileId: value.file.fileId, revisionId: value.revision.revisionId, sha256: metadata.sha256,
       byteSize: metadata.byteSize, mediaType: metadata.mediaType, state: 'available', expiresAt: '2026-10-01T14:00:00.000Z' }])
-    assert.equal(query.mock.calls.length, 2)
+    // Listing only reads: each authorization pass checks the live principal and the Job's persisted origin.
+    const statements = query.mock.calls.map(([sql]: [string]) => sql.includes('from job_executions') ? 'execution-scope' : sql.includes('from management_princi') ? 'principal' : sql)
+    assert.deepEqual(statements, ['principal', 'execution-scope', 'principal', 'execution-scope'])
     assert.equal('expiresAt' in value.file && value.file.expiresAt, '2026-10-01T14:00:00.000Z')
   })
 })
