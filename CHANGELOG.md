@@ -7,8 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.55] - 2026-10-09
+
+Known issues: under heavy parallel load, Main can shut down before a completed remote Agent session has closed, leaving its Run for reconciliation (seen only in the computer-workflow-save test). A Worker's unit-test verification profile cannot qualify while its tests run inside an overlay-root container. A workspace located on another computer cannot start CI runs from that computer (RUNNER_UNSUPPORTED). The real-model remote CI acceptance (an Agent running CI on Dexter) currently fails with SOURCE_QUOTA_MISSING on the build computer and is being fixed.
+
+### Added
+
+- CI verifies several projects at once across every qualified build computer, and each workflow's CI activity shows its own requests.
+
+### Changed
+
+- Unit-test verification honors the worker limit the build computer qualified with.
+
 ### Fixed
 
+- Completed CI queue tickets close, and a busy build computer is released when its Job finishes; preparation quota is reconciled when a source moves to another root, and the Run is locked before its Worker credential binding to avoid deadlocks.
+- Computer maintenance queues same-kind tasks instead of rejecting them, keeps task results across restarts, and selects the maintained Codex on Main too.
+- Fleet sync keeps each computer's own MCP servers and plugins through partial failures, delivers available catalogs even when one source is unreadable, and refuses inline MCP credentials.
+- The Operator can delete and restore its own chats over MCP, and keeps requested chat drafts with retryable creation.
+- Worker telemetry continues after a Worker reconnects; Worker profile checks use the Codex currently selected by maintenance.
+- Verification templates report ready only when their computer's runtime is currently ready, and a failed runtime inspection marks the profile for refresh instead of reporting an old ready state.
+- Computers shows an unknown account state when a GitHub, Codex or Claude sign-in check fails, instead of "Signed out" or a healthy badge.
+- Qualification reports are kept after a runtime inspection fails.
 - A CI or Job request with an explicit computer no longer waits forever as incompatible: matching names the computer and root, not the root attestation that each listing renews.
 - CI no longer fails with INTERNAL_ERROR when one build computer rejects the commit for its root (for example after the workspace moved); the request queues on the computers that accept it.
 - CI requests no longer fail with SOURCE_CAPACITY after a busy day of commits: when a new source capture would exceed Main's budget, snapshots that nothing actively uses are released before their retention window ends.
