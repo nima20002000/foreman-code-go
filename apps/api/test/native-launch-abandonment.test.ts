@@ -4,7 +4,13 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'vitest'
-import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import {
+  NativeProcessRegistry,
+  spawnNativeProcess,
+  stopRecoveredChild,
+  type NativeProcessRecovery,
+} from '../src/modules/harnesses/recovery/processRegistry.js'
 import { readRecord, recordObject, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
 function fixture() {
@@ -15,6 +21,74 @@ function fixture() {
   const directory = join(ownerDirectory, scope.launchId!)
   return { root, registry, scope, ownerDirectory, directory }
 }
+
+function auxiliary(registry: NativeProcessRegistry, scope: NativeProcessRecovery) {
+  const factories = new NativeHarnessFactories({ codexBinary: 'unused', auxiliaryRecovery: () => scope,
+    abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
+    closeRecovery: async recovery => {
+      if (!await registry.closeOwner(recovery.owner)) throw new Error('Auxiliary native closure is unconfirmed.')
+    },
+  })
+  const allocation = factories.allocate({ harness: 'codex', role: 'qualification',
+    ownerAgentId: 'qualification', workingDirectory: scope.root, appMcpAccess: 'none' })
+  factories.admitAuxiliary(allocation.manager)
+  return { factories, manager: allocation.manager }
+}
+
+describe('qualification reservation cleanup', () => {
+  it('abandons a never-dispatched reservation before closing its owner', async () => {
+    const f = fixture()
+    const owned = auxiliary(f.registry, f.scope)
+    try {
+      await owned.factories.disposeAuxiliary(owned.manager)
+      assert.equal(await f.registry.closeOwner(f.scope.owner), true)
+      assert.throws(() => spawnNativeProcess(process.execPath, ['-e', 'process.exit(0)'], {
+        cwd: f.root, env: {}, recovery: f.scope,
+      }))
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+
+  it.each(['reserved', 'unreserved'] as const)('uses owner closure after a %s launch has dispatched', async kind => {
+    const root = mkdtempSync(join(tmpdir(), 'qualification-launch-'))
+    const registry = new NativeProcessRegistry(root)
+    const scope = kind === 'reserved'
+      ? registry.reserveLaunch('qualification-owner') : registry.scope('qualification-owner')
+    const owned = auxiliary(registry, scope)
+    const child = spawnNativeProcess(process.execPath, ['-e', 'console.log("ready");setInterval(()=>{},1000)'], {
+      cwd: root, env: {}, recovery: scope,
+    })
+    child.stderr.resume()
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.stdout.once('data', () => resolve())
+        child.once('exit', () => reject(new Error('Native fixture exited before entering.')))
+      })
+      await owned.factories.disposeAuxiliary(owned.manager)
+      await closed
+      if (scope.launchId !== undefined) assert.equal(await registry.abandonReservedLaunch(scope), false)
+      assert.equal(await registry.closeOwner(scope.owner), true)
+    } finally {
+      await stopRecoveredChild(child)
+      await closed
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 10_000)
+
+  for (const mutation of [{ root: '/foreign-registry' }, { owner: 'foreign-owner' }, { launchId: '' }]) {
+    it(`retains cleanup failure for an invalid ${Object.keys(mutation)[0]} instead of closing another owner`, async () => {
+      const f = fixture()
+      const original = { ...f.scope }
+      const owned = auxiliary(f.registry, Object.assign(f.scope, mutation))
+      try {
+        await assert.rejects(owned.factories.disposeAuxiliary(owned.manager))
+        Object.assign(f.scope, original)
+        await owned.factories.disposeAuxiliary(owned.manager)
+        assert.equal(await f.registry.closeOwner(f.scope.owner), true)
+      } finally { rmSync(f.root, { recursive: true, force: true }) }
+    })
+  }
+})
 
 describe('original-parent no-dispatch retirement', () => {
   it('publishes positive no-start evidence and permanently fences the exact abandoned scope', async () => {

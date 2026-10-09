@@ -75,3 +75,14 @@ it('refuses writes and expires its read capability after cleanup', async () => {
     expect(f.close).toHaveBeenCalledExactlyOnceWith(f.recovery)
   } finally { await f.diagnostics.dispose() }
 })
+
+it('closes an admitted diagnostic owner that has no reserved launch', async () => {
+  const f = fixture()
+  f.admit.mockImplementation(() => undefined)
+  f.abandon.mockImplementation(async () => { throw new Error('Invalid native launch abandonment scope.') })
+  try {
+    expect(await f.diagnostics.run(f.pin, async () => 'metadata', f.writer)).toBe('metadata')
+    expect(f.abandon).not.toHaveBeenCalled()
+    expect(f.close).toHaveBeenCalledExactlyOnceWith(f.recovery)
+  } finally { await f.diagnostics.dispose() }
+})

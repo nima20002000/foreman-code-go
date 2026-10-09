@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
+import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
 import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
 import { productionClaudeFixture, managementEndpoint, deferred } from './support/claudeProduction.js'
 
@@ -151,7 +152,9 @@ describe('common admitted production Claude four-surface replay', () => {
 describe('actual common owned Claude version command', () => {
   function ownedVersion() {
     const f = productionClaudeFixture('operator')
-    const recovery = { root: '/forbidden-registry', owner: 'diagnostics:recorded', launchId: 'recorded-launch' }
+    const recovery: NativeProcessRecovery = {
+      root: '/forbidden-registry', owner: 'diagnostics:recorded', launchId: 'recorded-launch',
+    }
     const command = vi.fn(async () => ({ exitCode: 0, stdout: '2.1.284 (Claude Code)\n', stderr: '' }))
     const close = vi.fn(async () => {})
     const abandon = vi.fn(async () => {})
@@ -188,6 +191,20 @@ describe('actual common owned Claude version command', () => {
     await f.factories.disposeAuxiliaries()
     expect(f.close).toHaveBeenCalledTimes(2)
     await f.manager.dispose?.()
+  })
+  it('closes a version diagnostic without attempting abandonment when no reservation remains', async () => {
+    const f = ownedVersion()
+    delete f.recovery.launchId
+    f.abandon.mockImplementation(async () => { throw new Error('Invalid native launch abandonment scope.') })
+    try {
+      expect(await f.factories.observeClaudeVersion(f.binding, '/recorded-neutral'))
+        .toMatchObject({ version: '2.1.284', positiveProcessClosure: true })
+      expect(f.abandon).not.toHaveBeenCalled()
+      expect(f.close).toHaveBeenCalledExactlyOnceWith(f.recovery)
+    } finally {
+      await f.factories.disposeAuxiliaries()
+      await f.manager.dispose?.()
+    }
   })
   it('aborts and joins an in-flight version command during the existing factory shutdown phase', async () => {
     const f = ownedVersion(), entered = deferred<void>()

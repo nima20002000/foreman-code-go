@@ -164,10 +164,11 @@ describe('native runtime construction', () => {
 
   it('retains failed diagnostic recovery closure and retries the same owner after admission stops', async () => {
     const recovery = { root: '/unused-registry', owner: 'diagnostics:recorded' }
+    const abandonRecovery = vi.fn(async () => { throw new Error('Invalid native launch abandonment scope.') })
     const closeRecovery = vi.fn<(scope: typeof recovery) => Promise<void>>()
       .mockRejectedValueOnce(new Error('Closure is unconfirmed.')).mockResolvedValue(undefined)
     const factories = new NativeHarnessFactories({ codexBinary: 'unused',
-      auxiliaryRecovery: () => recovery, closeRecovery }, { mode: 'native' })
+      auxiliaryRecovery: () => recovery, abandonRecovery, closeRecovery }, { mode: 'native' })
     const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics',
       ownerAgentId: 'diagnostics', workingDirectory: '/project', appMcpAccess: 'none' })
     factories.admitAuxiliary(allocation.manager)
@@ -178,6 +179,7 @@ describe('native runtime construction', () => {
     await factories.disposeAuxiliaries()
     expect(closeRecovery).toHaveBeenCalledTimes(2)
     expect(closeRecovery.mock.calls.every(([scope]) => scope === recovery)).toBe(true)
+    expect(abandonRecovery).not.toHaveBeenCalled()
     await expect(allocation.manager.capabilities()).rejects.toThrow('shutting down')
     await factories.disposeAuxiliaries()
     expect(closeRecovery).toHaveBeenCalledTimes(2)
@@ -186,19 +188,40 @@ describe('native runtime construction', () => {
   it('retains a partially failed reservation and fences native work until cleanup succeeds', async () => {
     const recovery = { root: '/unused-registry', owner: 'diagnostics:partial' }
     const admitRecovery = vi.fn(() => { throw new Error('Reservation failed partway through.') })
+    const abandonRecovery = vi.fn(async () => { throw new Error('Invalid native launch abandonment scope.') })
     const closeRecovery = vi.fn<(scope: typeof recovery) => Promise<void>>().mockResolvedValue(undefined)
     const factories = new NativeHarnessFactories({ codexBinary: 'unused',
-      auxiliaryRecovery: () => recovery, admitRecovery, closeRecovery })
+      auxiliaryRecovery: () => recovery, admitRecovery, abandonRecovery, closeRecovery })
     const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics', ownerAgentId: 'diagnostics',
       workingDirectory: '/project', appMcpAccess: 'none' })
     expect(() => factories.admitAuxiliary(allocation.manager)).toThrow('Reservation failed')
     expect(() => factories.admitAuxiliary(allocation.manager)).toThrow('Reservation failed')
     expect(admitRecovery).toHaveBeenCalledTimes(1)
     await factories.disposeAuxiliary(allocation.manager)
+    expect(abandonRecovery).not.toHaveBeenCalled()
     expect(closeRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
     await factories.disposeAuxiliary(allocation.manager)
     expect(closeRecovery).toHaveBeenCalledTimes(1)
   })
+
+  it.each(['diagnostics', 'qualification'] as const)(
+    'closes an admitted %s owner without treating an unreserved scope as a launch', async role => {
+      const recovery = { root: '/unused-registry', owner: `${role}:unreserved` }
+      const admitRecovery = vi.fn()
+      const abandonRecovery = vi.fn(async () => { throw new Error('Invalid native launch abandonment scope.') })
+      const closeRecovery = vi.fn(async () => undefined)
+      const factories = new NativeHarnessFactories({ codexBinary: 'unused',
+        auxiliaryRecovery: () => recovery, admitRecovery, abandonRecovery, closeRecovery })
+      const allocation = factories.allocate({ harness: 'codex', role,
+        ownerAgentId: role, workingDirectory: '/project', appMcpAccess: 'none' })
+      factories.admitAuxiliary(allocation.manager)
+      await factories.disposeAuxiliary(allocation.manager)
+      await factories.disposeAuxiliary(allocation.manager)
+      expect(admitRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
+      expect(abandonRecovery).not.toHaveBeenCalled()
+      expect(closeRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
+      await expect(allocation.manager.capabilities()).rejects.toThrow('shutting down')
+    })
 })
 
 describe('original Codex lifetime factory capability', () => {

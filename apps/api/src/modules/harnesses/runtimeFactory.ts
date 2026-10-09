@@ -387,7 +387,10 @@ export class NativeHarnessFactories {
   private closeVersionDiagnostic(owned: CodexDiagnosticLifetime): Promise<void> {
     if (owned.cleanup) return owned.cleanup
     const cleanup = Promise.resolve().then(async () => {
-      if (owned.admitted) { await this.config.abandonRecovery!(owned.recovery); await this.config.closeRecovery!(owned.recovery) }
+      if (owned.admitted) {
+        if (owned.recovery.launchId !== undefined) await this.config.abandonRecovery!(owned.recovery)
+        await this.config.closeRecovery!(owned.recovery)
+      }
       this.versionDiagnostics.delete(owned)
     })
     owned.cleanup = cleanup
@@ -426,7 +429,7 @@ export class NativeHarnessFactories {
     const attempt = Promise.resolve().then(async () => {
       await manager.dispose!()
       if (owned.admitted && owned.recovery && this.config.closeRecovery) {
-        await this.config.abandonRecovery?.(owned.recovery)
+        if (owned.recovery.launchId !== undefined) await this.config.abandonRecovery?.(owned.recovery)
         await this.config.closeRecovery(owned.recovery)
       }
       this.auxiliaries.delete(manager)
