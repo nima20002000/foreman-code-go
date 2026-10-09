@@ -86,8 +86,9 @@ export class FleetMaintenanceService {
     if (input.task.kind === 'restart' && !input.targets) {
       throw new DomainError('COMPUTER_RESTART_TARGET_REQUIRED', 'Choose the computers to restart.', 400)
     }
-    return (await this.commands.execute({ principal, source, operation: 'computers.maintenance.start', commandId: input.commandId,
+    const result = await this.commands.execute({ principal, source, operation: 'computers.maintenance.start', commandId: input.commandId,
       targetKey: `computers-maintenance:${this.mainId}`, payload: input,
+      authorize: async sql => { requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update') },
       perform: async () => {
         const known = await this.targets(principal, 'settings:update')
         const selected = input.targets
@@ -106,7 +107,28 @@ export class FleetMaintenanceService {
         for (const target of targets) this.cache.delete(this.key(target))
         return ComputerMaintenanceStartResultSchema.parse({ computers })
       },
-    })).value
+    })
+    if (!result.replayed) return result.value
+    return this.readStartedTasks(principal, ComputerMaintenanceStartResultSchema.parse(result.value))
+  }
+
+  private async readStartedTasks(principal: ManagementPrincipal,
+    saved: ComputerMaintenanceStartResult): Promise<ComputerMaintenanceStartResult> {
+    const known = await this.targets(principal, 'settings:update')
+    return ComputerMaintenanceStartResultSchema.parse({ computers: await Promise.all(saved.computers.map(async computer => {
+      if (!computer.task) return computer
+      if (!known.some(target => sameDeviceProvisioningTarget(target, computer.target))) {
+        return { ...computer, task: null, error: 'This computer is no longer paired with this Main.' }
+      }
+      const taskId = computer.task.id
+      const status = await this.status(computer.target, true)
+      const task = status?.tasks.find(task => task.id === taskId)
+      if (task) return { ...computer, task }
+      if (computer.task.state !== 'running') return computer
+      return { ...computer, task: null, error: status
+        ? 'This maintenance task is no longer retained. Read current status before starting another command.'
+        : 'The computer is unavailable; this maintenance task could not be read back.' }
+    })) })
   }
 
   /** Background upkeep: current harnesses everywhere, then Main's MCP servers and plugins on every paired computer. */

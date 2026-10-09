@@ -1,12 +1,15 @@
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
+import { MaintenanceTaskStore } from './maintenanceTaskStore.js'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { access, mkdir, readFile, rename, statfs, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
+import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import {
-  MaintenanceStatusSchema, MaintenanceTaskSchema, type MaintainedHarness, type MaintenanceStatus, type MaintenanceTask,
+  MaintenanceStatusSchema, MaintenanceTaskSchema, MaintenanceTaskStartSchema,
+  type MaintainedHarness, type MaintenanceStatus, type MaintenanceTask,
   type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
 } from '@foreman-code/contracts/computer-maintenance'
 
@@ -23,8 +26,7 @@ export interface MaintenancePorts {
   /** Runs fn after ms; restart uses it so the reply reaches Main before the computer goes down. */
   later(fn: () => void, ms: number): void
   now(): Date
-  /** A Worker with an installer-selected Codex moves that selection to the freshly installed Codex, so the computer
-   * actually uses the update. Returns the selected binary, or null when this computer has no Codex selection. */
+  /** Moves this computer's runtime selection to the installed update. Qualification still checks the selected binary. */
   selectInstalledCodex?(signal: AbortSignal): Promise<string | null>
 }
 
@@ -49,10 +51,36 @@ function versionOf(output: string): string | null {
  */
 export class ComputerMaintenance {
   private readonly tasks: MaintenanceTask[] = []
+  private readonly activeTasks = new Map<string, { requestHash: string; completion: Promise<void> }>()
+  private taskRevision = 0
+  private readonly taskStore: MaintenanceTaskStore
+  private loadedTasks: Promise<void> | undefined
+  private storageFailure: unknown
   private latest: { at: number; value: Promise<Partial<Record<MaintainedHarness, string | null>>> } | undefined
-  constructor(private readonly ports: MaintenancePorts = systemMaintenancePorts()) {}
+  constructor(private readonly ports: MaintenancePorts = systemMaintenancePorts()) {
+    const home = ports.environment.HOME ?? homedir()
+    this.taskStore = new MaintenanceTaskStore(join(home, '.local', 'state', 'foreman-code', 'maintenance-tasks.json'), ports)
+  }
+
+  private async loadTasks(): Promise<void> {
+    this.loadedTasks ??= this.taskStore.load().then(tasks => { this.tasks.push(...tasks) })
+    await this.loadedTasks
+    await this.taskStore.flushed()
+    if (this.storageFailure) throw this.storageFailure
+  }
 
   async status(signal: AbortSignal): Promise<MaintenanceStatus> {
+    await this.loadTasks()
+    for (;;) {
+      signal.throwIfAborted()
+      const revision = this.taskRevision
+      const status = await this.observe(signal)
+      await this.taskStore.flushed()
+      if (revision === this.taskRevision) return status
+    }
+  }
+
+  private async observe(signal: AbortSignal): Promise<MaintenanceStatus> {
     const home = this.ports.environment.HOME ?? homedir()
     const [versions, latest, packageUpdates, rebootRequired, sudo, disk] = await Promise.all([
       Promise.all((['codex', 'claude'] as const).map(harness => this.installedVersion(harness, signal))),
@@ -70,16 +98,41 @@ export class ComputerMaintenance {
     })
   }
 
-  /** Starts one task and returns it at once; status readback follows its progress. */
-  start(request: MaintenanceTaskStart): MaintenanceTask {
-    const running = this.tasks.find(task => task.state === 'running' && task.kind === request.kind)
-    if (running) return structuredClone(running)
+  /** Saves the task before acknowledgement; status readback follows its background progress. */
+  async start(raw: MaintenanceTaskStart): Promise<MaintenanceTask> {
+    await this.loadTasks()
+    const request = MaintenanceTaskStartSchema.parse(raw)
+    const identity = request.kind === 'update-harnesses'
+      ? { ...request, harnesses: [...new Set(request.harnesses)].sort() } : request
+    const requestHash = commandInputHash(identity)
+    const running = this.tasks.find(task => task.state === 'running'
+      && this.activeTasks.get(task.id)?.requestHash === requestHash)
+    if (running) {
+      await this.taskStore.flushed()
+      return structuredClone(running)
+    }
+    const previous = this.tasks.findLast(task => task.state === 'running' && task.kind === request.kind)
+    if (this.tasks.length === 20) {
+      const oldestFinished = this.tasks.findIndex(task => task.state !== 'running')
+      if (oldestFinished < 0) throw new Error('The maintenance queue is full. Wait for a task to finish before retrying.')
+      this.tasks.splice(oldestFinished, 1)
+    }
     const task: MaintenanceTask = { id: randomUUID(), kind: request.kind, state: 'running',
-      startedAt: this.ports.now().toISOString(), finishedAt: null, summary: 'Running…', outputTail: '' }
+      startedAt: this.ports.now().toISOString(), finishedAt: null,
+      summary: previous ? 'Waiting for the previous task…' : 'Running…', outputTail: '' }
     this.tasks.push(task)
-    if (this.tasks.length > 20) this.tasks.splice(0, this.tasks.length - 20)
-    void this.perform(request, task).then(summary => this.finish(task, 'succeeded', summary),
+    this.taskRevision++
+    const saved = this.taskStore.save(this.tasks)
+    const predecessor = previous ? this.activeTasks.get(previous.id)?.completion : undefined
+    const completion = saved.then(async () => {
+      await predecessor
+      task.summary = 'Running…'
+      return this.perform(request, task)
+    }).then(summary => this.finish(task, 'succeeded', summary),
       (error: unknown) => this.finish(task, 'failed', error instanceof Error ? error.message : 'Maintenance failed.'))
+      .catch((error: unknown) => { this.storageFailure = error })
+    this.activeTasks.set(task.id, { requestHash, completion })
+    await saved
     return MaintenanceTaskSchema.parse(structuredClone(task))
   }
 
@@ -109,10 +162,13 @@ export class ComputerMaintenance {
     return write
   }
 
-  private finish(task: MaintenanceTask, state: 'succeeded' | 'failed', summary: string) {
+  private async finish(task: MaintenanceTask, state: 'succeeded' | 'failed', summary: string) {
     task.state = state
     task.summary = summary.slice(0, 2000)
     task.finishedAt = this.ports.now().toISOString()
+    this.taskRevision++
+    this.activeTasks.delete(task.id)
+    await this.taskStore.save(this.tasks)
   }
 
   private async perform(request: MaintenanceTaskStart, task: MaintenanceTask): Promise<string> {
@@ -461,7 +517,10 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
       })
     }),
     exists: async target => { try { await access(target); return true } catch { return false } },
-    readText: target => readFile(target, 'utf8').catch(() => null),
+    readText: target => readFile(target, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    }),
     async writePrivateText(target, text) {
       await mkdir(dirname(target), { recursive: true, mode: 0o700 })
       const temporary = `${target}.${randomUUID()}.tmp`

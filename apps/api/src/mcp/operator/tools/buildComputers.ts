@@ -47,7 +47,11 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), restart (sudo reboot; targets are required), sync-mcp (add Main\'s user-level Codex and Claude MCP '
       + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
       + 'sync-plugins (install Main\'s Codex and Claude plugins that other computers lack, adding Main\'s Git marketplaces first and matching Claude enabled state). Tasks run in the background; read their outcome with '
-      + 'computers_maintenance_status. Check every returned computer error; unavailable targets are not updated. Harness updates verify the installed version against the latest published version. Requires global settings:update. Reuse commandId to retry without starting work twice.',
+      + 'computers_maintenance_status. Equivalent running requests share a task; different requests of the same kind queue. '
+      + 'Task status survives application restarts; unfinished tasks report interruption. Check every returned computer error; '
+      + 'unavailable targets are not updated. Harness updates verify the selected runtime version against the latest published '
+      + 'version; Main and Workers select the installed Codex update and retain qualification checks. Requires global '
+      + 'settings:update. Reuse commandId to read back the same tasks without starting work twice.',
     inputSchema: ComputerMaintenanceStartInputSchema, outputSchema: ComputerMaintenanceStartResultSchema,
     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true, openWorldHint: true },
   }, input => invokeOperatorTool(context, 'computers_maintenance_start', () => maintenance.start(context.principal, 'mcp', input)))

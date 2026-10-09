@@ -377,7 +377,7 @@ export async function createInstalledWorkerDomains(input: {
       const owner = await maintenance
       return { payload: MaintenanceReplySchema.parse(request.operation === 'status'
         ? { operation: 'status', status: await owner.status(AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(90_000)])) }
-        : { operation: 'start', task: owner.start(request.task) }) }
+        : { operation: 'start', task: await owner.start(request.task) }) }
     },
   })
   extensions.push({ namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
