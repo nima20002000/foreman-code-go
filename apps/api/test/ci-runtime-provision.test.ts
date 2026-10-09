@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -34,7 +35,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.qualified).toContain(profile.id)
       const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId,
         profileId: profile.id }, 'reader')
-      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent).profiles).toContainEqual({
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read)).profiles).toContainEqual({
         profileId: profile.id, revision: 4, status: 'qualified',
       })
     } finally { await f.app.close() }
@@ -52,7 +53,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.refresh).toHaveLength(1)
       expect(await f.workerState()).toMatchObject({ state: 'refreshing', stage: 'draining', commit })
       const status = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-unit' })
-      expect(BuildComputerPrepareStatusSchema.parse(status.structuredContent).state).toBe('refreshing')
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(status)).state).toBe('refreshing')
       expect(f.calls.qualified).toEqual([])
       finish()
       expect(await f.settle('p-unit')).toMatchObject({ state: 'qualified', commit })
@@ -65,7 +66,8 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
     try {
       const started = await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-1' })
       expect(started.isError).not.toBe(true)
-      expect(BuildComputerPrepareStatusSchema.parse(started.structuredContent)).toMatchObject({ deviceId: dexter, state: 'approving' })
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(started)))
+        .toMatchObject({ deviceId: dexter, state: 'approving' })
       const done = await f.settle('p-install')
       expect(done).toMatchObject({ state: 'qualified', commit, deviceId: dexter, message: null })
       expect(done.profiles.map(value => [value.profileId, value.status]).sort()).toEqual([['p-install', 'qualified'], ['p-unit', 'qualified']])
@@ -118,7 +120,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
         workspaceId: f.workspaceId, profileId: 'p-unit',
       }, 'reader')
       expect(read.isError).not.toBe(true)
-      expect(BuildComputerPrepareStatusSchema.parse(read.structuredContent)).toMatchObject({
+      expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toMatchObject({
         state: 'qualified', commit, profiles: expect.arrayContaining([
           { profileId: 'p-unit', revision: 4, status: 'qualified' },
         ]),

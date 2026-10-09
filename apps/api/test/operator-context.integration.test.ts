@@ -5,7 +5,7 @@ import {
 } from '@foreman-code/contracts/operator-mcp'
 import { ManagedWorkspacePageSchema, ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { SavedManagedWorkflowPageSchema, SavedManagedWorkflowSchema } from '@foreman-code/contracts/wave25'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
@@ -13,6 +13,7 @@ describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () 
   it('looks up available schemas without prior discovery, rejects denied targets and audits denied callers', async () => {
     const f = await currentOperatorIntegration()
     try {
+      const update = vi.spyOn(f.services.workspaces, 'update')
       const lookup = async (name: string, includeOutputSchema = false) => {
         const result = await f.client.callTool({ name: 'operator_tool_schema_get', arguments: { name, includeOutputSchema } })
         expect(result.isError).not.toBe(true)
@@ -24,7 +25,17 @@ describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () 
       expect(input.inputSchema.required).toEqual(expect.arrayContaining(['commandId', 'expectedRevision', 'workspaceId']))
       expect(input.permissionRequirements.actions).toContain('workspaces:update')
       expect((await lookup('workspace_update', true)).outputSchema).toBeDefined()
+      expect(update).not.toHaveBeenCalled()
+      update.mockRestore()
       expect((await f.client.listTools()).tools.every((tool) => tool.outputSchema === undefined)).toBe(true)
+
+      for (const name of ['device_main_identity_get', 'unknown_tool']) {
+        const unavailable = await f.client.callTool({ name: 'operator_tool_schema_get', arguments: { name } })
+        expect(unavailable.isError).toBe(true)
+        expect(decodeMcpToolResult(unavailable)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+        expect(decodeMcpToolResult(unavailable)).not.toHaveProperty('inputSchema')
+        expect(decodeMcpToolResult(unavailable)).not.toHaveProperty('outputSchema')
+      }
 
       const issued = await f.access.issue({ name: 'Schema reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['capabilities:read'], scope: {} }] })
@@ -33,6 +44,8 @@ describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () 
       expect(denied.isError).toBe(true)
       expect(decodeMcpToolResult(denied)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       expect(denied).not.toHaveProperty('structuredContent')
+      expect(decodeMcpToolResult(denied)).not.toHaveProperty('inputSchema')
+      expect(decodeMcpToolResult(denied)).not.toHaveProperty('outputSchema')
       const noGrant = await f.access.issue({ name: 'No capability grant', audience: 'operator',
         expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['workspaces:read'], scope: {} }] })
       const restricted = await f.connect(noGrant.token)
@@ -84,23 +97,55 @@ describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () 
         .toBe('Persisted workspace description')
       const persisted = await f.services.workspaces.get(f.writer.principal, ids[0]!)
       expect(full.items.find((item) => item.workspace.id === ids[0])).toEqual(persisted)
+      const readback = ManagedWorkspaceSchema.parse(decodeMcpToolResult(await f.client.callTool({
+        name: 'workspace_get', arguments: { workspaceId: ids[0] },
+      })))
+      expect(readback).toEqual(persisted)
 
       const workflow = decodeMcpToolResult(await f.client.callTool({ name: 'workflow_create', arguments: {
         workspaceId: ids[0], commandId: randomUUID(), name: 'Context workflow', description: 'Persisted workflow description',
       } }))
       const saved = SavedManagedWorkflowSchema.parse(workflow.value)
+      const savedWorkflows = [saved]
+      for (let index = 1; index < 11; index++) {
+        const created = decodeMcpToolResult(await f.client.callTool({ name: 'workflow_create', arguments: {
+          workspaceId: ids[0], commandId: randomUUID(), name: `Context workflow ${index}`,
+          description: 'Persisted workflow description',
+        } }))
+        savedWorkflows.push(SavedManagedWorkflowSchema.parse(created.value))
+      }
       const summary = WorkflowSummaryPageSchema.parse(decodeMcpToolResult(await f.client.callTool({
         name: 'workflow_list', arguments: { workspaceId: ids[0] },
       })))
-      expect(summary.items).toEqual([{ workflow: {
-        id: saved.workflow.id, workspaceId: ids[0], name: 'Context workflow',
-      }, revision: saved.revision, currentVersionId: saved.currentVersionId,
-      archivedAt: null, detailsOmitted: true }])
-      const workflows = SavedManagedWorkflowPageSchema.parse(decodeMcpToolResult(await f.client.callTool({
-        name: 'workflow_list', arguments: { workspaceId: ids[0], detail: 'full' },
+      expect(summary.items).toHaveLength(10)
+      expect(summary.pageInfo.nextCursor).not.toBeNull()
+      const next = WorkflowSummaryPageSchema.parse(decodeMcpToolResult(await f.client.callTool({
+        name: 'workflow_list', arguments: { workspaceId: ids[0], cursor: summary.pageInfo.nextCursor },
       })))
-      expect(workflows.items).toEqual([saved])
-      expect((await f.client.callTool({ name: 'workspace_list', arguments: { limit: 101 } })).isError).toBe(true)
+      expect(next.items).toHaveLength(1)
+      expect(next.pageInfo.nextCursor).toBeNull()
+      const summaries = [...summary.items, ...next.items]
+      expect(summaries.map((item) => item.workflow.id).sort())
+        .toEqual(savedWorkflows.map((item) => item.workflow.id).sort())
+      expect(summaries).toEqual(expect.arrayContaining(savedWorkflows.map((item) => ({
+        workflow: { id: item.workflow.id, workspaceId: ids[0], name: item.workflow.name },
+        revision: item.revision, currentVersionId: item.currentVersionId,
+        archivedAt: item.archivedAt, detailsOmitted: true,
+      }))))
+      const workflows = SavedManagedWorkflowPageSchema.parse(decodeMcpToolResult(await f.client.callTool({
+        name: 'workflow_list', arguments: { workspaceId: ids[0], detail: 'full', limit: 100 },
+      })))
+      expect(workflows.items).toHaveLength(savedWorkflows.length)
+      expect(workflows.items).toEqual(expect.arrayContaining(savedWorkflows))
+      const workflowReadback = SavedManagedWorkflowSchema.parse(decodeMcpToolResult(await f.client.callTool({
+        name: 'workflow_get', arguments: { workspaceId: ids[0], workflowId: saved.workflow.id },
+      })))
+      expect(workflowReadback).toEqual(saved)
+      for (const limit of [0, 1.5, 101]) {
+        expect((await f.client.callTool({ name: 'workspace_list', arguments: { limit } })).isError).toBe(true)
+        expect((await f.client.callTool({ name: 'workflow_list', arguments: { workspaceId: ids[0], limit } })).isError)
+          .toBe(true)
+      }
     } finally { await f.close() }
   }, 60000)
 })

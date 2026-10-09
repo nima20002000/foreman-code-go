@@ -288,7 +288,9 @@ export async function ciPreparationFixture(options: {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) })
     const responseBody = await response.text()
     const body = responseBody.split('\n').find(line => line.startsWith('data: '))?.slice(6) ?? responseBody
-    return JSON.parse(body).result as { isError?: boolean; structuredContent?: unknown; content?: { text: string }[] }
+    return JSON.parse(body).result as {
+      isError?: boolean; structuredContent?: unknown; content?: { type: string; text?: string }[]
+    }
   }
   const settle = async (profileId: string, provisioner = ciRuntime) => {
     for (let attempt = 0; attempt < 500; attempt++) {

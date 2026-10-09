@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -36,7 +37,7 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
   const result = await client.callTool({ name, arguments: args }, { timeout: 180000 })
   // Do not print request bodies or fixture credentials on failure.
   expect(result.isError, `Public MCP operation ${name} failed`).not.toBe(true)
-  return result.structuredContent
+  return decodeMcpToolResult(result)
 }
 
 async function expectDenied(client: Client, name: string, args: Record<string, unknown>) {

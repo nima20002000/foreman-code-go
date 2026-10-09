@@ -395,7 +395,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('Operator man
     expect((await pool.query('select outcome from management_audit where principal_id=$1 and action=$2',
       [delegated.id, 'workflow_create'])).rows).toEqual([{ outcome: 'denied' }])
     const page = SavedManagedWorkflowPageSchema.parse(decodeMcpToolResult((await nativeMcp(file.context.nativeSessionId, 'workflow_list', {
-      workspaceId: workspace.id,
+      workspaceId: workspace.id, detail: 'full',
     }))))
     expect(page.items).toEqual([])
     expect((await pool.query('select id from workflows where workspace_id=$1', [workspace.id])).rowCount).toBe(0)

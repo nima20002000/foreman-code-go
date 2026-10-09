@@ -1,3 +1,4 @@
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { ManagedAgentDefaultsSchema, AgentDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
@@ -33,7 +34,8 @@ it.each(['service', 'mcp'] as const)('rejects an ephemeral Operator host profile
     expect((await f.pool.query("select count(*)::int as count from application_setting_versions where setting_key='agent-defaults-v1'")).rows[0].count).toBe(0)
     expect((await f.pool.query('select count(*)::int as count from operator_configuration_versions')).rows[0].count).toBe(1)
     expect(await f.operators.ensure()).toEqual(operator)
-    expect(ManagedAgentDefaultsSchema.parse((await client.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)).toEqual(initial)
+    const initialRead = await client.callTool({ name: 'agent_defaults_get', arguments: {} })
+    expect(ManagedAgentDefaultsSchema.parse(decodeMcpToolResult(initialRead))).toEqual(initial)
 
     const reader = await f.access.issue({ name: 'defaults reader', audience: 'operator',
       grants: [{ actions: ['settings:read', 'harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
@@ -53,10 +55,12 @@ it.each(['service', 'mcp'] as const)('rejects an ephemeral Operator host profile
       ...initial.value.operator, harness, harnessProfileSelection: { target: persistent.target,
         instanceId: persistent.instanceId, instanceRevision: persistent.instanceRevision },
     } } }
-    const saved = AgentDefaultsUpdateResultSchema.parse((await client.callTool({ name: 'agent_defaults_update', arguments: valid })).structuredContent)
+    const updated = await client.callTool({ name: 'agent_defaults_update', arguments: valid })
+    const saved = AgentDefaultsUpdateResultSchema.parse(decodeMcpToolResult(updated))
     expect(saved.value.revision).toBe(1)
     expect(saved.value.value.operator.harnessProfileSelection).toEqual(valid.value.operator.harnessProfileSelection)
-    expect(ManagedAgentDefaultsSchema.parse((await denied.callTool({ name: 'agent_defaults_get', arguments: {} })).structuredContent)).toEqual(saved.value)
+    const readback = await denied.callTool({ name: 'agent_defaults_get', arguments: {} })
+    expect(ManagedAgentDefaultsSchema.parse(decodeMcpToolResult(readback))).toEqual(saved.value)
     expect((await f.pool.query('select count(*)::int as count from operator_configuration_versions')).rows[0].count).toBe(2)
   } finally { await f.close() }
 }, 30_000)

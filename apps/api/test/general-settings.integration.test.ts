@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it } from 'vitest'
 import { GeneralSettingsUpdateResultSchema, ManagedGeneralSettingsSchema,
   type GeneralSettingsUpdateInput } from '@foreman-code/contracts/management'
@@ -22,20 +23,20 @@ it('persists shared preferences through authenticated MCP, denies writes, and pr
     expect((await otherComputer.callTool({ name: 'general_settings_update', arguments: input })).isError).toBe(true)
     const call = (arguments_: GeneralSettingsUpdateInput) =>
       client.callTool({ name: 'general_settings_update', arguments: arguments_ })
-    const result = GeneralSettingsUpdateResultSchema.parse((await call(input)).structuredContent)
+    const result = GeneralSettingsUpdateResultSchema.parse(decodeMcpToolResult(await call(input)))
     expect(result).toMatchObject({ value: { value: { theme: 'light' }, revision: 1 }, replayed: false })
-    const persisted = ManagedGeneralSettingsSchema.parse((await otherComputer.callTool({
+    const persisted = ManagedGeneralSettingsSchema.parse(decodeMcpToolResult(await otherComputer.callTool({
       name: 'general_settings_get', arguments: {},
-    })).structuredContent)
+    })))
     expect(persisted).toEqual(result.value)
     const restarted = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(f.pool), f.commands)
     expect(await restarted.getGeneralSettings(reader.principal)).toEqual(persisted)
-    expect(GeneralSettingsUpdateResultSchema.parse((await call(input)).structuredContent))
+    expect(GeneralSettingsUpdateResultSchema.parse(decodeMcpToolResult(await call(input))))
       .toEqual({ ...result, replayed: true })
     expect((await call({ ...input, commandId: randomUUID() })).isError).toBe(true)
     expect((await call({ ...input, value: { theme: 'dark' } })).isError).toBe(true)
-    const saved = GeneralSettingsUpdateResultSchema.parse((await call({ ...input,
-      value: { theme: 'dark' }, expectedRevision: 1, commandId: randomUUID() })).structuredContent)
+    const saved = GeneralSettingsUpdateResultSchema.parse(decodeMcpToolResult(await call({ ...input,
+      value: { theme: 'dark' }, expectedRevision: 1, commandId: randomUUID() })))
     expect(saved.value).toMatchObject({ value: { theme: 'dark' }, revision: 2 })
     const audits = await f.pool.query('select source,outcome from management_audit where action=$1', ['general.settings.update'])
     expect(audits.rows.filter(row => row.outcome === 'succeeded')).toEqual([

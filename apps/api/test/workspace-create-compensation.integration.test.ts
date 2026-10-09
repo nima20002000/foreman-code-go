@@ -132,7 +132,9 @@ describe('workspace project folder compensation through authenticated MCP', () =
       expect(denied.isError).toBe(true)
       expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
       expect(await readdir(f.parentPath)).toEqual([])
-      expect((await callWorkspaceTool(f.owner.client, 'workspace_list', contracts.ManagedWorkspacePageSchema)).items).toEqual([])
+      const listed = await callWorkspaceTool(f.owner.client, 'workspace_list', contracts.ManagedWorkspacePageSchema,
+        { detail: 'full' })
+      expect(listed.items).toEqual([])
       expect((await f.pool.query('select count(*)::int as count from management_command_receipts where command_id = $1',
         [input.commandId])).rows[0].count).toBe(0)
     } finally { await f.close() }

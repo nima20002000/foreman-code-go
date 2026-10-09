@@ -103,6 +103,8 @@ it('returns the stable workspace directory through authenticated MCP and denies 
       { requestInit: { headers: { authorization: 'Bearer worker' } } }))
     const first = await client.callTool({ name: 'context_get', arguments: {} })
     expect(first.isError).not.toBe(true)
+    expect(first.structuredContent).toEqual(decodeMcpToolResult(first))
+    expect((await client.listTools()).tools.find((tool) => tool.name === 'context_get')?.outputSchema).toBeDefined()
     expect(decodeMcpToolResult(first)).toMatchObject({ sharedFiles: { provider: 'syncthing', path: expect.stringMatching(/^\/main\/shared\/workspace-[a-f0-9]{64}$/u) } })
     name = 'Renamed workspace'
     expect(decodeMcpToolResult((await client.callTool({ name: 'context_get', arguments: {} })))).toEqual(decodeMcpToolResult(first))
