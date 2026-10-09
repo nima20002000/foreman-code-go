@@ -94,6 +94,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     const bytes = Buffer.from('original immutable source'), manifest = createSourceManifest({ version:1,snapshotId:randomUUID(),approvedSourceId:randomUUID(),
       capturePolicy:'git-tree-v1',git:{commit:'2'.repeat(40),tree:'3'.repeat(40),objectFormat:'sha1'},executablePolicy:'strip',deletions:[],
       entries:[{path:'source.txt',kind:'file',byteSize:bytes.length,sha256:sourceSha256(bytes),executable:false}] })
+    const snapshotRoot = join(directory, 'snapshots')
+    await mkdir(snapshotRoot, { mode: 0o700 })
+    const snapshots = new PrivateSourceSnapshotStore(snapshotRoot)
+    await snapshots.write(manifest.snapshotId, manifest.entries[0]!, bytes)
+    await snapshots.commit(manifest)
     const handle = await openPrivateRoot(namespace), filesystem = await identity(handle); await handle.close()
     root = SourceRootRecordSchema.parse({version:1,source:{approvedSourceId:manifest.approvedSourceId,snapshotId:manifest.snapshotId,manifestDigest:manifest.manifestDigest},
       selection:{hostRef:{kind:'device',mainId,deviceId:binding.deviceId},rootPolicyId:policyId,rootPolicyRevision:'1',locationRevision:'1'},
@@ -140,7 +145,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:binding.bootId,connectionGeneration:1}),
       request:async(_namespace,request)=>({payload:await worker.handle(SourceFilesystemOperationSchema.parse(request),{binding,signal:new AbortController().signal})})})},owners,{send:unused})
     const commands = new PostgresCommandCoordinator(database.pool)
-    sources = new PostgresSourceService(database.pool,commands,{} as never,new PrivateSourceSnapshotStore(join(directory,'snapshots')),mainId,{} as never,
+    sources = new PostgresSourceService(database.pool,commands,{} as never,snapshots,mainId,{} as never,
       {authorize:async()=>{},authorizeFinal:async()=>{},prepare: async (manifest, root, attempt) => {
           if (interruptSourceTransfer) throw new DomainError('SOURCE_TRANSFER_PENDING', 'Fixture source transfer interrupted', 503)
           const row = (await database.pool.query<{ spec: unknown }>(
@@ -542,6 +547,13 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       await f.jobs.wakeQueue()
       expect((await f.jobs.getQueueTicket(f.principal, workspaceId, next.id)).executionId).toBe(next.executionId)
       expect(f.delivered).toEqual([next.executionId])
+      expect((await database.pool.query<{ materialization: string; reservation: string; computer_released: boolean }>(
+        `select m.state as materialization,r.state as reservation,s.released_at is not null as computer_released
+          from source_execution_materializations m join source_storage_reservations r
+            on r.reservation_id=m.reservation_id
+          join job_computer_selections s on s.operation_id=m.operation_id
+          where m.execution_id=$1`, [next.executionId])).rows[0])
+        .toEqual({ materialization: 'closed', reservation: 'reclaimed', computer_released: true })
     } finally {
       sourceQuotaConfiguration = undefined
       interruptSourceTransfer = false
