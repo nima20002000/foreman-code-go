@@ -176,8 +176,8 @@ export async function createInstalledWorkerDomains(input: {
     const sources = new SourceOperationWorkerService({
       authenticate: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not on the actual original worker generation.', 409) },
       approvedRoots: roots,
-      async quotaPoolFor(binding, options) {
-        const pool = await installedSourceQuotaPool(input.jobConfiguration ?? null, binding, options)
+      async quotaPoolFor(binding) {
+        const pool = await installedSourceQuotaPool(input.jobConfiguration ?? null, binding)
         return pool ? { pool } : undefined
       },
       currentOwner: async (operation, context) => {

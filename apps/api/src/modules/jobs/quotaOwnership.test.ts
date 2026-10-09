@@ -31,23 +31,21 @@ async function installedQuota() {
   return { path, ownerUid: process.getuid!() }
 }
 
-describe('source cleanup quota selection', () => {
-  it('closes a preparation after its source binding changed on the same installed physical root', async () => {
+describe('installed source quota selection', () => {
+  it('prepares and closes an authorized source snapshot on the same installed physical root', async () => {
     const configuration = await installedQuota()
     const binding = { ...profile.root.binding, bindingRevision: profile.root.binding.bindingRevision + 1,
       snapshotId: '22222222-2222-4222-8222-222222222222', manifestDigest: '2'.repeat(64) }
-    expect(await installedSourceQuotaPool(configuration, binding)).toBeNull()
-    expect(await installedSourceQuotaPool(configuration, binding, { purpose: 'cleanup' })).toEqual(pool)
+    expect(await installedSourceQuotaPool(configuration, binding)).toEqual(pool)
   })
 
   it.each(['rootId', 'workspaceId', 'canonicalPath', 'locationRevision', 'filesystem', 'accessMode'] as const)(
-    'refuses cleanup with a changed physical root field: %s', async field => {
+    'refuses another installed physical root: %s', async field => {
       const configuration = await installedQuota()
       const changed = { rootId: '22222222-2222-4222-8222-222222222222', workspaceId: 'another-workspace',
         canonicalPath: '/another/root', locationRevision: profile.root.binding.locationRevision + 1,
         filesystem: { ...profile.root.binding.filesystem, inode: '9999' }, accessMode: 'read-only' as const }
-      expect(await installedSourceQuotaPool(configuration, { ...profile.root.binding, [field]: changed[field] },
-        { purpose: 'cleanup' })).toBeNull()
+      expect(await installedSourceQuotaPool(configuration, { ...profile.root.binding, [field]: changed[field] })).toBeNull()
     })
 })
 describe('observed project quota ownership', () => {

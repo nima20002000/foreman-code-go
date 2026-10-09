@@ -185,8 +185,8 @@ it('closes an unmaterialized verification attempt using its installed quota afte
   await writeFile(path, JSON.stringify({ schemaVersion: 2,
     root: { binding: { ...f.root.binding, bindingRevision: 2, snapshotId: randomUUID(), manifestDigest: 'c'.repeat(64) } },
     descriptor: { quotaPool: pool } }), { mode: 0o600 })
-  f.quotaPoolFor.mockImplementation(async (binding, options) => {
-    const selected = await installedSourceQuotaPool({ path, ownerUid: process.getuid!() }, binding, options)
+  f.quotaPoolFor.mockImplementation(async (binding) => {
+    const selected = await installedSourceQuotaPool({ path, ownerUid: process.getuid!() }, binding)
     return selected ? { pool: selected } : undefined
   })
   const response = await f.service.handle({ version: 1, operation: 'sources.reconcile-preparation',
