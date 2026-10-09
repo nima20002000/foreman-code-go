@@ -11,6 +11,7 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS, type CiAuthority } from './ciAuthority.
 import { canonical, jobDigest } from './digest.js'
 import { DomainError } from '../errors.js'
 import { DeviceAccessError } from '../devices/access.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { z } from 'zod'
 import { MaterializationReceiptSchema } from '@foreman-code/contracts/source-materialization'
 import type { ApprovedSourcePin, SourceRootRecord } from '@foreman-code/contracts/source-admission'
@@ -125,8 +126,10 @@ export class CiService {
         bound++
       } catch (error) {
         if (error instanceof DomainError && error.code === 'SOURCE_ROOT_REVISION_CONFLICT') throw error
-        // An offline or removed computer is not a build candidate for this commit; the queue uses the others.
-        if (!(error instanceof DeviceAccessError) && !(error instanceof DomainError && ![401, 403].includes(error.status))) throw error
+        // An offline, removed or refusing computer (for example a root out of the workspace's current scope) is not a
+        // build candidate for this commit; the queue uses the others.
+        if (!(error instanceof DeviceAccessError) && !(error instanceof DeviceApplicationError)
+          && !(error instanceof DomainError && ![401, 403].includes(error.status))) throw error
       }
     }
     if (!bound) throw new DomainError('CI_NO_BUILD_COMPUTER', 'No build computer root could receive this commit.', 409)

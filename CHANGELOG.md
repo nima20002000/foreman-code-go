@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- CI no longer fails with INTERNAL_ERROR when one build computer rejects the commit for its root (for example after the workspace moved); the request queues on the computers that accept it.
 - CI requests no longer fail with SOURCE_CAPACITY after a busy day of commits: when a new source capture would exceed Main's budget, snapshots that nothing actively uses are released before their retention window ends.
 - Internal CI tool failures are logged on Main instead of surfacing only as INTERNAL_ERROR.
 - Workflow Agents on Codex 0.16x no longer stop at a native approval prompt for each of their own Foreman Code MCP tools (for example `ci_run`); each call is still authorized by the Agent's grants.

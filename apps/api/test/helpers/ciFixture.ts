@@ -12,6 +12,7 @@ import type { CiAuthority } from '../../src/modules/jobs/ciAuthority.js'
 import { requireAuthorization } from '../../src/modules/access/policy.js'
 import { DomainError } from '../../src/modules/errors.js'
 import { DeviceAccessError } from '../../src/modules/devices/access.js'
+import { DeviceApplicationError } from '../../src/modules/devices/deviceApplicationError.js'
 import { jobDigest } from '../../src/modules/jobs/digest.js'
 import { createSourceManifest } from '../../src/modules/sources/manifest.js'
 import { jobExecution } from './jobFixture.js'
@@ -77,7 +78,7 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
   const templates = [jobVerificationTemplate({ profileId: 'profile', profileRevision: 1,
     suite: 'unit', ready: true, resources: runtime.spec.verification.resources, maxUnitWorkers: 1,
     policy: jobPolicyRequirementsRecord(runtime.spec.policy) })]
-  const roots: { offline: boolean; source: unknown; selection: { rootPolicyId: string }
+  const roots: { offline: boolean; refusing?: boolean; source: unknown; selection: { rootPolicyId: string }
     binding: { rootId: string; bindingRevision: number; accessMode: 'exclusive-write' } }[] = [
     { offline: false, source: null, selection: { rootPolicyId: 'online-root' },
       binding: { rootId: randomUUID(), bindingRevision: 1, accessMode: 'exclusive-write' } },
@@ -118,6 +119,8 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
     }) => {
       const root = roots.find(value => value.selection.rootPolicyId === input.selection.rootPolicyId)!
       if (root.offline) throw new DeviceAccessError('revoked')
+      // The computer is connected but rejects the bind, as an out-of-scope root does.
+      if (root.refusing) throw new DeviceApplicationError('extension-rejected')
       if (root.binding.bindingRevision !== input.expectedBindingRevision) {
         throw new DomainError('SOURCE_ROOT_REVISION_CONFLICT', 'Root binding changed.', 409)
       }

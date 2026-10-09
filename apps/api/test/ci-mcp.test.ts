@@ -148,6 +148,18 @@ describe('CI over the authenticated unified MCP transport', () => {
     } finally { await f.app.close() }
   })
 
+  it('queues CI on the computers that accept the commit when another computer rejects its root', async () => {
+    const f = await fixture()
+    try {
+      f.roots[1]!.offline = false
+      f.roots[1]!.refusing = true
+      const result = await f.call('ci_run', { suite: 'unit', commandId: 'one-refuses' })
+      expect(result.result.isError, JSON.stringify(result.result)).not.toBe(true)
+      CiRunOutputSchema.parse(result.result.structuredContent)
+      expect(f.counts().enqueues).toBe(1)
+    } finally { await f.app.close() }
+  })
+
   it('refuses CI when no build computer can receive the commit', async () => {
     const f = await fixture()
     try {
