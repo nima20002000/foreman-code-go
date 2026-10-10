@@ -68,6 +68,17 @@ describe('ENG04 native evidence and first-terminal immutability', () => {
       expect(() => assertRepeatNativeUpdate(f.execution, { ...incoming, ...mutation })).toThrow()
     }
   })
+  it('rejects changing or dropping the application system prompt snapshot after session start', () => {
+    const snapshot = { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' }
+    const previous = { ...nativeFixture().execution, systemPrompt: snapshot }
+    const incoming = nativeCompleted(previous)
+    expect(assertRepeatNativeUpdate(previous, incoming)).toBe('write')
+    expect(() => assertRepeatNativeUpdate(previous, { ...incoming,
+      systemPrompt: { ...snapshot, revision: 4 } })).toThrow()
+    const missing = { ...incoming }
+    delete missing.systemPrompt
+    expect(() => assertRepeatNativeUpdate(previous, missing)).toThrow()
+  })
   it('allows identical terminal replay but rejects changed terminal time or business output', () => {
     const prior = nativeCompleted(nativeFixture().execution)
     expect(assertRepeatNativeUpdate(prior, structuredClone(prior))).toBe('replay')

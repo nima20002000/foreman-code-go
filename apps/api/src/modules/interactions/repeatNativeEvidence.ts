@@ -43,6 +43,7 @@ export function assertRepeatNativeUpdate(previous: HarnessExecution, incoming: H
     agentId: execution.agentId, agentConfigurationVersionId: execution.agentConfigurationVersionId,
     attempt: execution.attempt, createdAt: execution.createdAt, input: execution.input,
     workingDirectory: execution.workingDirectory, runtimeDirectory: execution.runtimeDirectory,
+    systemPrompt: execution.systemPrompt,
   })
   if (!isDeepStrictEqual(immutable(previous), immutable(incoming))
     || previous.nativeSessionId !== undefined && previous.nativeSessionId !== incoming.nativeSessionId

@@ -1,4 +1,5 @@
-import { sessionStartDirectory, sessionStartOwner, sessionStartCorrelation, sessionStartConfiguration } from '../sessionStart.js'
+import { sessionStartDirectory, sessionStartOwner, sessionStartCorrelation, sessionStartConfiguration,
+  sessionStartSystemPrompt } from '../sessionStart.js'
 import { claudeCompactionResultMatches } from './compactionResults.js'
 import { recoveredClaudeCompaction } from './compactionHistory.js'
 import { z } from 'zod'
@@ -188,14 +189,15 @@ export function createClaudeNativeSessionManager(options: {
     }
     const scoped = claudeSessionEnvironment(appMcpTokenEnvironment(environment), preferences)
     const instructions = agentInstructionBundle(sessionStartConfiguration(start))
-    if (!instructions) return { ...options.sdkOptions, env: scoped }
+    const systemPrompt = sessionStartSystemPrompt(start)?.value.text
+    if (!instructions && !systemPrompt) return { ...options.sdkOptions, env: scoped }
     const base = options.sdkOptions.systemPrompt
     if (base !== undefined && typeof base !== 'string') {
       throw new HarnessExecutionError('CLAUDE_SYSTEM_PROMPT_UNSUPPORTED',
         'Persistent Agent instructions require a string SDK system prompt.')
     }
     return { ...options.sdkOptions, env: scoped,
-      systemPrompt: [base, instructions.text].filter(Boolean).join('\n\n') }
+      systemPrompt: [base, systemPrompt, instructions?.text].filter(Boolean).join('\n\n') }
   }
   function qualified(capability: 'basicTurns' | 'resume' | 'fork' | 'history') {
     if (!options.qualification[capability]) throw new HarnessExecutionError('CLAUDE_CAPABILITY_UNQUALIFIED', `Claude ${capability} has not been qualified on the selected installation.`)
@@ -276,7 +278,7 @@ export function createClaudeNativeSessionManager(options: {
     start = canonicalStart(start)
     if (start.kind === 'agent-chat') return { kind: start.kind, configuration: start.configuration,
       conversationId: start.conversationId, workflowId: start.workflowId, workflowNodeId: start.workflowNodeId,
-      cwd: start.workingDirectory, environment: start.environment }
+      cwd: start.workingDirectory, environment: start.environment, systemPrompt: start.systemPrompt }
     return start.kind === 'operator'
       ? { kind: start.kind, configuration: start.configuration,
         cwd: start.workingDirectory, environment: start.environment }

@@ -164,8 +164,10 @@ export class PostgresOperatorConversationRepository {
   private async createWithQuery(query: Queryable, operatorId: string, configuration: OperatorConfigurationVersion,
     ownerId: string, title: string | undefined, id: string): Promise<Conversation> {
     const now = new Date().toISOString()
+    const initialPrompt = await new PostgresFoundationSettingsRepository(this.pool).getOperatorInitialPrompt(query)
     const value = ConversationSchema.parse({ id, agentId: operatorId, scope: 'application',
-      operatorConfigurationVersionId: configuration.id, title: title ?? 'New conversation', status: 'open', createdAt: now, updatedAt: now })
+      operatorConfigurationVersionId: configuration.id, initialPrompt,
+      title: title ?? 'New conversation', status: 'open', createdAt: now, updatedAt: now })
     await query.query(`insert into operator_conversations
       (id,operator_id,operator_configuration_version_id,harness,owner_principal_id,record)
       values ($1,$2,$3,$4,$5,$6::jsonb) on conflict(id) do nothing`,
@@ -392,6 +394,11 @@ export class PostgresOperatorConversationRepository {
   async hasMessages(id: string): Promise<boolean> {
     return (await this.pool.query('select 1 from operator_conversation_messages where conversation_id=$1 limit 1', [id])).rowCount === 1
   }
+  async hasNativeSubmission(id: string): Promise<boolean> {
+    const result = await this.pool.query(`select 1 from operator_conversation_turns
+      where conversation_id=$1 and (native_turn_id is not null or payload->'nativeSubmission' is not null) limit 1`, [id])
+    return result.rowCount === 1
+  }
   async active(id: string, query: Queryable = this.pool): Promise<ConversationRow | undefined> {
     return (await query.query<ConversationRow>("select * from operator_conversations where id=$1 and kind='operator'", [id])).rows[0]
   }
@@ -517,7 +524,8 @@ export class PostgresOperatorConversationRepository {
       const now = new Date().toISOString()
       const parentTitle = conversation(source).title ?? 'Conversation'
       const record = ConversationSchema.parse({ id: childId, agentId: current.operatorId, scope: 'application',
-        operatorConfigurationVersionId: next.id, title: `Continued · ${parentTitle}`, status: 'open', createdAt: now, updatedAt: now })
+        operatorConfigurationVersionId: next.id, initialPrompt: conversation(source).initialPrompt,
+        title: `Continued · ${parentTitle}`, status: 'open', createdAt: now, updatedAt: now })
       await client.query(`insert into operator_conversations
         (id,operator_id,operator_configuration_version_id,harness,owner_principal_id,record,parent_conversation_id,fork_request_id,
          handoff_source_harness,handoff_source_sequence,handoff_omitted_messages,handoff_context,

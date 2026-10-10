@@ -1,6 +1,7 @@
 import { AgentDefaultsSchema, withAdvancedDefaults, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@foreman-code/contracts'
 import { WorkspaceDefaultsUpdateInputSchema, type WorkspaceDefaultsUpdateInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { GeneralSettingsUpdateInputSchema, type GeneralSettingsUpdateInput } from '@foreman-code/contracts/management'
+import { PromptSettingUpdateInputSchema, type PromptSettingUpdateInput } from '@foreman-code/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
@@ -21,6 +22,42 @@ export class FoundationSettingsManagementService {
     private readonly operators?: PostgresOperatorRepository,
     private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'> & Partial<Pick<HostHarnessOverrideService, 'selectionForConfiguration' | 'prepareOperatorConfiguration'>>,
   ) {}
+
+  getSystemPrompt(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'settings:read')
+    return this.settings.getSystemPrompt()
+  }
+
+  updateSystemPrompt(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: PromptSettingUpdateInput) {
+    requireAuthorization(principal, 'settings:update')
+    const input = PromptSettingUpdateInputSchema.parse(raw)
+    return this.commands.execute({
+      principal, source, operation: 'system.prompt.update', commandId: input.commandId,
+      targetKey: 'system-prompt', payload: input,
+      authorize: async client => {
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+      },
+      perform: client => this.settings.updateSystemPrompt(input.value, input.expectedRevision, client),
+    })
+  }
+
+  getOperatorInitialPrompt(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'settings:read')
+    return this.settings.getOperatorInitialPrompt()
+  }
+
+  updateOperatorInitialPrompt(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: PromptSettingUpdateInput) {
+    requireAuthorization(principal, 'settings:update')
+    const input = PromptSettingUpdateInputSchema.parse(raw)
+    return this.commands.execute({
+      principal, source, operation: 'operator.initial.prompt.update', commandId: input.commandId,
+      targetKey: 'operator-initial-prompt', payload: input,
+      authorize: async client => {
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+      },
+      perform: client => this.settings.updateOperatorInitialPrompt(input.value, input.expectedRevision, client),
+    })
+  }
 
   getGeneralSettings(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'settings:read')

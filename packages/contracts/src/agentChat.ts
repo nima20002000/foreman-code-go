@@ -6,6 +6,7 @@ import { MessageAttachmentFields } from "./files.js";
 import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
 import { SavedNodePlacementSchema } from './nodePlacement.js';
 import { WorkspaceRootPolicySchema } from './workspaceRootPolicies.js';
+import { PromptSettingSnapshotSchema } from './prompts.js';
 
 export const AgentChatDirectoryBindingSchema = z.object({ workflowVersionId: z.string().min(1),
   placement: SavedNodePlacementSchema, policy: WorkspaceRootPolicySchema,
@@ -107,6 +108,7 @@ export const AgentConversationSchema = z.object({
   agentId: IdSchema,
   /** Accepted configuration pinned at creation; resume never re-injects its startup instructions. */
   agentConfigurationVersionId: IdSchema,
+  systemPrompt: PromptSettingSnapshotSchema.optional(),
   harness: RecordedAgentHarnessSchema,
   origin: AgentChatOriginSchema,
   /** Null until the first native session is bound, including a definitely rejected, retryable attempt. */

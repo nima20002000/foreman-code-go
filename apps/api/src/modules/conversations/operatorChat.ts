@@ -635,6 +635,16 @@ export class OperatorChatService {
     try {
       let row = await this.repository.active(id)
       if (!row || row.active_request_id !== input.requestId) return
+      const initialPrompt = publicOperatorConversation(row.record).initialPrompt?.value.text
+      const initialPromptText = initialPrompt && !await this.repository.hasNativeSubmission(id) ? initialPrompt : ''
+      const userPrompt = sessionTaskContent(input.content, input.sessionMode)
+      const hint = input.context && Object.values(input.context).some(Boolean)
+        ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
+      const messagePrompt = (handoffContext: string | null) => {
+        const preamble = [initialPromptText, handoffContext].filter(Boolean).join('\n\n')
+        const prefix = preamble ? `${preamble}\n\nCurrent user message:\n` : ''
+        return `${prefix}${userPrompt}${hint}`
+      }
       const fileInputs = Boolean(input.attachments?.length)
       const admittedFiles = await this.managers.hasFileInputs?.(id, input.requestId) ?? false
       if (fileInputs !== admittedFiles || fileInputs && !this.managers.recordFileSubmission) throw new DomainError(
@@ -672,13 +682,11 @@ export class OperatorChatService {
           }
           if (runtime.fileInputs && !this.managers.recordFileMessageSubmission) throw new DomainError('OPERATOR_FILE_MESSAGE_BINDING_REQUIRED', 'The file bridge requires an observed native message receipt.', 409)
           submitting = true
-          const hint = input.context && Object.values(input.context).some(Boolean)
-            ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
           initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(start, {
             ...await this.sessionControls().turnSettings(id, {
               requestId: input.requestId, nativeSessionId: null,
             }, input.sessionMode),
-            prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`,
+            prompt: messagePrompt(initialHandoff ? row.handoff_context : null),
             clientCorrelationId: start.correlationId,
             onTerminal,
             onSessionObserved: async (observed) => {
@@ -719,8 +727,6 @@ export class OperatorChatService {
       signal.throwIfAborted(); this.assertOpen()
       submitting = true
       const correlationId = nativeCorrelation(id, input.requestId)
-      const hint = input.context && Object.values(input.context).some(Boolean)
-        ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
       let submittedTurnId = row.active_native_turn_id
       const textOwner = () => ({ scope: { kind: 'operator_chat' as const, conversationId: id },
         requestId: input.requestId, sessionId: runtime.session!.nativeSessionId,
@@ -744,7 +750,7 @@ export class OperatorChatService {
         ...await this.sessionControls().turnSettings(id, {
           requestId: input.requestId, nativeSessionId: runtime.session.nativeSessionId,
         }, input.sessionMode),
-        prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`, clientCorrelationId: correlationId,
+        prompt: messagePrompt(includeHandoff ? row.handoff_context : null), clientCorrelationId: correlationId,
         onTerminal,
         onMessageSubmitted: async (receipt) => {
           submitted = true

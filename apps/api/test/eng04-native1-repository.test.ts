@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type HarnessExecution, type PromptSettingSnapshot } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { beforeGraphCommit, ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { RepeatRunRepository, type RepeatLockedHooks } from '../src/modules/runs/repeatPostgres.js'
@@ -19,6 +19,7 @@ function fixture() {
     workflowNodeId: f.ref.nodeId, agentId: f.execution.agentId, agentConfigurationVersionId: f.execution.agentConfigurationVersionId,
     attempt: 1, createdAt: nativeAt, state: 'queued', input })
   let launchDigest: string | undefined
+  let systemPrompt: PromptSettingSnapshot = { value: { text: '' }, revision: 0, versionId: null }
   let saved: { execution: HarnessExecution; launchDigest: string | undefined } | undefined
   const state = { stopped: false, owned: true, deny: false, loseCommit: false, missingReceipt: false,
     possible: false, forgedAttempt: false, failPublication: false, consumedInside: false }
@@ -62,6 +63,8 @@ function fixture() {
       return rows([{ reservation, reservation_digest: repeatDigest(reservation), phase: 'reserved', transition: null }])
     }
     if (q.startsWith('select effect_digest from run_graph_effects')) return rows(launchDigest ? [{ effect_digest: launchDigest }] : [])
+    if (q.includes('from application_settings')) return rows([{ record: systemPrompt.value,
+      revision: String(systemPrompt.revision), current_version_id: systemPrompt.versionId }])
     if (q.startsWith('select ( exists(select 1 from run_graph_effects')) return rows([{ possible_submission: state.possible }])
     if (q.startsWith('update harness_executions set record=$3::jsonb')) {
       expect(values[0]).toBe(execution.id)
@@ -114,6 +117,7 @@ function fixture() {
     manager: { harness: 'codex' } as never, source: { type: 'boundary' }, kind: 'recovery',
     lifetimeGeneration: 1, closureGeneration: null, assertCurrent: assertOwned })
   return { evidence, f, state, calls, changes, connection, store,
+    setSystemPrompt: (snapshot: PromptSettingSnapshot) => { systemPrompt = structuredClone(snapshot) },
     record: () => structuredClone(execution),
     terminal: () => { execution = nativeCompleted(HarnessExecutionSchema.parse({ ...f.execution, input })) },
     recover: () => new RepeatRunRepository(owner, host, f.version),
@@ -122,6 +126,18 @@ function fixture() {
 const paths = { workingDirectory: '/accepted/root', runtimeDirectory: '/accepted/runtime/exact' }
 
 describe('ENG04 NATIVE-1 launch commit, denial and immutable replay', () => {
+  it('pins the application system prompt at first launch and retains its revision after recovery', async () => {
+    const f = fixture()
+    const accepted = { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' }
+    f.setSystemPrompt(accepted)
+    const claimed = await f.store.claimLaunch(f.f.execution.id, paths)
+    expect(claimed?.systemPrompt).toEqual(accepted)
+    expect(f.record().systemPrompt).toEqual(accepted)
+    f.setSystemPrompt({ value: { text: 'Changed app instructions.' }, revision: 4, versionId: 'prompt-version-4' })
+    expect(await f.recover().claimLaunch(f.f.execution.id, paths)).toBeUndefined()
+    expect(f.record().systemPrompt).toEqual(accepted)
+    await f.connection.close()
+  })
   it('issues no permit until confirmed COMMIT and consumes it exactly once', async () => {
     const f = fixture()
     expect(f.store.consumeLaunchPermit(f.f.execution.id)).toBe(false)

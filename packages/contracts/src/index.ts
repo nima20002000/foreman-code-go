@@ -1,4 +1,6 @@
 import { TextTruncationSchema } from './activityText.js';
+import { PromptSettingSnapshotSchema } from './prompts.js';
+export * from './prompts.js';
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { NativeInteractionSupportSchema } from './nativeInteractionSupport.js';
 import { NativeInteractionInputSchema } from './interactionInput.js';
@@ -811,6 +813,7 @@ export const ConversationSchema = z
     agentId: IdSchema,
     scope: z.enum(["workspace", "application"]).optional(),
     operatorConfigurationVersionId: IdSchema.optional(),
+    initialPrompt: PromptSettingSnapshotSchema.optional(),
     title: z.string().optional(),
     status: ConversationStatusSchema.optional(),
     ...OptionalTimestampFields,
@@ -928,6 +931,7 @@ export const HarnessExecutionSchema = z
     agentId: IdSchema,
     agentConfigurationVersionId: IdSchema,
     attempt: z.number().int().positive(),
+    systemPrompt: PromptSettingSnapshotSchema.optional(),
     parallelGroupId: IdSchema.optional(),
     nativeSessionId: IdSchema.optional(),
     /** User project directory selected on the Run. Optional only for legacy history. */
@@ -1103,6 +1107,7 @@ export const HarnessExecutionRequestSchema = z
     workingDirectory: ExecutionLocationSchema.shape.rootPath,
     runtimeDirectory: ExecutionLocationSchema.shape.rootPath,
     initialPrompt: z.string().trim().min(1).optional(),
+    systemPrompt: PromptSettingSnapshotSchema.optional(),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
     executionContext: HarnessExecutionContextSchema.optional(),

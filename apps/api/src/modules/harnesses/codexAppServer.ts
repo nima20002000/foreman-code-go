@@ -1,6 +1,7 @@
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../diagnostics/runtimeTiming.js'
-import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartOwner, sessionStartCorrelation } from './sessionStart.js'
+import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartOwner,
+  sessionStartCorrelation, sessionStartSystemPrompt } from './sessionStart.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { SessionPreferencesSchema, type SessionPreferences } from '@foreman-code/contracts'
 import { codexCollaborationMode, codexCompactionNotification, codexContextSnapshot } from './codexSessionControls.js'
@@ -278,8 +279,9 @@ function binding(input: NativeSessionStart): string {
 function instructions(input: NativeSessionStart): string | null {
   if (input.kind === 'operator') return agentInstructionBundle(input.configuration)?.text ?? null
   const configuration = input.kind === 'agent-chat' ? input.configuration : input.request.configuration
-  if (configuration.instructionDelivery !== 'native-v1') return configuration.prompt.system ?? null
-  return agentInstructionBundle(configuration)?.text ?? null
+  const agentInstructions = configuration.instructionDelivery === 'native-v1'
+    ? agentInstructionBundle(configuration)?.text : configuration.prompt.system
+  return [sessionStartSystemPrompt(input)?.value.text, agentInstructions].filter(Boolean).join('\n\n') || null
 }
 function credentialIdentity(input: NativeSessionStart): string {
   return canonical(input.environment ?? null)
@@ -572,6 +574,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private creationIdentity(input: NativeSessionStart, source?: NativeSessionReference): string {
     return canonical({ binding: binding(input), configuration: accepted(input),
+      systemPrompt: sessionStartSystemPrompt(input) ?? null,
       environment: input.environment ?? null, source: source ?? null,
       sessionPreferences: input.sessionPreferences ?? this.startupPreferences ?? null })
   }
@@ -1823,6 +1826,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     if (runtime.configurationIdentity !== canonical(accepted(input))) {
       throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The loaded session has a different accepted configuration snapshot.')
+    }
+    if (canonical(sessionStartSystemPrompt(runtime.input) ?? null)
+      !== canonical(sessionStartSystemPrompt(input) ?? null)) {
+      throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH',
+        'The loaded session has a different accepted system prompt snapshot.')
     }
   }
   private assertIdle(runtime: Runtime): void {

@@ -128,6 +128,7 @@ export function createProductionWorkerConversations(input: {
         conversationId: options.conversationId, configurationVersionId: configuration.id,
         configurationHash: commandInputHash(configuration) }, harness: configuration.harness.harness,
         profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess,
+        ...(original.kind === 'agent' && original.record.systemPrompt ? { systemPrompt: original.record.systemPrompt } : {}),
         ...(directoryBinding ? { directoryBinding } : {}) })
       if (requestedBinding.owner.kind === 'operator') {
         const rootChannel = input.endpoint().captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
@@ -167,6 +168,9 @@ export function createProductionWorkerConversations(input: {
           if (!isDeepStrictEqual(savedBinding, originalBinding) && !isDeepStrictEqual(savedBinding, binding)) {
             unavailable('The persisted worker conversation owner changed.')
           }
+        }
+        if (live.kind === 'agent' && !isDeepStrictEqual(live.record.systemPrompt, binding.systemPrompt)) {
+          unavailable('The saved chat system prompt changed.')
         }
         if ('agentId' in configuration && directoryBinding) {
           if (!isDeepStrictEqual(live.record.directoryBinding, directoryBinding)) unavailable('The saved node directory changed.')

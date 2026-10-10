@@ -131,7 +131,8 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const owner = this.options.binding.owner
     if (owner.kind === 'agent' && (start.kind !== 'agent-chat'
       || start.conversationId !== owner.conversationId || start.workflowId !== owner.workflowId
-      || start.workflowNodeId !== owner.workflowNodeId)) {
+      || start.workflowNodeId !== owner.workflowNodeId
+      || !isDeepStrictEqual(start.systemPrompt, this.options.binding.systemPrompt))) {
       conflict('The native startup belongs to another node conversation.')
     }
     const environment = start.environment

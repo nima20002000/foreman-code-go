@@ -1045,7 +1045,7 @@ export class ApprovalExecutionCoordinator {
       const identity = reviewPreflightIdentity(lane, `execution:${execution.id}`)
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
         workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
-        runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input })
+        runtimeDirectory: execution.runtimeDirectory, systemPrompt: execution.systemPrompt, configuration, input: execution.input })
       if (retained.detached) {
         owned.closureRegistration = this.workflowClosures.begin(execution)
         owned.closureGeneration = await owned.closureRegistration
@@ -1739,7 +1739,7 @@ export class ApprovalExecutionCoordinator {
       const request = HarnessExecutionRequestSchema.parse({
         ...input.request, executionId: execution.id, runId: execution.runId,
         workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
-        runtimeDirectory: execution.runtimeDirectory, input: execution.input,
+        runtimeDirectory: execution.runtimeDirectory, systemPrompt: execution.systemPrompt, input: execution.input,
       })
       context = { ...await this.managerContext(execution, input.request.configuration), workflowRequest: request }
       await this.validateContinuation?.(execution.id, signal)
