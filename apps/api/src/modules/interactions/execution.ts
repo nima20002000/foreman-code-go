@@ -1657,6 +1657,7 @@ export class ApprovalExecutionCoordinator {
         && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
     let execution = ensured.execution
     let repeatLaunch = false
+    let nativeTurnOffered = false
     const assertBoundary = async () => {
       signal.throwIfAborted()
       input.owner.assertOwned()
@@ -1849,6 +1850,7 @@ export class ApprovalExecutionCoordinator {
             const observed = new Promise<NativeSessionReference>((resolve, reject) => { resolveObserved = resolve; rejectObserved = reject })
             const opening = this.openingSession(ownedSession, observed)
             void opening.catch(() => undefined) // Joined by the existing owned-session lifecycle.
+            nativeTurnOffered = true
             nativeEvents = manager.startInitialTurnBatches(start, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
               onSessionObserved: async (native) => {
@@ -1859,6 +1861,7 @@ export class ApprovalExecutionCoordinator {
           } else {
             await publishObservedSession(await this.openingSession(ownedSession,
               timeRuntimeOperation('harness', 'native.create_session', () => manager!.createSession(start, signal))))
+            nativeTurnOffered = true
             nativeEvents = manager.startTurnBatches(session!, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
             }, signal)
@@ -2000,11 +2003,10 @@ export class ApprovalExecutionCoordinator {
         input.owner.assertOwned()
         throw error
       }
-      // A v3 transport/receipt/identity error is not a proved terminal result.
-      // Keep possible submission and the exact manager for observation or Stop.
-      // Explicit harness failure and owner-requested cancellation retain the
-      // existing negative settlement/cleanup path below.
-      if (!signal.aborted && !(rawError instanceof HarnessExecutionError)) {
+      // A created session with no offered turn cannot recover by observing a turn.
+      // Close its original manager before recording failure; possible submissions remain recoverable.
+      const sessionWithoutTurn = repeatLaunch && ownedSession?.session && !nativeTurnOffered
+      if (!signal.aborted && !(rawError instanceof HarnessExecutionError) && !sessionWithoutTurn) {
         input.owner.assertOwned()
         if (repeatPhysicalSettlementPending(error)) await this.budgets.beginWait(execution.id)
         input.owner.assertOwned()
@@ -2012,6 +2014,11 @@ export class ApprovalExecutionCoordinator {
       }
       if ((resolved && !manager) || isLeaseLost(rawError)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
+      if (sessionWithoutTurn) {
+        const stored = (await repeat.readExecution(execution.id)).execution
+        assertSameRepeatExecution(ensured.execution, stored)
+        ownedSession!.execution = stored
+      }
       if (execution.state === 'completed' && (!ownedSession || this.closedExecutions.has(execution.id))) throw error
       // A transport error is not an original terminal result and never makes
       // a technical retry eligible. Fence future work, close the captured

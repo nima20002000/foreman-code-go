@@ -11,6 +11,7 @@ import { discoverLauncher } from '../src/modules/harnesses/hostDiscovery.js'
 import { inspectInstalledCodex } from '../src/modules/harnesses/installedCodexInspection.js'
 import { commandInputHash } from '../src/modules/commands/postgres.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from '../src/modules/harnesses/claudeSdk/profileRevision.js'
+import { qualificationIdentity } from '../src/modules/harnesses/qualification/identity.js'
 
 it('distinguishes unavailable and stale remote snapshots from a current empty installation inventory', async () => {
   const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
@@ -77,6 +78,44 @@ it('pins actual main installation payloads and invalidates selections after pass
     registry.stop()
     expect(() => registry.pinDefault('codex')).toThrow('shutting down')
   } finally { await pool.end() }
+})
+
+it('retains Main installation qualification identity across API restarts and invalidates changed environments', async () => {
+  const pool = new pg.Pool({ connectionString: 'postgresql://unused@127.0.0.1:1/unused' })
+  const mainId = randomUUID()
+  let fingerprint = 'provider-payload'
+  const launcher: typeof discoverLauncher = async (requested, environment) => ({
+    requested, resolvedLauncher: '/recorded/codex', fingerprint,
+    status: 'installed', interpreter: null, diagnostics: [], environment,
+    checkedAt: new Date().toISOString(),
+  })
+  const payloads: typeof passiveDriverPayloads = async () => ({ complete: true, paths: [] })
+  const registries: ProductionHarnessRegistry[] = []
+  const create = async (path: string, hostId = mainId) => {
+    const registry = new ProductionHarnessRegistry(pool, { codexBinary: 'codex' },
+      async () => ({ revision: 1, defaults: DEFAULT_HARNESS_DEFAULTS }),
+      new HostHarnessProfileEvidenceRepository(pool), () => null, { PATH: path }, { launcher, payloads })
+    registries.push(registry)
+    await registry.initialize(hostId)
+    return registry
+  }
+  try {
+    const original = await create('/recorded')
+    const accepted = original.pinDefault('codex')
+    const identity = qualificationIdentity(accepted, 'native-suite')
+    const restarted = await create('/recorded')
+    expect(qualificationIdentity(restarted.pinDefault('codex'), 'native-suite')).toEqual(identity)
+    const changedEnvironment = await create('/different')
+    expect(qualificationIdentity(changedEnvironment.pinDefault('codex'), 'native-suite')).not.toEqual(identity)
+    const differentMain = await create('/recorded', randomUUID())
+    expect(qualificationIdentity(differentMain.pinDefault('codex'), 'native-suite')).not.toEqual(identity)
+    fingerprint = 'replacement-payload'
+    const changedBinary = await create('/recorded')
+    expect(qualificationIdentity(changedBinary.pinDefault('codex'), 'native-suite')).not.toEqual(identity)
+  } finally {
+    for (const registry of registries) registry.stop()
+    await pool.end()
+  }
 })
 
 it('consumes the explicit passive Claude SDK declaration without inventing default profiles', async () => {
