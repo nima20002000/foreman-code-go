@@ -89,7 +89,9 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,JSON.stringify({id:workspaceId,name:'Failed source preparation fixture'})])
     access = new PostgresAccessService(database.pool)
     writer = await access.issue({ name: 'Scoped cleanup writer', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
-      grants: [{ actions: ['sources:read','sources:reconcile','source_roots:read','job_definitions:read','job_definitions:write','jobs:start','jobs:read','capabilities:read'], scope: {workspaceIds:[workspaceId]} }] })
+      grants: [{ actions: ['sources:read','sources:reconcile','source_roots:read','workspace_locations:read',
+        'job_definitions:read','job_definitions:write','jobs:start','jobs:read','capabilities:read'],
+      scope: {workspaceIds:[workspaceId]} }] })
     reader = await access.issue({ name: 'Scoped source reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
       grants: [{ actions: ['sources:read','source_roots:read','capabilities:read'], scope: {workspaceIds:[workspaceId]} }] })
     const bytes = Buffer.from('original immutable source'), manifest = createSourceManifest({ version:1,snapshotId:randomUUID(),approvedSourceId:randomUUID(),
@@ -155,7 +157,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
             ? verificationQuota : undefined
           return new PrivateSourceMaterializer({ read: async () => bytes }, async () => {}, quota)
             .prepare({ manifest, binding: root.binding, attempt })
-        },verify:unused,verifyWorkingDirectory:unused,
+        },verify: record => remote.verify(record),verifyWorkingDirectory:unused,
         releaseClaim: async record => {
           await releaseMaterializationClaim(record.receipt, async () => 'released',
             record.receipt.quota ? verificationQuota : undefined)
