@@ -171,8 +171,11 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run-scoped chat PostgreSQL 
       await runA(f)
       const y = f.f.version.definition.nodes[1]!
       const all = await allExecutions(f), executions = all.filter((execution) => execution.workflowNodeId === y.id)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
       expect(executions).toHaveLength(3) // three real finite-repeat occurrences, not fabricated SQL attempts
-      expect(new Set(executions.map((execution) => execution.nativeSessionId)).size).toBe(3)
+      expect(new Set(executions.map((execution) => execution.nativeSessionId)).size).toBe(1)
+      expect(executions.map((execution) => execution.sessionContinuation?.previousExecutionId))
+        .toEqual([undefined, executions[0]!.id, executions[1]!.id])
       const before = await historicalRows(f.db.pool, [f.f.run.id])
       api = await openHistoricalApi(f)
       const target = { ...targetFor(f), workflowNodeId: y.id }
@@ -192,12 +195,13 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run-scoped chat PostgreSQL 
         expect(native.forks[0]!.source.nativeSessionId).toBe(execution.nativeSessionId)
       }
       expect(new Set(ids).size).toBe(3)
+      expect(new Set([...api.native.values()].map((native) => native.session.nativeSessionId)).size).toBe(3)
       expect(await readSelected(api, target)).toEqual(choice) // existing chats do not turn ambiguity into "latest"
       const wrongExecution = all.find((execution) => execution.workflowNodeId !== y.id)!
       const headers = { authorization: `Bearer ${f.writer.token}` }
       const { workspaceId, ...selection } = target
       for (const [executionId, status, code] of [
-        [wrongExecution.id, 409, 'AGENT_CHAT_CONTEXT_STALE'],
+        [wrongExecution.id, 404, 'RUN_CHAT_EXECUTION_NOT_FOUND'],
         [`absent-${randomUUID()}`, 404, 'RUN_CHAT_EXECUTION_NOT_FOUND'],
       ] as const) {
         const http = await api.app.inject({ method: 'GET', url: `${selectedPath(target)}?${new URLSearchParams({ executionId })}`, headers })

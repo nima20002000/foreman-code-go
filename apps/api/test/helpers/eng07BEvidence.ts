@@ -132,6 +132,11 @@ export async function assertScenarioEvidence(f: Harness, started: Started, initi
     for (const node of expected.executedIndexes) {
       const detail = at(node, round), result = expected.result(node, round)
       if (detail.execution.kind === 'job') throw new Error('Agent scenario requires an Agent execution')
+      if (round > 1) {
+        expect(detail.execution.continuedFromExecutionId).toBe(at(node, round - 1).execution.executionId)
+      } else {
+        expect(detail.execution).not.toHaveProperty('continuedFromExecutionId')
+      }
       expect(detail.execution.agentId).toBe(expected.nodes[node]!.agentId)
       expect(detail.execution.agentConfigurationVersionId).toBe(version.agentConfigurationVersionIds[detail.execution.agentId])
       expect(detail.reportedResult).toEqual(result)
@@ -188,6 +193,8 @@ export async function assertScenarioEvidence(f: Harness, started: Started, initi
   expect(Object.fromEntries(snapshot.state.executions.map((item) => [item.identity.executionId, item])))
     .toEqual(Object.fromEntries(details.map((detail) => [detail.execution.executionId, {
       identity: graphIdentity(detail.execution), inputDigest: detail.acceptedInput.digest,
+      ...(detail.execution.continuedFromExecutionId
+        ? { continuedFromExecutionId: detail.execution.continuedFromExecutionId } : {}),
       previousExecutionId: null, state: 'completed', resultOutcome: 'succeeded',
     }])))
   expect(snapshot.state.executions).toHaveLength(details.length)

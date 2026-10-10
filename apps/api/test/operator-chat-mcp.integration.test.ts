@@ -574,13 +574,21 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const firstRequest = { requestId: 'first-message', content: 'Original request' }
     await repository.beginTurn(conversation.id, firstRequest, owner.principal.id)
     await repository.bind(conversation.id, firstRequest.requestId, manager.session.providerVersion, manager.session.nativeSessionId)
+    await repository.journalTerminal(conversation.id, firstRequest.requestId, { outcome: 'succeeded' }, {
+      retryable: false, requiresRuntimeClosure: true,
+    })
+    await repository.closurePending(conversation.id, firstRequest.requestId)
+    await manager.close()
+    await repository.closureProven(conversation.id, firstRequest.requestId)
     await repository.finish(conversation.id, firstRequest.requestId, { outcome: 'succeeded' })
     const original = (await repository.acceptedConfiguration(conversation.id, firstRequest.requestId))!
     const controlsBefore = await chat.readSessionControls(conversation.id, owner.principal)
-    vi.spyOn(manager, 'history').mockImplementation(async () => ({ ...manager.nativeHistory,
-      ...(manager.turns ? { terminalResult: { outcome: 'succeeded' as const } } : {}) }))
+    const history = async () => ({ ...manager.nativeHistory,
+      ...(manager.turns ? { terminalResult: { outcome: 'succeeded' as const } } : {}) })
+    vi.spyOn(manager, 'history').mockImplementation(history)
+    vi.spyOn(manager, 'reconcile').mockImplementation(history)
     const request = { requestId: 'thinking-message', content: 'Continue', settings: {
-      ...((await chat.get(conversation.id, owner.principal)).settings!), showThinking: true,
+      ...((await chat.get(conversation.id, owner.principal)).settings!), showThinking: !(original.showThinking ?? false),
     } }
     await denied(reader.client, 'operator_chat_send', { conversationId: conversation.id, request })
     expect(manager.turns).toBe(0)
@@ -588,10 +596,11 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
       conversationId: conversation.id, request,
     } })
     expect(response.isError).not.toBe(true)
-    await vi.waitFor(async () => expect((await chat.get(conversation.id, owner.principal)).turnState).toBe('idle'))
+    await vi.waitFor(async () => expect((await chat.get(conversation.id, owner.principal)).turnState).toBe('idle'),
+      { timeout: 10000, interval: 50 })
     const read = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
     const snapshot = GetOperatorConversationResponseSchema.parse(decodeMcpToolResult(read))
-    expect(snapshot.settings?.showThinking).toBe(true)
+    expect(snapshot.settings?.showThinking).toBe(request.settings.showThinking)
     expect(snapshot.conversation.id).toBe(conversation.id)
     expect(manager.turns).toBe(1)
     const accepted = (await repository.acceptedConfiguration(conversation.id, request.requestId))!

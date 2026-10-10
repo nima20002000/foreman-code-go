@@ -107,6 +107,8 @@ function failEntryAtProvider(t: Runtime, allAttempts = false) {
       && (allAttempts || !first)) {
       first ??= input.request.executionId
       failed.add(session.nativeSessionId)
+    } else {
+      failed.delete(session.nativeSessionId)
     }
     return session
   })
@@ -165,7 +167,7 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
             })
           restore = () => fault.mockRestore()
           const started = observeCrashTask(t.engine.start(t.f.run.id))
-          const cut = await barrier.wait(started)
+          const cut = await barrier.wait(started, 30_000)
           expect(barrier.visits).toBe(1)
           expect(fault).toHaveBeenCalledTimes(1)
           const original = (await executions(t)).find((item) => item.id === cut)!
@@ -347,7 +349,8 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
           expect(await next.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
           expect(physical).toHaveBeenCalledTimes(kind === 'stop' ? 1 : 2)
           const expectedStarts = kind === 'stop' ? 1 : kind === 'retry' ? 3 : 2
-          expect(t.provider.counts).toEqual({ sessions: expectedStarts, starts: expectedStarts,
+          const expectedSessions = kind === 'stop' || kind === 'retry-exhausted' ? 1 : 2
+          expect(t.provider.counts).toEqual({ sessions: expectedSessions, starts: expectedStarts,
             responses: kind === 'approval' ? 1 : 0, attaches: 0 })
           expect(t.provider.startedExecutions.filter((id) => id === original.id)).toHaveLength(1)
           expect(new Set(t.provider.startedExecutions).size).toBe(expectedStarts)
@@ -358,6 +361,11 @@ describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3',
           }
           const all = await executions(t), attempts = all.filter((item) => item.workflowNodeId === original.workflowNodeId)
           expect(attempts.map((item) => item.attempt).sort()).toEqual(kind.startsWith('retry') ? [1, 2] : [1])
+          if (kind.startsWith('retry')) {
+            const retry = attempts.find((item) => item.attempt === 2)!
+            expect(retry.nativeSessionId).toBe(original.nativeSessionId)
+            expect(retry.sessionContinuation?.previousExecutionId).toBe(original.id)
+          }
           expect(await occurrenceCount(t)).toBe(form === 'repeat' ? 1 : 0)
           const decisions = (await t.db.pool.query<{ record: { reason: string } }>(
             'select record from run_repeat_decisions where run_id=$1', [t.f.run.id])).rows

@@ -19,7 +19,8 @@ export class FixtureProcessClosures {
   readonly startedExecutions: string[] = []
 
   async start(executionId: string, sessionId: string): Promise<void> {
-    if (this.lifetimes.has(executionId) || [...this.lifetimes.values()].some((item) => item.sessionId === sessionId)) {
+    if (this.lifetimes.has(executionId)
+      || [...this.lifetimes.values()].some((item) => item.sessionId === sessionId && !item.closed)) {
       throw new Error('A fixture process identity cannot be reused')
     }
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'ignore' })
@@ -58,7 +59,7 @@ export class FixtureProcessClosures {
   }
 
   async closeSession(sessionId: string): Promise<void> {
-    const registered = [...this.lifetimes].find(([, item]) => item.sessionId === sessionId)
+    const registered = [...this.lifetimes].reverse().find(([, item]) => item.sessionId === sessionId)
     if (!registered || !await this.closeExecution(registered[0], AbortSignal.timeout(5000))) {
       throw new Error('The original fixture session has no positive process closure')
     }

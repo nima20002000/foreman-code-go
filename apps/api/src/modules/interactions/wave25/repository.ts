@@ -89,7 +89,7 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
         left join interaction_graph_resumes g on g.interaction_id=i.id where i.run_id=$1
         and (i.status<>'canceled' or not (${CANCELED_INTERACTION_RETIRED_SQL}))
         and not (i.status='delivered' and (g.approval_native_ack_id is not null
-          or i.record->>'kind'='work_direction')) order by i.id`, [runId])).rows
+          or i.record->>'kind' is not distinct from 'work_direction')) order by i.id`, [runId])).rows
       let canceled = 0
       for (const { id } of rows) {
         const current = await lockInteraction(sql, id), context = await readContext(sql, current)
