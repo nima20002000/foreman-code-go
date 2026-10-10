@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 
 import '../shared/ui/resourceDirectory.css'
 
+import { RemoteExecutionSummary } from '../features/settings/RemoteExecutionSummary'
 import { AgentsDirectory } from '../features/agents'
 import { ProjectFilesSection } from '../features/project-files'
 import { WorkflowDefaultsSettings, WorkspaceExecutionLocationSettings } from '../features/settings'
@@ -149,10 +150,11 @@ export function ProjectFilesRouteEntry() {
   }} />
 }
 
-function SettingsCardBody({ icon, title, description }: {
+function SettingsCardBody({ icon, title, description, summary }: {
   icon: IconName
   title: string
   description: string
+  summary?: ReactNode
 }) {
   return (
     <>
@@ -160,6 +162,7 @@ function SettingsCardBody({ icon, title, description }: {
       <span className="settings-card-copy">
         <strong>{title}</strong>{' '}
         <small>{description}</small>
+        {summary}
       </span>
       <Icon className="settings-card-chevron" name="chevron" size={16} />
     </>
@@ -255,7 +258,8 @@ export function GlobalSettingsRouteEntry() {
               <li>
                 <Card className="settings-card">
                   <Link to="/settings/computers" className="settings-card-open">
-                    <SettingsCardBody icon="settings" title="Computers" description="Registered computers and harness profiles" />
+                    <SettingsCardBody icon="settings" title="Computers" description="Registered computers and harness profiles"
+                      summary={<RemoteExecutionSummary />} />
                   </Link>
                 </Card>
               </li>

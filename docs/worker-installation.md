@@ -2,21 +2,38 @@
 
 ## Main execution setting
 
-Main defaults `FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED` to `0`. New workflow Agent steps
+Main's persisted remote execution setting defaults off. New workflow Agent steps
 and Jobs on connected Worker computers, including laptop execution, are disabled.
 Main execution remains available, as do existing history, reconciliation,
 cancellation and cleanup. Pairing a computer does not enable execution.
 
-A person may set `FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED=1` in Main's startup environment
-and restart Main after qualifying the intended Worker. Activation is human-only
-because it permits execution on another computer; neither HTTP nor Operator MCP
-can change the deployment environment. Normal placement, permissions, source and
-runtime qualification checks still apply when the setting is enabled.
+Operator MCP's `remote_execution_settings_get` reads the saved value and revision,
+effective configuration, explicit environment overrides and listener runtime status.
+`remote_execution_settings_update` replaces the global settings with
+`{ value: { enabled, listener }, expectedRevision, commandId }`. Reads require global
+`settings:read`; updates require global `settings:update`. Reuse the same command ID
+and input after an uncertain save, then read back the persisted result.
+Normal placement, permissions, source and runtime qualification checks still apply.
 
-Settings > Computers shows the active value on the Main card ("Worker execution").
-Authenticated readers with global `settings:read` can read the same value through
-Operator MCP's `worker_execution_settings_get`, which returns
-`{ enabled, managedBy: 'startup' }`.
+Execution enablement applies live. Listener changes restart the dedicated listener
+when it has no connections. Connected computers keep their existing listener; the
+readback reports `restartRequired` until Main restarts or a subsequent save can
+apply the change safely. A failed live listener start is also reported in runtime
+status; the saved configuration remains available for correction through Operator.
+The listener uses its own port, an explicit bind host and absolute TLS paths.
+Certificate and key files must be regular, owner-only files owned by Main's OS user,
+without symbolic links. The advertised URL must use WSS and `/device/connect`.
+
+Explicit `FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED`,
+`FOREMAN_CODE_DEVICE_LISTENER_ENABLED` and `DEVICE_LISTENER_*` environment values
+override their corresponding saved settings, including explicit zero values.
+Remove an override from Main's startup configuration to use its persisted value.
+MCP does not edit the deployment environment or create TLS files.
+
+The existing Computers settings card shows a compact read-only listener and
+execution summary with “change via Operator.” `worker_execution_settings_get`
+continues to return the active `{ enabled, managedBy }`, with `managedBy` set to
+`settings` or `startup` for a persisted value or explicit startup override.
 
 `apps/worker` is a worker-only composition. It loads W07 identity/pairing and
 starts the W07 connection supervisor. It does not import API startup, PostgreSQL,

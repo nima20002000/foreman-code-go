@@ -62,6 +62,8 @@ import { NodePlacementChoicesService } from './modules/placement/choicesService.
 import { ProductionPlacementChoiceDiscovery } from './modules/placement/choiceDiscovery.js'
 import { readRemoteObservations } from './modules/runs/remote/persistence.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { remoteExecutionStartupEnvironment } from './modules/settings/remoteExecutionConfig.js'
+import { RemoteExecutionSettingsService } from './modules/settings/remoteExecution.js'
 import { WorkerExecutionPolicy } from './modules/settings/workerExecution.js'
 import { AgentExecutionPreparation } from './modules/placement/agentExecutionPreparation.js'
 import { assertRemoteExecutionAuthority, createExecutionAuthorityExtension } from './modules/placement/executionAuthority.js'
@@ -605,6 +607,10 @@ export function buildProductionApp(
       claude: claudeDiscovery.discover }, (deviceId) => deviceRuntime.currentBinding(deviceId),
     (deviceId) => deviceRuntime.presenceFor(deviceId))
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
+  const remoteExecution = new RemoteExecutionSettingsService(foundationSettings, commands, workerExecution,
+    deviceRuntime, remoteExecutionStartupEnvironment({ listener: infrastructure?.deviceListener,
+      workerExecution: config.workerExecution, environment: config.remoteExecutionEnvironment ?? {} }), config.port,
+    error => app.log.error({ err: error }, 'device listener settings could not be applied'))
   const operators = new PostgresOperatorRepository(database.pool, accountConfigurations)
   const rollout = new NativeRollout(process.env)
   const compatibilityProbe = (timeoutMs = 2000, expected?: { harness: CompatibilityHarness; binary: string }) => scopedCompatibilityProbe({
@@ -1438,6 +1444,7 @@ export function buildProductionApp(
     harnesses: harnessCatalog,
     harnessCompatibility,
     ...(harnessQualifications ? { harnessQualifications } : {}),
+    remoteExecution,
     settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances, accountConfigurations),
     workerExecution,
     runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction, async (executionId, session, cursor, signal) => {
@@ -1620,6 +1627,8 @@ export function buildProductionApp(
     initialization ??= Promise.resolve().then(async () => {
       assertOpen()
       await runtimeOwner.acquire()
+      assertOpen()
+      await remoteExecution.initialize()
       assertOpen()
       if (infrastructure?.mode !== 'replay') await mainCodex.initialize()
       assertOpen()

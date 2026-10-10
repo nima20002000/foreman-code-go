@@ -1,4 +1,6 @@
 import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
+import type { RemoteExecutionRuntimeStatus } from '@foreman-code/contracts/management'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { RuntimeIdentity } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
@@ -30,6 +32,7 @@ export class ProductionDeviceRuntime {
   private presence: ProductionDevicePresence | undefined
   private listener: ProductionDeviceListener | undefined
   private listenerStarted = false
+  private listenerHttp: ConstructorParameters<typeof ProductionDeviceListener>[2] | undefined
   private readonly pending = new Set<Promise<unknown>>()
   private runtimeIdentity: RuntimeIdentity | undefined
   readonly management: DeviceManagementService = {
@@ -40,7 +43,7 @@ export class ProductionDeviceRuntime {
     createPairingGrant: (principal, input, source) => this.track(() => this.access().createPairingGrant(principal, input, source)),
     revoke: (principal, deviceId, revision, commandId, source) => this.track(() => this.access().revoke(principal, deviceId, revision, commandId, source)),
   }
-  constructor(private readonly pool: pg.Pool, private readonly listenerConfig?: DeviceListenerConfig,
+  constructor(private readonly pool: pg.Pool, private listenerConfig: DeviceListenerConfig | undefined = undefined,
     private readonly domains?: DeviceDomainComposition) {
     if (domains?.extensions.length && typeof domains.reconcile !== 'function') throw new Error('Registered device domains require authoritative reconciliation.')
   }
@@ -106,13 +109,14 @@ export class ProductionDeviceRuntime {
       onBindingReady: (binding, signal) => this.domains?.bindingReady?.(binding, signal, endpoint),
     })
     this.service = access; this.endpoint = endpoint; this.presence = presence
-    if (this.listenerConfig) this.listener = new ProductionDeviceListener(this.listenerConfig, endpoint, {
+    this.listenerHttp = {
       mainId, mainPublicKeyFingerprint: identity.publicKeyFingerprint, appVersion: API_APPLICATION_VERSION,
       signMainEnrollmentProof: signEnrollment, pair: (input) => this.track(() => {
         this.assertAdmissionOpen()
         return access.pair(input)
       }),
-    })
+    }
+    if (this.listenerConfig) this.listener = new ProductionDeviceListener(this.listenerConfig, endpoint, this.listenerHttp)
   }
   currentBinding(deviceId: string): DeviceSessionBinding | null { return this.endpoint?.currentBinding(deviceId) ?? null }
   presenceFor(deviceId: string) { return this.presence?.get(deviceId) ?? null }
@@ -134,6 +138,33 @@ export class ProductionDeviceRuntime {
     await this.listener?.start()
     this.assertAdmissionOpen()
     this.listenerStarted = Boolean(this.listener)
+  }
+  listenerStatus(): RemoteExecutionRuntimeStatus {
+    return {
+      listenerEnabled: this.listenerStarted,
+      listenerEndpoint: this.listenerStarted ? this.listenerConfig?.advertisedEndpoint ?? null : null,
+      restartRequired: false,
+      reason: null,
+    }
+  }
+  configureListener(config: DeviceListenerConfig | undefined): Promise<boolean> {
+    return this.track(() => this.applyListenerConfiguration(config))
+  }
+  private async applyListenerConfiguration(config: DeviceListenerConfig | undefined): Promise<boolean> {
+    this.assertAdmissionOpen()
+    if (isDeepStrictEqual(config, this.listenerConfig) && (this.listenerStarted || !this.endpoint || !config)) return true
+    if (!this.endpoint || !this.listenerHttp) {
+      this.listenerConfig = config
+      return true
+    }
+    if (this.listener?.hasConnections()) return false
+    this.listenerStarted = false
+    await this.listener?.close({ preserveEndpoint: true })
+    this.assertAdmissionOpen()
+    this.listenerConfig = config
+    this.listener = config ? new ProductionDeviceListener(config, this.endpoint, this.listenerHttp) : undefined
+    await this.startListener()
+    return true
   }
   stopAdmission(): void {
     this.admissionStopped = true

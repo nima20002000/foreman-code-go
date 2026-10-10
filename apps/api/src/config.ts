@@ -3,7 +3,8 @@ import { isAbsolute } from 'node:path'
 import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origin'
 import { z } from 'zod'
 import { DEFAULT_AGENT_ACTIVE_TIMEOUT_MS } from '@foreman-code/contracts/wave25'
-import type { WorkerExecutionSettings } from '@foreman-code/contracts/management'
+import type { RemoteExecutionEnvironmentVariable, WorkerExecutionSettings } from '@foreman-code/contracts/management'
+import { RemoteExecutionEnvironmentVariableSchema } from '@foreman-code/contracts/management'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
 import { harnessBinaries } from './modules/harnesses/binaries.js'
 
@@ -36,6 +37,7 @@ const EnvironmentSchema = z.object({
 })
 
 export interface ApiConfig {
+  remoteExecutionEnvironment?: Partial<Record<RemoteExecutionEnvironmentVariable, string>>
   workerExecution?: WorkerExecutionSettings
   /** Trusted composition override for an isolated storage root; never a request field. */
   workspaceStorageRoot?: string
@@ -71,9 +73,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
   }
   const browserOrigin = resolveLocalBrowserOrigin(environment).origin
   return {
+    remoteExecutionEnvironment: Object.fromEntries(RemoteExecutionEnvironmentVariableSchema.options
+      .filter(key => environment[key] !== undefined).map(key => [key, environment[key]])),
     workerExecution: {
       enabled: parsed.FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED === '1',
-      managedBy: 'startup',
+      managedBy: environment.FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED === undefined ? 'settings' : 'startup',
     },
     browserOrigin,
     fileStorageRoot: parsed.FILE_STORAGE_ROOT ?? defaultFileStorageRoot(),

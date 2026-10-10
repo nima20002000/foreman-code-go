@@ -10,6 +10,7 @@ import { AgentActiveTimeoutMsSchema, CurrentWorkflowNodeSchema, CurrentWorkflowR
 export * from "./extensions.js";
 export * from "./harnessSettings.js";
 export * from './workerExecution.js'
+export * from './remoteExecution.js'
 export * from "./codexPlugins.js";
 export * from "./claudePlugins.js";
 export * from "./settingsExperience.js";
@@ -627,7 +628,7 @@ export const OperatorToolNameSchema = z.enum([
   'provider_accounts_list', 'provider_account_create', 'provider_account_rename',
   'provider_account_default_set', 'provider_account_login', 'provider_account_logout', 'provider_account_refresh',
   'system_prompt_get', 'system_prompt_update', 'operator_initial_prompt_get', 'operator_initial_prompt_update',
-  'worker_execution_settings_get',
+  'worker_execution_settings_get', 'remote_execution_settings_get', 'remote_execution_settings_update',
   "workspace_defaults_update",
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get", "harness_mcp_change_reconcile", "codex_plugin_change", "codex_plugin_reconcile",
   "codex_plugins_list", "codex_plugin_get",

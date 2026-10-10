@@ -27,6 +27,7 @@ import { registerSkillRoutes } from './skills.js'
 import {
   AgentGetInputSchema,
   GeneralSettingsUpdateInputSchema,
+  RemoteExecutionSettingsUpdateInputSchema,
   AgentDefaultsUpdateInputSchema,
   AgentListInputSchema,
   HarnessDefaultsUpdateInputSchema,
@@ -181,6 +182,13 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   app.put<{ Body: unknown }>('/api/management/harnesses/defaults', async (request) =>
     services.harnesses.updateDefaults(requirePrincipal(request), 'http', HarnessDefaultsUpdateInputSchema.parse(request.body)))
 
+  if (services.remoteExecution) {
+    app.get('/api/management/settings/remote-execution', request =>
+      services.remoteExecution!.read(requirePrincipal(request)))
+    app.put<{ Body: unknown }>('/api/management/settings/remote-execution', request =>
+      services.remoteExecution!.update(requirePrincipal(request), 'http',
+        RemoteExecutionSettingsUpdateInputSchema.parse(request.body)))
+  }
   if (services.settings) {
     registerPromptSettingsRoutes(app, services.settings)
     app.get('/api/management/settings/general', async request =>
