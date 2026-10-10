@@ -5,6 +5,8 @@ import type { DeviceRegistration } from '@foreman-code/contracts/device-identity
 import type { BuildComputerStatus } from '@foreman-code/contracts/build-computers'
 import type { ComputerActivityList } from '@foreman-code/contracts/computer-activity'
 import type { ComputerAccountsList } from '@foreman-code/contracts/computer-accounts'
+import type { ComputerMaintenanceList } from '@foreman-code/contracts/computer-maintenance'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
 import { useComputerUi } from './computerUiStore'
@@ -19,6 +21,15 @@ export const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicat
   keyRevision: null, authorizationRevision: null }
 export const deviceTarget = { hostRef: { kind: 'device' as const, mainId, deviceId },
   applicationInstallationId: registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1 }
+
+export function computerReadHandler(kind: 'accounts' | 'maintenance', result: ComputerAccountsList | ComputerMaintenanceList) {
+  return http.post(`*/api/management/computers/${kind}/read`, async ({ request }) => {
+    const { target } = await request.json() as { target: DeviceProvisioningTarget }
+    const computer = result.computers.find(value => computerKey(value.target) === computerKey(target))
+      ?? { target, [kind === 'accounts' ? 'accounts' : 'status']: null }
+    return HttpResponse.json({ computers: [computer] })
+  })
+}
 
 export function computersFixture(children: React.ReactNode, handlers: HttpHandler[] = []) {
   useComputerUi.setState({ activity: undefined })
@@ -44,7 +55,8 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
       return HttpResponse.json(statuses.get(computerKey(target)))
     }),
     http.get('*/api/management/computers/activity', () => HttpResponse.json(activity)),
-    http.get('*/api/management/computers/accounts', () => HttpResponse.json(accounts)),
+    computerReadHandler('accounts', accounts),
+    computerReadHandler('maintenance', { computers: [] }),
     http.post('*/api/management/computers/sync/status', async ({ request }) => {
       const { target } = await request.json() as { target: typeof mainTarget }
       return HttpResponse.json({ target, installed: false, running: false, message: null, folders: [] })

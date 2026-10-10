@@ -181,3 +181,56 @@ it('debounces rapid typing before starting another catalog read', async () => {
   await waitFor(() => expect(queries.at(-1)).toBe('notes'))
   expect(queries.filter(Boolean)).toEqual(['notes'])
 })
+
+it('shows a rejected change and refresh recovery inside the active plugin dialog', async () => {
+  reads()
+  server.use(http.post('/api/management/harnesses/codex/plugins/change', () => HttpResponse.json({
+    error: { code: 'REVISION_CONFLICT', message: 'The plugin source changed. Review refreshed details.' },
+  }, { status: 409 })))
+  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  const user = await openPlugin()
+  await user.click(screen.getByRole('button', { name: 'Install plugin' }))
+  const dialog = within(screen.getByRole('dialog', { name: 'notes plugin' }))
+  expect(await dialog.findByRole('alert')).toHaveTextContent('The plugin source changed. Review refreshed details.')
+  expect(dialog.getByRole('button', { name: 'Refresh list and details' })).toBeEnabled()
+  expect(dialog.queryByRole('button', { name: 'Reconcile original request' })).not.toBeInTheDocument()
+})
+
+it('disables installation and explains an incomplete catalog inside the detail dialog', async () => {
+  reads()
+  server.use(http.get('/api/management/harnesses/codex/plugins', () =>
+    HttpResponse.json({ ...listPayload(), catalogStatus: 'partial' })))
+  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available&pluginId=notes%40trusted')
+  const dialog = within(await screen.findByRole('dialog', { name: 'notes plugin' }))
+  expect(await dialog.findByText('Installation unavailable')).toBeVisible()
+  expect(dialog.getByRole('button', { name: 'Install plugin' })).toBeDisabled()
+  expect(dialog.getByText(/The catalog is incomplete/)).toBeVisible()
+})
+
+it('awaits a fresh catalog on Refresh before updating the reviewed detail snapshot', async () => {
+  reads()
+  let fresh = false
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const next = 'sha256:' + 'c'.repeat(64)
+  server.use(
+    http.get('/api/management/harnesses/codex/plugins', async ({ request }) => {
+      if (new URL(request.url).searchParams.get('refresh') === 'true') {
+        await gate
+        fresh = true
+      }
+      return HttpResponse.json(listPayload(fresh, fresh ? next : revision))
+    }),
+    http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [] })),
+    http.get('/api/management/harnesses/codex/plugins/:pluginId', () =>
+      HttpResponse.json(detailPayload(fresh, fresh ? next : revision))),
+  )
+  mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
+  const user = await openPlugin()
+  await user.click(screen.getByRole('button', { name: /^Refresh$/ }))
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Refresh$/ })).toBeDisabled())
+  expect(screen.getByRole('button', { name: 'Install plugin' })).toBeDisabled()
+  release()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Remove plugin' })).toBeEnabled())
+  expect(screen.getByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('summarize')
+})

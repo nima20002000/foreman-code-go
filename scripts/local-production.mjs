@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
+import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
@@ -76,7 +77,8 @@ async function stageRelease() {
     await deployProductionApi(run, join(release, 'apps/api'))
     await cp(join(source, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
     await mkdir(join(release, 'scripts'), { recursive: true })
-    for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs']) {
+    for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs',
+      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs']) {
       await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
     }
     await copyVerificationRuntime(source, release)
@@ -90,6 +92,8 @@ async function stageRelease() {
     }
     await copyFile(process.execPath, join(release, 'node'))
     await chmod(join(release, 'node'), 0o700)
+    await buildWorkerReleaseArtifacts({ repository: source, directory: join(release, 'worker-artifacts'),
+      productManifestPath: join(release, 'package.json'), run })
     return release
   } catch (error) {
     await removeUninstalledRelease(release, current)
@@ -138,6 +142,7 @@ Delegate=yes
 WorkingDirectory=@APP@/current/apps/api
 EnvironmentFile=@HOME@/.config/graphql-production/production.env
 Environment=FOREMAN_CODE_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
+Environment=FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY=@APP@/current/worker-artifacts
 Environment=PATH=@PATH@
 ExecStart=@NODE@ @APP@/current/apps/api/dist/server.js
 ExecStartPost=@NODE@ @APP@/current/scripts/local-production.mjs health

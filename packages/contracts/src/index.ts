@@ -1440,14 +1440,17 @@ export function applyOperatorChatSettings(base: HarnessConfiguration, settings: 
   if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
   if (settings.harness === "claude") {
     const configuration = ClaudeHarnessConfigurationSchema.parse({ ...base, accountId: settings.accountId, model: settings.model });
+    if (!configuration.accountId) delete configuration.accountId;
     delete configuration.effort;
     if (settings.effort) configuration.effort = settings.effort;
     return configuration;
   }
-  return SupportedHarnessConfigurationSchema.parse({
+  const configuration = SupportedHarnessConfigurationSchema.parse({
     ...base, accountId: settings.accountId, model: settings.model, reasoningEffort: settings.reasoningEffort,
     serviceTier: settings.serviceTier,
   });
+  if (!configuration.accountId) delete configuration.accountId;
+  return configuration;
 }
 export const OperatorChatSetupQuerySchema = z.object({
   conversationId: IdSchema.optional(),

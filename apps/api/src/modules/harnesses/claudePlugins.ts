@@ -25,9 +25,10 @@ export class ClaudePluginSettingsService {
   private readonly catalogs = new QualificationCache<ClaudePluginCatalog>(30_000, 2, Date.now, true)
   constructor(private readonly ports: PluginPorts, private readonly commands: PostgresCommandCoordinator) {}
 
-  private async catalog(signal: AbortSignal) {
+  private async catalog(signal: AbortSignal, options: { refresh?: boolean | undefined } = {}) {
     try {
-      return await this.catalogs.get('catalog', () => readClaudePlugins(this.ports, signal))
+      return await this.catalogs.get('catalog', (active) => readClaudePlugins(this.ports,
+        AbortSignal.any([active, AbortSignal.timeout(120_000)])), { signal, refresh: options.refresh })
     } catch (error) {
       this.catalogs.forget('catalog')
       throw error
@@ -41,8 +42,7 @@ export class ClaudePluginSettingsService {
   async list(principal: ManagementPrincipal, raw: ClaudePluginListInput, signal = AbortSignal.timeout(120_000)) {
     requireAuthorization(principal, 'harnesses:read')
     const input = ClaudePluginListInputSchema.parse(raw)
-    if (input.refresh) this.catalogs.clear()
-    const catalog = await this.catalog(signal)
+    const catalog = await this.catalog(signal, { refresh: input.refresh })
     const query = input.query.toLocaleLowerCase()
     const items = catalog.plugins.filter(plugin => plugin.installed === (input.view === 'installed'))
       .filter(plugin => `${plugin.name} ${plugin.marketplaceName} ${plugin.description ?? ''}`

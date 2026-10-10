@@ -19,7 +19,7 @@ export class ProviderAccountConfigurationService {
   }
 
   async profile(input: { principal: ManagementPrincipal; source: 'http' | 'mcp'; configuration: HarnessConfiguration;
-    selection?: HarnessProfileSelection; commandId: string; client: pg.PoolClient; check?: boolean }): Promise<HarnessProfileSelection | undefined> {
+    selection?: HarnessProfileSelection | undefined; commandId: string; client: pg.PoolClient; check?: boolean }): Promise<HarnessProfileSelection | undefined> {
     if (input.configuration.harness !== 'claude' || !input.configuration.accountId) return input.selection
     if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE',
       'Managed Claude accounts require local harness profile setup.', 503)

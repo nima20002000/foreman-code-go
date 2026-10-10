@@ -11,6 +11,7 @@ export const WorkflowBoardContext = createContext<{
   openLocation(): void
   openRuns(): void
   navigationControls?: ReactNode
+  authoringActive?: boolean
   /** Active or recovering Runs in the workspace; saving meaningful edits may stop them. */
   activeRuns: number
 } | null>(null)

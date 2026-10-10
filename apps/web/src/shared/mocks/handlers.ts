@@ -1,5 +1,7 @@
 import { agentChatHandlers, resetAgentChatFixtures } from './agentChatHandlers'
 import { createCurrentBoardMock } from './currentBoard'
+import { ComputerAccountsReadInputSchema } from '@foreman-code/contracts/computer-accounts'
+import { ComputerMaintenanceReadInputSchema } from '@foreman-code/contracts/computer-maintenance'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
@@ -224,6 +226,14 @@ export const handlers: RequestHandler[] = [
   http.get('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', ({ params }) =>
     sessionControlsResponse(String(params.conversationId))),
   http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [] })),
+  http.post('*/api/management/computers/maintenance/read', async ({ request }) => {
+    const { target } = ComputerMaintenanceReadInputSchema.parse(await request.json())
+    return HttpResponse.json({ computers: [{ target, status: null }] })
+  }),
+  http.post('*/api/management/computers/accounts/read', async ({ request }) => {
+    const { target } = ComputerAccountsReadInputSchema.parse(await request.json())
+    return HttpResponse.json({ computers: [{ target, accounts: null }] })
+  }),
   http.post('*/api/management/computers/maintenance/start', () => HttpResponse.json({ computers: [] })),
   http.get('*/api/management/computers/activity', () => HttpResponse.json({
     mainId: '11111111-1111-4111-8111-111111111111', computers: [], truncated: false, activityComplete: true,

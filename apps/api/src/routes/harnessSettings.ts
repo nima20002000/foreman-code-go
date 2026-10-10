@@ -59,8 +59,9 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
   app.get('/api/management/harnesses/codex/plugins/:pluginId', async (request, reply) => {
     const plugins = settings().plugins
     if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
+    const input = CodexPluginGetInputSchema.parse({ ...request.params as object, ...request.query as object })
     return pluginHttpRead(request, reply, async (signal) => CodexPluginDetailResultSchema.parse(
-      await plugins.get(requirePrincipal(request), CodexPluginGetInputSchema.parse(request.params).pluginId, signal)))
+      await plugins.get(requirePrincipal(request), input.pluginId, { signal, refresh: input.refresh })))
   })
   app.get('/api/management/harnesses/codex/plugins/operations', async (request) => {
     requireLocalHuman(request)

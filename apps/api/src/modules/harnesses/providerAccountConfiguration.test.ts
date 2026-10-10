@@ -119,7 +119,7 @@ describe('provider account execution selection', () => {
     const configuration = await accounts.resolve(claude)
     await expect(accounts.profile({ principal: { id: 'reader', name: 'Reader', audience: 'operator',
       revokedAt: null, expiresAt: '2099-01-01T00:00:00Z', grants: [] }, source: 'mcp',
-      configuration, commandId: 'account-change', client: {} as never, check: true,
+      configuration, selection: undefined, commandId: 'account-change', client: {} as never, check: true,
     })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
   })
 

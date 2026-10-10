@@ -15,6 +15,7 @@ import {
   MaintenanceStatusSchema, MaintenanceTaskSchema, MaintenanceTaskStartSchema,
   type MaintainedHarness, type MaintenanceStatus, type MaintenanceTask,
   type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
+  type WorkerUpdateStatus,
 } from '@foreman-code/contracts/computer-maintenance'
 
 export interface MaintenancePorts {
@@ -32,6 +33,11 @@ export interface MaintenancePorts {
   now(): Date
   /** Moves this computer's runtime selection to the installed update. Qualification still checks the selected binary. */
   selectInstalledCodex?(signal: AbortSignal): Promise<string | null>
+  workerUpdate?: {
+    status(): Promise<WorkerUpdateStatus>
+    start(): Promise<string>
+    outcome?(task: MaintenanceTask): Promise<WorkerUpdateStatus | null>
+  }
 }
 
 type FleetLedger = { mcp: Record<MaintainedHarness, string[]>; codexPlugins: string[]; claudePlugins: string[] }
@@ -47,6 +53,19 @@ type Step = (binary: string, args: string[], label: string, options?: { timeoutM
   => Promise<{ code: number | null; stdout: string; stderr: string }>
 function versionOf(output: string): string | null {
   return output.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/u)?.[0] ?? null
+}
+
+function meetsPublishedVersion(installed: string, published: string): boolean {
+  if (installed === published) return true
+  const stableVersion = /^(\d+)\.(\d+)\.(\d+)(?:\+[\w.-]+)?$/u
+  const actual = installed.match(stableVersion)
+  const expected = published.match(stableVersion)
+  if (!actual || !expected) return false
+  for (let index = 1; index <= 3; index++) {
+    const difference = Number(actual[index]) - Number(expected[index])
+    if (difference !== 0) return difference > 0
+  }
+  return true
 }
 
 /**
@@ -90,6 +109,15 @@ export class ComputerMaintenance {
   }
 
   private async observe(signal: AbortSignal): Promise<MaintenanceStatus> {
+    const worker = await this.ports.workerUpdate?.status()
+    if (worker) {
+      for (const task of this.tasks.filter(task => task.kind === 'update-worker' && task.state === 'running')) {
+        const outcome = await this.workerTaskOutcome(task, worker)
+        if (!outcome) continue
+        await this.finish(task, outcome.state === 'current' ? 'succeeded' : 'failed',
+          outcome.lastError ?? `Worker ${outcome.currentVersion} is current.`)
+      }
+    }
     const home = this.ports.environment.HOME ?? homedir()
     const [versions, latest, packageUpdates, rebootRequired, sudo, disk] = await Promise.all([
       Promise.all((['codex', 'claude'] as const).map(harness => this.installedVersion(harness, signal))),
@@ -104,7 +132,17 @@ export class ComputerMaintenance {
         version: versions[index] ?? null, latest: latest[harness] ?? null })),
       system: { packageUpdates: packageUpdates?.pending ?? null, rebootRequired, sudo, disk },
       tasks: [...this.tasks].reverse(), observedAt: this.ports.now().toISOString(),
+      ...(worker ? { worker } : {}),
     })
+  }
+
+  private async workerTaskOutcome(task: MaintenanceTask, worker: WorkerUpdateStatus) {
+    if (task.workerTargetVersion === undefined) return null
+    const retained = await this.ports.workerUpdate?.outcome?.(task)
+    if (retained) return retained
+    const matching = worker.state === 'current' ? worker.currentVersion === task.workerTargetVersion
+      : worker.targetVersion === task.workerTargetVersion
+    return matching && ['current', 'failed', 'rolled-back'].includes(worker.state) ? worker : null
   }
 
   /** Saves the task before acknowledgement; status readback follows its background progress. */
@@ -123,10 +161,20 @@ export class ComputerMaintenance {
     await this.loadTasks()
   }
 
+  async drainForWorkerUpdate(): Promise<void> {
+    await this.admissions
+    const tasks = this.tasks.filter(task => task.kind !== 'update-worker')
+    await Promise.all(tasks.flatMap(task => {
+      const active = this.activeTasks.get(task.id)
+      return active ? [active.completion] : []
+    }))
+    await this.loadTasks()
+  }
+
   private async admit(request: MaintenanceTaskStart, commandId: string): Promise<MaintenanceTask> {
     await this.loadTasks()
     const identity = request.kind === 'update-harnesses'
-      ? { ...request, harnesses: [...new Set(request.harnesses)].sort() } : request
+      ? { ...request, harnesses: [...request.harnesses].sort() } : request
     const requestHash = commandInputHash(identity)
     const receipt = await this.commandStore.read(commandId)
     if (receipt) {
@@ -134,7 +182,15 @@ export class ComputerMaintenance {
         throw new DomainError('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.', 409)
       }
       const retained = this.tasks.find(task => task.id === receipt.task.id) ?? receipt.task
-      if (retained.state === 'running' && !this.activeTasks.has(retained.id)) {
+      if (retained.kind === 'update-worker' && retained.state === 'running') {
+        const worker = await this.ports.workerUpdate?.status()
+        const outcome = worker ? await this.workerTaskOutcome(retained, worker) : null
+        if (outcome) {
+          await this.finish(retained, outcome.state === 'current' ? 'succeeded' : 'failed',
+            outcome.lastError ?? `Worker ${outcome.currentVersion} is current.`)
+        }
+      }
+      if (retained.kind !== 'update-worker' && retained.state === 'running' && !this.activeTasks.has(retained.id)) {
         retained.state = 'failed'
         retained.summary = 'Maintenance was interrupted when the application stopped. Check its status before retrying.'
         retained.finishedAt = this.ports.now().toISOString()
@@ -166,7 +222,23 @@ export class ComputerMaintenance {
       await predecessor
       task.summary = 'Running…'
       return this.perform(request, task)
-    }).then(summary => this.finish(task, 'succeeded', summary),
+    }).then(async summary => {
+      if (request.kind === 'update-worker') {
+        const worker = await this.ports.workerUpdate?.status()
+        if (worker?.state === 'restarting' && worker.targetVersion) {
+          task.workerTargetVersion = worker.targetVersion
+          task.summary = summary
+          this.taskRevision++
+          await this.taskStore.save(this.tasks)
+          return
+        }
+        if (worker && ['failed', 'rolled-back'].includes(worker.state)) {
+          await this.finish(task, 'failed', worker.lastError ?? 'Worker update failed.')
+          return
+        }
+      }
+      await this.finish(task, 'succeeded', summary)
+    },
       (error: unknown) => this.finish(task, 'failed', error instanceof Error ? error.message : 'Maintenance failed.'))
       .catch((error: unknown) => { this.storageFailure = error })
     this.activeTasks.set(task.id, { requestHash, completion })
@@ -232,6 +304,13 @@ export class ComputerMaintenance {
       return result
     }
     switch (request.kind) {
+      case 'update-worker': {
+        if (!this.ports.workerUpdate) {
+          throw new DomainError('WORKER_UPDATE_UNAVAILABLE',
+            'Worker updates are available only on paired computers with an installed updater.', 409)
+        }
+        return this.ports.workerUpdate.start()
+      }
       case 'update-harnesses': {
         const changes: string[] = []
         const failures: string[] = []
@@ -248,7 +327,7 @@ export class ComputerMaintenance {
             }
             const after = await this.installedVersion(harness, signal)
             if (!after || !latest[harness]) throw new Error(`${LABELS[harness]} update could not be verified.`)
-            if (after !== latest[harness]) {
+            if (!meetsPublishedVersion(after, latest[harness])) {
               throw new Error(`${LABELS[harness]} is still ${after}; latest published version is ${latest[harness]}.`)
             }
             changes.push(`${LABELS[harness]} ${before ?? 'not installed'} → ${after}`)

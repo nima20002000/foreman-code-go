@@ -43,7 +43,8 @@ export const ProviderAccountRenameInputSchema = ProviderAccountCommandInputSchem
 })
 /** This input belongs only to the local human HTTP endpoint; it is never an MCP tool input. */
 export const ProviderAccountApiKeyInputSchema = ProviderAccountCommandInputSchema.extend({
-  apiKey: z.string().trim().min(20).max(4096).regex(/^[^\s\x00-\x1f]+$/),
+  apiKey: z.string().trim().min(20).max(4096).refine(value =>
+    !/\s/.test(value) && !Array.from(value).some(character => character.charCodeAt(0) < 32)),
 })
 export const ProviderAccountUpdateResultSchema = z.object({
   value: ProviderAccountsSnapshotSchema,

@@ -47,14 +47,7 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
   const { workspaceId, workflowId: requestedId, search, run } = selection
   const navigate = useNavigate(), client = useQueryClient()
   const location = useLocation(), selectedRunId = location.search.selectedRunId
-  const workspace = useWorkspaceDetailsQuery(workspaceId, {
-    refetchInterval: (query) => {
-      const error = query.state.error
-      return ApiError.is(error) && (error.status === 401 || error.status === 403 || error.status === 404)
-        ? false
-        : 1_000
-    },
-  })
+  const workspace = useWorkspaceDetailsQuery(workspaceId)
   const managed = useManagedWorkflowQuery(workspaceId, requestedId ?? '')
   const denied = useProtectedAccessError(workspace), managedDenied = useProtectedAccessError(managed)
   const details = denied ? undefined : workspace.data

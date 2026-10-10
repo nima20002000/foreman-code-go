@@ -6,6 +6,7 @@ import type { AgentNodeState, Tone } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { currentRunKey } from './currentRunQuery'
 import { useWorkflowBoard } from './context'
+import { pinnedNodeStates, type PinnedNodeDisplayCut } from './inspect/pinnedTopology'
 
 /** Cache-only subscriber: no Query observer with a competing queryFn. Only
  * CurrentRunObserver owns current-state fetching and invalidation/refetch work. */
@@ -31,27 +32,16 @@ const words: Record<string, [AgentNodeState, string]> = {
   uncertain: ['unavailable', 'Unconfirmed'], unknown: ['unavailable', 'Unavailable'],
 }
 export const lifecycleView = (lifecycle?: string): [AgentNodeState, string] => words[lifecycle ?? 'unknown'] ?? words.unknown!
-function latestNode(record: RepeatGraphCurrentV3, nodeId: string) {
-  // Occurrence index, then technical attempt. Timestamps and timers are never authority.
-  return record.state.executions.filter((item) => item.identity.workflowNodeId === nodeId).sort((a, b) =>
-    (b.identity.occurrence?.occurrenceIndex ?? 0) - (a.identity.occurrence?.occurrenceIndex ?? 0)
-    || b.identity.attempt - a.identity.attempt)[0]
-}
-function lifecycleOf(record: RepeatGraphCurrentV3, nodeId: string): string {
-  const execution = latestNode(record, nodeId)
-  if (execution) return execution.state === 'completed' ? execution.resultOutcome ?? 'unknown' : execution.state
-  const resolved = record.state.resolutions.filter((item) => item.ref.nodeId === nodeId).sort((a, b) =>
-    (b.ref.occurrence?.occurrenceIndex ?? 0) - (a.ref.occurrence?.occurrenceIndex ?? 0))[0]
-  return resolved?.value.resolution ?? 'not_activated'
-}
-export function runNodeView(record: RepeatGraphCurrentV3 | undefined, selected: boolean, nodeId: string, agentId: string): RunNodeView {
+export function runNodeView(record: (PinnedNodeDisplayCut & Pick<RepeatGraphCurrentV3, 'topology'>) | undefined,
+  selected: boolean, nodeId: string, agentId: string): RunNodeView {
   if (!selected) return { state: 'idle', label: 'Idle', inRun: false }
   if (!record) return { state: 'unavailable', label: 'Unavailable', inRun: false }
   if (!record.topology.nodes.some((node) => node.workflowNodeId === nodeId && node.kind!=='job' && node.agentId === agentId)) return { state: 'idle', label: 'Not in this Run', inRun: false }
-  const [state, label] = lifecycleView(lifecycleOf(record, nodeId))
-  const execution = latestNode(record, nodeId)
-  const occurrence = execution?.identity.occurrence
-  return { state, label, inRun: true, ...(occurrence ? { activity: `Business occurrence ${occurrence.occurrenceIndex} · technical attempt ${execution.identity.attempt}` } : {}) }
+  const latest = pinnedNodeStates(record).get(nodeId)
+  const [state, label] = lifecycleView(latest?.label ?? 'not_activated')
+  if (!latest?.occurrenceIndex) return { state, label, inRun: true }
+  const attempt = latest.attempt ? `technical attempt ${latest.attempt}` : 'no execution'
+  return { state, label, inRun: true, activity: `Business occurrence ${latest.occurrenceIndex} · ${attempt}` }
 }
 const ACTIVE = ['queued', 'running', 'waiting', 'interrupted']
 export const isActiveRun = (run: Pick<WorkflowRunSummary, 'executionState' | 'cleanupPending'>) => ACTIVE.includes(run.executionState) || Boolean(run.cleanupPending)

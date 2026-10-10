@@ -1,0 +1,78 @@
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { WorkerArtifactReplySchema } from '@foreman-code/contracts/computer-maintenance'
+import { createProductionWorkerArtifactExtension } from '../src/modules/computers/workerArtifactsProduction.js'
+
+const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
+const context = { binding: {
+  mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222',
+  workerInstallationId: '33333333-3333-4333-8333-333333333333', bootId: '44444444-4444-4444-8444-444444444444',
+  connectionEpoch: '55555555-5555-4555-8555-555555555555', keyRevision: 1,
+  authorizationRevision: 1, connectionGeneration: 1,
+}, signal: new AbortController().signal }
+const directories: string[] = []
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
+})
+
+async function release() {
+  const directory = await mkdtemp(join(tmpdir(), 'worker-production-release-'))
+  directories.push(directory)
+  const artifacts = join(directory, 'worker-artifacts')
+  await mkdir(artifacts, { mode: 0o700 })
+  await mkdir(join(directory, 'apps/api'), { recursive: true })
+  await writeFile(join(directory, 'package.json'), JSON.stringify({ name: 'foreman-code', version: '0.0.56' }))
+  await writeFile(join(directory, 'apps/api/package.json'), JSON.stringify({ name: '@foreman-code/api', version: '0.1.0' }))
+  const content = Buffer.from('export {}\n')
+  const manifest = { format: 1, version: '0.0.56', commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
+    packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target,
+    sourceSnapshot: { commit: 'a'.repeat(40), files: [] },
+    files: [{ path: 'src/cli.mjs', size: content.length, sha256: createHash('sha256').update(content).digest('hex') }] }
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
+  const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex')
+  await mkdir(join(artifacts, manifestSha256, 'src'), { mode: 0o700, recursive: true })
+  await writeFile(join(artifacts, manifestSha256, 'src/cli.mjs'), content)
+  await writeFile(join(artifacts, manifestSha256, 'manifest.json'), manifestBytes)
+  const index = { format: 1, version: manifest.version, artifacts: [{ target, manifestSha256 }] }
+  await writeFile(join(artifacts, 'index.json'), JSON.stringify(index))
+  return { directory, artifacts, manifest, manifestSha256, index }
+}
+
+describe('production Worker artifact composition', () => {
+  it('serves product release 0.0.56 while the API package uses version 0.1.0', async () => {
+    const f = await release()
+    const extension = createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory })
+    const reply = WorkerArtifactReplySchema.parse((await extension.handle!({ operation: 'release', target }, context)).payload)
+    expect(reply).toEqual({ operation: 'release', release: {
+      version: '0.0.56', manifestSha256: f.manifestSha256, manifest: f.manifest,
+    } })
+  })
+
+  it('rejects artifacts for another product release instead of accepting the API package version', async () => {
+    const f = await release()
+    await writeFile(join(f.artifacts, 'index.json'), JSON.stringify({ ...f.index, version: '0.1.0' }))
+    const extension = createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory })
+    await expect(extension.handle!({ operation: 'release', target }, context)).rejects.toThrow()
+  })
+
+  it('uses the configured artifact directory while keeping the installed product version check', async () => {
+    const f = await release()
+    const other = await release()
+    await writeFile(join(other.artifacts, 'index.json'), JSON.stringify({ ...other.index, version: '0.0.57' }))
+    const extension = createProductionWorkerArtifactExtension({
+      environment: { FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY: other.artifacts }, releaseDirectory: f.directory,
+    })
+    await expect(extension.handle!({ operation: 'release', target }, context)).rejects.toThrow()
+  })
+
+  it('requires the root product manifest and rejects invalid release metadata', async () => {
+    const f = await release()
+    await rm(join(f.directory, 'package.json'))
+    expect(() => createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory })).toThrow()
+    await writeFile(join(f.directory, 'package.json'), JSON.stringify({ name: '@foreman-code/api', version: '0.1.0' }))
+    expect(() => createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory })).toThrow()
+  })
+})

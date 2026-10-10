@@ -41,11 +41,15 @@ export async function acquireWorkerLock(stateDirectory, status = () => ({ active
 
 // This composition has no control-plane imports. Identity and connection implementations
 // are explicitly injected from W07-A/B; execution admission is a later W08 port.
-export async function startWorker({ stateDirectory, loadIdentity, createConnection, beforeUnlock, shutdownMs = 10_000, readBootId = async () => (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }) {
+export async function startWorker({ stateDirectory, loadIdentity, createConnection, beforeUnlock, appVersion,
+  shutdownMs = 10_000, readBootId = async () => (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }) {
   let connection;
-  const unlock = await acquireWorkerLock(stateDirectory, () => ({ active: true, phase: connection?.status?.().phase ?? 'connecting', failure: connection?.status?.().failure ?? null }));
+  let identity;
+  const unlock = await acquireWorkerLock(stateDirectory, () => ({ active: true,
+    appVersion, workerInstallationId: identity?.workerInstallationId,
+    phase: connection?.status?.().phase ?? 'connecting', failure: connection?.status?.().failure ?? null }));
   try {
-    const identity = await loadIdentity(stateDirectory);
+    identity = await loadIdentity(stateDirectory);
     const bootId = await readBootId();
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bootId)) throw new WorkerError('boot_identity_unavailable');
     connection = await createConnection({ identity, bootId, capabilities: { dispatch: false, transfer: false },

@@ -665,6 +665,12 @@ export class WorkerConversationHost {
     }
   }
 
+  async drainForUpdate(): Promise<void> {
+    while (this.tasks.size || this.allocating.size) {
+      await Promise.allSettled([...this.tasks, ...this.allocating.values()])
+    }
+  }
+
   async shutdown() {
     this.closing = true
     this.lifetime.abort(new DomainError('ENGINE_RESTART', 'The worker native owner is shutting down.', 503))

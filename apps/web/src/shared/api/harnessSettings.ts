@@ -56,10 +56,20 @@ export const harnessSettingsKeys = {
 
 export function useCodexPlugins(input: CodexPluginListInput, enabled = true) {
   useHarnessSessionEpoch()
-  return useQuery({ queryKey: harnessSettingsKeys.plugins(input), enabled: enabled && !sessionIsSwitching(), retry: false, refetchOnWindowFocus: false,
-    queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/codex/plugins?${new URLSearchParams({
+  const client = useQueryClient()
+  const queryKey = harnessSettingsKeys.plugins(input)
+  const read = (signal: AbortSignal, options: { refresh?: boolean } = {}) => {
+    const query = new URLSearchParams({
       view: input.view, query: input.query, offset: String(input.offset), limit: String(input.limit),
-    })}`, CodexPluginListResultSchema, { signal }) })
+    })
+    if (options.refresh || input.refresh) query.set('refresh', 'true')
+    return apiClient.request(`/api/management/harnesses/codex/plugins?${query}`, CodexPluginListResultSchema, { signal })
+  }
+  const result = useQuery({ queryKey, enabled: enabled && !sessionIsSwitching(), retry: false,
+    refetchOnWindowFocus: false, queryFn: ({ signal }) => read(signal) })
+  const refresh = () => client.fetchQuery({ queryKey, staleTime: 0,
+    queryFn: ({ signal }) => read(signal, { refresh: true }) })
+  return { ...result, refresh }
 }
 export function useCodexPlugin(pluginId: string | undefined) {
   useHarnessSessionEpoch()
@@ -213,7 +223,7 @@ export function useRefreshNativeHarness(harness: Harness, refresh: 'catalog' | '
 export function useNativeMcpServers(harness: Harness, enabled = true) {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: harnessSettingsKeys.mcp(harness), enabled: enabled && !sessionIsSwitching(), staleTime: 30_000, retry: false,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: false, refetchInterval: enabled ? 10_000 : false,
     queryFn: ({ signal }) => apiClient.request(`/api/management/harnesses/${harness}/mcp`, HarnessMcpListResultSchema, { signal }),
   })
 }
@@ -262,7 +272,15 @@ export function useDecideNativeMcpChange() {
   return useMutation({ retry: false,
     mutationFn: (input: { planId: string; approve: boolean }) => apiClient.request('/api/management/harnesses/mcp/decision', HarnessMcpPlanSchema,
       { method: 'POST', body: input }),
-    onSuccess: (plan) => settleManagedOperation(client, epoch, plan),
+    onSuccess: (plan) => {
+      if (epoch !== sessionGeneration() || sessionIsSwitching()) return
+      client.setQueryData<{ items: HarnessMcpPlan[] }>(harnessSettingsKeys.plans(plan.harness), (current) => {
+        const observed = current?.items.find((item) => item.id === plan.id)
+        if (observed && terminalMcpPlan(observed)) return current
+        return { items: [plan, ...(current?.items.filter((item) => item.id !== plan.id) ?? [])] }
+      })
+      settleManagedOperation(client, epoch, plan)
+    },
     onSettled: (plan, _error, input) => refreshMcpReadback(client, epoch, plan?.harness ?? cachedPlanHarness(client, input.planId)),
   })
 }
