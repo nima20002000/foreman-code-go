@@ -3,16 +3,14 @@ import { useLocation } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@foreman-code/contracts'
 import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@foreman-code/contracts/wave25'
-import { Button, Dialog, Drawer, Icon, IconButton } from '../../shared/ui/nocturne'
+import { Dialog, Drawer, Icon, IconButton } from '../../shared/ui/nocturne'
 import { WorkspaceExecutionLocationSettings } from '../settings/WorkspaceExecutionLocationSettings'
 import { RunBoardSlot } from '../run-board'
 import { runsSelectorApi, useSelectedRun, useSelectedRunSnapshot } from '../runs-selector'
 import { BoardNavigationControls } from './BoardNavigationControls'
-import { AgentChatPanel } from '../graph/AgentPanels'
 import { CurrentRunObserver } from './CurrentRunObserver'
 import { WorkflowBoardContext } from './context'
 import { RunActivityPanel } from './RunActivityPanel'
-import { Activities } from './Activities'
 import { isActiveRun, shortRunId } from './runFacts'
 import { useInspectionPresentation } from './inspect/presentation'
 import './workflowBoard.css'
@@ -60,13 +58,6 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   const currentRef = useRef(current)
   currentRef.current = current
   const locationKey = JSON.stringify(['board-location-dialog', workspaceId, workflowId])
-  const panelKey = JSON.stringify(['selected-run-panel-hidden', workspaceId, workflowId])
-  const panelHidden = useInspectionPresentation((state) => !!state.open[panelKey])
-  const panelTrigger = useRef<HTMLButtonElement>(null)
-  const setPanelHidden = (hidden: boolean) => {
-    useInspectionPresentation.getState().setOpen(panelKey, hidden)
-    if (hidden) panelTrigger.current?.focus()
-  }
   const locationOpen = useInspectionPresentation((state) => !!state.open[locationKey])
   const setLocationOpen = useCallback((open: boolean) => {
     if (!open || currentRef.current) useInspectionPresentation.getState().setOpen(locationKey, open)
@@ -92,8 +83,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   useEffect(() => () => {
     useInspectionPresentation.getState().setOpen(runsKey, false)
     useInspectionPresentation.getState().setOpen(locationKey, false)
-    useInspectionPresentation.getState().setOpen(panelKey, false)
-  }, [runsKey, locationKey, panelKey])
+  }, [runsKey, locationKey])
   useEffect(() => {
     // The preserved editor owns a window-level undo/redo listener. inert only
     // blocks its DOM, not that listener. Leave text inputs and dialogs alone.
@@ -122,8 +112,6 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
       {!current ? <header className="board-topbar" aria-label="Board toolbar"
         style={{ position: 'static', flex: '0 0 auto', flexWrap: 'wrap', justifyContent: 'flex-end', padding: 'var(--space-2)', boxSizing: 'border-box', minWidth: 0 }}>
         <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} />
-        <Button ref={panelTrigger} size="sm" variant="ghost" aria-expanded={!panelHidden}
-          aria-label="Open Selected Run panel" onClick={() => setPanelHidden(false)}>Selected Run</Button>
       </header> : null}
       <RunBoardSlot selection={boardSelection}>
         <div className="workflow-board-authoring" onClickCapture={authoringEvent} onKeyDownCapture={authoringEvent} onSubmitCapture={authoringEvent}>
@@ -143,21 +131,6 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
           </Dialog>
         </div>
       </RunBoardSlot>
-      {selectedRun.active && !panelHidden && (selectedRun.invalid || selectedRun.identity.runId !== null)
-        ? <aside className="board-side-panel board-historical-chat" aria-label="Agent chat">
-          <header><h2>Selected Run</h2>
-            <IconButton size="sm" variant="ghost" label="Close Selected Run panel" onClick={() => setPanelHidden(true)}>
-              <Icon name="close" size={14} />
-            </IconButton>
-          </header>
-          <div className="board-historical-chat-content">
-            <section aria-label="Run-wide Activities"><Activities selection={selectedRun} /></section>
-            <section className="board-historical-chat-agent" aria-label="Agent chat">
-              <h2>Agent chat</h2>
-              <AgentChatPanel name="Agent chat" selectedRun={selectedRun} />
-            </section>
-          </div>
-        </aside> : null}
     </div>
   </WorkflowBoardContext.Provider>
 }

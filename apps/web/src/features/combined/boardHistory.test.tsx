@@ -101,7 +101,7 @@ function installBoardHistory() {
 function SelectedSurface() {
   selected = useSelectedRun(chatScope)
   return <><RunsSelector selection={selected} /><RunBoard selection={selected} />
-    <AgentChatPanel name="Removed Coder" context={context()} selectedRun={selected} />
+    <AgentChatPanel name="Removed Coder" context={context(selected.identity.runId ?? undefined)} />
     <Activities selection={selected} /></>
 }
 
@@ -220,6 +220,8 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
       const pinned = screen.getByRole('region', { name: 'Selected Run pinned topology' })
       expect(node).toBeVisible()
       expect(node).toBeEnabled()
+      expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Open Selected Run panel' })).not.toBeInTheDocument()
       await user.click(screen.getByRole('button', { name: `Open ${name} chat` }))
       const chat = await screen.findByRole('dialog', { name: `${name} chat` })
       expect(chat).toHaveTextContent('Selected Run')
@@ -323,10 +325,10 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-run-id', 'run-a')
     const old = deferred<ReturnType<typeof envelope>>()
     let held = false
-    server.use(http.get(selectedRoute, async ({ params }) => {
-      const id = String(params.runId)
-      if (id === 'run-b' && !held) { held = true; return HttpResponse.json(await old.promise) }
-      return HttpResponse.json(envelope(source.states.get(id)!))
+    server.use(http.get('*/api/workspaces/:workspaceId/agent-chat', async ({ request }) => {
+      const id = new URL(request.url).searchParams.get('runId')!
+      if (id === 'run-b' && !held) { held = true; return HttpResponse.json((await old.promise).state) }
+      return HttpResponse.json(source.states.get(id)!)
     }))
     await act(async () => { await selected.selectRun('run-b') })
     await waitFor(() => expect(held).toBe(true))
@@ -336,7 +338,7 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     const late = historicalState('run-b'); late.messages[1]!.content = 'Late B response'
     await act(async () => { old.resolve(envelope(late, execution('run-b'))); await old.promise })
     expect(screen.queryByText('Late B response')).not.toBeInTheDocument()
-    expect(within(activityRegion()).getByText('Run activity execution-run-a')).toBeInTheDocument()
+    expect(await within(activityRegion()).findByText('Run activity execution-run-a')).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-run-id', 'run-a')
     await act(async () => { await selected.selectRun('run-b') })
     await screen.findByText('Reply execution-run-b')
@@ -378,8 +380,9 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
         if (holdFirst) { holdFirst = false; await late.promise }
         return HttpResponse.json({ value: { ...row, file: { ...row.file, state: 'ready' } }, replayed: false })
       }),
-      http.post(`${selectedRoute}/messages`, async ({ request, params }) => {
-        const body = await request.json() as Record<string, unknown>, runId = String(params.runId)
+      http.post('*/api/workspaces/:workspaceId/agent-chat/messages', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>
+        const runId = (body.context as { runId: string }).runId
         posts.push({ runId, body })
         const result = admitted(source.states.get(runId)!, body as Parameters<typeof admitted>[1])
         const pin = (body.attachments as Array<{ fileId: string; revisionId: string }>)[0]
@@ -403,7 +406,7 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'Review B file')
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
     await waitFor(() => expect(posts).toHaveLength(1))
-    expect(posts[0]).toMatchObject({ runId: 'run-b', body: { executionId: 'execution-run-b' } })
+    expect(posts[0]).toMatchObject({ runId: 'run-b', body: { context: { runId: 'run-b' } } })
     expect(await screen.findByRole('group', { name: /sent.md/ })).toHaveAttribute('data-state', 'ready')
     await act(async () => { await selected.selectRun('run-a') })
     await screen.findByText('Reply execution-run-a')

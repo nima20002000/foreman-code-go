@@ -8,14 +8,12 @@ import { agentChatFixtures, AgentChatStateSchema, type AgentChatState, type Send
 import { ReadSelectedRunChatResponseSchema, type SelectedRunChatExecution } from '@foreman-code/contracts/selected-run-chat'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
-import { AgentChatPanel } from '../../graph/AgentPanels'
 import { RunsSelector } from '../../runs-selector/RunsSelector'
 import { RunsSelectorSearchSchema } from '../../runs-selector/search'
 import { useSelectedRun, type SelectedRunState } from '../../runs-selector/useSelectedRun'
 import { Activities } from '../../workflow-board/Activities'
 import { server } from '../../../mocks/server'
 import { agentChatFixtureFor, createAgentChatMock } from '../../../shared/mocks/agentChatHandlers'
-import { resolvedSelectedChatKey } from './selectedRunChatModel'
 
 export const scope = { workspaceId: 'workspace-schedule', workflowId: 'workflow-schedule' }
 export const nodeId = 'node-shared', agentId = 'agent-shared', at = '2026-09-28T03:00:00.000Z'
@@ -50,7 +48,7 @@ export function historicalState(runId: string, executionId = `execution-${runId}
 }
 export function envelope(state: AgentChatState, target = execution(state.context.runId!)) {
   return ReadSelectedRunChatResponseSchema.parse({ kind: 'selected', selection: target,
-    key: resolvedSelectedChatKey(target, state), state })
+    key: state.conversation ? { ...target, agentId: state.conversation.agentId, conversationId: state.conversation.id } : null, state })
 }
 export function snapshot(runId: string) {
   return RunBoardSnapshotGetResultSchema.parse({ snapshot: { kind: 'available', ...scope, runId,
@@ -97,10 +95,26 @@ export function installSelectedHandlers() {
       return HttpResponse.json(result)
     }),
   )
+  server.use(
+    http.get('*/api/workspaces/:workspaceId/agent-chat', ({ request }) => {
+      const runId = new URL(request.url).searchParams.get('runId')
+      if (!runId) return HttpResponse.json(agentChatFixtureFor(agentChatFixtures.empty, context()))
+      reads.push(request.url)
+      return HttpResponse.json(states.get(runId))
+    }),
+    http.post('*/api/workspaces/:workspaceId/agent-chat/messages', async ({ request }) => {
+      const body = await request.json() as Record<string, unknown>
+      const runId = (body.context as { runId: string }).runId
+      posts.push({ runId, body })
+      const result = admitted(states.get(runId)!, body as unknown as Omit<SendAgentChatMessageRequest, 'context'>)
+      states.set(runId, result.state)
+      return HttpResponse.json(result)
+    }),
+  )
   return { states, reads, posts, current }
 }
 
-export async function mountSelected(runId: string | null = 'run-a', activitiesOnly = false) {
+export async function mountSelectedActivities(runId: string | null = 'run-a') {
   let latest!: SelectedRunState
   let refreshView!: () => void
   function Probe() {
@@ -110,8 +124,8 @@ export async function mountSelected(runId: string | null = 'run-a', activitiesOn
     useLayoutEffect(() => { latest = selection }, [selection])
     return <><RunsSelector selection={selection} />
       <output aria-label="Selected Run">{selection.identity.runId ?? 'current'}</output>
-      {activitiesOnly ? <Activities selection={selection} />
-        : <AgentChatPanel name="Coder" context={context()} selectedRun={selection} />}</>
+      <Activities selection={selection} /></>
+
   }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 }, mutations: { retry: false } } })
   clients.push(client)

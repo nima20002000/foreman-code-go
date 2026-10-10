@@ -7,15 +7,15 @@ import { ApiError } from '../../shared/api/client'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { runReadErrorLabel, useSelectedRunSnapshot } from '../runs-selector/query'
-import { createChatVisit, type SelectedChatBinding } from '../conversations/agentChat/selectedRunChatModel'
+import { createChatVisit } from '../conversations/agentChat/selectedRunChatModel'
 import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { readRunActivities, readRunActivityFeed, mergeOlderRunActivities, isTransientRunActivityError,
   runActivitiesKey, runActivitiesRefetchInterval, type RunActivityFeed, type RunActivityScope } from './runActivitiesQuery'
 import './activities.css'
 
 /** focusAgentId pins the feed to one Agent: its filter controls and per-row Agent names are dropped. */
-type ActivitiesProps = { scope: RepeatGraphScopeV3; focusAgentId?: string; selection?: never; chat?: never }
-  | { scope?: never; selection: SelectedRunState; chat?: SelectedChatBinding }
+type ActivitiesProps = { scope: RepeatGraphScopeV3; focusAgentId?: string; selection?: never }
+  | { scope?: never; selection: SelectedRunState }
 
 type OlderActivityRequest = {
   cursor: string
@@ -25,18 +25,17 @@ type OlderActivityRequest = {
   finish(): void
 }
 
-/** Callers need not remember a React key. Run, execution and conversation changes
- * reset feed/scroll/older-page requests together, without remounting the Board. */
+/** Run selection changes reset feed, scroll and older-page requests together. */
 export function Activities(props: ActivitiesProps) {
-  return props.selection ? <SelectedActivities selection={props.selection} chat={props.chat} />
+  return props.selection ? <SelectedActivities selection={props.selection} />
     : <ActivityFeed key={JSON.stringify(props.scope)} scope={props.scope!} focusAgentId={props.focusAgentId} />
 }
 
-function SelectedActivities({ selection, chat }: { selection: SelectedRunState; chat?: SelectedChatBinding }) {
+function SelectedActivities({ selection }: { selection: SelectedRunState }) {
   const query = useSelectedRunSnapshot(selection)
   if (!selection.active) return null
   if (selection.invalid) return <p role="status">Invalid Run</p>
-  if (!selection.isCurrent(selection.generation) || chat && !chat.isCurrent()) return null
+  if (!selection.isCurrent(selection.generation)) return null
   if (selection.identity.runId === null) return null
   if (query.isError) return <p role="status">{runReadErrorLabel(query.error)}</p>
   const snapshot = query.snapshot
@@ -44,18 +43,15 @@ function SelectedActivities({ selection, chat }: { selection: SelectedRunState; 
   if (snapshot.kind === 'unavailable') return <p role="status">Activities unavailable</p>
   const scope = { workspaceId: snapshot.workspaceId, workflowId: snapshot.workflowId,
     runId: snapshot.runId, workflowVersionId: snapshot.workflowVersionId }
-  // Run facts have no conversationId. Partition their UI cache by the chat binding,
-  // and filter only explicit execution references; never relabel chat events as Run results.
-  const address = JSON.stringify([scope, selection.generation.id, chat?.visitId, chat?.key ?? chat?.selection ?? null])
-  return <ActivityFeed key={address} scope={scope} selection={selection} chat={chat} address={address} />
+  const address = JSON.stringify([scope, selection.generation.id])
+  return <ActivityFeed key={address} scope={scope} selection={selection} address={address} />
 }
 
-function ActivityFeed({ scope, selection, chat, address, focusAgentId }: { scope: RunActivityScope; selection?: SelectedRunState; chat?: SelectedChatBinding; address?: string; focusAgentId?: string }) {
+function ActivityFeed({ scope, selection, address, focusAgentId }: { scope: RunActivityScope; selection?: SelectedRunState; address?: string; focusAgentId?: string }) {
   const cache = useQueryClient()
   const key = address ? [...runActivitiesKey(scope), address] : runActivitiesKey(scope)
   const isSelected = selection?.isCurrent, ticket = selection?.generation
-  const visit = useMemo(() => createChatVisit(() => (!isSelected || !ticket || isSelected(ticket))
-    && (!chat || chat.isCurrent())), [isSelected, ticket, chat])
+  const visit = useMemo(() => createChatVisit(() => !isSelected || !ticket || isSelected(ticket)), [isSelected, ticket])
   useEffect(() => visit.mount(), [visit])
   const list = useRef<HTMLOListElement>(null)
   const lastSequence = useRef<string | undefined>(undefined)
@@ -136,9 +132,7 @@ function ActivityFeed({ scope, selection, chat, address, focusAgentId }: { scope
       return runActivitiesRefetchInterval(query.state.data)
     } })
   const denied = useProtectedAccessError(feed, older.error)
-  const scopedItems = useMemo(() => chat ? feed.data?.items.filter((item) => item.refs.executionId === chat.selection.executionId
-    && (!item.actor && !item.subject || item.actor?.nodeId === chat.selection.workflowNodeId || item.subject?.nodeId === chat.selection.workflowNodeId))
-    : feed.data?.items, [feed.data?.items, chat])
+  const scopedItems = feed.data?.items
   const latest = scopedItems?.at(-1)?.sequence
   useEffect(() => {
     if (!latest) return
@@ -199,11 +193,10 @@ function ActivityFeed({ scope, selection, chat, address, focusAgentId }: { scope
   const agents = [...new Map(items?.flatMap((item) => [item.actor, item.subject]
     .filter((agent) => agent !== undefined && 'agentId' in agent).map((agent) => [agent.agentId, agent] as const)) ?? []).values()]
     .sort((a, b) => a.agentName.localeCompare(b.agentName))
-  const visible = items?.filter((item) => (chat || !kind || item.kind === kind)
-    && (chat || !agentId || item.actor && 'agentId' in item.actor && item.actor.agentId === agentId
+  const visible = items?.filter((item) => (!kind || item.kind === kind)
+    && (!agentId || item.actor && 'agentId' in item.actor && item.actor.agentId === agentId
       || item.subject && 'agentId' in item.subject && item.subject.agentId === agentId))
-  return <section className="board-activities" aria-label="Activities" data-run-id={scope.runId}
-    data-execution-id={chat?.selection.executionId} data-conversation-id={chat?.key?.conversationId}>
+  return <section className="board-activities" aria-label="Activities" data-run-id={scope.runId}>
     <header><h3>Activities</h3><Button size="sm" variant="ghost" disabled={feed.isFetching && !older.isPending}
       onClick={refresh} aria-label="Refresh Activities">{selection ? 'Refresh' : 'Refresh Activities'}</Button></header>
     {!selection && !focusAgentId ? <p>Recorded actions for this Run, in server order. Pending approvals stay in the approval inbox.</p> : null}
@@ -216,7 +209,7 @@ function ActivityFeed({ scope, selection, chat, address, focusAgentId }: { scope
       </Alert> : null}
     {!error && !denied && !items ? <p role="status">{feed.isPaused ? 'Activities refresh is offline or paused.' : 'Loading Activities…'}</p> : null}
     {items ? <>
-      {!chat && !focusAgentId ? <div className="board-activities-filters">
+      {!focusAgentId ? <div className="board-activities-filters">
         <Select label="Activity kind" value={kind} onChange={(event) => setFilter('activityKind', event.currentTarget.value)}
           options={[{ value: '', label: 'All actions' }, ...[...new Set(items.map((item) => item.kind))].sort()
             .map((value) => ({ value, label: value.replaceAll('_', ' ') })),

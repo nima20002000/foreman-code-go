@@ -82,15 +82,6 @@
 }
 .board-side-panel > header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
 .board-side-panel > header h2 { margin: 0; color: var(--text-strong); font: var(--type-heading); }
-.board-historical-chat-content {
-  display: grid; grid-template-rows: minmax(0, 2fr) minmax(0, 3fr); flex: 1; min-height: 0;
-  gap: var(--space-3); overflow: hidden; padding: var(--space-4);
-}
-.board-historical-chat-content > section { min-width: 0; min-height: 0; overflow-y: auto; }
-.board-historical-chat-agent > h2 { margin: 0 0 var(--space-2); color: var(--text-strong); font: var(--type-heading); }
-.board-historical-chat > header { flex-shrink: 0; }
-/* Chat scrolls separately from Run-wide Activities, with a readable transcript viewport. */
-.board-historical-chat .conversation-viewport { flex: 0 0 auto; height: 16rem; min-height: 16rem; }
 .board-side-panel > fieldset { display: grid; align-content: start; gap: var(--space-6); min-width: 0; margin: 0; padding: var(--space-4); overflow: auto; border: 0; }
 .board-keyboard-list { position: absolute; z-index: 8; bottom: var(--space-4); left: 64px; display: flex; flex-wrap: wrap; gap: var(--space-1);
   max-width: calc(100% - 8rem); padding: var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-raised); }
