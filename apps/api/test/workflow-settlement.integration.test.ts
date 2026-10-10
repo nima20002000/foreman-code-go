@@ -82,8 +82,7 @@ async function directionApi(f: Fixture) {
   const repository = new Wave25InteractionRepository(f.db.pool)
   const service = new InteractionService(repository, new PostgresApprovalBudgetRepository(f.db.pool),
     {} as never, async () => { throw new Error('Direction must not resume a native approval') })
-  const locations = new WorkspaceLocationService(f.db.pool, f.commands, f.db.directory, 'runner-local', f.db.directory)
-  vi.spyOn(locations, 'snapshot').mockResolvedValue(f.run.executionLocation)
+  const locations = new WorkspaceLocationService(f.db.pool, f.commands)
   const start = vi.fn(async (principal: Parameters<typeof admitRepeatRun>[2], source: 'http' | 'mcp',
     input: Parameters<typeof admitRepeatRun>[4]) => {
     const accepted = await admitRepeatRun(f.db.pool, locations, principal, source, input, repeatStartPublication)
@@ -246,12 +245,19 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement and e
               new PostgresApprovalBudgetRepository(f.db.pool), {} as never, async () => undefined)
             restarted.useWorkDirectionActions({ start: api.start, wake: async () => undefined })
             expect((await restarted.recover({ limit: 20 })).errors).toEqual([])
+            expect((await restarted.recover({ limit: 20 })).errors).toEqual([])
           }
           const accepted = await api.call('interaction_respond', response)
           expect(accepted?.isError, JSON.stringify(accepted)).not.toBe(true)
           const decided = RespondToInteractionResponseSchema.parse(graphRpcValue(accepted))
           expect(decided).toMatchObject({ replayed: choice === 'continue',
             interaction: { status: 'delivered', selectedOptionId: choice } })
+          if (choice === 'stop') {
+            expect((await f.db.pool.query('select stop_requested_at from runs where id=$1', [f.run.id]))
+              .rows[0]?.stop_requested_at).toEqual(expect.any(Date))
+            expect((await f.db.pool.query('select pending from run_cleanup_intents where run_id=$1', [f.run.id]))
+              .rows[0]?.pending).toBe(true)
+          }
           await f.restart()
           if (choice === 'stop') {
             await f.lifecycle.settleRun(true, false)

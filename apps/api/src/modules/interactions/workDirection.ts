@@ -110,8 +110,11 @@ export class WorkDirectionRepository {
           values($1,$2,$3,$4::jsonb)`, [current.id, principal.id, source, startInput ? JSON.stringify(startInput) : null])
         await this.audit(transaction, principal.id, source, next, false)
       } })
-      if (option.optionId === 'stop') await requestWorkflowStopLocked(sql, current.runId,
-        async () => { await this.authorize(sql, principal.id, next) })
+      if (option.optionId === 'stop') {
+        const snapshot = await readAcceptedRepeatRunLocked(sql, current.runId)
+        await requestWorkflowStopLocked(sql, current.runId,
+          async () => { await this.authorize(sql, principal.id, next) }, { publication, snapshot })
+      }
       return { interaction: next, replayed: false }
     })
     const interaction = await this.complete(decision.interaction)
