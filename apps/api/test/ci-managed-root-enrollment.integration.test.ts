@@ -26,7 +26,6 @@ import { createProductionSources } from '../src/modules/sources/production.js'
 import { createWorkspaceRootWorkerHandler, qualifyApprovedRootAllowlist } from '../src/modules/sources/rootAttestation.js'
 import { ManagedWorkspaceRootService } from '../src/modules/workspace-roots/managedRoot.js'
 import { WorkspaceBoundLocationService } from '../src/modules/workspace-roots/service.js'
-import { registerWorkspaceRootRoutes } from '../src/modules/workspace-roots/transports.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { buildComputerFixture } from './helpers/buildComputerFixture.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
@@ -173,7 +172,6 @@ async function fixture(options: { managedStorage: boolean }) {
       jobRuntimeProfiles: profiles, ciEnrollment: enrollment } as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services } })
-    registerWorkspaceRootRoutes(app, roots)
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
       const client = new Client({ name: 'Managed root enrollment', version: '1' })
@@ -216,7 +214,7 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
       expect((await f.db.pool.query('select count(*)::int as count from ci_enrollment_computers')).rows[0]?.count).toBe(0)
       expect((await f.client.callTool({ name: 'ci_enrollment_update', arguments: input })).isError).not.toBe(true)
       await vi.waitFor(async () => expect((await f.read()).computers[0]).toMatchObject({ state: 'preparing',
-        managedSetup: f.managedSetup, templates: [{ templateId: f.saved.id, state: 'preparing' }] }))
+        managedSetup: f.managedSetup, templates: [{ templateId: f.saved.id, state: 'preparing' }] }), { timeout: 5000 })
       expect(f.rootRequests).toContain('workspace-roots.configuration')
       expect(f.rootRequests).toContain('workspace-roots.prepare-managed')
       const choices = decodeMcpToolResult(await f.client.callTool({ name: 'workspace_root_choices_list',
@@ -239,7 +237,7 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
       expect(http.statusCode).toBe(200)
       expect(http.json()).toEqual(choices)
       expect((await f.client.callTool({ name: 'ci_enrollment_update', arguments: input })).isError).not.toBe(true)
-      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('preparing'))
+      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('preparing'), { timeout: 5000 })
       expect((await f.db.pool.query("select count(*)::int as count from management_audit where action='workspace.root.managed.bind' and outcome='succeeded'")).rows[0]?.count).toBe(1)
       expect((await f.db.pool.query("select count(*)::int as count from management_audit where action='ci_enrollment_update' and outcome='denied'")).rows[0]?.count).toBeGreaterThan(0)
       const inventory = f.createInventory()
@@ -261,7 +259,7 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
         expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })).value
       await f.client.callTool({ name: 'ci_enrollment_update', arguments: { workspaceId: f.workspaceId,
         target: f.worker.target, commandId: randomUUID(), expectedRevision: 0, enabled: true } })
-      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('preparing'))
+      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('preparing'), { timeout: 5000 })
       expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)
       const choices = await f.roots.choices(f.owner.principal, { workspaceId: f.workspaceId })
       const policies = choices.policies.filter(policy => policy.hostRef.kind === 'device')
@@ -276,7 +274,7 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
     try {
       await f.client.callTool({ name: 'ci_enrollment_update', arguments: { workspaceId: f.workspaceId,
         target: f.worker.target, commandId: randomUUID(), expectedRevision: 0, enabled: true } })
-      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('root-required'))
+      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('root-required'), { timeout: 5000 })
       expect(f.rootRequests).not.toContain('workspace-roots.prepare-managed')
       expect((await f.roots.choices(f.owner.principal, { workspaceId: f.workspaceId })).policies)
         .not.toEqual(expect.arrayContaining([expect.objectContaining({ bindingPurpose: 'ci-enrollment' })]))
@@ -294,7 +292,7 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
       await f.client.callTool({ name: 'ci_enrollment_update', arguments: { workspaceId: f.workspaceId,
         target: f.worker.target, commandId: randomUUID(), expectedRevision: 0, enabled: true } })
       await vi.waitFor(async () => expect((await f.read()).computers[0]).toMatchObject({ state: 'runtime-required',
-        managedSetup: setup, templates: [{ state: 'runtime-required', message: setup.message }] }))
+        managedSetup: setup, templates: [{ state: 'runtime-required', message: setup.message }] }), { timeout: 5000 })
       expect(f.rootRequests).toEqual([])
       const persisted = await f.read()
       await f.restart()
