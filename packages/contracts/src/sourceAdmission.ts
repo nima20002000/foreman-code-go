@@ -11,7 +11,7 @@ export type SourceToolName = z.infer<typeof SourceToolNameSchema>
 export const SourcePinSchema = z.object({ approvedSourceId: z.uuid(), snapshotId: z.uuid(), manifestDigest: SourceHashSchema }).strict()
 export type ApprovedSourcePin = z.infer<typeof SourcePinSchema>
 export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, commandId: z.string().min(8).max(200),
-  expectedLocationRevision: z.number().int().positive(), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+  expectedLocationRevision: z.number().int().nonnegative(), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   approvedPaths: z.array(z.string().min(1).max(1024)).min(1).max(4096).optional(),
   approveTrackedTree: z.literal(true).optional(), executablePolicy: z.enum(['strip', 'preserve-approved']),
 }).strict().refine(input => (input.approvedPaths !== undefined) !== (input.approveTrackedTree === true), {
@@ -19,7 +19,7 @@ export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, comman
 })
 export type SourceApproveInput = z.infer<typeof SourceApproveInputSchema>
 export const ApprovedSourceSchema = z.object({ version: z.literal(1), workspaceId: IdSchema, ownerPrincipalId: IdSchema,
-  approvedByPrincipalId: IdSchema, locationRevision: z.number().int().positive(),
+  approvedByPrincipalId: IdSchema, locationRevision: z.number().int().nonnegative(),
   mainId: z.uuid(), originIdentityHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   manifest: SourceManifestSchema, approvedAt: z.string().datetime(), availability: z.enum(['retained', 'unavailable']),
 }).strict()

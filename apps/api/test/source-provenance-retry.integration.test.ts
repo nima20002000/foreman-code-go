@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ManagedWorkspaceCommandResultSchema, ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
+import { ApprovedSourceSchema } from '@foreman-code/contracts/source-admission'
 import { expect, it, vi } from 'vitest'
 import { CiService } from '../src/modules/jobs/ci.js'
 import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
@@ -36,6 +37,7 @@ it('rejects interrupted CI capture replay after a supported repository edit thro
       {} as RegisteredSourceRootPort, {} as SourceExecutionHostPort, { confirmedClosed: async () => false })
     // Both repositories already contain this commit; provenance must still prevent substitution.
     sources.git = { ...systemGitWorktreePorts(gitFixtureEnvironment()), cloneDirectory: () => clone }
+    services.sources = sources
     vi.spyOn(sources, 'approve').mockImplementation(async (...args) => {
       approvals.push(args)
       throw new Error('Interrupted before approval')
@@ -46,6 +48,7 @@ it('rejects interrupted CI capture replay after a supported repository edit thro
     const created = await callWorkspaceTool(f.owner.client, 'workspace_create', ManagedWorkspaceCommandResultSchema,
       { commandId: randomUUID(), name: 'CI provenance' })
     const workspaceId = created.value.workspace.id
+    expect(created.value.locationRevision).toBe(0)
     const repository = { provider: 'github', owner: 'octo-owner', name: 'repo-a', defaultBranch: 'main' }
     const saved = await callWorkspaceTool(f.owner.client, 'workspace_update', ManagedWorkspaceCommandResultSchema,
       { workspaceId, commandId: randomUUID(), expectedRevision: created.value.revision, repository })
@@ -55,9 +58,10 @@ it('rejects interrupted CI capture replay after a supported repository edit thro
     expect(approvals).toHaveLength(0)
     expect((await f.owner.client.callTool({ name: 'ci_run', arguments: input })).isError).toBe(true)
     expect(approvals).toHaveLength(1)
-    const receipts = await f.pool.query<{ result: { commit: string } }>(
+    const receipts = await f.pool.query<{ result: { commit: string; expectedLocationRevision: number } }>(
       "select result from management_command_receipts where operation='source.project.capture'")
     expect(receipts.rows.map(row => row.result.commit)).toEqual([commit])
+    expect(receipts.rows.map(row => row.result.expectedLocationRevision)).toEqual([0])
     await callWorkspaceTool(f.owner.client, 'workspace_update', ManagedWorkspaceCommandResultSchema,
       { workspaceId, commandId: randomUUID(), expectedRevision: saved.value.revision,
         repository: { ...repository, name: 'repo-b' } })
@@ -69,8 +73,17 @@ it('rejects interrupted CI capture replay after a supported repository edit thro
     expect(JSON.stringify(retried)).toContain('COMMAND_ID_CONFLICT')
     expect(approvals).toHaveLength(1)
     expect(enqueue).not.toHaveBeenCalled()
-  } finally {
     vi.mocked(sources.approve).mockRestore()
+    const approved = await sources.approveProject(f.owner.principal, {
+      workspaceId, commandId: randomUUID(), commit,
+    })
+    expect(approved.locationRevision).toBe(0)
+    expect(await callWorkspaceTool(f.owner.client, 'source_get', ApprovedSourceSchema, {
+      workspaceId, approvedSourceId: approved.manifest.approvedSourceId,
+      snapshotId: approved.manifest.snapshotId, manifestDigest: approved.manifest.manifestDigest,
+    })).toEqual(approved)
+  } finally {
+    vi.restoreAllMocks()
     await f.close()
   }
 }, 30_000)
