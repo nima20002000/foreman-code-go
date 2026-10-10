@@ -776,7 +776,16 @@ for (const [name, contents] of [
 test('verification builds execute each time and return machine-readable command results', async () => {
   const f = fixture()
   try {
-    copyFileSync(new URL('./verification-reports.mjs', import.meta.url), join(f.first, 'scripts/verification-reports.mjs'))
+    for (const path of [
+      'scripts/verification-reports.mjs',
+      'scripts/integration-capabilities.mjs',
+      'apps/worker/src/diagnostics.mjs',
+      'packages/contracts/src/verificationEnvironment.mjs',
+    ]) {
+      const destination = join(f.first, path)
+      mkdirSync(dirname(destination), { recursive: true })
+      copyFileSync(new URL(`../${path}`, import.meta.url), destination)
+    }
     const reports = join(f.first, '.logs', 'verification')
     const environment = { ...jobEnv(f.first), FOREMAN_CODE_VERIFICATION_ROOT: f.first,
       FOREMAN_CODE_VERIFICATION_REPORT_DIR: reports, FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192',
