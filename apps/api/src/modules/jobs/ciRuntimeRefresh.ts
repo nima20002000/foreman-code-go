@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { copyFile, mkdir, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises'
+import { availableParallelism, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -9,11 +10,25 @@ import { InstalledVerificationRuntimeCaptureInputSchema, InstalledVerificationRu
   type InstalledVerificationRuntimeCaptureInput, type InstalledVerificationRuntimeConfiguration }
   from './installedVerificationConfiguration.js'
 import type { JobResourceRequest, PreparedCiRuntime } from '@foreman-code/contracts'
+import { DEVICE_MIB, DEVICE_RESOURCE_HOST_RESERVE, DeviceResourceLimitsSchema, type DeviceResourceLimits }
+  from '@foreman-code/contracts/device-resources'
 import { InstalledJobRuntimeConfigurationRecordSchema } from './installedRuntimeHost.js'
 import { readCiRuntimeInstallation, readCiRuntimeTemplate, relocateCiQuotaSlots } from './ciRuntimeInstallation.js'
 import { DomainError } from '../errors.js'
 
 const run = promisify(execFile)
+
+/** What this computer can lend to builds: every CPU and its memory less the host reserve. The owner's build
+ * allowance percent scales it, and each Job stays inside its own container limits. Disk keeps its installed quota. */
+export function hostDeviceLimits(installed: DeviceResourceLimits,
+  host = { cpus: availableParallelism(), memoryBytes: totalmem() }): DeviceResourceLimits {
+  const reserve = Math.max(DEVICE_RESOURCE_HOST_RESERVE.minimumMemoryBytes,
+    host.memoryBytes * DEVICE_RESOURCE_HOST_RESERVE.memoryFraction)
+  const increment = 64 * DEVICE_MIB
+  return DeviceResourceLimitsSchema.parse({ ...installed, cpuLimit: host.cpus,
+    memoryBytes: Math.floor((host.memoryBytes - reserve) / increment) * increment,
+    pidsLimit: Math.max(installed.pidsLimit, 8192) })
+}
 
 /** The next protected runtime: the current installation with the prepared image, seed, qualification source and root. */
 export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, input: {
@@ -28,7 +43,8 @@ export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, 
     schemaVersion: 2, root: input.root, descriptor: { ...configuration.descriptor, resources: input.resources,
       target: { hostRef: input.root.selection.hostRef, registration: input.root.registration,
         mainInstallationId: input.root.binding.mainId } },
-    machine: { ...machine, resources: input.resources, limits: input.resources.limits,
+    machine: { ...machine, ...(machine.deviceLimits ? { deviceLimits: hostDeviceLimits(machine.deviceLimits) } : {}),
+      resources: input.resources, limits: input.resources.limits,
       imageDigest: prepared.imageId, imageConfigDigest: prepared.imageId,
       imageManifestDigest: prepared.imageManifestDigest, sourceCommit: prepared.commit },
     seedReceiptPath: input.seedReceiptPath,

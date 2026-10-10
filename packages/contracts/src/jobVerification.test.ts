@@ -43,13 +43,17 @@ describe('verification placement and policy', () => {
     const { spec, resources } = verificationFixture()
     const large = { ...resources, scratchBytes: 16 * 2 ** 30,
       limits: { ...resources.limits, cpuLimit: 8, memoryBytes: 9 * 2 ** 30, diskBytes: 32 * 2 ** 30 } }
-    expect(qualificationIntegrationShards(large)).toBe(4)
+    // A slot needs about 1 GiB beside the shared database, so memory no longer halves the CPU-bound slots.
+    expect(qualificationIntegrationShards(large)).toBe(8)
+    expect(qualificationIntegrationShards({ ...large, limits: { ...large.limits, memoryBytes: 5 * 2 ** 30 } })).toBe(4)
     expect(qualificationIntegrationShards({ ...large, limits: { ...large.limits, cpuLimit: 2 } })).toBe(2)
     expect(qualificationIntegrationShards({ ...large, scratchBytes: 2 * 2 ** 30 })).toBe(1)
     const template = jobVerificationTemplate({ profileId: spec.policy.isolationPolicyId,
       profileRevision: 1, suite: 'integration', ready: true, policy: jobPolicyRequirementsRecord(spec.policy),
       resources: large, maxUnitWorkers: 8, maxIntegrationShards: 3 })
     expect(template.parameters.integrationShards).toBe(3)
+    // Jobs use every qualified unit worker, not the pre-qualification single worker.
+    expect(template.parameters.unitWorkers).toBe(8)
   })
   it('keeps all choices readable when a saved unqualified report allowance cannot fit four declarations', () => {
     const { spec, resources, build } = verificationFixture()

@@ -18,13 +18,14 @@ export const JOB_VERIFICATION_OWNER_CONFIGURATION = Object.freeze({
 export function qualificationUnitWorkers(limits: { cpuLimit: number }): number {
   return Math.max(1, Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers, Math.floor(limits.cpuLimit)))
 }
-/** Each integration slot runs an API process and disposable database within the saved Job reservation. */
+/** Each integration slot runs an API process and disposable database within the saved Job reservation.
+ * Measured gates run 11 slots on 14 GiB computers, so a slot budgets 1 GiB of memory after the shared database. */
 export function qualificationIntegrationShards(resources: {
   limits: { cpuLimit: number; memoryBytes: number }; scratchBytes: number
 }): number {
   const gib = 2 ** 30
   const cpuSlots = Math.floor(resources.limits.cpuLimit)
-  const memorySlots = Math.floor((resources.limits.memoryBytes - gib) / (2 * gib))
+  const memorySlots = Math.floor((resources.limits.memoryBytes - gib) / gib)
   const scratchSlots = Math.floor(resources.scratchBytes / (2 * gib))
   return Math.max(1, Math.min(JOB_VERIFICATION_OWNER_CONFIGURATION.integrationShards,
     cpuSlots, memorySlots, scratchSlots))

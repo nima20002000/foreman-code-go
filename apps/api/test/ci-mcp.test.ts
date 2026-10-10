@@ -81,6 +81,31 @@ describe('CI over the authenticated unified MCP transport', () => {
     } finally { await f.app.close() }
   })
 
+  it('splits a partitioned integration run into one balanced Job per slice and refuses partitions for other suites', async () => {
+    const f = await fixture()
+    try {
+      f.templates.push(jobVerificationTemplate({ ...f.templates[0]!, suite: 'integration' }))
+      const input = { workspaceId: f.workspaceId, suite: 'integration', commandId: 'partitioned-ci', partitions: 3 }
+      const response = await f.call('ci_run', input, 'operator')
+      expect(response.result.isError, JSON.stringify(response.result)).not.toBe(true)
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult(response.result))
+      expect(started.partitions).toHaveLength(3)
+      expect(started.ticketId).toBe(started.partitions![0]!.ticketId)
+      expect(new Set(started.partitions!.map(value => value.ticketId)).size).toBe(3)
+      expect(f.counts().enqueues).toBe(3)
+      for (const [index, partition] of started.partitions!.entries()) {
+        const read = await f.call('ci_get', { workspaceId: f.workspaceId, ticketId: partition.ticketId }, 'operator')
+        expect(CiGetOutputSchema.parse(decodeMcpToolResult(read.result)).queue.definition.spec).toMatchObject({
+          verification: { suite: 'integration', parameters: { partition: { index, count: 3 } } } })
+      }
+      expect(CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', input, 'operator')).result))).toEqual(started)
+      expect(f.counts().enqueues).toBe(3)
+      const unit = await f.call('ci_run', { workspaceId: f.workspaceId, suite: 'unit', commandId: 'partitioned-unit',
+        partitions: 2 }, 'operator')
+      expect(unit.result.isError).toBe(true)
+    } finally { await f.app.close() }
+  })
+
   it('retains the caller’s preparation grants and explicit runtime selection on the queued ticket', async () => {
     const f = await fixture()
     try {

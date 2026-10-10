@@ -1,9 +1,7 @@
 import Fastify from 'fastify'
 import type pg from 'pg'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
-import type { PrivateSourceSnapshotStore } from '../../src/modules/sources/store.js'
 import type { GitWorktreePorts } from '../../src/modules/sources/gitWorktree.js'
-import { sourcePackageStream } from '../../src/modules/sources/operationPackage.js'
 import { BuildComputerPrepareStatusSchema, CI_RUNTIME_NAMESPACE, type CiRuntimeRequest, type PreparedCiRuntime }
   from '@foreman-code/contracts'
 import { JobVerificationProfileSchema, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
@@ -83,18 +81,16 @@ export function preparationProfile(id: string, name: string, deviceId: string | 
       policy: { ...baseline.spec.policy, imageDigest: oldImage } } }))
 }
 
-type Stage = 'source' | 'source-transfer' | 'root' | 'profile' | 'refresh' | 'capture' | 'qualify'
+type Stage = 'source' | 'root' | 'profile' | 'refresh' | 'capture' | 'qualify'
 export async function ciPreparationFixture(options: {
   reusedImage?: boolean; staleQualification?: boolean
   /** A Main verification profile; 'installed' also gives Main its own CI runtime. */
   main?: 'installed' | 'absent'
   prepareFails?: boolean; disabled?: boolean; statusDrops?: number; loseRefreshAck?: boolean
   refreshGate?: Promise<void>
-  loseSourceAck?: 'first' | 'complete'
-  corruptSourceRetry?: boolean
-  /** GitHub serves the approved commit, so Main sends no source bytes. */
-  published?: boolean
-  source?: { manifest: SourceManifest; store: PrivateSourceSnapshotStore; git: GitWorktreePorts }
+  /** Main's publication of the approved commit to GitHub; the computer then fetches it with its own clone. */
+  publish?(repository: string, commit: string): Promise<void>
+  source?: { manifest: SourceManifest; git: GitWorktreePorts }
   pause?(stage: Stage): Promise<void>
 } = {}) {
   const data = ciFixture()
@@ -108,7 +104,7 @@ export async function ciPreparationFixture(options: {
   ])
   const calls = { prepare: [] as unknown[], bind: [] as unknown[],
     saves: [] as Array<{ id: string; spec: { bindingRevision: number; policy: { imageDigest: string } } }>,
-    refresh: [] as unknown[], qualified: [] as string[], sourceChunks: 0 }
+    refresh: [] as unknown[], qualified: [] as string[], publish: [] as Array<{ repository: string; commit: string }> }
   const memory = ciPreparationMemory()
   const reader: ManagementPrincipal = { ...data.readonly, id: 'runtime-reader', grants: [{
     actions: ['job_definitions:read'], scope: { workspaceIds: [workspaceId] },
@@ -192,33 +188,16 @@ export async function ciPreparationFixture(options: {
   let restartedOperation: string | undefined
   let statusDrops = options.statusDrops ?? 0
   let ackLost = false
-  let sourceAckLost = false
-  let sourceRetryChanged = false
   const endpoint = {
     capabilities: (deviceId: string) => deviceId === dexter ? [{ namespace: CI_RUNTIME_NAMESPACE, mainCanRequest: true }] : [],
     request: async (_deviceId: string, _namespace: string, raw: unknown) => {
-      let payload = raw as CiRuntimeRequest
-      if (payload.operation === 'source' && sourceAckLost && options.corruptSourceRetry && !sourceRetryChanged) {
-        const bytes = Buffer.from(payload.dataBase64, 'base64')
-        bytes[0] = bytes[0]! ^ 1
-        payload = { ...payload, dataBase64: bytes.toString('base64') }
-        sourceRetryChanged = true
-      }
+      const payload = raw as CiRuntimeRequest
       if (refreshRecord && restartedOperation !== refreshRecord.operationId) {
         restartedOperation = refreshRecord.operationId
         worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
       }
       if (payload.operation === 'status' && statusDrops-- > 0) throw new DeviceConnectionError('transport')
-      if (payload.operation === 'source') calls.sourceChunks++
       const state = await worker.handle(payload)
-      if (payload.operation === 'source' && payload.complete) {
-        await options.pause?.('source-transfer')
-      }
-      if (payload.operation === 'source' && !sourceAckLost
-        && (options.loseSourceAck === 'first' || options.loseSourceAck === 'complete' && payload.complete)) {
-        sourceAckLost = true
-        throw new DeviceConnectionError('transport')
-      }
       if (payload.operation === 'refresh') {
         await options.pause?.('refresh')
         if (options.loseRefreshAck && !ackLost) { ackLost = true; throw new DeviceConnectionError('transport') }
@@ -239,10 +218,9 @@ export async function ciPreparationFixture(options: {
       await options.pause?.('source')
       return approved
     },
-    published: async () => options.published ?? false,
-    sourcePackage: async () => {
-      if (!options.source) throw new Error('This fixture has no source package.')
-      return sourcePackageStream(options.source.manifest, options.source.store, AbortSignal.timeout(30_000))
+    publish: async (repository: string, commit: string) => {
+      calls.publish.push({ repository, commit })
+      await options.publish?.(repository, commit)
     },
     rootList: async () => ({ items: [...currentRoots.values()].map(value => structuredClone(value)) }),
     bindRoot: async (principal: ManagementPrincipal, _source: unknown,

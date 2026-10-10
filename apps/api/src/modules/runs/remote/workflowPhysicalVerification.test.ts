@@ -91,8 +91,7 @@ async function sourceFixture(options: { relativeCwd?: string; harness?: 'codex' 
   const nativePlacement=bindNativeExecution(placement,intent,record,workingTree)
   nativePlacement.materialization.finalDispatchBindingHash=nativePlacement.bindingHash
   const owner:SourceOperationOwner={identity:{operationId:intent.operationId,ownerPrincipalId:'owner',expiresAt:'2099-01-01T00:00:00.000Z'},root:sourceRoot,attempt,source,record:nativePlacement.materialization,physicalClosureConfirmed:false}
-  const sources=new SourceOperationWorkerService({authenticate:async()=>undefined,approvedRoots:async()=>approvedRoots,currentOwner:async()=>owner,
-    transfers:{resolveVerifiedReceipt:vi.fn().mockRejectedValue(new Error('Verify-only fixture')),openVerified:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))},transferContext:vi.fn().mockRejectedValue(new Error('Verify-only fixture'))})
+  const sources=new SourceOperationWorkerService({authenticate:async()=>undefined,approvedRoots:async()=>approvedRoots,currentOwner:async()=>owner})
   const configuration: AgentConfigurationVersion = {
     id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1,
     prompt: { system: 'Unit workflow instructions.' }, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS[harness],

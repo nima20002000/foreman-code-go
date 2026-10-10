@@ -21,9 +21,14 @@ export const JOB_VERIFICATION_SUITES = [
   'install', 'typecheck', 'lint', 'unit', 'build', 'integration', 'browser', 'native-acceptance', 'full-gate-local',
 ] as const
 export const JobVerificationSuiteSchema = z.enum(JOB_VERIFICATION_SUITES)
+/** One slice of a suite's integration files: a CI run split across computers runs each slice as its own Job. */
+export const JobVerificationPartitionSchema = z.object({
+  index: DeviceSafeIntegerSchema, count: DeviceSafeIntegerSchema.min(2).max(12),
+}).strict().refine(value => value.index < value.count, 'The partition index must be below its count.')
 export const JobVerificationParametersSchema = z.object({
   unitWorkers: DeviceSafeIntegerSchema.min(1).max(256),
   integrationShards: DeviceSafeIntegerSchema.min(1).max(64),
+  partition: JobVerificationPartitionSchema.optional(),
 }).strict()
 export const JobVerificationOutputSchema = JobOutputSpecSchema.extend({
   kind: z.enum(['suite-summary', 'junit', 'vitest-json', 'logs-archive', 'traces-archive']),
@@ -93,7 +98,8 @@ export type JobVerificationTemplate = z.infer<typeof JobVerificationTemplateSche
 
 export function jobVerificationTemplate(input: Omit<JobVerificationTemplate, 'argv' | 'outputs' | 'parameters' | 'setupIssue'>) {
   const reportBytes = Math.floor(input.policy.maxOutputBytes / 4)
-  const parameters = { unitWorkers: JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers,
+  // Qualification measures how many workers the envelope sustains; Jobs use all of them.
+  const parameters = { unitWorkers: Math.max(JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers, input.maxUnitWorkers),
     integrationShards: input.suite === 'integration'
       ? Math.min(input.maxIntegrationShards ?? 1, qualificationIntegrationShards(input.resources))
       : JOB_VERIFICATION_INITIAL_CONCURRENCY.integrationShards }

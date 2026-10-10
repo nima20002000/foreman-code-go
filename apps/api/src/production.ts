@@ -1787,8 +1787,7 @@ export function buildProductionApp(
         workerExecution,
         runtimeRoot: config.harnesses.workspaceRoot, storageRoot: fileStorageRoot, endpoint: () => deviceRuntime.endpointForDomains(),
         activeNativeSession, captureNativeSession,
-        ...(installedRsync ? { transferSender: source => rsync.sender(source),
-          transferReceiver:installedRsync.receiver,
+        ...(installedRsync ? { transferReceiver:installedRsync.receiver,
           transferPreparationClosed: async closure => {
             if (rsync.kind !== 'configured') throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Rsync cleanup is unavailable.', 409)
             await rsync.backend.retirePreparation(closure, AbortSignal.timeout(15_000))

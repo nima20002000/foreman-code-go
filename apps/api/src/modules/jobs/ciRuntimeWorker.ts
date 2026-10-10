@@ -1,4 +1,3 @@
-import { CiRuntimeSourceReceiver } from './ciRuntimeSource.js'
 import { join } from 'node:path'
 import { CiRuntimeRequestSchema, CiRuntimeWorkerStateSchema, PreparedCiRuntimeSchema,
   type CiRuntimeRequest, type CiRuntimeWorkerState } from '@foreman-code/contracts'
@@ -24,13 +23,11 @@ export interface CiRuntimeWorkerPorts {
 
 /** One CI runtime preparation at a time on this build computer; Main follows it with `status`. */
 export class CiRuntimeWorker {
-  private readonly sources: CiRuntimeSourceReceiver
   private state: CiRuntimeWorkerState | undefined
   private preparation: Promise<void> | undefined
   /** `lifetime` is the Worker's, not a request's: preparation outlives the call that started it. */
   constructor(private readonly stateDirectory: string, private readonly ports: CiRuntimeWorkerPorts,
     private readonly lifetime: AbortSignal) {
-    this.sources = new CiRuntimeSourceReceiver(ports.git, lifetime)
   }
 
   async handle(raw: unknown): Promise<CiRuntimeWorkerState> {
@@ -45,13 +42,6 @@ export class CiRuntimeWorker {
       throw new DomainError('CI_RUNTIME_SETUP_REQUIRED', managedSetup.message ?? 'Managed CI storage is unavailable.', 409)
     }
     this.lifetime.throwIfAborted()
-    if (request.operation === 'source') {
-      if (this.state?.state === 'preparing' || this.state?.state === 'refreshing') {
-        throw new DomainError('CI_RUNTIME_BUSY', 'This computer is already preparing its CI runtime.', 409)
-      }
-      await this.sources.receive(request)
-      return this.status()
-    }
     if (request.operation === 'prepare') return this.prepare(request)
     return this.refresh(request)
   }
@@ -66,9 +56,6 @@ export class CiRuntimeWorker {
   }
 
   private async prepare(request: Extract<CiRuntimeRequest, { operation: 'prepare' }>) {
-    if (this.sources.active) {
-      throw new DomainError('CI_RUNTIME_BUSY', 'This computer is receiving approved source for runtime preparation.', 409)
-    }
     if (this.state?.state === 'preparing' || this.state?.state === 'refreshing') {
       if (this.state.operationId === request.operationId && this.state.commit === request.commit) return this.state
       throw new DomainError('CI_RUNTIME_BUSY', 'This computer is already preparing its CI runtime for another commit.', 409)
@@ -78,8 +65,11 @@ export class CiRuntimeWorker {
     const state = this.set({ operationId: request.operationId, state: 'preparing', commit: request.commit,
       stage: 'fetch-source', prepared: null, message: null, preparationLimits: ciPreparationLimits() })
     this.preparation = (async () => {
-      await this.sources.releaseCompleted()
-      const repository = await ensureCommit(this.ports.git, request.repository, request.commit, this.lifetime)
+      const repository = await ensureCommit(this.ports.git, request.repository, request.commit, this.lifetime).catch(error => {
+        this.lifetime.throwIfAborted()
+        throw new DomainError('COMPUTER_GITHUB_REQUIRED', `This computer could not fetch ${request.repository} from GitHub. `
+          + 'Connect GitHub on this computer (computer_github_login_start), then retry.', 409, { cause: error instanceof Error ? error.message : String(error) })
+      })
       this.lifetime.throwIfAborted()
       const installer = join(await this.ports.managedRuntimeRoot(), 'installer')
       const keepPaths = await this.ports.currentRuntimePaths(this.stateDirectory)
@@ -106,7 +96,6 @@ export class CiRuntimeWorker {
 
   async close(): Promise<void> {
     await this.preparation
-    await this.sources.close()
   }
 
   private async refresh(request: Extract<CiRuntimeRequest, { operation: 'refresh' }>) {

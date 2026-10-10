@@ -4,17 +4,26 @@ import { JobOrdinaryVerificationSuiteSchema, JobVerificationReportReadSchema } f
 import { JobPlacementIntentSchema, JobQueueCancelSchema, JobQueueTicketSchema } from './jobAdmission.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { JobArtifactSchema, JobArtifactReadInputSchema, JobArtifactReadOutputSchema, JobLogPageSchema, JobExecutionSchema } from './jobs.js'
-import { SourceRootRecordSchema, SourcePinSchema } from './sourceAdmission.js'
+import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
-export const CiRunInputSchema = z.object({
+const CiRunInputObjectSchema = z.object({
   suite: JobOrdinaryVerificationSuiteSchema,
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
   commandId: IdSchema,
   placementOverride: JobPlacementIntentSchema.optional(),
+  /** Split an integration run into this many duration-balanced Jobs that build computers run in parallel. */
+  partitions: z.number().int().min(2).max(12).optional(),
 }).strict()
-export const OperatorCiRunInputSchema = CiRunInputSchema.extend({ workspaceId: IdSchema }).strict()
-export const CiRunOutputSchema = z.object({ ticketId: IdSchema, executionId: IdSchema.optional() }).strict()
+const partitionedSuite = (value: { suite: string; partitions?: number | undefined }) =>
+  value.partitions === undefined || value.suite === 'integration'
+const partitionIssue = { message: 'Only the integration suite can be partitioned.', path: ['partitions'] }
+export const CiRunInputSchema = CiRunInputObjectSchema.refine(partitionedSuite, partitionIssue)
+export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspaceId: IdSchema }).strict()
+  .refine(partitionedSuite, partitionIssue)
+const CiRunTicketSchema = z.object({ ticketId: IdSchema, executionId: IdSchema.optional() }).strict()
+/** `partitions` lists every partition's ticket in order; the first is also `ticketId`. Poll each with ci_get. */
+export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(12).optional() }).strict()
 export const CiGetInputSchema = z.object({ ticketId: IdSchema }).strict()
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({
@@ -64,10 +73,6 @@ export const PreparedCiRuntimeSchema = z.object({
     binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
 }).strict()
 export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('source'), transferId: z.uuid(), repository: z.string().min(3).max(140),
-    source: SourcePinSchema, byteSize: z.number().int().positive().max(128 * 1024 * 1024),
-    sha256: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().nonnegative(),
-    dataBase64: z.string().max(700 * 1024), complete: z.boolean() }).strict(),
   z.object({ operation: z.literal('prepare'), operationId: z.uuid(), repository: z.string().min(3).max(140), commit: CommitSchema,
     review: z.object({ reviewedByPrincipalId: IdSchema, decisionDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
     keepImages: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).max(64) }).strict(),

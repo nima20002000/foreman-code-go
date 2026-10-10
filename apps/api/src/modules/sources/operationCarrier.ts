@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { SOURCE_OPERATION_EXTENSION, SourceOperationRequestSchema, SourceOperationResponseSchema, SourceTransferStatusRequestSchema, SourceTransferStatusResponseSchema,
-  type SourceFilesystemOperation, type SourceOperationOwner, type SourcePreparationIdentitySchema } from '@foreman-code/contracts/source-operations'
+  type SourceFilesystemOperation, type SourceOperationOwner, type SourceGitHubReferenceSchema } from '@foreman-code/contracts/source-operations'
 import type { z } from 'zod'
 import type { SourceRootRecord, SourceMaterializationRecord, VerifiedSourceWorkingTree } from '@foreman-code/contracts/source-admission'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -27,14 +27,13 @@ import type { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { SourceReservationReclamationRequestSchema, SourceReservationReclamationAuthorityResponseSchema } from '@foreman-code/contracts/source-operations'
 import type { MaterializationReservationCleanup } from './materializationReservationCleanup.js'
 
-export interface AcceptedSourcePackageSender {
-  /** Persist the actual B source intent and consume the original preparation
-   * reservation before sending the immutable package over existing W07/B. */
-  send(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt, identity: z.infer<typeof SourcePreparationIdentitySchema>): Promise<{ transferId: string; receiptId: string; sha256: string; byteSize: number }>
+export interface SourceGitHubPublication {
+  /** GitHub serves the approved commit before the computer fetches it; Main sends no source bytes. */
+  publish(manifest: SourceManifest, signal: AbortSignal): Promise<z.infer<typeof SourceGitHubReferenceSchema>>
 }
 export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMaterializationHost {
   constructor(private readonly carrier: MainWorkerCarrier, private readonly owners: Pick<PostgresSourceOperationAuthority, 'prepareIdentity' | 'resolve'>,
-    private readonly packages: AcceptedSourcePackageSender) {}
+    private readonly github: SourceGitHubPublication) {}
   async reconcilePreparation(reconciliationId: string, owner: SourceOperationOwner) {
     const response = await this.call(owner.root, { version: 1, operation: 'sources.reconcile-preparation', reconciliationId })
     if (response.operation !== 'sources.reconcile-preparation') throw new DomainError('SOURCE_RESPONSE_INVALID', 'Expected original preparation closure proof.', 409)
@@ -75,8 +74,8 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     options?: { worktree?: SourceWorktreeRequest }) {
     const identity = await this.owners.prepareIdentity(root, attempt)
     this.connection(root) // Validate actual host before any source transfer.
-    const reference = await this.packages.send(manifest, root, attempt, identity)
-    const response = await this.call(root, { version: 1, operation: 'sources.prepare', root, attempt, identity, package: reference,
+    const github = await this.github.publish(manifest, AbortSignal.timeout(Math.max(1, Date.parse(identity.expiresAt) - Date.now())))
+    const response = await this.call(root, { version: 1, operation: 'sources.prepare', root, attempt, identity, github,
       ...(options?.worktree ? { worktree: options.worktree } : {}) })
     if (response.operation !== 'sources.prepare' || !isDeepStrictEqual(response.receipt.binding, root.binding) || response.receipt.executionId !== attempt.executionId
       || response.receipt.attemptId !== attempt.attemptId || response.receipt.placementHash !== attempt.placementHash || response.receipt.verifiedManifestDigest !== manifest.manifestDigest

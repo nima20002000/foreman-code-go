@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { BuildComputerPrepareGetInputSchema, BuildComputerPrepareInputSchema, BuildComputerPrepareStatusSchema,
   CI_RUNTIME_NAMESPACE, CiRuntimeWorkerStateSchema, WorkspaceSchema, type BuildComputerPrepareInput,
@@ -34,7 +34,7 @@ export const BUILD_COMPUTER_PREPARE_ACTIONS = CI_PREPARATION_ACTIONS
 const PREPARE_LIMIT_MS = 3 * 60 * 60_000
 const stopped = () => new DomainError('CI_PREPARATION_STOPPED', 'Runtime preparation will resume on Main.', 503)
 type Profiles = Pick<JobRuntimeProfiles, 'list' | 'save' | 'requestQualification' | 'qualify'>
-type Sources = Pick<PostgresSourceService, 'approveProject' | 'rootList' | 'bindRoot' | 'sourcePackage' | 'published'>
+type Sources = Pick<PostgresSourceService, 'approveProject' | 'rootList' | 'bindRoot' | 'publish'>
 interface PreparationPorts {
   repository?: CiPreparationRepository
   acquire?: typeof JobOwnership.acquire
@@ -188,8 +188,7 @@ export class CiRuntimeProvisioner {
       if (['qualified', 'failed'].includes(record.status.state)) return
       await runCiPreparation(record, { profiles: this.profiles, sources: this.sources, principal, signal, checkpoint,
         repository: workspaceId => this.projectRepository(workspaceId), now: this.timing.now,
-        published: repository => this.sources.published(repository, record.manifest!.git!.commit, signal),
-        deliverSource: repository => this.deliverSource(record, repository, principal, signal),
+        publish: (repository, commit) => this.sources.publish(repository, commit, signal),
         wait: () => this.wait(signal), device: request => this.device(record, request, principal, signal),
         deviceImages: () => this.deviceImages(record.profile.root.selection.hostRef) })
     } catch (error) {
@@ -237,34 +236,6 @@ export class CiRuntimeProvisioner {
         if (!temporaryCiConnectionError(error) || request.operation === 'refresh') throw error
         componentLogger('jobs').info({ operationId: record.id }, 'Waiting for the build computer to reconnect')
         await this.wait(signal)
-      }
-    }
-  }
-
-  private async deliverSource(record: CiPreparationRecord, repository: string,
-    principal: () => Promise<ManagementPrincipal>, signal: AbortSignal): Promise<void> {
-    const manifest = record.manifest!
-    const source = { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
-      manifestDigest: manifest.manifestDigest }
-    const stream = async () => this.sources.sourcePackage(await principal(), record.input.workspaceId, source)
-    let byteSize = 0
-    const hash = createHash('sha256')
-    for await (const value of await stream()) {
-      signal.throwIfAborted()
-      const bytes = value as Buffer
-      hash.update(bytes)
-      byteSize += bytes.length
-    }
-    const sha256 = hash.digest('hex')
-    let offset = 0
-    for await (const value of await stream()) {
-      const bytes = value as Buffer
-      for (let index = 0; index < bytes.length; index += 512 * 1024) {
-        signal.throwIfAborted()
-        const chunk = bytes.subarray(index, index + 512 * 1024)
-        await this.device(record, { operation: 'source', transferId: record.id, repository, source, byteSize, sha256,
-          offset, dataBase64: chunk.toString('base64'), complete: offset + chunk.length === byteSize }, principal, signal)
-        offset += chunk.length
       }
     }
   }

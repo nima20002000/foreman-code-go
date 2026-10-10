@@ -3,15 +3,15 @@ import type { SourceReservationReclamation } from '@foreman-code/contracts/sourc
 import { releaseMaterializationClaim } from './materialization.js'
 import { mkdtemp, mkdir, rm, readFile, rename, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
+import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { SourceRootRecord, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import type { SourceActiveNativeSession, SourceFilesystemOperation, SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import type { SourceInstalledNativeOwner } from './executionHosts.js'
-import type { VerifiedTransferReceipt, TransferContext } from '@foreman-code/contracts/byte-transfer'
-import { sourcePackageHeader } from './operationPackage.js'
-import { createSourceManifest, sourceSha256 } from './manifest.js'
+import { captureGitSource } from './capture.js'
+import { systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
+import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { qualifyApprovedRootAllowlist } from './rootAttestation.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { sourceBindingHash } from './bindingHash.js'
@@ -33,8 +33,19 @@ async function fixture() {
   const policyId = randomUUID(), parent = join(runtime, 'source-materializations'), namespace = join(parent, policyId); await mkdir(parent, { mode: 0o700 }); await mkdir(namespace, { mode: 0o700 })
   const handle = await openPrivateRoot(namespace); const filesystem = await identity(handle); await handle.close()
   const bytes = Buffer.from('export const actual = true\n')
-  const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(), capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip', deletions: [],
-    entries: [{ path: 'src/source.ts', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }] })
+  // A local origin stands in for GitHub: the Worker fetches the approved commit from it with its own clone.
+  const origin = join(directory, 'origin'), environment = gitFixtureEnvironment()
+  const run = (...args: string[]) => execFileSync('git', args, { cwd: origin, env: environment, encoding: 'utf8' }).trim()
+  await mkdir(join(origin, 'src'), { recursive: true }); run('init', '-q', '-b', 'main')
+  await writeFile(join(origin, 'src/source.ts'), bytes); run('add', '.'); run('commit', '-qm', 'source')
+  const commit = run('rev-parse', 'HEAD'), approvedSourceId = randomUUID()
+  const capture = (snapshotId: string, at = commit) => captureGitSource({ root: origin, approvedSourceId, snapshotId, commit: at,
+    repository: 'octo/site', executablePolicy: 'strip', approvedPaths: ['src/source.ts'],
+    sink: { write: async () => {}, writeGitMetadata: async () => {}, commit: async () => {}, abort: async () => {} } })
+  const manifest = await capture(randomUUID())
+  const system = systemGitWorktreePorts(environment)
+  const git = vi.fn<GitWorktreePorts['git']>((args, options) => system.git(args[0] === 'clone'
+    ? ['clone', '--no-checkout', '--template=', origin, args.at(-1)!] : args, options))
   const source = { snapshotId: manifest.snapshotId, approvedSourceId: manifest.approvedSourceId, manifestDigest: manifest.manifestDigest }
   const root: SourceRootRecord = { version: 1, source, selection: { hostRef: roots.hostRef, rootPolicyId: policyId, rootPolicyRevision: '1', locationRevision: '1' },
     binding: { version: 1, workspaceId: 'workspace-actual-fixture', mainId: binding.mainId, deviceId: binding.deviceId, workerInstallationId: binding.workerInstallationId, rootId: randomUUID(), bindingRevision: 1,
@@ -45,16 +56,8 @@ async function fixture() {
   attempt.placementHash = sourceBindingHash(root, attempt, operationId)
   expect(sourceOperationSelectionHash(root, attempt, operationId)).toBe(attempt.placementHash)
   const owner: SourceOperationOwner = { identity: { operationId, ownerPrincipalId: root.authorizedByPrincipalId, expiresAt: new Date(Date.now() + 120_000).toISOString() }, root, attempt, source, record: null, physicalClosureConfirmed: false }
-  const data = Buffer.concat([sourcePackageHeader(manifest), bytes]), transferId = randomUUID(), receiptId = randomUUID()
-  const transferContext = { ...binding, connectionEpoch: binding.connectionEpoch } as TransferContext
-  const receipt: VerifiedTransferReceipt = { version: 1, receiptId, transferId, sha256: sourceSha256(data), byteSize: data.length, verifiedAt: new Date().toISOString(), intent: {
-    ...transferContext, version: 1, transferId, operationId, executionId: attempt.executionId, attemptId: attempt.attemptId, placementHash: attempt.placementHash,
-    rootId: root.binding.rootId, rootBindingRevision: 1, direction: 'to-worker', byteClass: 'source', manifestDigest: manifest.manifestDigest,
-    expiresAt: owner.identity.expiresAt, chunkBytes: 1024 * 1024, sha256: sourceSha256(data), byteSize: data.length } }
-  // B context contains only its canonical fields, not W07 connectionGeneration.
-  delete (receipt.intent as unknown as Record<string, unknown>).connectionGeneration; delete (transferContext as unknown as Record<string, unknown>).connectionGeneration
-  const request: SourceFilesystemOperation = { version: 1, operation: 'sources.prepare', identity: owner.identity, root, attempt, package: { transferId, receiptId, sha256: receipt.sha256, byteSize: data.length } }
-  const readRoots = vi.fn(async () => roots), open = vi.fn(async () => Readable.from([data]))
+  const request: SourceFilesystemOperation = { version: 1, operation: 'sources.prepare', identity: owner.identity, root, attempt, github: { repository: 'octo/site', commit, executablePolicy: 'strip' } }
+  const readRoots = vi.fn(async () => roots)
   const currentOwner = vi.fn(async () => structuredClone(owner))
   const nativeOwnerFor = vi.fn(async (): Promise<SourceInstalledNativeOwner | null> => null)
   const preparationNativeClosed = vi.fn(async () => true)
@@ -67,12 +70,12 @@ async function fixture() {
   })
   const reclamationNativeClosed = vi.fn(async () => true)
   const service = new SourceOperationWorkerService({ authenticate: async () => {}, approvedRoots: readRoots, currentOwner,
-    transfers: { resolveVerifiedReceipt: async () => receipt, openVerified: open }, transferContext: async () => transferContext,
+    git: { cloneDirectory: () => join(directory, 'worker-clone'), git },
     nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled, quotaPoolFor,
     currentReclamation, reclamationNativeClosed })
   const context = { binding, signal: new AbortController().signal }
-  return { directory, runtime, namespace, data, bytes, manifest, root, owner, request, receipt, context, service, currentOwner,
-    readRoots, open, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
+  return { directory, runtime, namespace, bytes, manifest, root, owner, request, context, service, currentOwner,
+    readRoots, git, capture, origin, run, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
     currentReclamation, reclamationNativeClosed, quotaPoolFor }
 }
 
@@ -117,7 +120,7 @@ it.each(['repository', 'branch'] as const)('rejects a substituted Agent %s befor
   await expect(f.service.handle(request, f.context))
     .rejects.toMatchObject({ code: 'SOURCE_OPERATION_AUTHORITY_CONFLICT' })
   expect(f.readRoots).not.toHaveBeenCalled()
-  expect(f.open).not.toHaveBeenCalled()
+  expect(f.git).not.toHaveBeenCalled()
 })
 
 it('does not let an accepted branch request acquire writable authority from a read-only root', async () => {
@@ -130,26 +133,18 @@ it('does not let an accepted branch request acquire writable authority from a re
   await expect(f.service.handle({ ...f.request, worktree: f.owner.worktree }, f.context))
     .rejects.toMatchObject({ code: 'SOURCE_READ_ONLY' })
   expect(f.readRoots).not.toHaveBeenCalled()
-  expect(f.open).not.toHaveBeenCalled()
+  expect(f.git).not.toHaveBeenCalled()
 })
 
 it('prepares a quota-required Job after the approved root is rebound to a new snapshot', async () => {
   const f = await fixture()
   const installed = await installQuota(f)
-  const manifest = createSourceManifest({ ...f.manifest, snapshotId: randomUUID() })
+  const manifest = await f.capture(randomUUID())
   f.root.source = { ...f.root.source, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   f.root.binding = { ...f.root.binding, bindingRevision: f.root.binding.bindingRevision + 1,
     snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   f.owner.source = f.root.source
   f.owner.attempt.placementHash = sourceBindingHash(f.root, f.owner.attempt, f.owner.identity.operationId)
-  const data = Buffer.concat([sourcePackageHeader(manifest), f.bytes])
-  Object.assign(f.receipt, { sha256: sourceSha256(data), byteSize: data.length })
-  Object.assign(f.receipt.intent, { sha256: f.receipt.sha256, byteSize: data.length,
-    rootBindingRevision: f.root.binding.bindingRevision, manifestDigest: manifest.manifestDigest,
-    placementHash: f.owner.attempt.placementHash })
-  if (f.request.operation !== 'sources.prepare') throw new Error('Expected source preparation request')
-  Object.assign(f.request.package, { sha256: f.receipt.sha256, byteSize: data.length })
-  f.open.mockImplementation(async () => Readable.from([data]))
 
   const prepared = await f.service.handle(f.request, f.context)
   if (prepared.operation !== 'sources.prepare') throw new Error('Expected source preparation')
@@ -167,7 +162,7 @@ it.each(['rootId', 'workerInstallationId', 'canonicalPath'] as const)(
     installed.configuration.root.binding[field] = field === 'canonicalPath' ? '/another/approved/root' : randomUUID()
     await writeFile(installed.location.path, JSON.stringify(installed.configuration))
     await expect(f.service.handle(f.request, f.context)).rejects.toMatchObject({ code: 'SOURCE_QUOTA_MISSING' })
-    expect(f.open).not.toHaveBeenCalled()
+    expect(f.git).not.toHaveBeenCalled()
   })
 
 it('finds and removes an abandoned Worker materialization without Main preparation metadata', async () => {
@@ -224,10 +219,11 @@ it('leaves an in-flight Worker preparation alone', async () => {
   let resume!: () => void
   const opened = new Promise<void>(resolve => { entered = resolve })
   const paused = new Promise<void>(resolve => { resume = resolve })
-  f.open.mockImplementation(async () => {
+  const fetch = f.git.getMockImplementation()!
+  f.git.mockImplementationOnce(async (args, options) => {
     entered()
     await paused
-    return Readable.from([f.data])
+    return fetch(args, options)
   })
   const preparation = f.service.handle(f.request, f.context)
   await opened
@@ -331,7 +327,7 @@ it('preserves strict pre-entry bytes and permits edits only on the same current 
   expect(result.operation).toBe('sources.verify')
   expect(await readFile(join(f.tree, 'src/source.ts'))).toEqual(edited)
   expect(f.assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(4)
-  expect(f.open).toHaveBeenCalledTimes(1)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'clone')).toHaveLength(1)
 })
 it('keeps source verification valid while the same native writer renews its lease', async () => {
   const f = await continuationFixture()
@@ -408,7 +404,8 @@ it('prepares actual accepted bytes, rechecks owner before activation, and recove
   expect(response.operation).toBe('sources.prepare'); if (response.operation !== 'sources.prepare') throw new Error('wrong fixture operation')
   expect(await readFile(join(f.namespace, response.receipt.materializationId, 'tree/src/source.ts'))).toEqual(f.bytes)
   expect(f.currentOwner.mock.calls.length).toBeGreaterThan(3)
-  expect(await f.service.handle(f.request, f.context)).toEqual(response); expect(f.open).toHaveBeenCalledTimes(1)
+  const fetched = f.git.mock.calls.length
+  expect(await f.service.handle(f.request, f.context)).toEqual(response); expect(f.git.mock.calls.length).toBe(fetched)
 })
 it('verifies and creates genuine detached private Git, replays repository receipt, and requires positive Main closure', async () => {
   const f = await fixture(), result = await f.service.handle(f.request, f.context)
@@ -448,11 +445,15 @@ it('reports bounded repository deadline and incomplete-owner codes without publi
 it('denies stale auth/expired ownership before local config or source package IO', async () => {
   const f = await fixture(); f.owner.identity.expiresAt = new Date(Date.now() - 1).toISOString()
   await expect(f.service.handle(f.request, f.context)).rejects.toThrow('current exact')
-  expect(f.readRoots).not.toHaveBeenCalled(); expect(f.open).not.toHaveBeenCalled()
+  expect(f.readRoots).not.toHaveBeenCalled(); expect(f.git).not.toHaveBeenCalled()
 })
 it('rejects corruption before activating a ready tree and rejects root replacement', async () => {
-  const f = await fixture(); f.data[f.data.length - 1] = 120
-  await expect(f.service.handle(f.request, f.context)).rejects.toThrow('accepted manifest')
+  // GitHub serving other bytes than the approved snapshot is refused before any tree exists.
+  const f = await fixture()
+  await writeFile(join(f.origin, 'src/source.ts'), 'export const substituted = true\n'); f.run('commit', '-qam', 'substituted')
+  if (f.request.operation !== 'sources.prepare') throw new Error('wrong fixture operation')
+  await expect(f.service.handle({ ...f.request, github: { ...f.request.github, commit: f.run('rev-parse', 'HEAD') } }, f.context))
+    .rejects.toMatchObject({ code: 'SOURCE_PIN_CONFLICT' })
   const other = await fixture(); await rename(other.namespace, `${other.namespace}-original`); await mkdir(other.namespace, { mode: 0o700 })
   await expect(other.service.handle(other.request, other.context)).rejects.toThrow('changed')
 })
@@ -462,7 +463,7 @@ it('rejects another actual operation/owner/root and caller binary/source-path sh
   await expect(f.service.handle({ ...f.request, identity: { ...f.request.identity, operationId: randomUUID() } }, f.context)).rejects.toThrow('original source')
   await expect(f.service.handle({ ...f.request, path: '/home/other' }, f.context)).rejects.toThrow()
   await expect(f.service.handle(f.request, { ...f.context, bytes: Buffer.from('shortcut') })).rejects.toThrow('inline binary')
-  expect(f.open).not.toHaveBeenCalled()
+  expect(f.git).not.toHaveBeenCalled()
 })
 
 it('attests a real opened child separately from the tree and rejects traversal and symlink replacement', async () => {

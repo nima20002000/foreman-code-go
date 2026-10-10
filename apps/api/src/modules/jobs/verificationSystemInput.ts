@@ -43,7 +43,8 @@ export function createVerificationSystemInput(input: {
     signal.throwIfAborted()
     return JobVerificationRepositoryContextSchema.parse(verificationRepositoryContext({
       execution, measurement: result.measurement,
-      requiredPortions: captureVerificationInventory(source.privateRepositoryRoot, execution.acceptedSpec.verification.suite), gitMounts: requireJobGitMounts(execution, source),
+      requiredPortions: captureVerificationInventory(source.privateRepositoryRoot, execution.acceptedSpec.verification.suite,
+        { partition: execution.acceptedSpec.verification.parameters.partition }), gitMounts: requireJobGitMounts(execution, source),
       preseedFacts: { lockfileSha256: lockfile.sha256, pnpmVersion: '11.27.0',
         platform: seed.platform.os, architecture: seed.platform.arch,
         provenanceDigest: seed.provenanceDigest, minimumReleaseAgeMinutes: seed.minimumReleaseAge,

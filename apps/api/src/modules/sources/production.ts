@@ -16,7 +16,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { SourceRootRecordSchema, type SourceRootRecord, type SourcePreparationClosure, type SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
-import { ExistingByteTransferSourcePackageSender, type SourcePackageTransferAdmission } from './operationSender.js'
+import { GitHubSourcePublisher } from './githubPublisher.js'
 import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
 import type { MainWorkerCarrier } from '../placement/workerCarrier.js'
 import { lstat, mkdir } from 'node:fs/promises'
@@ -58,7 +58,6 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   installedJobConfiguration?: InstalledRuntimeConfigurationLocation;
   dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost;
   activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader;
-  transferSender?: SourcePackageTransferAdmission['sender'];
   transferAcknowledged?: (intent: TransferIntent) => Promise<void>;
   transferPreparationClosed?: (closure: SourcePreparationClosure) => Promise<void>;
   transferMaterializationClosed?: (record: SourceMaterializationRecord) => Promise<void> }) {
@@ -184,7 +183,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     return Boolean(await input.dispatch().readAcceptedClosureReceipt(sql, identity))
   }
   const owners = new PostgresSourceOperationAuthority(input.pool, attempts, confirmedClosed, input.activeNativeSession)
-  const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint, input.transferSender)
+  const transfers = new PostgresSourcePackageTransfers(input.pool, input.commands, owners, input.endpoint)
   const lifecycle = new PostgresSourceRsyncLifecycle(input.pool, transfers)
   const carrier: MainWorkerCarrier = { capture(deviceId) {
     const channel = input.endpoint().captureRequest(deviceId, SOURCE_OPERATION_EXTENSION.namespace)
@@ -196,7 +195,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
         return channel.request(payload, options)
       } }
   } }
-  const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new ExistingByteTransferSourcePackageSender(snapshots, transfers))
+  const remote = input.remote ?? new CarrierRemoteSourceMaterializationHost(carrier, owners, new GitHubSourcePublisher())
   const quotaPoolFor = async (binding: SourceRootRecord['binding'], attempt: MaterializationAttempt) => {
     const row = (await input.pool.query<{ spec: unknown }>(
       'select spec from job_computer_selections where execution_id=$1 and attempt_id=$2 and workspace_id=$3',

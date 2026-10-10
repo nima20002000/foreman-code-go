@@ -66,21 +66,32 @@ export class CiService {
         const lockKey = `ci:${scope.workspaceId}:${input.suite}`
         try {
           await commandConnection.query('select pg_advisory_lock(hashtext($1))', [lockKey])
-          const prepared = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.prepare',
-            commandId: input.commandId, targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
-            authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
-            perform: async () => this.prepare(scope.principal, scope.workspaceId, input.suite, commandKey, source, preferredHost),
-          })
-          const admitted = await this.jobs.enqueue(scope.principal, 'mcp', scope.workspaceId, {
-            commandId: `${commandKey}:enqueue`, definitionId: prepared.value.id,
-            expectedRevision: prepared.value.revision,
-            ...(placementOverride ? { placementOverride } : {}),
-          }, { runtimePreparation: scope.principal, initiatingAgent: scope.initiatingAgent })
-          if (admitted.kind === 'retained-execution') {
-            throw new DomainError('CI_QUEUE_CONFLICT', 'The CI command belongs to an earlier nonqueued execution.', 409)
+          // A partitioned run is one Job per slice; Auto placement spreads them over the build computers.
+          const partitions = input.partitions
+            ? Array.from({ length: input.partitions }, (_, index) => ({ index, count: input.partitions! })) : [undefined]
+          const tickets = []
+          for (const partition of partitions) {
+            const key = partition ? `${commandKey}:partition:${partition.index}` : commandKey
+            const prepared = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.prepare',
+              commandId: partition ? `${input.commandId}:partition:${partition.index}` : input.commandId,
+              targetKey: scope.workspaceId, payload: input, dedicatedConnection: true,
+              authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
+              perform: async () => this.prepare(scope.principal, scope.workspaceId, input.suite, key, source,
+                preferredHost, partition),
+            })
+            const admitted = await this.jobs.enqueue(scope.principal, 'mcp', scope.workspaceId, {
+              commandId: `${key}:enqueue`, definitionId: prepared.value.id,
+              expectedRevision: prepared.value.revision,
+              // Partitions share the build computers; an Agent's preferred computer still takes its first slice.
+              ...(placementOverride && (!partition || partition.index === 0) ? { placementOverride } : {}),
+            }, { runtimePreparation: scope.principal, initiatingAgent: scope.initiatingAgent })
+            if (admitted.kind === 'retained-execution') {
+              throw new DomainError('CI_QUEUE_CONFLICT', 'The CI command belongs to an earlier nonqueued execution.', 409)
+            }
+            tickets.push({ ticketId: admitted.kind === 'accepted' ? admitted.ticketId : admitted.ticket.id,
+              ...(admitted.kind === 'accepted' ? { executionId: admitted.executionId } : {}) })
           }
-          return CiRunOutputSchema.parse({ ticketId: admitted.kind === 'accepted' ? admitted.ticketId : admitted.ticket.id,
-            ...(admitted.kind === 'accepted' ? { executionId: admitted.executionId } : {}) })
+          return CiRunOutputSchema.parse({ ...tickets[0], ...(input.partitions ? { partitions: tickets } : {}) })
         } finally {
           await commandConnection.query('select pg_advisory_unlock(hashtext($1))', [lockKey])
         }
@@ -102,7 +113,7 @@ export class CiService {
 
   private async prepare(principal: ManagementPrincipal, workspaceId: string, suite: CiRunInput['suite'],
     commandKey: string, source: Awaited<ReturnType<PostgresSourceService['approveProject']>>,
-    preferredHost?: AgentHostRef): Promise<JobDefinitionRecord> {
+    preferredHost?: AgentHostRef, partition?: { index: number; count: number }): Promise<JobDefinitionRecord> {
     const choices = await this.jobs.choices(principal, workspaceId, 'mcp')
     // One Auto definition reaches every computer qualified for the same envelope; pick the envelope most computers can run.
     const templates = (choices.verificationTemplates ?? []).filter(value => value.suite === suite && value.outputs)
@@ -138,8 +149,9 @@ export class CiService {
       target: { kind: 'auto' }, runtimeSelection: 'qualified-profile',
       limits: template.resources.limits, policy: template.policy,
       argv: template.argv, inputs: [], outputs: template.outputs,
-      verification: { suite, resources: template.resources, parameters: template.parameters, credentialRefs: [] } })
-    const name = `CI: ${suite}`
+      verification: { suite, resources: template.resources, credentialRefs: [],
+        parameters: { ...template.parameters, ...(partition ? { partition } : {}) } } })
+    const name = partition ? `CI: ${suite} ${partition.index + 1}/${partition.count}` : `CI: ${suite}`
     const definitions = await this.jobs.listDefinitions(principal, workspaceId, 'mcp')
     const old = definitions.find(value => value.name === name && 'verification' in value.spec)
     if (old && canonical(old.spec) === canonical(spec)) return old

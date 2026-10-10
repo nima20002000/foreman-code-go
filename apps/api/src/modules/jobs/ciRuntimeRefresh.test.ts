@@ -6,7 +6,7 @@ import type { PreparedCiRuntime } from '@foreman-code/contracts'
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { InstalledVerificationRuntimeConfigurationSchema } from './installedVerificationConfiguration.js'
-import { currentCiRuntimePaths, nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations,
+import { currentCiRuntimePaths, hostDeviceLimits, nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations,
   pruneCiRuntimeRefreshFiles, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { refreshMainJobRuntime } from '../../cli/refreshMainJobRuntime.js'
 import { identity, openPrivateRoot } from '../sources/privateFilesystem.js'
@@ -81,6 +81,14 @@ function fixture() {
 }
 
 describe('CI runtime refresh', () => {
+  it('records what the computer can really lend instead of the installer\'s first limits', () => {
+    const installed = { cpuLimit: 4.25, memoryBytes: 4608 * 2 ** 20, diskBytes: 16 * 2 ** 30, pidsLimit: 1088 }
+    const gib = 2 ** 30
+    expect(hostDeviceLimits(installed, { cpus: 16, memoryBytes: 14.5 * gib }))
+      .toEqual({ cpuLimit: 16, memoryBytes: 13 * gib, diskBytes: 16 * gib, pidsLimit: 8192 })
+    // Small hosts keep at least 1 GiB for themselves.
+    expect(hostDeviceLimits(installed, { cpus: 2, memoryBytes: 4 * gib }).memoryBytes).toBe(3 * gib)
+  })
   it.each(['worker', 'main'])('reclaims stale refresh files while preserving retained inputs and the last log on %s', async host => {
     const f = fixture()
     const directory = await privateFixtureDirectory('ci-refresh-cleanup-')
