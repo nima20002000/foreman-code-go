@@ -128,7 +128,7 @@ it.each(['unfinished', 'different-receipt', 'different-result', 'unconfirmed-clo
     try {
       if (fault === 'different-receipt') f.observed.nativeSubmission!.nativeMessageId = 'another-input'
       if (fault === 'different-result') f.observed.terminalResult = { outcome: 'succeeded', output: 'another-result' }
-      if (fault === 'unconfirmed-close') delete f.launch.closureEvidence
+      if (fault === 'unconfirmed-close') delete (f.launch as { closureEvidence?: unknown }).closureEvidence
       if (fault === 'changed-authority') f.connection.authorizationRevision++
       await expect(f.recover()).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_RECOVERY_REQUIRED' })
       expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
