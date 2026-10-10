@@ -114,8 +114,7 @@ export async function scheduleQueue(items, {
   const active = new Map()
   let pending = [...items].sort((left, right) =>
     (profiles[right.id]?.durationMs ?? 0) - (profiles[left.id]?.durationMs ?? 0))
-  let phase = 'initial'
-  let initialStarts = 0
+  let phase = 'parallel'
   let stalledAt
   let pressureFailure
   let lastStartAt = -Infinity
@@ -142,7 +141,6 @@ export async function scheduleQueue(items, {
       if (attempt === 1) {
         updatedProfiles[item.id] = { ...updatedProfiles[item.id], ...outcome.metrics }
         settled.add(item.id)
-        if (phase === 'initial') phase = 'drain'
       }
       if (outcome.slotUnavailable) retired.add(workerIndex)
       active.delete(workerIndex)
@@ -180,23 +178,17 @@ export async function scheduleQueue(items, {
       return false
     })
     const ready = pending.filter(item => (item.dependsOn ?? []).every(id => records.get(id).status === 'PASSED'))
-    if (phase === 'initial' && (initialStarts >= maxConcurrency || !ready.some(item => !item.exclusive))) {
-      phase = 'drain'
-    }
+    // Ordinary work fills every slot first; exclusive work runs alone once nothing ordinary is ready, so slots
+    // never idle in the middle of a run. Work that depends on an exclusive item resumes in parallel afterwards.
+    const ordinaryReady = ready.some(item => !item.exclusive)
+    const exclusiveReady = ready.some(item => item.exclusive)
+    const exclusiveActive = [...active.values()].some(entry => entry.item.exclusive)
+    if (phase === 'parallel' && !ordinaryReady && exclusiveReady) phase = 'drain'
     if (phase === 'drain' && !active.size) phase = 'exclusive'
-    const hasExclusiveWork = pending.some(item => item.exclusive)
-      || [...active.values()].some(entry => entry.item.exclusive)
-    if (phase === 'exclusive' && !hasExclusiveWork) phase = 'parallel'
+    if (phase === 'exclusive' && !exclusiveReady && !exclusiveActive) phase = 'parallel'
     let candidates = ready.filter(item => !item.exclusive)
     if (phase === 'drain') candidates = []
-    if (phase === 'exclusive') {
-      const exclusive = ready.filter(item => item.exclusive)
-      const required = requiredByExclusive(pending, itemsById)
-      candidates = exclusive.length ? exclusive : candidates.filter(item => required.has(item.id))
-      if (active.size && (exclusive.length || [...active.values()].some(entry => entry.item.exclusive))) {
-        candidates = []
-      }
-    }
+    if (phase === 'exclusive') candidates = active.size ? [] : ready.filter(item => item.exclusive)
     const eligible = candidates.map(item => ({ item, workerIndex: usableWorker(item) }))
       .filter(entry => entry.workerIndex !== undefined)
     if (!active.size && !eligible.length) {
@@ -218,7 +210,6 @@ export async function scheduleQueue(items, {
     if (next && performance.now() - lastStartAt >= pollIntervalMs) {
       pending = pending.filter(item => item.id !== next.item.id)
       launch(next.item, next.workerIndex, pressure, 1)
-      if (phase === 'initial') initialStarts++
       stalledAt = undefined
     } else if (!active.size) {
       stalledAt ??= performance.now()

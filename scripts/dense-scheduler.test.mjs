@@ -71,7 +71,7 @@ test('profiled CPU seconds and RSS defer a job that exceeds projected pressure',
   }
 })
 
-test('exclusive jobs share a serial window after the initial parallel wave with no overlap', async () => {
+test('exclusive jobs run alone, one at a time, after every ordinary job has filled the slots', async () => {
   const order = []
   const active = new Set()
   let ordinaryPeak = 0
@@ -91,13 +91,13 @@ test('exclusive jobs share a serial window after the initial parallel wave with 
       return { code: 0 }
     },
   })
-  assert.deepEqual(order, ['first', 'second', 'exclusive-one', 'exclusive-two', 'last'])
+  assert.deepEqual(order, ['first', 'second', 'last', 'exclusive-one', 'exclusive-two'])
   assert.equal(ordinaryPeak, 2)
   assert.equal(outcome.unexecuted.length, 0)
   assert.ok(outcome.results.every(result => result.status === 'PASSED'))
 })
 
-test('trailing ordinary work waits until the final active exclusive job finishes', async () => {
+test('ordinary work never waits behind an exclusive job and never overlaps one', async () => {
   const active = new Set()
   const overlaps = []
   const timeline = []
@@ -123,7 +123,7 @@ test('trailing ordinary work waits until the final active exclusive job finishes
     },
   })
   assert.deepEqual(overlaps, [])
-  assert.ok(timeline.indexOf('finish:exclusive') < timeline.indexOf('start:trailing'))
+  assert.ok(timeline.indexOf('finish:trailing') < timeline.indexOf('start:exclusive'))
   assert.ok(outcome.results.every(result => result.status === 'PASSED'))
 })
 
