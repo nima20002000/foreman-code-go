@@ -50,6 +50,40 @@ async function fixture() {
 }
 
 describe('CI over the authenticated unified MCP transport', () => {
+  it('keeps Git credentials out of snapshot failures and preserves denial, retry and readback', async () => {
+    const f = await fixture()
+    try {
+      f.agentExecution.id = 'execution-agent'
+      const snapshot = f.services.ci!.snapshots!
+      let attempts = 0
+      f.services.ci!.snapshots = async (...args) => {
+        if (++attempts > 1) return snapshot(...args)
+        return snapshotAgentWorktree({ git: async gitArgs => ({
+          code: gitArgs[0] === 'read-tree' ? 1 : 0,
+          stdout: '',
+          stderr: 'fatal: https://synthetic-token:synthetic-password@example.invalid/repo',
+        }) }, { path: '/unused-worktree', baseCommit: 'b'.repeat(40) }, new AbortController().signal)
+      }
+      const input = { suite: 'unit', commandId: 'snapshot-retry' }
+      const denied = await f.call('ci_run', { ...input, workspaceId: f.workspaceId }, 'readonly')
+      expect(JSON.stringify(denied.result)).toContain('ACCESS_DENIED')
+      expect(attempts).toBe(0)
+      const failed = await f.call('ci_run', input)
+      expect(failed.result.isError).toBe(true)
+      expect(decodeMcpToolResult(failed.result)).toEqual({ error: {
+        code: 'SOURCE_SNAPSHOT_FAILED',
+        message: 'git read-tree failed. Check repository access and local Git configuration, then retry.',
+      } })
+      expect(f.counts()).toEqual({ sourceCaptures: 0, enqueues: 0 })
+      const started = CiRunOutputSchema.parse(decodeMcpToolResult((await f.call('ci_run', input)).result))
+      f.services.ci = f.createCi()
+      const read = await f.call('ci_get', { workspaceId: f.workspaceId, ticketId: started.ticketId }, 'operator')
+      expect(CiGetOutputSchema.parse(decodeMcpToolResult(read.result)).queue.definition.spec.source.commit)
+        .toBe('c'.repeat(40))
+      expect(f.counts()).toEqual({ sourceCaptures: 1, enqueues: 1 })
+    } finally { await f.app.close() }
+  })
+
   it.each(['worker', 'operator'])('queues integration with %s grants and retains its suite after recreation', async token => {
     const f = await fixture()
     try {
