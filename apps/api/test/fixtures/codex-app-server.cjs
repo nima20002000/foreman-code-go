@@ -253,7 +253,8 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     if (flag('late-reject-thread-start')) { setTimeout(() => fail(message.id), 800); return }
     const owner = thread(`thread-${agent}-${process.pid}-${++created}`, params)
     store(owner)
-    if (flag('late-thread-start')) setTimeout(() => replyThread(owner, message.id, params), 800)
+    if (flag('hold-thread-start')) replyOrHold('thread-start', () => replyThread(owner, message.id, params))
+    else if (flag('late-thread-start')) setTimeout(() => replyThread(owner, message.id, params), 800)
     else replyThread(owner, message.id, params)
   } else if (message.method === 'thread/fork') {
     const original = read(`state-${params.threadId}.json`, null)
@@ -350,7 +351,8 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       } else if (['wait', 'slow-start', 'late-start'].includes(prompt)) { /* The fixture intentionally leaves the turn active. */ }
       else complete(owner.id, nativeTurn.id)
     }
-    if (prompt === 'slow-start') setTimeout(started, 250)
+    if (flag('hold-turn-start')) replyOrHold('turn-start', started)
+    else if (prompt === 'slow-start') setTimeout(started, 250)
     else if (prompt === 'late-start') setTimeout(started, 800)
     else started()
   } else if (message.method === 'turn/steer') {

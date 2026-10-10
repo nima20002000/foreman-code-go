@@ -38,7 +38,8 @@ import {
 } from './codex-app-server.test-support.js'
 
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
-  useCodexFixture()
+  // Healthy child-process RPCs need room for scheduling and fixture disk writes under load.
+  useCodexFixture({ requestTimeoutMs: 5_000 })
 
   it('F03: rejected second start restores the previous completed result and permits another turn', async () => {
     const session = await manager.createSession(source)
@@ -329,9 +330,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
 
   it('F12: a late turn ID remains correlated after timeout and cancellation reaches it', async () => {
     const session = await manager.createSession(source)
-    const events = collect(manager.startTurn(session, { prompt: 'late-start', clientCorrelationId: 'late' }))
+    await flag('hold-turn-start')
+    const events = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'late' }))
     await assertCode(events, 'CODEX_APP_SERVER_TIMEOUT')
     const canceled = manager.cancel(session)
+    await flag('release-turn-start')
     assert.equal(await canceled, true)
     await until(async () => (await manager.history(session)).terminalResult?.outcome === 'canceled')
     assert.equal((await wire('turn/start')).length, 1)
@@ -339,9 +342,10 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   })
 
   it('F12: an uncertain thread/start is never duplicated, and its late identity is recoverable', async () => {
-    await flag('late-thread-start')
+    await flag('hold-thread-start')
     await assertCode(manager.createSession(source), 'CODEX_APP_SERVER_TIMEOUT')
     await assertCode(manager.createSession(source), 'CODEX_SESSION_CREATION_UNCERTAIN')
+    await flag('release-thread-start')
     const session = await until(async () => { try { return await manager.reconcileSessionCreation(source) } catch { return undefined } })
     assert.deepEqual(await manager.createSession(source), session)
     assert.equal((await wire('thread/start')).length, 1)

@@ -42,10 +42,15 @@ vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
 })
 
+let requestTimeoutMs = 500
+
 vi.doMock('../src/modules/harnesses/codexStdioTransport.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexStdioTransport.js')>('../src/modules/harnesses/codexStdioTransport.js')
   class TestTransport extends actual.CodexStdioTransport {
-    constructor(...args: ConstructorParameters<typeof actual.CodexStdioTransport>) { args[7] = 500; super(...args) }
+    constructor(...args: ConstructorParameters<typeof actual.CodexStdioTransport>) {
+      args[7] = requestTimeoutMs
+      super(...args)
+    }
   }
   return { ...actual, CodexStdioTransport: TestTransport }
 })
@@ -146,9 +151,9 @@ export async function assertMetadataProcessesClosed(): Promise<void> {
   }
 }
 
-export function useCodexFixture(): void {
+export function useCodexFixture(options: { requestTimeoutMs?: number } = {}): void {
   beforeEach(async () => {
-    // This file exercises a 500 ms wire deadline; fixture persistence uses owned temporary storage.
+    requestTimeoutMs = options.requestTimeoutMs ?? 500
     scratch = createTestRoot(tmpdir(), 'foreman-code-codex-wire-')
     scratchCleanupId = registerTestResourceCleanup(invocation, {
       kind: 'codex-wire-fixture', directory: scratch.directory, owner: scratch.token,
