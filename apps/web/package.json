@@ -10,7 +10,7 @@
     "test": "node ../../scripts/heavy-job.mjs -- sh -c \"corepack pnpm test:run-graph-smoke && corepack pnpm test:unit\"",
     "test:run-graph-smoke": "node ../../scripts/heavy-job.mjs -- node --test src/features/workflow-board/currentSource.smoke.mjs",
     "build": "node ../../scripts/heavy-job.mjs --build web -- sh -c \"tsc -b && vite build\"",
-    "test:unit": "node ../../scripts/heavy-job.mjs -- vitest run"
+    "test:unit": "node ../../scripts/heavy-job.mjs -- sh -c \"FOREMAN_WEB_TEST_PHASE=fast vitest run && FOREMAN_WEB_TEST_PHASE=heavy vitest run\""
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
