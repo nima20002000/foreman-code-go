@@ -21,6 +21,7 @@ import { transferContextForBinding, type AcceptedTransferAuthority } from '../by
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { verifiedSourceWorkingTree } from './nativeStamp.js'
 import { SOURCE_LIMITS } from './manifest.js'
+import { assertWorktreeReceipt } from './worktreeRequest.js'
 import { sourceCwdAttestationDigest } from './workingDirectory.js'
 import type { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { SourceReservationReclamationRequestSchema, SourceReservationReclamationAuthorityResponseSchema } from '@foreman-code/contracts/source-operations'
@@ -81,6 +82,7 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
       || response.receipt.attemptId !== attempt.attemptId || response.receipt.placementHash !== attempt.placementHash || response.receipt.verifiedManifestDigest !== manifest.manifestDigest
       || response.receipt.verifiedEntries !== manifest.totalEntries || response.receipt.verifiedBytes !== manifest.totalBytes)
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Source materialization does not verify the original accepted complete snapshot.', 409)
+    assertWorktreeReceipt(response.receipt, options?.worktree, manifest.git?.commit)
     return response.receipt
   }
   private async rootFor(record: SourceMaterializationRecord, operation: 'sources.verify' | 'sources.private-repository' | 'sources.release') {

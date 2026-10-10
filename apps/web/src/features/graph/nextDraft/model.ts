@@ -235,6 +235,9 @@ export function draftOperations(context: NextDraftContext, graph: WorkflowDefini
     ? { type: 'workflow.set_required_agent_count', requiredAgentCount: graph.requiredAgentCount } : { type: 'workflow.reset_required_agent_count' })
   if (!sameValue(base.executionCondition, graph.executionCondition)) operations.push({ type: 'workflow.set_execution_condition', executionCondition: graph.executionCondition })
   if (!sameValue(base.repeat, graph.repeat)) operations.push({ type: 'workflow.set_repeat', repeat: graph.repeat ?? null })
+  if (!sameValue(base.defaultWorktree, graph.defaultWorktree)) {
+    operations.push({ type: 'workflow.set_worktree', worktree: graph.defaultWorktree ?? null })
+  }
   return operations
 }
 

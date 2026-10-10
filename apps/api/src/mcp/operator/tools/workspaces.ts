@@ -1,3 +1,5 @@
+import { WorkspaceRepositoryAddInputSchema, WorkspaceRepositoryAddResultSchema,
+  WorkspaceRepositoryGetInputSchema, WorkspaceRepositoryReadResultSchema } from '@foreman-code/contracts/workspace-git'
 import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
@@ -20,6 +22,18 @@ import type { OperatorRequestContext } from '../types.js'
 import { WorkspaceFolderDeleteInputSchema, WorkspaceFolderDeleteResultSchema } from '@foreman-code/contracts/management'
 
 export function registerWorkspaceTools(server: McpServer, context: OperatorRequestContext): void {
+  if (operatorToolAvailable(context, 'workspace_repository_get')) server.registerTool('workspace_repository_get', {
+    description: 'Read the prepared workspace GitHub project and persisted import progress. Requires scoped workspaces:read, workspace_locations:read, sources:read and source_roots:read. Default readback shows unfinished or latest attempts. Ready requires the current repository/location, retained approved source and source root binding. Only the initiating principal receives operation.retryInput with the original command and revisions; other authorized readers see progress without a replay request. Pass the original commandId to inspect a partial attempt owned by this caller. Metadata changes invalidate readiness without deleting projects or changing saved workflow versions.',
+    inputSchema: WorkspaceRepositoryGetInputSchema, outputSchema: WorkspaceRepositoryReadResultSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'workspace_repository_get', () =>
+    context.services.workspaceRepositories!.get(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'workspace_repository_add')) server.registerTool('workspace_repository_add', {
+    description: 'Prepare one GitHub repository on Main in its existing app-managed Workspaces base: clone without checkout filters, pin and approve the entire supported tracked tree, save repository/root location, and bind its approved source in one action. Requires scoped workspaces:read/update, workspace_locations:read/provision/update/validate, sources:read/approve and source_roots:read/bind. Discover Main base/configuration and current location/root/binding revisions first. Uses existing GitHub sign-in; no arbitrary URL, path, credentials, scripts or permission changes. Reuse the same commandId and input after unknown acknowledgment and read workspace_repository_get progress. A missing branch, unsupported tree/content or quarantined source failure requires a new command after correction. Existing user projects and historical Runs are preserved.',
+    inputSchema: WorkspaceRepositoryAddInputSchema, outputSchema: WorkspaceRepositoryAddResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, input => invokeOperatorTool(context, 'workspace_repository_add', () =>
+    context.services.workspaceRepositories!.add(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workspace_storage_folders_list')) server.registerTool('workspace_storage_folders_list', {
     description: 'List one page of direct-child workspace folders in the app’s Workspaces storage location, including identity and deletion status/reason. Exact active registered destinations are deduplicated against workspace_list; other referenced folders remain visible with protected deletion state. Folder ownership, archived references, active runs and defaults prevent deletion; symlinks are excluded. Reads never register workspaces. Requires global workspace-read and location-read grants. Pass nextCursor to load more.',
     inputSchema: WorkspaceStorageFoldersListInputSchema, outputSchema: WorkspaceStorageFoldersPageSchema,

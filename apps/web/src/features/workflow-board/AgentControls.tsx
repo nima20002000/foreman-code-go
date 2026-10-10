@@ -3,6 +3,7 @@ import { useId } from 'react'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { usePlacementChoices } from '../node-placement/usePlacementChoices'
 import type { SavedNodePlacement } from '@foreman-code/contracts/node-placement'
+import type { AgentWorktreeSettings } from '@foreman-code/contracts/worktree-settings'
 import type { NodePlacementOption } from '../node-placement/NodePlacementField'
 import type { Agent, GraphqlToolOverride } from '@foreman-code/contracts'
 import { useAgentDefaultsQuery } from '../../shared/api/query'
@@ -12,8 +13,11 @@ import { useGraphDraftStore } from '../graph/store'
 import { AgentSettingsForm } from '../graph/AgentSettingsForm'
 import { changeDraftAgent, editorAgents } from '../graph/nextDraft/agentEdits'
 import type { NextDraftEdit } from '../graph/nextDraft/state'
+import { useWorktreeChoices } from '../../shared/api/worktreeChoices'
+import { worktreeLabel } from './WorkflowWorktreeField'
 
-function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId?: string, prompt?: string, graphqlTools?: GraphqlToolOverride, placement?: SavedNodePlacement) {
+function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId?: string, prompt?: string,
+  graphqlTools?: GraphqlToolOverride, placement?: SavedNodePlacement, worktree?: AgentWorktreeSettings) {
   useGraphDraftStore.getState().updateNextDraft(draftKey, (current) => {
     if (current.instanceId !== instanceId) throw new Error('The draft instance changed. Reopen these settings.')
     const graph = current.graph
@@ -24,8 +28,10 @@ function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId
     if (kept) {
       delete kept.graphqlTools
       delete kept.placement
+      delete kept.worktree
     }
-    const nextNode = kept ? { ...kept, name: agent.name, initialPrompt: prompt, ...(graphqlTools ? { graphqlTools } : {}), ...(placement ? { placement } : {}) } : {
+    const nextNode = kept ? { ...kept, name: agent.name, initialPrompt: prompt,
+      ...(graphqlTools ? { graphqlTools } : {}), ...(placement ? { placement } : {}), ...(worktree ? { worktree } : {}) } : {
       id, agentId: agent.id, name: agent.name,
       position: { x: 80 + graph.nodes.length % 4 * 320, y: 100 + Math.floor(graph.nodes.length / 4) * 300 },
     }
@@ -70,12 +76,23 @@ function BoardAgentSettingsVisit({ draftKey, edit, nodeId, close, remove, placem
   const choiceScope = savedNode && savedAgent?.configurationVersionId && !edit.agentEdits?.[savedNode.agentId]
     ? { workspaceId: edit.graph.workspaceId, workflowId: edit.graph.id, nodeId: savedNode.id, agentConfigurationVersionId: savedAgent.configurationVersionId } : undefined
   const choices = usePlacementChoices(choiceScope, `${visit}:${edit.instanceId}`)
+  const worktrees = useWorktreeChoices(edit.graph.workspaceId,
+    Boolean(edit.graph.defaultWorktree || node?.placement?.rootBinding))
+  const roots = worktrees.isError ? [] : worktrees.data ?? []
+  const options = (placementOptions ?? choices.options).map(option => {
+    const root = roots.find(item => sameWorkflowValue(item.rootBinding, option.placement.rootBinding))
+    return { ...option, ...(root?.commit ? { commit: root.commit } : {}) }
+  })
   if (!node || !agent) return <Alert tone="warning" title="This agent’s settings aren’t available." />
   // Re-key on the staged agent so a discard or reload never leaves stale values in the open form.
   return <>
     {!choiceScope ? <p role="status">Save this node and Agent before choosing its computer.</p> : choices.isError ? <Alert tone="warning" title="Computer choices are unavailable." /> : null}
-    <AgentSettingsForm key={`${edit.instanceId}:${node.id}:${JSON.stringify(agent)}:${node.initialPrompt ?? ''}:${JSON.stringify(node.graphqlTools ?? null)}:${JSON.stringify(node.placement ?? null)}`} embedded agent={agent} initialPrompt={node.initialPrompt}
-    nodeGraphqlTools={node.graphqlTools} nodePlacement={node.placement} placementHidden={!choices.current} placementOptions={placementOptions ?? choices.options}
+    <AgentSettingsForm key={`${edit.instanceId}:${node.id}:${JSON.stringify(agent)}:${node.initialPrompt ?? ''}:${JSON.stringify(node.graphqlTools ?? null)}:${JSON.stringify(node.placement ?? null)}:${JSON.stringify(node.worktree ?? null)}`} embedded agent={agent} initialPrompt={node.initialPrompt}
+    nodeGraphqlTools={node.graphqlTools} nodePlacement={node.placement} nodeWorktree={node.worktree}
+    workflowWorktree={edit.graph.defaultWorktree}
+    workflowWorktreeLabel={edit.graph.defaultWorktree ? worktreeLabel(edit.graph.defaultWorktree, roots) : undefined}
+    worktreeDisabled={edit.busy || !!edit.pending}
+    placementHidden={!choices.current} placementOptions={options}
     placementStage={sameWorkflowValue(node.placement, savedNode?.placement) ? 'saved' : 'draft'}
     placementOptionsState={placementOptions ? 'ready' : !choiceScope || choices.isError || choices.isPaused ? 'unavailable' : choices.isPending ? 'loading' : 'ready'}
     retainedForm={edit.agentForms?.[node.id]}
@@ -93,6 +110,7 @@ function BoardAgentSettingsVisit({ draftKey, edit, nodeId, close, remove, placem
     workspaceId={edit.graph.workspaceId} workflowApprovalHandler={edit.graph.approval?.handler}
     designatedOrchestrator={edit.graph.approval?.handler === 'orchestrator' && edit.graph.approval.designatedOrchestratorAgentId === agent.id}
     executionPolicy={edit.graph.executionPolicy} onClose={close} onRemove={remove}
-    onSave={(next, prompt, _policy, graphqlTools, placement) => installAgent(draftKey, edit.instanceId, next, node.id, prompt, graphqlTools, placement)} />
+    onSave={(next, prompt, _policy, graphqlTools, placement, worktree) =>
+      installAgent(draftKey, edit.instanceId, next, node.id, prompt, graphqlTools, placement, worktree)} />
   </>
 }

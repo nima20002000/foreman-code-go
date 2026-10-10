@@ -1,3 +1,4 @@
+import { WorkflowWorktreeSettingsSchema, AgentWorktreeSettingsSchema } from '../worktreeSettings.js'
 import { z } from 'zod'
 import { IdSchema, GraphIdSchema, TimestampSchema } from '../schemaPrimitives.js'
 import { JobWorkflowNodeSchema } from '../jobWorkflow.js'
@@ -85,6 +86,7 @@ const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
 export const CurrentAgentWorkflowNodeFields = {
   kind: z.literal('agent').optional(),
   placement: SavedNodePlacementSchema.optional(),
+  worktree: AgentWorktreeSettingsSchema.optional(),
   id: GraphIdSchema, agentId: GraphIdSchema,
   name: z.string().trim().min(1).optional(), label: z.string().trim().min(1).optional(),
   description: z.string().optional(), initialPrompt: z.string().trim().min(1).optional(),
@@ -116,6 +118,7 @@ export const CurrentWorkflowDefinitionBaseSchema = z.object({
   executionCondition: ExecutionConditionSchema, approval: WorkflowApprovalConfigurationSchema.optional(),
   requiredAgentCount: z.number().int().nonnegative().max(10000).optional(),
   nodes: z.array(CurrentWorkflowNodeSchema).max(1000), edges: z.array(CurrentWorkflowRelationshipSchema).max(8000),
+  defaultWorktree: WorkflowWorktreeSettingsSchema.optional(),
   version: z.number().int().positive().optional(), executionPolicy: WorkflowExecutionPolicySchema.optional(),
   createdAt: TimestampSchema.optional(), updatedAt: TimestampSchema.optional(),
 }).strict()

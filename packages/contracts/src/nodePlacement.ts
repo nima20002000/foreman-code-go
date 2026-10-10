@@ -1,3 +1,5 @@
+import { SourceRootReferenceSchema } from './worktreeSettings.js'
+import { SourceWorktreeRequestSchema } from './sourceMaterialization.js'
 import { z } from 'zod'
 import { DeviceProvisioningHostReferenceSchema, HistoricalDeviceExecutionAdmissionFields, DeviceExecutionAdmissionFields,
   validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
@@ -18,7 +20,7 @@ export const SavedNodePlacementSchema = z.object({
   relativeCwd: z.string(), instanceId: IdSchema, instanceRevision: IdSchema,
   harnessInstallationId: IdSchema,
   source: SourcePinSchema.optional(),
-  rootBinding: z.object({ rootId: z.uuid(), bindingRevision: z.number().int().positive() }).strict().optional(),
+  rootBinding: SourceRootReferenceSchema.optional(),
 }).strict()
 export type SavedNodePlacement = z.infer<typeof SavedNodePlacementSchema>
 export const AcceptedDestinationSchema = z.object({
@@ -28,6 +30,7 @@ export const AcceptedDestinationSchema = z.object({
   attestationId: IdSchema, attestationHash: PlacementDigestSchema,
 }).strict()
 const AgentPayload = z.object({
+  worktree: SourceWorktreeRequestSchema.optional(),
   kind: z.literal('agent'), agentId: IdSchema, agentConfigurationVersionId: IdSchema,
   driverId: IdSchema, driverRevision: IdSchema, instanceId: IdSchema, instanceRevision: IdSchema,
   harnessInstallationId: IdSchema, installationFingerprint: IdSchema,
@@ -105,6 +108,7 @@ export type OwnerControl = z.infer<typeof OwnerControlSchema>
 /** A read projection never infers observed execution from an accepted placement. */
 export const NodePlacementReadbackSchema = z.discriminatedUnion('evidence', [
   z.object({ evidence: z.literal('accepted'), placement: AcceptedNodePlacementSchema,
+    nativePlacements: z.array(z.lazy(() => NativeExecutionPlacementSchema)).optional(),
     observations: z.array(WorkerObservationSchema) }).strict(),
   z.object({ evidence: z.literal('legacy_missing'), originalMainInstallationId: IdSchema.nullable() }).strict(),
 ])

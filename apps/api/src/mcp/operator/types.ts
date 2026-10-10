@@ -33,6 +33,7 @@ export interface OperatorServices {
     reads: import('@foreman-code/contracts/resource-telemetry').TelemetryReadService<ManagementPrincipal>
     selectors: import('@foreman-code/contracts/resource-telemetry').TelemetrySelectorService<ManagementPrincipal>
   }
+  workspaceRepositories?: import('../../modules/workspaces/repositoryService.js').WorkspaceRepositoryService
   workspaceRoots?: import('../../modules/workspace-roots/service.js').WorkspaceBoundLocationService
   harnessInstances?: import('../../modules/harnesses/instanceSettings/service.js').HostHarnessOverrideService
   harnessRegistry?: import('../../modules/harnesses/productionRegistry.js').ProductionHarnessRegistry

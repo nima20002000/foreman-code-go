@@ -1,6 +1,7 @@
 import { z } from 'zod'
+export { CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from './currentAuthoring.js'
 import { WorkspaceDetailsRecordFields } from '../index.js'
-import { ManagedWorkflowRecordFields, ManagementPageInfoSchema, WorkflowCreateInputSchema,
+import { ManagedWorkflowRecordFields, ManagementPageInfoSchema,
   RepeatCapabilitiesResultSchema } from '../management/index.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema, RunDetailsV3Schema } from './saved.js'
 import { sameWorkflowValue } from './meaningfulEdit.js'
@@ -12,7 +13,6 @@ export const CurrentManagedWorkflowPageSchema = z.object({ items: z.array(Curren
 export const CurrentManagedWorkflowCommandResultSchema = z.object({ value: CurrentManagedWorkflowSchema, replayed: z.boolean() }).strict()
 export const CurrentWorkspaceDetailsSchema = z.object({ ...WorkspaceDetailsRecordFields, workflows: z.array(WorkflowDefinitionV3Schema) }).strict()
 export const CurrentGetWorkflowResponseSchema = z.object({ workflow: WorkflowDefinitionV3Schema }).strict()
-export const CurrentWorkflowCreateInputSchema = WorkflowCreateInputSchema.extend({ executionSemanticsVersion: z.literal(3) }).strict()
 export const CurrentWorkflowVersionDetailSchema = z.object({ version: WorkflowVersionV3Schema }).strict()
 export const CurrentWorkflowVersionPageSchema = z.object({ items: z.array(WorkflowVersionV3Schema), pageInfo: ManagementPageInfoSchema }).strict()
 export const CurrentRunPageSchema = z.object({ items: z.array(WorkflowRunV3Schema), pageInfo: ManagementPageInfoSchema }).strict()
@@ -38,6 +38,5 @@ export const CurrentWorkflowCapabilitiesSchema = RepeatCapabilitiesResultSchema.
 export type CurrentManagedWorkflow = z.infer<typeof CurrentManagedWorkflowSchema>
 export type CurrentWorkspaceDetails = z.infer<typeof CurrentWorkspaceDetailsSchema>
 export type CurrentGetWorkflowResponse = z.infer<typeof CurrentGetWorkflowResponseSchema>
-export type CurrentWorkflowCreateInput = z.infer<typeof CurrentWorkflowCreateInputSchema>
 export type CurrentRunDetails = z.infer<typeof CurrentRunDetailsSchema>
 export type CurrentWorkflowCapabilities = z.infer<typeof CurrentWorkflowCapabilitiesSchema>

@@ -107,6 +107,32 @@ async function installQuota(f: Awaited<ReturnType<typeof fixture>>) {
   return { configuration, location, slot }
 }
 
+it.each(['repository', 'branch'] as const)('rejects a substituted Agent %s before root or transfer I/O', async field => {
+  const f = await fixture()
+  if (f.request.operation !== 'sources.prepare') throw new Error('Expected preparation fixture')
+  f.owner.preparationKind = 'workflow'
+  f.owner.worktree = { repository: 'octo/site', branch: 'foreman/site/reviewer' }
+  const request = { ...f.request, worktree: { ...f.owner.worktree,
+    [field]: field === 'repository' ? 'another/site' : 'foreman/site/substituted' } }
+  await expect(f.service.handle(request, f.context))
+    .rejects.toMatchObject({ code: 'SOURCE_OPERATION_AUTHORITY_CONFLICT' })
+  expect(f.readRoots).not.toHaveBeenCalled()
+  expect(f.open).not.toHaveBeenCalled()
+})
+
+it('does not let an accepted branch request acquire writable authority from a read-only root', async () => {
+  const f = await fixture()
+  if (f.request.operation !== 'sources.prepare') throw new Error('Expected preparation fixture')
+  f.owner.preparationKind = 'workflow'
+  f.owner.worktree = { repository: 'octo/site', branch: 'foreman/site/reviewer' }
+  f.root.binding.accessMode = 'read-only'
+  f.owner.attempt.placementHash = sourceBindingHash(f.root, f.owner.attempt, f.owner.identity.operationId)
+  await expect(f.service.handle({ ...f.request, worktree: f.owner.worktree }, f.context))
+    .rejects.toMatchObject({ code: 'SOURCE_READ_ONLY' })
+  expect(f.readRoots).not.toHaveBeenCalled()
+  expect(f.open).not.toHaveBeenCalled()
+})
+
 it('prepares a quota-required Job after the approved root is rebound to a new snapshot', async () => {
   const f = await fixture()
   const installed = await installQuota(f)

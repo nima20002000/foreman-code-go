@@ -1,3 +1,4 @@
+import { SourceRootReferenceSchema } from './worktreeSettings.js'
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
 import { SourceManifestSchema, SourceHashSchema, RootBindingSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
@@ -55,7 +56,7 @@ export const SourceRootRecordSchema = z.object({ version: z.literal(1), source: 
 })
 export type SourceRootRecord = z.infer<typeof SourceRootRecordSchema>
 export const SourceRootBindResultSchema = z.object({ value: SourceRootRecordSchema, replayed: z.boolean() }).strict()
-export const SourceRootGetInputSchema = z.object({ workspaceId: IdSchema, rootId: z.uuid(), bindingRevision: z.number().int().positive() }).strict()
+export const SourceRootGetInputSchema = z.object({ workspaceId: IdSchema, ...SourceRootReferenceSchema.shape }).strict()
 export const SourceMaterializationRecordSchema = z.object({ receipt: MaterializationReceiptSchema,
   rootPolicyId: IdSchema, rootPolicyRevision: z.string().regex(/^[1-9][0-9]*$/), operationId: IdSchema,
   reservationId: z.uuid(), sourceBindingHash: SourceHashSchema, finalDispatchBindingHash: SourceHashSchema.nullable(), state: z.enum(['prepared', 'running', 'uncertain', 'closed']),

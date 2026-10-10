@@ -94,7 +94,8 @@ async function fixture() {
     return { rows, rowCount: rows.length }
   }, on: () => undefined, removeListener: () => undefined, release: () => undefined }
   const roots = { resolve: async () => ({ canonicalProjectRoot: project, managedRuntimeRoot: runtime, registration }) } as unknown as WorkspaceRootPolicyPort
-  const sources = { resolveRootBinding: async () => sourceRoot } as unknown as SourceAdmissionPort
+  const sources = { resolveRootBinding: async () => sourceRoot,
+    resolveApprovedSource: async () => ({ manifest }) } as unknown as SourceAdmissionPort
   const producer = new AgentPlacementProducer({ connect: async () => client } as unknown as pg.Pool, binding.mainId, sources, roots,
     { installations, pinOverride: value => installations.pin({ instanceId: value.instanceId,
       hostRef: value.target.hostRef, harnessInstallationId: value.target.harnessInstallationId,

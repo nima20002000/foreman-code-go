@@ -2,7 +2,7 @@ import type pg from 'pg'
 import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
 import { isDeepStrictEqual } from 'node:util'
 import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, type SourceFilesystemOperation, type SourceOperationOwner } from '@foreman-code/contracts/source-operations'
-import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
+import { ApprovedSourceSchema, SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import type { SourceRootRecord, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -14,6 +14,7 @@ import { assertAcceptedSourceRelativeCwd } from './agentSourceAuthority.js'
 import type { MaterializationAttempt } from './ports.js'
 import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
 import { requireUnreclaimedSourceOperation } from './reservations.js'
+import { agentWorktree } from './service.js'
 
 /** Actual Main allocation/source facts; workers receive no database credentials. */
 export class PostgresSourceOperationAuthority {
@@ -85,7 +86,7 @@ export class PostgresSourceOperationAuthority {
         || root.registration.keyRevision !== binding.keyRevision || root.registration.authorizationRevision !== binding.authorizationRevision)
         throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not bound to its original current authenticated device.', 409)
       if (principal) await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
-      const snapshot = (await sql.query<{ availability: string }>('select availability from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
+      const snapshot = (await sql.query<{ availability: string; record: unknown }>('select availability,record from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
         [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
       if ((request.operation !== 'sources.release' || receipt?.quota) && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
       let record: SourceMaterializationRecord | null = null, physicalClosureConfirmed = false
@@ -129,7 +130,14 @@ export class PostgresSourceOperationAuthority {
         ResolvedJobDefinitionSpecRecordSchema.parse(selected.spec))
       const activeNativeSession = request.operation === 'sources.verify' && record?.receipt.binding.accessMode === 'exclusive-write'
         ? await this.activeNativeSession?.(sql, record) ?? null : null
+      const worktree = request.operation === 'sources.prepare' && allocated.preparation_kind === 'workflow'
+        && root.binding.accessMode === 'exclusive-write'
+        ? await agentWorktree(sql, attempt.executionId, ApprovedSourceSchema.parse(snapshot?.record).manifest) : undefined
+      if (request.operation === 'sources.prepare' && !isDeepStrictEqual(request.worktree, worktree)) {
+        throw new DomainError('SOURCE_WORKTREE_CONFLICT', 'Preparation cannot substitute the accepted Agent branch request.', 409)
+      }
       return SourceOperationOwnerSchema.parse({ identity, root, attempt, source: root.source, record, physicalClosureConfirmed, activeNativeSession,
+        ...(worktree ? { worktree } : {}),
         ...(quotaRequired ? { quotaRequired: true } : {}),
         ...(allocated.preparation_kind === 'workflow' ? { preparationKind: 'workflow' } : {}) })
     })

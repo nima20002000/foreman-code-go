@@ -16,6 +16,7 @@ import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import { verifyJobQuotaOwnership, type JobQuotaReader } from '../jobs/quotaOwnership.js'
 import { prepareAgentWorktree, prepareSharedWorkingTree, verifySharedWorkingTree } from './sharedWorkingTree.js'
+import { assertWorktreeReceipt, verifyWorktreeBranch } from './worktreeRequest.js'
 import { systemGitWorktreePorts, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
@@ -60,8 +61,11 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     const manifest = verifySourceManifest(input.manifest), binding = RootBindingSchema.parse(input.binding)
     if (binding.snapshotId !== manifest.snapshotId || binding.manifestDigest !== manifest.manifestDigest)
       throw new SourceError('SOURCE_PIN_CONFLICT', 'The root is not bound to this exact source snapshot.')
-    if (input.worktree && manifest.git?.repository && input.worktree.repository !== manifest.git.repository) {
+    if (input.worktree && input.worktree.repository !== manifest.git?.repository) {
       throw new SourceError('SOURCE_PIN_CONFLICT', 'The worktree repository differs from the approved source.')
+    }
+    if (input.worktree && (binding.accessMode !== 'exclusive-write' || !input.sharedWritableTree)) {
+      throw new SourceError('SOURCE_READ_ONLY', 'Agent branches require a writable workflow source.')
     }
     const attempt = input.attempt
     // Parse every accepted attempt pin before any I/O; the authorization port
@@ -79,7 +83,10 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     await this.authorize(binding, attempt)
     signal.throwIfAborted()
     const recovered = await this.recover(binding, attempt, signal)
-    if (recovered) return recovered
+    if (recovered) {
+      assertWorktreeReceipt(recovered, input.worktree, manifest.git?.commit)
+      return recovered
+    }
     if (this.active >= SOURCE_LIMITS.concurrent) throw new SourceError('SOURCE_CAPACITY', 'Materialization concurrency is exhausted.')
     this.active++
     let slotDirectory: FileHandle | undefined
@@ -267,6 +274,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
           if (!equal(await identity(tree), receipt.sharedTree?.referenceIdentity ?? receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized source reference replaced.')
           await verifyMaterializedSourceTree(tree, manifest, expected.signal)
           await verifySharedWorkingTree(root, receipt)
+          await verifyWorktreeBranch(receipt, { git: this.git, signal: expected.signal })
         } finally { await tree.close() }
       } finally { await directory.close() }
     } finally { await root.close() }

@@ -5,6 +5,7 @@ import { posix } from 'node:path'
 import { DomainError } from '../errors.js'
 import { placementDigest, readPlacement } from './binding.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { assertWorktreeReceipt } from '../sources/worktreeRequest.js'
 function sourceMaterializationDigest(record: SourceMaterializationRecord): string {
   return commandInputHash({ receipt: record.receipt, sourceBindingHash: record.sourceBindingHash,
     rootPolicyId: record.rootPolicyId, rootPolicyRevision: record.rootPolicyRevision,
@@ -25,6 +26,9 @@ export function bindNativeExecution(placement: AcceptedNodePlacement, intent: Di
 export function readNativeExecutionBinding(parent: AcceptedNodePlacement, intent: DispatchIntent, raw: unknown): NativeExecutionPlacement {
   const placement = readPlacement(parent), binding = NativeExecutionPlacementSchema.parse(raw), { bindingHash, ...input } = binding
   const receipt = binding.materialization.receipt
+  if (placement.payload.kind === 'agent' && placement.payload.worktree) {
+    assertWorktreeReceipt(receipt, placement.payload.worktree)
+  }
   const source = placement.source
   if (!('kind' in source) || source.kind !== 'pending' || placement.bindingHash !== intent.bindingHash
     || bindingHash !== nativePlacementDigest(input) || binding.acceptedBindingHash !== placement.bindingHash

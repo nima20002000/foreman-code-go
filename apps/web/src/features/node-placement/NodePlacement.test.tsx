@@ -4,13 +4,15 @@ import { vi } from 'vitest'
 import { NodePlacementField } from './NodePlacementField'
 import { NodePlacementFacts } from './NodePlacementFacts'
 import { acceptedPlacementFixture as placement, savedPlacementFixture as saved, workerObservationFixture as observation } from './fixtures'
+import { NativeExecutionPlacementSchema } from '@foreman-code/contracts/node-placement'
+import { worktreeFixture } from '../workflow-board/worktree.fixtures'
 
 it('shows Main as the default without inventing or applying a saved placement', () => {
   const change = vi.fn()
   const view = render(<NodePlacementField options={[{ label: 'Laptop', placement: saved }]} onChange={change} />)
   expect(screen.getByRole('option', { name: 'Main (default)' })).toBeInTheDocument()
   expect(screen.getByRole('combobox', { name: 'Computer' })).toHaveValue('inherited')
-  expect(screen.getByText(/This Agent will use Main when the workflow starts/)).toBeInTheDocument()
+  expect(screen.getByText(/Inherited from workflow: Main through existing workspace placement/)).toBeInTheDocument()
   expect(change).not.toHaveBeenCalled()
   view.rerender(<NodePlacementField value={saved} stage="draft"
     options={[{ label: 'Laptop', placement: saved }]} onChange={vi.fn()} />)
@@ -44,6 +46,39 @@ it('renders accepted pins without claiming execution before acknowledgment', () 
   expect(screen.getAllByText('/synthetic/accepted', { selector: 'dd' })).toHaveLength(2)
   expect(screen.getByText(/Awaiting worker acknowledgment/)).toBeInTheDocument()
   expect(screen.queryByText(/Execution observed on/)).not.toBeInTheDocument()
+})
+
+it('shows the accepted prefix separately from the allocated branch and prepared execution directory', () => {
+  const project = worktreeFixture()
+  const digest = placement.bindingHash
+  const filesystem = project.root.binding.filesystem
+  const materializationId = '12345678-1234-4234-8234-123456789012'
+  const native = NativeExecutionPlacementSchema.parse({ version: 1, acceptedBindingHash: digest, runId: 'run-a',
+    nodeId: 'node-a', executionId: 'execution-a', attemptId: 'attempt-a', operationId: 'operation-a', bindingHash: digest,
+    materialization: { rootPolicyId: placement.destination.rootPolicyId, rootPolicyRevision: placement.destination.rootPolicyRevision,
+      operationId: 'operation-a', reservationId: '12345678-1234-4234-8234-123456789013', sourceBindingHash: digest,
+      finalDispatchBindingHash: digest, state: 'prepared', receipt: { version: 1, materializationId, binding: project.root.binding,
+        placementHash: digest, executionId: 'execution-a', attemptId: 'attempt-a', keyRevision: 1, authorizationRevision: 2,
+        verifiedManifestDigest: project.source.manifest.manifestDigest, verifiedEntries: 0, verifiedBytes: 0,
+        verifiedAt: project.source.approvedAt, claimScope: 'execution',
+        sharedTree: { id: '12345678-1234-4234-8234-123456789014', referenceIdentity: filesystem },
+        worktree: { repository: 'octo-owner/website', branch: 'foreman/review-unique', commit: project.source.manifest.git!.commit },
+        localTreeIdentity: filesystem } },
+    workingTree: { materializationId, materializationDigest: digest, canonicalProjectRoot: '/runtime/worktree/unique',
+      canonicalCwd: '/runtime/worktree/unique', directoryIdentityHash: digest, filesystem,
+      accessMode: 'exclusive-write', privateGit: null } })
+  if (placement.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
+  const accepted = { ...placement, payload: { ...placement.payload,
+    worktree: { repository: 'octo-owner/website', branch: 'foreman/review' } } }
+  const view = render(<NodePlacementFacts runId="run-a" nodeId="node-a" readback={{ evidence: 'accepted',
+    placement: accepted, observations: [], nativePlacements: [native] }} />)
+  expect(screen.getByText('foreman/review')).toBeVisible()
+  expect(screen.getByText('foreman/review-unique')).toBeVisible()
+  expect(screen.getByText('/runtime/worktree/unique')).toBeVisible()
+  expect(screen.queryByText(/Execution observed on/)).not.toBeInTheDocument()
+  view.rerender(<NodePlacementFacts runId="run-a" nodeId="node-a" readback={{ evidence: 'accepted',
+    placement: accepted, observations: [], nativePlacements: [{ ...native, acceptedBindingHash: 'f'.repeat(64) }] }} />)
+  expect(screen.queryByText('/runtime/worktree/unique')).not.toBeInTheDocument()
 })
 it('worker acceptance does not claim a process ran; latest matching attempt phase does', () => {
   const view = render(<NodePlacementFacts runId="run-a" nodeId="node-a" readback={{ evidence: 'accepted', placement, observations: [observation] }} />)

@@ -1,3 +1,5 @@
+import { authorizeWorkflowWorktreeContent, validateWorkflowWorktrees,
+  type WorkflowWorktreeServices } from './worktreeSettings.js'
 import { validateReviewerBootstrap } from './reviewerBootstrap.js'
 import { requireCurrentWorkflowAccess } from './currentWorkflowPolicy.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -11,7 +13,7 @@ import {
   ExecutableWorkflowV3Schema, canonicalGraphJson, sameAuthoredWorkflow, sameExecutableWorkflow,
   sameWorkflowValue, workflowNodeNames,
   CurrentEditSaveInputSchema, CurrentEditMutationInputSchema, CurrentEditReadInputSchema, preserveWorkflowGeometry,
-  type CurrentWorkflowValidateInput, type CurrentEditSaveInput,
+  type CurrentWorkflowValidateInput, type CurrentEditSaveInput, type WorkflowDefinitionV3,
 } from '@foreman-code/contracts/wave25'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -51,8 +53,9 @@ function completeSaveInput(
 }
 const fail = (code: string, message: string): never => { throw new DomainError(code, message, 409) }
 const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
-function authorize(principal: ManagementPrincipal, scope: Scope, write: boolean) {
-  requireCurrentWorkflowAccess(principal, write ? 'save' : 'validate', scope)
+function authorize(principal: ManagementPrincipal, input: Scope & { graph?: WorkflowDefinitionV3 }, write: boolean) {
+  requireCurrentWorkflowAccess(principal, write ? 'save' : 'validate', input)
+  authorizeWorkflowWorktreeContent(principal, input)
 }
 async function versionAt(sql: Pick<pg.PoolClient, 'query'>, scope: Scope, id: string) {
   const row = (await sql.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS}
@@ -78,7 +81,8 @@ export class CurrentWorkflowAuthoring {
   private editStop: RunManagementService['stop'] | undefined
   private runtime: Pick<RunManagementService, 'availability' | 'assertCurrentStopReady'> | undefined
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly agentActiveTimeoutMs = DEFAULT_AGENT_ACTIVE_TIMEOUT_MS) {
+    private readonly agentActiveTimeoutMs = DEFAULT_AGENT_ACTIVE_TIMEOUT_MS,
+    private readonly worktrees?: WorkflowWorktreeServices) {
     this.editIntents = createCurrentEditIntentService(pool, commands, {
       validate: async (client, principal, input, options) => {
         authorize(principal, input, true)
@@ -313,9 +317,13 @@ export class CurrentWorkflowAuthoring {
         return fail('LAYOUT_REVISION_CONFLICT', 'The stored node geometry changed. Reconcile this rejected layout command before retrying.')
       }
     }
-    if (presentationOnly && base) return { presentationOnly, version: base, content: '',
-      definition: WorkflowDefinitionV3Schema.parse({ ...(intentId ? preserveWorkflowGeometry(input.graph, current) : input.graph),
-        updatedAt: new Date().toISOString() }) }
+    if (presentationOnly && base) {
+      await validateWorkflowWorktrees({ sql: client, principal, definition: input.graph, previous: current,
+        services: this.worktrees })
+      return { presentationOnly, version: base, content: '',
+        definition: WorkflowDefinitionV3Schema.parse({ ...(intentId ? preserveWorkflowGeometry(input.graph, current) : input.graph),
+          updatedAt: new Date().toISOString() }) }
+    }
 
     if (publication) {
       await assertMeaningfulSaveAdmitted(client, { ...input, stagedAgentIds: staged?.prepared.map((item) => item.agent.id) ?? [] })
@@ -344,6 +352,8 @@ export class CurrentWorkflowAuthoring {
       return readImmutableAgentConfiguration(config, { workspaceId: input.workspaceId, agentId: config.agent_id, id })
     })
     configurations.push(...(staged?.prepared.map((item) => item.configuration) ?? []))
+    await validateWorkflowWorktrees({ sql: client, principal, definition: input.graph, previous: current,
+      configurations, services: this.worktrees })
     const number = Number((await client.query<{ next: string }>('select coalesce(max(version),0)+1 as next from workflow_versions where workflow_id=$1',
       [input.workflowId])).rows[0]?.next)
     if (!Number.isSafeInteger(number) || number < 1 || base && number <= base.version) return fail('WORKFLOW_BASE_CONFLICT', 'The next immutable version is invalid.')

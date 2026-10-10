@@ -60,8 +60,8 @@ export const ManagementHarnessDefaultsSchema = z.object({
   claude: ClaudeHarnessConfigurationSchema.optional(),
 }).strict();
 
-export const CommandIdSchema = z.string().trim().min(8).max(200);
-export const ExpectedRevisionSchema = z.number().int().nonnegative();
+import { CommandIdSchema, ExpectedRevisionSchema } from './commands.js';
+export { CommandIdSchema, ExpectedRevisionSchema } from './commands.js';
 export const ManagementPageInputSchema = z
   .object({
     cursor: z.string().trim().min(1).optional(),
@@ -718,3 +718,6 @@ export const OperatorCapabilitiesSchema = z.object({
 
 export * from './executionReadiness.js'
 export * from './workspaceStorageFolders.js'
+
+export * from '../workspaceGit.js';
+export * from '../worktreeSettings.js';

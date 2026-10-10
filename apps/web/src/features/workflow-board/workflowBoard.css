@@ -52,7 +52,13 @@
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); pointer-events: none;
 }
 .board-topbar > * { pointer-events: auto; }
-.board-title { display: flex; min-width: 0; flex: 1; align-items: center; }
+.board-title { display: flex; min-width: 0; flex: 1; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.workflow-worktree-field { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+.workflow-worktree-field button { display: grid; min-width: 0; max-width: 22rem; text-align: start; }
+.workflow-worktree-field button span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-worktree-stage { color: var(--text-muted); font-size: var(--text-xs); }
+.worktree-editor, .agent-worktree-fields { display: grid; gap: var(--space-2); }
+.worktree-editor-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
 .board-title h2 { margin: 0; overflow: hidden; color: var(--text-strong); font: var(--type-heading); text-overflow: ellipsis; white-space: nowrap; }
 .board-topbar .n-toolbar { padding: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-raised); }
 .board-topbar .runs-selector-trigger > span { display: inline-flex; align-items: center; gap: var(--space-1); }

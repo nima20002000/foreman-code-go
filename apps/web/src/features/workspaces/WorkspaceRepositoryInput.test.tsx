@@ -6,19 +6,21 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
 import { clearRevisionedFormPersistence } from '../settings/revisionedForm'
 import { WorkspaceRepositoryForm } from './WorkspaceRepositoryForm'
+import { worktreeFixture } from '../workflow-board/worktree.fixtures'
+import { mainRoot } from '../settings/workspaceBoundLocation.fixtures'
 
 afterEach(clearRevisionedFormPersistence)
 
 function mount() {
   const writes: unknown[] = []
-  server.use(http.patch('/api/management/workspaces/workspace-1', async ({ request }) => {
-    const input = await request.json() as { repository: unknown }
+  const fixture = worktreeFixture()
+  server.use(http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
+    workspaceId: 'workspace-1', policies: [], allowlists: [mainRoot], readiness: 'metadata-only',
+  })), http.post('/api/management/workspaces/workspace-1/repository/add', async ({ request }) => {
+    const input = await request.json() as { repository: unknown; commandId: string }
     writes.push(input)
-    return HttpResponse.json({ value: {
-      workspace: { id: 'workspace-1', name: 'Website', repository: input.repository },
-      revision: 2, archivedAt: null, executionLocation: null, locationRevision: 0,
-      locationValidation: { status: 'unconfigured' },
-    }, replayed: false })
+    return HttpResponse.json({ value: { ...fixture.ready, operation: { ...fixture.ready.operation,
+      commandId: input.commandId } }, replayed: false })
   }))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(<QueryClientProvider client={client}>
@@ -39,7 +41,7 @@ describe('repository input', () => {
     const writes = mount()
     const user = userEvent.setup()
     await user.type(screen.getByRole('textbox', { name: 'Repository' }), value)
-    const save = screen.getByRole('button', { name: 'Save repository' })
+    const save = screen.getByRole('button', { name: 'Add project' })
     expect(save).toBeDisabled()
     expect(screen.getByText('Use owner/name or a GitHub repository URL without extra path segments.')).toBeVisible()
     await user.click(save)
@@ -59,7 +61,8 @@ describe('repository input', () => {
     const writes = mount()
     const user = userEvent.setup()
     await user.type(screen.getByRole('textbox', { name: 'Repository' }), value)
-    await user.click(screen.getByRole('button', { name: 'Save repository' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add project' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Add project' }))
     await waitFor(() => expect(writes).toHaveLength(1))
     expect(writes[0]).toMatchObject({ repository: {
       provider: 'github', owner: 'octo-owner', name: 'website', defaultBranch: 'main',

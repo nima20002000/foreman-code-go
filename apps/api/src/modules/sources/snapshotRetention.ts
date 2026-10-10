@@ -75,6 +75,31 @@ async function releasable(sql: GraphSqlClient, snapshotId: string, underPressure
       greatest((a.record->>'requestedAt')::timestamptz,(a.record->>'expiresAt')::timestamptz),null::integer
     from job_runtime_qualification_approvals a where a.record#>>'{fingerprint,root,source,snapshotId}'=$1
     union all
+    select true,null::timestamptz,null::integer
+    from workspace_repository_imports i join workspaces w on w.id=i.workspace_id
+    where i.phase='ready' and w.archived_at is null
+      and i.results#>>'{approvedSource,manifest,snapshotId}'=$1
+      and w.record->'repository'=i.input->'repository'
+      and w.location_revision::text=i.results#>>'{location,locationRevision}'
+    union all
+    select true,null::timestamptz,null::integer
+    from workflows w join workspaces workspace on workspace.id=w.workspace_id
+      join workflow_versions v on v.id=w.current_version_id
+      join source_root_bindings b
+        on b.workspace_id=w.workspace_id
+        and b.root_id::text=v.record#>>'{definition,defaultWorktree,rootBinding,rootId}'
+        and b.binding_revision::text=v.record#>>'{definition,defaultWorktree,rootBinding,bindingRevision}'
+    where b.snapshot_id::text=$1 and w.archived_at is null and workspace.archived_at is null
+    union all
+    select true,null::timestamptz,null::integer
+    from workflows w join workspaces workspace on workspace.id=w.workspace_id
+      join workflow_versions v on v.id=w.current_version_id
+      cross join lateral jsonb_array_elements(v.record#>'{definition,nodes}') node
+      join source_root_bindings b on b.workspace_id=w.workspace_id
+        and b.root_id::text=node#>>'{placement,rootBinding,rootId}'
+        and b.binding_revision::text=node#>>'{placement,rootBinding,bindingRevision}'
+    where b.snapshot_id::text=$1 and w.archived_at is null and workspace.archived_at is null
+    union all
     select false,(b.record->>'boundAt')::timestamptz,null::integer
     from source_root_bindings b where b.snapshot_id::text=$1
   ) select not coalesce(bool_or(active),false)

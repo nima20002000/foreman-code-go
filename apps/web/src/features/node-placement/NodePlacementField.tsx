@@ -8,6 +8,7 @@ export type NodePlacementOption = Readonly<{
   placement: SavedNodePlacement
   label: string
   unavailableReason?: string
+  commit?: string
 }>
 export type NodePlacementFieldProps = {
   value?: SavedNodePlacement
@@ -16,13 +17,15 @@ export type NodePlacementFieldProps = {
   disabled?: boolean
   optionsState?: 'ready' | 'loading' | 'unavailable'
   stage?: 'editing' | 'draft' | 'saved'
+  inheritedWorktree?: string
 }
 const stageMessages = {
   editing: 'Editing computer choice — Apply to this node’s draft.',
   draft: 'Applied to draft — Save graph to persist this placement.',
   saved: 'Persisted Board placement — configured for a later Run.',
 }
-export function NodePlacementField({ value, options, onChange, disabled, optionsState = 'ready', stage }: NodePlacementFieldProps) {
+export function NodePlacementField({ value, options, onChange, disabled, optionsState = 'ready', stage,
+  inheritedWorktree }: NodePlacementFieldProps) {
   const selected = value ? options.findIndex((option) => sameWorkflowValue(option.placement, value)) : -1
   const current = selected >= 0 ? options[selected] : undefined
   let selection = 'inherited'
@@ -30,7 +33,7 @@ export function NodePlacementField({ value, options, onChange, disabled, options
   return <div className="node-placement-field">
     <Select label="Computer" aria-label="Computer" value={selection} disabled={disabled}
       options={[
-        { value: 'inherited', label: 'Main (default)' },
+        { value: 'inherited', label: inheritedWorktree ? 'Workflow default' : 'Main (default)' },
         ...(value && selected < 0 ? [{ value: 'retained', label: 'Configured computer — retained', disabled: true }] : []),
         ...options.map((option, index) => ({ value: String(index), label: option.unavailableReason ? `${option.label} — ${option.unavailableReason}` : option.label, disabled: !!option.unavailableReason })),
       ]} onChange={(event) => {
@@ -42,11 +45,12 @@ export function NodePlacementField({ value, options, onChange, disabled, options
         if (option && !option.unavailableReason) onChange(structuredClone(option.placement))
       }} />
     {stage && (value || stage !== 'saved') ? <p role="status">{stageMessages[stage]}</p> : null}
-    <p>Agents without a computer choice use Main. In workflows with computer choices,
-      Start records every Agent’s authorized source, root and harness in the Run.</p>
+    <p>Agents inherit the workflow’s selected source and computer. Start records every Agent’s authorized
+      source, root and harness in the Run.</p>
     {value ? <>
       <dl>
-        <dt>Configured for next Run</dt><dd>{current?.label ?? (optionsState === 'ready' ? 'Unavailable configured choice' : 'Configured choice retained')}</dd>
+        <dt>Override for next Run</dt><dd>{current?.label ?? (optionsState === 'ready' ? 'Unavailable configured choice' : 'Configured choice retained')}</dd>
+        <dt>Approved commit</dt><dd><code>{current?.commit ?? 'Unavailable'}</code></dd>
         <dt>Execution root</dt><dd>{value.projectRoot}</dd>
       </dl>
       <details><summary>Computer and harness identities</summary><dl>
@@ -55,7 +59,7 @@ export function NodePlacementField({ value, options, onChange, disabled, options
         <dt>Harness installation</dt><dd>{value.harnessInstallationId}</dd>
         <dt>Root policy</dt><dd>{value.rootPolicyId} · revision {value.rootPolicyRevision}</dd>
       </dl></details>
-    </> : <p>This Agent will use Main when the workflow starts. Choose another computer above to change it.</p>}
+    </> : <p>Inherited from workflow: {inheritedWorktree ?? 'Main through existing workspace placement'}.</p>}
     {optionsState === 'loading' ? <p role="status">Reading authorized computer choices…</p> : optionsState === 'unavailable' ? <p role="status">Authorized computer choices are unavailable. Configured placement is retained.</p> : null}
     {optionsState === 'ready' && value && (!current || current.unavailableReason) ? <p role="status">{current?.unavailableReason ?? 'This configured choice is no longer available. It is retained until you explicitly replace it.'}</p> : null}
     {stage ? null : <p>Apply changes this node’s draft. Save graph persists it for a later Run. An accepted Run keeps its original placement.</p>}

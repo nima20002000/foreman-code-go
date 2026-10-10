@@ -7,6 +7,7 @@ import {
   type CurrentEditIntent, type CurrentEditStageInput, type CurrentEditDraft,
   type CurrentEditSaveInput, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
+import { authorizeWorkflowWorktreeContent } from '../workflows/worktreeSettings.js'
 import { requireCurrentWorkflowAccess } from '../workflows/currentWorkflowPolicy.js'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
@@ -45,8 +46,14 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
   return new DurableEditIntentService<CurrentEditStageInput, CurrentEditIntent>(pool, commands, {
     kind: 'current', stageSchema: CurrentEditStageInputSchema, intentSchema: CurrentEditIntentSchema,
     readResultSchema: CurrentEditReadResultSchema, resultSchema: CurrentWorkflowSavedSchema,
-    authorize: (principal, scope, write) => requireCurrentWorkflowAccess(principal, write ? 'save' : 'validate', scope),
-    authorizeContent: (principal, intent) => authorizeStagedAgents(principal, intent.saveInput),
+    authorize: (principal, scope, write) => {
+      requireCurrentWorkflowAccess(principal, write ? 'save' : 'validate', scope)
+      authorizeWorkflowWorktreeContent(principal, scope)
+    },
+    authorizeContent: (principal, intent) => {
+      authorizeStagedAgents(principal, intent.saveInput)
+      authorizeWorkflowWorktreeContent(principal, intent.saveInput)
+    },
     stagedAgentIds: (draft) => (draft.stagedAgents ?? []).map((item) => item.agent.id),
     requiresRunSettlement,
     prepare: async (client, principal, input, saveCommandId) => {
