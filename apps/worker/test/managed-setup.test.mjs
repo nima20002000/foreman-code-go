@@ -130,6 +130,82 @@ async function previousInstallation(f) {
   return { state, pairing, ...runtime };
 }
 
+async function installQuotaObserver(old, script) {
+  const executable = join(old.state, 'quota-observer');
+  const bytes = `#!${process.execPath}\n${script}\n`;
+  await writeFile(executable, bytes, { mode: 0o700 });
+  const quotaPool = { ...old.runtime.descriptor.quotaPool, queryExecutable: executable,
+    queryBinarySha256: createHash('sha256').update(bytes).digest('hex') };
+  old.runtime = { ...old.runtime, descriptor: { ...old.runtime.descriptor, quotaPool },
+    machine: { ...old.runtime.machine, quotaPool } };
+  await writeFile(join(old.state, 'job-runtime.json'), JSON.stringify(old.runtime), { mode: 0o600 });
+}
+
+test('automatic adoption reads every installed quota through its pinned observer without sudo', async t => {
+  const f = await fixture(t);
+  const old = await previousInstallation(f);
+  const pool = old.runtime.descriptor.quotaPool;
+  const observations = {};
+  for (const slot of pool.slots) {
+    const directory = join(old.runtime.root.binding.canonicalPath, slot.namespace);
+    observations[directory] = await old.readQuota(pool, directory);
+  }
+  const reads = join(old.state, 'quota-reads.jsonl');
+  await installQuotaObserver(old, `
+const observations = ${JSON.stringify(observations)};
+const observed = observations[process.argv[2]];
+if (!observed || process.argv[3] !== ${JSON.stringify(pool.blockDevice)}) process.exit(1);
+const { appendFileSync } = await import('node:fs');
+appendFileSync(${JSON.stringify(reads)}, JSON.stringify(observed.projectId) + '\\n', { mode: 0o600 });
+process.stdout.write(JSON.stringify(observed));`);
+  const status = await f.worker.ensurePairedManagedSetup({
+    stateDirectory: f.state, pairing: f.pairing, home: f.home,
+  });
+  assert.equal(status.state, 'ready');
+  assert.equal(status.migrated, true);
+  assert.deepEqual((await readFile(reads, 'utf8')).trim().split('\n').map(Number),
+    pool.slots.map(slot => slot.projectId));
+  const installed = JSON.parse(await readFile(join(f.state, 'ci-runtime-installation.json'), 'utf8'));
+  assert.deepEqual(installed.runtime.descriptor.quotaPool, old.runtime.descriptor.quotaPool);
+  assert.equal(installed.runtime.descriptor.runtimeRoot, old.runtime.descriptor.runtimeRoot);
+  const approved = JSON.parse(await readFile(join(f.state, 'approved-roots.json'), 'utf8'));
+  assert.equal(approved.managedRuntimeRoot, old.runtime.descriptor.runtimeRoot);
+  assert.equal(approved.hostRef.deviceId, f.pairing.deviceId);
+});
+
+test('a denied quota observer leaves the original installation available for a later retry', async t => {
+  const f = await fixture(t);
+  const old = await previousInstallation(f);
+  await installQuotaObserver(old, "process.stderr.write('read project quota: Operation not permitted\\n'); process.exit(1);");
+  const status = await f.worker.ensurePairedManagedSetup({
+    stateDirectory: f.state, pairing: f.pairing, home: f.home,
+  });
+  assert.equal(status.state, 'failed');
+  assert.match(status.message, /JOB_QUOTA_UNAVAILABLE/);
+  assert.equal(status.migrated, false);
+  assert.deepEqual(JSON.parse(await readFile(join(old.state, 'job-runtime.json'), 'utf8')), old.runtime);
+  assert.deepEqual(JSON.parse(await readFile(join(old.state, 'pairing.json'), 'utf8')), old.pairing);
+  await assert.rejects(readFile(join(old.state, 'managed-retirement.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(f.state, 'ci-runtime-installation.json')), { code: 'ENOENT' });
+});
+
+test('automatic adoption rejects an installation without a quota pool and retains its selectors', async t => {
+  const f = await fixture(t);
+  const old = await previousInstallation(f);
+  delete old.runtime.descriptor.quotaPool;
+  delete old.runtime.machine.quotaPool;
+  await writeFile(join(old.state, 'job-runtime.json'), JSON.stringify(old.runtime), { mode: 0o600 });
+  const status = await f.worker.ensurePairedManagedSetup({
+    stateDirectory: f.state, pairing: f.pairing, home: f.home,
+  });
+  assert.equal(status.state, 'failed');
+  assert.match(status.message, /managed_installation_quota_required/);
+  assert.equal(status.migrated, false);
+  assert.deepEqual(JSON.parse(await readFile(join(old.state, 'job-runtime.json'), 'utf8')), old.runtime);
+  assert.deepEqual(JSON.parse(await readFile(join(old.state, 'approved-roots.json'), 'utf8')), old.approved);
+  await assert.rejects(readFile(join(f.state, 'ci-runtime-installation.json')), { code: 'ENOENT' });
+});
+
 test('a new pairing adopts an idle managed runtime, retains image inputs and retires old access', async t => {
   const f = await fixture(t);
   const old = await previousInstallation(f);

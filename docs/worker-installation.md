@@ -71,6 +71,17 @@ automatically. A computer without an installed quota-enabled CI volume reports
 `runtime-unavailable`; pairing does not change privileged host prerequisites or
 weaken quota checks. Arbitrary bases from an old pairing are not transferred.
 
+The host Worker service must allow the existing quota observer's file capability
+and rootless Podman's installed helpers. Its reviewed unit uses
+`NoNewPrivileges=no`; the Worker still runs as the signed-in user, and CI
+containers retain dropped capabilities and `no-new-privileges`. A unit with
+`NoNewPrivileges=yes` blocks the observer's kernel quota reads even when the
+quota volume and observer are installed correctly, producing
+`JOB_QUOTA_UNAVAILABLE`. For such an existing installation, review and activate
+the updated Companion service plan before retrying adoption. Worker updates
+preserve the existing service's security settings; they do not authorize this
+policy change themselves.
+
 Root requests check the current boot, connection, pairing revisions and approved
 scope before reading configuration or changing storage. The managed-folder
 operation accepts only the workspace's fixed relative directory beneath a
