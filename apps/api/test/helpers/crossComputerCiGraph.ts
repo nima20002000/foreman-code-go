@@ -36,17 +36,17 @@ function agentPrompt(suite: ScenarioSuite | null): string {
   return 'Use only Foreman Code MCP tools. Do not use shell, filesystem, network or browser tools. '
     + 'Read context_get and retain your own repository and branch. Read ci_computers_list. '
     + `Call ci_run exactly once for suite ${suite}, with a fresh commandId, `
-    + 'placementOverride {"kind":"auto"}, and no commit override; this must capture your current worktree files. '
+    + 'and no commit override; this must publish your current worktree files to GitHub. '
     + 'Retain that commandId for an uncertain response and retry only that same request. '
-    + 'Poll ci_get on your ticket until process.phase is terminal and publication is complete. '
-    + 'Do not stop just because the ticket is waiting, claimed or accepted. '
-    + 'Read ci_logs_read and ci_artifacts_list, then read the summary.json artifact using ci_artifact_read. '
+    + 'Poll ci_get on your ticket until run.state is passed, failed, canceled or lost. '
+    + 'Keep polling while the run is queued, starting or running. '
+    + 'Read ci_logs_read; continue from nextOffset to read more log text. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
-    + '{"ticketId":"...","executionId":"...","suite":"' + suite + '",'
+    + '{"ticketId":"...","suite":"' + suite + '",'
     + '"computer":{"kind":"main","mainId":"..."},'
-    + '"outcome":"succeeded","repository":"owner/repo","branch":"...",'
-    + '"logLine":"one nonempty actual log line","summarySha256":"..."}. '
-    + 'Set computer to the actual selectedComputer.target.hostRef; for a Worker it has kind device and deviceId. '
+    + '"outcome":"passed","repository":"owner/repo","branch":"...",'
+    + '"logLine":"one nonempty actual log line"}. '
+    + 'Set computer to the actual run.computer.hostRef; for a Worker it has kind device and deviceId. '
     + 'If CI fails, report its actual outcome instead of claiming success. Do not edit or commit any files.'
 }
 
@@ -76,7 +76,7 @@ export function buildCrossComputerCiGraph(
     prompt: { system: 'Complete the assigned MCP task and report observed results accurately.' },
     assignedSkills: [],
     graphqlTools: ['context_get', 'ci_computers_list', 'ci_run', 'ci_get', 'ci_cancel',
-      'ci_logs_read', 'ci_artifacts_list', 'ci_artifact_read'],
+      'ci_logs_read'],
   }))
   const graph = WorkflowDefinitionV3Schema.parse({
     ...base,
