@@ -31,17 +31,19 @@ function resourceCost(item, profiles, pressure) {
   }
 }
 
-function fitsPressure(item, pressure, running, profiles, { cpuTarget, memoryTarget, allowOversize = false }) {
-  const cpu = Math.max(pressure.cpuUtilization ?? 0, pressure.cpuPressure ?? 0)
+function fitsPressure(item, pressure, running, profiles, { cpuTarget, memoryTarget, allowOversize = false, dedicated = false }) {
+  // A dedicated CI computer fills every slot: other load never holds files back, only memory does.
+  const cpu = dedicated ? 0 : Math.max(pressure.cpuUtilization ?? 0, pressure.cpuPressure ?? 0)
   const memory = Math.max(pressure.memoryUtilization ?? 0, pressure.memoryPressure ?? 0)
   if (cpu >= cpuTarget || memory >= memoryTarget) return false
   const projected = resourceCost(item, profiles, pressure)
   const oversized = projected.cpu >= cpuTarget || projected.memory >= memoryTarget
   // Observed usage already includes active jobs. Recent starts reserve their profiled cost
   // for one feedback interval because their CPU/RSS may not be visible in the next sample.
+  if (dedicated) projected.cpu = 0
   for (const entry of running) {
     const cost = resourceCost(entry.item, profiles, pressure)
-    projected.cpu += cost.cpu
+    if (!dedicated) projected.cpu += cost.cpu
     projected.memory += cost.memory
   }
   if (cpu + projected.cpu < cpuTarget && memory + projected.memory < memoryTarget) return true
@@ -92,6 +94,7 @@ export async function scheduleQueue(items, {
   pollIntervalMs = 250,
   stallTimeoutMs = 60_000,
   cpuTarget = 0.9,
+  dedicated = false,
   memoryTarget = 0.8,
   retest = true,
   onEvent = () => {},
@@ -211,7 +214,7 @@ export async function scheduleQueue(items, {
     if (!pressure) continue
     const recent = [...active.values()].filter(entry => performance.now() - entry.startedAt <= pollIntervalMs * 2)
     const next = eligible.find(entry => fitsPressure(entry.item, pressure, recent, updatedProfiles,
-      { cpuTarget, memoryTarget, allowOversize: !active.size }))
+      { cpuTarget, memoryTarget, allowOversize: !active.size, dedicated }))
     if (next && performance.now() - lastStartAt >= pollIntervalMs) {
       pending = pending.filter(item => item.id !== next.item.id)
       launch(next.item, next.workerIndex, pressure, 1)
@@ -240,7 +243,7 @@ export async function scheduleQueue(items, {
     while (!shouldStop() && !pressureFailure) {
       pressure = await readPressure()
       if (!pressure || fitsPressure(item, pressure, [], updatedProfiles,
-        { cpuTarget, memoryTarget, allowOversize: !active.size })) break
+        { cpuTarget, memoryTarget, allowOversize: !active.size, dedicated })) break
       if (performance.now() - started >= stallTimeoutMs) {
         records.get(item.id).retestReason = 'Pressure prevented isolated retest'
         break

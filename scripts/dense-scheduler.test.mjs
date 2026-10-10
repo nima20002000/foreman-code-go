@@ -241,3 +241,19 @@ test('item-specific worker availability permits other work and reports stopped q
   })
   assert.match(stopped.results[0].reason, /Stopped/)
 })
+
+test('a dedicated computer fills every slot while CPU is busy and still stops at the memory guard', async () => {
+  let active = 0, peak = 0
+  const busy = { ...idle, cpuUtilization: 0.99, cpuPressure: 0.95 }
+  const run = sample => scheduleQueue(Array.from({ length: 6 }, (_, index) => ({ id: `file-${index}` })), {
+    ...defaults, maxConcurrency: 4, dedicated: true, samplePressure: () => sample,
+    execute: async () => { peak = Math.max(peak, ++active); await delay(10); active--; return { code: 0 } },
+  })
+  const outcome = await run(busy)
+  assert.equal(peak, 4)
+  assert.ok(outcome.results.every(result => result.status === 'PASSED'))
+  peak = 0
+  const full = await run({ ...busy, memoryUtilization: 0.95 })
+  assert.ok(peak <= 1)
+  assert.ok(full.results.some(result => result.status !== 'PASSED' || peak <= 1))
+})

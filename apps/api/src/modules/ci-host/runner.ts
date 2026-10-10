@@ -194,7 +194,7 @@ export class HostCiRunner {
     const run = this.runDirectory(meta.runId)
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       // The repository's own integration runner sizes its shards to this computer.
-      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=6144`,
+      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true FOREMAN_CODE_CI_DEDICATED=1 NODE_OPTIONS=--max-old-space-size=6144`,
       'mkdir -p "$TMPDIR"',
       `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
