@@ -25,6 +25,11 @@ import { lockActiveWorkspace } from '../workspaces/admission.js'
 export const CI_ENROLLMENT_ACTIONS: ManagementAction[] = [...CI_PREPARATION_ACTIONS]
 type Profiles = Pick<JobRuntimeProfiles, 'list' | 'save'>
 type Preparation = Pick<CiRuntimeProvisioner, 'start' | 'get'>
+const templateSetupRequired = {
+  state: 'templates-required' as const,
+  message: 'This workspace has no active CI runtime profiles. Save a verification profile with '
+    + 'job_runtime_profile_save before automatic enrollment can prepare its build computers.',
+}
 
 export class CiEnrollment {
   private readonly repository: CiEnrollmentRepository
@@ -86,10 +91,13 @@ export class CiEnrollment {
     const { workspaceId } = CiEnrollmentReadSchema.parse(raw)
     await this.authorize(principal, workspaceId, ['job_definitions:read'])
     const saved = await this.repository.computers(workspaceId)
+    const listed = await this.profiles.list(principal, workspaceId)
+    const hasTemplates = listed.profiles.some(row => row.profile.status !== 'revoked')
     const computers = (await this.inventory.computers()).map(computer => {
       const state = saved.find(row => buildComputerKey(row.state.target) === buildComputerKey(computer.target))?.state
         ?? this.initial(computer)
-      return { ...state, target: computer.target, ...this.availability(computer, state.enabled) }
+      const setup = hasTemplates ? {} : templateSetupRequired
+      return { ...state, ...setup, target: computer.target, ...this.availability(computer, state.enabled) }
     })
     return { workspaceId, computers }
   }
@@ -260,8 +268,11 @@ export class CiEnrollment {
 
   private summarize(templates: JobRuntimeProfileRecord[], state: CiEnrollmentComputer): void {
     const statuses = new Set(state.templates.map(result => result.state))
-    if (!statuses.size) state.state = 'pending'
-    else if (statuses.size === 1) state.state = state.templates[0]!.state
+    if (!statuses.size) {
+      Object.assign(state, templateSetupRequired)
+      return
+    }
+    if (statuses.size === 1) state.state = state.templates[0]!.state
     else if ([...statuses].some(status => !['pending', 'preparing', 'ready'].includes(status))) state.state = 'partial'
     else state.state = statuses.has('preparing') ? 'preparing' : 'pending'
     const messages = state.templates.filter(result => result.message).map(result => {

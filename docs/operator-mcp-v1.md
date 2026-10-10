@@ -38,6 +38,9 @@ corepack pnpm dev
 ## Client configuration
 
 `ci_enrollment_get` returns persisted enrollment controls and per-template results for each build computer.
+An enabled, connected computer in a workspace without active runtime profiles reports `templates-required`,
+including before enrollment has been enabled explicitly. Save a verification profile with
+`job_runtime_profile_save` to provide the template that automatic enrollment derives and prepares.
 Verification clones keep the template's resource envelope, including disk, scratch and inode budgets.
 A computer that cannot fit that envelope reports `storage-required` for the template instead of a smaller clone.
 Other templates continue enrollment and preparation; mixed results use computer state `partial`.
