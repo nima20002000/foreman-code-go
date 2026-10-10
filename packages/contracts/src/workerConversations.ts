@@ -16,6 +16,7 @@ import { AgentChatDirectoryBindingSchema } from './agentChat.js'
 import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from './files.js'
 import { PromptSettingSnapshotSchema } from './prompts.js'
 import { AcceptedNodePlacementSchema } from './nodePlacement.js'
+import { VerifiedSourceWorkingTreeSchema } from './sourceAdmission.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -30,7 +31,8 @@ export const WorkerConversationBindingSchema = z.object({
   owner: WorkerConversationOwnerSchema,
   directoryBinding: AgentChatDirectoryBindingSchema.optional(),
   systemPrompt: PromptSettingSnapshotSchema.optional(),
-  sourceExecution: z.object({ executionId: id, placement: z.lazy(() => AcceptedNodePlacementSchema) }).strict().optional(),
+  sourceExecution: z.object({ executionId: id, placement: z.lazy(() => AcceptedNodePlacementSchema),
+    workingTree: VerifiedSourceWorkingTreeSchema }).strict().optional(),
   harness: z.lazy(() => AgentHarnessSchema),
   profile: HarnessProfileSelectionSchema,
   workingDirectory: directory,
@@ -54,7 +56,8 @@ export const WorkerConversationBindingSchema = z.object({
     const owner = value.owner
     const target = value.profile.target
     const host = target.hostRef
-    if (owner.kind !== 'agent' || payload.kind !== 'agent'
+    if (value.workingDirectory !== value.sourceExecution.workingTree.canonicalCwd
+      || owner.kind !== 'agent' || payload.kind !== 'agent'
       || payload.agentId !== owner.agentId || payload.agentConfigurationVersionId !== owner.configurationVersionId
       || placement.nodeId !== owner.workflowNodeId || payload.driverId !== value.harness
       || value.profile.instanceId !== payload.instanceId || value.profile.instanceRevision !== payload.instanceRevision

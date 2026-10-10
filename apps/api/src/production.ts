@@ -1168,10 +1168,13 @@ export function buildProductionApp(
       return { profileSelection: configuration.harnessProfileSelection, sourceExecution: undefined }
     }
     const native = await readNativePlacement(database.pool, executionId)
+    if (!native) {
+      throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The chat source working tree is unavailable.', 409)
+    }
     const profileSelection = workflowProfileSelection({ executionId, runId: source.runId, agentId: source.agentId,
       harness: configuration.harness.harness, configuration, workingDirectory, acceptedPlacement: placement },
     native?.workingTree.canonicalCwd)
-    return { profileSelection, sourceExecution: { executionId, placement } }
+    return { profileSelection, sourceExecution: { executionId, placement, workingTree: native.workingTree } }
   }
   const recoverChatCompaction = async (
       configuration: import('@foreman-code/contracts').OperatorConfigurationVersion | import('@foreman-code/contracts').AgentConfigurationVersion,

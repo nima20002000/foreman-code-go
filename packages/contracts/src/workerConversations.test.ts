@@ -40,7 +40,13 @@ it('binds a historical follow-up to its execution profile while preserving the A
       installationFingerprint: target.profile.target.installationFingerprint,
       runtimeContractVersion: 1, protocolRevision: 'protocol', credentialScopeRefs: [] } }
   const accepted = WorkerConversationBindingSchema.parse({ ...target,
-    sourceExecution: { executionId: 'source-execution', placement } })
+    sourceExecution: { executionId: 'source-execution', placement, workingTree: {
+      materializationId: randomUUID(), materializationDigest: digest,
+      canonicalProjectRoot: target.workingDirectory, canonicalCwd: target.workingDirectory,
+      directoryIdentityHash: digest, filesystem: { device: '1', inode: '2', mountId: '3' },
+      accessMode: 'read-only', privateGit: null,
+    } } })
+  expect(WorkerConversationBindingSchema.safeParse({ ...accepted, workingDirectory: '/another-tree' }).success).toBe(false)
   const before = structuredClone(configuration)
   expect(workerConversationProfileSelection(accepted, configuration)).toEqual(target.profile)
   expect(workerConversationProfileSelection(target, configuration)).toEqual(configuration.harnessProfileSelection)

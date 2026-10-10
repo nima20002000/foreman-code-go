@@ -39,7 +39,7 @@ import type { AgentFileToolService } from '../files/tools/service.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
 import { definedProperties } from '../definedProperties.js'
-import { readExecutionPlacement } from '../placement/persistence.js'
+import { readExecutionPlacement, readNativePlacement } from '../placement/persistence.js'
 import type { WorkerConversationBinding } from '@foreman-code/contracts/remote-execution-rpc'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
@@ -113,7 +113,9 @@ export function createProductionWorkerConversations(input: {
           || live.record.origin.executionId !== sourceExecution.executionId
           || live.record.origin.runId !== sourceExecution.placement.runId
           || !isDeepStrictEqual(await readExecutionPlacement(input.pool, sourceExecution.executionId),
-            sourceExecution.placement)) unavailable('The original Run chat placement changed.')
+            sourceExecution.placement)
+          || !isDeepStrictEqual((await readNativePlacement(input.pool, sourceExecution.executionId))?.workingTree,
+            sourceExecution.workingTree)) unavailable('The original Run chat placement changed.')
       }
       await assertSource(original)
       const directoryBinding = original.kind === 'agent' && original.record.directoryBinding

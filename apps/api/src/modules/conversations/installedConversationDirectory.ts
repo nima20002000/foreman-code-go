@@ -26,6 +26,37 @@ async function inspectApprovedDirectory(approved: ApprovedRootAllowlist, path: s
   } finally { await directory.close() }
 }
 
+async function inspectRunDirectory(approved: ApprovedRootAllowlist, binding: WorkerConversationBinding,
+  accessMode: 'read-only' | 'read-write') {
+  const source = binding.sourceExecution!
+  const namespace = posix.join(approved.managedRuntimeRoot, 'source-materializations',
+    source.placement.destination.rootPolicyId)
+  const child = posix.relative(namespace, source.workingTree.canonicalCwd)
+  if (source.placement.destination.managedRuntimeRoot !== approved.managedRuntimeRoot
+    || source.workingTree.canonicalCwd !== binding.workingDirectory
+    || !child || posix.isAbsolute(child) || child === '..' || child.startsWith('../')
+    || accessMode === 'read-write' && source.workingTree.accessMode !== 'exclusive-write') {
+    throw new DomainError('WORKER_CONVERSATION_ROOT_UNAVAILABLE',
+      'The chat folder differs from its accepted Run working tree.', 409)
+  }
+  const runtime = await openPrivateRoot(approved.managedRuntimeRoot)
+  try {
+    if (!isDeepStrictEqual(await identity(runtime), approved.runtimeFilesystem)) {
+      throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'The worker runtime root changed.', 409)
+    }
+    const directory = await openRootDirectory(approved.managedRuntimeRoot,
+      posix.relative(approved.managedRuntimeRoot, source.workingTree.canonicalCwd), approved.runtimeFilesystem)
+    try {
+      const observed = await identity(directory)
+      if (await realpath(anchored(directory)) !== source.workingTree.canonicalCwd
+        || !isDeepStrictEqual(observed, source.workingTree.filesystem)) {
+        throw new DomainError('WORKER_CONVERSATION_ROOT_CHANGED', 'The saved Run working tree changed.', 409)
+      }
+      return observed
+    } finally { await directory.close() }
+  } finally { await runtime.close() }
+}
+
 /** Pins the selected project to the worker's existing human-approved root configuration. */
 export async function installedConversationDirectory(input: {
   binding: WorkerConversationBinding
@@ -107,7 +138,11 @@ export async function installedConversationDirectory(input: {
   if (!('agentId' in input.configuration)) throw new DomainError('WORKER_CONVERSATION_ROOT_UNAVAILABLE',
     'The selected node chat requires its Agent configuration.', 409)
   const accessMode = requiredLocationAccess([input.configuration])
-  const inspect = () => inspectApprovedDirectory(approved, input.binding.workingDirectory, accessMode)
+  const inspect = async () => {
+    const source = input.binding.sourceExecution
+    if (!source) return inspectApprovedDirectory(approved, input.binding.workingDirectory, accessMode)
+    return inspectRunDirectory(approved, input.binding, accessMode)
+  }
   const original = await inspect()
   return {
     async assertCurrent(signal?: AbortSignal) {
