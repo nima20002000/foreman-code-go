@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION,
-  ComputerMaintenanceStartInputSchema, MaintenanceRequestSchema, MaintenanceTaskStartSchema, MaintenanceStatusSchema,
+  ComputerMaintenanceStartInputSchema, ComputerMaintenanceOperatorListInputSchema, MaintenanceRequestSchema, MaintenanceTaskStartSchema, MaintenanceStatusSchema,
   MaintenanceTaskSchema, SyncedMarketplaceSchema,
   SyncedMcpServerSchema, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_JSON_BYTES,
   WORKER_UPDATE_MAX_BINARY_BYTES, WorkerArtifactRequestSchema, WorkerArtifactReplySchema,
@@ -157,5 +157,18 @@ describe('Worker updates', () => {
     }
     expect(WorkerArtifactRequestSchema.safeParse({ ...request, offset: Number.MAX_SAFE_INTEGER }).success).toBe(false)
     expect(WorkerArtifactReplySchema.safeParse({ ...request, byteSize: 262_145 }).success).toBe(false)
+  })
+})
+
+
+describe('Operator maintenance detail selection', () => {
+  it('allows full task selection and rejects task selection without full detail', () => {
+    const taskId = '77777777-7777-4777-8777-777777777777'
+    expect(ComputerMaintenanceOperatorListInputSchema.parse({})).toEqual({})
+    expect(ComputerMaintenanceOperatorListInputSchema.parse({ detail: 'full', taskId }))
+      .toEqual({ detail: 'full', taskId })
+    expect(ComputerMaintenanceOperatorListInputSchema.safeParse({ taskId }).success).toBe(false)
+    expect(ComputerMaintenanceOperatorListInputSchema.safeParse({ detail: 'compact', taskId }).success).toBe(false)
+    expect(ComputerMaintenanceOperatorListInputSchema.safeParse({ detail: 'full', taskId: 'invalid' }).success).toBe(false)
   })
 })
