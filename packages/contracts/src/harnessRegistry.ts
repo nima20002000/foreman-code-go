@@ -136,3 +136,10 @@ export const HARNESS_PROFILE_CHECK_NAMESPACE = 'host-harness-check-v1' as const
 export const HostHarnessProfileCheckRequestSchema = z.object({
   checkId: z.uuid(), override: HostHarnessOverrideSchema,
 }).strict().superRefine((value, context) => validateHostEnvironment(value.override.configuration, context, ['override', 'configuration']))
+export const HostHarnessConfigurationInspectionRequestSchema = z.object({
+  operation: z.literal('operator-configuration-inspect'),
+  override: HostHarnessOverrideSchema,
+  proof: HostHarnessProfileEvidenceSchema,
+  endpoint: z.string().url(),
+}).strict().superRefine((value, context) => validateHostEnvironment(value.override.configuration, context, ['override', 'configuration']))
+export type HostHarnessConfigurationInspectionRequest = z.infer<typeof HostHarnessConfigurationInspectionRequestSchema>

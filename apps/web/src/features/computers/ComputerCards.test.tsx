@@ -41,7 +41,11 @@ it('asks the Operator to fix a signed-out harness and drafts a settings change w
   expect(useOperatorChatStore.getState().request).toMatchObject({ content: 'On Main PC: ', send: false })
 })
 
-it.each(['null', 'absent'] as const)('shows unknown account observations without sign-in prompts (%s)', async observation => {
+it.each([
+  { observation: 'null', version: '1.0' },
+  { observation: 'absent', version: '1.0' },
+  { observation: 'null', version: null },
+] as const)('shows unknown accounts without sign-in prompts ($observation, $version)', async ({ observation, version }) => {
   const accounts = observation === 'absent' ? [] : (['codex', 'claude', 'github'] as const).map(tool => ({
     tool, installed: true, signedIn: null, account: null, details: [],
   }))
@@ -50,14 +54,15 @@ it.each(['null', 'absent'] as const)('shows unknown account observations without
       accounts: { observedAt: new Date().toISOString(), accounts } }] }),
     computerReadHandler('maintenance', { computers: [{ target: mainTarget,
       status: { observedAt: new Date().toISOString(), tasks: [],
-        harnesses: (['codex', 'claude'] as const).map(harness => ({ harness, installed: true, version: '1.0', latest: '1.0' })),
+        harnesses: (['codex', 'claude'] as const).map(harness => ({ harness, installed: true, version, latest: version })),
         system: { packageUpdates: null, rebootRequired: false, sudo: false, disk: null } } }] }),
   ])
   const card = await screen.findByRole('article', { name: 'Main PC' })
-  expect(await within(card).findByText('Codex 1.0 · account unknown')).toBeVisible()
-  expect(within(card).getByText('Claude 1.0 · account unknown')).toBeVisible()
+  const versionLabel = version ? ` ${version}` : ''
+  expect(await within(card).findByText(`Codex${versionLabel} · account unknown`)).toBeVisible()
+  expect(within(card).getByText(`Claude${versionLabel} · account unknown`)).toBeVisible()
   expect(within(card).getByText('Account unknown')).toBeVisible()
-  expect(within(card).queryByText('Signed out')).not.toBeInTheDocument()
+  expect(within(card).queryByText(/signed out/i)).not.toBeInTheDocument()
   expect(within(card).queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument()
 })
 

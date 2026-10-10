@@ -13,17 +13,29 @@ import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.
 import { DomainError } from '../errors.js'
 import { ProductionPlacementChoiceDiscovery } from './choiceDiscovery.js'
 
-function fixture() {
+function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device' } = {}) {
   const workflow = makeCurrentWorkflowFixture('computer-choices', 'single')
   const configuration = workflow.configurations[0]!
+  const driver = options.driver ?? 'codex'
+  if (driver === 'claude') {
+    configuration.harness = { harness: 'claude', model: 'claude-haiku-4-5', authMode: 'subscription',
+      configDirectory: '/home/operator/.claude', permissionMode: 'default', sandbox: 'danger-full-access',
+      tools: ['Read', 'Write'], permissionRules: [], instructions: '', mcpServers: {} }
+  }
   const mainId = randomUUID()
+  const deviceId = randomUUID()
+  const registration = options.host === 'device'
+    ? { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 } : null
+  const hostRef = options.host === 'device'
+    ? { kind: 'device' as const, mainId, deviceId } : { kind: 'main' as const, mainId }
+  const applicationInstallationId = registration?.workerInstallationId ?? mainId
   const rootId = randomUUID()
   const digest = 'a'.repeat(64)
   const principal = ManagementPrincipalSchema.parse({ id: 'owner', name: 'Owner', audience: 'operator',
     expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null, grants: [] })
   const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId: randomUUID(),
-    rootPolicyRevision: '1', workspaceId: configuration.workspaceId, hostRef: { kind: 'main', mainId },
-    applicationInstallationId: mainId, registration: null, locationRevision: '1', ownerPrincipalId: principal.id,
+    rootPolicyRevision: '1', workspaceId: configuration.workspaceId, hostRef,
+    applicationInstallationId, registration, locationRevision: '1', ownerPrincipalId: principal.id,
     allowedBaseId: randomUUID(), configurationRevision: '1', relativePath: 'project', accessMode: 'read-write',
     canonicalProjectRoot: '/approved/project', filesystem: { device: '1', inode: '2', mountId: '3' },
     directoryIdentityHash: digest, managedRuntimeRoot: '/runtime',
@@ -32,15 +44,16 @@ function fixture() {
     source: { approvedSourceId: rootId, snapshotId: rootId, manifestDigest: digest },
     selection: { hostRef: policy.hostRef, rootPolicyId: policy.rootPolicyId,
       rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision },
-    binding: { version: 1, mainId, deviceId: null, workerInstallationId: null, workspaceId: configuration.workspaceId,
+    binding: { version: 1, mainId, deviceId: registration ? deviceId : null,
+      workerInstallationId: registration?.workerInstallationId ?? null, workspaceId: configuration.workspaceId,
       rootId, bindingRevision: 2, locationRevision: 1, canonicalPath: '/source/namespace',
       filesystem: policy.filesystem, accessMode: 'exclusive-write', snapshotId: rootId, manifestDigest: digest },
-    ownerPrincipalId: principal.id, authorizedByPrincipalId: principal.id, registration: null,
+    ownerPrincipalId: principal.id, authorizedByPrincipalId: principal.id, registration,
     attestationId: randomUUID(), attestationDigest: digest, boundAt: '2030-01-01T00:00:00.000Z' })
   const profile = HostHarnessOverrideSchema.parse({ instanceId: randomUUID(), revision: 3, instanceRevision: 'profile-3',
-    target: { hostRef: policy.hostRef, applicationInstallationId: mainId,
-      harnessInstallationId: 'installed-codex', installationFingerprint: digest },
-    presetId: 'codex-default', enabled: true, driverId: 'codex', configuration: configuration.harness,
+    target: { hostRef: policy.hostRef, applicationInstallationId,
+      harnessInstallationId: `installed-${driver}`, installationFingerprint: digest },
+    presetId: `${driver}-default`, enabled: true, driverId: driver, configuration: configuration.harness,
     configurationFingerprint: digest, qualification: 'qualified' })
   const sourceRoots = vi.fn(async () => [root])
   const query = vi.fn(async (sql: string) => {
@@ -82,6 +95,27 @@ it('discovers an authorized matching profile with the persisted root, source and
   } })
   expect(f.resolveSource).toHaveBeenCalledOnce()
   expect((await f.service.list(f.principal, f.input))[0]!.id).toBe(choices[0]!.id)
+})
+
+it.each([
+  { driver: 'codex', host: 'main', availability: 'ready' },
+  { driver: 'codex', host: 'device', availability: 'ready' },
+  { driver: 'claude', host: 'main', availability: 'ready' },
+  { driver: 'claude', host: 'device', availability: 'unavailable' },
+] as const)('matches workflow driver support for $driver on $host', async ({ driver, host, availability }) => {
+  const f = fixture({ driver, host })
+
+  const choices = await f.service.list(f.principal, f.input)
+
+  expect(choices).toHaveLength(1)
+  expect(choices[0]).toMatchObject({ availability, placement: { hostRef: f.policy.hostRef } })
+  if (availability === 'ready') {
+    expect(choices[0]!.reason).toBeNull()
+    expect(f.evidence).toHaveBeenCalledOnce()
+  } else {
+    expect(choices[0]!.reason).toBe('This harness does not support workflow execution on this computer.')
+    expect(f.evidence).not.toHaveBeenCalled()
+  }
 })
 
 it('omits disabled or incompatible profiles and respects a saved profile selection', async () => {

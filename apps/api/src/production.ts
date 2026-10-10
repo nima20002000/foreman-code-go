@@ -128,6 +128,7 @@ import {
   type AgentDefaults,
 } from '@foreman-code/contracts'
 import { inspectClaudeOperatorConfiguration } from './modules/harnesses/claudeSdk/operatorConfigurationInspection.js'
+import { inspectWorkerClaudeOperatorConfiguration } from './modules/harnesses/workerClaudeOperatorInspection.js'
 import { requireClaudePolicyQualification } from './modules/harnesses/claudeSdk/configuration.js'
 import { qualificationError } from './modules/harnesses/qualificationErrors.js'
 import { authorizeOperatorConfigurationRead } from './modules/operators/configurationRead.js'
@@ -1240,9 +1241,15 @@ export function buildProductionApp(
       const owner: ClaudeProfileOwner = { kind: 'operator-inspection', principalId: principal.id,
         configurationVersionId: configuration.id, configurationHash: configuration.contentHash, admissionSignal: signal }
       const accepted = await claudeProfiles.admit(owner, configuration.harnessProfileSelection)
-      const apiKey = await requireClaudeProductionCredentialDelivery(configuration.harness, providerAccounts)
+      if (accepted.override.target.hostRef.kind === 'device') {
+        return inspectWorkerClaudeOperatorConfiguration({ accepted, endpoint: deviceRuntime.endpointForDomains(),
+          expectedEndpoint: appMcpEndpoint, signal,
+          revalidate: async () => { await claudeProfiles.revalidate(owner, accepted) } })
+      }
+      const apiKey = await requireClaudeProductionCredentialDelivery(configuration.harness, providerAccounts,
+        accepted.override.target.hostRef)
       const binding = harnessRegistry.pinOverride(accepted.override), binary = binding.installation.launcher.resolvedLauncher
-      if (!binary || accepted.override.target.hostRef.kind !== 'main') throw new DomainError('HARNESS_HOST_MISMATCH', 'Claude setup must inspect its actual local installed profile.', 409)
+      if (!binary) throw new DomainError('HARNESS_HOST_MISMATCH', 'Claude setup must inspect its actual local installed profile.', 409)
       const recovery = processRegistry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
       const close = async () => {
         await processRegistry.abandonReservedLaunch(recovery)

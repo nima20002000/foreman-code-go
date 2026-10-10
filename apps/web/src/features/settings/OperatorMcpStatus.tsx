@@ -64,26 +64,35 @@ function ClaudeOperatorMcp({ defaults, revision }: { defaults: HarnessDefaults; 
   const command = useRef<DefaultsUpdate | undefined>(undefined)
   const claude = defaults.claude
   if (!claude) return <Status label="No preset" tone="neutral"><small>Save a Claude preset first</small></Status>
-  if (APP_MCP_SERVER_NAMES.some((name) => Object.hasOwn(claude.mcpServers, name))) return <Status label="Installed" tone="success" />
   if (setup.isPending) return <Status label="Checking…" tone="neutral" />
   if (setup.isError || !setup.data?.graphqlMcp) return <Status label="Unavailable" tone="warning">
     <small className="operator-mcp-error" role="alert">{setup.error?.message ?? 'The app MCP endpoint is unavailable.'}</small>
     <Button size="sm" variant="ghost" onClick={() => void setup.refetch()}>Retry setup</Button>
   </Status>
-  const endpoint = setup.data?.graphqlMcp
-  return <Status label={save.isPending ? 'Installing…' : 'Not installed'} tone="neutral">
-    <Button size="sm" variant="primary" disabled={!endpoint || save.isPending} onClick={() => {
-      if (!endpoint) return
+  const endpoint = setup.data.graphqlMcp
+  const serverName = APP_MCP_SERVER_NAMES.find((name) => Object.hasOwn(claude.mcpServers, name))
+  const server = serverName ? claude.mcpServers[serverName] : undefined
+  if (server?.type === endpoint.type && server.url === endpoint.url) {
+    return <Status label="Installed" tone="success" />
+  }
+  const pendingLabel = server ? 'Updating…' : 'Installing…'
+  const savedLabel = server ? 'Outdated' : 'Not installed'
+  const label = save.isPending ? pendingLabel : savedLabel
+  return <Status label={label} tone={server ? 'warning' : 'neutral'}>
+    <Button size="sm" variant={server ? 'secondary' : 'primary'} disabled={save.isPending} onClick={() => {
       const input = command.current ?? HarnessDefaultsUpdateInputSchema.parse({
         commandId: crypto.randomUUID(), expectedRevision: revision,
-        defaults: { ...defaults, claude: { ...claude, mcpServers: { ...claude.mcpServers, [PRODUCT_SLUG]: endpoint } } },
+        defaults: {
+          ...defaults,
+          claude: { ...claude, mcpServers: { ...claude.mcpServers, [serverName ?? PRODUCT_SLUG]: endpoint } },
+        },
       })
       command.current = input
       save.mutate(input, {
         onSuccess: () => { command.current = undefined },
         onError: (error) => { if (commandWasRejected(error)) command.current = undefined },
       })
-    }}>Install</Button>
+    }}>{server ? 'Update' : 'Install'}</Button>
     {save.isError ? <small className="operator-mcp-error" role="alert">{save.error.message}</small> : null}
   </Status>
 }

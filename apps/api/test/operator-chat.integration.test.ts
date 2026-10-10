@@ -1170,7 +1170,8 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       await expectMcpAccessDenied(denied.callTool({ name: 'operator_chat_send', arguments: { conversationId: sourceId, request } }))
     })
   })
-  it('inspects persisted Claude setup through read-only HTTP and MCP without creating an execution owner', async () => {
+  it.each(['main', 'device'] as const)(
+    'inspects persisted %s Claude setup through read-only HTTP and MCP without creating an execution owner', async host => {
     const settings = new PostgresFoundationSettingsRepository(pool)
     const commands = new PostgresCommandCoordinator(pool)
     const inspected: Array<{ principalId: string; configurationId: string; profileId?: string }> = []
@@ -1194,8 +1195,11 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     try {
       const address = await app.listen({ host: '127.0.0.1', port: 0 }); endpoint = `${address}/mcp`
       const mainId = '11111111-1111-4111-8111-111111111111'
-      const selector = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef: { kind: 'main' as const, mainId },
-        applicationInstallationId: mainId, harnessInstallationId: 'synthetic-claude-installation', installationFingerprint: 'synthetic-payload' } }
+      const hostRef = host === 'main' ? { kind: 'main' as const, mainId }
+        : { kind: 'device' as const, mainId, deviceId: randomUUID() }
+      const selector = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef,
+        applicationInstallationId: host === 'main' ? mainId : randomUUID(),
+        harnessInstallationId: 'synthetic-claude-installation', installationFingerprint: 'synthetic-payload' } }
       const saved = await settings.updateAgentDefaults({ ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator,
         harnessProfileSelection: selector, harness: { harness: 'claude', model: 'synthetic-claude-model', authMode: 'subscription',
           configDirectory: '/synthetic/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '',

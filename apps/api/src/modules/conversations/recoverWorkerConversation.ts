@@ -84,6 +84,12 @@ export async function recoverWorkerConversation(input: {
       const history = await allocation.manager.reconcile(session, turn.correlationId, signal)
       let terminal = history.correlationId === turn.correlationId ? history.terminalResult : undefined
       if (history.terminalTurn?.correlationId === turn.correlationId) terminal = history.terminalTurn.result
+      // Claude transcripts retain the input receipt, while the completed result lives in the journal.
+      if (!terminal && session.harness === 'claude' && turn.status === 'completed'
+        && history.correlationId === turn.correlationId && turn.nativeSubmission
+        && isDeepStrictEqual(history.nativeSubmission, turn.nativeSubmission)) {
+        terminal = turn.result ?? undefined
+      }
       const nativeId = history.nativeTurnId ?? history.nativeSubmission?.nativeMessageId
       const acceptedId = turn.nativeTurnId ?? turn.nativeSubmission?.nativeMessageId
       if (!terminal || !acceptedId || nativeId !== acceptedId

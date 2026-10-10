@@ -17,7 +17,7 @@ import { readSystemPromptSetting } from '../src/modules/settings/foundation.js'
 import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 
-it('preserves remote Claude ownership and definite non-delivery through authenticated Operator MCP', async () => {
+it('preserves remote Claude cold recovery, ownership and non-delivery through authenticated Operator MCP', async () => {
   const db = await agent3Database()
   const recorded = workerConversationFixture('agent', 'claude')
   const fixture = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
@@ -34,6 +34,9 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
       expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['agent_chat:read', 'agent_chat:write'], scope: {} }] })
     const reader = await access.issue({ name: 'remote Claude reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['agent_chat:read'], scope: {} }] })
+    const ungranted = await access.issue({ name: 'other workspace reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600_000),
+      grants: [{ actions: ['agent_chat:read'], scope: { workspaceIds: ['other'] } }] })
     const repository = new PostgresAgentChatRepository(db.pool)
     const messages = new PostgresOperatorConversationRepository(db.pool)
     const context = { workspaceId: seeded.scope.workspaceId, workflowId: seeded.scope.workflowId,
@@ -48,7 +51,7 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
         conversationId: conversation.id, workspaceId: configuration.workspaceId,
         workflowId: seeded.scope.workflowId, workflowNodeId: node.id, agentId: configuration.agentId,
         configurationVersionId: configuration.id, configurationHash: commandInputHash(configuration) } } })
-    chat = new AgentChatService(db.pool, repository, messages, new PostgresWorkflowRepository(db.pool), {
+    const createChat = () => new AgentChatService(db.pool, repository, messages, new PostgresWorkflowRepository(db.pool), {
       getForWorkspace: async () => { throw new Error('Chat must not select a Run.') },
       executionPages() { throw new Error('Chat must not select a Run execution.') },
     }, (id, selected, cwd) => {
@@ -57,8 +60,11 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
       expect(cwd).toBe(db.directory)
       return worker!.createManager()
     }, db.directory)
-    app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+    chat = createChat()
+    const createApp = () => buildApp({ logger: false,
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { agentChat: chat, commands: new PostgresCommandCoordinator(db.pool) } as never } })
+    app = createApp()
     const query = { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId, agentId: context.agentId }
     const call = (token: string, name: string, args: Record<string, unknown>) => graphRpc(app!, token, 'tools/call', {
       name, arguments: { workspaceId: seeded.scope.workspaceId, ...args },
@@ -74,6 +80,34 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
     expect(graphRpcValue(started.result)).toMatchObject({ state: { conversation: { id } } })
     await vi.waitFor(async () => expect((await repository.turn(id, first.requestId))?.delivery).toBe('completed'))
     const nativeId = (await repository.get(id))!.native_session_id
+    await chat.shutdown()
+    await app.close()
+    const originalTurn = await repository.turn(id, first.requestId)
+    const originalWorker = (await worker.journal.conversations.read(worker.binding))!
+    await worker.coldRestart()
+    expect(worker.launches).toHaveLength(1)
+    expect(worker.launches[0]).toMatchObject({ lifecycle: 'closed', closureEvidence: 'native_exit_removed_cgroup' })
+    expect(worker.offers).toHaveLength(1)
+    chat = createChat()
+    app = createApp()
+    const deniedRead = await call(ungranted.token, 'agent_chat_read', { query })
+    expect(deniedRead.error || deniedRead.result?.isError).toBeTruthy()
+    const resumedRead = await call(reader.token, 'agent_chat_read', { query })
+    expect(resumedRead.result?.isError).not.toBe(true)
+    expect(graphRpcValue(resumedRead.result)).toMatchObject({
+      conversation: { id, nativeSession: { nativeSessionId: nativeId } },
+    })
+    expect(worker.offers).toHaveLength(1)
+    const next = { ...first, requestId: 'remote-after-cold-restart', expectedConversationId: id }
+    expect((await call(writer.token, 'agent_chat_send', { request: next })).result?.isError).not.toBe(true)
+    await vi.waitFor(async () => expect((await repository.turn(id, next.requestId))?.delivery).toBe('completed'))
+    expect(worker.recoveries).toEqual([{ inputsBefore: 1, inputsAfter: 1 }])
+    expect(worker.offers).toHaveLength(2)
+    const recoveredWorker = (await worker.journal.conversations.read(worker.binding))!
+    expect(recoveredWorker.session).toEqual(originalWorker.session)
+    expect(recoveredWorker.turns[0]).toEqual(originalWorker.turns[0])
+    expect(await repository.turn(id, first.requestId)).toEqual(originalTurn)
+    expect((await repository.get(id))!.native_session_id).toBe(nativeId)
     const previous = (await worker!.journal.conversations.read(worker!.binding))!.nativeOwner
     const controls = await call(writer.token, 'agent_chat_controls_get', { conversationId: id })
     const state = SessionControlStateSchema.parse(graphRpcValue(controls.result))
@@ -94,7 +128,7 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
     await vi.waitFor(async () => expect((await repository.turn(id, failedInput.requestId))?.delivery).toBe('failed'))
     expect((await repository.turn(id, failedInput.requestId))?.nativeSubmission).toBeUndefined()
     expect((await repository.get(id))?.active_request_id).toBeNull()
-    expect(worker!.offers).toHaveLength(2)
+    expect(worker!.offers).toHaveLength(3)
     const retry = { ...first, requestId: 'remote-later', expectedConversationId: id }
     expect((await call(writer.token, 'agent_chat_send', { request: retry })).result?.isError).not.toBe(true)
     await vi.waitFor(async () => expect(await repository.turn(id, retry.requestId)).toMatchObject({ delivery: 'completed' }))
@@ -104,7 +138,7 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
     const readControls = await call(writer.token, 'agent_chat_controls_get', { conversationId: id })
     expect(SessionControlStateSchema.parse(graphRpcValue(readControls.result)).applied?.autoCompact).toBe('off')
     await call(writer.token, 'agent_chat_send', { request: failedInput })
-    expect(worker!.offers).toHaveLength(3)
+    expect(worker!.offers).toHaveLength(4)
   } finally {
     try { await chat?.shutdown() }
     finally {

@@ -13,6 +13,10 @@ import { workerConversationProcessDigest } from './workerNativeOwner.js'
 import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import type { WorkerConversationAllocation } from './workerHost.js'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
+import { createClaudeSdkRunner } from '../harnesses/claudeSdk/runner.js'
+import { claudePromptUuid, createClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
+import { ClaudeBoundedQueue } from '../harnesses/claudeSdk/queue.js'
+import type { ClaudeSdkClient } from '../harnesses/claudeSdk/port.js'
 
 /** Recorded native/process ports verify recovery behavior, not installed harness qualification. */
 async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agent' = 'agent',
@@ -29,7 +33,8 @@ async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agen
     processIdentityDigest: workerConversationProcessDigest(f.binding, launch) }
   const result = { outcome: 'succeeded' as const, output: { text: 'Remembered context' } }
   const submission = { kind: 'message' as const, nativeSessionId: f.session.nativeSessionId,
-    nativeMessageId: 'native-message', clientCorrelationId: 'original-input' }
+    nativeMessageId: harness === 'claude' ? claudePromptUuid('original-input') : 'native-message',
+    clientCorrelationId: 'original-input' }
   await journal.conversations.receive(f.binding, f.connection)
   await journal.conversations.reserveCreation(f.binding, 'original-create', commandInputHash({ mode: 'create' }))
   await journal.conversations.bindSession(f.binding, f.session, owner)
@@ -72,6 +77,64 @@ async function fixture(harness: AgentHarness = 'codex', kind: 'operator' | 'agen
     attach, reconcile, start, close, allocate, closeOwner, assertCurrent, recover, allocation, journal,
     async cleanup() { await journal.close(); await rm(directory, { recursive: true, force: true }) } }
 }
+
+it('recovers a completed Claude result with a fresh SDK manager and matching native input history', async () => {
+  const f = await fixture('claude')
+  const frames = new ClaudeBoundedQueue<unknown>(2)
+  const offered = vi.fn()
+  const client: ClaudeSdkClient = {
+    sdkVersion: '0.3.284',
+    query(input) {
+      void (async () => { for await (const message of input.prompt) offered(message) })()
+      return {
+        [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](),
+        close: () => frames.close(),
+        interrupt: async () => {},
+        initializationResult: async () => ({}),
+      }
+    },
+    getSessionInfo: async sessionId => ({ sessionId }),
+    getSessionMessages: async () => [{ type: 'user', session_id: f.session.nativeSessionId,
+      uuid: claudePromptUuid('original-input'), parent_tool_use_id: null }],
+    forkSession: async () => { throw new Error('Recovery cannot fork') },
+  }
+  const manager = createClaudeNativeSessionManager({
+    runner: createClaudeSdkRunner({ loadClient: async () => client }),
+    scope: { deviceId: f.connection.deviceId, profilePath: '/recorded/profile',
+      configRevision: '1', cwd: f.binding.workingDirectory },
+    sdkOptions: {},
+    qualification: { sdkVersion: '0.3.284', cliVersion: f.session.providerVersion,
+      basicTurns: true, resume: true, fork: false, history: true },
+  })
+  f.allocation.manager = manager
+  try {
+    expect(await f.recover()).toBe(f.allocation)
+    const saved = await f.journal.conversations.read(f.binding)
+    expect(saved?.session).toEqual(f.session)
+    expect(saved?.turns).toEqual(f.record.turns)
+    expect(saved?.nativeOwner).toEqual(f.nextOwner)
+    expect((await manager.reconcile(f.session, 'original-input')).terminalResult).toBeUndefined()
+    expect(offered).not.toHaveBeenCalled()
+  } finally {
+    await manager.dispose?.()
+    await f.cleanup()
+  }
+})
+
+it.each(['unfinished', 'different-receipt', 'different-result', 'unconfirmed-close', 'changed-authority'] as const)(
+  'refuses Claude receipt-only recovery with %s', async fault => {
+    const f = await fixture('claude', 'agent', { journalStatus: fault === 'unfinished' ? 'uncertain' : 'completed' })
+    delete f.observed.terminalResult
+    try {
+      if (fault === 'different-receipt') f.observed.nativeSubmission!.nativeMessageId = 'another-input'
+      if (fault === 'different-result') f.observed.terminalResult = { outcome: 'succeeded', output: 'another-result' }
+      if (fault === 'unconfirmed-close') delete f.launch.closureEvidence
+      if (fault === 'changed-authority') f.connection.authorizationRevision++
+      await expect(f.recover()).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_RECOVERY_REQUIRED' })
+      expect((await f.journal.conversations.read(f.binding))?.nativeOwner).toEqual(f.owner)
+    } finally { await f.cleanup() }
+  },
+)
 
 for (const harness of ['codex', 'claude'] as const) {
   it.each(['none', 'scoped'] as const)(`${harness}: changes Operator App MCP access from %s on the same native session`, async previous => {

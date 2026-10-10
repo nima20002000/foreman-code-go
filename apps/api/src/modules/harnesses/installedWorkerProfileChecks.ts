@@ -12,6 +12,7 @@ import { inspectInstalledCodex } from './installedCodexInspection.js'
 import { createInstalledNativeQualifier } from './installedNativeQualification.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { createInstalledClaudeQualifier } from './installedClaudeQualification.js'
+import { createInstalledClaudeOperatorInspection } from './installedClaudeOperatorInspection.js'
 
 export async function createInstalledWorkerProfileChecks(input: {
   stateDirectory: string
@@ -24,10 +25,15 @@ export async function createInstalledWorkerProfileChecks(input: {
   if (!configuration) return null
   const qualifiers = new Set<ReturnType<typeof createInstalledNativeQualifier>>()
   const claude = createInstalledClaudeQualifier(input)
+  const claudeInspection = createInstalledClaudeOperatorInspection(input)
   let closing = false
   const extension = createHostHarnessProfileCheckExtension({
     hostRef: { kind: 'device', mainId: input.pairing.mainId, deviceId: input.pairing.deviceId },
     applicationInstallationId: input.pairing.workerInstallationId,
+    inspectConfiguration: async (request, context) => {
+      if (closing) throw new DomainError('HARNESS_INVENTORY_STALE', 'Worker configuration inspections are stopping.', 409)
+      return claudeInspection.inspect(request, context)
+    },
     qualifierForBinding: binding => ({ async qualify(value, request) {
       if (closing || !isDeepStrictEqual(input.current(), binding)) {
         throw new DomainError('HARNESS_INVENTORY_STALE', 'The profile check connection changed.', 409)
@@ -82,8 +88,9 @@ export async function createInstalledWorkerProfileChecks(input: {
   })
   return { extension, async close() {
     closing = true
-    await claude.close()
-    const results = await Promise.allSettled([...qualifiers].map(qualifier => qualifier.close()))
+    const results = await Promise.allSettled([
+      claude.close(), claudeInspection.close(), ...[...qualifiers].map(qualifier => qualifier.close()),
+    ])
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Worker profile checks did not close.')
   } }

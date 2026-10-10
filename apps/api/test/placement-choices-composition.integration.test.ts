@@ -17,7 +17,7 @@ import { seedAgent3 } from './helpers/wave25Agent3.js'
 
 /** Real production composition, PostgreSQL and bearer MCP; destination inventory is synthetic, with no native execution. */
 describe.skipIf(!postgresEnabled)('saved placement discovery and clearing through the production server', () => {
-  it('returns choices, denies callers, and saves inherited Main with persisted MCP readback', async () => {
+  it.each(['codex', 'claude'] as const)('%s choices honor MCP grants and persisted readback', async harness => {
     const db = await currentDatabase()
     const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL! })
     config.harnesses.workspaceRoot = join(db.directory, 'runtime')
@@ -31,12 +31,22 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
         cwdPolicy: 'project-root', relativeCwd: '', instanceId: 'profile', instanceRevision: '1',
         harnessInstallationId: 'installed-harness' })
       const initial = makeCurrentWorkflowFixture(randomUUID(), 'single')
+      if (harness === 'claude') {
+        initial.configurations[0]!.harness = { harness: 'claude', model: 'claude-haiku-4-5', authMode: 'subscription',
+          configDirectory: '/home/operator/.claude', permissionMode: 'default', sandbox: 'danger-full-access',
+          tools: ['Read', 'Write'], permissionRules: [], instructions: '', mcpServers: {} }
+      }
       initial.version.definition.nodes[0]!.placement = placement
       const fixture = await seedAgent3(db.pool, db.directory, initial, { run: false })
       const input = { workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId,
         nodeId: fixture.version.definition.nodes[0]!.id, agentConfigurationVersionId: fixture.configurations[0]!.id }
-      const choices = [{ id: 'approved-main-choice', label: 'Approved Main', placement,
-        availability: 'ready' as const, reason: null }]
+      const choices = [{ id: 'approved-main-choice', label: `Main · ${harness}`, placement,
+        availability: 'ready' as const, reason: null }, ...(harness === 'claude' ? [{
+          id: 'unsupported-worker-claude', label: 'Worker · claude',
+          placement: { ...placement, hostRef: { kind: 'device' as const, mainId, deviceId: randomUUID() } },
+          availability: 'unavailable' as const,
+          reason: 'This harness does not support workflow execution on this computer.',
+        }] : [])]
       const discovery = vi.spyOn(ProductionPlacementChoiceDiscovery.prototype, 'list').mockResolvedValue(choices)
       const access = new PostgresAccessService(db.pool)
       const owner = await access.issue({ name: 'Placement owner', audience: 'operator',
@@ -65,6 +75,12 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
       const mcp = await operator.callTool({ name: 'workflow_node_placement_choices', arguments: input })
       expect(mcp.isError).not.toBe(true)
       expect(decodeMcpToolResult(mcp)).toEqual(http.json())
+      if (harness === 'claude') {
+        expect(decodeMcpToolResult(mcp).choices).toContainEqual(expect.objectContaining({
+          availability: 'unavailable', reason: 'This harness does not support workflow execution on this computer.',
+          placement: expect.objectContaining({ hostRef: expect.objectContaining({ kind: 'device' }) }),
+        }))
+      }
       const deniedHttp = await production.app.inject({ method: 'GET', url: path,
         headers: { authorization: `Bearer ${denied.token}` } })
       expect(deniedHttp.statusCode).toBe(403)
@@ -78,6 +94,10 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
       const scope = { workspaceId: input.workspaceId, workflowId: input.workflowId }
       const saved = await operator.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })
       const before = CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(saved))
+      expect(before.version.agentConfigurationVersionIds).toEqual(fixture.version.agentConfigurationVersionIds)
+      const configuration = (await db.pool.query('select record from agent_configuration_versions where id=$1',
+        [input.agentConfigurationVersionId])).rows[0].record
+      expect(configuration.harness).toEqual(fixture.configurations[0]!.harness)
       const savedNode = before.version.definition.nodes[0]!
       if (savedNode.kind === 'job') throw new Error('Expected the saved Agent node.')
       expect(savedNode.placement).toEqual(placement)
