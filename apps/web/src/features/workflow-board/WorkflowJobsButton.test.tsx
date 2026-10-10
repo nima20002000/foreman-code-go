@@ -7,6 +7,7 @@ import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { server } from '../../mocks/server'
 import { execution, logPage, queueTicket, verificationExecution } from '../jobs/fixtures'
 import { BoardNavigationControls } from './BoardNavigationControls'
+import { deferred } from '../runs-selector/testFixtures'
 
 vi.mock('../runs-selector', () => ({ RunsSelector: () => <button>Runs</button> }))
 vi.mock('../schedules', () => ({ ScheduleClockButton: () => null }))
@@ -235,6 +236,41 @@ it('requests older history with the returned cursor', async () => {
   expect(cursors).toEqual([null, JSON.stringify(cursor)])
 })
 
+it('waits for the history refresh before requesting older jobs', async () => {
+  const cursor = { createdAt: execution.createdAt, id: execution.id }
+  const refreshed = deferred<WorkflowJobPage>()
+  const cursors: (string | null)[] = []
+  let refreshing = false
+  server.use(http.get(historyPath, async ({ request }) => {
+    const received = new URL(request.url).searchParams.get('cursor')
+    cursors.push(received)
+    if (received) return HttpResponse.json(page([{ name: 'Older build', execution: { ...nodeJob, id: 'older' } }]))
+    return HttpResponse.json(refreshing ? await refreshed.promise : { ...page(), nextCursor: cursor })
+  }))
+  const { client } = mount()
+  await open()
+  const older = await screen.findByRole('button', { name: 'Older jobs' })
+  refreshing = true
+  const refresh = client.invalidateQueries({ queryKey: ['jobs', workspaceId, 'workflow', workflowId] })
+  await waitFor(() => expect(older).toBeDisabled())
+  fireEvent.click(older)
+  expect(cursors).toEqual([null, null])
+
+  refreshed.resolve({ ...page([{ name: 'Newest build', execution: { ...nodeJob, id: 'newest' } },
+    { name: 'Web build', execution: { ...nodeJob,
+      process: { ...nodeJob.process, outcome: 'succeeded', exitCode: 0 } } }]),
+  nextCursor: cursor })
+  await refresh
+  await screen.findByRole('button', { name: /Newest build/ })
+  await waitFor(() => expect(older).toBeEnabled())
+  fireEvent.click(older)
+  await screen.findByRole('button', { name: /Older build/ })
+  expect(screen.getAllByRole('button', { name: /Web build/ })).toHaveLength(1)
+  expect(within(screen.getByRole('button', { name: /Web build/ }))
+    .getByLabelText('Process succeeded · results incomplete')).toBeInTheDocument()
+  expect(cursors).toEqual([null, null, JSON.stringify(cursor)])
+})
+
 it('rejects another workflow response and hides its rows', async () => {
   responses({ ...page(), workflowId: 'foreign' })
   mount()
@@ -252,6 +288,43 @@ it('hides previously read jobs after denied readback', async () => {
   await client.invalidateQueries({ queryKey: ['jobs', workspaceId, 'workflow', workflowId] })
   expect(await screen.findByRole('alert')).toHaveTextContent('permission lost')
   expect(screen.queryByRole('button', { name: /Web build/ })).toBeNull()
+})
+
+it('retains the selected tail result and its log controls after the history page shifts', async () => {
+  const items = Array.from({ length: 50 }, (_, index) => ({
+    name: `Build ${index + 1}`,
+    execution: { ...nodeJob, id: `execution-${index + 1}` },
+  }))
+  const selected = items.at(-1)!.execution
+  responses(page(items))
+  server.use(http.get(`${root}/executions/:id`, () => HttpResponse.json({ execution: selected })),
+    http.get(`${root}/executions/:id/logs`, () => HttpResponse.json({ ...logPage,
+      chunks: logPage.chunks.map(chunk => ({ ...chunk, executionId: selected.id })) })))
+  const { client } = mount()
+  await open()
+  fireEvent.click(await screen.findByRole('button', { name: /Build 50/ }))
+  const search = await screen.findByRole('searchbox', { name: 'Search loaded logs' })
+  fireEvent.change(search, { target: { value: 'build failed' } })
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Follow tail' }))
+  await screen.findByText(/build failed <script>/)
+
+  server.use(http.get(historyPath, () => HttpResponse.json(page([
+    { name: 'Newest build', execution: { ...nodeJob, id: 'newest' } }, ...items.slice(0, 49),
+  ]))))
+  await client.invalidateQueries({ queryKey: ['jobs', workspaceId, 'workflow', workflowId] })
+
+  expect(screen.getByRole('button', { name: 'Back to jobs' })).toBeInTheDocument()
+  expect(screen.getByRole('searchbox', { name: 'Search loaded logs' })).toBe(search)
+  expect(search).toHaveValue('build failed')
+  expect(screen.getByRole('checkbox', { name: 'Follow tail' })).not.toBeChecked()
+  expect(screen.getByText(/build failed <script>/)).toBeInTheDocument()
+
+  server.use(http.get(historyPath, () => HttpResponse.json({ error: {
+    code: 'ACCESS_DENIED', message: 'Denied',
+  } }, { status: 403 })))
+  await client.invalidateQueries({ queryKey: ['jobs', workspaceId, 'workflow', workflowId] })
+  expect(await screen.findByRole('alert')).toHaveTextContent('permission lost')
+  expect(screen.queryByRole('region', { name: 'Job logs' })).toBeNull()
 })
 
 it('closes the local panel when workflow navigation changes', async () => {

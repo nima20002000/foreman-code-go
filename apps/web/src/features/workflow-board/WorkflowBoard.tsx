@@ -85,7 +85,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   // History is rendered only by RunBoardSlot. Do not feed legacy Run pins to the
   // hidden editor/SelectedRunCanvas, or fabricate missing version/semantics pins.
   const value = useMemo(() => ({ workspaceId, workflowId, run: legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent,
-    openLocation: () => setLocationOpen(true), openRuns: () => setRunsOpen(true), activeRuns,
+    openLocation: () => setLocationOpen(true), openRuns: () => setRunsOpen(true), activeRuns, authoringActive: current,
     navigationControls: current ? <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} /> : undefined,
   }), [workspaceId, workflowId, legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns, setRunsOpen, setLocationOpen, selectedRun, current])
   const authoringEvent = (event: SyntheticEvent) => {

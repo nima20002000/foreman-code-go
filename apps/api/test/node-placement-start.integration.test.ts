@@ -54,8 +54,9 @@ async function fixture(options: { gitSource?: boolean } = {}) {
       workspaceId: base.f.scope.workspaceId, commandId: randomUUID(), expectedRevision: Number(workspace.revision),
       repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' },
     })
-    base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, undefined,
-      { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies })
+    base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, {
+      worktrees: { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies },
+    })
     placementProducer = placement.producer
     await base.app.close()
     // Start admission and readback are real; this external provider boundary
@@ -355,18 +356,18 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
     } finally { await f.close() }
   }, 120_000)
 
-  it.each(['source', 'rootBinding'] as const)('rejects an explicit remote placement missing %s without a Main fallback', async field => {
+  it.each(['source', 'rootBinding'] as const)('rejects saving remote placement missing %s without a Main fallback', async field => {
     const f = await fixture()
     try {
       delete agentWorkflowNode(f.saveInput.graph.nodes[1]).placement![field]
-      const saved = await f.save('http')
-      const input = startInput(f, saved)
-      const http = await f.app.inject({ method: 'POST', url: `${f.path}/runs`, headers: f.headers, payload: input })
+      const http = await f.app.inject({ method: 'PUT', url: `${f.path}/definition`, headers: f.headers, payload: f.saveInput })
       expect(http.statusCode).toBe(409)
-      expect(http.json()).toMatchObject({ error: { code: 'PLACEMENT_ADMISSION_CONFLICT' } })
-      expect(toolError(await f.client.callTool({ name: 'run_start', arguments: { ...input, commandId: randomUUID() } })))
-        .toMatchObject({ error: { code: 'PLACEMENT_ADMISSION_CONFLICT' } })
-      expect((await f.base.db.pool.query('select id from runs where workflow_id=$1', [input.workflowId])).rows).toEqual([])
+      expect(http.json()).toMatchObject({ error: { code: 'WORKTREE_BINDING_REQUIRED' } })
+      expect(toolError(await f.client.callTool({ name: 'workflow_save_v3', arguments: f.saveInput })))
+        .toMatchObject({ error: { code: 'WORKTREE_BINDING_REQUIRED' } })
+      expect((await f.base.db.pool.query('select id from runs where workflow_id=$1', [f.saveInput.workflowId])).rows).toEqual([])
+      expect((await f.base.db.pool.query('select id from workflow_versions where workflow_id=$1', [f.saveInput.workflowId])).rows).toEqual([])
+      expect(f.base.provider.counts.sessions).toBe(0)
     } finally { await f.close() }
   }, 120_000)
 

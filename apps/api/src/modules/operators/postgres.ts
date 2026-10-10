@@ -18,6 +18,7 @@ import { inTransaction } from '../../infrastructure/transaction.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 
 import { DomainError } from '../errors.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 import { resolveWorkspaceSkills } from '../skills/catalog.js'
 import { composeInstructionText, instructionsTooLarge } from '../skills/instructions.js'
 
@@ -52,7 +53,7 @@ export async function operatorSkillContent(client: pg.ClientBase, references: re
 }
 
 export class PostgresOperatorRepository {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly pool: pg.Pool, private readonly accountConfigurations?: ProviderAccountConfigurationService) {}
 
   /** Read-only inspection must not create an Operator before a conversation exists. */
   async inspectionConfiguration(expectedDefaultsRevision?: number): Promise<OperatorConfigurationVersion> {
@@ -93,7 +94,9 @@ export class PostgresOperatorRepository {
     }
     const createdAt = new Date().toISOString()
     const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator
-    const harness = acceptedConfiguration(defaults.harness)
+    const requested = this.accountConfigurations
+      ? await this.accountConfigurations.resolve(defaults.harness, defaults.harnessProfileSelection) : defaults.harness
+    const harness = acceptedConfiguration(requested)
     const profile = defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}
     // Saved defaults were authorized and resolved when saved; keep those exact references.
     const skills = await operatorSkillContent(client, defaults.assignedSkills, defaults.assignedSkills)
@@ -137,6 +140,7 @@ export class PostgresOperatorRepository {
       const previous = (await client.query<{ record: unknown }>('select record from operator_configuration_versions where id = $1', [expectedConfigurationVersionId])).rows[0]
       const previousConfiguration = previous ? OperatorConfigurationVersionSchema.parse(previous.record) : undefined
       const selection = harnessProfileSelection === null ? undefined : harnessProfileSelection ?? previousConfiguration?.harnessProfileSelection
+      if (this.accountConfigurations) harness = await this.accountConfigurations.resolve(harness, selection)
       if (selection && harnessProfileSelection === undefined && !isDeepStrictEqual(previousConfiguration?.harness, harness)) {
         throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'Changing the selected profile configuration requires an explicitly validated profile selection.', 409)
       }

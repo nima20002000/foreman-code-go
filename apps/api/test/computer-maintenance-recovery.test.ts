@@ -165,14 +165,19 @@ describe('fleet synchronization ordering and ownership', () => {
 
   it('retries an unchanged MCP catalog after a missing harness becomes installed', async () => {
     const computer = fakeComputer()
+    let now = Date.now()
+    computer.ports.now = () => new Date(now)
     const find = computer.ports.find
     let installed = false
     computer.ports.find = name => name === 'codex' && !installed ? Promise.resolve(null) : find(name)
-    const { fleet, requested } = fakeFleet(computer)
+    const { fleet, requested } = fakeFleet(computer, () => now)
     await fleet.syncChangedSources()
     expect((await settle(computer)).tasks.find(task => task.kind === 'sync-mcp'))
       .toMatchObject({ state: 'failed', summary: expect.stringContaining('MCP sync remains pending') })
     installed = true
+    await fleet.syncChangedSources()
+    expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(1)
+    now += 5 * 60_000
     await fleet.syncChangedSources()
     await settle(computer)
     await fleet.syncChangedSources()

@@ -8,7 +8,7 @@ import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
 import type { RegistryHarnessSelection } from '../installationRegistry.js'
 import { DomainError } from '../../errors.js'
 import { claudeCandidateConfiguration } from './configuration.js'
-import { assertClaudeHelperProfile, loadOfficialClaudeSdk } from './official.js'
+import { loadOfficialClaudeSdk } from './official.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { ClaudeSdkClient, ClaudeSdkSession } from './port.js'
 import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
@@ -24,12 +24,10 @@ const exists = async (path: string) => readFile(path).then(() => true, () => fal
 export async function qualifyClaudeNativeProfile(input: {
   value: HostHarnessOverride; checkId: string; binding: RegistryHarnessSelection; pin: ClaudeQualificationPin
   directory: string; recovery: NativeProcessRecovery; signal: AbortSignal
-  assertCurrent(): Promise<void>; sdkEntrypoint?: string; loadClient?: typeof loadOfficialClaudeSdk
+  assertCurrent(): Promise<void>; sdkEntrypoint?: string; loadClient?: typeof loadOfficialClaudeSdk; apiKey?: string
 }) {
   if (input.value.configuration.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude qualification requires a Claude profile.', 409)
   const configuration = ClaudeFullAccessConfigurationSchema.parse(input.value.configuration)
-  assertClaudeHelperProfile(configuration.configDirectory)
-  if (configuration.authMode !== 'subscription') throw new DomainError('CLAUDE_API_KEY_REQUIRED', 'The native profile checker requires explicitly provisioned API-key authority for API-key mode.', 409)
   const binary = input.binding.installation.launcher.resolvedLauncher
   if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The exact Claude executable is unavailable.', 409)
   await mkdir(input.directory, { recursive: true, mode: 0o700 })
@@ -41,7 +39,7 @@ export async function qualifyClaudeNativeProfile(input: {
   const ambient = join(directory, 'ambient-hook.txt')
   const quotedAmbient = `'${ambient.replaceAll("'", "'\\''")}'`
   await writeFile(join(cwd, '.claude', 'settings.json'), JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: `printf ambient > ${quotedAmbient}` }] }] } }), { mode: 0o600 })
-  const compiled = claudeCandidateConfiguration(configuration, cwd)
+  const compiled = claudeCandidateConfiguration(configuration, cwd, process.env, input.apiKey)
   const evidence: Record<string, unknown> = { checkId: input.checkId, pin: input.pin, configurationFingerprint: input.value.configurationFingerprint,
     cwd, model: compiled.model, effort: compiled.effort, sandbox: compiled.sandbox, sessions: [], hooks: [], receipts: [] }
   const passed = new Set<typeof CLAUDE_QUALIFICATION_CHECKS[number]>()

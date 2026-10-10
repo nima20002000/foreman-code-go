@@ -32,6 +32,8 @@ import { readOperatorActivitySnapshot } from './operatorActivitySnapshot.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { DomainError } from '../errors.js'
+import { harnessSessionChanged, type ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -131,7 +133,9 @@ function conversation(row: ConversationRow): Conversation {
 /** SQL transitions are fenced by the accepted request, even under a delayed native response. */
 export class PostgresOperatorConversationRepository {
   readonly activity: PostgresOperatorActivityRepository
-  constructor(private readonly pool: pg.Pool) { this.activity = new PostgresOperatorActivityRepository(pool) }
+  constructor(private readonly pool: pg.Pool, private readonly accountConfigurations?: ProviderAccountConfigurationService) {
+    this.activity = new PostgresOperatorActivityRepository(pool)
+  }
 
   async create(operatorId: string, configuration: OperatorConfigurationVersion, ownerId: string, title?: string, id: string = randomUUID()): Promise<Conversation> {
     return this.createWithQuery(this.pool, operatorId, configuration, ownerId, title, id)
@@ -460,10 +464,14 @@ export class PostgresOperatorConversationRepository {
 
   async harnessForMessage(configuration: OperatorConfigurationVersion, input: SendOperatorMessageRequest): Promise<HarnessConfiguration> {
     const settings = input.settings
-    if (!settings) return configuration.harness
+    if (!settings) return this.accountConfigurations
+      ? this.accountConfigurations.resolve(configuration.harness, configuration.harnessProfileSelection) : configuration.harness
     // A chat owns its policy. Editing application defaults never mutates an
     // existing native session.
-    if (settings.harness === configuration.harness.harness) return applyOperatorChatSettings(configuration.harness, settings)
+    if (settings.harness === configuration.harness.harness) {
+      const harness = applyOperatorChatSettings(configuration.harness, settings)
+      return this.accountConfigurations ? this.accountConfigurations.resolve(harness, configuration.harnessProfileSelection) : harness
+    }
     const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults()
     if (input.defaultsRevision === undefined || input.defaultsRevision !== defaults.revision) {
       throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'Operator defaults changed before this handoff. Review the current defaults before sending a new command.', 409)
@@ -471,7 +479,9 @@ export class PostgresOperatorConversationRepository {
     if (defaults.value.operator.harness.harness !== settings.harness) {
       throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The selected handoff harness no longer matches the reviewed defaults.', 409)
     }
-    return applyOperatorChatSettings(defaults.value.operator.harness, settings)
+    const harness = applyOperatorChatSettings(defaults.value.operator.harness, settings)
+    return this.accountConfigurations
+      ? this.accountConfigurations.resolve(harness, defaults.value.operator.harnessProfileSelection) : harness
   }
 
   async acceptedConfiguration(id: string, requestId: string): Promise<OperatorConfigurationVersion | undefined> {
@@ -483,7 +493,8 @@ export class PostgresOperatorConversationRepository {
 
   /** The first cross-harness message and its child are one durable, idempotent admission. */
   async beginForkTurn(sourceId: string, input: SendOperatorMessageRequest, ownerId: string, harness: HarnessConfiguration,
-    expectedConfigurationId?: string, validate?: (configuration: OperatorConfigurationVersion) => void) {
+    expectedConfigurationId?: string, validate?: (configuration: OperatorConfigurationVersion) => void,
+    preparedProfile?: HarnessProfileSelection) {
     const childId = `operator-fork:${input.requestId}`
     const client = await this.pool.connect()
     try {
@@ -508,9 +519,10 @@ export class PostgresOperatorConversationRepository {
       if (source.active_request_id || !['idle', 'error'].includes(source.turn_state)) throw new DomainError('CONVERSATION_TURN_ACTIVE', 'Finish the current turn before switching harnesses.', 409)
       if (input.forkExpectedRevision === undefined || input.forkExpectedRevision !== Number(source.revision))
         throw new DomainError('CONVERSATION_REVISION_CONFLICT', 'The conversation changed before the handoff. Refresh it and review the latest messages.', 409)
-      if (harness.harness === source.harness) throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'A fork requires a different harness.', 409)
       const current = await this.configuration(source.operator_configuration_version_id, client)
       if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
+      if (!harnessSessionChanged(current.harness, harness)) throw new DomainError('HARNESS_CONFIGURATION_MISMATCH',
+        'A linked conversation requires a different harness or provider account.', 409)
       const history = await client.query<{ sequence: string; role: string; content: string }>(
         `select sequence::text,role,content from operator_conversation_messages
           where conversation_id=$1 and role in ('user','assistant') order by sequence desc limit $2`, [sourceId, HANDOFF_MESSAGE_LIMIT])
@@ -520,7 +532,8 @@ export class PostgresOperatorConversationRepository {
       const sourceSequence = count.rows[0]?.sequence ?? '0'
       const context = handoffContext(source.handoff_context, source.handoff_omitted_messages ?? 0,
         history.rows, Number(count.rows[0]?.count ?? 0))
-      const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate)
+      const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate,
+        this.accountConfigurations, preparedProfile)
       const now = new Date().toISOString()
       const parentTitle = conversation(source).title ?? 'Conversation'
       const record = ConversationSchema.parse({ id: childId, agentId: current.operatorId, scope: 'application',
@@ -548,7 +561,8 @@ export class PostgresOperatorConversationRepository {
   }
 
   async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration,
-    expectedConfigurationId?: string, receiptOnly = false, validate?: (configuration: OperatorConfigurationVersion) => void) {
+    expectedConfigurationId?: string, receiptOnly = false, validate?: (configuration: OperatorConfigurationVersion) => void,
+    preparedProfile?: HarnessProfileSelection) {
     const client = await this.pool.connect()
     try {
       await client.query('begin')
@@ -593,11 +607,18 @@ export class PostgresOperatorConversationRepository {
         if (!prior) {
           const current = await this.configuration(row.operator_configuration_version_id, client)
           if (!current) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Operator configuration was not found.', 409)
-          const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate)
+          const next = await acceptOperatorConfiguration(client, current, input, undefined, harness, validate,
+            this.accountConfigurations, preparedProfile)
+          const sessionChanged = harnessSessionChanged(current.harness, next.harness)
+          if (sessionChanged && (await client.query('select 1 from operator_conversation_messages where conversation_id=$1 limit 1', [id])).rowCount) {
+            throw new DomainError('HARNESS_HANDOFF_REQUIRED',
+              'A different harness or provider account must continue in a linked conversation.', 409)
+          }
           if (next.id !== current.id) {
             await client.query(`update operator_conversations set operator_configuration_version_id=$2,harness=$3,
-              native_session_id=case when harness=$3 then native_session_id else null end,
-              provider_version=case when harness=$3 then provider_version else null end where id=$1`, [id,next.id,next.harness.harness])
+              native_session_id=case when $4 then null else native_session_id end,
+              provider_version=case when $4 then null else provider_version end where id=$1`,
+            [id,next.id,next.harness.harness,sessionChanged])
             row.operator_configuration_version_id = next.id
             row.record = { ...OperatorConversationRecordSchema.parse(row.record), operatorConfigurationVersionId: next.id }
           }

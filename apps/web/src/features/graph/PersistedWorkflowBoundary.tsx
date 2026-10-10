@@ -8,6 +8,7 @@ import { nextDraftKey } from './nextDraft/state'
 import { useGraphDraftStore } from './store'
 import { editIntentCommandKey } from './nextDraft/useGraphEditIntent'
 import type { BoardUpdateFailure } from '../workflow-board/BoardAlerts'
+import { useWorkflowBoard } from '../workflow-board/context'
 
 /** Persisted execution tags are explicit. No default, conversion, complexity
  * selector or fallback can open an executable editor for a retired record. */
@@ -23,12 +24,14 @@ export function PersistedWorkflowBoundary({ workspaceId, workflowId, workflow, u
   return <AuthoringBoundary workspaceId={workspaceId} workflowId={workflowId} updateFailures={updateFailures} />
 }
 function AuthoringBoundary({ workspaceId, workflowId, updateFailures = [] }: { workspaceId: string; workflowId: string; updateFailures?: readonly BoardUpdateFailure[] }) {
+  const authoringActive = useWorkflowBoard()?.authoringActive !== false
   const key = nextDraftKey(workspaceId, workflowId)
   const edit = useGraphDraftStore((state) => state.nextDrafts[key])
   const saving = useIsMutating({ mutationKey: editIntentCommandKey(key), exact: true }) > 0
   const source = useQuery({ queryKey: boardDraftContextKey(workspaceId, workflowId),
     queryFn: ({ signal }) => nextDraftApi.context(workspaceId, workflowId, { signal }),
-    staleTime: 3000, refetchInterval: 3000, refetchOnWindowFocus: true, retry: false,
+    enabled: authoringActive, staleTime: 3000, refetchInterval: authoringActive ? 3000 : false,
+    refetchOnWindowFocus: authoringActive, retry: false,
   })
   const denied = useProtectedAccessError(source)
   if (denied) return <section role="alert">Draft access is unavailable. Retained local edits have not been replaced or discarded.</section>

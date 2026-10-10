@@ -21,7 +21,7 @@ export function DeviceSetupGuide() {
   </section>
 }
 
-/** Truthful connection state for a registered computer. No connection contract or authenticated route exists in this build yet. */
+/** Pairing alone cannot establish whether remote commands are approved or ready. */
 export function ConnectionSetupStatus({ registration }: { registration: DeviceRegistration }) {
   const state = registration.status === 'revoked' ? 'blocked' : registration.status === 'paired' ? 'unverified' : 'needs-pairing'
   return <section className="device-setup-status" aria-label="Remote command connection" data-state={state}>
@@ -29,10 +29,10 @@ export function ConnectionSetupStatus({ registration }: { registration: DeviceRe
     <p role="status">{registration.status === 'revoked'
       ? <><strong>Blocked.</strong> This computer’s registration is revoked, so no connection can be set up.</>
       : registration.status === 'paired'
-        ? <><strong>Connection status unverified.</strong> This computer is paired, but this build cannot read remote-command consent, so its status is unavailable here.</>
+        ? <><strong>Connection status unverified.</strong> This computer is paired. Ask the Operator to read its current remote-command approval and check the connection.</>
         : <><strong>Pairing needed.</strong> Pair this computer before any connection can be set up.</>}</p>
     <p className="computer-hint">Running commands as the selected operating-system user needs a separate owner approval.
-      This build cannot read or request that approval, and pairing does not substitute for it.</p>
+      This page does not display or request that approval, and pairing does not substitute for it.</p>
     <ul className="computer-diagnostics">
       <li>Remote-command approval does not give any agent permissions; read-only agents stay read-only.</li>
       <li>It never uses sudo or root automatically, skips SSH host-key checks, or stores hidden credentials.</li>

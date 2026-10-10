@@ -57,6 +57,7 @@ import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonOb
 export type CodexTransport = Pick<CodexStdioTransport, 'start' | 'request' | 'respond' | 'reject' | 'close'>
   & { isConnected?(): boolean }
 interface CodexSessionOperations {
+  prepareEnvironment?: () => Promise<void>
   transport: (...args: ConstructorParameters<typeof CodexStdioTransport>) => CodexTransport
   qualify: typeof qualifyCodex
   assertUnchanged: typeof assertCodexUnchanged
@@ -294,7 +295,7 @@ function validateEnvironmentVariables(input?: NativeSessionStart['environment'])
     }
   }
 }
-function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
+export function safeEnvironment(input?: NativeSessionStart['environment'], scopedNames: readonly string[] = []): NodeJS.ProcessEnv {
   validateEnvironmentVariables(input)
   const environment = inheritedAgentEnvironment()
   for (const key of scopedNames) delete environment[key]
@@ -473,6 +474,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async capabilities(signal?: AbortSignal): Promise<NativeHarnessCapabilities> {
+    await this.dependencies.prepareEnvironment?.()
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const result = await this.dependencies.qualify(this.binary, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
@@ -488,6 +490,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   /** Qualify the same native transport/settings without creating a thread or issuing an App credential. */
   async qualifyConfiguration(value: CodexHarnessConfiguration, workingDirectory: string, signal?: AbortSignal) {
+    await this.dependencies.prepareEnvironment?.()
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const parsed = CodexHarnessConfigurationSchema.safeParse(value)
@@ -503,6 +506,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async discoverModels(workingDirectory: string, signal?: AbortSignal) {
+    await this.dependencies.prepareEnvironment?.()
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const qualified = await this.dependencies.qualify(this.binary, workingDirectory, this.dependencies.environment(), true, signal)
@@ -515,6 +519,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async qualificationEvidence(signal?: AbortSignal): Promise<CodexQualificationEvidence> {
+    await this.dependencies.prepareEnvironment?.()
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const result = await this.dependencies.qualify(this.binary, this.inspection.workingDirectory ?? process.cwd(), this.dependencies.environment(), true, signal)
@@ -1661,6 +1666,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async inspectMcpConfiguration(cwd: string, signal?: AbortSignal): Promise<CodexMcpConfigurationInspection> {
+    await this.dependencies.prepareEnvironment?.()
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const environment = this.dependencies.environment()
@@ -1736,6 +1742,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     this.loginStarting = true
     try {
+      await this.dependencies.prepareEnvironment?.()
       const environment = this.dependencies.environment()
       const qualified = await this.dependencies.qualify(this.binary, process.cwd(), environment, false, signal)
       await this.dependencies.assertUnchanged(qualified)
@@ -1891,6 +1898,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private async prepareInput(source: NativeSessionStart, signal?: AbortSignal, io: CodexDiagnosticOperations = this.dependencies, binary = this.binary): Promise<Prepared> {
+    await this.dependencies.prepareEnvironment?.()
     signal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
     signal.throwIfAborted()
     const input = structuredClone(this.startupPreferences && !source.sessionPreferences

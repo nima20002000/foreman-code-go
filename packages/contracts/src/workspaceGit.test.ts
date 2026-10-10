@@ -15,13 +15,15 @@ describe('workspace repository import contracts', () => {
       .toEqual({ workspaceId: input.workspaceId, commandId: input.commandId })
   })
 
-  it.each(['cloneCommand', 'environment', 'credential', 'url', 'absolutePath', 'replaceDirectory'])
-  ('rejects caller-owned import control %s', field => {
+  it.each([
+    'cloneCommand', 'environment', 'credential', 'url', 'absolutePath', 'replaceDirectory',
+  ])('rejects caller-owned import control %s', field => {
     expect(WorkspaceRepositoryAddInputSchema.safeParse({ ...input, [field]: '/tmp/project' }).success).toBe(false)
   })
 
-  it.each(['expectedRevision', 'expectedLocationRevision', 'expectedRootPolicyRevision', 'expectedBindingRevision'])
-  ('rejects invalid %s', field => {
+  it.each([
+    'expectedRevision', 'expectedLocationRevision', 'expectedRootPolicyRevision', 'expectedBindingRevision',
+  ])('rejects invalid %s', field => {
     expect(WorkspaceRepositoryAddInputSchema.safeParse({ ...input, [field]: -1 }).success).toBe(false)
     expect(WorkspaceRepositoryAddInputSchema.safeParse({ ...input, [field]: 1.5 }).success).toBe(false)
   })

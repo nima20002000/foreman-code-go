@@ -27,6 +27,7 @@ import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 import {
   IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, readImmutableAgentConfiguration,
   type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow,
@@ -34,6 +35,11 @@ import {
 
 type Source = 'http' | 'mcp'
 type Scope = { workspaceId: string; workflowId: string }
+export interface WorkflowAuthoringOptions {
+  agentActiveTimeoutMs?: number | undefined
+  worktrees?: WorkflowWorktreeServices | undefined
+  accountConfigurations?: ProviderAccountConfigurationService | undefined
+}
 function completeSaveInput(
   request: CurrentEditSaveInput,
   metadata: CurrentEditSaveInput['graph'],
@@ -81,8 +87,7 @@ export class CurrentWorkflowAuthoring {
   private editStop: RunManagementService['stop'] | undefined
   private runtime: Pick<RunManagementService, 'availability' | 'assertCurrentStopReady'> | undefined
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly agentActiveTimeoutMs = DEFAULT_AGENT_ACTIVE_TIMEOUT_MS,
-    private readonly worktrees?: WorkflowWorktreeServices) {
+    private readonly options: WorkflowAuthoringOptions = {}) {
     this.editIntents = createCurrentEditIntentService(pool, commands, {
       validate: async (client, principal, input, options) => {
         authorize(principal, input, true)
@@ -122,7 +127,7 @@ export class CurrentWorkflowAuthoring {
     const availability = this.availability()
     return { ...structuredClone(CURRENT_WORKFLOW_CAPABILITIES), ...availability,
       agentActiveTimeBudget: { ...CURRENT_WORKFLOW_CAPABILITIES.agentActiveTimeBudget,
-        defaultMs: this.agentActiveTimeoutMs },
+        defaultMs: this.options.agentActiveTimeoutMs ?? DEFAULT_AGENT_ACTIVE_TIMEOUT_MS },
       meaningfulEdit: availability.stopAvailable,
       editIntents: { ...CURRENT_WORKFLOW_CAPABILITIES.editIntents, stopUnsettled: availability.stopAvailable },
       reasons: [...(availability.runtimeAdmission ? [] : ['NATIVE_START_NOT_READY' as const]),
@@ -292,7 +297,7 @@ export class CurrentWorkflowAuthoring {
       return fail('WORKFLOW_BASE_CONFLICT', 'The current definition disagrees with its immutable executable version.')
     }
     const stagedInput = 'stagedAgents' in input && input.stagedAgents?.length ? input as CurrentEditSaveInput : undefined
-    const staged = stagedInput ? await prepareCurrentStagedAgents(client, principal, stagedInput) : undefined
+    const staged = stagedInput ? await prepareCurrentStagedAgents(client, principal, stagedInput, this.options.accountConfigurations) : undefined
     const configurationPins = staged?.resultant ?? input.expectedAgentConfigurationVersionIds
     const presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
       && sameWorkflowValue(base.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
@@ -319,7 +324,7 @@ export class CurrentWorkflowAuthoring {
     }
     if (presentationOnly && base) {
       await validateWorkflowWorktrees({ sql: client, principal, definition: input.graph, previous: current,
-        services: this.worktrees })
+        services: this.options.worktrees })
       return { presentationOnly, version: base, content: '',
         definition: WorkflowDefinitionV3Schema.parse({ ...(intentId ? preserveWorkflowGeometry(input.graph, current) : input.graph),
           updatedAt: new Date().toISOString() }) }
@@ -353,7 +358,7 @@ export class CurrentWorkflowAuthoring {
     })
     configurations.push(...(staged?.prepared.map((item) => item.configuration) ?? []))
     await validateWorkflowWorktrees({ sql: client, principal, definition: input.graph, previous: current,
-      configurations, services: this.worktrees })
+      configurations, services: this.options.worktrees })
     const number = Number((await client.query<{ next: string }>('select coalesce(max(version),0)+1 as next from workflow_versions where workflow_id=$1',
       [input.workflowId])).rows[0]?.next)
     if (!Number.isSafeInteger(number) || number < 1 || base && number <= base.version) return fail('WORKFLOW_BASE_CONFLICT', 'The next immutable version is invalid.')

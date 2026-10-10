@@ -218,6 +218,7 @@ export async function createInstalledWorkerConversations(input: {
       }
       return operations.run(request, () => host.handle(request, connection, signal))
     },
+    drainForUpdate: () => host.drainForUpdate(),
     close: async () => { await host.shutdown(); await files.close() },
   }
 }

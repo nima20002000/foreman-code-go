@@ -5,6 +5,7 @@ import { localHumanPrincipal } from '../src/modules/access/localHuman.js'
 import { registerOperatorHttpSecurity, requireLocalHuman, requirePrincipal } from '../src/modules/access/http.js'
 import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
+import * as localClient from '@foreman-code/contracts/local-client-node'
 
 async function fixture() {
   const app = Fastify()
@@ -24,6 +25,38 @@ async function fixture() {
 }
 
 describe('implicit local human', () => {
+  it('returns retryable peer errors on real HTTP without granting access or changing bearer permissions', async () => {
+    const { app, authenticate } = await fixture()
+    const peer = vi.spyOn(localClient, 'localHumanClient')
+    peer.mockRejectedValue(new localClient.LocalClientUnavailableError())
+    try {
+      const address = await app.listen({ port: 0, host: '127.0.0.1' })
+      const unknown = await fetch(`${address}/api/local-human`)
+      expect(unknown.status).toBe(503)
+      expect(unknown.headers.get('retry-after')).toBe('1')
+      expect(await unknown.json()).toEqual({ code: 'LOCAL_CLIENT_UNAVAILABLE' })
+      expect(authenticate).not.toHaveBeenCalled()
+      const headers = { authorization: 'Bearer reader-token' }
+      const reader = await fetch(`${address}/api/settings/agents`, { headers })
+      expect(reader.status).toBe(200)
+      expect((await reader.json()).id).toBe('reader')
+      const write = await fetch(`${address}/api/settings/agents`, { method: 'PUT', headers })
+      expect(write.status).toBe(403)
+      await write.body?.cancel()
+      expect(peer).toHaveBeenCalledTimes(1)
+      peer.mockResolvedValue(false)
+      const denied = await fetch(`${address}/api/local-human`)
+      expect(denied.status).toBe(403)
+      await denied.body?.cancel()
+      peer.mockResolvedValue(true)
+      const recovered = await fetch(`${address}/api/local-human`)
+      expect(recovered.status).toBe(200)
+      expect((await recovered.json()).principal.id).toBe(localHumanPrincipal.id)
+    } finally {
+      peer.mockRestore()
+      await app.close()
+    }
+  })
   it('defaults to loopback and rejects non-loopback binds', () => {
     const environment = { DATABASE_URL: 'postgresql://graphql:graphql@127.0.0.1/graphql' }
     expect(loadConfig(environment).host).toBe('127.0.0.1')

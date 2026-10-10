@@ -7,11 +7,7 @@ import { useWorktreeChoices, type WorktreeOption } from '../../shared/api/worktr
 import { useWorkspaceRepository } from '../../shared/api/workspaceGit'
 import { Alert, Button, Dialog, Select, TextField } from '../../shared/ui/nocturne'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
-
-export function worktreeLabel(value: WorkflowWorktreeSettings | undefined, options: readonly WorktreeOption[]) {
-  if (!value) return 'Workspace placement'
-  return options.find(option => sameWorkflowValue(option.rootBinding, value.rootBinding))?.label ?? 'Configured source retained'
-}
+import { worktreeLabel } from './worktreePresentation'
 
 export function WorkflowWorktreeField({ workspaceId, value, savedValue, disabled, onChange }: {
   workspaceId: string

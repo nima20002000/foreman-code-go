@@ -1,12 +1,14 @@
-import { useState } from 'react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { useState, type ReactElement } from 'react'
+import { cleanup, render as renderComponent, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration } from '@foreman-code/contracts'
 import { HarnessBasicFields } from './HarnessBasicFields'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 
-vi.mock('../../shared/api/harnessSettings', () => ({
+vi.mock('../../shared/api/harnessSettings', async importOriginal => ({
+  ...await importOriginal<typeof import('../../shared/api/harnessSettings')>(),
   useNativeHarnessOptions: (harness: 'codex' | 'claude') => ({ data: { models: [
     { id: { codex: DEFAULT_HARNESS_DEFAULTS.codex.model, claude: savedClaudeConfiguration.model }[harness], name: 'Current native model', reasoningEfforts: ['medium', 'high'], variants: [''], serviceTiers: ['standard', 'priority'] },
     { id: 'long-model', name: 'A long native model label that remains searchable and selectable', reasoningEfforts: ['medium'], variants: ['balanced'], serviceTiers: ['standard'] },
@@ -15,7 +17,13 @@ vi.mock('../../shared/api/harnessSettings', () => ({
 }))
 
 beforeEach(() => { HTMLElement.prototype.scrollIntoView = vi.fn() })
-afterEach(cleanup)
+const clients: QueryClient[] = []
+afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
+function render(component: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  return renderComponent(<QueryClientProvider client={client}>{component}</QueryClientProvider>)
+}
 function BasicFields({ initial }: { initial: HarnessConfiguration }) {
   const [value, onChange] = useState(initial)
   return <HarnessBasicFields value={value} onChange={onChange} includeSandbox={false} />

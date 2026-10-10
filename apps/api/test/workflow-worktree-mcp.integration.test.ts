@@ -2,15 +2,17 @@ import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import type { Client } from '@modelcontextprotocol/client'
 import { describe, expect, it } from 'vitest'
+import { AgentSchema } from '@foreman-code/contracts'
 import { WorkspaceRepositoryAddResultSchema, WorkspaceRepositoryReadResultSchema } from '@foreman-code/contracts/workspace-git'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { AgentMutationResultSchema, ManagedWorkspaceCommandResultSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
+import { AgentMutationResultSchema, ManagedAgentDetailSchema, ManagedWorkspaceCommandResultSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import {
   CurrentEditReadResultSchema, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
   SavedManagedWorkflowCommandResultSchema, SavedManagedWorkflowSchema,
   makeCurrentWorkflowFixture, type CurrentWorkflowSaveInput,
 } from '@foreman-code/contracts/wave25'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
+import { ProviderAccountConfigurationService } from '../src/modules/harnesses/providerAccountConfiguration.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './helpers/mixedComputerPlacement.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
@@ -21,7 +23,10 @@ import { workspaceRepositoryFixture, fixtureRepository } from './helpers/workspa
 
 const repository = { provider: 'github' as const, owner: 'octo-owner', name: 'website', defaultBranch: 'main' }
 
-async function setup(options: { sourceAccessMode?: 'read-only' | 'exclusive-write' } = {}) {
+async function setup(options: {
+  sourceAccessMode?: 'read-only' | 'exclusive-write'
+  accountConfigurations?: ProviderAccountConfigurationService
+} = {}) {
   const base = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'sequential'),
     agentManagement: true })
   const directory = await privateFixtureDirectory('workflow-worktree-')
@@ -37,7 +42,9 @@ async function setup(options: { sourceAccessMode?: 'read-only' | 'exclusive-writ
     })
     const services = { readyRoot: async () => placement.local.rootBinding,
       sources: placement.sources, roots: placement.policies }
-    base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, undefined, services)
+    base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, {
+      worktrees: services, accountConfigurations: options.accountConfigurations,
+    })
     async function create(defaultWorktree?: Parameters<typeof base.services.workflows.create>[2]['defaultWorktree']) {
       const input = { workspaceId, commandId: randomUUID(), name: 'Worktree workflow',
         ...(defaultWorktree === undefined ? {} : { defaultWorktree }) }
@@ -48,6 +55,7 @@ async function setup(options: { sourceAccessMode?: 'read-only' | 'exclusive-writ
         version: created.value.workflow.version,
         nodes: base.f.version.definition.nodes, edges: base.f.version.definition.edges,
         entryNodeId: base.f.version.definition.entryNodeId,
+        approval: base.f.version.definition.approval,
         executionPolicy: base.f.version.definition.executionPolicy }
       const saveInput: CurrentWorkflowSaveInput = {
         workspaceId, workflowId: created.value.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
@@ -77,13 +85,64 @@ async function setup(options: { sourceAccessMode?: 'read-only' | 'exclusive-writ
 }
 
 describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP', () => {
+  it('pins a provider account and worktree together through staged edits and persisted reads', async () => {
+    const accountId = randomUUID()
+    const accountConfigurations = new ProviderAccountConfigurationService({
+      resolve: async () => ({ accountId, homePath: '/accounts/codex/home', authMode: 'subscription' }),
+    })
+    const f = await setup({ accountConfigurations })
+    try {
+      const { saveInput } = await f.create()
+      const saved = (await f.save(saveInput)).value
+      const agentId = randomUUID()
+      const nodeId = randomUUID()
+      const agent = AgentSchema.parse({ id: agentId, name: 'Account-backed coder', productRole: 'coder',
+        harnessConfiguration: f.base.f.configurations[0]!.harness })
+      const definition = saved.version.definition
+      const stage = {
+        ...saveInput, action: 'stage_edits', draftId: randomUUID(), commandId: randomUUID(),
+        expectedRevision: saved.revision, expectedWorkflowVersionId: saved.currentVersionId,
+        graph: { ...definition,
+          nodes: [...definition.nodes, { ...agentWorkflowNode(definition.nodes[0]), id: nodeId, agentId }],
+          edges: [...definition.edges, { ...definition.edges[0]!, id: randomUUID(),
+            source: definition.nodes.at(-1)!.id, target: nodeId }],
+          executionPolicy: { ...definition.executionPolicy!, maxNodeExecutions: definition.executionPolicy!.maxNodeExecutions + 1 },
+          defaultWorktree: { rootBinding: f.placement.local.rootBinding!, branchPrefix: 'foreman/accounts' },
+        },
+        stagedAgents: [{ agent, baseRevision: null }],
+      }
+      const reader = await f.base.access.issue({ name: 'Read-only account/worktree caller', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['workflows:read', 'graph:read', 'agents:read'],
+          scope: { workspaceIds: [f.workspaceId] } }] })
+      await expectMcpAccessDenied((await f.base.connect(reader.token)).callTool({
+        name: 'workflow_edit_v3', arguments: stage,
+      }))
+      const staged = await f.base.client.callTool({ name: 'workflow_edit_v3', arguments: stage })
+      expect(staged.isError, JSON.stringify(staged)).not.toBe(true)
+      const intent = CurrentEditReadResultSchema.parse(decodeMcpToolResult(staged)).intent!
+      const published = await f.base.client.callTool({ name: 'workflow_edit_v3', arguments: {
+        workspaceId: f.workspaceId, workflowId: saveInput.workflowId, draftId: stage.draftId,
+        intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId,
+      } })
+      expect(published.isError, JSON.stringify(published)).not.toBe(true)
+      expect(CurrentEditReadResultSchema.parse(decodeMcpToolResult(published)).intent?.state).toBe('saved')
+      expect((await f.read(saveInput.workflowId)).version.definition.defaultWorktree).toEqual(stage.graph.defaultWorktree)
+      const readback = await f.base.client.callTool({ name: 'agent_get', arguments: {
+        workspaceId: f.workspaceId, agentId,
+      } })
+      expect(readback.isError).not.toBe(true)
+      expect(ManagedAgentDetailSchema.parse(decodeMcpToolResult(readback)).agent.harnessConfiguration)
+        .toMatchObject({ accountId })
+    } finally { await f.close() }
+  }, 30_000)
+
   it('copies a prepared repository through the domain services and keeps grants conditional', async () => {
     const f = await workspaceRepositoryFixture()
     try {
-      f.services.workflows = new WorkflowManagementService(f.pool, f.commands, undefined, {
+      f.services.workflows = new WorkflowManagementService(f.pool, f.commands, { worktrees: {
         readyRoot: (principal, workspaceId, sql) => f.repositories.readyRoot(principal, workspaceId, sql),
         sources: f.sources, roots: f.policies,
-      })
+      } })
       const workspaceResponse = await f.owner.client.callTool({ name: 'workspace_create', arguments: {
         commandId: randomUUID(), name: 'Imported workflow project',
       } })
@@ -154,7 +213,7 @@ describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP', 
       expect(await f.save(input)).toEqual({ ...saved, replayed: true })
       expect((await f.read(input.workflowId)).version.definition).toEqual(saved.value.version.definition)
 
-      f.base.services.workflows = new WorkflowManagementService(f.base.db.pool, f.base.commands, undefined, f.services)
+      f.base.services.workflows = new WorkflowManagementService(f.base.db.pool, f.base.commands, { worktrees: f.services })
       const reloaded = await f.base.client.callTool({ name: 'workflow_get', arguments: {
         workspaceId: f.workspaceId, workflowId: input.workflowId,
       } })
@@ -351,8 +410,8 @@ describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP', 
     } finally { await f.close() }
   }, 30_000)
 
-  it.each(['sources:read', 'source_roots:read', 'workspace_locations:read'] as const)
-  ('reauthorizes worktree edit receipts after removal of %s', async missing => {
+  it.each(['sources:read', 'source_roots:read', 'workspace_locations:read'] as const)(
+  'reauthorizes worktree edit receipts after removal of %s', async missing => {
     const f = await setup()
     try {
       const { saveInput } = await f.create()

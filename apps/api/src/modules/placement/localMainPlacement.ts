@@ -102,13 +102,16 @@ export async function resolveBoundRootPlacement(input: {
         driverId: candidate.driverId, driverRevision: installation.driverRevision,
         instanceId: candidate.instanceId, instanceRevision: candidate.instanceRevision,
         harnessInstallationId: installation.harnessInstallationId,
-        installationFingerprint: installation.installationFingerprint,
+        installationFingerprint: candidate.target.installationFingerprint,
         runtimeContractVersion: 1, protocolRevision: installation.protocolRevision, credentialScopeRefs: [],
       } }, input.installations, input.qualificationSuites)
       qualified.push(candidate)
     } catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'HARNESS_PROFILE_UNAVAILABLE') throw error
     }
+  }
+  if (qualified.length === 0 && compatible.length > 0) {
+    throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'No compatible harness profile is qualified.', 409)
   }
   const profile = qualified[0]
   if (qualified.length !== 1 || !profile) return unavailable('selected_harness_profile')

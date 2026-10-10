@@ -36,6 +36,7 @@ import { registerWorkflowScheduleTools } from './tools/workflowSchedules.js'
 import { registerWorkspaceTools } from './tools/workspaces.js'
 import { registerInteractionTools } from './tools/interactions.js'
 import { registerSettingsTools } from './tools/settings.js'
+import { registerProviderAccountTools } from './tools/providerAccounts.js'
 import { registerAgentChatTools } from './tools/agentChat.js'
 import { registerWorkspaceDefaultsTools } from './tools/workspaceDefaults.js'
 import { registerFileRetentionTools } from './tools/fileRetention.js'
@@ -71,6 +72,7 @@ export function registerOperatorTools(server: McpServer, context: OperatorReques
   registerHarnessMcpTools(server, context)
   registerClaudePluginTools(server, context)
   registerSettingsTools(server, context)
+  registerProviderAccountTools(server, context)
   registerAgentChatTools(server, context)
   registerSessionControlTools(server, context)
   registerWorkspaceDefaultsTools(server, context)

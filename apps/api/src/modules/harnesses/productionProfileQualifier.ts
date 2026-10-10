@@ -12,6 +12,7 @@ import { harnessProfile } from './qualification/profiles.js'
 import { qualificationError } from './qualificationErrors.js'
 import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './claudeSdk/profileRevision.js'
+import type { ProviderAccountResolver } from '../provider-accounts/service.js'
 
 /** Explicit profile checks enter through real role-isolated adapters. A saved
  * config, filesystem inventory, worker heartbeat or fixture never grants trust. */
@@ -19,14 +20,14 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
   constructor(private readonly registry: ProductionHarnessRegistry, private readonly factories: NativeHarnessFactories,
     private readonly endpoint: () => DeviceEndpoint, private readonly workingDirectory: string,
     private readonly claude?: HostHarnessProfileQualifier,
-    private readonly workerExecution = new WorkerExecutionPolicy()) {}
+    private readonly workerExecution = new WorkerExecutionPolicy(), private readonly accounts?: ProviderAccountResolver) {}
   async qualify(value: HostHarnessOverride, input: { checkId: string; signal: AbortSignal }): Promise<HostHarnessProfileEvidence> {
     this.workerExecution.requireEnabled(value.target.hostRef)
     input.signal.throwIfAborted()
     if (commandInputHash(withAdvancedDefaults(value.configuration)) !== value.configurationFingerprint) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The saved configuration fingerprint is invalid.', 409)
     }
-    requireClaudeProductionCredentialDelivery(value.configuration)
+    await requireClaudeProductionCredentialDelivery(value.configuration, this.accounts, value.target.hostRef)
     const suiteRevision = value.driverId === 'claude'
       ? CLAUDE_PROFILE_CHECK_REVISION : `${value.driverId}-profile-check-v1`
     if (value.target.hostRef.kind === 'device') {

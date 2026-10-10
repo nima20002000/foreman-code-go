@@ -237,6 +237,7 @@ export type RetiredOpenCodeAdvancedConfiguration = z.infer<typeof RetiredOpenCod
 export const CodexHarnessConfigurationSchema = z
   .object({
     harness: z.literal("codex"),
+    accountId: z.uuid().optional(),
     model: z.string().trim().min(1),
     reasoningEffort: AgentEffortSchema,
     sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]),
@@ -1238,6 +1239,8 @@ export const RunnerSummarySchema = z
   .strict();
 export type RunnerSummary = z.infer<typeof RunnerSummarySchema>;
 
+export const LOCAL_CLIENT_UNAVAILABLE = 'LOCAL_CLIENT_UNAVAILABLE'
+
 export const ApiErrorSchema = z
   .object({
     code: z.string().trim().min(1),
@@ -1408,8 +1411,9 @@ export const OperatorConversationContextSchema = z.object({
 /** Per-message model controls. Execution permissions remain server-owned. */
 export const OperatorChatSettingsSchema = z.discriminatedUnion("harness", [
   z.object({ harness: z.literal("codex"), model: z.string().trim().min(1), reasoningEffort: AgentEffortSchema,
-    serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
-  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
+    accountId: z.uuid().optional(), serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
+  z.object({ harness: z.literal("claude"), accountId: z.uuid().optional(), model: z.string().trim().min(1),
+    effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
 ]);
 /** Saved conversation controls remain readable after provider retirement. */
 export const RecordedOperatorChatSettingsSchema = z.union([
@@ -1421,23 +1425,29 @@ export type OperatorChatSettings = z.infer<typeof OperatorChatSettingsSchema>;
 export function operatorChatSettings(harness: HarnessConfiguration, showThinking = false): OperatorChatSettings {
   if (harness.harness === "opencode") throw new Error(RETIRED_OPENCODE_MESSAGE);
   if (harness.harness === "claude") {
-    return { harness: "claude", model: harness.model, ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
+    return { harness: "claude", model: harness.model, ...(harness.accountId ? { accountId: harness.accountId } : {}),
+      ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
   }
   return { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort,
+    ...(harness.accountId ? { accountId: harness.accountId } : {}),
     serviceTier: harness.serviceTier, showThinking };
 }
 /** Apply chat controls without replacing the accepted execution permissions. */
 export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
   if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
   if (settings.harness === "claude") {
-    const configuration = ClaudeHarnessConfigurationSchema.parse({ ...base, model: settings.model });
+    const configuration = ClaudeHarnessConfigurationSchema.parse({ ...base, accountId: settings.accountId, model: settings.model });
+    if (!configuration.accountId) delete configuration.accountId;
     delete configuration.effort;
     if (settings.effort) configuration.effort = settings.effort;
     return configuration;
   }
-  return SupportedHarnessConfigurationSchema.parse({
-    ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier,
+  const configuration = SupportedHarnessConfigurationSchema.parse({
+    ...base, accountId: settings.accountId, model: settings.model, reasoningEffort: settings.reasoningEffort,
+    serviceTier: settings.serviceTier,
   });
+  if (!configuration.accountId) delete configuration.accountId;
+  return configuration;
 }
 export const OperatorChatSetupQuerySchema = z.object({
   conversationId: IdSchema.optional(),

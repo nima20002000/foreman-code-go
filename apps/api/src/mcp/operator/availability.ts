@@ -152,6 +152,10 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile', 'codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile', 'claude_plugins_list', 'claude_plugin_change', 'claude_plugin_marketplace_add'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
+  if (name.startsWith('provider_account')) {
+    result[0]!.scope = 'global'
+    if (name !== 'provider_accounts_list') result.push({ action: 'settings:read', scope: 'global' })
+  }
   if (name === 'interaction_respond') result.push({ action: 'interactions:read', scope: 'resource' })
   if (name === 'workspace_storage_folders_list' || name === 'workspace_storage_folder_delete') {
     result[0]!.scope = 'global'
@@ -223,6 +227,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (retiredExecutionTool(name)) return false
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
+  if (name.startsWith('provider_account') && !service.providerAccounts) return false
   if ((name.startsWith('general_settings_') || name.startsWith('system_prompt_')
     || name.startsWith('operator_initial_prompt_')) && !service.settings) return false
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') {

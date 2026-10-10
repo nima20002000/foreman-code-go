@@ -23,7 +23,6 @@ function fixture() {
   const seed = makeCurrentWorkflowFixture('workflow-worktree', 'single')
   const version = structuredClone(seed.version)
   const node = version.definition.nodes[0]!
-  if (node.kind === 'job') throw new Error('Expected Agent fixture')
   const configuration = seed.configurations[0]!
   const mainId = randomUUID()
   const deviceId = randomUUID()
@@ -156,6 +155,13 @@ it('selects the qualified profile when an identical installed profile is unquali
   })
   expect((await f.prepare())!.bind('run-one')[0]?.payload)
     .toMatchObject({ instanceId: f.profile.instanceId })
+})
+
+it('preserves qualification denial when no compatible profile is qualified', async () => {
+  const f = fixture()
+  vi.mocked(readPlacementHarnessFacts).mockRejectedValue(
+    new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Qualification has not completed.', 409))
+  await expect(f.prepare()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
 })
 
 it('fails an unavailable inherited source before refreshing a replacement computer', async () => {

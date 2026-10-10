@@ -13,6 +13,7 @@ import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresFoundationSettingsRepository } from './foundation.js'
 import { operatorSkillContent, type PostgresOperatorRepository } from '../operators/postgres.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 
 export class FoundationSettingsManagementService {
   constructor(
@@ -21,6 +22,7 @@ export class FoundationSettingsManagementService {
     private readonly harnesses?: Pick<HarnessCatalogService, 'qualifyConfiguration'>,
     private readonly operators?: PostgresOperatorRepository,
     private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'> & Partial<Pick<HostHarnessOverrideService, 'selectionForConfiguration' | 'prepareOperatorConfiguration'>>,
+    private readonly accountConfigurations?: ProviderAccountConfigurationService,
   ) {}
 
   getSystemPrompt(principal: ManagementPrincipal) {
@@ -115,6 +117,12 @@ export class FoundationSettingsManagementService {
       targetKey: 'agent-defaults-v1', payload: input,
       perform: async (client) => {
         const value = AgentDefaultsSchema.parse(input.value)
+        if (this.accountConfigurations) {
+          for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+            value[role].harness = await this.accountConfigurations.resolve(value[role].harness,
+              value[role].harnessProfileSelection)
+          }
+        }
         for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)
         const previous = await this.settings.getAgentDefaults(client)
         if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)

@@ -40,7 +40,8 @@ export async function workspaceRepositoryFixture() {
     storage = join(parentPath, 'projects')
     runtime = join(parentPath, 'runtime')
     origin = join(parentPath, 'origin')
-    for (const path of [storage, runtime, origin]) await mkdir(path, { mode: 0o700 })
+    const sourceStore = join(parentPath, 'source-store')
+    for (const path of [storage, runtime, origin, sourceStore]) await mkdir(path, { mode: 0o700 })
     fixtureGit(origin, 'init', '--template=', '-q', '-b', 'main')
     await writeFile(join(origin, 'content.txt'), 'approved raw bytes\n')
     await writeFile(join(origin, '.gitattributes'), '*.txt filter=unsafe\n')
@@ -95,7 +96,7 @@ export async function workspaceRepositoryFixture() {
     }
     const createSources = () => {
       const service = new PostgresSourceService(pool, commands, services.locations,
-        new PrivateSourceSnapshotStore(join(parentPath, 'source-store')), mainId, sourceRoots,
+        new PrivateSourceSnapshotStore(sourceStore), mainId, sourceRoots,
         { authorize: unavailable, prepare: unavailable, verifyWorkingDirectory: unavailable,
           verify: unavailable, releaseClaim: unavailable, authorizeFinal: unavailable }, { confirmedClosed: unavailable })
       service.git = git

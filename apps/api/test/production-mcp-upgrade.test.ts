@@ -1,9 +1,11 @@
-import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
+import { realpathSync } from 'node:fs'
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
-  APP_MCP_TOKEN, appLauncherConnection, installManagedLauncher, isAppLauncher,
+  APP_MCP_TOKEN, appLauncherConnection, installManagedLauncher, isAppLauncher, readLauncherInstallation,
 } from '../src/modules/harnesses/appMcpLauncher.js'
 import { upgradeProductionMcpLauncher } from '../src/modules/harnesses/productionMcpUpgrade.js'
 import { runLauncherProcess } from './helpers/launcherInstallationProcess.js'
@@ -31,6 +33,44 @@ async function fixture() {
   await installManagedLauncher(source, previous)
   return { home, previous, shared }
 }
+
+it.each(['absent', 'empty-routes'] as const)(
+  'refreshes a managed canonical launcher with %s legacy directories and retains its registrations', async legacy => {
+    const { home, previous, shared } = await fixture()
+    await rm(dirname(previous), { recursive: true })
+    if (legacy === 'empty-routes') await mkdir(join(dirname(previous), 'routes'), { recursive: true })
+    const installedRuntime = join(home, 'installed-node')
+    await writeFile(installedRuntime, 'installed runtime')
+    Object.defineProperty(process, 'execPath', { value: installedRuntime })
+    await installManagedLauncher(source, shared)
+    Object.defineProperty(process, 'execPath', { value: runtime })
+    await writeFile(shared, 'process.stdout.write("obsolete launcher\\n")')
+    expect(spawnSync(runtime, [shared], { encoding: 'utf8' }).stdout).toBe('obsolete launcher\n')
+
+    await upgradeProductionMcpLauncher(home)
+
+    const result = spawnSync(runtime, [shared], { input: 'invalid json\n', encoding: 'utf8' })
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ jsonrpc: '2.0', id: null, error: { code: -32700 } })
+    expect(readLauncherInstallation(shared)?.executables).toEqual(expect.arrayContaining([
+      { path: installedRuntime, realpath: realpathSync(installedRuntime) },
+      { path: runtime, realpath: realpathSync(runtime) },
+    ]))
+    expect(isAppLauncher({ command: installedRuntime, args: [shared], env_vars: [APP_MCP_TOKEN] })).toBe(true)
+    await upgradeProductionMcpLauncher(home)
+    expect(readLauncherInstallation(shared)?.executables).toHaveLength(2)
+  },
+)
+
+it('does not refresh an unmanaged canonical launcher when legacy directories are absent', async () => {
+  const { home, previous, shared } = await fixture()
+  await rm(dirname(previous), { recursive: true })
+  await mkdir(dirname(shared), { recursive: true })
+  await writeFile(shared, '// custom launcher')
+  await expect(upgradeProductionMcpLauncher(home)).rejects.toThrow('valid managed installation record')
+  expect(await readFile(shared, 'utf8')).toBe('// custom launcher')
+  expect(readLauncherInstallation(shared)).toBeUndefined()
+})
 
 it.each(['codex'] as const)(
   '%s retains its reviewed shared connection when the old production folder is unused', async () => {

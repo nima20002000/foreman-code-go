@@ -1,0 +1,13 @@
+.provider-accounts-settings, .provider-account-form { display: grid; gap: var(--space-4); }
+.provider-accounts-heading, .provider-account-summary header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.provider-accounts-heading { margin-bottom: var(--space-3); }
+.provider-accounts-heading h3 { margin: 0; }
+.provider-account-summary { padding: 24px; }
+.provider-account-summary dl { display: grid; gap: var(--space-2); margin-bottom: 0; }
+.provider-account-summary dl > div { display: flex; justify-content: space-between; gap: var(--space-3); }
+.provider-account-summary dt, .provider-account-summary small { color: var(--n-muted); }
+.provider-account-summary dd { margin: 0; text-align: end; overflow-wrap: anywhere; min-width: 0; }
+.provider-account-actions { flex-wrap: wrap; }
+.provider-account-actions > p { flex-basis: 100%; }
+.provider-account-select { min-width: 0; }
+@media (max-width: 540px) { .provider-account-summary { padding: 18px; } }

@@ -9,6 +9,7 @@ import {
 } from '../../shared/api/harnessSettings'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
+import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 
 type Harness = 'codex'
 type Presets = HarnessMcpList['presets']
@@ -33,7 +34,9 @@ function ChangeDetails({ change }: { change: HarnessMcpChange }) {
     </> : null}
   </dl>
 }
-function ConnectionForm({ busy, onReview }: { busy: boolean; onReview(change: HarnessMcpChange): void }) {
+function ConnectionForm({ busy, disabled, onReview }: {
+  busy: boolean; disabled: boolean; onReview(change: HarnessMcpChange): void
+}) {
   const [name, setName] = useState('')
   const [transport, setTransport] = useState<'remote' | 'stdio'>('remote')
   const [url, setUrl] = useState('')
@@ -72,14 +75,17 @@ function ConnectionForm({ busy, onReview }: { busy: boolean; onReview(change: Ha
       <TextField label="Environment variable names (optional)" value={environment} autoComplete="off" placeholder="SERVICE_TOKEN, SERVICE_ACCOUNT" onChange={(event) => setEnvironment(event.target.value)} />
     </>}
     {error ? <Alert tone="danger" live title={error} /> : null}
-    <Button variant="primary" disabled={busy} onClick={review}>Review connection</Button>
+    <Button variant="primary" disabled={busy || disabled} onClick={review}>Review connection</Button>
   </div>
 }
 
-function NativeMcpManager({ harness }: { harness: Harness }) {
+function NativeMcpManager({ harness, accessUnavailable = false }: { harness: Harness; accessUnavailable?: boolean }) {
   const guard = useContext(UnsavedChangesContext)
-  const servers = useNativeMcpServers(harness)
-  const plans = useNativeMcpPlans(harness)
+  const servers = useNativeMcpServers(harness, !accessUnavailable)
+  const accessError = useProtectedAccessError(servers)
+  const blocked = accessUnavailable || Boolean(accessError)
+  const serverData = blocked ? undefined : servers.data
+  const plans = useNativeMcpPlans(harness, !blocked)
   const request = useRequestNativeMcpChange()
   const decision = useDecideNativeMcpChange()
   const managed = useApplyManagedMcpChange(harness, plans.data?.items)
@@ -94,21 +100,22 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   const [feedback, setFeedback] = useState<string>()
   // A failed HTTP response may hide a committed plan. Reuse the same receipt ID on retry.
   const command = useRef<{ signature: string; id: string } | undefined>(undefined)
-  const allPlans = [...(plans.data?.items ?? [])]
+  const allPlans = blocked ? [] : [...(plans.data?.items ?? [])]
   const managedPlan = managed.operation?.plan
-  const selected = decision.data?.id === active ? decision.data : allPlans.find((plan) => plan.id === active)
+  const selected = blocked ? undefined : allPlans.find((plan) => plan.id === active)
+    ?? (decision.data?.id === active ? decision.data : undefined)
     ?? (created?.id === active ? created : managedPlan?.id === active ? managedPlan : undefined)
   const reconcileInput = selected ? reconcileInputs[selected.id] : undefined
   const acceptObservedState = selected ? observedAcceptance[selected.id] ?? false : false
-  const inspection = useNativeMcpServers(selected?.harness ?? harness, Boolean(active))
+  const inspection = useNativeMcpServers(selected?.harness ?? harness, Boolean(active) && !blocked)
   const expired = Boolean(selected && Date.parse(selected.expiresAt) <= Date.now())
   const requestChange = (change: HarnessMcpChange) => {
-    if (!servers.data || request.isPending) return
-    const signature = JSON.stringify([harness, servers.data.revision, change])
+    if (!serverData || servers.isError || request.isPending) return
+    const signature = JSON.stringify([harness, serverData.revision, change])
     if (command.current?.signature !== signature) command.current = { signature, id: crypto.randomUUID() }
     setFeedback(undefined)
     decision.reset()
-    request.mutate({ harness, commandId: command.current.id, expectedRevision: servers.data.revision, change }, {
+    request.mutate({ harness, commandId: command.current.id, expectedRevision: serverData.revision, change }, {
       onSuccess: (result) => { setCreated(result.value); setActive(result.value.id); setAdding(false) },
     })
   }
@@ -121,9 +128,9 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     } })
   }
   const manage = (preset: HarnessMcpManagedPreset, change: { installed: boolean } | { enabled: boolean }) => {
-    if (!servers.data || managed.isPending || managed.operation) return
+    if (!serverData || servers.isError || managed.isPending || managed.operation) return
     setFeedback(undefined)
-    managed.start({ preset, ...change, expectedRevision: servers.data.revision })
+    managed.start({ preset, ...change, expectedRevision: serverData.revision })
   }
   const reconcile = () => {
     if (!selected || !inspection.data || reconciliation.isPending) return
@@ -145,8 +152,8 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
       if (!attempt.unresolved) clearInput()
     } })
   }
-  const presets = servers.data?.presets
-  const details = servers.data?.servers.find((server) => server.name === detailsName)
+  const presets = serverData?.presets
+  const details = serverData?.servers.find((server) => server.name === detailsName)
   const detailsPreset = details && APP_MCP_SERVER_NAMES.some((name) => name === details.name) && ['installed', 'disabled'].includes(presets?.graphql ?? '') ? 'graphql'
     : details?.name === 'linear' && ['installed', 'disabled'].includes(presets?.linear ?? '') ? 'linear' : undefined
   const detailsRemovable = Boolean(details && (detailsPreset || details.editable))
@@ -162,14 +169,17 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   return <section className="harness-mcp-manager" aria-label={`${harness} MCP connections`}>
     <div className="harness-section-heading"><div><h4>MCP servers</h4><p className="harness-muted">Native user configuration · changes apply to new sessions.</p></div>
       <div className="harness-inline-actions"><Button size="sm" disabled={servers.isFetching} onClick={() => void servers.refetch()}>Refresh</Button>
-        <Button size="sm" variant="primary" disabled={!servers.data || servers.isError} onClick={() => { request.reset(); setAdding(true) }}>Add server</Button></div></div>
+        <Button size="sm" variant="primary" disabled={!serverData || servers.isError} onClick={() => { request.reset(); setAdding(true) }}>Add server</Button></div></div>
+    {blocked ? <Alert tone="warning" title="Connection access is unavailable">Your connection draft is kept. Restore access before reviewing it.</Alert> : null}
     {servers.isPending ? <p role="status">Reading configured servers…</p> : null}
     {servers.isError ? <Alert tone="danger" title={servers.error.message} /> : null}
     {request.isError ? <Alert live tone="danger" title={request.error.message} /> : null}
     {managed.operation ? <Alert live tone="warning" title={managed.operation.phase === 'sending' ? 'Applying original MCP change' : 'MCP change needs attention'}>
       {managed.operation.error ?? (managed.operation.phase === 'sending' ? 'Waiting for the native result.' : 'Review the accepted request before making another change.')}
-      {managed.operation.phase === 'retry' ? <Button size="sm" onClick={managed.retry}>Retry original change</Button> : null}
-      {managed.operation.plan ? <Button size="sm" onClick={() => { decision.reset(); setActive(managed.operation!.plan!.id) }}>Review original change</Button> : null}
+      {managed.operation.phase === 'retry' ? <Button size="sm" disabled={blocked || servers.isError}
+        onClick={managed.retry}>Retry original change</Button> : null}
+      {managed.operation.plan ? <Button size="sm" disabled={blocked}
+        onClick={() => { decision.reset(); setActive(managed.operation!.plan!.id) }}>Review original change</Button> : null}
     </Alert> : managed.isError ? <Alert live tone="danger" title="MCP change was not accepted">{managed.error.message}</Alert> : null}
     {managed.data?.status === 'applied' ? <p role="status" className="harness-success">Connection settings saved. New sessions will use them.</p> : null}
     {feedback ? <p role="status" className="harness-success">{feedback}</p> : null}
@@ -179,7 +189,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         if (status === 'installed' || status === 'disabled') return null
         const label = preset === 'graphql' ? 'Foreman Code MCP' : 'Linear MCP'
         const actionable = status === 'missing' || status === 'legacy'
-          || (status === 'mismatch' && (preset !== 'linear' || !servers.data?.servers.find((server) => server.name === 'linear')?.protected))
+          || (status === 'mismatch' && (preset !== 'linear' || !serverData?.servers.find((server) => server.name === 'linear')?.protected))
         return <div key={preset} className="harness-preset-row"><div><strong>{label}</strong>
           <small>{status === 'missing' ? preset === 'graphql' ? 'App tools for Operator chat and workflow agents, with automatic instance routing. Each agent’s role decides which tools it can call.' : 'Read-only Linear connection; sign in with the harness after adding.'
             : status === 'legacy' ? 'Replaces the separate graphql-app and graphql-operator connections with one connection for every role.'
@@ -190,8 +200,8 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
         </div>
       })}
     </div> : null}
-    {servers.data?.servers.length === 0 ? <div className="harness-empty">No servers configured. Add a connection to give this harness more tools.</div> : null}
-    <ul className="harness-server-list">{servers.data?.servers.map((server) => {
+    {serverData?.servers.length === 0 ? <div className="harness-empty">No servers configured. Add a connection to give this harness more tools.</div> : null}
+    <ul className="harness-server-list">{serverData?.servers.map((server) => {
       const status = !server.enabled ? 'Disabled'
         : server.origin === 'inherited' ? 'Inherited'
           : needsAttention(server.name, presets) ? 'Needs attention' : 'Enabled'
@@ -215,7 +225,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
     </section> : null}
     {plans.isError ? <p className="harness-muted" role="status">Change requests: {plans.error.message}</p> : null}
     <Dialog open={adding} onOpenChange={(open) => { if (open) setAdding(true); else void (async () => { if (!guard || await guard.surfaces()) setAdding(false) })() }} title={`Add ${'Codex'} MCP server`} size="md" busy={request.isPending}>
-      {adding ? <ConnectionForm busy={request.isPending} onReview={requestChange} /> : null}
+      {adding ? <ConnectionForm busy={request.isPending} disabled={blocked || servers.isError} onReview={requestChange} /> : null}
       {request.isError ? <Alert tone="danger" title={request.error.message} /> : null}
     </Dialog>
     <Dialog open={Boolean(active)} onOpenChange={(open) => { if (!open) setActive(undefined) }} title="Review MCP change" size="md" busy={decision.isPending || reconciliation.isPending}
@@ -282,7 +292,7 @@ function NativeMcpManager({ harness }: { harness: Harness }) {
   </section>
 }
 
-export function HarnessMcpManager({ harness }: { harness: Harness }) {
+export function HarnessMcpManager({ harness, accessUnavailable }: { harness: Harness; accessUnavailable?: boolean }) {
   const epoch = useHarnessSessionEpoch()
-  return <NativeMcpManager key={`${harness}:${epoch}`} harness={harness} />
+  return <NativeMcpManager key={`${harness}:${epoch}`} harness={harness} accessUnavailable={accessUnavailable} />
 }

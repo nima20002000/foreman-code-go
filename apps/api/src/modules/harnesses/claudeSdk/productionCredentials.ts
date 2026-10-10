@@ -1,11 +1,32 @@
 import type { HarnessConfiguration } from '@foreman-code/contracts'
 import { DomainError } from '../../errors.js'
+import type { ProviderAccountResolver } from '../../provider-accounts/service.js'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 
-/** Main production has no authorized host/profile API-key delivery source.
- * Saved settings and native proof cannot supply a secret or authorize ambient authentication. */
-export function requireClaudeProductionCredentialDelivery(configuration: HarnessConfiguration): void {
-  if (configuration.harness === 'claude' && configuration.authMode === 'api-key') {
-    throw new DomainError('CLAUDE_API_KEY_DELIVERY_UNAVAILABLE',
-      'Claude API-key execution requires authorized host/profile credential delivery, which is not configured. This profile cannot be qualified or launched; inherited ANTHROPIC_API_KEY is never used.', 409)
+/** Secrets are resolved locally after the immutable account configuration is checked. */
+export async function requireClaudeProductionCredentialDelivery(configuration: HarnessConfiguration,
+  accounts?: ProviderAccountResolver, host?: CanonicalMachineReference): Promise<string | undefined> {
+  if (configuration.harness === 'opencode') return undefined
+  if (host?.kind === 'device') {
+    if (configuration.accountId) throw new DomainError('PROVIDER_ACCOUNT_LOCAL_ONLY',
+      'Managed provider accounts can run only on the computer where they were added.', 409)
+    return undefined
   }
+  const account = await accounts?.resolve(configuration.harness, configuration.accountId)
+  if (configuration.accountId && !account) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
+    'The selected managed provider account is unavailable.', 409)
+  if (configuration.harness === 'claude' && account
+    && (account.accountId !== configuration.accountId || account.homePath !== configuration.configDirectory
+      || account.authMode !== configuration.authMode)) {
+    throw new DomainError('PROVIDER_ACCOUNT_CONFIGURATION_CONFLICT',
+      'Save the selected account settings before running this Claude profile.', 409)
+  }
+  if (configuration.harness === 'claude' && configuration.authMode === 'api-key') {
+    if (configuration.accountId && account?.authMode === 'api-key' && account.apiKey) {
+      return account.apiKey
+    }
+    throw new DomainError('CLAUDE_API_KEY_DELIVERY_UNAVAILABLE',
+      'Select a managed Claude account with a locally provisioned API key before running this profile.', 409)
+  }
+  return undefined
 }

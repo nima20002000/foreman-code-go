@@ -14,7 +14,7 @@ import { AgentSettingsForm } from '../graph/AgentSettingsForm'
 import { changeDraftAgent, editorAgents } from '../graph/nextDraft/agentEdits'
 import type { NextDraftEdit } from '../graph/nextDraft/state'
 import { useWorktreeChoices } from '../../shared/api/worktreeChoices'
-import { worktreeLabel } from './WorkflowWorktreeField'
+import { worktreeLabel } from './worktreePresentation'
 
 function installAgent(draftKey: string, instanceId: string, agent: Agent, nodeId?: string, prompt?: string,
   graphqlTools?: GraphqlToolOverride, placement?: SavedNodePlacement, worktree?: AgentWorktreeSettings) {

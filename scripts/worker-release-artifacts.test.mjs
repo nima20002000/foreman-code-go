@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import { buildWorkerReleaseArtifacts, readCommittedWorkerTargets } from './worker-release-artifacts.mjs'
+
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
+const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
+
+async function fixture(t) {
+  const repository = await mkdtemp(join(tmpdir(), 'worker-release-artifacts-'))
+  t.after(() => rm(repository, { recursive: true, force: true }))
+  const git = args => execFileSync('git', args, { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] })
+  await mkdir(join(repository, 'apps/worker/artifacts'), { recursive: true })
+  await mkdir(join(repository, 'apps/api'), { recursive: true })
+  await writeFile(join(repository, 'package.json'), JSON.stringify({ version: '0.0.57' }))
+  await writeFile(join(repository, 'apps/api/package.json'), JSON.stringify({ version: '0.1.0' }))
+  const targets = [target, { ...target, node: 'v22.23.2' },
+    { ...target, osRelease: '26.04', libc: 'glibc-2.43' },
+    { ...target, osRelease: '26.04', libc: 'glibc-2.43', node: 'v22.23.2' }]
+  for (const [index, value] of targets.entries()) {
+    await writeFile(join(repository, `apps/worker/artifacts/ubuntu-${index}-target.json`), JSON.stringify(value))
+  }
+  git(['init', '-q'])
+  git(['add', '.'])
+  git(['-c', 'user.name=Artifact Test', '-c', 'user.email=artifact@example.invalid', 'commit', '-qm', 'reviewed targets'])
+  const commit = git(['rev-parse', 'HEAD']).toString().trim()
+  const directory = join(repository, 'worker-artifacts')
+  const productManifestPath = join(repository, 'installed-product.json')
+  const calls = []
+  const run = async (command, args, options) => {
+    calls.push({ command, args, commit: options.env.FOREMAN_CODE_WORKER_BUILD_COMMIT })
+    const selected = JSON.parse(git(['show', `${options.env.FOREMAN_CODE_WORKER_BUILD_COMMIT}:${args[1]}`]))
+    const output = args[2]
+    await mkdir(join(output, 'src'), { recursive: true, mode: 0o700 })
+    const bytes = Buffer.from('export const worker = true\n')
+    await writeFile(join(output, 'src/cli.mjs'), bytes)
+    const manifest = { format: 1, version: '0.0.57', commit, lockfileSha256: 'b'.repeat(64),
+      packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target: selected,
+      files: [{ path: 'src/cli.mjs', sha256: sha256(bytes), size: bytes.length }] }
+    await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+  }
+  return { repository, commit, directory, productManifestPath, run, calls }
+}
+
+test('packages every reviewed target from one committed release in private storage', async t => {
+  const f = await fixture(t)
+  await writeFile(join(f.repository, 'apps/worker/artifacts/ubuntu-0-target.json'), JSON.stringify({ ...target, node: 'bad' }))
+  const index = await buildWorkerReleaseArtifacts(f)
+  assert.equal(index.version, '0.0.57')
+  assert.equal(JSON.parse(await readFile(f.productManifestPath)).version, '0.0.57')
+  assert.equal(JSON.parse(await readFile(join(f.repository, 'apps/api/package.json'))).version, '0.1.0')
+  assert.equal((await stat(f.productManifestPath)).mode & 0o077, 0)
+  assert.equal(index.artifacts.length, 4)
+  assert.equal(f.calls.length, 4)
+  assert.ok(f.calls.every(call => call.commit === f.commit))
+  assert.equal((await stat(f.directory)).mode & 0o077, 0)
+  assert.equal((await stat(join(f.directory, 'index.json'))).mode & 0o077, 0)
+  assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), index)
+  for (const artifact of index.artifacts) {
+    const bytes = await readFile(join(f.directory, artifact.manifestSha256, 'manifest.json'))
+    assert.equal(sha256(bytes), artifact.manifestSha256)
+    assert.deepEqual(JSON.parse(bytes).target, artifact.target)
+  }
+})
+
+test('rejects corrupted build output and removes incomplete artifact storage', async t => {
+  const f = await fixture(t)
+  const run = async (...args) => {
+    await f.run(...args)
+    await writeFile(join(args[1][2], 'src/cli.mjs'), 'changed after building')
+  }
+  await assert.rejects(buildWorkerReleaseArtifacts({ ...f, run }), /checksum mismatch/)
+  await assert.rejects(stat(f.directory), { code: 'ENOENT' })
+})
+
+test('keeps failed builds from publishing an index', async t => {
+  const f = await fixture(t)
+  const run = async () => { throw new Error('Artifact build failed') }
+  await assert.rejects(buildWorkerReleaseArtifacts({ ...f, run }), /Artifact build failed/)
+  await assert.rejects(stat(f.directory), { code: 'ENOENT' })
+})
+
+test('rejects unsupported reviewed targets before building', async t => {
+  const f = await fixture(t)
+  const path = join(f.repository, 'apps/worker/artifacts/ubuntu-0-target.json')
+  await writeFile(path, JSON.stringify({ ...target, arch: 'arm64' }))
+  execFileSync('git', ['add', '.'], { cwd: f.repository })
+  execFileSync('git', ['-c', 'user.name=Artifact Test', '-c', 'user.email=artifact@example.invalid',
+    'commit', '-qm', 'unsupported target'], { cwd: f.repository })
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.repository, encoding: 'utf8' }).trim()
+  assert.throws(() => readCommittedWorkerTargets(f.repository, commit), /linux-x64/)
+})

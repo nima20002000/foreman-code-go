@@ -24,8 +24,9 @@ async function fixture() {
     const configured = await base.services.workspaces.update(base.writer.principal, 'http', {
       workspaceId: base.f.scope.workspaceId, commandId: randomUUID(), expectedRevision: Number(workspace.revision), repository,
     })
-    base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, undefined,
-      { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies })
+    base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, {
+      worktrees: { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies },
+    })
     const input = await base.create()
     input.expectedLocationRevision = placement.locationRevision
     const source = await placement.sources.get(base.writer.principal, 'http', {

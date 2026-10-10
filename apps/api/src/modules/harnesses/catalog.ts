@@ -36,21 +36,24 @@ export class HarnessCatalogService {
       managed.defaults[harness] && !unavailable.has(harness) ? [this.currentStatus(managed.defaults[harness]!)] : []))
   }
 
-  private currentStatus(value: HarnessConfiguration) {
-    return this.statuses.get(canonical(withAdvancedDefaults(value)), () => this.inspectConfiguration(value))
+  private currentStatus(value: HarnessConfiguration,
+    options: { signal?: AbortSignal; allowStale?: boolean } = {}) {
+    return this.statuses.get(canonical(withAdvancedDefaults(value)),
+      (active) => this.inspectConfiguration(value, active), options)
   }
 
-  private async inspectConfiguration(value: HarnessConfiguration) {
+  private async inspectConfiguration(value: HarnessConfiguration, signal?: AbortSignal) {
     assertClaudeFullAccess(value)
     try {
-      return await this.checks.get(canonical(withAdvancedDefaults(value)), async () => {
+      return await this.checks.get(canonical(withAdvancedDefaults(value)), async (active) => {
         const qualification = HarnessQualificationSchema.parse(
-          await this.qualifier.qualify(value, this.qualificationDirectory, AbortSignal.timeout(60_000)))
+          await this.qualifier.qualify(value, this.qualificationDirectory,
+            AbortSignal.any([active, AbortSignal.timeout(60_000)])))
         if (!qualification.ready || !qualification.authenticated || qualification.harness !== value.harness) {
           throw new DomainError('HARNESS_DEFAULTS_UNQUALIFIED', 'Sign in to the native harness and check this selection again.', 409)
         }
         return { qualification, checkedAt: new Date().toISOString() }
-      })
+      }, { signal })
     } catch (error) { throw qualificationError(error) }
   }
 
@@ -87,9 +90,10 @@ export class HarnessCatalogService {
     return (await this.inspectConfiguration(value)).qualification
   }
 
-  async checkConfiguration(principal: ManagementPrincipal, configuration: HarnessConfiguration) {
+  async checkConfiguration(principal: ManagementPrincipal, configuration: HarnessConfiguration, signal?: AbortSignal) {
     requireAuthorization(principal, 'harnesses:read')
-    return { configuration, ...await this.currentStatus(configuration) }
+    return { configuration, ...await this.currentStatus(configuration,
+      { ...(signal ? { signal } : {}), allowStale: false }) }
   }
 
   private async describe(principal: ManagementPrincipal, harness: AgentHarness, defaults: HarnessDefaults, revision: number,

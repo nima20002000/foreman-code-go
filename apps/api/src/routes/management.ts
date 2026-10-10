@@ -20,6 +20,7 @@ import type { FastifyInstance } from 'fastify'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
 import { registerPromptSettingsRoutes } from './promptSettings.js'
 import { registerHarnessSettingsRoutes } from './harnessSettings.js'
+import { pluginHttpRead } from './pluginReadCancellation.js'
 import { registerSkillRoutes } from './skills.js'
 
 import {
@@ -164,9 +165,10 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     return services.agents.get(requirePrincipal(request), input.workspaceId, input.agentId)
   })
 
-  app.post<{ Body: unknown }>('/api/management/harnesses/validate', async (request) => {
+  app.post<{ Body: unknown }>('/api/management/harnesses/validate', async (request, reply) => {
     const input = HarnessConfigurationCheckInputSchema.parse(request.body)
-    return HarnessConfigurationCheckResultSchema.parse(await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration))
+    return pluginHttpRead(request, reply, async (signal) => HarnessConfigurationCheckResultSchema.parse(
+      await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration, signal)))
   })
 
   app.get('/api/management/harnesses', async (request) => services.harnesses.list(requirePrincipal(request)))

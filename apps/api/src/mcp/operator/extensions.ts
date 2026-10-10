@@ -12,18 +12,22 @@ import { VersionHistoryService } from '../../modules/workflows/historyManagement
 import { SkillCatalogService } from '../../modules/skills/catalog.js'
 import { SkillUsageService } from '../../modules/skills/usage.js'
 import { CurrentWorkflowAuthoring } from '../../modules/workflows/currentAuthoring.js'
+import type { ProviderAccountConfigurationService } from '../../modules/harnesses/providerAccountConfiguration.js'
 
 export function createOperatorExtensions(input: {
   pool:pg.Pool;commands:PostgresCommandCoordinator;catalog:HarnessCatalogService;native:NativeConfigurationService;
   detection:McpDetectionService;locations:WorkspaceLocationService;
   provisioningRoot?:string|undefined;
   harnessProfiles?: Pick<HostHarnessOverrideService, 'validateSelection'>;
+  accountConfigurations?: ProviderAccountConfigurationService;
 }) {
-  const agents = new OperatorAgentMutationService(input.pool,input.commands,input.catalog,input.harnessProfiles)
+  const agents = new OperatorAgentMutationService(input.pool,input.commands,input.catalog,input.harnessProfiles,
+    input.accountConfigurations)
   return {
     native:input.native,
     agents,
-    skillUsage:new SkillUsageService(input.pool,agents,new CurrentWorkflowAuthoring(input.pool,input.commands)),
+    skillUsage:new SkillUsageService(input.pool,agents,new CurrentWorkflowAuthoring(input.pool,input.commands,
+      { accountConfigurations: input.accountConfigurations })),
     history:new VersionHistoryService(input.pool),
     lifecycle:new OperatorLifecycleService(input.commands),
     workspace:new OperatorWorkspaceControls(input.pool,input.commands,input.locations,input.detection,input.provisioningRoot),

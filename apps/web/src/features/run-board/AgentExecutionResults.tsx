@@ -1,6 +1,8 @@
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { createStore, useStore } from 'zustand'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import type { JobInitiatingAgent } from '@foreman-code/contracts/jobs'
-import { jobQueueHasExecution } from '@foreman-code/contracts/job-admission'
+import { jobQueueHasExecution, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import type { RepeatGraphScopeV3, RunExecutionSummary } from '@foreman-code/contracts/wave25'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
@@ -23,10 +25,12 @@ export function AgentExecutionResults({ selection, scope, execution, name }: {
   execution: Exclude<RunExecutionSummary, { kind: 'job' }>; name: string
 }) {
   useHarnessSessionEpoch()
+  const client = useQueryClient()
   const origin: JobInitiatingAgent = { workflowId: scope.workflowId, runId: scope.runId,
     agentId: execution.agentId, executionId: execution.executionId }
+  const queryKey = [...runNodeInspectionKey(selection), execution.executionId, 'ci']
   const ci = useInfiniteQuery({
-    queryKey: [...runNodeInspectionKey(selection), execution.executionId, 'ci'],
+    queryKey,
     initialPageParam: undefined as string | undefined,
     queryFn: ({ signal, pageParam }) => readForRunVisit(selection, signal, async () => {
       const page = await jobsClient.queuePage(scope.workspaceId,
@@ -53,18 +57,33 @@ export function AgentExecutionResults({ selection, scope, execution, name }: {
       {ci.isError ? <p role="status">CI history unavailable. {runReadErrorLabel(ci.error)}</p> : <>
         {ci.isPending ? <p role="status">Reading CI requests…</p> : null}
         {!ci.isPending && !tickets.size ? <p>No CI requests recorded for this Agent execution.</p> : null}
-        {[...tickets.values()].map(ticket => <section key={ticket.id} aria-label={`CI request ${ticket.id}`}>
-          <JobQueueFacts ticket={ticket} />
-          {jobQueueHasExecution(ticket) ? <JobResult workspaceId={scope.workspaceId}
-            executionId={ticket.executionId} expectedInitiatingAgent={origin}
-            expectedDefinitionVersionId={ticket.definition.versionId} /> : null}
-        </section>)}
+        {[...tickets.values()].map(ticket => <CiRequest key={ticket.id} ticket={ticket}
+          workspaceId={scope.workspaceId} origin={origin} />)}
         {ci.hasNextPage ? <Button size="sm" disabled={ci.isFetching}
           onClick={() => void ci.fetchNextPage()}>Load older CI requests</Button> : null}
       </>}
       <Button size="sm" disabled={ci.isFetching} onClick={() => void ci.refetch()}>Refresh CI requests</Button>
+      {(ci.data?.pageParams.length ?? 0) > 1 || ci.data?.pageParams[0] !== undefined
+        ? <Button size="sm" disabled={ci.isFetching}
+          onClick={() => void client.resetQueries({ queryKey, exact: true })}>Newest CI requests</Button> : null}
     </section>
   </>
+}
+
+function CiRequest({ ticket, workspaceId, origin }: {
+  ticket: JobQueueTicket; workspaceId: string; origin: JobInitiatingAgent
+}) {
+  const [store] = useState(() => createStore<{ open: boolean }>(() => ({ open: false })))
+  const open = useStore(store, state => state.open)
+  const accepted = jobQueueHasExecution(ticket)
+  return <section aria-label={`CI request ${ticket.id}`}>
+    <JobQueueFacts ticket={ticket} />
+    {accepted && <Button size="sm" aria-expanded={open}
+      onClick={() => store.setState({ open: !open })}>{open ? 'Hide result' : 'View result'}</Button>}
+    {accepted && open && <JobResult workspaceId={workspaceId}
+      executionId={ticket.executionId} expectedInitiatingAgent={origin}
+      expectedDefinitionVersionId={ticket.definition.versionId} />}
+  </section>
 }
 
 function AgentOutput({ selection, scope, execution, name }: {

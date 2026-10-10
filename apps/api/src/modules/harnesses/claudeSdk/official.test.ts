@@ -46,3 +46,23 @@ it('accepts another SDK release by its method contract and refuses a missing met
   await expect(loadOfficialClaudeSdk(profile, recovery, '/not-executed/claude', './sdk.mjs'))
     .rejects.toThrow('qualified absolute entrypoint')
 })
+
+it('reads and forks concurrent account homes without changing the API process environment', async () => {
+  const f = await installedModule()
+  await writeFile(f.entrypoint, `
+export function query() { throw new Error('No native query') }
+export async function getSessionInfo(id) { return { sessionId: id, profile: process.env.CLAUDE_CONFIG_DIR } }
+export async function getSessionMessages() { return [{ profile: process.env.CLAUDE_CONFIG_DIR }] }
+export async function forkSession() { return { sessionId: process.env.CLAUDE_CONFIG_DIR + '/fork' } }
+export async function listSubagents() { return [process.env.CLAUDE_CONFIG_DIR] }
+export async function getSubagentMessages() { return [{ profile: process.env.CLAUDE_CONFIG_DIR }] }
+`)
+  const before = process.env.CLAUDE_CONFIG_DIR
+  const clients = await Promise.all(['/accounts/one/home', '/accounts/two/home'].map(profile =>
+    loadOfficialClaudeSdk(profile, { root: f.root, owner: profile }, '/not-executed/claude', f.entrypoint)))
+  const results = await Promise.all(clients.map(client => client.getSessionMessages('session', { dir: '/project' })))
+  expect(results).toEqual([[{ profile: '/accounts/one/home' }], [{ profile: '/accounts/two/home' }]])
+  expect(await clients[0]!.forkSession('session', { dir: '/project' })).toEqual({ sessionId: '/accounts/one/home/fork' })
+  expect(await clients[1]!.listSubagents!('session', { dir: '/project' })).toEqual(['/accounts/two/home'])
+  expect(process.env.CLAUDE_CONFIG_DIR).toBe(before)
+})

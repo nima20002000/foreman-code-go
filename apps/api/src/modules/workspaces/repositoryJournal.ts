@@ -81,7 +81,7 @@ export class WorkspaceRepositoryJournal {
       throw new DomainError('REPOSITORY_IMPORT_PENDING', 'Another repository import is unfinished. Read its progress first.', 409)
     }
     const importId = randomUUID()
-    const workspaceKey = commandInputHash(input.workspaceId).slice(0, 16)
+    const workspaceKey = commandInputHash(input.workspaceId).slice('sha256:'.length).slice(0, 16)
     const owned = { ...preparation, importId, directoryName: `repository-${workspaceKey}-${importId}` }
     const result = await sql.query<ImportRow>(`insert into workspace_repository_imports
       (import_id,principal_id,workspace_id,command_id,input_hash,input,phase,preparation)

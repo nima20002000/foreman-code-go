@@ -134,14 +134,20 @@ describe('fleet source propagation', () => {
     expect(status.tasks.find(task => task.kind === 'sync-plugins')?.summary).toContain('could not be read')
   })
 
-  it('retries failed background work with unchanged sources on the next tick', async () => {
+  it('backs off failed background work across Main restarts and retries after the delay', async () => {
     const computer = fakeComputer()
-    const { fleet, sources, requested } = fakeFleet(computer)
+    let now = Date.now()
+    computer.ports.now = () => new Date(now)
+    const { fleet, sources, requested, createFleet } = fakeFleet(computer, () => now)
     sources.codexPlugins = async () => ['notes@official']
     computer.fail((binary, args) => binary.endsWith('codex') && args[0] === 'plugin' && args[1] === 'add')
     await fleet.syncChangedSources()
     expect((await settle(computer)).tasks.find(task => task.kind === 'sync-plugins')?.state).toBe('failed')
     computer.fail(() => false)
+    await fleet.syncChangedSources()
+    await createFleet().syncChangedSources()
+    expect(requested.filter(task => task.kind === 'sync-plugins')).toHaveLength(1)
+    now += 5 * 60_000
     await fleet.syncChangedSources()
     await settle(computer)
     expect([...computer.codexPlugins]).toEqual(['notes@official'])
@@ -154,6 +160,8 @@ describe('fleet source propagation', () => {
 
   it('waits for matching completion and retries an interrupted Worker task', async () => {
     const computer = fakeComputer()
+    let now = Date.now()
+    computer.ports.now = () => new Date(now)
     const originalRead = computer.ports.readText
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
@@ -161,17 +169,106 @@ describe('fleet source propagation', () => {
       if (path.endsWith('fleet-sync.json')) await gate
       return originalRead(path)
     }
-    const { fleet, requested } = fakeFleet(computer)
+    const { fleet, requested } = fakeFleet(computer, () => now)
     await fleet.syncChangedSources()
     await fleet.syncChangedSources()
     expect(requested).toHaveLength(2)
     const original = computer.maintenance
     computer.maintenance = new ComputerMaintenance(computer.ports)
     await fleet.syncChangedSources()
+    expect(requested).toHaveLength(2)
+    now += 5 * 60_000
+    await fleet.syncChangedSources()
     expect(requested).toHaveLength(4)
     release()
     await settle({ ...computer, maintenance: original })
     await settle(computer)
+  })
+
+  it('caps repeated failures at hourly retries and shares concurrent automatic dispatches', async () => {
+    const computer = fakeComputer()
+    let now = Date.now()
+    computer.ports.now = () => new Date(now)
+    const { fleet, requested } = fakeFleet(computer, () => now)
+    computer.fail((_binary, args) => args[0] === 'mcp' && args[1] === 'list')
+    await Promise.all([fleet.syncChangedSources(), fleet.syncChangedSources(), fleet.keepCurrent()])
+    await settle(computer)
+    expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(1)
+    for (const minutes of [5, 10, 20, 40, 60, 60]) {
+      const count = requested.filter(task => task.kind === 'sync-mcp').length
+      for (let tick = 1; tick < minutes; tick++) {
+        now += 60_000
+        await fleet.syncChangedSources()
+      }
+      expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(count)
+      now += 60_000
+      await fleet.syncChangedSources()
+      await settle(computer)
+      expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(count + 1)
+    }
+  })
+
+  it.each([-60, 60])('backs off with a Worker clock offset of %i minutes', async offset => {
+    const computer = fakeComputer()
+    let now = Date.now()
+    computer.ports.now = () => new Date(now + offset * 60_000)
+    const { fleet, createFleet, requested } = fakeFleet(computer, () => now)
+    computer.fail((_binary, args) => args[0] === 'mcp' && args[1] === 'list')
+    await fleet.syncChangedSources()
+    await settle(computer)
+    for (let tick = 0; tick < 4; tick++) {
+      now += 60_000
+      await createFleet().syncChangedSources()
+    }
+    expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(1)
+    now += 60_000
+    await fleet.syncChangedSources()
+    await settle(computer)
+    expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(2)
+  })
+
+  it('retries an unanswered dispatch with the same command ID without duplicating accepted work', async () => {
+    const computer = fakeComputer()
+    let now = Date.now()
+    computer.ports.now = () => new Date(now)
+    const { fleet, requested, endpoint } = fakeFleet(computer, () => now)
+    const request = endpoint.request
+    let loseReply = true
+    endpoint.request = async (device, namespace, payload) => {
+      const result = await request(device, namespace, payload)
+      if (MaintenanceRequestSchema.parse(payload).operation === 'start' && loseReply) {
+        loseReply = false
+        throw new Error('Reply lost')
+      }
+      return result
+    }
+    await fleet.syncChangedSources()
+    await settle(computer)
+    now += 5 * 60_000
+    await fleet.syncChangedSources()
+    expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(1)
+    expect(computer.calls.filter(call => call.args[0] === 'mcp' && call.args[1] === 'add')).toHaveLength(1)
+  })
+
+  it('reports secret-bearing Claude servers as skipped in a successful persisted sync', async () => {
+    const computer = fakeComputer()
+    const { fleet, sources, requested } = fakeFleet(computer)
+    sources.codexUserMcpServers = async () => ({})
+    sources.claudeUserMcpServers = async () => ({
+      private: { type: 'http', url: 'https://private.example/mcp', headers: { Authorization: 'Bearer fixture-secret' } },
+    })
+    await fleet.syncChangedSources()
+    await settle(computer)
+    computer.maintenance = new ComputerMaintenance(computer.ports)
+    const status = await computer.maintenance.status(AbortSignal.timeout(1000))
+    expect(status.tasks.find(task => task.kind === 'sync-mcp')).toMatchObject({
+      state: 'succeeded', summary: expect.stringContaining('contains credentials; configure it separately'),
+    })
+    expect(status.tasks.find(task => task.kind === 'sync-mcp')?.summary).toContain('skipped')
+    expect(JSON.stringify(requested)).not.toContain('fixture-secret')
+    expect(computer.calls.some(call => call.args[0] === 'mcp')).toBe(false)
+    await fleet.syncChangedSources()
+    expect(requested.filter(task => task.kind === 'sync-mcp')).toHaveLength(1)
   })
 
   it.each(['sync-mcp', 'sync-plugins'] as const)('tracks a queued %s task through persisted completion', async kind => {

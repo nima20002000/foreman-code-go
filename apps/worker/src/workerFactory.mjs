@@ -14,6 +14,8 @@ import { validateManifest, requireReleaseState } from './installation.mjs';
 import { startWorker, acquireWorkerLock } from './runtime.mjs';
 import { approvedRootExtensions } from './rootExtension.mjs';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { WorkerUpdater, workerUpdateExtension } from './update.mjs';
 import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
 
 export { createWorkerConnection };
@@ -60,7 +62,7 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
 export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync }) {
   const manifest = await prepareWorkerState(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
-  let installed, connection, rsyncEntrypoint;
+  let installed, connection, rsyncEntrypoint, updater;
   const bindingDrains = new Set();
   const bindingFailures = [];
   const bindingLost = binding => {
@@ -73,14 +75,28 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     bindingDrains.add(task);
     void task.then(() => bindingDrains.delete(task), error => { bindingDrains.delete(task); bindingFailures.push(error); });
   };
-  const runtime = await startWorker({ stateDirectory, loadIdentity: loadOrCreateWorkerIdentity, beforeUnlock: async () => {
-    const results = await Promise.allSettled([execution?.close(), installed?.close(), installed?.rsyncWriters?.close()]);
+  const runtime = await startWorker({ stateDirectory, appVersion: manifest.version,
+    loadIdentity: loadOrCreateWorkerIdentity, beforeUnlock: async () => {
+    const updaterClosing = updater?.close();
+    const results = await Promise.allSettled([execution?.close(), installed?.close(),
+      installed?.rsyncWriters?.close(), updaterClosing]);
     while (bindingDrains.size) await Promise.allSettled([...bindingDrains]);
     const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []).concat(bindingFailures);
     if (failures.length) throw new AggregateError(failures, 'Worker shutdown remains incomplete.');
     if (rsyncEntrypoint?.kind === 'configured') await rsyncEntrypoint.close();
   }, createConnection: async ({ bootId, assertStateOwnership }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
+    if (!executionDomains) {
+      const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
+      const releaseDirectory = fileURLToPath(new URL('../', import.meta.url));
+      const manifestSha256 = createHash('sha256').update(await readFile(join(releaseDirectory, 'manifest.json'))).digest('hex');
+      updater = await new WorkerUpdater({ stateDirectory, version: manifest.version, manifestSha256,
+        workerInstallationId: pairing.workerInstallationId, releaseDirectory, facts, assertStateOwnership,
+        connection: () => connection, drain: () => installed.drainForUpdate(),
+        resume: () => installed.resumeAfterUpdate(),
+        reportError: error => process.stderr.write(`Worker update: ${error.code ?? 'worker_update_failed'}\n`),
+      }).initialize();
+    }
     const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
     if (!executionDomains) {
       if (!rsync) {
@@ -102,6 +118,8 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
       const jobConfigurationPath = join(stateDirectory, 'job-runtime.json');
       const jobSelection = await lstat(jobConfigurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       installed = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId, assertStateOwnership,
+        ...(updater ? { workerUpdate: { status: () => updater.status(), start: () => updater.start({ retry: true }),
+          outcome: task => updater.maintenanceOutcome(task) } } : {}),
         configuration: selection ? { path: configurationPath, ownerUid: process.getuid() } : null,
         jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
@@ -119,7 +137,9 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     }
     connection = createWorkerConnection({ pairing, bootId, appVersion: manifest.version,
       onBindingLost: bindingLost,
-      extensions: [...extensions, ...(execution?.extensions ?? []), ...(installed?.extensions ?? []), ...rootExtensions] });
+      onReady: () => updater?.ready(),
+      extensions: [...extensions, ...(updater ? [workerUpdateExtension] : []),
+        ...(execution?.extensions ?? []), ...(installed?.extensions ?? []), ...rootExtensions] });
     return connection;
   } });
   return runtime;

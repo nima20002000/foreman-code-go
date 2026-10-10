@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
-import { ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema, ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
+import { ComputerMaintenanceListSchema, ComputerMaintenanceListInputSchema, ComputerMaintenanceStartInputSchema,
+  ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema, ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
   GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
@@ -27,34 +28,51 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       description: 'Read which harness (Codex, Claude), GitHub CLI accounts each paired computer '
         + 'has installed and is signed in to. Requires global settings:read. Identity strings only (email, username, provider names); '
         + 'no tokens. Results are cached for 30 seconds unless refresh is true; an offline computer reports null accounts. '
-        + 'Each page includes up to 100 paired computers; Main appears only on the first page. Continue with nextCursor as cursor until null.',
+        + 'Supply target to read one current installation independently; target cannot be combined with cursor. '
+        + 'Each fleet page includes up to 100 paired computers; Main appears only on the first page. Continue with nextCursor as cursor until null.',
       inputSchema: ComputerAccountsListInputSchema, outputSchema: ComputerAccountsListSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
     }, input => invokeOperatorTool(context, 'computer_accounts_list',
-      () => context.services.computerAccounts!.list(context.principal, 'mcp', input.refresh === true, input.cursor)))
+      () => input.target
+        ? context.services.computerAccounts!.readTarget(context.principal, 'mcp', input)
+        : context.services.computerAccounts!.list(context.principal, 'mcp', input.refresh === true, input.cursor)))
   }
   const maintenance = context.services.computerMaintenance
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_status')) server.registerTool('computers_maintenance_status', {
     description: 'Read maintenance status for Main and every paired computer: installed and latest Codex/Claude versions, pending OS '
       + 'package updates (including phased or held packages), whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome and sync source fingerprint. '
-      + 'Requires global settings:read. Cached for 20 seconds unless refresh is true; an offline computer reports null status.',
-    inputSchema: z.object({ refresh: z.boolean().optional() }).strict(), outputSchema: ComputerMaintenanceListSchema,
+      + 'Paired Workers also report current and target application versions, update state and the last update error, '
+      + 'including rollback. '
+      + 'Requires global settings:read. Supply target to read one current installation independently. '
+      + 'Settled status is cached for 20 seconds unless refresh is true; pending probes are shared. An offline computer reports null status.',
+    inputSchema: ComputerMaintenanceListInputSchema, outputSchema: ComputerMaintenanceListSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
-  }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => maintenance.list(context.principal, 'mcp', input.refresh === true)))
+  }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => input.target
+    ? maintenance.readTarget(context.principal, 'mcp', input)
+    : maintenance.list(context.principal, 'mcp', input.refresh === true)))
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_start')) server.registerTool('computers_maintenance_start', {
-    description: 'Start one maintenance task on the given computers, or on Main and every paired computer when targets is omitted: '
+    description: 'Start one maintenance task on the given computers. With targets omitted, update-worker and sync tasks select '
+      + 'paired computers; other tasks select Main and every paired computer: '
       + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
-      + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), restart (sudo reboot; targets are required), sync-mcp (add Main\'s user-level Codex and Claude MCP '
+      + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), '
+      + 'update-worker (drain active work, verify and install the matching Main version, then restart through the Worker supervisor; '
+      + 'failed releases roll back and report the error; Main uses production:install), restart (sudo reboot; targets are required), '
+      + 'sync-mcp (add Main\'s user-level Codex and Claude MCP '
       + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
       + 'sync-plugins (install Main\'s Codex and Claude plugins that other computers lack, adding Main\'s Git marketplaces first and matching enabled state for fleet-managed Claude plugins). '
       + 'Sync preserves pre-existing computer-owned entries and removes only fleet-managed entries absent from an available Main catalog. '
       + 'Unsafe or unsupported MCP definitions and unreadable catalogs are skipped and reported; existing Worker entries for skipped definitions are preserved. '
+      + 'Intentional credential skips do not fail a task. Automatic sync failures retry after 5 minutes with exponential '
+      + 'backoff capped at one hour; a manual start with a new commandId retries immediately. '
       + 'Disabled servers, native tool allow/deny lists and stdio environment-name references cannot be copied by this sync path. '
       + 'Tasks run in the background; read their outcome with computers_maintenance_status. Equivalent requests share only the latest queued task; different requests of the same kind queue. '
       + 'Task status survives application restarts; unfinished tasks report interruption. Check every returned computer error; '
-      + 'unavailable targets are not updated. Harness updates verify the selected runtime version against the latest published '
-      + 'version; Main and Workers select the installed Codex update and retain qualification checks. Requires global '
+      + 'unavailable targets are not updated. Harness updates verify the selected runtime meets the published version observed at start; '
+      + 'a newer stable release installed during the update also succeeds. '
+      + 'Main and Workers select the installed Codex update and retain qualification checks. Requires global '
       + 'settings:update. Reuse commandId with the original input to recover the saved targets, source catalogs and receiver tasks, including after Main stops before recording its result. '
+      + 'Use a new commandId with update-worker to trigger an update check or retry a failed update. '
+      + 'Older Workers without worker-update-v1 require an initial updater-enabled Worker installation on that computer. '
       + 'Receivers require maintenance protocol 2. Restart stays running until the reboot command returns; success reports command acceptance, not confirmed reconnection. '
       + 'A missing harness leaves nonempty MCP sync pending for a later retry.',
     inputSchema: ComputerMaintenanceStartInputSchema, outputSchema: ComputerMaintenanceStartResultSchema,

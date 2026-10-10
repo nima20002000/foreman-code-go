@@ -50,7 +50,7 @@ import { InstalledWorkflowRecovery } from '../runs/remote/installedWorkflowRecov
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
 import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION, MaintenanceReplySchema, MaintenanceRequestSchema } from '@foreman-code/contracts/computer-maintenance'
-import { ComputerMaintenance, systemMaintenancePorts } from '../computers/maintenance.js'
+import { ComputerMaintenance, systemMaintenancePorts, type MaintenancePorts } from '../computers/maintenance.js'
 import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccountsRequestSchema, GitHubLoginRequestSchema } from '@foreman-code/contracts/computer-accounts'
 import { createComputerSyncExtension } from '../computers/syncExtension.js'
 import { SyncthingComputer } from '../computers/syncthingComputer.js'
@@ -91,6 +91,7 @@ export async function createInstalledWorkerDomains(input: {
   codexSuiteRevision: string
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
   rsync?: InstalledRsyncProviders
+  workerUpdate?: NonNullable<MaintenancePorts['workerUpdate']>
 }) {
   const lifetime = new AbortController()
   const active = new Map<Promise<unknown>, string>()
@@ -380,6 +381,7 @@ export async function createInstalledWorkerDomains(input: {
         const binaries: Record<string, string> = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
           ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
         return new ComputerMaintenance({ ...systemMaintenancePorts(process.env, binaries),
+          ...(input.workerUpdate ? { workerUpdate: input.workerUpdate } : {}),
           async selectInstalledCodex(signal) {
             const binary = await selectInstalledCodex(input.configuration, process.env.HOME ?? homedir(), signal)
             if (binary) binaries.codex = binary
@@ -501,9 +503,36 @@ export async function createInstalledWorkerDomains(input: {
     else extensions.push(handler)
   }
   if (profileChecks) extensions.push(profileChecks.extension)
+  const updateDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
+    active: () => [...active].filter(([, namespace]) => namespace !== COMPUTER_MAINTENANCE_NAMESPACE
+      && namespace !== CI_RUNTIME_NAMESPACE).map(([task]) => task),
+    drainJobs: async () => {
+      if (jobOpening) await (await jobOpening).beginDrain()
+      if (native?.kind === 'configured') await native.drainForUpdate()
+      await conversations?.drainForUpdate()
+    },
+    drainQualifications: async () => { await qualification?.drain() },
+    drainMaintenance: async () => { if (maintenance) await (await maintenance).drainForWorkerUpdate() },
+    quiescent: async () => {
+      const logs = await Promise.all([journalOpening, jobJournalOpening])
+      if (!(await Promise.all(logs.map(log => log?.isWorkerUpdateIdle() ?? true))).every(Boolean)) return false
+      const nativeActive = [registry, jobRegistry].some(value => value.snapshot().launches.some(launch =>
+        launch.lifecycle !== 'closed' && !launch.owner.startsWith('conversation:')))
+      if (nativeActive) return false
+      if (receiver && !await receiver.receiver.isRuntimeQuiescent()) return false
+      if (rsync.kind === 'configured') {
+        const transfers = await Promise.allSettled(rsync.ownership.inventory().map(intent =>
+          rsync.ownership.quiescent(intent, lifetime.signal)))
+        if (transfers.some(result => result.status === 'rejected')) return false
+      }
+      return true
+    } })
   const tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
     lifetime.signal.throwIfAborted()
-    try { runtimeDrain?.assertAdmission(extension.namespace, payload) }
+    try {
+      runtimeDrain?.assertAdmission(extension.namespace, payload)
+      updateDrain.assertAdmission(extension.namespace, payload)
+    }
     catch (error) { return Promise.reject(error) }
     const task = extension.handle!(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) })
     active.set(task, extension.namespace)
@@ -512,6 +541,13 @@ export async function createInstalledWorkerDomains(input: {
   } } : {}) }))
   let shutdown: Promise<void> | undefined
   return { extensions: tracked, rsyncAvailable: rsync.kind === 'configured', rsyncMissing: rsync.missing,
+    async drainForUpdate() {
+      if (runtimeDrain?.isDraining()) {
+        throw new DomainError('WORKER_RUNTIME_DRAINING', 'A CI runtime refresh is already waiting for active work.', 409)
+      }
+      await updateDrain.run()
+    },
+    resumeAfterUpdate() { updateDrain.resume(); jobs?.resumeAdmissions() },
     ...(rsync.kind === 'configured' ? { rsync: rsync.backend, rsyncWriters: rsync.rsyncWriters, rsyncOwnership: rsync.ownership } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
     close() { return shutdown ??= (async () => {
       lifetime.abort()
@@ -558,10 +594,11 @@ export function createWorkerRuntimeDrain(ports: {
       ports.signal.throwIfAborted()
     },
     resume() { draining = false },
+    isDraining() { return draining },
     assertAdmission(namespace: string, payload: unknown) {
       if (draining && isWorkerAdmission(namespace, payload)) {
         throw new DomainError('WORKER_RUNTIME_DRAINING',
-          'This computer is waiting for active work to finish before refreshing its CI runtime.', 409)
+          'This computer is waiting for active work to finish before updating its runtime.', 409)
       }
     },
   }
@@ -573,9 +610,11 @@ function isWorkerAdmission(namespace: string, payload: unknown): boolean {
   if (namespace === 'execution-v1' && 'method' in payload) {
     return ['job-dispatch', 'prepare', 'prepare-review', 'start-turn', 'session-compact', 'capabilities', 'inspect-mcp',
       'conversation.open', 'conversation.initial-turn', 'conversation.start-turn', 'conversation.compact',
-      'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read']
+      'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read',
+      'conversation.file-copy']
       .includes(String(payload.method))
   }
+  if (namespace === 'byte-transfer-v1' && 'method' in payload) return payload.method === 'start'
   if (!('operation' in payload)) return false
   return namespace === SOURCE_OPERATION_EXTENSION.namespace && payload.operation === 'sources.prepare'
     || namespace === COMPUTER_MAINTENANCE_NAMESPACE && payload.operation === 'start'

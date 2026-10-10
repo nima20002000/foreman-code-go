@@ -33,7 +33,7 @@ export function repositoryRootBindInput(attempt: RepositoryImport) {
     commandId: repositorySubcommand(input, 'bound'), expectedBindingRevision: input.expectedBindingRevision,
     source: { approvedSourceId: approved.manifest.approvedSourceId, snapshotId: approved.manifest.snapshotId,
       manifestDigest: approved.manifest.manifestDigest },
-    selection: { workspaceId: input.workspaceId, hostRef: location.binding.hostRef,
+    selection: { hostRef: location.binding.hostRef,
       rootPolicyId: location.binding.rootPolicyId, rootPolicyRevision: location.binding.rootPolicyRevision,
       locationRevision: location.binding.locationRevision }, accessMode: 'exclusive-write' })
 }

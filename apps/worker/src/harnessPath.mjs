@@ -6,28 +6,29 @@ import { dirname, join, relative, resolve } from 'node:path';
 export function workerPath(home, node) {
   const directories = [dirname(node), '/usr/bin', '/bin'];
   const uid = process.getuid();
-  function owned(path, directory) {
+  function owned(path, directory, owner = uid) {
     const info = lstatSync(path);
-    return info.uid === uid && !(info.mode & 0o002) && (directory ? info.isDirectory() : info.isFile());
+    const writable = owner === 0 ? 0o022 : 0o002;
+    return info.uid === owner && !(info.mode & writable) && (directory ? info.isDirectory() : info.isFile());
   }
-  function trusted(path, directory = true) {
-    if (!path.startsWith(`${home}/`)) return false;
-    const parts = relative(home, path).split('/');
-    let current = home;
-    if (!owned(current, true)) return false;
+  function trusted(path, directory = true, root = home, owner = uid) {
+    if (!path.startsWith(`${root}/`)) return false;
+    const parts = relative(root, path).split('/');
+    let current = root;
+    if (!owned(current, true, owner)) return false;
     for (let i = 0; i < parts.length; i++) {
       current = join(current, parts[i]);
-      if (!owned(current, i < parts.length - 1 || directory)) return false;
+      if (!owned(current, i < parts.length - 1 || directory, owner)) return false;
     }
     return true;
   }
-  function add(directory) {
+  function add(directory, root = home, owner = uid) {
     try {
-      if (!trusted(directory)) return;
+      if (!trusted(directory, true, root, owner)) return;
       const installed = ['codex', 'claude'].some((name) => {
         try {
           const launcher = realpathSync(join(directory, name));
-          if (!trusted(launcher, false)) return false;
+          if (!trusted(launcher, false, root, owner)) return false;
           accessSync(launcher, constants.X_OK);
           return true;
         } catch { return false; }
@@ -35,6 +36,7 @@ export function workerPath(home, node) {
       if (installed) directories.push(directory);
     } catch { /* Missing or untrusted installations do not extend PATH. */ }
   }
+  add('/usr/local/bin', '/usr', 0);
   if (typeof home === 'string' && home.startsWith('/') && resolve(home) === home && /^[/a-zA-Z0-9_.-]+$/.test(home)) {
     add(join(home, '.local/bin'));
     const versions = join(home, '.nvm/versions/node');
