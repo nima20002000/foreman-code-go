@@ -119,6 +119,35 @@ async function readSnapshot(app: ReturnType<typeof buildApp>, fixture: Awaited<R
 }
 
 describe('persisted native Run activity', () => {
+  it('reads persisted work results through HTTP and MCP with the same Run grants and redaction', async () => {
+    await activityFixture(async (pool, fixture, app) => {
+      const token = `opm_${'a'.repeat(43)}`
+      const result = { outcome: 'succeeded', output: {
+        routing: { kind: 'finish', outcome: 'done' },
+        data: { latestDeliverable: `Implemented the requested change ${token}`,
+          remainingFindings: [{ message: `Review needs a decision ${token}` }] },
+      } }
+      await pool.query(`update harness_executions set record=jsonb_set(record,'{result}',$2::jsonb)
+        where id=$1 and run_id=$3`, [executionId, JSON.stringify(result), fixture.run.id])
+      for (const kind of ['work_result_accepted', 'work_needs_direction']) {
+        await pool.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+          values($1,'backend',$2,$3,$4,'{}'::jsonb)`, [fixture.run.id, kind, executionId, occurredAt])
+      }
+      const page = await readBoth(app, fixture)
+      const results = page.items.filter((item) => item.workResult)
+      expect(results.map((item) => item.kind)).toEqual(['agent_work', 'needs_direction'])
+      for (const item of results) expect(item.workResult).toEqual({ outcome: 'done',
+        latestDeliverable: 'Implemented the requested change [REDACTED]',
+        remainingFindings: [{ message: 'Review needs a decision [REDACTED]' }] })
+      expect(JSON.stringify(page)).not.toContain(token)
+      const readback = await readBoth(app, fixture)
+      expect(readback.items).toEqual(page.items)
+      const stored = await pool.query<{ result: unknown }>(
+        "select record->'result' as result from harness_executions where id=$1", [executionId])
+      expect(stored.rows[0]?.result).toEqual(result)
+    })
+  }, 120000)
+
   it('reads Codex messages, streams, edits and tools through HTTP and MCP with safe details', async () => {
     await activityFixture(async (pool, fixture, app) => {
       const events: Array<Pick<NativeHarnessEvent, 'type' | 'payload'>> = [

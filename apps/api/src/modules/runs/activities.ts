@@ -18,8 +18,7 @@ select coalesce((select max(sequence) from recent),0)::text as high_water,
   coalesce((select min(sequence) from retained),0)::text as retained_from,
   (select count(*) from recent)::integer as observed`
 
-/** SQL extracts protocol metadata and the first executable token. No raw
- * provider payloads, prompts, arguments, command bodies or error bodies. */
+/** Extract protocol metadata and recorded work results without native provider bodies. */
 export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,a.occurred_at,a.harness_execution_id,
   coalesce(e.workflow_node_id,j.record#>>'{workflow,nodeId}') as execution_node_id,e.agent_id as execution_agent_id,
   coalesce(e.attempt,x.technical_attempt) as execution_attempt,e.work_activation_id,
@@ -31,6 +30,8 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
   j.accepted_spec->>'definitionVersionId' as job_definition_version_id,
   coalesce(e.record#>>'{result,outcome}',case when j.record#>>'{process,phase}'='terminal'
     then case j.record#>>'{process,outcome}' when 'succeeded' then 'succeeded' when 'cancelled' then 'canceled' else 'failed' end end) as result_outcome,
+  case when a.kind in ('result_recorded','work_result_accepted','work_needs_direction')
+    then e.record->'result' end as work_result,
   jsonb_strip_nulls(jsonb_build_object(
     'executionState',a.payload->>'executionState','state',a.payload->>'state',
     'status',a.payload->>'status','deliveryState',a.payload->>'deliveryState',

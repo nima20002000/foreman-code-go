@@ -242,6 +242,18 @@ function ActivityRow({ item }: { item: RunActivityPublic }) {
     <div><strong>{label}</strong>
       <span className={`board-activity-status is-${item.severity}`}>{item.status.replaceAll('_', ' ')}</span>
       <p>{item.summary}</p>{item.detail ? <p className="board-activity-detail">{item.detail}</p> : null}
+      {item.workResult ? <div className="board-activity-work-result">
+        <p>Outcome: {item.workResult.outcome}</p>
+        <strong>Result summary</strong>
+        <pre>{typeof item.workResult.latestDeliverable === 'string'
+          ? item.workResult.latestDeliverable : JSON.stringify(item.workResult.latestDeliverable, null, 2)}</pre>
+        {item.workResult.remainingFindings.length ? <>
+          <strong>Remaining findings</strong>
+          <ul>{item.workResult.remainingFindings.map((finding, index) => <li key={index}>
+            <pre>{typeof finding === 'string' ? finding : JSON.stringify(finding, null, 2)}</pre>
+          </li>)}</ul>
+        </> : <p>No remaining findings.</p>}
+      </div> : null}
       {item.usage ? <small>{item.usage.used} used · {item.usage.limit === null ? 'no connection cap' : `${item.usage.limit} limit`}</small> : null}
     </div></li>
 }

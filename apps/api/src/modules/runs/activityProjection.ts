@@ -1,5 +1,7 @@
-import { GraphIdSchema, RunActivityPublicSchema,
+import { GraphIdSchema, RunActivityPublicSchema, WorkHandoffResultSchema,
   type RunActivityPublic, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
+import { ExecutionResultSchema } from '@foreman-code/contracts'
+import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { repeatId } from './repeatResolution.js'
 import { safeNodeName, nativeToolTitle } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
@@ -18,6 +20,7 @@ export interface ActivityReadRow {
   ci_attempt_id?: string | null; ci_operation_id?: string | null;
   job_definition_revision?: number | null; job_definition_version_id?: string | null;
   result_outcome: string | null;
+  work_result?: unknown;
   safe_payload: Record<string, unknown>; native: Record<string, unknown> | null;
 }
 
@@ -25,6 +28,27 @@ const string = (value: unknown): string | undefined => typeof value === 'string'
 const id = (value: unknown): string | undefined => GraphIdSchema.safeParse(value).success ? value as string : undefined
 const count = (value: unknown): number | undefined => typeof value === 'number'
   && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+
+function activityWorkResult(raw: unknown): RunActivityPublic['workResult'] {
+  const result = ExecutionResultSchema.safeParse(raw)
+  if (!result.success || result.data.outcome !== 'succeeded') return undefined
+  let output = result.data.output
+  if (output && typeof output === 'object' && !Array.isArray(output)
+    && Object.keys(output).length === 1 && typeof output.text === 'string') output = output.text
+  if (typeof output === 'string') {
+    try { output = JSON.parse(output) } catch (error) {
+      if (error instanceof SyntaxError) return undefined
+      throw error
+    }
+  }
+  const work = WorkHandoffResultSchema.safeParse(output)
+  if (!work.success) return undefined
+  return nativePersistenceRedactor([]).value({
+    outcome: work.data.routing.outcome ?? work.data.routing.kind,
+    latestDeliverable: work.data.data.latestDeliverable,
+    remainingFindings: work.data.data.remainingFindings,
+  })
+}
 
 function toolLabel(native: Record<string, unknown>): string | undefined {
   const item = string(native.itemType), part = string(native.partTool)
@@ -98,8 +122,7 @@ function toolStatus(native: Record<string, unknown>): RunActivityPublic['status'
   return 'recorded'
 }
 
-/** Deliberate allowlist: no original payload, prompt, file path, command,
- * provider text, error body or raw tool argument reaches Activities. */
+/** Project typed activity details and recorded work results; exclude native provider bodies. */
 export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersionV3,
   runId: string, runOutcome: string): RunActivityPublic {
   const scope = { workspaceId: version.workspaceId, workflowId: version.workflowId,
@@ -171,6 +194,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   let status: RunActivityPublic['status']
   let summary: string
   let detail: string | undefined
+  let workResult: RunActivityPublic['workResult']
   switch (row.kind) {
     case 'ci_state_changed': {
       kind = 'job_work'
@@ -261,7 +285,10 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
       break
     }
     case 'result_recorded': case 'work_result_accepted':
-      status = 'completed'; summary = 'Work result recorded'; break
+      status = 'completed'
+      summary = 'Work result recorded'
+      workResult = activityWorkResult(row.work_result)
+      break
     case 'work_handoff_accepted':
       kind = 'work_request'; status = refs.requestId ? 'accepted' : 'unknown'
       summary = refs.requestId ? 'Work request admitted' : 'Work request details unavailable'; break
@@ -304,6 +331,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
       status = row.kind === 'work_direction_wait' || refs.unresolvedId ? 'needs_direction' : 'unknown'
       summary = status === 'unknown' ? 'Unresolved work details unavailable'
         : row.kind === 'work_direction_wait' ? 'Run waiting for direction' : 'Work needs direction'
+      workResult = row.kind === 'work_needs_direction' ? activityWorkResult(row.work_result) : undefined
       break
     case 'interaction_pending':
       kind = 'approval'; status = refs.interactionId ? 'pending' : 'unknown'
@@ -364,6 +392,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   return RunActivityPublicSchema.parse({ id: repeatId('activity', scope.runId, row.sequence),
     scope, sequence: row.sequence, occurredAt: row.occurred_at.toISOString(), source: row.source,
     kind, status, severity, summary,
+    ...(workResult ? { workResult } : {}),
     ...(detail ? { detail } : {}), ...(actor ? { actor } : {}),
     ...(subject ? { subject } : {}), refs,
     ...(usage ? { usage } : {}) })
