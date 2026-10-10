@@ -90,9 +90,8 @@ describe('Worker update maintenance lifecycle', () => {
 
   it('excludes its own update task from maintenance draining and reports supervisor launch rejection', async () => {
     const computer = fakeComputer()
-    let maintenance: ComputerMaintenance
     let worker: WorkerUpdateStatus = { currentVersion: '1.0.0', targetVersion: null, state: 'current', lastError: null }
-    maintenance = new ComputerMaintenance({ ...computer.ports, workerUpdate: { status: async () => worker,
+    const maintenance: ComputerMaintenance = new ComputerMaintenance({ ...computer.ports, workerUpdate: { status: async () => worker,
       start: async () => {
         await maintenance.drainForWorkerUpdate()
         worker = { ...worker, targetVersion: '1.1.0', state: 'failed', lastError: 'supervisor refused restart' }

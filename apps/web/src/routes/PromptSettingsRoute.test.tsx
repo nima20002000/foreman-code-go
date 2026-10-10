@@ -65,7 +65,50 @@ it('opens the System prompt editor from Settings at a linkable route', async () 
     .toHaveValue('Workflow and chat instructions')
   expect(router.state.location.pathname).toBe('/settings/system-prompt')
   expect(screen.getByText(/The Operator is excluded/)).toBeVisible()
+  const breadcrumbs = screen.getByRole('navigation', { name: 'Breadcrumbs' })
+  expect(within(breadcrumbs).getAllByRole('listitem').map(item => item.textContent))
+    .toEqual(['Settings', 'System prompt'])
+  const settings = within(breadcrumbs).getByRole('link', { name: 'Go to Settings' })
+  expect(settings).toHaveAttribute('href', '/settings')
+  await userEvent.click(settings)
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
 })
+
+it.each(['', '&section=model', '&section=permissions'])(
+  'names the Operator prompt and keeps breadcrumb navigation in its settings location: %s',
+  async search => {
+    const { router } = mount(`/settings/agents?role=operator${search}`)
+    const user = userEvent.setup()
+    expect(await screen.findByRole('textbox', { name: 'Initial prompt' })).toHaveValue('Operator instructions')
+    const breadcrumbs = screen.getByRole('navigation', { name: 'Breadcrumbs' })
+    expect(within(breadcrumbs).getAllByRole('listitem').map(item => item.textContent))
+      .toEqual(['Settings', 'Agents', 'Operator', 'Initial prompt'])
+    expect(breadcrumbs.querySelector('[aria-current="page"]')).toHaveTextContent('Initial prompt')
+    expect(within(breadcrumbs).getByRole('link', { name: 'Go to Settings' })).toHaveAttribute('href', '/settings')
+    const agents = within(breadcrumbs).getByRole('link', { name: 'Go to Agents' })
+    expect(agents).toHaveAttribute('href', '/settings/agents')
+    const operator = within(breadcrumbs).getByRole('link', { name: 'Go to Operator' })
+    expect(operator).toHaveAttribute('href', '/settings/agents?role=operator')
+    await user.click(operator)
+    await waitFor(() => expect(router.state.location.search).toEqual({ role: 'operator' }))
+    expect(screen.getByRole('textbox', { name: 'Initial prompt' })).toHaveValue('Operator instructions')
+    await user.click(agents)
+    expect(await screen.findByRole('button', { name: 'Edit Operator defaults' })).toBeVisible()
+    expect(router.state.location.search).toEqual({})
+  },
+)
+
+it.each(['', '&section=model', '&section=permissions'])(
+  'returns from a direct Operator prompt link to Agents using Back: %s',
+  async search => {
+    const { router } = mount(`/settings/agents?role=operator${search}`)
+    expect(await screen.findByRole('textbox', { name: 'Initial prompt' })).toHaveValue('Operator instructions')
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('button', { name: 'Edit Operator defaults' })).toBeVisible()
+    expect(router.state.location.pathname).toBe('/settings/agents')
+    expect(router.state.location.search).toEqual({})
+  },
+)
 
 it('opens the Operator card by URL selection and protects edited text when returning to Agents', async () => {
   const { router } = mount('/settings/agents')

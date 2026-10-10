@@ -113,7 +113,7 @@ describe.each(['codex', 'claude'] as const)('%s plugin catalog reader ownership'
   })
 
   it('shares a forced refresh without giving the first reader cancellation ownership', async () => {
-    let blocked: ReturnType<typeof gate> | undefined
+    let blocked: ReturnType<typeof gate> | undefined = undefined
     const { service } = fixture((signal) => blocked ? blocked.wait(signal) : Promise.resolve())
     await service.list(principal, input)
     blocked = gate()
@@ -133,7 +133,7 @@ describe.each(['codex', 'claude'] as const)('%s plugin catalog reader ownership'
 })
 
 it('awaits fresh Codex inventory and revisions instead of returning the cached catalog', async () => {
-  let blocked: ReturnType<typeof gate> | undefined
+  let blocked: ReturnType<typeof gate> | undefined = undefined
   const { service, install, list } = codexFixture((signal) => blocked ? blocked.wait(signal) : Promise.resolve())
   const before = await service.list(principal, input)
   install()
