@@ -224,6 +224,20 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     completeTestResourceCleanup(invocation, scratchCleanupId)
   })
 
+  it('starts one session process after model inspection and retains it for the first turn', async () => {
+    const session = await manager.createSession(source)
+    const launched = await processesForRequests(f.directory, 'thread/start')
+    const inspections = await processesForRequests(f.directory, 'model/list')
+    assert.equal(launched.length, 1)
+    assert.equal(inspections.length, 1)
+    assert.notEqual(launched[0]!.pid, inspections[0]!.pid)
+    await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'first-turn' }))
+    const turnProcesses = await processesForRequests(f.directory, 'turn/start')
+    assert.equal(turnProcesses.length, 1)
+    assert.equal(turnProcesses[0]!.pid, launched[0]!.pid)
+    assert.equal((await processesForRequests(f.directory, 'thread/start')).length, 1)
+  })
+
   it('lets an unattended workflow Agent call only its App MCP tools without native prompts', async () => {
     await manager.createSession(source)
     const chats = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none')

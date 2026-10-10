@@ -119,6 +119,7 @@ async function runOwnedProcess<T>(
   options.signal?.throwIfAborted()
   const child = spawnNativeProcess(options.binary, options.args, {
     cwd: options.cwd, env: appMcpTokenEnvironment(childEnvironment),
+    purpose: 'command',
     ...(options.recovery ? { recovery: options.recovery } : {}),
   })
   const closed = new Promise<ProcessExit>((resolve) => {
@@ -341,6 +342,7 @@ export function spawnOwnedStdioProcess(options: {
 } {
   const child = spawnNativeProcess(options.binary, options.args, {
     cwd: options.cwd, env: options.environment,
+    purpose: options.preserveReadableDrain ? 'inspection' : 'session',
     ...(options.recovery ? { recovery: options.recovery } : {}),
   })
   let didClose = false

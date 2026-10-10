@@ -566,11 +566,12 @@ function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
  */
 export function spawnNativeProcess(binary: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery; restartDetachable?: true
+  purpose?: 'command' | 'inspection' | 'session'
   claudeSessionScope?: import('../claudeSdk/port.js').ClaudeSessionScope
 }): ChildProcessWithoutNullStreams {
   return observeNativeProcess(spawnNativeProcessUnobserved(binary, args, {
     ...options, env: nativeAgentEnvironment(binary, options.cwd, options.env),
-  }), binary, options.recovery?.owner)
+  }), binary, options.recovery?.owner, options.purpose ?? 'process')
 }
 
 const harnessLog = componentLogger('harness')
@@ -582,14 +583,25 @@ function publishRetirement(directory: string): void {
   try { nativeRegistryProjection(dirname(dirname(directory))).observeRetirement(directory) }
   catch { harnessLog.warn('Native observation publication unavailable') }
 }
-/** Every native harness start and end is logged: binary name, pid, exit code or signal.
- * Arguments and environment are never logged; they can carry prompts and credentials. */
-function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: string, owner: string | undefined) {
-  const facts = { binary: basename(binary), ...(owner ? { owner } : {}) }
-  child.once('spawn', () => harnessLog.info({ ...facts, childPid: child.pid }, 'harness process started'))
+/** Arguments and environment can carry prompts and credentials; log only lifecycle facts. */
+function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: string,
+  owner: string | undefined, purpose: 'command' | 'inspection' | 'session' | 'process') {
+  const facts = { binary: basename(binary), purpose, ...(owner ? { owner } : {}) }
+  child.once('spawn', () => harnessLog.info({ ...facts, childPid: child.pid }, `harness ${purpose} started`))
   // No 'error' listener here: adding one would change whether an unhandled spawn error crashes the caller.
-  child.once('exit', (exitCode, signal) => harnessLog[exitCode === 0 ? 'info' : 'warn']({ ...facts, childPid: child.pid, exitCode, signal },
-    'harness process exited'))
+  child.once('exit', (exitCode, signal) => {
+    const guardian = owned.has(child) ? { guardianExitCode: exitCode, guardianSignal: signal } : {}
+    let outcome: NativeProcessExit
+    try { outcome = nativeProcessExit(child, { exitCode, exitSignal: signal }) }
+    catch {
+      harnessLog.warn({ ...facts, childPid: child.pid, ...guardian, outcomeReceipt: 'invalid' },
+        `harness ${purpose} outcome unavailable`)
+      return
+    }
+    harnessLog[outcome.exitCode === 0 ? 'info' : 'warn']({
+      ...facts, childPid: child.pid, exitCode: outcome.exitCode, signal: outcome.exitSignal, ...guardian,
+    }, `harness ${purpose} exited`)
+  })
   return child
 }
 
