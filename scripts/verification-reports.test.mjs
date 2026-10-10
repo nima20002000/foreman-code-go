@@ -422,7 +422,8 @@ if (args[0] === 'list') {
   assert.equal(args[args.indexOf('--exclude') + 1], 'test/native-guardian-outcome.test.ts');
   fs.writeFileSync(args.find(arg => arg.startsWith('--outputFile.json=')).slice(18), JSON.stringify({
     success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0,
-    numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0,
+    numPendingTests: 0, numTodoTests: 0,
+    numTotalTestSuites: 1, numPassedTestSuites: 1, numFailedTestSuites: 0, numPendingTestSuites: 0,
     testResults: [{name: ${JSON.stringify(join(f.root, available))}, status: 'passed', startTime: 1, endTime: 2,
       assertionResults: [{fullName: 'mock guardian succeeds', status: 'passed', duration: 1, failureMessages: []}]}]
   }));
@@ -437,6 +438,8 @@ if (args[0] === 'list') {
     assert.equal(code, 1)
     const [portion] = collectPortions(f.directory, f.root,
       [{ key, kind: 'vitest', files: [unavailable, available] }], context().limits)
+    assert.equal(portion.error, undefined)
+    assert.equal(portion.failed, false)
     assert.equal(portion.complete, false)
     assert.deepEqual(portion.totals, { total: 1, passed: 1, failed: 0, skipped: 0 })
     assert.deepEqual(portion.missing, [unavailable])
