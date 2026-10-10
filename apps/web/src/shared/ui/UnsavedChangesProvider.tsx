@@ -46,11 +46,13 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   const context = useMemo(() => ({ register, request: ask, changed, surfaces }), [register, ask, changed, surfaces])
   const shouldBlockFn = useCallback(async ({ current, next }: { current: LeaveTarget; next: LeaveTarget }) => {
     if (current.pathname === next.pathname && JSON.stringify(current.search) === JSON.stringify(next.search)) return false
-    // Nested aliases and Run query selection keep all authoring surfaces mounted.
-    // Run selection keeps editors mounted. Other departures only prompt for edits that cannot be recovered.
     if (pending.current) return true
-    if (staysOnWorkflowBoard(current, next)) return false
-    const ids = [...editors.current].filter(([, editor]) => (!editor.blocks || editor.blocks(current, next)) && !editor.current.canResume?.()).map(([id]) => id)
+    const sameBoard = staysOnWorkflowBoard(current, next)
+    // The Board editor survives Run selection, but toolbar forms can unmount.
+    const ids = [...editors.current].filter(([, editor]) =>
+      (!sameBoard || editor.current.scope === 'surface')
+      && (!editor.blocks || editor.blocks(current, next))
+      && !editor.current.canResume?.()).map(([id]) => id)
     return !await ask(ids)
   }, [ask])
   const enableBeforeUnload = useCallback(() => activeEditors([...editors.current.keys()]).some(({ editor }) => !editor.canResume?.()), [activeEditors])

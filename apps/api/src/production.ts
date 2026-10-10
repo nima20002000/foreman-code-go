@@ -49,7 +49,7 @@ import { createProductionRemoteWorkflow } from './modules/placement/productionRe
 import { remoteMcpPreflight } from './modules/placement/remoteMcpPreflight.js'
 import { closeCompletedWorkflowSources } from './modules/sources/workflowCleanup.js'
 import { remoteWorkflowPreparationClosed } from './modules/sources/workflowPreparationCleanup.js'
-import { readExecutionPlacement } from './modules/placement/persistence.js'
+import { readExecutionPlacement, readNativePlacement } from './modules/placement/persistence.js'
 import { sourceNativeSessionContinues } from './modules/sources/workingDirectory.js'
 import { placedContinuationValidator } from './modules/placement/continuation.js'
 import { readLiveManagementPrincipal } from './modules/access/liveManagementPrincipal.js'
@@ -1150,18 +1150,46 @@ export function buildProductionApp(
     suiteRevisions: selectedSuites ? {
       codex: selectedSuites.codex.revision,
     } : {} })
+  const agentChatProfileSelection = async (
+    configuration: import('@foreman-code/contracts').AgentConfigurationVersion,
+    workingDirectory: string, executionId?: string,
+  ) => {
+    if (!executionId) return { profileSelection: configuration.harnessProfileSelection, sourceExecution: undefined }
+    const source = await runs.getExecution(executionId)
+    if (!source || source.agentId !== configuration.agentId
+      || source.agentConfigurationVersionId !== configuration.id || source.workingDirectory !== workingDirectory) {
+      throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The chat source execution changed.', 409)
+    }
+    const placement = await readExecutionPlacement(database.pool, executionId)
+    if (!placement) {
+      if (await readAcceptedPlacement(database.pool, source.runId, source.workflowNodeId)) {
+        throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The chat source placement is unavailable.', 409)
+      }
+      return { profileSelection: configuration.harnessProfileSelection, sourceExecution: undefined }
+    }
+    const native = await readNativePlacement(database.pool, executionId)
+    if (!native) {
+      throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The chat source working tree is unavailable.', 409)
+    }
+    const profileSelection = workflowProfileSelection({ executionId, runId: source.runId, agentId: source.agentId,
+      harness: configuration.harness.harness, configuration, workingDirectory, acceptedPlacement: placement },
+    native?.workingTree.canonicalCwd)
+    return { profileSelection, sourceExecution: { executionId, placement, workingTree: native.workingTree } }
+  }
   const recoverChatCompaction = async (
       configuration: import('@foreman-code/contracts').OperatorConfigurationVersion | import('@foreman-code/contracts').AgentConfigurationVersion,
       conversationId: string, session: import('@foreman-code/contracts').NativeSessionReference,
       start: import('./modules/harnesses/port.js').NativeSessionStart, state: import('@foreman-code/contracts').CompactionState,
       principalId: string, signal: AbortSignal,
+      profileSelection = configuration.harnessProfileSelection,
+      sourceExecution?: import('@foreman-code/contracts/remote-execution-rpc').WorkerConversationBinding['sourceExecution'],
     ) => {
       if (session.harness === 'opencode' || configuration.harness.harness === 'opencode') {
         throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
       }
-      if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
+      if (profileSelection?.target.hostRef.kind === 'device') {
         const manager = workerChats.create({ configuration, conversationId, workingDirectory: sessionStartDirectory(start),
-          appMcpAccess: 'none', observationPrincipalId: principalId })
+          appMcpAccess: 'none', observationPrincipalId: principalId, profileSelection, sourceExecution })
         try { return await manager.readCompaction!(session, start, state, signal) }
         finally { await manager.dispose?.() }
       }
@@ -1170,8 +1198,8 @@ export function buildProductionApp(
         ? { kind: 'operator', conversationId, repository: operatorConversations, observationPrincipalId: principalId }
         : { kind: 'agent', conversationId, workspaceId: configuration.workspaceId,
           repository: agentConversations, observationPrincipalId: principalId }
-      const accepted = configuration.harnessProfileSelection
-        ? await selectedProfiles.admit({ ...binding, admissionSignal: signal }, configuration.harnessProfileSelection) : undefined
+      const accepted = profileSelection
+        ? await selectedProfiles.admit({ ...binding, admissionSignal: signal }, profileSelection) : undefined
       const selection = accepted ? harnessRegistry.pinOverride(accepted.override)
         : harnessRegistry.pinAccepted({ id: configuration.id,
           agentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
@@ -1298,14 +1326,19 @@ export function buildProductionApp(
     },
   )
   const agentChatManagers = new Map<string, NativeHarnessSessionManager>()
-  const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory, accountSource) => {
+  const resolveAgentChatManager: AgentChatManagerFactory = async (conversationId, configuration, workingDirectory, accountSource) => {
     if (configuration.harness.harness === 'opencode') {
       throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     }
     const existing = agentChatManagers.get(conversationId)
     if (existing) return existing
-    if (configuration.harnessProfileSelection?.target.hostRef.kind === 'device') {
-      const manager = workerChats!.create({ configuration, conversationId, workingDirectory, appMcpAccess: 'none' })
+    const selected = await agentChatProfileSelection(configuration, workingDirectory, accountSource?.executionId)
+    const selector = selected.profileSelection
+    const resolved = agentChatManagers.get(conversationId)
+    if (resolved) return resolved
+    if (selector?.target.hostRef.kind === 'device') {
+      const manager = workerChats!.create({ configuration, conversationId, workingDirectory, appMcpAccess: 'none',
+        profileSelection: selector, sourceExecution: selected.sourceExecution })
       agentChatManagers.set(conversationId, manager)
       return manager
     }
@@ -1319,7 +1352,7 @@ export function buildProductionApp(
         ...sourceRecovery,
         accounts: providerAccounts,
         profiles: claudeProfiles,
-        ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
+        ...(selector ? { selector } : {}),
         binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
         role: 'agent-chat', configuration: harness, workingDirectory, ownerAgentId: configuration.agentId, recovery,
         appMcpAccess: 'none', mode: infrastructure?.mode ?? 'native',
@@ -1330,10 +1363,10 @@ export function buildProductionApp(
       agentChatManagers.set(conversationId, manager)
       return manager
     }
-    if (configuration.harnessProfileSelection) {
+    if (selector) {
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         ...sourceRecovery,
-        selector: configuration.harnessProfileSelection,
+        selector,
         binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
         configuration: harness, role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId, recovery, appMcpAccess: 'none',
         files: productionCodexChatFiles(() => app, conversationId, chatFileAdmissions) })
@@ -1354,7 +1387,29 @@ export function buildProductionApp(
     agentChatManagers.set(conversationId, manager)
     return manager
   }
-  resolveAgentChatManager.recoverCompaction = recoverChatCompaction
+  resolveAgentChatManager.recoverCompaction = async (configuration, conversationId, session, start, state, principalId, signal) => {
+    const row = await agentConversations.get(conversationId)
+    if (!row || row.agent_configuration_version_id !== configuration.id) {
+      throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The chat configuration changed.', 409)
+    }
+    const executionId = row.record.origin.kind === 'run_execution' ? row.record.origin.executionId : undefined
+    const selected = await agentChatProfileSelection(configuration, sessionStartDirectory(start), executionId)
+    return recoverChatCompaction(configuration, conversationId, session, start, state, principalId, signal,
+      selected.profileSelection, selected.sourceExecution)
+  }
+  resolveAgentChatManager.unavailable = async (configuration, workingDirectory, executionId) => {
+    const { profileSelection } = await agentChatProfileSelection(configuration, workingDirectory, executionId)
+    if (!profileSelection) return undefined
+    if (hostProfileChecks.pending(profileSelection.target.hostRef)) {
+      return { reason: 'harness_unavailable', message: 'This computer is checking its harness profile. Retry shortly.' }
+    }
+    const profile = await hostSettings.readAuthorized(client => hostSettings.latest(client, profileSelection.instanceId))
+    if (!profile || !profile.enabled || profile.instanceRevision !== profileSelection.instanceRevision
+      || !await harnessRegistry.profileEvidence(profile)) {
+      return { reason: 'harness_unavailable', message: 'The harness profile used by this Run is unavailable.' }
+    }
+    return undefined
+  }
   resolveAgentChatManager.release = (conversationId) => { agentChatManagers.delete(conversationId) }
   const agentChat = new AgentChatService(database.pool, agentConversations,
     new PostgresOperatorConversationRepository(database.pool, accountConfigurations), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)

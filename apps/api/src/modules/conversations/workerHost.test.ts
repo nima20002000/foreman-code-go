@@ -133,6 +133,34 @@ function receipt(value: unknown) {
   return WorkerConversationReceiptSchema.parse((value as { receipt: unknown }).receipt)
 }
 
+it('keeps file callbacks with the live turn while its submitted input is still activating', async () => {
+  const f = await setup()
+  const allocation = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))
+  const recoverFiles = vi.fn(async () => { throw new Error('The live file owner is still activating.') })
+  f.ports.allocate = async () => ({ ...allocation, recoverFiles })
+  await f.request(f.open)
+  let submitted!: () => void
+  const submission = new Promise<void>(resolve => { submitted = resolve })
+  let release!: () => void
+  const activation = new Promise<void>(resolve => { release = resolve })
+  f.ports.observeSubmission = async () => {
+    submitted()
+    await activation
+  }
+  try {
+    await f.request({ method: 'conversation.start-turn', session: f.session,
+      prompt: 'Keep the original callbacks', correlationId: 'activating-turn' })
+    await submission
+    const result = await f.request({ method: 'conversation.reconcile', session: f.session,
+      correlationId: 'activating-turn' })
+    expect(receipt(result).turns[0]?.nativeTurnId).toBe('fixture-turn-1')
+    expect(recoverFiles).not.toHaveBeenCalled()
+  } finally { release() }
+  await f.host.drainForUpdate()
+  expect((await f.journal.conversations.read(f.binding))?.turns[0]?.status).toBe('completed')
+  expect(f.manager.prompts).toEqual(['Keep the original callbacks'])
+})
+
 it('closes only the idle old owner and attaches the same session under the requested App MCP access', async () => {
   const f = await setup()
   const allocation = await f.ports.allocate(f.binding, f.configuration, f.connection, AbortSignal.timeout(1000))

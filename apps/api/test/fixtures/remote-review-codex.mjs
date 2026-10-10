@@ -169,7 +169,7 @@ async function review(turn, prompt) {
 
 async function started(turn, prompt) {
   if (prompt.startsWith('Call files_read with fileId ')) return qualificationFiles(turn, prompt)
-  if (String(turn.items[0].id).startsWith('review-')) return review(turn, prompt)
+  if (String(turn.items[0].clientId).startsWith('review-')) return review(turn, prompt)
   if (thread.instructions.includes('fixture-reviewer')) {
     log({ workflowTurn: { pid: process.pid, sessionId: thread.id, turnId: turn.id } })
     while (existsSync(join(root, 'block-workflow-turns'))) await new Promise(resolve => setTimeout(resolve, 20))
@@ -229,6 +229,12 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     thread.settings = configuration(params)
     save()
     reply(message.id, { ...thread.settings, thread: view(!params.excludeTurns) })
+  } else if (message.method === 'thread/fork') {
+    const source = JSON.parse(readFileSync(join(root, `thread-${params.threadId}.json`), 'utf8'))
+    thread = { ...source, id: randomUUID(), settings: configuration(params) }
+    save()
+    log({ forkedSession: { source: source.id, child: thread.id, cwd: thread.settings.cwd } })
+    reply(message.id, { ...thread.settings, thread: view(!params.excludeTurns) })
   } else if (message.method === 'thread/read') {
     reply(message.id, { thread: view(params.includeTurns === true) })
   } else if (message.method === 'thread/turns/list') {
@@ -236,7 +242,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   } else if (message.method === 'turn/start') {
     const turn = { id: randomUUID(), status: 'inProgress', itemsView: 'full', error: null,
       startedAt: 1, completedAt: null, durationMs: null,
-      items: [{ type: 'userMessage', id: params.clientUserMessageId, content: params.input }] }
+      items: [{ type: 'userMessage', id: randomUUID(), clientId: params.clientUserMessageId, content: params.input }] }
     thread.turns.push(turn)
     save()
     reply(message.id, { turn })

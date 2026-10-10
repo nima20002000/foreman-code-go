@@ -109,14 +109,15 @@ function fixture() {
     getAgentConfiguration: vi.fn(async (id: string) => configurations.get(id)) }
   const runPort = { getForWorkspace: async (workspaceId: string, id: string) => {
     const run = runs.get(id); return run?.workspaceId === workspaceId ? run : undefined
-  }, async *executionPages(runId: string) { for (const execution of executions.get(runId) ?? []) yield [execution] } }
+  }, getExecution: vi.fn(async (id: string) => [...executions.values()].flat().find(item => item.id === id)),
+    async *executionPages(runId: string) { for (const execution of executions.get(runId) ?? []) yield [execution] } }
   const managers = vi.fn(() => { throw new Error('A read or rejected command must not launch native work') })
   const chat = new AgentChatService(pool, repository as unknown as PostgresAgentChatRepository,
-    new PostgresOperatorConversationRepository(pool), workflows, runPort as unknown as Pick<PostgresRunRepository, 'getForWorkspace' | 'executionPages'>,
+    new PostgresOperatorConversationRepository(pool), workflows, runPort as unknown as Pick<PostgresRunRepository, 'getForWorkspace' | 'executionPages' | 'getExecution'>,
     managers as () => NativeHarnessSessionManager, '/sch06-fixture')
   cleanup.push(chat)
   return { saved, version, context, target, principal, live, runs, source, configurations, executions, snapshots, conversations,
-    stored, capture, row, query, repository, workflows, managers, chat }
+    stored, capture, row, query, repository, workflows, managers, chat, runPort }
 }
 
 async function selected(f: ReturnType<typeof fixture>, runId = f.target.runId, executionId = f.source.id) {
@@ -227,6 +228,34 @@ describe('SCH-06 historical Agent chat identity and fail-closed selection', () =
       .rejects.toMatchObject({ code: 'RUN_CHAT_EXECUTION_NOT_FOUND' })
     expect(f.managers).not.toHaveBeenCalled()
   })
+
+  it('rejects an execution from another node without scanning or selecting the available execution', async () => {
+    const f = fixture()
+    const other = { ...f.source, id: 'other-node-execution', workflowNodeId: 'another-node' }
+    f.executions.set(f.target.runId, [f.source, other])
+    const pages = vi.spyOn(f.runPort, 'executionPages')
+
+    await expect(selected(f, f.target.runId, other.id))
+      .rejects.toMatchObject({ code: 'RUN_CHAT_EXECUTION_NOT_FOUND', status: 404 })
+
+    expect(pages).not.toHaveBeenCalled()
+    expect(f.repository.state).not.toHaveBeenCalled()
+    expect(f.repository.admit).not.toHaveBeenCalled()
+    expect(f.managers).not.toHaveBeenCalled()
+  })
+
+  it.each(['agentId', 'agentConfigurationVersionId'] as const)(
+    'rejects mismatched %s on an execution in the selected Run and node', async field => {
+      const f = fixture()
+      f.executions.set(f.target.runId, [{ ...f.source, [field]: 'mismatched' }])
+
+      await expect(selected(f)).rejects.toMatchObject({ code: 'AGENT_CHAT_CONTEXT_STALE', status: 409 })
+
+      expect(f.repository.state).not.toHaveBeenCalled()
+      expect(f.repository.admit).not.toHaveBeenCalled()
+      expect(f.managers).not.toHaveBeenCalled()
+    },
+  )
 
   it('requires an explicit execution for multiple attempts and never falls back from a missing source to a session-bearing attempt', async () => {
     const f = fixture()
@@ -353,5 +382,17 @@ describe('SCH-06 historical Agent chat identity and fail-closed selection', () =
     expect(choices).toMatchObject({ hasMoreExecutions: true })
     expect(await selectRunChatExecution(pages(), f.context, f.source.agentConfigurationVersionId, 'execution-104'))
       .toEqual({ executionId: 'execution-104' })
+  })
+  it.each([0, 250])('resolves one selected chat with %s unrelated attempts without reading execution pages', async count => {
+    const f = fixture()
+    const unrelated = Array.from({ length: count }, (_, index) => ({ ...f.source,
+      id: `unrelated-${index}`, workflowNodeId: 'another-node', attempt: index + 1 }))
+    f.executions.set(f.target.runId, [...unrelated, f.source])
+    const pages = vi.spyOn(f.runPort, 'executionPages')
+    const state = await selected(f)
+    expect(state.selection.executionId).toBe(f.source.id)
+    expect(f.runPort.getExecution).toHaveBeenCalledTimes(2)
+    expect(pages).not.toHaveBeenCalled()
+    expect(f.managers).not.toHaveBeenCalled()
   })
 })

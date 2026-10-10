@@ -58,7 +58,7 @@ describe.skipIf(!postgresEnabled)('G4 PostgreSQL / HTTP / MCP regressions', () =
     const repository = new PostgresAgentChatRepository(pool)
     const native = new AgentChatF5Native()
     const chat = new AgentChatService(pool, repository, new PostgresOperatorConversationRepository(pool), new PostgresWorkflowRepository(pool),
-      { getForWorkspace: async () => { throw new Error('G4 tests must not access a Run.') }, async *executionPages() { yield [] } },
+      { getForWorkspace: async () => { throw new Error('G4 tests must not access a Run.') }, getExecution: async () => { throw new Error('This fixture must not read a Run execution.') }, async *executionPages() { yield [] } },
       () => native, database.directory)
     const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       operator: { access, services: { agentChat: chat, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })

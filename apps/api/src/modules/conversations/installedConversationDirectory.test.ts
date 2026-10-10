@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, rename, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
 import { installedConversationDirectory } from './installedConversationDirectory.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
@@ -115,5 +116,73 @@ it('creates a private Operator folder on the approved worker root and keeps othe
     await rename(directory, `${directory}-original`)
     await mkdir(directory, { mode: 0o700 })
     await expect(owner.assertCurrent()).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_CHANGED' })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('keeps historical Agent chat on its saved runtime working tree without opening other runtime folders', async () => {
+  const root = await mkdtemp(join(persistentFixtureRoot, 'historical-chat-root-'))
+  const f = workerConversationFixture('agent')
+  if (f.binding.owner.kind !== 'agent' || f.binding.profile.target.hostRef.kind !== 'device') {
+    throw new Error('Worker Agent fixture required')
+  }
+  const runtime = join(root, 'runtime')
+  const base = join(root, 'projects')
+  const rootPolicyId = randomUUID()
+  const tree = join(runtime, 'source-materializations', rootPolicyId, randomUUID(), 'tree')
+  try {
+    await mkdir(tree, { recursive: true, mode: 0o700 })
+    await mkdir(base, { mode: 0o700 })
+    const baseHandle = await openPrivateRoot(base)
+    const runtimeHandle = await openPrivateRoot(runtime)
+    const treeHandle = await openPrivateRoot(tree)
+    let roots
+    let filesystem
+    try {
+      filesystem = await identity(treeHandle)
+      roots = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef: f.binding.profile.target.hostRef,
+        applicationInstallationId: f.connection.workerInstallationId, configurationRevision: '1',
+        bases: [{ baseId: randomUUID(), canonicalPath: base, filesystem: await identity(baseHandle),
+          accessModes: ['read-only'] }], managedRuntimeRoot: runtime, runtimeFilesystem: await identity(runtimeHandle) })
+    } finally { await treeHandle.close(); await runtimeHandle.close(); await baseHandle.close() }
+    const digest = 'a'.repeat(64)
+    const placement = { schemaVersion: 1, mainId: f.connection.mainId, runId: 'source-run',
+      nodeId: f.binding.owner.workflowNodeId, hostRef: f.binding.profile.target.hostRef,
+      registration: { workerInstallationId: f.connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+      mainInstallationId: f.connection.mainId, bindingHash: digest,
+      destination: { canonicalProjectRoot: base, canonicalCwd: base, managedRuntimeRoot: runtime,
+        directoryIdentityHash: digest, rootPolicyId, rootPolicyRevision: '1', locationRevision: '1',
+        attestationId: 'attestation', attestationHash: digest },
+      source: { revisionId: 'source-revision', manifestDigest: digest, materializationId: 'materialization',
+        materializationDigest: digest },
+      payload: { kind: 'agent', agentId: f.binding.owner.agentId,
+        agentConfigurationVersionId: f.configuration.id, driverId: 'codex', driverRevision: 'driver',
+        instanceId: f.binding.profile.instanceId, instanceRevision: f.binding.profile.instanceRevision,
+        harnessInstallationId: f.binding.profile.target.harnessInstallationId,
+        installationFingerprint: f.binding.profile.target.installationFingerprint,
+        runtimeContractVersion: 1, protocolRevision: 'protocol', credentialScopeRefs: [] } }
+    const binding = WorkerConversationBindingSchema.parse({ ...f.binding, workingDirectory: tree,
+      sourceExecution: { executionId: 'source-execution', placement, workingTree: {
+        materializationId: randomUUID(), materializationDigest: digest, canonicalProjectRoot: tree,
+        canonicalCwd: tree, directoryIdentityHash: digest, filesystem, accessMode: 'read-only', privateGit: null,
+      } } })
+    const input = { binding, configuration: f.configuration, approvedRoots: async () => roots }
+    const directory = await installedConversationDirectory(input)
+    await directory.assertCurrent()
+    const withoutSource = structuredClone(binding)
+    delete withoutSource.sourceExecution
+    await expect(installedConversationDirectory({ ...input, binding: withoutSource }))
+      .rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_UNAVAILABLE' })
+    const wrongNamespace = structuredClone(binding)
+    wrongNamespace.sourceExecution!.placement.destination.rootPolicyId = randomUUID()
+    await expect(installedConversationDirectory({ ...input, binding: wrongNamespace }))
+      .rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_UNAVAILABLE' })
+    const writable = structuredClone(f.configuration)
+    if (writable.harness.harness !== 'codex') throw new Error('Codex fixture required')
+    writable.harness.sandbox = 'workspace-write'
+    await expect(installedConversationDirectory({ ...input, configuration: writable }))
+      .rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_UNAVAILABLE' })
+    await rename(tree, `${tree}-original`)
+    await mkdir(tree, { mode: 0o700 })
+    await expect(directory.assertCurrent()).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_ROOT_CHANGED' })
   } finally { await rm(root, { recursive: true, force: true }) }
 })

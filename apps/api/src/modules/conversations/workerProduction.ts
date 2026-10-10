@@ -15,7 +15,7 @@ import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.js'
 import type { HarnessQualificationRepository } from '../harnesses/qualification/repository.js'
 import { readInstalledCodexQualification } from '../harnesses/installedCodexInspection.js'
-import type { AcceptedHarnessProfileAdmission } from '../harnesses/instanceSettings/acceptedProfile.js'
+import type { AcceptedHarnessProfileAdmission, AcceptedProfileSelector } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
 import { PostgresClaudeInteractionAuthority } from '../harnesses/claudeSdk/domainAuthority.js'
 import type { ClaudeCallbackIdentity } from '../harnesses/claudeSdk/interactions.js'
@@ -39,6 +39,8 @@ import type { AgentFileToolService } from '../files/tools/service.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
 import { definedProperties } from '../definedProperties.js'
+import { readExecutionPlacement, readNativePlacement } from '../placement/persistence.js'
+import type { WorkerConversationBinding } from '@foreman-code/contracts/remote-execution-rpc'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -86,12 +88,14 @@ export function createProductionWorkerConversations(input: {
     return result
   }
   const create = (options: { conversationId: string; configuration: WorkerConversationConfiguration;
-    workingDirectory: string; appMcpAccess: 'scoped' | 'none'; observationPrincipalId?: string }) => {
+    workingDirectory: string; appMcpAccess: 'scoped' | 'none'; observationPrincipalId?: string;
+    profileSelection?: AcceptedProfileSelector;
+    sourceExecution?: WorkerConversationBinding['sourceExecution'] }) => {
     const configuration = structuredClone(options.configuration)
     if (configuration.harness.harness === 'opencode') {
       throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     }
-    const selector = configuration.harnessProfileSelection
+    const selector = options.profileSelection ?? configuration.harnessProfileSelection
     if (!selector || selector.target.hostRef.kind !== 'device') unavailable('A selected device profile is required.')
     let caller = options.observationPrincipalId
     const kind = 'operatorId' in configuration ? 'operator' : 'agent'
@@ -102,6 +106,18 @@ export function createProductionWorkerConversations(input: {
     const profiles = configuration.harness.harness === 'claude' ? input.claudeProfiles : input.profiles
     const admitted = createAdmittedNativeManager<WorkerConversationManager>(configuration.harness.harness, async signal => {
       const original = await row(options.conversationId)
+      const sourceExecution = options.sourceExecution
+      const assertSource = async (live: OwnerRow) => {
+        if (!sourceExecution) return
+        if (live.kind !== 'agent' || live.record.origin?.kind !== 'run_execution'
+          || live.record.origin.executionId !== sourceExecution.executionId
+          || live.record.origin.runId !== sourceExecution.placement.runId
+          || !isDeepStrictEqual(await readExecutionPlacement(input.pool, sourceExecution.executionId),
+            sourceExecution.placement)
+          || !isDeepStrictEqual((await readNativePlacement(input.pool, sourceExecution.executionId))?.workingTree,
+            sourceExecution.workingTree)) unavailable('The original Run chat placement changed.')
+      }
+      await assertSource(original)
       const directoryBinding = original.kind === 'agent' && original.record.directoryBinding
         ? AgentChatDirectoryBindingSchema.parse(original.record.directoryBinding) : undefined
       if ('agentId' in configuration && directoryBinding) {
@@ -139,6 +155,7 @@ export function createProductionWorkerConversations(input: {
         configurationHash: commandInputHash(executionConfiguration) }, harness: configuration.harness.harness,
         profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess,
         ...(original.kind === 'agent' && original.record.systemPrompt ? { systemPrompt: original.record.systemPrompt } : {}),
+        ...(sourceExecution ? { sourceExecution } : {}),
         ...(directoryBinding ? { directoryBinding } : {}) })
       if (requestedBinding.owner.kind === 'operator') {
         const rootChannel = input.endpoint().captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
@@ -168,6 +185,7 @@ export function createProductionWorkerConversations(input: {
       const requestCallers = new WeakMap<WorkerConversationRpcRequest, string>()
       const current = async (request: WorkerConversationRpcRequest, effectSignal?: AbortSignal) => {
         const live = await row(options.conversationId)
+        await assertSource(live)
         const configurationId = live.kind === 'operator' ? live.operator_configuration_version_id : live.agent_configuration_version_id
         if (live.kind !== kind || configurationId !== configuration.id
           || 'agentId' in configuration && (live.workspace_id !== configuration.workspaceId || live.agent_id !== configuration.agentId)) {

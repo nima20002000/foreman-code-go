@@ -407,7 +407,7 @@ export function fixture(store = new F1Store()) {
   } as unknown as Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'getCurrentSavedVersion' | 'getSavedVersion'>
   const service = new AgentChatService(store.pool, repository, {} as PostgresOperatorConversationRepository,
     workflows, { getForWorkspace: () => { throw new Error('No Run access in F1 tests.') },
-      executionPages: () => { throw new Error('No execution access in F1 tests.') } }, () => manager, '/unused')
+      getExecution: async () => { throw new Error('This fixture must not read a Run execution.') }, executionPages: () => { throw new Error('No execution access in F1 tests.') } }, () => manager, '/unused')
   // Keep the service/pump/observation code real; only the already-resident native owner is injected.
   const internals = service as unknown as {
     runtimes: Map<string, { manager: NativeHarnessSessionManager; session: NativeSessionReference; configuration: AgentConfigurationVersion }>

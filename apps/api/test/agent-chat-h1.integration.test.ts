@@ -159,7 +159,7 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
     }
     factory.release = (id) => { owners.delete(id) }
     const chat = new AgentChatService(pool, repository, new PostgresOperatorConversationRepository(pool), new PostgresWorkflowRepository(pool),
-      { getForWorkspace: async () => { throw new Error('H1 must not access a Run.') }, executionPages: () => { throw new Error('H1 must not access an execution.') } },
+      { getForWorkspace: async () => { throw new Error('H1 must not access a Run.') }, getExecution: async () => { throw new Error('This fixture must not read a Run execution.') }, executionPages: () => { throw new Error('H1 must not access an execution.') } },
       factory, database.directory)
     const request = (requestId: string, expectedConversationId: string | null): SendAgentChatMessageRequest =>
       ({ requestId, context: query, content: `H1 ${requestId}`, intent: 'next_turn', expectedConversationId })

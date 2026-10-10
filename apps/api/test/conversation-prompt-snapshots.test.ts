@@ -161,7 +161,7 @@ describe('conversation prompt snapshots', () => {
     } as unknown as Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'getCurrentSavedVersion' | 'getSavedVersion'>
     const service = new AgentChatService(store.pool, new PostgresAgentChatRepository(store.pool),
       {} as PostgresOperatorConversationRepository, workflows,
-      { getForWorkspace: async () => undefined, async *executionPages() {} }, () => native, root)
+      { getForWorkspace: async () => undefined, getExecution: async () => undefined, async *executionPages() {} }, () => native, root)
     const caller = { ...operator('caller'), grants: [{ scope: {}, actions: ['agent_chat:read' as const, 'agent_chat:write' as const] }] }
     try {
       await service.send(caller, context.workspaceId, {

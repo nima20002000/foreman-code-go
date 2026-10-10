@@ -129,7 +129,7 @@ async function fixture() {
   const services: AgentChatService[] = []
   const makeService = () => {
     const service = new AgentChatService(pool, repository, {} as PostgresOperatorConversationRepository, workflows,
-      { getForWorkspace: () => { throw new Error('No Run access.') }, executionPages: () => { throw new Error('No execution access.') } }, managers, root)
+      { getForWorkspace: () => { throw new Error('No Run access.') }, getExecution: async () => { throw new Error('This fixture must not read a Run execution.') }, executionPages: () => { throw new Error('No execution access.') } }, managers, root)
     services.push(service); return service
   }
   const service = makeService()

@@ -56,7 +56,7 @@ function result(rows: unknown[] = []) { return { rows, rowCount: rows.length } }
 function service(pool: pg.Pool, repository = new PostgresAgentChatRepository(pool)) {
   return new AgentChatService(pool, repository, {} as PostgresOperatorConversationRepository,
     { getSavedVersion: async () => undefined, getCurrentSavedVersion: async () => undefined, getAgentConfiguration: async () => undefined },
-    { getForWorkspace: async () => { throw new Error('G4 unit fixture must not read a Run.') }, async *executionPages() { yield [] } },
+    { getForWorkspace: async () => { throw new Error('G4 unit fixture must not read a Run.') }, getExecution: async () => { throw new Error('This fixture must not read a Run execution.') }, async *executionPages() { yield [] } },
     () => { throw new Error('G4 unit fixture must not create a native manager.') }, '/tmp/g4')
 }
 

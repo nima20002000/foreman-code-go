@@ -128,7 +128,7 @@ async function fixture({ readOnly }: { readOnly: boolean }) {
   // Crucially, every send goes through the REAL AgentChatService and manager;
   // the test does not call resolve/prepare/activate instead of native startTurn.
   chat.current = new AgentChatService(database.pool, repository, new PostgresOperatorConversationRepository(database.pool),
-    new PostgresWorkflowRepository(database.pool), { getForWorkspace: async () => undefined, async *executionPages() {} },
+    new PostgresWorkflowRepository(database.pool), { getForWorkspace: async () => undefined, getExecution: async () => undefined, async *executionPages() {} },
     (conversationId) => {
       const existing = managers.get(conversationId)
       if (existing) return existing

@@ -69,7 +69,8 @@ export async function findRunChatConversation(query: Queryable, context: AgentCh
 
 /** Streaming, bounded projection. A missing session is NOT permission to select an older execution. */
 export async function selectRunChatExecution(
-  pages: AsyncIterable<HarnessExecution[]>, context: AgentChatContext, configurationVersionId: string, executionId?: string,
+  pages: AsyncIterable<HarnessExecution[]> | Iterable<HarnessExecution[]>,
+  context: AgentChatContext, configurationVersionId: string, executionId?: string,
 ): Promise<{ executionId: string } | { executions: Array<{ executionId: string; attempt: number }>; hasMoreExecutions: boolean } | undefined> {
   let first: HarnessExecution | undefined
   let count = 0
@@ -78,7 +79,6 @@ export async function selectRunChatExecution(
     for (const execution of page) {
       if (executionId && execution.id !== executionId) continue
       if (execution.runId !== context.runId || execution.workflowNodeId !== context.workflowNodeId) {
-        if (executionId) staleRunChat()
         continue
       }
       if (execution.agentId !== context.agentId || execution.agentConfigurationVersionId !== configurationVersionId) staleRunChat()
@@ -95,7 +95,7 @@ export async function selectRunChatExecution(
 }
 
 /** The immutable admission snapshot supplies Agent identity; today's workflow/Agent is never queried here. */
-export async function resolveRunChatSelection(query: Queryable, runs: Pick<PostgresRunRepository, 'executionPages'>,
+export async function resolveRunChatSelection(query: Queryable, runs: Pick<PostgresRunRepository, 'executionPages' | 'getExecution'>,
   input: SelectedRunChatSelection): Promise<RunChatSelection> {
   const target: SelectedRunChatTarget = { workspaceId: input.workspaceId, workflowId: input.workflowId,
     runId: input.runId, workflowNodeId: input.workflowNodeId }
@@ -115,7 +115,9 @@ export async function resolveRunChatSelection(query: Queryable, runs: Pick<Postg
   if (!node) throw new DomainError('RUN_CHAT_NODE_NOT_FOUND', 'Node not found in the selected Run snapshot.', 404)
   if (node.kind === 'job') return { kind: 'unavailable', target, reason: 'job_node' }
   const context: AgentChatContext = { ...target, agentId: node.agentId }
-  const selected = await selectRunChatExecution(runs.executionPages(input.runId), context, node.agentConfigurationVersionId, input.executionId)
+  const exact = input.executionId ? await runs.getExecution(input.executionId) : undefined
+  const pages = input.executionId ? [exact ? [exact] : []] : runs.executionPages(input.runId)
+  const selected = await selectRunChatExecution(pages, context, node.agentConfigurationVersionId, input.executionId)
   if (!selected) return { kind: 'unavailable', target, reason: 'execution_missing' }
   if ('executions' in selected) return { kind: 'execution_selection_required', target, ...selected }
   return { kind: 'selected', selection: { ...target, executionId: selected.executionId }, context }

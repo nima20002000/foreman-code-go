@@ -53,7 +53,7 @@ it('preserves remote Claude cold recovery, ownership and non-delivery through au
         configurationVersionId: configuration.id, configurationHash: commandInputHash(configuration) } } })
     const createChat = () => new AgentChatService(db.pool, repository, messages, new PostgresWorkflowRepository(db.pool), {
       getForWorkspace: async () => { throw new Error('Chat must not select a Run.') },
-      executionPages() { throw new Error('Chat must not select a Run execution.') },
+      getExecution: async () => { throw new Error('This fixture must not read a Run execution.') }, executionPages() { throw new Error('Chat must not select a Run execution.') },
     }, (id, selected, cwd) => {
       expect(id).toBe(conversation.id)
       expect(selected).toEqual(configuration)

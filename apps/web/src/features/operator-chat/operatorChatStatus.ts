@@ -1,5 +1,7 @@
 import type { OperatorConversationState, OperatorConversationSummary } from '@foreman-code/contracts'
+import type { AgentChatSessionState } from '@foreman-code/contracts/agent-chat'
 import { chatBackgroundWork } from '../conversations/chatWorkStatus'
+import { chatStatus } from '../conversations/chatStatus'
 import type { OperatorChatConnection } from '../../shared/api/operatorChatStream'
 
 export function operatorNeedsAttention(state: OperatorConversationState): boolean {
@@ -25,15 +27,26 @@ export function operatorNavigationStatus(summary: OperatorConversationSummary): 
 
 export function operatorTurnStatus(state: OperatorConversationState, connection: OperatorChatConnection): string {
   const background = !state.activeRequestId && !['active', 'starting'].includes(state.turnState) ? chatBackgroundWork(state.activitySnapshot) : undefined
-  const status = state.turnState === 'canceling' ? 'Cancellation requested. Waiting for confirmation.'
-    : operatorNeedsAttention(state) ? 'Waiting for your decision.'
-      : state.pendingInteraction && state.responseDelivery !== 'offered' ? 'Checking delivery of your decision. It will not be sent twice.'
-        : state.turnState === 'uncertain' ? 'The previous turn may still be running.'
-          : state.activeRequestId || ['active', 'starting'].includes(state.turnState) ? 'Operator is working…'
-            : state.turnState === 'error' ? 'The turn failed.'
-              : background ? `${background.label}. ${background.message}` : state.lastResult ? '' : 'Ready for your message.'
-  return connection === 'connected' ? status
-    : `${connection === 'unavailable' ? 'Live updates unavailable. Polling for changes.' : 'Reconnecting to live updates.'} Information may be stale.${status ? ` ${status}` : ''}`
+  let phase: AgentChatSessionState = 'idle'
+  let executionLabel: string | undefined
+  if (state.turnState === 'canceling') phase = 'interrupting'
+  else if (state.turnState === 'uncertain') phase = 'uncertain'
+  else if (operatorNeedsAttention(state)) {
+    phase = 'waiting_approval'
+    executionLabel = 'Waiting for your decision.'
+  } else if (state.activeRequestId || ['active', 'starting'].includes(state.turnState)) {
+    phase = state.turnState === 'starting' ? 'creating' : 'active'
+    executionLabel = 'Operator is working…'
+  } else if (state.turnState === 'error') {
+    phase = 'error'
+    executionLabel = 'The turn failed.'
+  } else if (background) executionLabel = `${background.label}. ${background.message}`
+  else executionLabel = state.lastResult ? '' : 'Ready for your message.'
+  const delivery = state.pendingInteraction && state.responseDelivery !== 'offered'
+    ? 'Checking delivery of your decision. It will not be sent twice.' : undefined
+  const presentation = chatStatus({ phase, connection, hasConversation: true,
+    ...(executionLabel !== undefined ? { executionLabel } : {}), ...(delivery ? { delivery } : {}) })
+  return [presentation.connection, presentation.execution, presentation.delivery].filter(Boolean).join(' ')
 }
 
 /** Late summary polls cannot undo a decision already acknowledged by a newer revision. */

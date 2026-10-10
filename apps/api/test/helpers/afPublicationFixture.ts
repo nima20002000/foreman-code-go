@@ -128,6 +128,7 @@ export async function afPublicationFixture({ selectedRun = false }: { selectedRu
     new PostgresWorkflowRepository(database.pool), { // Only source execution/native I/O is synthetic; Run/execution FK rows are real.
       getForWorkspace: async (workspaceId, runId) => selectedRun && workspaceId === fixture.scope.workspaceId && runId === fixture.run.id
         ? completedRun : undefined,
+      getExecution: async (id) => selectedRun && id === runExecution.id ? runExecution : undefined,
       async *executionPages() { if (selectedRun) yield [runExecution] },
     },
     (id) => {

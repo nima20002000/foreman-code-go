@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { server } from '../mocks/server'
 import { bindMockInstallation, resetTestFixtures } from '../shared/mocks/handlers'
 import { useNavigationUiStore } from '../features/workspaces/navigationUiStore'
+import { protectedKey } from '../shared/api/protectedChatStorage'
 
 if (typeof HTMLDialogElement !== 'undefined' && !HTMLDialogElement.prototype.showModal) {
   HTMLDialogElement.prototype.showModal = function showModal() { this.open = true }
@@ -31,6 +32,11 @@ afterEach(() => {
   server.resetHandlers()
   resetTestFixtures()
   cleanup()
+  const pendingPrefix = protectedKey('outbox', 'agent:')
+  for (let index = localStorage.length - 1; index >= 0; index--) {
+    const key = localStorage.key(index)
+    if (key?.startsWith(pendingPrefix)) localStorage.removeItem(key)
+  }
   useNavigationUiStore.getState().reset()
   vi.restoreAllMocks()
 })

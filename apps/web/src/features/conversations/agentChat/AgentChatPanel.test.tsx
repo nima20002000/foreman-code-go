@@ -22,6 +22,41 @@ afterEach(() => {
 })
 
 describe('AgentChatPanel frozen fixtures', () => {
+  it('does not restore protected content from a GET begun before a command denial', async () => {
+    const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
+    await mounted.ready()
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let reads = 0
+    let posts = 0
+    let restored = false
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat', async () => {
+      reads++
+      if (reads === 1) {
+        await held
+        return HttpResponse.json(agentChatFixtures.idleAfterCompletion)
+      }
+      return restored ? HttpResponse.json(agentChatFixtures.idleAfterCompletion)
+        : errorResponse('ACCESS_DENIED', 'Chat access revoked', 403)
+    }), http.post(messagePath, () => {
+      posts++
+      return errorResponse('ACCESS_DENIED', 'Chat access revoked', 403)
+    }))
+    const oldRead = mounted.refresh()
+    await waitFor(() => expect(reads).toBe(1))
+    write('Denied command')
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await screen.findByText('Agent chat access unavailable')
+    await act(async () => { release(); await oldRead })
+    expect(screen.queryByText('It is a workflow engine.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
+    restored = true
+    await act(() => mounted.refresh())
+    await screen.findByRole('textbox', { name: 'Message' })
+    expect(posts).toBe(1)
+    mounted.unmount()
+    mounted.client.clear()
+  })
   it.each(Object.entries(agentChatFixtures))('renders fixture: %s', async (_name, fixture) => {
     const mounted = mountChat(fixture)
     await mounted.ready()

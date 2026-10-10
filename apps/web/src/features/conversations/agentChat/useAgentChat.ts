@@ -16,6 +16,7 @@ import { useConversationDraftStore } from '../conversationDraftStore'
 import { messageAttachmentRefs, sameAttachmentRefs, type ChatAttachmentAttempt } from '../chatAttachmentAttempt'
 import { readEarlierChatHistory } from './historyReadback'
 import { claimDraftReadback, receiptForCommand } from './receiptReadback'
+import { forgetPendingCommand, rememberPendingCommand, restorePendingCommands } from './pendingCommands'
 import { acceptAgentChatState, agentChatContextKey, approvalReplyAvailable, intentUnavailable, stateBelongsToContext } from './model'
 
 import { agentChatReadbacksKey, compactAgentChatResult, confirmedCommandReceipt, currentCommandReceipt, rememberAgentChatReadback, retireAgentChatAcknowledgements, type AgentChatReadbacks, type AgentChatCommand as Command, type AgentChatCommandResult as Result, type AgentChatCommandRecord } from './commandRecords'
@@ -63,10 +64,19 @@ export function useAgentChat(inputContext: AgentChatContext) {
   }), [workspaceId, workflowId, workflowNodeId, agentId, runId])
   const client = useQueryClient(), generation = sessionGeneration()
   const readGeneration = useRef(0)
+  const commandDenial = useRef<ApiError | undefined>(undefined)
   const draftKey = agentChatContextKey(context)
   const matches = useCallback((incoming: AgentChatState) => stateBelongsToContext(incoming, context), [context])
   const key = useMemo(() => agentChatStateKey(context, generation), [context, generation])
   const commandKey = useMemo(() => ['agent-chat', generation, draftKey, 'command'] as const, [draftKey, generation])
+  const recoveryError = useMemo(() => {
+    try {
+      restorePendingCommands(client, draftKey, generation)
+      return undefined
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Pending messages could not be recovered.'
+    }
+  }, [client, draftKey, generation])
   const commandFilters = useMemo(() => ({ mutationKey: commandKey, exact: true }), [commandKey])
   const online = useSyncExternalStore(subscribeNetwork, isOnline, () => true)
   const access = useLocalHumanAccessQuery()
@@ -87,11 +97,13 @@ export function useAgentChat(inputContext: AgentChatContext) {
   const query = useQuery({ queryKey: key, enabled: canRead, retry: false, staleTime: 0, refetchInterval: 5_000,
     queryFn: async ({ signal }) => {
       const read = ++readGeneration.current
+      const denialAtStart = commandDenial.current
       const state = await agentChatApi.read(context, { signal })
       signal.throwIfAborted()
       if (read !== readGeneration.current) throw new DOMException('Newer chat readback required', 'AbortError')
       assertSession(generation)
       if (!matches(state)) throw new ApiError({ code: 'AGENT_CHAT_CONTEXT_STALE', message: 'Chat returned a different selection. Refresh before sending.' }, 409)
+      if (commandDenial.current === denialAtStart) commandDenial.current = undefined
       return state
     },
     structuralSharing: (previous, incoming) => {
@@ -113,7 +125,11 @@ export function useAgentChat(inputContext: AgentChatContext) {
         return result
       } catch (error) {
         // A state GET started before a known denial cannot clear it with a stale response.
-        if (isApiAccessError(error)) await client.cancelQueries({ queryKey: key, exact: true })
+        if (isApiAccessError(error)) {
+          commandDenial.current = error
+          readGeneration.current++
+          await client.cancelQueries({ queryKey: key, exact: true })
+        }
         throw error
       }
     },
@@ -121,7 +137,7 @@ export function useAgentChat(inputContext: AgentChatContext) {
     enabled: false, retry: false,
   })
   const historyDenial = history.errorUpdatedAt >= query.dataUpdatedAt && isApiAccessError(history.error) ? history.error : undefined
-  const denial = useProtectedAccessError(query, historyDenial
+  const denial = useProtectedAccessError(query, commandDenial.current ?? historyDenial
     ?? (latestCommand && latestCommand.submittedAt > query.dataUpdatedAt ? latestCommand.error : undefined))
   const state = canRead && !denial && query.data && matches(query.data) ? query.data : undefined
   const currentReceipt = latestCommand?.result
@@ -132,11 +148,19 @@ export function useAgentChat(inputContext: AgentChatContext) {
   useEffect(() => {
     if (generation !== sessionGeneration() || sessionIsSwitching()) return
     if (reconcileDraftReadback(state, commands, draftKey)) setLocalError(undefined)
+    for (const record of commands) {
+      if (record.command?.kind !== 'send') continue
+      const receipt = confirmedCommandReceipt(record, state) ?? receiptForCommand(state, record.command)
+      if (receipt && ['completed', 'failed', 'canceled'].includes(receipt.delivery)) {
+        forgetPendingCommand(draftKey, record.command.input.requestId)
+      }
+    }
   }, [state, commands, draftKey, generation])
   useEffect(() => { retireAgentChatAcknowledgements(client) }, [client, state])
   const accept = useCallback((incoming: AgentChatState, source: 'read' | 'receipt' = 'receipt') => {
     assertSession(generation)
     if (sessionIsSwitching() || !matches(incoming)) return
+    if (commandDenial.current) return
     if (isApiAccessError(client.getQueryState(key)?.error)) return
     const historyRead = client.getQueryState(['agent-chat', generation, incoming.context, incoming.conversation?.id, 'history'])
     // A late SSE/command snapshot cannot undo a known denial; require a fresh state GET.
@@ -224,7 +248,19 @@ export function useAgentChat(inputContext: AgentChatContext) {
       }
       refresh()
     },
-    onError: () => { if (generation === sessionGeneration() && !sessionIsSwitching()) refresh() },
+    onError: async (error, command) => {
+      if (generation !== sessionGeneration() || sessionIsSwitching()) return
+      if (command.kind === 'send' && !commandMayHaveBeenAccepted(error)) {
+        forgetPendingCommand(draftKey, command.input.requestId)
+      }
+      if (isApiAccessError(error)) {
+        // Only a GET begun after this denial can restore protected chat state.
+        commandDenial.current = error
+        readGeneration.current++
+        await client.cancelQueries({ queryKey: key, exact: true })
+      }
+      refresh()
+    },
   })
   const runCommand = (build: () => Command): boolean => {
     const release = acquire(client, JSON.stringify(commandKey))
@@ -232,13 +268,16 @@ export function useAgentChat(inputContext: AgentChatContext) {
     setLocalError(undefined)
     try {
       // Allocate exactly one requestId AFTER synchronous admission, not on each keystroke/click.
-      void mutation.mutateAsync(build()).catch(() => undefined).finally(() => { release(); retireAgentChatAcknowledgements(client) })
+      const command = build()
+      if (command.kind === 'send') rememberPendingCommand(draftKey, command)
+      void mutation.mutateAsync(command).catch(() => undefined).finally(() => { release(); retireAgentChatAcknowledgements(client) })
       return true
     } catch (error) { release(); setLocalError(error instanceof Error ? error.message : 'The command could not be prepared.'); return false }
   }
   const blocked = (action: ManagementAction) => {
     if (!online) return 'You are offline. Your draft is kept.'
     if (!permits(action)) return 'Your access does not allow this action for this Agent and Run.'
+    if (recoveryError) return recoveryError
     if (!state || query.isError) return 'Refresh this conversation before sending a command.'
     if (state.availability.reason === 'run_active' || state.sessionState === 'unavailable') {
       return state.availability.message ?? 'This selection is read only.'

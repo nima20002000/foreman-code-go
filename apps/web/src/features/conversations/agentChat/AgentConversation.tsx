@@ -3,7 +3,7 @@ import { CompactionActivity } from '../sessionControls/CompactionActivity'
 import { useSessionControls } from '../sessionControls/useSessionControls'
 import { compactionBlocksSend, parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { AgentChatContext, AgentChatIntent, AgentChatSessionState, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import type { AgentChatContext, AgentChatIntent, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
 import { ChatAttachmentBoundary } from '../ChatAttachmentBoundary'
 import { prepareChatAttachments } from '../chatAttachmentAttempt'
@@ -15,17 +15,12 @@ import { ConversationComposer } from '../ConversationComposer'
 import { ConversationViewport } from '../ConversationViewport'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { chatBackgroundWork } from '../chatWorkStatus'
+import { chatStatus } from '../chatStatus'
 import { AgentChatTranscript } from './AgentChatTranscript'
 import { chatBusy, deliveryLabels, intentLabels, intentUnavailable } from './model'
 import { useAgentChat } from './useAgentChat'
 import './agentChat.css'
 import '../chatAttachments.css'
-
-const stateLabels: Record<AgentChatSessionState, string> = {
-  none: 'Start a conversation', creating: 'Creating the native session', idle: 'Ready for a follow-up', active: 'Agent is working',
-  interrupting: 'Waiting for the interrupted turn to settle', waiting_approval: 'Waiting for approval', uncertain: 'Native delivery is unconfirmed',
-  unavailable: 'Native session unavailable', error: 'The last turn failed',
-}
 
 /** Mounted ONLY through the existing Board AgentChatPanel. Server state stays in Query. */
 type AgentConversationProps = {
@@ -149,17 +144,24 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.activityChannel !== 'reasoning' && message.nativeMessageComplete !== false).at(-1)
   const resendFiles = sendAgain && state ? [...state.messages, ...(chat.history.data?.pages.flatMap((batch) => batch.pages.flatMap((page) => page.messages)) ?? [])]
     .flatMap((message) => message.attachments ?? []) : []
+  const status = chatStatus({
+    phase: state?.sessionState ?? 'none',
+    ...(state?.sessionState === 'idle' && background ? { executionLabel: background.label } : {}),
+    connection: chat.connection,
+    online: chat.online,
+    hasConversation: !!state?.conversation,
+  })
   const notices = <div className="agent-chat-notices">
     {runActivity}
     {retired ? <p role="status">Retired harness (OpenCode): read-only</p> : <CompactionActivity controls={sessionControls} />}
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
-      : state.sessionState === 'idle' && background ? background.label : stateLabels[state.sessionState]}</p> : null}
+      : status.execution}</p> : null}
     {background ? <p role="status">{background.message}</p> : null}
-    {!chat.online ? <Alert tone="warning" title="You are offline" live>Your draft is kept. No messages will be sent automatically when you reconnect.</Alert>
-      : state?.conversation && chat.connection !== 'connected' ? <Alert tone="warning" title={chat.connection === 'unavailable' ? 'Live updates unavailable' : 'Connecting to live activity'} live>
-        {chat.connection === 'unavailable' ? 'Checking the latest saved state while live updates are unavailable.' : 'Reconnecting and checking the latest saved state. Messages are not resent.'}
-      </Alert> : null}
+    {status.connection ? <Alert tone="warning" title={!chat.online ? 'You are offline'
+      : chat.connection === 'unavailable' ? 'Live updates unavailable' : 'Connecting to live activity'} live>
+      {status.connection}
+    </Alert> : null}
     {chat.query.isError ? <Alert title="Chat could not be refreshed" tone="warning" live><p>{chat.query.error.message}</p>
       <Button size="sm" onClick={() => { void chat.query.refetch() }}>Refresh chat</Button></Alert> : null}
     {chat.query.isPending ? <LoadingState label="Loading this Agent conversation…" rows={1} /> : null}

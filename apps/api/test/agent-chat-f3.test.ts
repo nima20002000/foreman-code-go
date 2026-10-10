@@ -174,6 +174,7 @@ async function setup(options: { ephemeral?: boolean; stored?: boolean; origin?: 
     { release: (id: string) => { owners.delete(id) } })
   const source: HarnessExecution[] = []
   const runs = { getForWorkspace: async () => ({ ...fixture.run, executionState: 'completed' as const, outcome: 'succeeded' as const }),
+    getExecution: async (id: string) => source.find(item => item.id === id),
     async *executionPages() { sourceReads++; for (const execution of source) yield [execution] } }
   const workflows = { getSavedVersion: async () => fixture.version, getCurrentSavedVersion: async () => fixture.version,
     getAgentConfiguration: async () => configuration }

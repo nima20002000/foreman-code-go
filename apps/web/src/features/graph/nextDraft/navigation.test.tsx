@@ -9,6 +9,10 @@ import { nextDraftKey } from './state'
 import { fixture } from './core.cases'
 import { NextDraftEditor } from './NextDraftEditor'
 import { queryKeys } from '../../../shared/api/query'
+import { agentChatFixtures } from '@foreman-code/contracts/agent-chat'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../../mocks/server'
+import { agentChatFixtureFor } from '../../../shared/mocks/agentChatHandlers'
 
 async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
@@ -50,6 +54,56 @@ it.each(['workflow', 'agent'])('explains the required Save before chatting with 
   expect(await screen.findByRole('heading', { name: 'Save this Agent and workflow to chat' })).toBeVisible()
   expect(screen.getByText(/Save the Agent settings and workflow changes/)).toBeVisible()
   expect(document.querySelector('.agent-chat-panel')).not.toBeInTheDocument()
+})
+it.each([
+  ['attachment', 'allowed'],
+  ['second node', 'allowed'],
+  ['attachment', 'denied'],
+  ['second node', 'denied'],
+])('requires Save for an unsaved %s of an existing Agent (%s chat access)', async (kind, access) => {
+  const reads: string[] = []
+  server.use(http.get('/api/local-human', () => HttpResponse.json({ principal: {
+    id: 'chat-test-principal', name: 'Chat tester', expiresAt: '2099-01-01T00:00:00.000Z',
+    grants: access === 'allowed' ? [{ actions: ['agent_chat:read'],
+      scope: { workspaceIds: ['workspace'], workflowIds: ['workflow'] } }] : [],
+  } })))
+  server.use(http.get('/api/workspaces/:workspaceId/agent-chat', ({ request }) => {
+    reads.push(new URL(request.url).searchParams.get('workflowNodeId')!)
+    return HttpResponse.json(agentChatFixtureFor(agentChatFixtures.empty, {
+      workspaceId: 'workspace', workflowId: 'workflow', workflowNodeId: 'node-0', agentId: 'agent-0',
+    }))
+  }))
+  const context = fixture(['coder'])
+  context.draft.graph.nodes[0]!.id = 'original-node'
+  context.draft.graph.entryNodeId = 'original-node'
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, graph => ({ ...graph,
+    entryNodeId: 'node-0',
+    nodes: kind === 'attachment' ? [{ ...graph.nodes[0]!, id: 'node-0' }]
+      : [...graph.nodes, { ...graph.nodes[0]!, id: 'node-0' }],
+  })))
+  const client = readyClient()
+  const view = render(<QueryClientProvider client={client}>
+    <NextDraftEditor workspaceId="workspace" workflowId="workflow" />
+  </QueryClientProvider>)
+  await userEvent.click(screen.getByRole('button', { name: 'Open fixture chat' }))
+  expect(await screen.findByRole('heading', { name: 'Save this Agent and workflow to chat' })).toBeVisible()
+  expect(screen.queryByTestId('agent-conversation')).not.toBeInTheDocument()
+  expect(reads).toEqual([])
+  act(() => useGraphDraftStore.getState().updateNextDraft(key, state => {
+    const saved = { ...state.context.draft, graph: state.graph, baseWorkflowVersionId: 'workflow-version-2' }
+    return { ...state, context: { ...state.context, draft: saved, savedDraft: saved } }
+  }))
+  if (access === 'allowed') {
+    expect(await screen.findByTestId('agent-conversation')).toBeVisible()
+    expect(reads).toEqual(['node-0'])
+  } else {
+    expect(await screen.findByText('Agent chat access unavailable')).toBeVisible()
+    expect(screen.queryByTestId('agent-conversation')).not.toBeInTheDocument()
+    expect(reads).toEqual([])
+  }
+  view.unmount()
+  client.clear()
 })
 it('registers local form dirtiness and discard with the existing navigation guard', async () => {
   useGraphDraftStore.getState().installNextDraft(key, fixture())
