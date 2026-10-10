@@ -29,8 +29,9 @@ export const OPERATOR_RUNTIME_LIMITS = [
       + 'Updates wait for active work to drain, verify the artifact and install side-by-side; '
       + 'a failed release rolls back and reports the error. computers_maintenance_status requires global settings:read '
       + 'and exposes current/target versions, update state and last error. It defaults to compact task summaries '
-      + '(latest per kind and retained failures from the last 24 hours), without outputTail. '
-      + 'Use detail: "full" for retained history/output, optionally filtered by taskId. computers_maintenance_start with update-worker '
+      + '(newest 5 tasks, newest first), without outputTail. taskLimit accepts 1-50; running and queued tasks are always '
+      + 'included and tasksOmitted counts excluded retained tasks per computer. Use detail: "full" for output '
+      + 'with the same limit, optionally filtered by taskId. computers_maintenance_start with update-worker '
       + 'requires global settings:update; omitted targets select paired Workers only. Reuse the original commandId '
       + 'and input to recover the saved task, or a new commandId to retry. Older Workers without worker-update-v1 '
       + 'need one human installation of an updater-enabled Worker first. Main is updated with production:install.' },

@@ -121,6 +121,9 @@ export const MaintenanceStatusSchema = z.object({
 }).strict()
 export type MaintenanceStatus = z.infer<typeof MaintenanceStatusSchema>
 
+export const DEFAULT_MAINTENANCE_TASK_LIMIT = 5
+export const MaintenanceTaskLimitSchema = z.number().int().min(1).max(50)
+
 export const MaintenanceReplySchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status'), status: MaintenanceStatusSchema }).strict(),
   z.object({ operation: z.literal('start'), task: MaintenanceTaskSchema }).strict(),
@@ -128,13 +131,15 @@ export const MaintenanceReplySchema = z.discriminatedUnion('operation', [
 
 /** Main-side readback across computers. null status: the computer is offline or did not answer in time. */
 export const ComputerMaintenanceListSchema = z.object({
-  computers: z.array(z.object({ target: DeviceProvisioningTargetSchema, status: MaintenanceStatusSchema.nullable() }).strict()).max(101),
+  computers: z.array(z.object({ target: DeviceProvisioningTargetSchema, status: MaintenanceStatusSchema.nullable(),
+    tasksOmitted: z.number().int().nonnegative().default(0) }).strict()).max(101),
 }).strict()
 export type ComputerMaintenanceList = z.infer<typeof ComputerMaintenanceListSchema>
 export const ComputerMaintenanceListInputSchema = z.object({
   refresh: z.boolean().optional(), target: DeviceProvisioningTargetSchema.optional(),
+  taskLimit: MaintenanceTaskLimitSchema.optional(),
 }).strict()
-/** Operator summaries omit diagnostic output; full reads retain the existing UI/device contract. */
+/** Operator summaries omit diagnostic output; full reads use the same history selection with diagnostic output. */
 export const MaintenanceTaskSummarySchema = MaintenanceTaskSchema.omit({ outputTail: true }).extend({
   summary: z.string().max(300),
 })
@@ -145,6 +150,7 @@ export const ComputerMaintenanceOperatorListSchema = z.object({
   computers: z.array(z.object({
     target: DeviceProvisioningTargetSchema,
     status: z.union([MaintenanceStatusSchema, CompactMaintenanceStatusSchema]).nullable(),
+    tasksOmitted: z.number().int().nonnegative().default(0),
   }).strict()).max(101),
 }).strict()
 export type ComputerMaintenanceOperatorList = z.infer<typeof ComputerMaintenanceOperatorListSchema>
@@ -158,6 +164,7 @@ export type ComputerMaintenanceOperatorListInput = z.infer<typeof ComputerMainte
 
 export const ComputerMaintenanceReadInputSchema = z.object({
   target: DeviceProvisioningTargetSchema, refresh: z.boolean().optional(),
+  taskLimit: MaintenanceTaskLimitSchema.optional(),
 }).strict()
 
 /** Start one maintenance task on the selected computers (all paired computers and Main when omitted). */

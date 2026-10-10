@@ -81,7 +81,8 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
         return <li key={computerKey(card.target)}>
           <ComputerCard card={card} observed={observed} fresh={fresh}
             activityComplete={activity.data?.activityComplete === true && !activity.data.truncated}
-            accounts={accountRead.isError ? undefined : accountRead.data} maintenance={maintenanceRead.data}
+            accounts={accountRead.isError ? undefined : accountRead.data} maintenance={maintenanceRead.data?.status}
+            tasksOmitted={maintenanceRead.data?.tasksOmitted ?? 0}
             maintenanceError={maintenanceRead.isError} onRetryMaintenance={() => { void maintenanceRead.refetch() }}
             onMaintain={task => start.mutate({ task, targets: [card.target] })} maintaining={start.isPending || start.unresolved}
             buildPosition={ranksKnown ? builders.indexOf(card) + 1 : undefined} buildCount={builders.length}
@@ -105,17 +106,16 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
 }
 
 type Task = ComputerMaintenanceStartInput['task']
-function ComputerCard({ card, observed, fresh, activityComplete, accounts, maintenance, maintenanceError,
+function ComputerCard({ card, observed, fresh, activityComplete, accounts, maintenance, maintenanceError, tasksOmitted,
   onRetryMaintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
   card: Card; observed: ComputerActivity | undefined; fresh: boolean; accounts: ComputerAccounts | null | undefined
   activityComplete: boolean; maintenanceError: boolean; onRetryMaintenance(): void
   maintenance: MaintenanceStatus | null | undefined; onMaintain(task: Task): void; maintaining: boolean
+  tasksOmitted: number
   buildPosition: number | undefined; buildCount: number; onOpen: (() => void) | undefined
 }) {
   const name = observed?.name ?? computerDisplayName(card.target.hostRef)
-  const recentTasks = maintenance?.tasks ?? []
-  const importantTasks = recentTasks.filter(item => item.state === 'running' || item.state === 'failed')
-  const tasks = importantTasks.length ? importantTasks : recentTasks.slice(0, 1)
+  const tasks = maintenance?.tasks ?? []
   const online = fresh && observed?.online === true
   const workflows = new Set(observed?.agents.map(agent => agent.workflowId) ?? []).size
   const account = (tool: ComputerAccount['tool']) => accounts?.accounts.find(value => value.tool === tool)
@@ -160,6 +160,7 @@ function ComputerCard({ card, observed, fresh, activityComplete, accounts, maint
     {tasks.map(task => <p key={task.id} className="computer-card-task" data-state={task.state} role="status">
       {maintenanceError ? 'Last confirmed: ' : null}
       {task.state === 'running' ? `${taskLabel(task.kind)}…` : `${taskLabel(task.kind)}: ${task.summary}`}</p>)}
+    {tasksOmitted > 0 ? <p className="computer-card-note">{count(tasksOmitted, 'older maintenance task')} not shown.</p> : null}
     <footer className="computer-card-footer">
       <Button size="sm" variant="ghost" onClick={() => askOperator(`On ${name}: `, { send: false })}>Ask Operator to change…</Button>
     </footer>

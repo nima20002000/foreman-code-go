@@ -24,6 +24,25 @@ function task(kind: MaintenanceTask['kind'], state: MaintenanceTask['state']): M
     summary: state === 'failed' ? 'Package download failed' : 'Finished', outputTail: '' }
 }
 
+it('shows the returned recent history, active tasks and omitted count from the shared maintenance response', async () => {
+  const tasks = Array.from({ length: 5 }, (_, index) => ({ ...task('sync-mcp', 'succeeded'), summary: `Sync ${index}` }))
+  tasks.push({ ...task('update-system', 'running') }, { ...task('sync-plugins', 'running') })
+  let requestedLimit: unknown
+  computersFixture(<ComputerCards mainId={mainId} devices={[registration]} only={registration.deviceId} />, [
+    http.post('*/api/management/computers/maintenance/read', async ({ request }) => {
+      const input = await request.json() as { target: DeviceProvisioningTarget; taskLimit?: number }
+      requestedLimit = input.taskLimit
+      return HttpResponse.json({ computers: [{ target: input.target, status: status(tasks), tasksOmitted: 11 }] })
+    }),
+  ])
+  const card = await screen.findByRole('article', { name: deviceName })
+  expect(await within(card).findByText('11 older maintenance tasks not shown.')).toBeVisible()
+  expect(requestedLimit).toBe(5)
+  for (let index = 0; index < 5; index++) expect(within(card).getByText(`MCP sync: Sync ${index}`)).toBeVisible()
+  expect(within(card).getByText('System update…')).toBeVisible()
+  expect(within(card).getByText('Plugin sync…')).toBeVisible()
+})
+
 it.each(['succeeded', 'running'] as const)('keeps an older failed sibling visible beside a newer %s task on detail', async state => {
   const upkeep = status([task('update-system', state), task('update-harnesses', 'failed')])
   computersFixture(<ComputerCards mainId={mainId} devices={[registration]} only={registration.deviceId} />, [

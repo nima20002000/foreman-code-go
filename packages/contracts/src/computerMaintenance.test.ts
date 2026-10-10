@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION,
-  ComputerMaintenanceStartInputSchema, ComputerMaintenanceOperatorListInputSchema, MaintenanceRequestSchema, MaintenanceTaskStartSchema, MaintenanceStatusSchema,
+  ComputerMaintenanceStartInputSchema, ComputerMaintenanceOperatorListInputSchema,
+  ComputerMaintenanceListInputSchema, ComputerMaintenanceReadInputSchema,
+  MaintenanceRequestSchema, MaintenanceTaskStartSchema, MaintenanceStatusSchema,
   MaintenanceTaskSchema, SyncedMarketplaceSchema,
   SyncedMcpServerSchema, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_JSON_BYTES,
   WORKER_UPDATE_MAX_BINARY_BYTES, WorkerArtifactRequestSchema, WorkerArtifactReplySchema,
@@ -162,6 +164,22 @@ describe('Worker updates', () => {
 
 
 describe('Operator maintenance detail selection', () => {
+  it.each([1, 5, 50])('accepts taskLimit %i at HTTP and MCP boundaries', taskLimit => {
+    const target = { hostRef: { kind: 'main', mainId: 'main' }, applicationInstallationId: 'main',
+      keyRevision: null, authorizationRevision: null }
+    expect(ComputerMaintenanceListInputSchema.parse({ taskLimit })).toEqual({ taskLimit })
+    expect(ComputerMaintenanceOperatorListInputSchema.parse({ taskLimit })).toEqual({ taskLimit })
+    expect(ComputerMaintenanceReadInputSchema.parse({ target, taskLimit })).toEqual({ target, taskLimit })
+  })
+
+  it.each([0, 51, 1.5, '5', null])('rejects invalid taskLimit %j at HTTP and MCP boundaries', taskLimit => {
+    const target = { hostRef: { kind: 'main', mainId: 'main' }, applicationInstallationId: 'main',
+      keyRevision: null, authorizationRevision: null }
+    expect(ComputerMaintenanceListInputSchema.safeParse({ taskLimit }).success).toBe(false)
+    expect(ComputerMaintenanceOperatorListInputSchema.safeParse({ taskLimit }).success).toBe(false)
+    expect(ComputerMaintenanceReadInputSchema.safeParse({ target, taskLimit }).success).toBe(false)
+  })
+
   it('allows full task selection and rejects task selection without full detail', () => {
     const taskId = '77777777-7777-4777-8777-777777777777'
     expect(ComputerMaintenanceOperatorListInputSchema.parse({})).toEqual({})

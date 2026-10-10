@@ -3,7 +3,8 @@ import { useRef } from 'react'
 import {
   ComputerMaintenanceListSchema, ComputerMaintenanceReadInputSchema,
   ComputerMaintenanceStartInputSchema, ComputerMaintenanceStartResultSchema,
-  type MaintenanceStatus, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
+  DEFAULT_MAINTENANCE_TASK_LIMIT,
+  type MaintenanceStatus, type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
 } from '@foreman-code/contracts/computer-maintenance'
 import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { ApiError, apiClient } from './client'
@@ -25,15 +26,16 @@ export function useComputerMaintenance(targets: readonly DeviceProvisioningTarge
   useHarnessSessionEpoch()
   return useQueries({ queries: targets.map(target => ({
     queryKey: [...key(), target], enabled: !sessionIsSwitching(), retry: false, staleTime: 15_000,
-    refetchInterval: (query: { state: { data: MaintenanceStatus | null | undefined } }) =>
-      needsFrequentRefresh(query.state.data, target) ? 5_000 : 60_000,
+    refetchInterval: (query: { state: { data: ComputerMaintenanceList['computers'][number] | undefined } }) =>
+      needsFrequentRefresh(query.state.data?.status, target) ? 5_000 : 60_000,
     queryFn: async ({ signal }: QueryFunctionContext) => {
       const result = await apiClient.request('/api/management/computers/maintenance/read', ComputerMaintenanceListSchema,
-        { method: 'POST', body: ComputerMaintenanceReadInputSchema.parse({ target }), signal })
+        { method: 'POST', body: ComputerMaintenanceReadInputSchema.parse({ target,
+          taskLimit: DEFAULT_MAINTENANCE_TASK_LIMIT }), signal })
       if (result.computers.length !== 1 || !sameDeviceProvisioningTarget(result.computers[0]!.target, target)) {
         throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Maintenance belongs to another computer installation.' })
       }
-      return result.computers[0]!.status
+      return result.computers[0]!
     },
   })) })
 }
