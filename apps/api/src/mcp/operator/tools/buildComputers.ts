@@ -55,6 +55,8 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'sync-plugins (install Main\'s Codex and Claude plugins that other computers lack, adding Main\'s Git marketplaces first and matching enabled state for fleet-managed Claude plugins). '
       + 'Sync preserves pre-existing computer-owned entries and removes only fleet-managed entries absent from an available Main catalog. '
       + 'Unsafe or unsupported MCP definitions and unreadable catalogs are skipped and reported; existing Worker entries for skipped definitions are preserved. '
+      + 'Intentional credential skips do not fail a task. Automatic sync failures retry after 5 minutes with exponential '
+      + 'backoff capped at one hour; a manual start with a new commandId retries immediately. '
       + 'Disabled servers, native tool allow/deny lists and stdio environment-name references cannot be copied by this sync path. '
       + 'Tasks run in the background; read their outcome with computers_maintenance_status. Equivalent requests share only the latest queued task; different requests of the same kind queue. '
       + 'Task status survives application restarts; unfinished tasks report interruption. Check every returned computer error; '

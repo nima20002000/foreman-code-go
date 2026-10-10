@@ -55,6 +55,18 @@ function versionOf(output: string): string | null {
   return output.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/u)?.[0] ?? null
 }
 
+function maintenanceError(error: unknown, fallback: string): string {
+  const details = error as NodeJS.ErrnoException | null
+  const message = error instanceof Error ? error.message : fallback
+  if (details?.code === 'EDQUOT' || details?.errno === -122 || message.includes('Unknown system error -122')) {
+    return 'Disk quota reached on this computer. Free space or increase its disk quota, then retry maintenance.'
+  }
+  if (details?.code === 'ENOSPC' || details?.errno === -28) {
+    return 'This computer is out of disk space. Free space, then retry maintenance.'
+  }
+  return message
+}
+
 /**
  * Keeps this computer's harnesses, packages, MCP servers and Codex plugins current. Runs on Main for itself and on every
  * paired computer for Main's requests. Long work runs as background tasks that status readback reports.
@@ -226,8 +238,8 @@ export class ComputerMaintenance {
       }
       await this.finish(task, 'succeeded', summary)
     },
-      (error: unknown) => this.finish(task, 'failed', error instanceof Error ? error.message : 'Maintenance failed.'))
-      .catch((error: unknown) => { this.storageFailure = error })
+      (error: unknown) => this.finish(task, 'failed', maintenanceError(error, 'Maintenance failed.')))
+      .catch((error: unknown) => { this.storageFailure = new Error(maintenanceError(error, 'Maintenance storage failed.')) })
     this.activeTasks.set(task.id, { requestHash, completion })
     await saved
     return MaintenanceTaskSchema.parse(structuredClone(task))
@@ -319,7 +331,7 @@ export class ComputerMaintenance {
             }
             changes.push(`${LABELS[harness]} ${before ?? 'not installed'} → ${after}`)
           } catch (error) {
-            failures.push(error instanceof Error ? error.message : `${LABELS[harness]} update failed.`)
+            failures.push(maintenanceError(error, `${LABELS[harness]} update failed.`))
           }
         }
         this.latest = undefined
@@ -363,12 +375,12 @@ export class ComputerMaintenance {
               () => this.updateLedger(current => { current.mcp[harness] = [...managed] }))
             if (summary) results.push(`${LABELS[harness]}: ${summary}`)
           } catch (error) {
-            failures.push(error instanceof Error ? error.message : `${LABELS[harness]} MCP sync failed.`)
+            failures.push(maintenanceError(error, `${LABELS[harness]} MCP sync failed.`))
           } finally {
             await this.updateLedger(current => { current.mcp[harness] = [...managed] })
           }
         }
-        if (failures.length) throw new Error([...results, ...failures].join(' · '))
+        if (failures.length) throw new Error([...failures, ...results].join(' · '))
         return results.join(' · ') || 'Nothing to sync'
       }
       case 'sync-plugins': {
@@ -399,9 +411,9 @@ export class ComputerMaintenance {
         ]
         for (const harness of sync) {
           try { results.push(`${harness.name}: ${await harness.run()}`) }
-          catch (error) { failures.push(`${harness.name}: ${error instanceof Error ? error.message : 'Plugin sync failed.'}`) }
+          catch (error) { failures.push(`${harness.name}: ${maintenanceError(error, 'Plugin sync failed.')}`) }
         }
-        if (failures.length) throw new Error([...results, ...failures].join(' · '))
+        if (failures.length) throw new Error([...failures, ...results].join(' · '))
         return results.join(' · ')
       }
     }
@@ -418,7 +430,8 @@ export class ComputerMaintenance {
     }
     const npm = await this.ports.find('npm')
     if (!npm) throw new Error('npm is not installed on this computer, so Codex cannot be installed.')
-    await step(npm, ['install', '--global', '--prefix', join(home, '.local'), `${PACKAGES.codex}@latest`], 'npm install @openai/codex@latest')
+    await step(npm, ['install', '--global', '--include=optional', '--prefix', join(home, '.local'),
+      `${PACKAGES.codex}@latest`], 'npm install @openai/codex@latest')
   }
 
   /** Adds Main's servers this computer lacks and removes the ones it received from Main earlier that Main has since
@@ -485,7 +498,9 @@ export class ComputerMaintenance {
   private async mcpNames(harness: MaintainedHarness, binary: string, signal: AbortSignal): Promise<string[]> {
     if (harness === 'codex') {
       const listed = await this.ports.run(binary, ['mcp', 'list', '--json'], { signal, timeoutMs: 60_000 })
-      if (listed.code !== 0) throw new Error('Codex could not list its MCP servers.')
+      if (listed.code !== 0) {
+        throw new Error('Codex could not list its MCP servers. Update or reinstall Codex on this computer, then retry sync.')
+      }
       return (JSON.parse(listed.stdout) as { name?: unknown }[]).flatMap(entry => typeof entry.name === 'string' ? [entry.name] : [])
     }
     return Object.keys(await claudeUserMcpServers(this.ports))
@@ -665,7 +680,9 @@ export async function claudeUserMcpServers(ports: Pick<MaintenancePorts, 'enviro
 
 export async function installedPlugins(ports: Pick<MaintenancePorts, 'run'>, codex: string, signal: AbortSignal): Promise<string[]> {
   const listed = await ports.run(codex, ['plugin', 'list', '--json'], { signal, timeoutMs: 120_000 })
-  if (listed.code !== 0) throw new Error('Codex could not list its plugins.')
+  if (listed.code !== 0) {
+    throw new Error('Codex could not list its plugins. Update or reinstall Codex on this computer, then retry sync.')
+  }
   const value = JSON.parse(listed.stdout) as { installed?: { pluginId?: unknown; installed?: unknown }[] }
   return (value.installed ?? []).flatMap(entry => typeof entry.pluginId === 'string' && entry.installed !== false ? [entry.pluginId] : [])
 }
@@ -687,24 +704,37 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
   const directories = [join(home, '.local', 'bin'), ...(environment.PATH ?? '').split(delimiter), '/usr/local/bin', '/usr/bin', '/bin']
     .filter((value, index, all) => value.startsWith('/') && all.indexOf(value) === index)
   const path = directories.join(delimiter)
+  const run: MaintenancePorts['run'] = (binary, args, options) => new Promise((resolve, reject) => {
+    execFile(binary, args, { signal: options.signal, timeout: options.timeoutMs, maxBuffer: 8 * 1024 * 1024,
+      encoding: 'utf8', env: { ...environment, PATH: path, NO_COLOR: '1', CI: '1', LC_ALL: 'C' } },
+    (error, stdout, stderr) => {
+      if (error && maintenanceError(error, '') !== error.message) {
+        reject(new Error(maintenanceError(error, 'Maintenance command failed.'), { cause: error }))
+        return
+      }
+      let code: number | null = 0
+      if (error) code = typeof error.code === 'number' ? error.code : null
+      resolve({ code, stdout, stderr })
+    })
+  })
   return {
     environment,
     async find(name) {
       const selected = binaries[name]
       if (selected) { try { await access(selected, constants.X_OK); return selected } catch { /* fall back to PATH */ } }
+      let firstExecutable: string | null = null
       for (const directory of directories) {
         const candidate = join(directory, name)
-        try { await access(candidate, constants.X_OK); return candidate } catch { continue }
+        try { await access(candidate, constants.X_OK) } catch { continue }
+        firstExecutable ??= candidate
+        if (name !== 'codex' && name !== 'claude') return candidate
+        // npm can leave an executable launcher whose optional native package is incomplete.
+        const probe = await run(candidate, ['--version'], { signal: AbortSignal.timeout(15_000), timeoutMs: 15_000 })
+        if (probe.code === 0 && versionOf(probe.stdout)) return candidate
       }
-      return null
+      return firstExecutable
     },
-    run: (binary, args, options) => new Promise(resolve => {
-      execFile(binary, args, { signal: options.signal, timeout: options.timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8',
-        env: { ...environment, PATH: path, NO_COLOR: '1', CI: '1', LC_ALL: 'C' } }, (error, stdout, stderr) => {
-        const code = error && typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : error ? null : 0
-        resolve({ code, stdout, stderr })
-      })
-    }),
+    run,
     exists: async target => { try { await access(target); return true } catch { return false } },
     readText: async target => {
       try {
@@ -715,10 +745,17 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
       }
     },
     async writePrivateText(target, text) {
-      await mkdir(dirname(target), { recursive: true, mode: 0o700 })
-      const temporary = `${target}.${randomUUID()}.tmp`
-      await writeFile(temporary, text, { mode: 0o600, flag: 'wx' })
-      await rename(temporary, target)
+      try {
+        await mkdir(dirname(target), { recursive: true, mode: 0o700 })
+        const temporary = `${target}.${randomUUID()}.tmp`
+        await writeFile(temporary, text, { mode: 0o600, flag: 'wx' })
+        await rename(temporary, target)
+      } catch (error) {
+        if (error instanceof Error && maintenanceError(error, '') !== error.message) {
+          throw new Error(maintenanceError(error, 'Maintenance storage failed.'), { cause: error })
+        }
+        throw error
+      }
     },
     disk: async target => {
       try { const value = await statfs(target); return { freeBytes: value.bavail * value.bsize, totalBytes: value.blocks * value.bsize } }
