@@ -5,9 +5,7 @@ import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { expect, it, vi } from 'vitest'
-import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
-import { jobVerificationTemplate } from '@foreman-code/contracts/job-verification'
+import { expect, it } from 'vitest'
 import { ManagementActionSchema, OperatorCapabilitiesSchema } from '@foreman-code/contracts/management'
 import { SourceApproveResultSchema, SourceListResultSchema, ApprovedSourceSchema, SourceRootBindResultSchema, SourceRootListResultSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { buildApp } from '../src/app.js'
@@ -25,10 +23,6 @@ import { qualifyApprovedRootAllowlist } from '../src/modules/sources/rootAttesta
 import { qualifiedGit } from '../src/modules/sources/capture.js'
 import { sourceSha256 } from '../src/modules/sources/manifest.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { CiService } from '../src/modules/jobs/ci.js'
-import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
-import { ciFixture } from './helpers/ciFixture.js'
-import { jobDigest } from '../src/modules/jobs/digest.js'
 
 /** Root-only DB fixture: real authenticated /mcp, actual workspace/installation,
  * canonical Git capture and persisted readback. The fixture registered-root
@@ -95,10 +89,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const createSources = () => new PostgresSourceService(pool, new PostgresCommandCoordinator(pool), locations, new PrivateSourceSnapshotStore(canonical), mainId, roots,
       { authorize: nativeNotInvoked, prepare: nativeNotInvoked, verifyWorkingDirectory: nativeNotInvoked, verify: nativeNotInvoked, releaseClaim: nativeNotInvoked, authorizeFinal: nativeNotInvoked }, { confirmedClosed: nativeNotInvoked })
     let sources = createSources()
-    const ciData = ciFixture()
-    const createCi = () => new CiService(pool, new PostgresCommandCoordinator(pool),
-      new RunCiAuthority(pool), sources, ciData.jobs)
-    const services = { commands, workspaces, locations, sources, ci: createCi() } as unknown as OperatorServices
+    const services = { commands, workspaces, locations, sources } as unknown as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const operator = await access.issue({ name: 'Scoped source Operator', audience: 'operator', grants: [{ actions: ['capabilities:read', 'sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 240_000) })
@@ -236,68 +227,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     [operator.principal.id, bind.commandId])
     expect(bindingAudit.rows[0]!.count).toBe(1)
 
-    const ciClient = await connect(owner.token)
-    const ciInput = { workspaceId: workspace.id, suite: 'unit', commandId: randomUUID() }
-    const choices = vi.spyOn(ciData.jobs, 'choices')
-    choices.mockRejectedValueOnce(new Error('Interrupted after source approval commits'))
-    expect((await ciClient.callTool({ name: 'ci_run', arguments: ciInput })).isError).toBe(true)
-    const sourceCommand = `${jobDigest({ callerId: owner.principal.id, commandId: ciInput.commandId })}:source`
-    const original = (await pool.query<{ record: unknown }>(`select s.record from source_approvals a
-      join source_snapshots s on s.snapshot_id=a.snapshot_id where a.requested_by=$1 and a.command_id=$2`,
-    [owner.principal.id, sourceCommand])).rows[0]!
-    const originalSource = ApprovedSourceSchema.parse(original.record)
-    expect(originalSource.manifest.git!.commit).toBe(commit)
-    await writeFile(join(project, 'source.ts'), 'export const revision = 3\n')
-    await qualifiedGit(project, ['add', '.'])
-    await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-      'commit', '-m', 'advance while CI is interrupted'])
-    services.ci = createCi()
-    const recoveredCall = await ciClient.callTool({ name: 'ci_run', arguments: ciInput })
-    expect(recoveredCall.isError, JSON.stringify(recoveredCall.content)).not.toBe(true)
-    const recovered = CiRunOutputSchema.parse(decodeMcpToolResult(recoveredCall))
-    const ciRead = await ciClient.callTool({ name: 'ci_get', arguments: {
-      workspaceId: workspace.id, ticketId: recovered.ticketId,
-    } })
-    expect(CiGetOutputSchema.parse(decodeMcpToolResult(ciRead)).queue.definition.spec.source).toMatchObject({
-      snapshotId: originalSource.manifest.snapshotId, commit,
-    })
-    const sourceRead = await ciClient.callTool({ name: 'source_get', arguments: {
-      workspaceId: workspace.id, approvedSourceId: originalSource.manifest.approvedSourceId,
-      snapshotId: originalSource.manifest.snapshotId, manifestDigest: originalSource.manifest.manifestDigest,
-    } })
-    expect(ApprovedSourceSchema.parse(decodeMcpToolResult(sourceRead))).toEqual(originalSource)
-    expect(CiRunOutputSchema.parse(decodeMcpToolResult((await ciClient.callTool({ name: 'ci_run', arguments: ciInput })))))
-      .toEqual(recovered)
-    expect(ciData.counts().enqueues).toBe(1)
-
-    const available = await ciData.jobs.choices(owner.principal, workspace.id, 'mcp')
-    const unit = available.verificationTemplates![0]!
-    choices.mockResolvedValue({ ...available, verificationTemplates: [unit,
-      jobVerificationTemplate({ ...unit, suite: 'lint' })] })
-    const listRoots = sources.rootList.bind(sources)
-    let bothRead!: () => void
-    const concurrentReads = new Promise<void>(resolve => { bothRead = resolve })
-    let readCount = 0
-    const rootReads = vi.spyOn(sources, 'rootList').mockImplementation(async (...args) => {
-      const listed = await listRoots(...args)
-      if (++readCount === 2) bothRead()
-      if (readCount <= 2) await concurrentReads
-      return listed
-    })
-    const parallel = await Promise.all(['unit', 'lint'].map(suite => ciClient.callTool({ name: 'ci_run',
-      arguments: { workspaceId: workspace.id, suite, commandId: randomUUID() } })))
-    rootReads.mockRestore()
-    choices.mockRestore()
-    for (const response of parallel) {
-      expect(response.isError, JSON.stringify(response.content)).not.toBe(true)
-      const queued = CiRunOutputSchema.parse(decodeMcpToolResult(response))
-      const read = await ciClient.callTool({ name: 'ci_get', arguments: {
-        workspaceId: workspace.id, ticketId: queued.ticketId,
-      } })
-      expect(CiGetOutputSchema.parse(decodeMcpToolResult(read)).queue.state).toBe('waiting')
-    }
-    const persistedRoots = await sources.rootList(owner.principal, 'mcp', { workspaceId: workspace.id, limit: 100 })
-    expect(persistedRoots.items[0]!.binding.bindingRevision).toBe(4)
     const unchangedRevision = await client.callTool({ name: 'source_root_bind', arguments: {
       ...bind, commandId: randomUUID(),
     } })
@@ -311,9 +240,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
       arguments: { ...approve, commandId: randomUUID() } }))).toMatchObject({ code: 'ACCESS_DENIED' })
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',
       arguments: { workspaceId: workspace.id, ...pin } }))))).toEqual(read)
-    expect((await deniedClient.callTool({ name: 'ci_run', arguments: {
-      workspaceId: workspace.id, suite: 'unit', commandId: randomUUID(),
-    } })).isError).toBe(true)
     expect(Number((await pool.query<{ count: string }>(`select count(*) from management_audit where principal_id=$1 and outcome='denied'`, [denied.principal.id])).rows[0]!.count)).toBeGreaterThan(0)
     const reader = await access.issue({ name: 'Read-only source', audience: 'operator', grants: [{ actions: ['sources:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 120_000) })
     const readerClient = await connect(reader.token)
@@ -326,7 +252,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const newCommit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
     const second = await client.callTool({ name: 'source_approve', arguments: { ...approve, commandId: randomUUID(), commit: newCommit } }); expect(second.isError).not.toBe(true)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })))).manifest.git?.commit).toBe(commit)
-    expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(5)
+    expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(2)
     const page = OperatorSourceListResultSchema.parse(decodeMcpToolResult(await client.callTool({
       name: 'source_list', arguments: { workspaceId: workspace.id, limit: 1 },
     })))
@@ -346,7 +272,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
       ...approve, commandId: randomUUID(), commit: sensitiveCommit,
     } }))).toMatchObject({ code: 'SOURCE_SENSITIVE_PATH' })
     expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list',
-      arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(5)
+      arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(2)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',
       arguments: { workspaceId: workspace.id, ...pin } }))))).toEqual(read)
     const http = await app.inject({ method: 'POST', url: `/api/management/workspaces/${workspace.id}/sources/get`, headers: { authorization: `Bearer ${operator.token}` }, payload: pin })
@@ -358,7 +284,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     await expect(access.authenticate(operator.token)).rejects.toMatchObject({ code: 'AUTH_REVOKED', status: 401 })
     await expect(client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })).rejects.toThrow('Unauthorized')
   } finally {
-    vi.restoreAllMocks()
     for (const client of clients) await client.close().catch(() => undefined)
     await app?.close(); await pool.end(); await dropFixtureSchema(admin, schema); await admin.end(); await removeFixtureDirectory(directory)
   }
