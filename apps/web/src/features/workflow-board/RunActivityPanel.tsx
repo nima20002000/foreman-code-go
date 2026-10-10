@@ -9,7 +9,7 @@ import { Activities } from './Activities'
 import { pinnedNodeStates } from './inspect/pinnedTopology'
 import { useRunVersionQuery } from './inspect/queries'
 import { useSelectedRunRecord } from './runFacts'
-import { isActiveRun, runLabel, runTone, when } from './runFacts'
+import { isActiveRun, runLabel, runTone, shortRunId, when } from './runFacts'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { CurrentRunDetails } from './RunDetails'
@@ -96,20 +96,20 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
       {fresh.filter((run) => !listedIds.has(run.id)).map((run) => <li key={run.id}>
         <button type="button" className="board-run-row" disabled={reading === run.id} onClick={() => void inspect(run.id)} aria-label={`Inspect ${run.id}`}>
           <StatusBadge label={runLabel(run.executionState, run.outcome)} tone={runTone(run.executionState, run.outcome)} busy={run.executionState === 'running'} />
-          <code>{run.id.slice(-8)}</code><span>{run.cleanupPending ? 'Cleaning up' : when(run.startedAt)}</span>
+          <code>{shortRunId(run.id)}</code><span>{run.cleanupPending ? 'Cleaning up' : when(run.startedAt)}</span>
         </button></li>)}
       {listed.map((run) => {
         const facts = freshById.get(run.id) ?? run
         let scope: ReturnType<typeof scopeForBoardRun>
         try { scope = scopeForBoardRun(run) } catch {
-          return <li key={run.id}><p className="next-draft-hint">Run {run.id.slice(-8)} can’t be shown on this board.</p></li>
+          return <li key={run.id}><p className="next-draft-hint">Run {shortRunId(run.id)} can’t be shown on this board.</p></li>
         }
         const current = !!selected && sameCanonicalGraphScope(scope, selected)
         return <li key={run.id}><button type="button" className="board-run-row" aria-pressed={current}
           aria-label={`Open Run ${run.id} · ${facts.executionState} · ${facts.outcome}`}
           onClick={() => { ++request.current; resetDiscovery(); selectRun(current ? undefined : scope) }}>
           <StatusBadge label={runLabel(facts.executionState, facts.outcome)} tone={runTone(facts.executionState, facts.outcome)} busy={facts.executionState === 'running'} />
-          <code>{run.id.slice(-8)}</code><span>{when(facts.startedAt)}</span>
+          <code>{shortRunId(run.id)}</code><span>{when(facts.startedAt)}</span>
           <span>{facts.executionState === 'completed' ? 'Past Run' : 'Current Run'} · saved version <code>{run.workflowVersionId}</code></span>
         </button></li>
       })}
@@ -122,7 +122,7 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     {!selected ? <section className="board-activities" aria-label="Activities"><h3>Activities</h3>
       <p>Select a Run to see its recorded Agent actions, outcomes and notices.</p></section> : null}
     {selected ? <section className="board-run-detail" aria-label="Selected run">
-      <header><h3>Run {selected.runId.slice(-8)}</h3>
+      <header><h3>Run {shortRunId(selected.runId)}</h3>
         <Button size="sm" variant="ghost" onClick={() => { ++request.current; resetDiscovery(); selectRun() }}>Clear Run selection</Button></header>
       <CurrentRunDetails key={JSON.stringify(selected)} scope={selected}
         runActions={<RunActions workspaceId={selected.workspaceId} workflowId={selected.workflowId} runId={selected.runId} />} />
@@ -147,7 +147,7 @@ function AgentFocus({ scope, nodeId, onClose }: { scope: RepeatGraphScopeV3; nod
   return <section className="board-agent-focus" aria-label={`Agent ${name}`}>
     <header>
       <span className="board-agent-focus-avatar" aria-hidden="true"><Icon name="bot" size={18} /></span>
-      <div><h3>{name}</h3><p>{state ? state.label.replaceAll('_', ' ') : 'Not started'} · Run <code>{scope.runId.slice(-8)}</code></p></div>
+      <div><h3>{name}</h3><p>{state ? state.label.replaceAll('_', ' ') : 'Not started'} · Run <code>{shortRunId(scope.runId)}</code></p></div>
       <Button size="sm" variant="ghost" onClick={onClose}>Whole Run</Button>
     </header>
     <Activities scope={scope} focusAgentId={node.agentId} />

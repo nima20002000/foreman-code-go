@@ -13,7 +13,7 @@ import { CurrentRunObserver } from './CurrentRunObserver'
 import { WorkflowBoardContext } from './context'
 import { RunActivityPanel } from './RunActivityPanel'
 import { Activities } from './Activities'
-import { isActiveRun, useSelectedRunRecord } from './runFacts'
+import { isActiveRun, shortRunId, useSelectedRunRecord } from './runFacts'
 import { useInspectionPresentation } from './inspect/presentation'
 import './workflowBoard.css'
 
@@ -167,5 +167,5 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
 
 function RunContextLabel({ scope }: { scope: RepeatGraphScopeV3 }) {
   const record = useSelectedRunRecord()
-  return <span>Run <code title={scope.runId}>{scope.runId.slice(-8)}</code>{record && record.state.run.executionState !== 'completed' ? ' · live' : ''}</span>
+  return <span>Run <code title={scope.runId}>{shortRunId(scope.runId)}</code>{record && record.state.run.executionState !== 'completed' ? ' · live' : ''}</span>
 }

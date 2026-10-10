@@ -58,3 +58,6 @@ export function runTone(state: string, outcome: string): Tone {
   return outcome === 'succeeded' ? 'success' : outcome === 'failed' ? 'danger' : 'neutral'
 }
 export const when = (value?: string) => value ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Not started'
+
+/** The same short Run name the Runs table shows (server rule: the id's first 8 characters after "run-"). */
+export const shortRunId = (runId: string) => runId.replace(/^run-/, '').slice(0, 8) || runId.slice(0, 8)
