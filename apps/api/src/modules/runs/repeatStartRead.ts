@@ -68,14 +68,15 @@ function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
       || typeof row.stopped !== 'boolean' || typeof row.cleanup_pending !== 'boolean') {
       throw new DomainError('RUN_PIN_CONFLICT', 'The accepted v3 Run differs from its physical scope/location/state.', 409)
     }
+    const pinLock = lock || configurationPolicy === 'executable' ? 'for share' : ''
     const related = (await sql.query<{ versions: ImmutableWorkflowVersionRow[]; configurations: ImmutableAgentConfigurationRow[] }>(
       `with pinned_version as materialized (
         select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions
-        where id=$1 and workspace_id=$2 and workflow_id=$3 for share
+        where id=$1 and workspace_id=$2 and workflow_id=$3 ${pinLock}
       ), pinned_configurations as materialized (
         select id,workspace_id,agent_id,version,record from agent_configuration_versions
         where workspace_id=$2 and id=any($4::text[]) and exists(select 1 from pinned_version)
-        order by id for share
+        order by id ${pinLock}
       ) select coalesce((select json_agg(v) from pinned_version v),'[]'::json) as versions,
         coalesce((select json_agg(c order by c.id) from pinned_configurations c),'[]'::json) as configurations`,
       [run.workflowVersionId, run.workspaceId, run.workflowId, Object.values(run.agentConfigurationVersionIds)])).rows[0]!

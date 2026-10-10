@@ -91,6 +91,40 @@ describe('chronological Run list pagination', () => {
     }
   }, 60000)
 
+  it('reads committed Run facts through HTTP and MCP while lifecycle and pin rows are locked', async () => {
+    const f = await currentOperatorIntegration({ approvalNodeIds: [] })
+    const blocker = await f.db.pool.connect()
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    let pending: ReturnType<typeof page> | undefined
+    try {
+      const run = f.f.run
+      const r = await reader(f, [{ actions: ['runs:read'], scope: { workspaceIds: [run.workspaceId] } }])
+      await blocker.query('begin')
+      await blocker.query('select id from runs where id=$1 for update', [run.id])
+      await blocker.query('select id from workflow_versions where id=$1 for update', [run.workflowVersionId])
+      await blocker.query('select id from agent_configuration_versions where id=any($1::text[]) for update',
+        [Object.values(run.agentConfigurationVersionIds)])
+      pending = page(f, r, { workspaceId: run.workspaceId, limit: 10 })
+      const result = await Promise.race([
+        pending,
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error('Run list waited for lifecycle locks')), 2000)
+        }),
+      ])
+      expect(result.items).toHaveLength(1)
+      expect(result.items[0]).toMatchObject({ id: run.id, executionState: run.executionState })
+      expect((await f.db.pool.query('select record from runs where id=$1', [run.id])).rows[0]!.record)
+        .toEqual(run)
+    } finally {
+      if (deadline) clearTimeout(deadline)
+      await blocker.query('rollback')
+      blocker.release()
+      // Settle both transports after releasing the blocker even if the deadline failed.
+      await pending?.catch(() => undefined)
+      await f.close()
+    }
+  }, 60000)
+
   it('filters beyond unauthorized pages, rejects foreign cursors and rechecks live grants', async () => {
     const f = await currentOperatorIntegration({ approvalNodeIds: [] })
     try {
