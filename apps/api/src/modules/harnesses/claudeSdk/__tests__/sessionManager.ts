@@ -17,12 +17,12 @@ export function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSess
   let messages: AsyncIterator<ClaudeSdkUserMessage>
   let ready!: () => void
   const started = new Promise<void>((resolve) => { ready = resolve })
-  const closeFrames = () => frames.close()
-  const close: Mock<typeof closeFrames> = vi.fn(closeFrames)
-  const statuses: Mock<() => Promise<Array<Record<string, unknown>>>> = vi.fn(async () => [{ name: 'graphql', status: 'connected', source: 'dynamic', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app', headers: { Authorization: 'secret-token' } }, tools: [{ name: 'interaction_get' }] }])
-  const queries: Mock<(input: unknown) => void> = vi.fn()
-  const interrupt: Mock<() => Promise<{ still_queued: never[] }>> = vi.fn(async () => ({ still_queued: [] }))
-  const setServers: Mock<(servers: Readonly<Record<string, unknown>>) => Promise<{ added: string[], removed: never[], errors: Record<string, never> }>> = vi.fn(async (servers: Readonly<Record<string, unknown>>) => { void servers; return { added: ['graphql'], removed: [], errors: {} } })
+  const close: Mock = vi.fn(() => frames.close())
+  const statusRows = async () => [{ name: 'graphql', status: 'connected', source: 'dynamic', config: { type: 'http', url: 'http://127.0.0.1:3000/mcp/app', headers: { Authorization: 'secret-token' } }, tools: [{ name: 'interaction_get' }] }]
+  const statuses: Mock<typeof statusRows> = vi.fn(statusRows)
+  const queries: Mock = vi.fn()
+  const interrupt: Mock = vi.fn(async () => ({ still_queued: [] }))
+  const setServers: Mock = vi.fn(async (servers: Readonly<Record<string, unknown>>) => { void servers; return { added: ['graphql'], removed: [], errors: {} } })
   const client: ClaudeSdkClient = {
     sdkVersion: '0.3.284', query: (input) => {
       queries(input)
@@ -31,7 +31,7 @@ export function fixture(decodeFactory?: Parameters<typeof createClaudeNativeSess
     }, getSessionInfo: async (sessionId) => ({ sessionId }), getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'fork' }),
   }
   const runner = createClaudeSdkRunner({ loadClient: async () => client })
-  const offers: Mock<(message: unknown) => void> = vi.fn()
+  const offers: Mock = vi.fn()
   const open = runner.open
   runner.open = async (input) => {
     const session = await open(input)

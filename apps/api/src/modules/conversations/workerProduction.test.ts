@@ -90,19 +90,20 @@ it('admits a thinking-only next turn through the production Worker channel witho
     owner.grants = [{ actions: ['operator_chat:read'], scope: {} }]
     await expect(manager.attachSession(f.session, { kind: 'operator', configuration: accepted,
       correlationId: 'denied', workingDirectory: '/main/runtime' })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
-  } finally { await manager.dispose(); await production.close() }
+  } finally { await manager.dispose?.(); await production.close() }
 })
 
 it('rejects execution, profile, owner and bound-hash changes during a presentation transition', () => {
   const f = workerConversationFixture()
-  if (!('operatorId' in f.configuration)) throw new Error('Operator fixture required')
-  const accepted = { ...f.configuration, id: 'presentation', version: 2, showThinking: true }
-  expect(workerExecutionConfiguration(f.binding, accepted, f.configuration)).toEqual(f.configuration)
+  const configuration = f.configuration
+  if (!('operatorId' in configuration)) throw new Error('Operator fixture required')
+  const accepted = { ...configuration, id: 'presentation', version: 2, showThinking: true }
+  expect(workerExecutionConfiguration(f.binding, accepted, configuration)).toEqual(configuration)
   for (const candidate of [
     { ...accepted, harness: { ...accepted.harness, model: 'different' } },
     { ...accepted, operatorId: 'other-owner' },
     { ...accepted, harnessProfileSelection: { ...f.binding.profile, instanceRevision: 'other-profile' } },
-  ]) expect(() => workerExecutionConfiguration(f.binding, candidate, f.configuration)).toThrow()
+  ]) expect(() => workerExecutionConfiguration(f.binding, candidate, configuration)).toThrow()
   expect(() => workerExecutionConfiguration({ ...f.binding, owner: { ...f.binding.owner,
-    configurationHash: '0'.repeat(64) } }, accepted, f.configuration)).toThrow()
+    configurationHash: '0'.repeat(64) } }, accepted, configuration)).toThrow()
 })

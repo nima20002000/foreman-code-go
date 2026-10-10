@@ -861,7 +861,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         assert.notEqual(result.isError, true)
         const capabilities = OperatorCompactCapabilitiesSchema.pick({ runtimeLimits: true }).strip()
           .parse(decodeMcpToolResult(result))
-        const support = capabilities.runtimeLimits.find(limit => limit.feature === 'general_questions_and_forms')
+        const support = capabilities.runtimeLimits?.find(limit => limit.feature === 'general_questions_and_forms')
         assert.equal(support?.state, 'limited')
         assert.match(support!.detail, /Codex/)
         assert.match(support!.detail, /session/)

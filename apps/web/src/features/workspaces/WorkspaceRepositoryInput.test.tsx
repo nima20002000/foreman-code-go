@@ -71,8 +71,7 @@ describe('repository input', () => {
 })
 
 
-it.each(['release..stable', 'release/', 'release.lock', 'feature:broken', ''])
-('shows the invalid base branch %j on its own field and saves after correction', async value => {
+it.each(['release..stable', 'release/', 'release.lock', 'feature:broken', ''])('shows the invalid base branch %j on its own field and saves after correction', async value => {
   const writes = mount()
   const user = userEvent.setup()
   const repository = screen.getByRole('textbox', { name: 'Repository' })
