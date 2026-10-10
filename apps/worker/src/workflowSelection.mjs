@@ -1,0 +1,132 @@
+import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access, readFile, realpath, unlink } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import { openPrivateRoot, anchored } from '../../../apps/api/src/modules/sources/privateFilesystem.ts';
+import { readInstalledWorkflowConfiguration, InstalledWorkflowConfigurationSchema }
+  from '../../../apps/api/src/modules/runs/remote/installedWorkflowConfiguration.ts';
+import { passiveDriverPayloads } from '../../../apps/api/src/modules/harnesses/payloadDiscovery.ts';
+import { discoverInstalledClaudeSdk } from '../../../apps/api/src/modules/harnesses/claudeSdk/currentPin.ts';
+import { publishManagedJson, managedEntryExists } from './managedState.mjs';
+import { WorkerError } from './diagnostics.mjs';
+import { workerPath } from './harnessPath.mjs';
+
+const releaseDirectory = fileURLToPath(new URL('../', import.meta.url));
+
+async function executable(name, environment) {
+  for (const directory of (environment.PATH ?? '').split(':').filter(path => path.startsWith('/'))) {
+    try {
+      const path = await realpath(join(directory, name));
+      await access(path, constants.X_OK);
+      return path;
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code)) throw error;
+    }
+  }
+  return null;
+}
+
+async function codexSelection(environment, signal) {
+  const launcher = await executable('codex', environment);
+  if (!launcher) return null;
+  const image = await passiveDriverPayloads('codex', launcher);
+  let binary = launcher;
+  let payloadPaths = image.paths;
+  if (!image.complete) {
+    const packageDirectory = dirname(dirname(launcher));
+    const manifest = join(packageDirectory, 'package.json');
+    const metadata = JSON.parse(await readFile(manifest, 'utf8'));
+    if (metadata.name !== '@openai/codex') return null;
+    const requireLauncher = createRequire(launcher);
+    const packageName = `@openai/codex-${process.platform}-${process.arch}`;
+    let vendor;
+    try { vendor = join(dirname(requireLauncher.resolve(`${packageName}/package.json`)), 'vendor'); }
+    catch (error) {
+      if (error.code !== 'MODULE_NOT_FOUND') throw error;
+      vendor = join(packageDirectory, 'vendor');
+    }
+    const architecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+    binary = await realpath(join(vendor, `${architecture}-unknown-linux-musl`, 'bin/codex'));
+    if (!(await passiveDriverPayloads('codex', binary)).complete) return null;
+    await access(binary, constants.X_OK);
+    payloadPaths = [launcher, manifest];
+  } else if (image.paths.length) {
+    binary = image.paths[0];
+    payloadPaths = [launcher];
+  }
+  const expectedVersion = await new Promise((resolve, reject) => {
+    execFile(binary, ['--version'], { env: { ...environment, NO_COLOR: '1' }, signal,
+      timeout: 15_000, maxBuffer: 4096, encoding: 'utf8' }, (error, stdout) => {
+      const version = stdout.trim();
+      if (error || !/^codex-cli \d+\.\d+\.\d+(?:[-+][\w.-]+)?$/u.test(version)) {
+        reject(new WorkerError('installed_codex_version_unavailable'));
+      } else { resolve(version); }
+    });
+  });
+  return { codexBinary: binary, expectedVersion, payloadPaths };
+}
+
+async function claudeSelection(environment, release, signal) {
+  const binary = await executable('claude', environment);
+  if (!binary) return null;
+  for (const source of [join(release, 'package.json'), binary]) {
+    let sdkEntrypoint;
+    try { sdkEntrypoint = await realpath(createRequire(source).resolve('@anthropic-ai/claude-agent-sdk')); }
+    catch (error) {
+      if (error.code === 'MODULE_NOT_FOUND') continue;
+      throw error;
+    }
+    const offset = sdkEntrypoint.indexOf('/node_modules/.pnpm/');
+    if (offset < 0) continue;
+    const installedLockPath = join(sdkEntrypoint.slice(0, offset), 'node_modules/.pnpm/lock.yaml');
+    await discoverInstalledClaudeSdk({ entrypoint: sdkEntrypoint, installedLockPath, selectedExecutable: binary }, {
+      harnessInstallationId: 'worker-installed-claude',
+      environment: { path: environment.PATH ?? '', cwd: release, provenance: 'worker', generation: 'selection' },
+    }, signal);
+    return { binary, installedLockPath, sdkEntrypoint };
+  }
+  return null;
+}
+
+/** Pairing approves selection; native qualification and profile grants remain separate. */
+export async function refreshWorkflowSelection({ stateDirectory, release = releaseDirectory,
+  environment = { ...process.env, PATH: workerPath(process.env.HOME ?? '', process.execPath) },
+  assertStateOwnership, signal = AbortSignal.timeout(30_000),
+  reportError = error => process.stderr.write(`Workflow harness selection: ${error.code ?? 'installation_unavailable'}\n`) }) {
+  assertStateOwnership();
+  signal.throwIfAborted();
+  const state = await openPrivateRoot(stateDirectory);
+  try {
+    const location = { path: join(stateDirectory, 'workflow-runtime.json'), ownerUid: process.getuid() };
+    const exists = await managedEntryExists(state, 'workflow-runtime.json');
+    const previous = exists ? await readInstalledWorkflowConfiguration(location) : null;
+    const selections = await Promise.allSettled([
+      codexSelection(environment, signal), claudeSelection(environment, release, signal),
+    ]);
+    for (const result of selections) {
+      if (result.status === 'rejected') reportError(result.reason);
+    }
+    signal.throwIfAborted();
+    const codex = selections[0].status === 'fulfilled' ? selections[0].value : null;
+    const claude = selections[1].status === 'fulfilled' ? selections[1].value : null;
+    assertStateOwnership();
+    if (!codex && !claude) {
+      if (exists) {
+        await unlink(anchored(state, 'workflow-runtime.json'));
+        await state.sync();
+      }
+      return null;
+    }
+    const appMcpLauncher = join(release, 'artifacts/graphql-mcp.mjs');
+    if (await realpath(appMcpLauncher) !== appMcpLauncher) throw new WorkerError('workflow_launcher_retargeted');
+    const configuration = InstalledWorkflowConfigurationSchema.parse({ schemaVersion: 1, appMcpLauncher,
+      ...(codex ?? {}), ...(claude ? { claude } : {}) });
+    if (!isDeepStrictEqual(configuration, previous)) {
+      await publishManagedJson(state, 'workflow-runtime.json', configuration);
+    }
+    return location;
+  } finally { await state.close(); }
+}

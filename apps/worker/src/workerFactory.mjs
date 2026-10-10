@@ -18,8 +18,10 @@ import { createHash } from 'node:crypto';
 import { WorkerUpdater, workerUpdateExtension } from './update.mjs';
 import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
 import { ensurePairedManagedSetup } from './managedSetup.mjs';
+import { refreshWorkflowSelection } from './workflowSelection.mjs';
 
 export { ensurePairedManagedSetup };
+export { refreshWorkflowSelection };
 export { inspectManagedInstallation } from './managedInstallation.mjs';
 
 export { createWorkerConnection };
@@ -121,15 +123,16 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         }
         if (rsyncEntrypoint.kind === 'unavailable') process.stderr.write(`rsync unavailable: ${rsyncEntrypoint.reason}\n`);
       }
-      const configurationPath = join(stateDirectory, 'workflow-runtime.json');
-      const selection = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      const refreshWorkflowConfiguration = signal => refreshWorkflowSelection({ stateDirectory,
+        assertStateOwnership, ...(signal ? { signal } : {}) });
+      const selection = managedSetup?.state === 'failed' ? null : await refreshWorkflowConfiguration();
       const jobConfigurationPath = join(stateDirectory, 'job-runtime.json');
       const jobSelection = await lstat(jobConfigurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       installed = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId, assertStateOwnership,
         ...(updater ? { workerUpdate: { status: () => updater.status(), start: () => updater.start({ retry: true }),
           outcome: task => updater.maintenanceOutcome(task) } } : {}),
-        configuration: selection && managedSetup?.state !== 'failed'
-          ? { path: configurationPath, ownerUid: process.getuid() } : null,
+        configuration: selection,
+        ...(managedSetup?.state !== 'failed' ? { refreshWorkflowConfiguration } : {}),
         jobConfiguration: jobSelection && managedSetup?.state !== 'failed'
           ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
         approvedRoots: () => managedSetup?.state === 'failed' ? Promise.resolve(null)

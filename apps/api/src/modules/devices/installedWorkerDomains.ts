@@ -83,6 +83,7 @@ export async function createInstalledWorkerDomains(input: {
   /** The packaged Worker's existing exclusive state socket remains held during journal recovery. */
   assertStateOwnership?: () => void
   configuration: InstalledWorkflowConfigurationLocation | null
+  refreshWorkflowConfiguration?: (signal: AbortSignal) => Promise<InstalledWorkflowConfigurationLocation | null>
   nativeOutputs?: InstalledWorkflowHostOptions['nativeOutputs']
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
   jobReports?: Pick<RemoteJobExecutionHostPorts, 'prepareOutputs' | 'preparePublication'>
@@ -431,10 +432,14 @@ export async function createInstalledWorkerDomains(input: {
     async handle(payload, context) {
       HarnessDiscoveryRequestSchema.parse(payload)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The actual installed inventory requires its original worker channel.', 409)
-      const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: input.configuration,
+      const signal = AbortSignal.any([context.signal, lifetime.signal])
+      const configuration = input.refreshWorkflowConfiguration
+        ? await input.refreshWorkflowConfiguration(signal) : input.configuration
+      if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
+      const inspected = await inspectInstalledCodex({ binding: context.binding, configuration,
         fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
         signal: AbortSignal.any([context.signal, lifetime.signal]) })
-      const claude = await inspectInstalledClaude({ binding: context.binding, configuration: input.configuration,
+      const claude = await inspectInstalledClaude({ binding: context.binding, configuration,
         fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
         signal: AbortSignal.any([context.signal, lifetime.signal]) })
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
