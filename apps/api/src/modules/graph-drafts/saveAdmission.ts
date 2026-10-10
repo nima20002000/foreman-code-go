@@ -105,7 +105,8 @@ const currentInteractions = `exists (
     or i.record->>'requestingAgentId' is distinct from e.agent_id
     or i.record->>'nativeSessionId' is distinct from e.record->>'nativeSessionId'
     or i.record->'approval' is distinct from r.record->'approval'
-    or (i.status='delivered' and (
+    -- Owner work directions settle without native approval callbacks or graph-resume records.
+    or (i.status='delivered' and i.record->>'kind' is distinct from 'work_direction' and (
       i.record->>'deliveryState' is distinct from 'delivered' or i.record->>'deliveredAt' is null
       or g.run_id is distinct from r.id or g.execution_id is distinct from i.execution_id
       or g.graph_thread_id is distinct from i.record->>'graphThreadId'
