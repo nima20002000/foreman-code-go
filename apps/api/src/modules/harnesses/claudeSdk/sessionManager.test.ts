@@ -986,6 +986,90 @@ describe('Claude native session manager admission', () => {
 })
 
 describe('Claude native instruction delivery', () => {
+  it.each(['workflow', 'agent-chat', 'operator'] as const)(
+    'launches %s with its accepted application system prompt policy before the first user input', async kind => {
+      const snapshot = { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' }
+      const request = workflowRequest()
+      request.configuration = { ...request.configuration,
+        instructionDelivery: 'native-v1', prompt: { system: 'Agent instructions.' } }
+      request.systemPrompt = snapshot
+      let selected: NativeSessionStart
+      if (kind === 'workflow') {
+        selected = { request, correlationId: 'prompt-launch' }
+      } else if (kind === 'agent-chat') {
+        selected = { kind, conversationId: 'prompt-chat', workflowId: 'workflow', workflowNodeId: 'node',
+          correlationId: 'prompt-launch', configuration: request.configuration, systemPrompt: snapshot,
+          workingDirectory: '/work' }
+      } else {
+        selected = { ...start, correlationId: 'prompt-launch', systemPrompt: snapshot,
+          configuration: { instructionDelivery: 'native-v1', prompt: { system: 'Operator instructions.' },
+            assignedSkills: [] } } as unknown as NativeSessionStart
+      }
+      const f = fixture(undefined, { sdkOptions: { systemPrompt: 'Harness instructions.' } })
+      try {
+        const output = drain(f.manager.startInitialTurn(selected, { prompt: 'first user input',
+          clientCorrelationId: 'prompt-launch', onSessionObserved: async () => undefined }))
+        const message = await f.nextMessage()
+        const expected = kind === 'operator' ? 'Operator instructions.' : 'App instructions.\n\nAgent instructions.'
+        expect(f.queries.mock.calls[0]![0].options.systemPrompt).toBe(`Harness instructions.\n\n${expected}`)
+        expect(message.message.content).toBe('first user input')
+        await f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'prompt-reply',
+          user_message_uuid: message.uuid })
+        await f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'prompt-result',
+          user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
+        await output
+      } finally {
+        await f.manager.dispose?.()
+      }
+    },
+  )
+
+  it('keeps the accepted application system prompt when an existing Claude query resumes', async () => {
+    const f = fixture(undefined, { sdkOptions: { systemPrompt: 'Harness instructions.' } })
+    const request = workflowRequest()
+    request.systemPrompt = { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' }
+    try {
+      const session = await f.manager.attachSession({ harness: 'claude', providerVersion: '2.1.284',
+        nativeSessionId: 'native-session' }, { request })
+      await f.manager.applySessionPreferences!(session, SessionPreferencesSchema.parse({ autoCompact: 'off' }))
+      for (const [query] of f.queries.mock.calls) {
+        expect(query.options.systemPrompt).toBe('Harness instructions.\n\nApp instructions.')
+      }
+      expect(f.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
+  it('rejects changing the pinned application prompt when attaching a resident Agent chat', async () => {
+    const f = fixture()
+    const request = workflowRequest()
+    const selected: NativeSessionStart = {
+      kind: 'agent-chat', conversationId: 'prompt-chat', workflowId: 'workflow', workflowNodeId: 'node',
+      correlationId: 'prompt-chat', configuration: request.configuration, workingDirectory: '/work',
+      systemPrompt: { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' },
+    }
+    const session = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'native-session' }
+    try {
+      await f.manager.attachSession(session, selected)
+      const changed = structuredClone(selected)
+      changed.systemPrompt!.revision = 4
+      await expect(f.manager.attachSession(session, changed)).rejects.toMatchObject({ result: {
+        outcome: 'failed', error: { code: 'CLAUDE_SESSION_CONTEXT_CONFLICT', retryable: false },
+      } })
+      const missing = { ...selected }
+      delete missing.systemPrompt
+      await expect(f.manager.attachSession(session, missing)).rejects.toMatchObject({ result: {
+        outcome: 'failed', error: { code: 'CLAUDE_SESSION_CONTEXT_CONFLICT', retryable: false },
+      } })
+      expect(await f.manager.attachSession(session, structuredClone(selected))).toEqual(session)
+      expect(f.queries).toHaveBeenCalledOnce()
+      expect(f.offers).not.toHaveBeenCalled()
+    } finally {
+      await f.manager.dispose?.()
+    }
+  })
+
   it('delivers native-v1 Agent instructions as the Claude system prompt after the harness instructions', async () => {
     const f = fixture(undefined, { sdkOptions: { systemPrompt: 'Harness instructions.' } })
     const configured = { ...start, configuration: { instructionDelivery: 'native-v1', prompt: { system: 'Reply exactly COORDINATOR_READY.' }, assignedSkills: [] } } as unknown as NativeSessionStart

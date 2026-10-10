@@ -39,6 +39,10 @@ export function assertSameRepeatExecution(expected: HarnessExecution, actual: Ha
     if (expected[field] !== undefined && expected[field] !== actual[field]) throw new DomainError(
       'REPEAT_EXECUTION_INPUT_CONFLICT', 'Native observation cannot replace an accepted location or session.', 409)
   }
+  if (expected.systemPrompt !== undefined && !isDeepStrictEqual(expected.systemPrompt, actual.systemPrompt)) {
+    throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT',
+      'Native observation cannot replace the session system prompt.', 409)
+  }
   if (expected.state === 'completed' && (actual.state !== 'completed'
     || !isDeepStrictEqual(expected.result, actual.result) || expected.finishedAt !== actual.finishedAt)) {
     throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'A durable terminal observation is immutable.', 409)

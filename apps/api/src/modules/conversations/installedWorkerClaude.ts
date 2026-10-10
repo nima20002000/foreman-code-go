@@ -98,6 +98,7 @@ export async function allocateInstalledWorkerClaude(input: {
       'HARNESS_ROLE_AUTHORITY_INVALID', 'Agent chat cannot receive an Operator MCP credential.', 403)
     return { kind: 'agent-chat', configuration, conversationId: owner.conversationId, workflowId: owner.workflowId,
       workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
+      ...(binding.systemPrompt ? { systemPrompt: binding.systemPrompt } : {}),
       workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
   }
   const start: WorkerConversationAllocation['start'] = async options => {

@@ -1,4 +1,5 @@
 import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
+import { readSystemPromptSetting } from '../settings/foundation.js'
 import { readWorkflowJobSourceLocked } from '../jobs/workflowSource.js'
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
@@ -492,7 +493,10 @@ export class RepeatRunRepository {
         || await repeatPossibleSubmissionLocked(context.sql, stored.execution)) return repeatConflict('NATIVE_SESSION_START_UNCERTAIN')
       await context.hooks.assertAuthorityLocked(context.sql)
       await native.assertLaunchLocked(context.sql, stored.execution, stored.ref, paths)
-      const next = HarnessExecutionSchema.parse({ ...stored.execution, ...paths, state: 'starting', startedAt: context.now })
+      const systemPrompt = await readSystemPromptSetting(context.sql)
+      const next = HarnessExecutionSchema.parse({
+        ...stored.execution, ...paths, systemPrompt, state: 'starting', startedAt: context.now,
+      })
       const claim = repeatLaunchClaim(context.scope, stored.ref, next, stored.inputDigest)
       const digest = repeatDigest(claim)
       const change = this.nativeChange(context, stored, next, 'launch', claim,

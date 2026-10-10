@@ -7,7 +7,7 @@ import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type RecordedAgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type RecordedAgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction, type PromptSettingSnapshot } from '@foreman-code/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
@@ -15,6 +15,7 @@ import {
 } from '@foreman-code/contracts/agent-chat'
 
 import { DomainError } from '../errors.js'
+import { readSystemPromptSetting } from '../settings/foundation.js'
 import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
 import { readActivityCommands } from './activityCommands.js'
 import { agentActivityScope } from './activitySnapshot.js'
@@ -49,6 +50,7 @@ export interface AgentConversationRow {
   record: {
     origin: AgentChatOrigin; workingDirectory: string; runtimeDirectory: string; startupDelivered?: boolean; sessionUnavailable?: string
     directoryBinding?: AgentChatDirectoryBinding
+    systemPrompt?: PromptSettingSnapshot
     sessionUnavailableReason?: 'native_session_missing' | 'harness_unavailable'
     /** Durable fence: an unbound native creation is never permission to create a replacement. */
     sessionCreation?: { requestId: string }
@@ -102,6 +104,7 @@ export function agentConversation(row: AgentConversationRow): AgentConversation 
     id: row.id, workspaceId: row.workspace_id, workflowId: row.workflow_id, workflowNodeId: row.workflow_node_id,
     agentId: row.agent_id, agentConfigurationVersionId: row.agent_configuration_version_id, harness: row.harness,
     origin: row.record.origin,
+    ...(row.record.systemPrompt ? { systemPrompt: row.record.systemPrompt } : {}),
     nativeSession: row.native_session_id && row.provider_version
       ? { nativeSessionId: row.native_session_id, providerVersion: row.provider_version } : null,
     createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(),
@@ -134,6 +137,7 @@ export interface NewAgentConversation {
   workingDirectory: string
   runtimeDirectory: string
   directoryBinding?: AgentChatDirectoryBinding
+  systemPrompt?: PromptSettingSnapshot
 }
 
 export class PostgresAgentChatRepository {
@@ -156,6 +160,7 @@ export class PostgresAgentChatRepository {
       if (!row) {
         const id = randomUUID()
         const { context, origin, workingDirectory, runtimeDirectory, directoryBinding } = create
+        const systemPrompt = origin.kind === 'run_execution' ? create.systemPrompt : undefined
         await client.query(`insert into operator_conversations
           (id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,agent_configuration_version_id,
            origin_run_id,origin_execution_id,harness,record)
@@ -163,7 +168,8 @@ export class PostgresAgentChatRepository {
         [id,key,context.workspaceId,context.workflowId,context.workflowNodeId,context.agentId,
           create.agentConfigurationVersionId,origin.kind === 'run_execution' ? origin.runId : null,
           origin.kind === 'run_execution' ? origin.executionId : null,create.harness,
-          JSON.stringify({ origin, workingDirectory, runtimeDirectory, ...(directoryBinding ? { directoryBinding } : {}) })])
+          JSON.stringify({ origin, workingDirectory, runtimeDirectory,
+            ...(directoryBinding ? { directoryBinding } : {}), ...(systemPrompt ? { systemPrompt } : {}) })])
         row = (await this.get(id, client))!
       }
       await client.query('commit')
@@ -341,15 +347,26 @@ export class PostgresAgentChatRepository {
         if (!input.create) throw new DomainError('AGENT_CHAT_CONTEXT_STALE', 'The conversation for this Agent changed. Reload it before sending.', 409)
         const id = randomUUID()
         const { context, origin, workingDirectory, runtimeDirectory, directoryBinding } = input.create
+        const systemPrompt = origin.kind === 'fresh'
+          ? await readSystemPromptSetting(client)
+          : input.create.systemPrompt
         await client.query(`insert into operator_conversations (id,kind,agent_key,workspace_id,workflow_id,workflow_node_id,agent_id,
             agent_configuration_version_id,origin_run_id,origin_execution_id,harness,record)
           values ($1,'agent',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
         [id, input.key, context.workspaceId, context.workflowId, context.workflowNodeId, context.agentId,
           input.create.agentConfigurationVersionId, origin.kind === 'run_execution' ? origin.runId : null,
           origin.kind === 'run_execution' ? origin.executionId : null, input.create.harness,
-          JSON.stringify({ origin, workingDirectory, runtimeDirectory, ...(directoryBinding ? { directoryBinding } : {}) })])
+          JSON.stringify({ origin, workingDirectory, runtimeDirectory,
+            ...(directoryBinding ? { directoryBinding } : {}), ...(systemPrompt ? { systemPrompt } : {}) })])
         row = (await this.get(id, client))!
         created = true
+      }
+      if (row.record.origin.kind === 'fresh' && !row.native_session_id && !row.record.startupDelivered
+        && !row.record.sessionCreation && !row.record.systemPrompt) {
+        const systemPrompt = await readSystemPromptSetting(client)
+        await client.query(`update operator_conversations set record=record || jsonb_build_object('systemPrompt',$2::jsonb)
+          where id=$1 and kind='agent'`, [row.id, JSON.stringify(systemPrompt)])
+        row.record.systemPrompt = systemPrompt
       }
       if (input.request.intent === 'steer' && (!row.active_request_id || !input.request.expectedNativeTurnId
         || input.request.expectedNativeTurnId !== row.active_native_turn_id)) {

@@ -58,6 +58,15 @@ it('keeps two nodes with the same Agent independently addressable', () => {
   expect(second.profile).toEqual(first.profile)
 })
 
+it('preserves the Agent System prompt snapshot across worker messages and excludes the Operator', () => {
+  const systemPrompt = { value: { text: 'Shared startup instructions' }, revision: 2, versionId: 'prompt-version-2' }
+  const target = { ...binding('agent'), systemPrompt }
+  expect(WorkerConversationBindingSchema.parse(target)).toEqual(target)
+  const request = { method: 'conversation.status', binding: target }
+  expect(WorkerConversationRpcRequestSchema.parse(request)).toEqual(request)
+  expect(WorkerConversationBindingSchema.safeParse({ ...binding('operator'), systemPrompt }).success).toBe(false)
+})
+
 it('keeps approval recovery on its native request and rejects a prompt or grants in that request', () => {
   const request = { method: 'conversation.response-reconcile', binding: binding(),
     session: { harness: 'codex', providerVersion: 'provider-fixture', nativeSessionId: 'observed-session' },

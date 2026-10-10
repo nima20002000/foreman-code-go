@@ -94,6 +94,12 @@ export class F1Store {
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql.startsWith('select record, revision, current_version_id from application_settings')) return result()
+    if (sql.startsWith("update operator_conversations set record=record || jsonb_build_object('systemPrompt'")) {
+      if (this.row.id !== values[0]) return result()
+      this.row.record.systemPrompt = JSON.parse(String(values[1]))
+      return result([], 1)
+    }
     if (sql === 'select record from conversation_session_controls where conversation_id=$1'
       || sql === 'select record from conversation_session_controls where conversation_id=$1 for update') {
       const record = this.sessionControls.get(String(values[0]))

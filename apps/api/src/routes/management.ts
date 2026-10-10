@@ -17,6 +17,7 @@ import { registerRunInspectionRoutes } from './runInspection.js'
 import { registerCurrentVersionReadRoutes } from './currentVersionReads.js'
 import type { FastifyInstance } from 'fastify'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
+import { registerPromptSettingsRoutes } from './promptSettings.js'
 import { registerHarnessSettingsRoutes } from './harnessSettings.js'
 import { registerSkillRoutes } from './skills.js'
 
@@ -175,6 +176,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     services.harnesses.updateDefaults(requirePrincipal(request), 'http', HarnessDefaultsUpdateInputSchema.parse(request.body)))
 
   if (services.settings) {
+    registerPromptSettingsRoutes(app, services.settings)
     app.get('/api/management/settings/general', async request =>
       services.settings!.getGeneralSettings(requirePrincipal(request)))
     app.put<{ Body: unknown }>('/api/management/settings/general', async request =>

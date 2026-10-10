@@ -54,11 +54,18 @@ export function SettingsFormFeedback({ form, savedMessage = 'Changes are saved t
   </>
 }
 
-export function SettingsFormActions({ form, onSave, saveLabel = 'Save defaults', extra }: { form: SettingsFormState; onSave(): unknown | Promise<unknown>; saveLabel?: string; extra?: ReactNode }) {
+export function SettingsFormActions({ form, onSave, saveLabel = 'Save defaults', extra, canSave = true }: {
+  form: SettingsFormState; onSave(): unknown | Promise<unknown>;
+  saveLabel?: string; extra?: ReactNode; canSave?: boolean;
+}) {
+  const save = () => {
+    if (!canSave) return false
+    return onSave()
+  }
   useUnsavedChanges({ label: saveLabel.replace(/^Save /, ''), dirty: form.isDirty, busy: form.isSaving,
-    uncertain: form.uncertain, saveDisabled: form.conflicted && !form.uncertain,
+    uncertain: form.uncertain, saveDisabled: !canSave || (form.conflicted && !form.uncertain),
     error: form.conflicted ? 'These settings changed elsewhere. Keep editing to review and resolve the conflict.' : form.error,
-    save: onSave, discard: form.reset })
+    save, discard: form.reset })
   const subject = saveLabel.replace(/^Save /, '')
   const subjectTitle = subject.charAt(0).toUpperCase() + subject.slice(1)
   const toasts = useContext(ToastContext)
@@ -81,10 +88,11 @@ export function SettingsFormActions({ form, onSave, saveLabel = 'Save defaults',
     previous.current = { revision: form.savedRevision, error: form.error, uncertain: form.uncertain,
       conflicted: form.conflicted, saving: form.isSaving }
   }, [form.savedRevision, form.error, form.uncertain, form.conflicted, form.isSaving, form.isDirty, subject, subjectTitle, toasts])
+  if (!canSave) return null
   return <footer className="settings-save-actions">
     {extra ? <div className="settings-footer-options">{extra}</div> : null}
     {form.isDirty && !form.conflicted ? <Button disabled={!form.isDirty || form.isSaving || form.uncertain} onClick={form.reset}>Discard changes</Button> : null}
-    <Button variant="primary" aria-label={saveLabel} disabled={form.isSaving || (!form.isDirty && !form.uncertain) || (form.conflicted && !form.uncertain)} onClick={onSave}>
+    <Button variant="primary" aria-label={saveLabel} disabled={form.isSaving || (!form.isDirty && !form.uncertain) || (form.conflicted && !form.uncertain)} onClick={save}>
       {form.isSaving ? 'Saving…' : form.uncertain ? 'Retry original save' : 'Save'}
     </Button>
   </footer>

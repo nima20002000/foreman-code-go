@@ -14,6 +14,7 @@ export * from "./codexPlugins.js";
 export * from "./claudePlugins.js";
 export * from "./settingsExperience.js";
 export * from './generalSettings.js';
+export * from './promptSettings.js';
 
 import {
   AgentSchema,
@@ -620,6 +621,7 @@ export const OperatorToolNameSchema = z.enum([
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
   'general_settings_get', 'general_settings_update',
+  'system_prompt_get', 'system_prompt_update', 'operator_initial_prompt_get', 'operator_initial_prompt_update',
   'worker_execution_settings_get',
   "workspace_defaults_update",
   "harness_mcp_servers_list", "harness_mcp_change_request", "harness_mcp_managed_request", "harness_mcp_change_get", "harness_mcp_change_reconcile", "codex_plugin_change", "codex_plugin_reconcile",

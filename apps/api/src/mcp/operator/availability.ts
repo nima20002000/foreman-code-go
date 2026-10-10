@@ -127,7 +127,8 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
-  if (name.startsWith('general_settings_')) scope = 'global'
+  if (name.startsWith('general_settings_') || name.startsWith('system_prompt_')
+    || name.startsWith('operator_initial_prompt_')) scope = 'global'
   if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','harness_compatibility_list','harness_compatibility_retry','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_chat_cancel','operator_chat_respond','operator_handoff_history_get'].includes(name)) scope = 'global'
   if (['operator_chat_list', 'operator_chat_history_get', 'operator_chat_activity_get',
     'operator_chat_delete', 'operator_chat_restore'].includes(name)) scope = 'global'
@@ -214,7 +215,8 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (retiredExecutionTool(name)) return false
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
-  if (name.startsWith('general_settings_') && !service.settings) return false
+  if ((name.startsWith('general_settings_') || name.startsWith('system_prompt_')
+    || name.startsWith('operator_initial_prompt_')) && !service.settings) return false
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') {
     if (!service.resourceTelemetry) return false
     return TELEMETRY_READ_ACTIONS.some(action => action === 'devices:metrics:read'

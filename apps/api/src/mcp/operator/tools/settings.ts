@@ -15,6 +15,9 @@ import {
   ManagedGeneralSettingsSchema,
   GeneralSettingsUpdateInputSchema,
   GeneralSettingsUpdateResultSchema,
+  ManagedPromptSettingSchema,
+  PromptSettingUpdateInputSchema,
+  PromptSettingUpdateResultSchema,
   AgentDefaultsUpdateInputSchema,
   AgentDefaultsUpdateResultSchema,
   ManagedAgentDefaultsSchema,
@@ -118,6 +121,37 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     context.services.operatorChat!.setup(context.principal, input)))
   const settings = context.services.settings
   if (!settings) return
+  if (operatorToolAvailable(context, 'system_prompt_get')) server.registerTool('system_prompt_get', {
+    description: 'Read the app-wide System prompt and its revision. It is prepended to newly started workflow '
+      + 'and Agent chat sessions for Codex and Claude. The Operator is excluded. Requires global settings:read.',
+    inputSchema: z.object({}).strict(), outputSchema: ManagedPromptSettingSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, () => invokeOperatorTool(context, 'system_prompt_get', () => settings.getSystemPrompt(context.principal)))
+  if (operatorToolAvailable(context, 'system_prompt_update')) server.registerTool('system_prompt_update', {
+    description: 'Save the app-wide System prompt for newly started Codex and Claude workflow and Agent chat '
+      + 'sessions. Existing sessions keep their saved revision; the Operator is excluded. Requires global '
+      + 'settings:update. Use expectedRevision from system_prompt_get; retry an uncertain save with the same '
+      + 'commandId and input, then read back with system_prompt_get. Empty text clears the prompt.',
+    inputSchema: PromptSettingUpdateInputSchema, outputSchema: PromptSettingUpdateResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'system_prompt_update',
+    () => settings.updateSystemPrompt(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'operator_initial_prompt_get')) server.registerTool('operator_initial_prompt_get', {
+    description: 'Read the Operator own Initial prompt and revision. Newly created Operator conversations '
+      + 'use this text; they do not receive the app-wide System prompt. Requires global settings:read.',
+    inputSchema: z.object({}).strict(), outputSchema: ManagedPromptSettingSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, () => invokeOperatorTool(context, 'operator_initial_prompt_get',
+    () => settings.getOperatorInitialPrompt(context.principal)))
+  if (operatorToolAvailable(context, 'operator_initial_prompt_update')) server.registerTool('operator_initial_prompt_update', {
+    description: 'Save the Operator own Initial prompt for new conversations. Existing conversations keep '
+      + 'their saved revision. Requires global settings:update. Use expectedRevision from '
+      + 'operator_initial_prompt_get and reuse commandId with the same input after an uncertain save. '
+      + 'Read back with operator_initial_prompt_get. Empty text clears the custom Initial prompt.',
+    inputSchema: PromptSettingUpdateInputSchema, outputSchema: PromptSettingUpdateResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, input => invokeOperatorTool(context, 'operator_initial_prompt_update',
+    () => settings.updateOperatorInitialPrompt(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'general_settings_get')) server.registerTool('general_settings_get', {
     description: 'Read Main’s saved general preferences and revision. Theme is shared by browsers on all computers '
       + 'connected to this Main. Requires global settings:read. Credentials and native profiles remain per computer.',

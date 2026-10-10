@@ -338,6 +338,7 @@ export class AgentChatService {
         agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness,
         origin: { kind: 'run_execution', runId: run.id, executionId, sourceNativeSessionId: source.nativeSessionId },
         workingDirectory: source.workingDirectory, runtimeDirectory: '',
+        ...(source.systemPrompt ? { systemPrompt: source.systemPrompt } : {}),
       } }
     }
     const version = await this.workflows.getCurrentSavedVersion(context.workspaceId, context.workflowId)
@@ -952,6 +953,7 @@ export class AgentChatService {
       kind: 'agent-chat', conversationId: row.id, workflowId: row.workflow_id,
       workflowNodeId: row.workflow_node_id, configuration,
       workingDirectory: row.record.workingDirectory, correlationId, instructionsDelivered: delivered,
+      ...(row.record.systemPrompt ? { systemPrompt: row.record.systemPrompt } : {}),
       ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
     }
   }
