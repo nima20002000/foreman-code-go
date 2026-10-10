@@ -35,6 +35,14 @@ export const OPERATOR_RUNTIME_LIMITS = [
       + 'and input to recover the saved task, or a new commandId to retry. Older Workers without worker-update-v1 '
       + 'need one human installation of an updater-enabled Worker first. Main is updated with production:install.' },
   {feature:'source_approval',state:'protected',detail:'source_approve accepts either every tracked file in approvedPaths or approveTrackedTree: true with approvedPaths omitted. Both approve only the pinned commit tree, retain sensitive-path/content rejection, executable policy and source limits, and persist the approval choice and exact inventory. Requires sources:approve, sources:read and workspace_locations:read in the workspace.'},
+  { feature: 'workflow_create_initial_save', state: 'protected',
+    detail: 'workflow_create accepts initialSave {graph, expectedAgentConfigurationVersionIds, expectedLocationRevision}. '
+      + 'Creation supplies workflow identity, name, description, defaultWorktree and timestamps. '
+      + 'Create, validation, immutable save, receipts and audits commit together; failure leaves no workflow. '
+      + 'Omitting initialSave still creates an unsaved workflow with workflows:create alone. '
+      + 'initialSave additionally requires workflows:read/update, graph:read/edit/save, agents:read and workspace_locations:read '
+      + 'in the workspace without workflow-ID restrictions, plus referenced skill/harness/source grants. '
+      + 'Retry the same commandId and input; changed input conflicts. Read the saved version with workflow_saved_get_v3.' },
   {feature:'current_workflow_semantics',state:'limited',detail:'One semantics-3 authoring/read/Start contract covers ordinary, parallel/all-required, conditional/approval and optional bounded repeat. Ordinary definitions omit repeat. Read workflow_authoring_capabilities_v3 for separately composed native Start/Stop readiness. Stage/Discard do not execute; Stop-and-save waits for exact settlement.'},
   {feature:'general_questions_and_forms',state:'unsupported',detail:'Native arbitrary questions/forms do not have a typed durable response path. Approval options are not general answers.'},
   {feature:'named_workflow_routing',state:'limited',detail:'Explicit named outcomes, acyclic execution relationships and all-required joins share the current validator. Arbitrary cycles, nested repeats, inferred routes and unknown outcomes are rejected. Valid authoring is not native admission.'},
