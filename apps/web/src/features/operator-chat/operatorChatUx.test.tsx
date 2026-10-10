@@ -229,6 +229,7 @@ describe('Operator chat UX', () => {
     delete nativeDefault.effort
     expect(saved.value.operator.harness).toEqual(nativeDefault)
     expect(screen.queryByText('Changes were not saved')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Agent settings: Haiku 4.5' })).toBeEnabled())
     expect(screen.queryByRole('slider', { name: 'Effort' })).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /Choose model/ })).toBeEnabled())
     await choose('Sonnet 5.5', 'claude-sonnet-5-5')

@@ -7,17 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { DEFAULT_FILE_RETENTION_SECONDS, FilePageSchema, FileWithRevisionSchema, temporaryFileExpiresAt,
   type FileWithRevision } from '@foreman-code/contracts/files'
-import { AgentChatStateSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
+import { AgentChatContextSchema, AgentChatStateSchema, agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { RunActivitiesPageSchema, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
+import { agentChatFixtureFor } from '../../shared/mocks/agentChatHandlers'
 import { bindMockInstallation } from '../../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../../shared/mocks/scenarios'
 import { useGraphDraftStore } from '../graph/store'
 import { installFlowLayout } from '../run-board/testFlowLayout'
-import { deferred, reply, runsUrl, versionReply } from '../run-board/testFixtures'
+import { deferred, pinnedRunHandlers, reply, runsUrl, versionReply } from '../run-board/testFixtures'
 import { page, runA, runB } from '../runs-selector/testFixtures'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { RunsSelector } from '../runs-selector/RunsSelector'
@@ -63,8 +64,17 @@ async function choose(user: ReturnType<typeof userEvent.setup>, trigger: HTMLEle
 }
 
 function installBoardHistory() {
+  const chatReads: URL[] = []
   const fixture = getMockFixture(scope.workspaceId)!
   server.use(
+    ...pinnedRunHandlers(scope),
+    http.get('*/api/workspaces/:workspaceId/agent-chat', ({ request, params }) => {
+      const url = new URL(request.url)
+      chatReads.push(url)
+      const context = AgentChatContextSchema.parse({ workspaceId: String(params.workspaceId),
+        ...Object.fromEntries(url.searchParams) })
+      return HttpResponse.json(agentChatFixtureFor(agentChatFixtures.empty, context))
+    }),
     http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({ workspace: fixture.workspace,
       revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/tmp/project' },
       locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),
@@ -77,6 +87,7 @@ function installBoardHistory() {
     http.get('*/api/workspaces/:workspaceId/reference-files', () =>
       HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
   )
+  return chatReads
 }
 
 function SelectedSurface() {
@@ -166,13 +177,15 @@ describe('FIL-17 + SCH selected Board', () => {
     vi.stubGlobal('innerWidth', 320)
     installBoardHistory()
     await mountBoard()
-    const board = await screen.findByRole('region', { name: 'Selected Run board' })
+    const board = await screen.findByRole('region', { name: 'Selected Run pinned topology' })
     const graph = within(board)
-    const node = await graph.findByRole('group', { name: 'Y, saved agent, read only' })
+    const node = await graph.findByRole('button', { name: 'Inspect Run node Y' })
     expect(node).toBeVisible()
-    expect(within(node).getByRole('button', { name: 'Inspect Y' })).toBeEnabled()
-    expect(screen.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
-    expect(await within(screen.getByRole('region', { name: 'Run-wide Activities' })).findByText('Saved run run-a')).toBeVisible()
+    expect(node).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Activities' }))
+    const activities = await screen.findByRole('dialog', { name: 'Activities' })
+    expect(await within(activities).findByText('Saved run run-a')).toBeVisible()
+    await user.click(within(activities).getByRole('button', { name: 'Close runs' }))
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const clock = within(controls).getByRole('button', { name: 'Schedule workflow' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
@@ -191,17 +204,27 @@ describe('FIL-17 + SCH selected Board', () => {
   it.each([320, 1024])('keeps the saved graph and chat selection together across A, B, A at %spx', async (width) => {
     const user = userEvent.setup()
     vi.stubGlobal('innerWidth', width)
-    installBoardHistory()
+    const chatReads = installBoardHistory()
     await mountBoard()
-    const board = await screen.findByRole('region', { name: 'Selected Run board' })
-    const graph = within(board)
-    const sidePanel = within(screen.getByRole('complementary', { name: 'Agent chat' }))
-    const activities = within(sidePanel.getByRole('region', { name: 'Run-wide Activities' }))
-    const nodeA = await graph.findByRole('group', { name: 'Y, saved agent, read only' })
-    expect(nodeA).toBeVisible()
-    expect(within(nodeA).getByRole('button', { name: 'Inspect Y' })).toBeEnabled()
-    expect(sidePanel.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
-    expect(await activities.findByText('Saved run run-a')).toBeVisible()
+    await screen.findByRole('region', { name: 'Selected Run pinned topology' })
+    const assertSelection = async (runId: string, name: string) => {
+      const node = await screen.findByRole('button', { name: `Inspect Run node ${name}` })
+      const pinned = screen.getByRole('region', { name: 'Selected Run pinned topology' })
+      expect(node).toBeVisible()
+      expect(node).toBeEnabled()
+      await user.click(screen.getByRole('button', { name: `Open ${name} chat` }))
+      const chat = await screen.findByRole('dialog', { name: `${name} chat` })
+      expect(chat).toHaveTextContent('Selected Run')
+      await waitFor(() => expect(chatReads.at(-1)?.searchParams.get('runId')).toBe(runId))
+      expect(chatReads.at(-1)?.searchParams.get('workflowNodeId')).toBe(name === 'Y' ? 'node-y' : 'node-x')
+      await user.keyboard('{Escape}')
+      await user.click(screen.getByRole('button', { name: 'Activities' }))
+      const activities = await screen.findByRole('dialog', { name: 'Activities' })
+      expect(await within(activities).findByText(`Saved run ${runId}`)).toBeVisible()
+      await user.click(within(activities).getByRole('button', { name: 'Close runs' }))
+      expect(pinned).toHaveTextContent(`Run ${runId} · version version-${runId.slice(4)}`)
+    }
+    await assertSelection('run-a', 'Y')
     const controls = screen.getByRole('group', { name: 'Board controls' })
     const runs = within(controls).getByRole('button', { name: 'Runs' })
     if (width === 320) {
@@ -211,21 +234,11 @@ describe('FIL-17 + SCH selected Board', () => {
       await waitFor(() => expect(dialog).not.toBeInTheDocument())
     }
     await choose(user, runs, 'run-b')
-    const nodeB = await graph.findByRole('group', { name: 'X in B, saved agent, read only' })
-    expect(nodeB).toBeVisible()
-    expect(within(nodeB).getByRole('button', { name: 'Inspect X in B' })).toBeEnabled()
-    expect(sidePanel.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-b')
-    expect(await activities.findByText('Saved run run-b')).toBeVisible()
-    expect(screen.queryByText('Saved run run-a')).not.toBeInTheDocument()
-    expect(screen.queryByRole('group', { name: 'Y, saved agent, read only' })).not.toBeInTheDocument()
+    await assertSelection('run-b', 'X in B')
+    expect(screen.queryByRole('button', { name: 'Inspect Run node Y' })).not.toBeInTheDocument()
     await choose(user, runs, 'run-a')
-    const restoredNodeA = await graph.findByRole('group', { name: 'Y, saved agent, read only' })
-    expect(restoredNodeA).toBeVisible()
-    expect(within(restoredNodeA).getByRole('button', { name: 'Inspect Y' })).toBeEnabled()
-    expect(sidePanel.getByRole('region', { name: 'Selected Run chat' })).toHaveAttribute('data-run-id', 'run-a')
-    expect(await activities.findByText('Saved run run-a')).toBeVisible()
-    expect(screen.queryByText('Saved run run-b')).not.toBeInTheDocument()
-    expect(screen.queryByRole('group', { name: 'X in B, saved agent, read only' })).not.toBeInTheDocument()
+    await assertSelection('run-a', 'Y')
+    expect(screen.queryByRole('button', { name: 'Inspect Run node X in B' })).not.toBeInTheDocument()
   })
 
   it('keeps same-named Operator file cards bound to chats A and B while a Board is open', async () => {
@@ -250,6 +263,7 @@ describe('FIL-17 + SCH selected Board', () => {
       })] as const
     }))
     useOperatorChatStore.setState({ open: true, historyOpen: false, selectedConversationId: 'conversation-a' })
+    installBoardHistory()
     const fixture = getMockFixture(scope.workspaceId)!
     server.use(
       http.get('/api/local-human', () => HttpResponse.json({ principal: { id: owner, name: 'Combined tester',
@@ -273,7 +287,7 @@ describe('FIL-17 + SCH selected Board', () => {
       http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), scope))),
     )
     await mountBoard()
-    await screen.findByRole('region', { name: 'Selected Run board' })
+    await screen.findByRole('region', { name: 'Selected Run pinned topology' })
     const card = () => screen.getByRole('group', { name: /shared.md/ })
     await waitFor(() => expect(card().querySelector('[title*="operator-file-a"]')).not.toBeNull())
     expect(screen.getByText('Message A')).toBeInTheDocument()
@@ -284,7 +298,7 @@ describe('FIL-17 + SCH selected Board', () => {
     act(() => useOperatorChatStore.getState().select('conversation-a'))
     await waitFor(() => expect(card().querySelector('[title*="operator-file-a"]')).not.toBeNull())
     expect(screen.queryByText('Message B')).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Selected Run board' })).toHaveAttribute('data-run-id', 'run-a')
+    expect(screen.getByRole('region', { name: 'Selected Run pinned topology' })).toHaveTextContent('Run run-a · version version-a')
   })
 
   it('moves graph, chat and Activities as one selection and rejects a late old-Run read', async () => {

@@ -1,5 +1,8 @@
 import { RunBoardSnapshotSchema, type RunBoardSnapshotGetResult } from '@foreman-code/contracts/run-snapshots'
-import { makeCurrentWorkflowFixture, RunVersionDetailSchema } from '@foreman-code/contracts/wave25'
+import { http, HttpResponse } from 'msw'
+import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
+import { CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3,
+  makeCurrentWorkflowFixture, RunVersionDetailSchema } from '@foreman-code/contracts/wave25'
 import type { RunsSelectorScope } from '../runs-selector/types'
 import type { AvailableRunBoardSnapshot } from './model'
 
@@ -80,4 +83,49 @@ export function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((done) => { resolve = done })
   return { promise, resolve }
+}
+
+export function pinnedRunHandlers(target: RunsSelectorScope) {
+  const source = makeCurrentWorkflowFixture('saved-run-board', 'single')
+  const saved = (runId: string) => versionReply(reply(runId, target).snapshot)
+  const details = (runId: string) => {
+    const { version } = saved(runId)
+    return CurrentRunDetailsSchema.parse({
+      run: { ...source.run, id: runId, ...target, workflowVersionId: version.id,
+        agentConfigurationVersionIds: version.agentConfigurationVersionIds,
+        executionState: 'completed', outcome: 'succeeded', startedAt: version.createdAt,
+        finishedAt: version.createdAt, result: { outcome: 'succeeded', output: {} } },
+      executions: [], activity: [], cleanupPending: false,
+    })
+  }
+  return [
+    http.get('*/api/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/graph/v1/current', ({ params }) => {
+      const runId = String(params.runId)
+      const { scope, version } = saved(runId)
+      return HttpResponse.json(RepeatGraphCurrentV3Schema.parse({
+        kind: 'current', protocolVersion: 1, scope, topology: repeatGraphTopologyV3(version),
+        asOfSequence: '0', retentionFloor: '0', historyCoverage: 'from_admission',
+        state: { run: { executionState: 'completed', outcome: 'succeeded', stopRequested: false,
+          cleanupPending: false, unsettledReviewCount: 0, pendingInteractionCount: 0 },
+          nodes: [], inputBindings: [], interactions: [], reviews: [], occurrences: [], executions: [],
+          resolutions: [], results: [], bindings: [], decisions: [] },
+      }))
+    }),
+    http.get('*/api/management/workspaces/:workspaceId/runs', () =>
+      HttpResponse.json({ items: ['run-a', 'run-b'].map(id => details(id).run), pageInfo: { nextCursor: null } })),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId', ({ params }) =>
+      HttpResponse.json(details(String(params.runId)))),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/executions', ({ params }) => {
+      const runId = String(params.runId)
+      return HttpResponse.json({ run: { ...saved(runId).scope, executionState: 'completed', outcome: 'succeeded',
+        createdAt: saved(runId).version.createdAt, cleanupPending: false },
+        items: [], pageInfo: { nextCursor: null } })
+    }),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/handoffs', ({ params }) =>
+      HttpResponse.json({ scope: saved(String(params.runId)).scope, policy: 'not_configured',
+        runState: 'completed', connections: [], routes: [], notices: [], unresolved: [], directionWait: false })),
+    http.get('*/api/management/workspaces/:workspaceId/agents/:agentId/versions/:versionId', ({ params }) =>
+      HttpResponse.json({ version: AgentConfigurationVersionSchema.parse({ ...source.configurations[0],
+        workspaceId: target.workspaceId, agentId: String(params.agentId), id: String(params.versionId) }) })),
+  ]
 }

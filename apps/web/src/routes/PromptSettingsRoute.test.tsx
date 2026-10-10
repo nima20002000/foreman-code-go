@@ -216,7 +216,7 @@ it.each([503, 403])('retries the original uncertain prompt save after a %s app a
   await waitFor(() => expect(editor).not.toHaveAttribute('readonly'))
   await user.type(editor, '\nSubmitted edit')
   await user.click(screen.getByRole('button', { name: 'Save initial prompt' }))
-  expect(await screen.findByText('Save not confirmed')).toBeVisible()
+  expect(await within(screen.getByRole('region', { name: 'Initial prompt settings' })).findByText('Save not confirmed')).toBeVisible()
   server.use(http.get('/api/local-human', () => HttpResponse.json({
     error: { code: 'ACCESS_UNAVAILABLE', message: 'Access check failed.' },
   }, { status })))
@@ -231,7 +231,7 @@ it.each([503, 403])('retries the original uncertain prompt save after a %s app a
   expect(await screen.findByRole('textbox', { name: 'Initial prompt' }))
     .toHaveValue('Operator instructions\nSubmitted edit')
   expect(screen.getByRole('textbox', { name: 'Initial prompt' })).toBeDisabled()
-  expect(screen.getByText('Save not confirmed')).toBeVisible()
+  expect(within(screen.getByRole('region', { name: 'Initial prompt settings' })).getByText('Save not confirmed')).toBeVisible()
   const unload = new Event('beforeunload', { cancelable: true })
   window.dispatchEvent(unload)
   expect(unload.defaultPrevented).toBe(true)
@@ -259,7 +259,7 @@ it.each([false, true])('guards navigation and blocks saving after prompt denial 
   await user.type(editor, '\nProtected edit')
   if (uncertain) {
     await user.click(screen.getByRole('button', { name: 'Save initial prompt' }))
-    expect(await screen.findByText('Save not confirmed')).toBeVisible()
+    expect(await within(screen.getByRole('region', { name: 'Initial prompt settings' })).findByText('Save not confirmed')).toBeVisible()
   }
   server.use(http.get('/api/management/settings/operator-initial-prompt', () => HttpResponse.json({
     error: { code: 'FORBIDDEN', message: 'Prompt access denied.' },

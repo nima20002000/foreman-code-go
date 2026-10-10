@@ -89,10 +89,10 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
     if (!workflowId) return
     if (scope && (scope.workspaceId !== workspaceId || scope.workflowId !== workflowId)) throw new Error('Run selection belongs to a different board.')
     // Explicit legacy Run/Current actions replace, rather than combine, history pins.
-    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId },
+    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, replace: Boolean(selectedRunId),
       hash: (previous) => run?.runId === scope?.runId ? previous ?? '' : clearSelectedSubagentHash(previous ?? ''),
       search: (previous) => boardSearchForRun(withoutRunsSelectorSearch(previous), workflowId, scope) })
-  }, [workflowId, workspaceId, navigate, run?.runId])
+  }, [workflowId, workspaceId, navigate, run?.runId, selectedRunId])
   const selectInspection = useCallback((inspection: WorkspaceBoardInspection) => {
     if (!workflowId || !run) return
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: true, search: (previous) => {
