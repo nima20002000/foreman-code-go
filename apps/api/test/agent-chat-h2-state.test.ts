@@ -17,7 +17,7 @@ function service() {
       expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] }
   } } as unknown as Ports[0], {} as Ports[1], {} as Ports[2],
     { getSavedVersion: forbidden, getCurrentSavedVersion: forbidden, getAgentConfiguration: forbidden },
-    { getForWorkspace: forbidden, executionPages: forbidden }, forbidden, '/h2-not-used')
+    { getForWorkspace: forbidden, executionPages: forbidden, getExecution: forbidden }, forbidden, '/h2-not-used')
 }
 
 describe('H2 A-R01: truthful chat availability without changing the frozen contract', () => {

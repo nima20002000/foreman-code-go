@@ -15,6 +15,7 @@ import { PairedMcpEndpointSchema } from './mcpDetection.js'
 import { AgentChatDirectoryBindingSchema } from './agentChat.js'
 import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from './files.js'
 import { PromptSettingSnapshotSchema } from './prompts.js'
+import { AcceptedNodePlacementSchema } from './nodePlacement.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -29,6 +30,7 @@ export const WorkerConversationBindingSchema = z.object({
   owner: WorkerConversationOwnerSchema,
   directoryBinding: AgentChatDirectoryBindingSchema.optional(),
   systemPrompt: PromptSettingSnapshotSchema.optional(),
+  sourceExecution: z.object({ executionId: id, placement: z.lazy(() => AcceptedNodePlacementSchema) }).strict().optional(),
   harness: z.lazy(() => AgentHarnessSchema),
   profile: HarnessProfileSelectionSchema,
   workingDirectory: directory,
@@ -46,12 +48,37 @@ export const WorkerConversationBindingSchema = z.object({
   if (value.owner.kind === 'operator' && value.systemPrompt) {
     context.addIssue({ code: 'custom', message: 'The Operator does not receive the app-wide System prompt.' })
   }
+  if (value.sourceExecution) {
+    const placement = value.sourceExecution.placement
+    const payload = placement.payload
+    const owner = value.owner
+    const target = value.profile.target
+    const host = target.hostRef
+    if (owner.kind !== 'agent' || payload.kind !== 'agent'
+      || payload.agentId !== owner.agentId || payload.agentConfigurationVersionId !== owner.configurationVersionId
+      || placement.nodeId !== owner.workflowNodeId || payload.driverId !== value.harness
+      || value.profile.instanceId !== payload.instanceId || value.profile.instanceRevision !== payload.instanceRevision
+      || host.kind !== 'device' || placement.hostRef.kind !== 'device'
+      || host.mainId !== placement.hostRef.mainId || host.deviceId !== placement.hostRef.deviceId
+      || target.applicationInstallationId !== placement.registration?.workerInstallationId
+      || target.harnessInstallationId !== payload.harnessInstallationId
+      || target.installationFingerprint !== payload.installationFingerprint) {
+      context.addIssue({ code: 'custom', message: 'The chat profile must match its accepted Agent execution placement.' })
+    }
+  }
 })
 export type WorkerConversationBinding = z.infer<typeof WorkerConversationBindingSchema>
 export const WorkerConversationConfigurationSchema = z.union([
   z.lazy(() => OperatorConfigurationVersionSchema), z.lazy(() => AgentConfigurationVersionSchema),
 ])
 export type WorkerConversationConfiguration = z.infer<typeof WorkerConversationConfigurationSchema>
+
+/** Run follow-ups use the accepted execution profile while retaining the Agent configuration. */
+export function workerConversationProfileSelection(binding: WorkerConversationBinding,
+  configuration: WorkerConversationConfiguration) {
+  const parsed = WorkerConversationBindingSchema.parse(binding)
+  return parsed.sourceExecution ? parsed.profile : configuration.harnessProfileSelection
+}
 
 export const WorkerConversationTurnSchema = z.object({
   correlationId: id, inputHash: digest,

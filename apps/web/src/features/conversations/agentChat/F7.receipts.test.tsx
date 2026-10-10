@@ -21,6 +21,49 @@ const reopen = (mounted: ReturnType<typeof mountChat>) => render(<QueryClientPro
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); useConversationDraftStore.getState().clearAllDrafts(); vi.unstubAllGlobals() })
 
 describe('F7 B-R07 compact command retention', () => {
+  it.each(['missing', 'completed'] as const)('recovers the original send after a lost response and full client recreation (%s receipt)', async receipt => {
+    const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
+    clients.push(mounted.client)
+    await mounted.ready()
+    write('Keep original request after reload')
+    let original: SendAgentChatMessageRequest | undefined
+    let posts = 0
+    server.use(http.post('/api/workspaces/:workspaceId/agent-chat/messages', async ({ request }) => {
+      posts++
+      original = await request.json() as SendAgentChatMessageRequest
+      return HttpResponse.error()
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await screen.findByText('No receipt was confirmed. The original may have been accepted; it will not be resent automatically.')
+    expect(original).toBeDefined()
+    const queued = structuredClone(agentChatFixtures.idleAfterCompletion)
+    const turn = { ...queued.turns[0]!, requestId: original!.requestId, messageId: 'reload-message',
+      sequence: '2', delivery: 'queued' as const, intent: original!.intent }
+    queued.turns.push(turn)
+    queued.messages.push({ id: turn.messageId, conversationId: queued.conversation!.id, role: 'user',
+      requestId: original!.requestId, content: original!.content })
+    const next = receipt === 'completed'
+      ? completedFixture(startedFixture(queued, original!.requestId), 'Recovered reply')
+      : agentChatFixtures.idleAfterCompletion
+    mounted.unmount()
+    mounted.client.clear()
+    const reloaded = mountChat(next)
+    clients.push(reloaded.client)
+    await reloaded.ready()
+    expect(reloaded.client.getMutationCache().getAll()[0]?.state.variables).toMatchObject({
+      kind: 'send', input: { requestId: original!.requestId, content: original!.content },
+    })
+    if (receipt === 'completed') {
+      await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(''))
+    } else {
+      await screen.findByText('No receipt was confirmed. The original may have been accepted; it will not be resent automatically.')
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
+      await screen.findByText(/Message could not be sent: Delivery is unknown/)
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(original!.content)
+    }
+    expect(posts).toBe(1)
+    expect(sends(reloaded)).toHaveLength(0)
+  })
   it('bounds completed commands across close/reopen without retaining complete response snapshots', async () => {
     const mounted = mountChat(agentChatFixtures.idleAfterCompletion); clients.push(mounted.client)
     await mounted.ready()

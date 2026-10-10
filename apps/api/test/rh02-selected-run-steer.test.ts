@@ -130,11 +130,12 @@ it('RH-02 keeps new, in-steer replay and ordinary replay responses on the explic
     nativeTurnId: 'turn-e2', events: [], pendingInteractions: [] })
   const managers = vi.fn(() => native)
   const runPort = { getForWorkspace: async () => ({ ...saved.run, executionState: 'completed', outcome: 'succeeded' }),
+    getExecution: async (id: string) => executions.find(item => item.id === id),
     async *executionPages() { yield executions } }
   const chat = new AgentChatService(pool, repository as unknown as PostgresAgentChatRepository, new PostgresOperatorConversationRepository(pool),
     { getSavedVersion: async () => saved.version, getAgentConfiguration: async () => configuration,
       getCurrentSavedVersion: async () => { throw new Error('Do not read the current workflow for historical steering') } },
-    runPort as unknown as Pick<PostgresRunRepository, 'getForWorkspace' | 'executionPages'>, managers, directory)
+    runPort as unknown as Pick<PostgresRunRepository, 'getForWorkspace' | 'executionPages' | 'getExecution'>, managers, directory)
   try {
     // Use public recovery to attach E2's existing active session; no private runtime injection.
     await chat.recover()

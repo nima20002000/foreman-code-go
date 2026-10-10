@@ -167,6 +167,7 @@ describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_
         const run = runs.get(runId)
         return run?.workspaceId === workspaceId ? run : undefined
       },
+      getExecution: async (id) => [...executions.values()].flat().find(item => item.id === id),
       async *executionPages(runId) { yield executions.get(runId) ?? [] },
     }, (id) => native(id), root)
     app = Fastify()

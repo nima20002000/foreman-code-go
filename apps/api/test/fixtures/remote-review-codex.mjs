@@ -229,6 +229,12 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     thread.settings = configuration(params)
     save()
     reply(message.id, { ...thread.settings, thread: view(!params.excludeTurns) })
+  } else if (message.method === 'thread/fork') {
+    const source = JSON.parse(readFileSync(join(root, `thread-${params.threadId}.json`), 'utf8'))
+    thread = { ...source, id: randomUUID(), settings: configuration(params) }
+    save()
+    log({ forkedSession: { source: source.id, child: thread.id, cwd: thread.settings.cwd } })
+    reply(message.id, { ...thread.settings, thread: view(!params.excludeTurns) })
   } else if (message.method === 'thread/read') {
     reply(message.id, { thread: view(params.includeTurns === true) })
   } else if (message.method === 'thread/turns/list') {

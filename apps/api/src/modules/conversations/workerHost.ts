@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import {
-  WorkerConversationRpcRequestSchema, type WorkerConversationBinding, type WorkerConversationConfiguration,
+  WorkerConversationRpcRequestSchema, workerConversationProfileSelection, type WorkerConversationBinding, type WorkerConversationConfiguration,
   type WorkerConversationReceipt, type WorkerConversationRpcRequest,
 } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -76,7 +76,7 @@ function validateConfiguration(binding: WorkerConversationBinding, configuration
   if (!roleMatches || configuration.id !== owner.configurationVersionId
     || commandInputHash(configuration) !== owner.configurationHash
     || configuration.harness.harness !== binding.harness
-    || !isDeepStrictEqual(configuration.harnessProfileSelection, binding.profile)) {
+    || !isDeepStrictEqual(workerConversationProfileSelection(binding, configuration), binding.profile)) {
     unavailable('The saved chat configuration differs from its selected worker owner.')
   }
 }

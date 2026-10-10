@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { WorkerConversationBindingSchema, WorkerConversationRpcRequestSchema,
-  WorkerConversationHistorySchema } from './workerConversations.js'
+  WorkerConversationHistorySchema, workerConversationProfileSelection } from './workerConversations.js'
+import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from './index.js'
 
 function binding(kind: 'operator' | 'agent' = 'operator') {
   const common = { conversationId: randomUUID(), configurationVersionId: 'saved-configuration',
@@ -14,6 +15,44 @@ function binding(kind: 'operator' | 'agent' = 'operator') {
       applicationInstallationId: randomUUID(), harnessInstallationId: 'installed-driver', installationFingerprint: 'installation',
     } } }
 }
+
+it('binds a historical follow-up to its execution profile while preserving the Agent default configuration', () => {
+  const target = WorkerConversationBindingSchema.parse(binding('agent'))
+  if (target.owner.kind !== 'agent' || target.profile.target.hostRef.kind !== 'device') throw new Error('Agent fixture required')
+  const configuration = AgentConfigurationVersionSchema.parse({ id: target.owner.configurationVersionId,
+    agentId: target.owner.agentId, workspaceId: target.owner.workspaceId, version: 1,
+    contentHash: `sha256:${'b'.repeat(64)}`, createdAt: '2026-10-10T00:00:00.000Z',
+    harness: DEFAULT_HARNESS_DEFAULTS.codex, prompt: {}, assignedSkills: [],
+    harnessProfileSelection: { ...target.profile, instanceId: randomUUID() } })
+  const digest = 'a'.repeat(64)
+  const placement = { schemaVersion: 1, mainId: target.profile.target.hostRef.mainId, runId: 'source-run',
+    nodeId: target.owner.workflowNodeId, hostRef: target.profile.target.hostRef,
+    registration: { workerInstallationId: target.profile.target.applicationInstallationId,
+      keyRevision: 1, authorizationRevision: 1 }, mainInstallationId: target.profile.target.hostRef.mainId,
+    destination: { canonicalProjectRoot: '/approved/project', canonicalCwd: '/approved/project',
+      managedRuntimeRoot: '/managed/runtime', directoryIdentityHash: digest, rootPolicyId: 'root-policy',
+      rootPolicyRevision: '1', locationRevision: '1', attestationId: 'attestation', attestationHash: digest },
+    source: { revisionId: 'source-revision', manifestDigest: digest, materializationId: 'materialization',
+      materializationDigest: digest }, bindingHash: digest,
+    payload: { kind: 'agent', agentId: target.owner.agentId, agentConfigurationVersionId: configuration.id,
+      driverId: 'codex', driverRevision: 'driver', instanceId: target.profile.instanceId,
+      instanceRevision: target.profile.instanceRevision, harnessInstallationId: target.profile.target.harnessInstallationId,
+      installationFingerprint: target.profile.target.installationFingerprint,
+      runtimeContractVersion: 1, protocolRevision: 'protocol', credentialScopeRefs: [] } }
+  const accepted = WorkerConversationBindingSchema.parse({ ...target,
+    sourceExecution: { executionId: 'source-execution', placement } })
+  const before = structuredClone(configuration)
+  expect(workerConversationProfileSelection(accepted, configuration)).toEqual(target.profile)
+  expect(workerConversationProfileSelection(target, configuration)).toEqual(configuration.harnessProfileSelection)
+  expect(configuration).toEqual(before)
+  expect(WorkerConversationBindingSchema.safeParse({ ...accepted,
+    profile: configuration.harnessProfileSelection }).success).toBe(false)
+  expect(WorkerConversationBindingSchema.safeParse({ ...accepted,
+    owner: { ...target.owner, workflowNodeId: 'other-node' } }).success).toBe(false)
+  expect(WorkerConversationBindingSchema.safeParse({ ...accepted,
+    owner: { ...target.owner, configurationVersionId: 'another-configuration' } }).success).toBe(false)
+  expect(WorkerConversationBindingSchema.safeParse({ ...accepted, owner: binding().owner }).success).toBe(false)
+})
 
 it('retains native input response digests and confirmed non-submission during Worker history readback', () => {
   const history = { events: [], pendingInteractions: [],

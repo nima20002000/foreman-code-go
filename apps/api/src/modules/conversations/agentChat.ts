@@ -72,7 +72,7 @@ import {
 /** One native manager per conversation; its process is owned by this service, never by a UI connection. */
 export interface AgentChatManagerFactory {
   (conversationId: string, configuration: AgentConfigurationVersion, workingDirectory: string,
-    accountSource?: { executionId: string }): NativeHarnessSessionManager
+    accountSource?: { executionId: string }): NativeHarnessSessionManager | Promise<NativeHarnessSessionManager>
   recoverCompaction?(configuration: AgentConfigurationVersion, conversationId: string,
     session: NativeSessionReference, start: NativeSessionStart,
     state: import('@foreman-code/contracts').CompactionState, principalId: string, signal: AbortSignal):
@@ -195,7 +195,7 @@ export class AgentChatService {
     private readonly messages: PostgresOperatorConversationRepository,
     private readonly workflows: Pick<PostgresWorkflowRepository, 'getSavedVersion' | 'getCurrentSavedVersion' | 'getAgentConfiguration'>,
     /** Read-only: chat never writes Runs, executions or their native lanes. */
-    private readonly runs: Pick<PostgresRunRepository, 'getForWorkspace' | 'executionPages'>,
+    private readonly runs: Pick<PostgresRunRepository, 'getForWorkspace' | 'executionPages' | 'getExecution'>,
     private readonly managers: AgentChatManagerFactory,
     private readonly runtimeRoot: string,
   ) {
@@ -276,7 +276,9 @@ export class AgentChatService {
       const block = version.definition.repeat?.blocks.find((entry) => entry.nodeIds.includes(context.workflowNodeId))
       let source: HarnessExecution | undefined
       let sourceOccurrence = 0
-      for await (const page of this.runs.executionPages(run.id)) {
+      const exactExecution = executionId ? await this.runs.getExecution(executionId) : undefined
+      const pages = executionId ? [exactExecution ? [exactExecution] : []] : this.runs.executionPages(run.id)
+      for await (const page of pages) {
         for (const execution of page) {
           if (executionId && execution.id !== executionId) continue
           if (execution.runId !== run.id || execution.workflowNodeId !== context.workflowNodeId || execution.agentId !== context.agentId) {
@@ -977,8 +979,18 @@ export class AgentChatService {
     this.assertOpen()
     signal.throwIfAborted()
     const accountSource = row.record.origin.kind === 'run_execution' ? { executionId: row.record.origin.executionId } : undefined
-    const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory,
+    const runtime: Runtime = existing ?? { manager: await this.managers(row.id, configuration, row.record.workingDirectory,
       accountSource), configuration }
+    try {
+      this.assertOpen()
+      signal.throwIfAborted()
+    } catch (error) {
+      if (!existing) {
+        await runtime.manager.dispose?.()
+        this.managers.release?.(row.id)
+      }
+      throw error
+    }
     if (controlPrincipalId) runtime.manager.setSessionControlPrincipal?.(controlPrincipalId)
     if (!existing) {
       const preferences = await this.sessionControls.preferences(row.id)

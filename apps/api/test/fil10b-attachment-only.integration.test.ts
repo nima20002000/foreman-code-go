@@ -162,7 +162,7 @@ describe.skipIf(!postgresEnabled)('FIL-10b attachment-only admission and legacy 
         prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {},
       })
     agent = new AgentChatService(database.pool, agentRepo, operatorRepo, new PostgresWorkflowRepository(database.pool), {
-      getForWorkspace: async () => undefined, async *executionPages() { yield [] },
+      getForWorkspace: async () => undefined, getExecution: async () => undefined, async *executionPages() { yield [] },
     }, (id) => native(id), root)
     app = Fastify()
     registerOperatorHttpSecurity(app, access)

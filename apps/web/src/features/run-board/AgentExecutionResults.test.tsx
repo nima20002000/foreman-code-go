@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { http, HttpResponse } from 'msw'
 import { expect, it, vi } from 'vitest'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
-import type { RunExecutionSummary, RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
+import type { RunExecutionSummary, RepeatGraphScopeV3, RunExecutionDetail } from '@foreman-code/contracts/wave25'
 import { server } from '../../mocks/server'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { autoQueueTicket, execution as job, definition, logPage } from '../jobs/fixtures'
@@ -42,7 +42,8 @@ function responses(origin = initiatingAgent, state: 'accepted' | 'terminal' = 'a
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const view = render(<QueryClientProvider client={client}>
-    <AgentExecutionResults scope={scope} selection={selection} execution={execution} name="Coder" />
+    <AgentExecutionResults scope={scope} selection={selection} execution={execution} name="Coder"
+      acceptedResult={{ status: 'not_accepted' }} />
   </QueryClientProvider>)
   return { ...view, client }
 }
@@ -74,6 +75,35 @@ it('withholds a job result that belongs to another initiating Agent execution', 
     expect(screen.queryByText('Process: build failed')).toBeNull()
     expect(screen.queryByRole('region', { name: 'Job logs' })).toBeNull()
   } finally { unmount(); client.clear() }
+})
+it('keeps accepted execution output and artifacts separate from later follow-up messages', async () => {
+  responses()
+  let chatReads = 0
+  server.use(http.get('*/api/workspaces/:workspaceId/agent-chat/workflows/:workflowId/runs/:runId/nodes/:nodeId', () => {
+    chatReads++
+    return HttpResponse.json({ messages: [{ content: 'Later follow-up answer' }] })
+  }))
+  const acceptedResult: RunExecutionDetail['acceptedResult'] = { status: 'accepted',
+    digest: `sha256:${'a'.repeat(64)}`, value: { outcome: 'succeeded', output: {
+      text: 'Original execution answer', artifacts: [{ name: 'Original artifact', digest: 'original-artifact' }],
+    } } }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const content = <QueryClientProvider client={client}>
+    <AgentExecutionResults scope={scope} selection={selection} execution={execution} name="Coder"
+      acceptedResult={acceptedResult} />
+  </QueryClientProvider>
+  const view = render(content)
+  try {
+    const output = screen.getByRole('region', { name: 'Agent output and artifacts' })
+    expect(output).toHaveTextContent('Original execution answer')
+    expect(output).toHaveTextContent('Original artifact')
+    await screen.findByRole('button', { name: 'View result' })
+    view.rerender(content)
+    await act(async () => { await client.invalidateQueries({ queryKey: ['agent-chat'] }) })
+    expect(output).toHaveTextContent('Original execution answer')
+    expect(output).not.toHaveTextContent('Later follow-up answer')
+    expect(chatReads).toBe(0)
+  } finally { view.unmount(); client.clear() }
 })
 it('withdraws cached CI results when an authenticated queue refresh is denied', async () => {
   responses()

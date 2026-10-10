@@ -107,7 +107,8 @@ function NodeExecutionResult({ selection, scope, node, executionId }: {
         runId: scope.runId, workflowVersionId: scope.workflowVersionId, nodeId: node.id,
         nodeExecutionId: execution.executionId, occurrenceId: occurrence?.occurrenceId ?? null,
         occurrenceIndex: occurrence?.occurrenceIndex ?? 0 }} />
-      : <AgentExecutionResults selection={selection} scope={scope} execution={execution} name={node.name} />}
+      : <AgentExecutionResults selection={selection} scope={scope} execution={execution} name={node.name}
+        acceptedResult={detail.acceptedResult} />}
     <details><summary>Accepted input and results</summary>
       <JsonValue label={`Input ${executionId}`} value={detail.acceptedInput.value} />
       {detail.acceptedResult.status === 'accepted'

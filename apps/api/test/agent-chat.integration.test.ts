@@ -167,6 +167,7 @@ function makeService() {
       return { ...runSourceFixture.run, id: runId, executionState: runState, workflowVersionId: runSourceFixture.version.id } as never
     },
     async *executionPages() { yield runExecutions },
+    getExecution: async (id: string) => runExecutions.find(execution => execution.id === id),
   }
   const service = new AgentChatService(pool, new PostgresAgentChatRepository(pool), new PostgresOperatorConversationRepository(pool),
     new PostgresWorkflowRepository(pool), runs, factory as never, root)

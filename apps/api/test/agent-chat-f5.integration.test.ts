@@ -53,7 +53,7 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
     const repository = new PostgresAgentChatRepository(pool)
     const managers = new Map<string, AgentChatF5Native>()
     const service = new AgentChatService(pool, repository, new PostgresOperatorConversationRepository(pool), new PostgresWorkflowRepository(pool),
-      { getForWorkspace: async () => { throw new Error('F5 fixture must not access a Run.') }, async *executionPages() { yield [] } },
+      { getForWorkspace: async () => { throw new Error('F5 fixture must not access a Run.') }, getExecution: async () => { throw new Error('This fixture must not read a Run execution.') }, async *executionPages() { yield [] } },
       (id) => { const manager = new AgentChatF5Native(); managers.set(id, manager); return manager }, root)
     const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       operator: { access, services: { agentChat: service, commands: new PostgresCommandCoordinator(pool) } as unknown as OperatorServices } })

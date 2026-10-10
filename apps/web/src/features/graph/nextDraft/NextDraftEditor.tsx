@@ -445,7 +445,11 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
     }
     const agent = agents.find((item) => item.id === node.agentId)
     const run = runNodeView(runRecord, Boolean(board?.run), node.id, node.agentId)
-    const unsavedChat = !pinned && !board?.run && (!context.draft.baseWorkflowVersionId || !agent?.configurationVersionId)
+    const savedGraph = (context.savedDraft ?? context.draft).graph
+    const savedNode = savedGraph.nodes.some((item) =>
+      item.kind !== 'job' && item.id === node.id && item.agentId === node.agentId)
+    const unsavedChat = !pinned && !board?.run
+      && (!context.draft.baseWorkflowVersionId || !agent?.configurationVersionId || !savedNode)
     const chat = unsavedChat ? <EmptyState icon="chat" title="Save this Agent and workflow to chat"
       description="Save the Agent settings and workflow changes, then reopen chat. Workflow alerts list any missing setup." />
       : <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}

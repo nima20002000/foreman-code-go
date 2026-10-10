@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { withAdvancedDefaults } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import { WorkerConversationProfileFactsSchema, type WorkerConversationBinding,
+import { WorkerConversationProfileFactsSchema, workerConversationProfileSelection, type WorkerConversationBinding,
   type WorkerConversationConfiguration } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { DomainError } from '../errors.js'
@@ -42,7 +42,7 @@ export function createInstalledClaudeConversationProfile(input: {
       || !isDeepStrictEqual(facts.installation.launcher.payloadFingerprints, after.installation.launcher.payloadFingerprints)
       || configuration.harness.harness !== 'claude' || binding.harness !== 'claude'
       || commandInputHash(configuration) !== binding.owner.configurationHash
-      || !isDeepStrictEqual(configuration.harnessProfileSelection, binding.profile)
+      || !isDeepStrictEqual(workerConversationProfileSelection(binding, configuration), binding.profile)
       || !isDeepStrictEqual(facts.override.target, binding.profile.target)
       || facts.override.instanceId !== binding.profile.instanceId
       || facts.override.instanceRevision !== binding.profile.instanceRevision

@@ -194,6 +194,7 @@ describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQ
       await terminal(f, runId)
       const source = (await executions(f, runId))[0]!
       expect(source.nativeSessionId).toBeTruthy()
+      const traverse = vi.spyOn(f.runs, 'executionPages')
       const unchanged = await oldRunRows(f, [runId])
       const placementScope = { workspaceId, workflowId, runId, nodeId: source.workflowNodeId }
       const placementPath = `/api/management/workspaces/${workspaceId}/workflows/${workflowId}`
@@ -244,6 +245,7 @@ describe.skipIf(!postgresEnabled)('SCH-06 selected historical Run chat PostgreSQ
       expect(body(await test.mcp.callTool({ name: 'run_node_placement_get', arguments: placementScope })))
         .toEqual(placement.json())
       expect(await oldRunRows(f, [runId])).toEqual(unchanged)
+      expect(traverse).not.toHaveBeenCalled()
     } finally { await test.close() }
   }, 90_000)
 
