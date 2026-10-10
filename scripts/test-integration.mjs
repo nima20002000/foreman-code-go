@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, openSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { availableParallelism, freemem } from 'node:os'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
@@ -236,15 +237,17 @@ export function integrationReport(selected, firstPass, retests, { startedAt, fin
     retests: retests.map(({ report, ...result }) => ({ ...result, totals: report?.totals ?? emptyCounts() })) }
 }
 
-export function integrationShardLimit(value) {
-  const limit = value === undefined ? 12 : Number(value)
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) throw new Error('Integration shards must be an integer from 1 to 64')
+export function integrationShardLimit(value, maximum = 64) {
+  const limit = value === undefined ? Math.min(12, maximum) : Number(value)
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > maximum) {
+    throw new Error(`Integration shards must be an integer from 1 to ${maximum}`)
+  }
   return limit
 }
 
-export function reservedIntegrationShards(environment) {
+export function reservedIntegrationShards(environment, maximum = 12) {
   if (!environment.FOREMAN_CODE_VERIFICATION_ROOT) {
-    return integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS'))
+    return integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS') ?? String(maximum), maximum)
   }
   if (!environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS
     || !environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS) {
@@ -252,11 +255,78 @@ export function reservedIntegrationShards(environment) {
   }
   const reserved = integrationShardLimit(environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS)
   const qualified = integrationShardLimit(environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS)
-  const requested = integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS') ?? String(reserved))
+  const requested = integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS')
+    ?? String(Math.min(reserved, maximum)), maximum)
   if (requested > reserved || requested > qualified) {
     throw new Error('Integration shards exceed the accepted reservation or suite qualification')
   }
   return requested
+}
+
+function availableIntegrationMemory() {
+  let available = freemem()
+  if (process.platform === 'linux') {
+    try {
+      const kilobytes = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(readFileSync('/proc/meminfo', 'utf8'))?.[1]
+      if (kilobytes !== undefined) available = Number(kilobytes) * 1024
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'EACCES') throw error
+    }
+  }
+  if (process.constrainedMemory() > 0) available = Math.min(available, process.availableMemory())
+  return available
+}
+
+export async function readIntegrationResources(admin, host = {
+  cpuCount: availableParallelism(), availableMemoryBytes: availableIntegrationMemory(),
+}) {
+  try {
+    const { rows } = await admin.query(`select
+      current_setting('max_connections')::integer as "maxConnections",
+      (current_setting('superuser_reserved_connections')::integer
+        + coalesce(current_setting('reserved_connections', true), '0')::integer) as "reservedConnections",
+      (select count(*)::integer from pg_stat_activity where backend_type = 'client backend') as "activeConnections"`)
+    return { ...host, ...rows[0] }
+  } catch {
+    // Missing database settings retain the fallback; connection details stay out of logs.
+    return { ...host }
+  }
+}
+
+export function integrationShardPlan(environment, resources = {}, fileCount = Infinity) {
+  const { cpuCount, availableMemoryBytes, maxConnections, reservedConnections, activeConnections } = resources
+  const knownCpu = Number.isSafeInteger(cpuCount) && cpuCount > 0
+  const knownMemory = Number.isSafeInteger(availableMemoryBytes) && availableMemoryBytes >= 0
+  const knownDatabase = Number.isSafeInteger(maxConnections) && maxConnections > 0
+    && Number.isSafeInteger(reservedConnections) && reservedConnections >= 0
+    && Number.isSafeInteger(activeConnections) && activeConnections >= 0
+  // One worker uses the default ten-connection pool plus admin and peer connections.
+  const connectionsPerShard = 16
+  const memoryPerShard = 1024 ** 3
+  const cpuLimit = knownCpu ? cpuCount : 12
+  const memoryLimit = knownMemory ? Math.floor(availableMemoryBytes / memoryPerShard) : 12
+  const freeConnections = knownDatabase ? maxConnections - reservedConnections - activeConnections : null
+  const databaseLimit = knownDatabase ? Math.floor(freeConnections / connectionsPerShard) : 12
+  const limit = Math.min(cpuLimit, memoryLimit, databaseLimit)
+  const reasons = [
+    knownCpu ? `CPU limit ${cpuLimit}` : 'CPU unknown (fallback 12)',
+    knownMemory ? `memory limit ${memoryLimit} (${availableMemoryBytes} available bytes, 1 GiB/shard)`
+      : 'memory unknown (fallback 12)',
+    knownDatabase ? `PostgreSQL limit ${databaseLimit} (max_connections=${maxConnections},`
+      + ` ${reservedConnections} reserved, ${activeConnections} occupied, ${connectionsPerShard} connections/shard)`
+      : 'PostgreSQL limits unknown (fallback 12)',
+  ]
+  if (limit < 1) throw new Error(`No integration shard fits available resources: ${reasons.join('; ')}`)
+  const requested = readProductEnvironment(environment, 'INTEGRATION_SHARDS')
+  const selected = reservedIntegrationShards(environment, limit)
+  if (requested !== undefined) reasons.push(`requested ${requested}`)
+  if (environment.FOREMAN_CODE_VERIFICATION_ROOT) {
+    reasons.push(`CI reservation ${environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS}`
+      + `, qualification ${environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS}`)
+  }
+  const shards = Math.min(selected, fileCount)
+  if (fileCount < selected) reasons.push(`${fileCount} runnable files`)
+  return { shards, limit, reason: reasons.join('; ') }
 }
 
 export async function scheduleFiles(files, slots, runFile, shouldStop = () => false) {
@@ -438,11 +508,18 @@ export async function runIntegration(argv = [], {
   if (env.FOREMAN_CODE_VERIFICATION_ROOT && !env.TEST_DATABASE_URL) {
     throw new Error('Integration Jobs require an explicit Job-local test database URL')
   }
-  const maximum = reservedIntegrationShards(env)
-  const shardCount = Math.min(maximum, runnable.length)
-  const concurrency = Math.max(1, Math.min(maximum, runnable.length + extraItems.length))
   const timeouts = integrationTimeouts(env)
   const admin = await testAdminPool()
+  let shardPlan
+  try {
+    shardPlan = integrationShardPlan(env, await readIntegrationResources(admin), runnable.length)
+  } catch (error) {
+    await admin.end()
+    throw error
+  }
+  const shardCount = shardPlan.shards
+  const maximum = reservedIntegrationShards(env, shardPlan.limit)
+  const concurrency = Math.max(1, Math.min(maximum, runnable.length + extraItems.length))
   const slots = []
   const active = new Map()
   const killTimers = new Map()
@@ -530,6 +607,7 @@ export async function runIntegration(argv = [], {
       slots.push({ index: index + 1, ...database })
     }
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
+    console.log(`[integration] chosen shards ${shardCount}, resource cap ${shardPlan.limit}: ${shardPlan.reason}.`)
     for (const entry of unavailable) console.error(`[integration] UNAVAILABLE ${entry.file}: ${entry.reason}`)
     console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file.`)
     heartbeat = setInterval(reportProgress, 30_000)

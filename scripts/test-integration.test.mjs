@@ -11,10 +11,11 @@ import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl } fr
 import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases,
   finalizeIntegrationResult, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission,
   integrationEnvironment, integrationReport,
-  integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, integrationVitestArguments,
+  integrationLogPath, integrationProgressLine, integrationShardLimit, integrationShardPlan,
+  integrationTimeouts, integrationVitestArguments,
   isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases,
-  partitionIntegrationFiles, readDurations, reservedIntegrationShards, scheduleFiles, scheduleIntegrationQueue,
-  selectFiles, selectExactFiles,
+  partitionIntegrationFiles, readDurations, readIntegrationResources, reservedIntegrationShards,
+  scheduleFiles, scheduleIntegrationQueue, selectFiles, selectExactFiles,
   signalOwnedChildren, vitestCommand, writeDurations } from './test-integration.mjs'
 
 test('the installed Job environment reports its unsupported host capabilities without probing the host', async () => {
@@ -289,13 +290,116 @@ test('a successful retest cannot make a failed first pass green', () => {
   assert.equal(fullRunExitCode(1, 'SIGTERM'), 143)
 })
 
-test('integration defaults to twelve slots and bounds explicit overrides', () => {
+test('integration shard validation retains the fallback and accepts a computed ceiling', () => {
   assert.equal(integrationShardLimit(undefined), 12)
   assert.equal(integrationShardLimit('8'), 8)
   assert.equal(integrationShardLimit('12'), 12)
   assert.equal(integrationShardLimit('16'), 16)
   assert.throws(() => integrationShardLimit('0'), /integer from 1 to 64/)
   assert.throws(() => integrationShardLimit('65'), /integer from 1 to 64/)
+  assert.equal(integrationShardLimit('96', 128), 96)
+  assert.throws(() => integrationShardLimit('17', 16), /integer from 1 to 16/)
+})
+
+const shardResources = {
+  cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3,
+  maxConnections: 300, reservedConnections: 3, activeConnections: 1,
+}
+
+test('a capable sixteen-CPU machine uses all CPUs and reports its resource limits', () => {
+  const plan = integrationShardPlan({}, shardResources)
+  assert.equal(plan.shards, 16)
+  assert.equal(plan.limit, 16)
+  assert.match(plan.reason, /CPU limit 16/)
+  assert.match(plan.reason, /memory limit 32.*1 GiB\/shard/)
+  assert.match(plan.reason, /PostgreSQL limit 18.*max_connections=300.*3 reserved.*1 occupied.*16 connections\/shard/)
+})
+
+test('each resource independently bounds integration parallelism', () => {
+  for (const [resources, expected] of [
+    [{ cpuCount: 4 }, 4],
+    [{ availableMemoryBytes: 3.5 * 1024 ** 3 }, 3],
+    [{ maxConnections: 100 }, 6],
+    [{ activeConnections: 45 }, 15],
+    [{ reservedConnections: 60 }, 14],
+  ]) {
+    assert.equal(integrationShardPlan({}, { ...shardResources, ...resources }).shards, expected)
+  }
+})
+
+test('unknown or invalid resource measurements retain twelve without ignoring known smaller limits', () => {
+  assert.equal(integrationShardPlan({}).shards, 12)
+  for (const field of Object.keys(shardResources)) {
+    const plan = integrationShardPlan({}, { ...shardResources, [field]: undefined })
+    assert.equal(plan.shards, 12)
+    assert.match(plan.reason, /unknown \(fallback 12\)/)
+  }
+  assert.equal(integrationShardPlan({}, { cpuCount: 4 }).shards, 4)
+  assert.equal(integrationShardPlan({}, { cpuCount: NaN, availableMemoryBytes: -1 }).shards, 12)
+})
+
+test('explicit shard requests must fit the computed resource cap', () => {
+  for (const variable of ['GRAPHQL_INTEGRATION_SHARDS', 'FOREMAN_CODE_INTEGRATION_SHARDS']) {
+    assert.equal(integrationShardPlan({ [variable]: '16' }, shardResources).shards, 16)
+    const smaller = integrationShardPlan({ [variable]: '8' }, shardResources)
+    assert.equal(smaller.shards, 8)
+    assert.match(smaller.reason, /requested 8/)
+    for (const value of ['0', '-1', '1.5', 'NaN', 'Infinity', '17']) {
+      assert.throws(() => integrationShardPlan({ [variable]: value }, shardResources), /integer from 1 to 16/)
+    }
+    assert.throws(() => integrationShardPlan({ [variable]: '13' }), /integer from 1 to 12/)
+  }
+})
+
+test('resource-derived capacity can exceed the old explicit ceiling on larger machines', () => {
+  const plan = integrationShardPlan({ GRAPHQL_INTEGRATION_SHARDS: '80' }, {
+    ...shardResources, cpuCount: 96, availableMemoryBytes: 96 * 1024 ** 3, maxConnections: 1600,
+  })
+  assert.equal(plan.limit, 96)
+  assert.equal(plan.shards, 80)
+})
+
+test('runnable file count bounds chosen shards and appears in the explanation', () => {
+  const plan = integrationShardPlan({}, shardResources, 2)
+  assert.equal(plan.shards, 2)
+  assert.equal(plan.limit, 16)
+  assert.match(plan.reason, /2 runnable files/)
+  assert.equal(integrationShardPlan({}, shardResources, 0).shards, 0)
+})
+
+test('known resources that cannot support a shard fail before allocating databases', () => {
+  for (const resources of [
+    { availableMemoryBytes: 0 },
+    { availableMemoryBytes: 1024 ** 3 - 1 },
+    { maxConnections: 19 },
+    { activeConnections: 300 },
+  ]) {
+    assert.throws(() => integrationShardPlan({}, { ...shardResources, ...resources }), /No integration shard fits/)
+  }
+})
+
+test('PostgreSQL capacity is read through the supplied test database connection', async () => {
+  const host = { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 }
+  let calls = 0
+  const admin = { query: async () => {
+    calls++
+    return { rows: [{ maxConnections: 100, reservedConnections: 3, activeConnections: 17 }] }
+  } }
+  const resources = await readIntegrationResources(admin, host)
+  assert.equal(calls, 1)
+  assert.equal(integrationShardPlan({}, resources).shards, 5)
+  assert.deepEqual(host, { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 })
+})
+
+test('unavailable database settings retain the fallback without exposing connection errors', async () => {
+  const host = { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 }
+  const admin = { query: async () => { throw new Error('private database connection details') } }
+  const resources = await readIntegrationResources(admin, host)
+  assert.deepEqual(resources, host)
+  const plan = integrationShardPlan({}, resources)
+  assert.equal(plan.shards, 12)
+  assert.match(plan.reason, /PostgreSQL limits unknown \(fallback 12\)/)
+  assert.doesNotMatch(plan.reason, /private database/)
 })
 
 test('process deadlines allow long progressing files and cannot be disabled by overrides', () => {
@@ -543,6 +647,23 @@ test('Job integration shards require and respect both reservation and qualificat
   assert.throws(() => reservedIntegrationShards({ ...job, GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
   assert.throws(() => reservedIntegrationShards({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '2',
     GRAPHQL_INTEGRATION_SHARDS: '2' }), /exceed/)
+})
+
+test('computed capacity preserves Job reservations and qualification checks', () => {
+  const job = { FOREMAN_CODE_VERIFICATION_ROOT: '/source',
+    FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '16', FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS: '16' }
+  assert.equal(integrationShardPlan(job, shardResources).shards, 16)
+  const plan = integrationShardPlan(job, { ...shardResources, cpuCount: 8 })
+  assert.equal(plan.shards, 8)
+  assert.match(plan.reason, /CI reservation 16, qualification 16/)
+  assert.throws(() => integrationShardPlan({ ...job, GRAPHQL_INTEGRATION_SHARDS: '9' },
+    { ...shardResources, cpuCount: 8 }), /integer from 1 to 8/)
+  assert.equal(integrationShardPlan({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '4' },
+    shardResources).shards, 4)
+  assert.throws(() => integrationShardPlan({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '4',
+    GRAPHQL_INTEGRATION_SHARDS: '8' }, shardResources), /exceed/)
+  assert.throws(() => integrationShardPlan({ ...job, FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS: '4' },
+    shardResources), /exceed/)
 })
 
 test('slowest recorded files start first and unmeasured files lead the queue', async () => {
