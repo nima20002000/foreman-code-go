@@ -4,35 +4,51 @@ import type { RunSubagent } from '@foreman-code/contracts/subagents'
 export const isTerminalSubagent = (status: RunSubagent['status']) => ['completed', 'failed', 'canceled'].includes(status)
 export type SubagentLayoutNode = Pick<RunBoardNodeSnapshot, 'id' | 'kind' | 'position' | 'size'>
 
-/** Chip geometry shared with the stylesheet. */
-export const SUBAGENT_CHIP = { height: 28, gap: 8, indent: 22, below: 40 } as const
+/** Orb geometry shared with the stylesheet: a small agent circle with its name underneath. */
+export const SUBAGENT_ORB = { size: 40, labelWidth: 96, gap: 30, ring: 64 } as const
 
 /**
- * Children hang below their parent node as an indented tree, so they never
- * cover the downstream nodes of a left-to-right workflow. (x, y) is the chip's
- * top-left corner; the connector runs down a spine at spineX from fromY, then
- * across to the chip's vertical middle.
+ * Screen angles in degrees (y grows downward). They avoid the agent card's
+ * action buttons (upper right), its edge handles (left and right) and the
+ * entry badge (straight down). A tenth child starts a wider ring.
  */
-export function layoutSubagents(nodes: readonly SubagentLayoutNode[], children: readonly RunSubagent[]) {
-  const result: { subagent: RunSubagent; x: number; y: number; spineX: number; fromY: number; parentId: string }[] = []
+const SLOTS = [135, 45, 160, 20, 112, 68, 205, 235, 265]
+
+export type SubagentOrb = { subagent: RunSubagent; x: number; y: number; from: { x: number; y: number }; parentId: string }
+
+/**
+ * Native children orbit the agent that spawned them, like small copies of it.
+ * (x, y) is the orb's center; `from` is where its link starts: the parent
+ * card's rim, or the center of the child that spawned it.
+ */
+export function layoutSubagents(nodes: readonly SubagentLayoutNode[], children: readonly RunSubagent[]): SubagentOrb[] {
+  const result: SubagentOrb[] = []
   const ordered = [...children].sort((a, b) => a.firstObservedAt.localeCompare(b.firstObservedAt) || a.id.localeCompare(b.id))
   for (const node of nodes) {
     if (node.kind === 'job') continue
     const attached = ordered.filter((child) => child.parentNodeId === node.id)
+    const tree: { subagent: RunSubagent; parent: string | null }[] = []
     const visited = new Set<string>()
-    let row = 0
-    const top = node.position.y + node.size.height + SUBAGENT_CHIP.below
-    const attach = (parentId: string | null, spineX: number, fromY: number) => {
+    const walk = (parentId: string | null) => {
       for (const child of attached.filter((item) => item.parentSubagentId === parentId)) {
         if (visited.has(child.id)) continue
         visited.add(child.id)
-        const x = spineX + SUBAGENT_CHIP.indent
-        const y = top + row++ * (SUBAGENT_CHIP.height + SUBAGENT_CHIP.gap)
-        result.push({ subagent: child, x, y, spineX, fromY, parentId: parentId ?? node.id })
-        attach(child.id, x + SUBAGENT_CHIP.indent / 2, y + SUBAGENT_CHIP.height)
+        tree.push({ subagent: child, parent: parentId })
+        walk(child.id)
       }
     }
-    attach(null, node.position.x + 24, node.position.y + node.size.height)
+    walk(null)
+    const radius = Math.min(node.size.width, node.size.height) / 2
+    const cx = node.position.x + node.size.width / 2, cy = node.position.y + node.size.height / 2
+    const centers = new Map<string, { x: number; y: number }>()
+    tree.forEach(({ subagent, parent }, index) => {
+      const angle = SLOTS[index % SLOTS.length]! * Math.PI / 180
+      const distance = radius + SUBAGENT_ORB.gap + SUBAGENT_ORB.size / 2 + Math.floor(index / SLOTS.length) * SUBAGENT_ORB.ring
+      const center = { x: cx + distance * Math.cos(angle), y: cy + distance * Math.sin(angle) }
+      centers.set(subagent.id, center)
+      const from = parent ? centers.get(parent)! : { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) }
+      result.push({ subagent, ...center, from, parentId: parent ?? node.id })
+    })
   }
   return result
 }

@@ -31,12 +31,12 @@ const items = [
 const clients: QueryClient[] = []
 let reads = 0
 
-async function mount({ timed = false, expectedText = 'Job ran' } = {}) {
+async function mount({ timed = false, expectedText = 'Job ran', focusAgentId = undefined as string | undefined } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
   const root = createRootRoute({ component: Outlet })
   const route = createRoute({ getParentRoute: () => root, path: '/workspaces/$workspaceId',
-    validateSearch: RunsSelectorSearchSchema, component: () => <Activities scope={scope} /> })
+    validateSearch: RunsSelectorSearchSchema, component: () => <Activities scope={scope} focusAgentId={focusAgentId} /> })
   const router = createRouter({ routeTree: root.addChildren([route]), defaultPendingMinMs: 0,
     history: createMemoryHistory({ initialEntries: ['/workspaces/workspace-a?workflowId=workflow-a&selectedRunId=run-a'] }) })
   await router.load()
@@ -118,6 +118,17 @@ describe('Activities shared Agent and Job actors', () => {
     expect(screen.queryByText('Native activity recorded; details unavailable')).not.toBeInTheDocument()
   })
 
+  it('folds consecutive identical rows and focuses one Agent without its filters', async () => {
+    const repeated = [1, 2, 3].map((index) => ({ ...event(String(index), 'Subagent: Command: bash completed', { actor: agent }, 'tool_action'), detail: 'Exit code: 0.' }))
+    server.use(http.get(activitiesPath, () => HttpResponse.json(page({ items: [...repeated, event('4', 'Job ran', { actor: job }), event('5', 'Agent worked', { actor: agent }, 'agent_work')] }))))
+    await mount({ expectedText: 'Agent worked', focusAgentId: agent.agentId })
+    const row = screen.getByText('Subagent: Command: bash completed').closest('li')!
+    expect(row).toHaveTextContent('×3')
+    expect(screen.getAllByText('Subagent: Command: bash completed')).toHaveLength(1)
+    expect(screen.queryByText('Job ran')).not.toBeInTheDocument()
+    expect(within(row).queryByText('Builder')).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Agent' })).not.toBeInTheDocument()
+  })
   it('keeps approvals in their Agent filter and renders uncertainty and cancellation', async () => {
     const other = { agentId: 'agent-reviewer', agentName: 'Reviewer', nodeId: 'reviewer-node', nodeName: 'Reviewer' }
     const approval = RunActivityPublicSchema.parse({

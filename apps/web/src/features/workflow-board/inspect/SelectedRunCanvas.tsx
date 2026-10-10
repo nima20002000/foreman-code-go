@@ -207,12 +207,8 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
   const missingNode = !!version && !!board.inspection.runNodeId
     && !version.definition.nodes.some((node) => node.id === board.inspection.runNodeId)
   return <section className="next-draft-canvas board-draft-canvas pinned-run-canvas" aria-label="Selected Run pinned topology">
-    <header className="pinned-run-heading">
-      <strong>{version?.definition.name ?? 'Selected Run'} · immutable saved topology</strong>
-      <span>Run <code>{scope.runId}</code> · version <code>{scope.workflowVersionId}</code> · read only</span>
-      <Button size="sm" variant="ghost" onClick={() => board.openRuns()}>Inspect Run</Button>
-      <Button size="sm" variant="ghost" onClick={() => board.selectRun()}>Return to draft</Button>
-    </header>
+    {/* Seen, the Run is just this Board; the small Run tag names it. Assistive tech still gets the exact pins. */}
+    <h2 className="visually-hidden">{version?.definition.name ?? 'Selected Run'} · Run {scope.runId} · version {scope.workflowVersionId}</h2>
     {query.isPaused ? <p role="status">Pinned topology refresh is paused. Any retained topology is a previously verified saved version.</p>
       : query.isPending ? <p role="status">Loading this Run’s exact saved topology…</p> : null}
     {query.isError || denied || canonicalDenied ? <Alert tone="warning" title="The selected Run topology is unavailable.">
@@ -239,11 +235,6 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow></Choreography.Provider></RunAgentPanels.Provider></ReactFlowProvider>
     </div> : null}
-    {version ? <p className="pinned-run-footnote">{version.definition.handoffs
-      ? 'Work handoff limits belong to this saved version. Usage comes from this Run, not the current Board draft.'
-      : version.definition.repeat
-      ? 'Configured repeat blocks belong to this saved version. Node badges show the bounded current cut; inspect a repetition for its recorded facts.'
-      : 'No repeat block is configured in this saved version. Inspect execution attempts without synthetic repetition rounds.'}</p> : null}
   </section>
 }
 

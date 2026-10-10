@@ -131,11 +131,10 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
         <div className="workflow-board-authoring" onClickCapture={authoringEvent} onKeyDownCapture={authoringEvent} onSubmitCapture={authoringEvent}>
           {children}
           {legacyRun ? <CurrentRunObserver scope={legacyRun} /> : null}
-          {legacyRun ? <div className="board-run-banner" role="status">
-            <Icon name="history" size={15} />
+          {legacyRun ? <div className="board-run-tag" role="status">
             <RunContextLabel scope={legacyRun} />
             <Button ref={detailsTrigger} size="sm" variant="ghost" onClick={() => setRunsOpen(true)}>Details</Button>
-            <IconButton size="sm" variant="ghost" label="Stop showing this run" onClick={() => selectRun()}><Icon name="close" size={14} /></IconButton>
+            <IconButton size="sm" variant="ghost" label="Return to draft" onClick={() => selectRun()}><Icon name="close" size={12} /></IconButton>
           </div> : null}
           <Drawer open={current && runsOpen} onOpenChange={setRunsOpen} title="Activities" className="workflow-board-runs-dialog"
             closeLabel="Close runs" size="lg" closeOnOutsideClick returnFocusRef={detailsTrigger}>
@@ -168,7 +167,5 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
 
 function RunContextLabel({ scope }: { scope: RepeatGraphScopeV3 }) {
   const record = useSelectedRunRecord()
-  return <span>Showing run <code>{scope.runId.slice(-8)}</code> · {record
-    ? record.state.run.executionState === 'completed' ? 'Past Run facts' : `Active Run · recorded cut ${record.asOfSequence}`
-    : 'Status unavailable'} · pinned version <code>{scope.workflowVersionId}</code></span>
+  return <span>Run <code title={scope.runId}>{scope.runId.slice(-8)}</code>{record && record.state.run.executionState !== 'completed' ? ' · live' : ''}</span>
 }

@@ -30,7 +30,7 @@ export function RunsWindow({ id, scope, anchor, close, children }: {
       const saved = useRunsSelectorUi.getState().geometry
       const anchorRect = anchor.current?.getBoundingClientRect()
       const initial = saved?.scope === scope ? saved.rect : {
-        left: (anchorRect?.right ?? 452) - 440, top: (anchorRect?.bottom ?? 12) + 8, width: 440, height: 420,
+        left: (anchorRect?.right ?? 572) - 560, top: (anchorRect?.bottom ?? 12) + 8, width: 560, height: 420,
       }
       useRunsSelectorUi.getState().setGeometry(scope, clampRunsWindow(initial, viewportBounds()))
       gesture.current = null

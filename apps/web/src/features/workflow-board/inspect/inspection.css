@@ -9,26 +9,12 @@
   flex-direction: column;
   min-height: 360px;
 }
-.pinned-run-heading {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.pinned-run-heading > span {
-  flex: 1 1 240px;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
 .pinned-run-flow { position: relative; flex: 1; min-height: 120px; }
 .pinned-work-limit-object { overflow: visible; pointer-events: none; }
 .pinned-work-limit-control { display: grid; justify-items: center; gap: 3px; pointer-events: auto; }
 .pinned-work-limit-pill { min-width: 44px; min-height: 32px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-strong); font: var(--type-control); cursor: pointer; }
 .pinned-work-limit-pill:hover, .pinned-work-limit-pill:focus-visible { border-color: var(--accent); outline: 2px solid var(--focus); outline-offset: 2px; }
 .pinned-work-limit-usage { padding: 2px 6px; border-radius: 5px; background: var(--surface-raised); color: var(--text-muted); font: var(--type-caption); text-align: center; }
-.pinned-run-footnote { padding: 8px 16px; font-size: 12px; margin: 0; border-top: 1px solid var(--border); }
 .run-execution-inspector { display: grid; gap: 12px; min-width: 0; }
 .run-execution-inspector header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .run-execution-inspector label { display: grid; gap: 6px; font-weight: 500; }
@@ -40,14 +26,7 @@
 .run-inspection-json:focus-visible { outline: 2px solid var(--accent, Highlight); }
 .run-exact-execution dd { margin-inline-start: 0; overflow-wrap: anywhere; }
 .board-run-context-note { flex: 0 0 auto; padding: 6px 12px; margin: 0; font-size: 12px; border-bottom: 1px solid var(--border); }
-@media (max-width: 640px) {
-  .pinned-run-heading { align-items: flex-start; }
-  .pinned-run-heading > strong, .pinned-run-heading > span { flex-basis: 100%; }
-}
 
-.unified-workflow-board .board-run-banner { max-width: calc(100% - 2rem); white-space: normal; }
-.unified-workflow-board .board-run-banner > span { min-width: 0; overflow-wrap: anywhere; }
-.unified-workflow-board .board-run-banner > button { flex-shrink: 0; }
 .workflow-board-run-panel .board-run-row > span:last-child { grid-column: 1 / -1; justify-self: start; overflow-wrap: anywhere; }
 @media (max-width: 900px) {
   .pinned-run-canvas { padding-top: 120px; overflow: auto; }

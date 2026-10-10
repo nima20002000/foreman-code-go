@@ -13,7 +13,8 @@ import { readRunActivities, readRunActivityFeed, mergeOlderRunActivities, isTran
   runActivitiesKey, runActivitiesRefetchInterval, type RunActivityFeed, type RunActivityScope } from './runActivitiesQuery'
 import './activities.css'
 
-type ActivitiesProps = { scope: RepeatGraphScopeV3; selection?: never; chat?: never }
+/** focusAgentId pins the feed to one Agent: its filter controls and per-row Agent names are dropped. */
+type ActivitiesProps = { scope: RepeatGraphScopeV3; focusAgentId?: string; selection?: never; chat?: never }
   | { scope?: never; selection: SelectedRunState; chat?: SelectedChatBinding }
 
 type OlderActivityRequest = {
@@ -28,7 +29,7 @@ type OlderActivityRequest = {
  * reset feed/scroll/older-page requests together, without remounting the Board. */
 export function Activities(props: ActivitiesProps) {
   return props.selection ? <SelectedActivities selection={props.selection} chat={props.chat} />
-    : <ActivityFeed key={JSON.stringify(props.scope)} scope={props.scope!} />
+    : <ActivityFeed key={JSON.stringify(props.scope)} scope={props.scope!} focusAgentId={props.focusAgentId} />
 }
 
 function SelectedActivities({ selection, chat }: { selection: SelectedRunState; chat?: SelectedChatBinding }) {
@@ -49,7 +50,7 @@ function SelectedActivities({ selection, chat }: { selection: SelectedRunState; 
   return <ActivityFeed key={address} scope={scope} selection={selection} chat={chat} address={address} />
 }
 
-function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityScope; selection?: SelectedRunState; chat?: SelectedChatBinding; address?: string }) {
+function ActivityFeed({ scope, selection, chat, address, focusAgentId }: { scope: RunActivityScope; selection?: SelectedRunState; chat?: SelectedChatBinding; address?: string; focusAgentId?: string }) {
   const cache = useQueryClient()
   const key = address ? [...runActivitiesKey(scope), address] : runActivitiesKey(scope)
   const isSelected = selection?.isCurrent, ticket = selection?.generation
@@ -67,7 +68,7 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
   const [newCount, setNewCount] = useState(0)
   const location = useLocation(), router = useRouter()
   const search = RunsSelectorSearchSchema.parse(location.search)
-  const kind = search.activityKind ?? '', agentId = search.activityAgentId ?? ''
+  const kind = focusAgentId ? '' : search.activityKind ?? '', agentId = focusAgentId ?? search.activityAgentId ?? ''
   const setFilter = (field: 'activityKind' | 'activityAgentId', value: string) => {
     if (!visit.isCurrent()) return
     const next = RunsSelectorSearchSchema.parse({ ...router.state.location.search, [field]: value || undefined })
@@ -205,7 +206,7 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
     data-execution-id={chat?.selection.executionId} data-conversation-id={chat?.key?.conversationId}>
     <header><h3>Activities</h3><Button size="sm" variant="ghost" disabled={feed.isFetching && !older.isPending}
       onClick={refresh} aria-label="Refresh Activities">{selection ? 'Refresh' : 'Refresh Activities'}</Button></header>
-    {!selection ? <p>Recorded actions for this Run, in server order. Pending approvals stay in the approval inbox.</p> : null}
+    {!selection && !focusAgentId ? <p>Recorded actions for this Run, in server order. Pending approvals stay in the approval inbox.</p> : null}
     {denied ? <Alert tone="warning" title="Activities access was withdrawn." /> : error ?
       <Alert tone="warning" title={errorTitle}>
         {errorHint}
@@ -215,7 +216,7 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
       </Alert> : null}
     {!error && !denied && !items ? <p role="status">{feed.isPaused ? 'Activities refresh is offline or paused.' : 'Loading Activities…'}</p> : null}
     {items ? <>
-      {!chat ? <div className="board-activities-filters">
+      {!chat && !focusAgentId ? <div className="board-activities-filters">
         <Select label="Activity kind" value={kind} onChange={(event) => setFilter('activityKind', event.currentTarget.value)}
           options={[{ value: '', label: 'All actions' }, ...[...new Set(items.map((item) => item.kind))].sort()
             .map((value) => ({ value, label: value.replaceAll('_', ' ') })),
@@ -227,21 +228,42 @@ function ActivityFeed({ scope, selection, chat, address }: { scope: RunActivityS
       {newCount ? <Button size="sm" onClick={() => { list.current?.scrollTo({ top: list.current.scrollHeight }); setNewCount(0) }}>
         {newCount} new {newCount === 1 ? 'activity' : 'activities'}</Button> : null}
       {!visible?.length ? <p>{selection ? 'No activities' : items.length ? 'No Activities match these filters.' : 'No public activities have been recorded for this Run.'}</p> :
-        <ol className="board-activities-list" ref={list}>{visible.map((item) => <ActivityRow key={item.id} item={item} />)}</ol>}
+        <ol className="board-activities-list" ref={list}>{groupRepeats(visible).map(({ item, count }) =>
+          <ActivityRow key={item.id} item={item} count={count} showActor={!focusAgentId} />)}</ol>}
       {feed.data?.olderCursor ? <Button size="sm" disabled={feed.isFetching || older.isPending} onClick={() => void loadOlder()}>
         {older.isPending ? 'Loading…' : selection ? 'More' : 'Load older Activities'}</Button> : null}
-      {!selection ? <p className="board-activities-bound">Latest 1,000 public events at most; earlier events may have expired.</p> : null}
+      {!selection && !focusAgentId ? <p className="board-activities-bound">Latest 1,000 public events at most; earlier events may have expired.</p> : null}
     </> : null}
   </section>
 }
 
-function ActivityRow({ item }: { item: RunActivityPublic }) {
+/** Consecutive identical rows (for example 20 finished shell commands) read as one row with a count. */
+function groupRepeats(items: readonly RunActivityPublic[]) {
+  const groups: { item: RunActivityPublic; count: number }[] = []
+  const same = (a: RunActivityPublic, b: RunActivityPublic) => !a.workResult && !b.workResult && !a.usage && !b.usage
+    && a.summary === b.summary && a.detail === b.detail && a.status === b.status && JSON.stringify(a.actor ?? a.subject) === JSON.stringify(b.actor ?? b.subject)
+  for (const item of items) {
+    const last = groups.at(-1)
+    if (last && same(last.item, item)) last.count++
+    else groups.push({ item, count: 1 })
+  }
+  return groups
+}
+
+const clock = (value: string) => {
+  const date = new Date(value), today = new Date().toDateString() === date.toDateString()
+  return today ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : date.toLocaleString()
+}
+
+function ActivityRow({ item, count = 1, showActor = true }: { item: RunActivityPublic; count?: number; showActor?: boolean }) {
   const participant = item.actor ?? item.subject
   const label = participant ? 'agentId' in participant ? participant.agentName : `Job · ${participant.nodeName}` : 'Workflow'
-  return <li><time dateTime={item.occurredAt}>{new Date(item.occurredAt).toLocaleString()}</time>
-    <div><strong>{label}</strong>
-      <span className={`board-activity-status is-${item.severity}`}>{item.status.replaceAll('_', ' ')}</span>
-      <p>{item.summary}</p>{item.detail ? <p className="board-activity-detail">{item.detail}</p> : null}
+  return <li data-severity={item.severity} data-status={item.status}><span className="board-activity-dot" aria-hidden="true" />
+    <time dateTime={item.occurredAt} title={new Date(item.occurredAt).toLocaleString()}>{clock(item.occurredAt)}</time>
+    <div>{showActor ? <strong>{label}</strong> : null}
+      <div className="board-activity-line"><p>{item.summary}{count > 1 ? <span className="board-activity-count"> ×{count}</span> : null}</p>
+        <span className={`board-activity-status is-${item.severity}`}>{item.status.replaceAll('_', ' ')}</span></div>
+      {item.detail ? <p className="board-activity-detail">{item.detail}</p> : null}
       {item.workResult ? <div className="board-activity-work-result">
         <p>Outcome: {item.workResult.outcome}</p>
         <strong>Result summary</strong>

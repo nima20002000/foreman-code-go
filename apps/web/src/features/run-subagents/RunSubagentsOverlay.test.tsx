@@ -47,16 +47,21 @@ async function mount(entry = runsUrl('run-a')) {
   return { client, router, selectRun: (runId: string | null) => selectRun(runId) }
 }
 describe('Run subagent overlays', () => {
-  it('hangs chips below saved parents and indents nested children under their immediate child', async () => {
+  it('orbits children around their agent and links a nested child to the child that spawned it', async () => {
     await mount()
     const root = screen.getByRole('button', { name: 'Research, Codex, Running' })
     const nested = screen.getByRole('button', { name: 'Nested, Codex, Running' })
     expect(root).toHaveAttribute('data-parent-id', 'node-x')
     expect(nested).toHaveAttribute('data-parent-id', 'child-1')
-    expect(root).toHaveStyle({ left: '-34px', top: '178px' })
-    expect(nested).toHaveStyle({ left: '-1px', top: '214px' })
+    // First orbit slots sit lower-left and lower-right of the agent, mirrored across it.
+    const center = (orb: HTMLElement) => ({ x: parseFloat(orb.style.left) + 48, y: parseFloat(orb.style.top) + 20 })
+    expect(center(root).y).toBeCloseTo(center(nested).y)
+    expect(center(root).x).toBeLessThan(center(nested).x)
+    const links = [...document.querySelectorAll('.run-subagents-links line')]
+    expect(links).toHaveLength(2)
+    expect(Number(links[1]!.getAttribute('x1'))).toBeCloseTo(center(root).x)
+    expect(Number(links[1]!.getAttribute('y1'))).toBeCloseTo(center(root).y)
     expect(root).toHaveTextContent('Research'); expect(root).toHaveTextContent('Running')
-    expect(document.querySelectorAll('.run-subagents-links path')).toHaveLength(2)
     expect(runA.nodes[0]?.position).toEqual({ x: -80, y: 40 })
   })
   it('keeps finished chips attached and reports terminal status', async () => {

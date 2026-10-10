@@ -80,7 +80,7 @@ it('provides keyboard move/resize, keeps geometry on reopen and separates workfl
   expect(screen.getByRole('dialog', { name: 'Runs' })).toHaveStyle({ left: '120px', height: '340px' })
   second.unmount()
   mount('workflow-two')
-  expect(screen.getByRole('dialog', { name: 'Runs' })).toHaveStyle({ left: '12px', width: '440px', height: '420px' })
+  expect(screen.getByRole('dialog', { name: 'Runs' })).toHaveStyle({ left: '12px', width: '560px', height: '420px' })
 })
 
 it('reclamps an open window after viewport resize and uses the visual viewport', () => {

@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 import { ViewportPortal } from '@xyflow/react'
-import { Button } from '../../shared/ui/nocturne'
-import { layoutSubagents, isTerminalSubagent, SUBAGENT_CHIP, type SubagentLayoutNode } from './layout'
+import { Button, Icon } from '../../shared/ui/nocturne'
+import { layoutSubagents, isTerminalSubagent, SUBAGENT_ORB, type SubagentLayoutNode } from './layout'
 import { subagentLabel, subagentName, subagentStatus } from './presentation'
 import { useRunSubagents, type SubagentsScope } from './query'
 import { useSelectedSubagent } from './selection'
@@ -26,23 +26,23 @@ export function RunSubagentsOverlay({ scope, nodes }: {
     <ViewportPortal>
       <div className="run-subagents-overlay">
         <svg className="run-subagents-links" aria-hidden="true">
-          {chips.map(({ subagent, x, y, spineX, fromY }) =>
-            <path key={subagent.id} d={`M ${spineX} ${fromY} V ${y + SUBAGENT_CHIP.height / 2} H ${x}`} />)}
+          {chips.map(({ subagent, x, y, from }) =>
+            <line key={subagent.id} x1={from.x} y1={from.y} x2={x} y2={y} data-live={subagent.status === 'running'} />)}
         </svg>
         {chips.map(({ subagent, x, y, parentId }) => {
           const status = subagentStatus(subagent.status)
           const label = subagentLabel(subagent)
           return <button key={subagent.id} ref={(element) => {
             if (selected === subagent.id && element) trigger.current = element
-          }} type="button" className="run-subagent-chip nodrag nopan"
+          }} type="button" className="run-subagent-orb nodrag nopan"
             data-parent-id={parentId} data-subagent-id={subagent.id} data-tone={status.tone}
             data-inactive={isTerminalSubagent(subagent.status)} data-live={subagent.status === 'running'}
             data-uncertain={subagent.evidence !== 'confirmed' || subagent.status === 'unknown'}
-            style={{ left: x, top: y }} title={label} aria-label={label} aria-pressed={selected === subagent.id}
+            style={{ left: x - SUBAGENT_ORB.labelWidth / 2, top: y - SUBAGENT_ORB.size / 2 }} title={label} aria-label={label} aria-pressed={selected === subagent.id}
             onClick={(event) => { event.stopPropagation(); trigger.current = event.currentTarget; void select(subagent.id) }}>
-            <span className="run-subagent-dot" aria-hidden="true" />
-            <span className="run-subagent-chip-name" aria-hidden="true">{subagentName(subagent)}</span>
-            <span className="run-subagent-chip-status" aria-hidden="true">{status.label}</span>
+            <span className="run-subagent-orb-body" aria-hidden="true"><Icon name="bot" size={16} /></span>
+            <span className="run-subagent-orb-name" aria-hidden="true">{subagentName(subagent)}</span>
+            <span className="run-subagent-orb-status" aria-hidden="true">{status.label}</span>
           </button>
         })}
       </div>

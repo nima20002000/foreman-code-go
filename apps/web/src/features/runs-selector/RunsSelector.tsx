@@ -99,14 +99,17 @@ export function RunsSelector({ selection, className = '' }: RunsSelectorProps) {
     {open && <RunsWindow id={id} scope={geometryScope} anchor={trigger} close={() => close(true)}>
       <div ref={surface} role="menu" tabIndex={-1} aria-label="Runs" className="n-menu-list runs-selector-menu"
       aria-busy={history.isPending || history.isFetchingNextPage} onKeyDown={keyboard}>
-      {rows.map(({ run, time, status, showShortId, label }) => <button key={run.runId} type="button" role="menuitemradio"
+      {rows.length > 0 && <div className="runs-selector-head" aria-hidden="true">
+        <span /><span>Status</span><span>Started</span><span>Trigger</span><span>Run</span>
+      </div>}
+      {rows.map(({ run, time, status, label }) => <button key={run.runId} type="button" role="menuitemradio"
         aria-label={label} aria-checked={identity.runId === run.runId} tabIndex={-1} className="runs-selector-option"
-        data-run-id={run.runId} onClick={() => choose(run.runId)}>
+        data-run-id={run.runId} data-status={run.status} onClick={() => choose(run.runId)}>
         <span className="runs-selector-mark" aria-hidden="true">{identity.runId === run.runId ? '✓' : ''}</span>
-        <span className="runs-selector-copy">
-          <span className="runs-selector-time">{time}</span>
-          <span className="runs-selector-meta"><span>{status}</span>{showShortId && <code title={run.shortId}>{run.shortId}</code>}</span>
-        </span>
+        <span className="runs-selector-status"><span className="runs-selector-dot" aria-hidden="true" />{status}</span>
+        <span className="runs-selector-time">{time}</span>
+        <span className="runs-selector-trigger-cell">{run.trigger === 'schedule' ? 'Scheduled' : 'Manual'}</span>
+        <code title={run.runId}>{run.shortId}</code>
       </button>)}
       {history.isPending && <p role="status" className="runs-selector-state">Loading…</p>}
       {history.isError && <p role="status" className="runs-selector-state">{runReadErrorLabel(history.error, 'list')}</p>}
