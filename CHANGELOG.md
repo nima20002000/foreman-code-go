@@ -7,9 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.0.56] - 2026-10-09
-
-Draft includes committed changes and the current lane work. Final repository, browser and cross-computer verification remains pending.
+## [0.0.56] - 2026-10-10
 
 ### CI across computers
 
@@ -21,6 +19,10 @@ Draft includes committed changes and the current lane work. Final repository, br
 - Retire unused runtime configurations, images and installer copies, and reclaim interrupted build inputs while protecting current profiles, accepted Jobs and pending qualifications. Image pruning checks installation ownership and preserves images with other tags or container references.
 - Keep seed and context receipts immutable across rebuilds, and retain receipts and qualification sources needed by installed configurations.
 - Isolated verification reports required native-containment, Docker Compose and installed-Worker suites as unavailable when their capabilities are absent. Required unit and integration coverage stays incomplete and returns a nonzero result until it runs on a capable host; published reports retain the missing-capability details.
+
+### Operator MCP
+
+- Return each Operator MCP tool result as one compact JSON text item, cutting tool discovery and result size. `workspace_list` returns compact summaries by default; pass `detail: "full"` for complete records. Denied calls return a structured `{ error: { code, message } }` result.
 
 ### Agents/workflows
 
@@ -53,6 +55,10 @@ Draft includes committed changes and the current lane work. Final repository, br
 - Bind Worker installations to their canonical state directory and serialize setup and Companion activation with updates. Artifacts use the product release version; recovery instructions require the retained release's matching Node runtime. An open Companion detects installation changes, and activation success requires a fresh active-service check.
 - Package the CI context builder and its dependencies inside the deployed API and Worker artifacts. Private preparation Git commands ignore inherited outer Git paths, fetch partial-clone objects before capture, and qualify the installed PostgreSQL binary and version.
 - Give nested verification commands separate report directories, support the offline production `pnpm deploy --prod --legacy` invocation, and preserve frozen dependency and release-age policies. Correct CI fixtures for isolated source trees, current enrollment and workflow contracts, and deterministic native chat-delivery faults.
+
+### Known issues
+
+- `computer-workflow-save.regression` can time out in full parallel integration runs: a second remote Codex execution stays in `starting` after Worker qualification. It passes in isolation; a fix is planned for the next release.
 
 ## [0.0.55] - 2026-10-09
 
