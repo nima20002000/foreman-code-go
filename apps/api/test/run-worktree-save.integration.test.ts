@@ -63,7 +63,7 @@ for (const transport of transports) describe.skipIf(!postgresEnabled)(`Run workt
       expect(await saveThrough(f, transport, input)).toEqual({ ...saved, replayed: true })
       expect(await versionCount(f)).toBe(count + 1)
       expect(saved.value.version.definition).toEqual({ ...input.graph,
-        version: input.graph.version + 1, updatedAt: expect.any(String) })
+        version: (input.graph.version ?? 0) + 1, updatedAt: expect.any(String) })
       const read = await rpc(f, CURRENT_WORKFLOW_TOOLS.saved, {
         workspaceId: input.workspaceId, workflowId: input.workflowId,
       })
