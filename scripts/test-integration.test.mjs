@@ -9,10 +9,12 @@ import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities,
 import { readVerificationEnvironment } from '../packages/contracts/src/verificationEnvironment.mjs'
 import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl } from './test-resources.mjs'
 import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases,
-  fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission, integrationEnvironment, integrationReport,
+  finalizeIntegrationResult, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission,
+  integrationEnvironment, integrationReport,
   integrationLogPath, integrationProgressLine, integrationShardLimit, integrationTimeouts, integrationVitestArguments,
   isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases,
-  partitionIntegrationFiles, readDurations, reservedIntegrationShards, scheduleFiles, selectFiles, selectExactFiles,
+  partitionIntegrationFiles, readDurations, reservedIntegrationShards, scheduleFiles, scheduleIntegrationQueue,
+  selectFiles, selectExactFiles,
   signalOwnedChildren, vitestCommand, writeDurations } from './test-integration.mjs'
 
 test('the installed Job environment reports its unsupported host capabilities without probing the host', async () => {
@@ -135,7 +137,7 @@ test('diagnostic case selection preserves file and worker limits and passes the 
   assert.deepEqual(integrationVitestArguments(file, pattern), [...unfiltered, '--testNamePattern', pattern])
   assert.equal(failForSkippedCases({ skipped: 5 }, false), true)
   assert.equal(failForSkippedCases({ skipped: 5 }, true), false)
-  assert.deepEqual(autoRetestFiles([file], { diagnostic: true, interrupted: null }), [])
+  assert.deepEqual(autoRetestFiles([file], { diagnostic: true, interrupted: null }), [file])
 })
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
@@ -259,10 +261,10 @@ test('skipped cases fail a clean full run while a diagnostic resume reports them
   assert.equal(failForSkippedCases({ ...summary, skipped: 0 }, null), false)
 })
 
-test('only a default full run queues each first-pass failure for one retest', () => {
+test('each selected first-pass failure receives one retest unless interrupted', () => {
   const failed = ['b', 'a', 'b']
   assert.deepEqual(autoRetestFiles(failed, { diagnostic: false, interrupted: null }), ['a', 'b'])
-  assert.deepEqual(autoRetestFiles(failed, { diagnostic: true, interrupted: null }), [])
+  assert.deepEqual(autoRetestFiles(failed, { diagnostic: true, interrupted: null }), ['a', 'b'])
   assert.deepEqual(autoRetestFiles(failed, { diagnostic: false, interrupted: 'SIGINT' }), [])
 })
 
@@ -482,6 +484,9 @@ test('machine reports keep first-pass failures after a successful fresh-DB diagn
   assert.equal(report.firstPassFailed, 1)
   assert.equal(report.totals.failed, 1)
   assert.equal(report.retests[0].totals.failed, 0)
+  assert.equal(report.files[0].status, 'FLAKY')
+  assert.equal(report.files[0].code, 1)
+  assert.equal(fullRunExitCode(report.firstPassFailed, null), 1)
 })
 
 test('missing JSON, unexecuted files and interruption retain an honest partial report', () => {
@@ -589,4 +594,205 @@ test('integration files launch workspace Vitest directly with package binaries a
     assert.match(tsx.stdout, /tsx v\d+/)
     assert.equal(environment.PATH, process.env.PATH)
   } finally { removeTestRoot(resource) }
+})
+
+const lowPressure = () => ({ cpuUtilization: 0, cpuPressure: 0,
+  memoryPressure: 0, memoryUtilization: 0, totalMemoryBytes: 16 * 1024 ** 3, cpuCount: 8 })
+
+test('integration and gate checks share the bounded queue and delay exclusive files', async () => {
+  const ordinary = 'apps/api/test/ordinary.integration.test.ts'
+  const exclusive = 'apps/api/test/dev-startup.integration.test.ts'
+  const events = []
+  let active = 0
+  let peak = 0
+  const run = async (id, isolated = false) => {
+    if (isolated) assert.equal(active, 0)
+    active++
+    peak = Math.max(peak, active)
+    events.push(`start:${id}`)
+    await new Promise((done) => setTimeout(done, 10))
+    events.push(`end:${id}`)
+    active--
+    return { code: 0, complete: true }
+  }
+  const result = await scheduleIntegrationQueue([ordinary, exclusive], [{ index: 1 }, { index: 2 }], {
+    maxConcurrency: 2, samplePressure: lowPressure, pollIntervalMs: 1,
+    extraItems: [{ id: 'gate:lint' }, { id: 'gate:typecheck', dependsOn: ['gate:lint'] }],
+    executeExtra: (item) => run(item.id),
+    runFile: (_slot, file) => run(file, file === exclusive),
+  })
+  assert.equal(result.results.length, 4)
+  assert.ok(result.results.every((item) => item.status === 'PASSED'))
+  assert.ok(events.indexOf(`start:${exclusive}`) > events.indexOf(`end:${ordinary}`))
+  assert.ok(events.indexOf('start:gate:typecheck') > events.indexOf('end:gate:lint'))
+  assert.equal(peak, 2)
+})
+
+test('failed integrations retest serially after gate checks with fresh resources and load context', async () => {
+  const files = ['apps/api/test/one.integration.test.ts', 'apps/api/test/two.integration.test.ts']
+  const slots = [{ index: 1, generation: 0 }, { index: 2, generation: 0 }]
+  const events = []
+  let active = 0
+  let gateFinished = false
+  const result = await scheduleIntegrationQueue(files, slots, {
+    maxConcurrency: 2, pollIntervalMs: 1,
+    samplePressure: () => ({ ...lowPressure(), cpuUtilization: 0.8 }),
+    extraItems: [{ id: 'gate:lint' }],
+    executeExtra: async () => {
+      active++
+      await new Promise(setImmediate)
+      active--
+      gateFinished = true
+      return { code: 0, complete: true }
+    },
+    prepareRetest: async (slot, file) => {
+      assert.equal(active, 0)
+      assert.equal(gateFinished, true)
+      slot.generation++
+      events.push(`fresh:${file}`)
+    },
+    runFile: async (slot, file, context) => {
+      if (context.isRetest) {
+        assert.equal(active, 0)
+        assert.ok(slot.generation > 0)
+      }
+      assert.ok(context.timeoutScale > 1)
+      active++
+      events.push(`${context.attempt}:${file}`)
+      await new Promise(setImmediate)
+      active--
+      return { code: context.isRetest ? 0 : 1, complete: true,
+        metrics: { durationMs: 10, peakRssBytes: 1000, cpuSeconds: 0.001 } }
+    },
+  })
+  for (const file of files) {
+    const resultFile = result.results.find((entry) => entry.id === file)
+    assert.equal(resultFile.status, 'FLAKY')
+    assert.equal(resultFile.attempts.length, 2)
+    assert.equal(events.filter((event) => event === `fresh:${file}`).length, 1)
+    assert.deepEqual(result.profiles[file], { durationMs: 10, peakRssBytes: 1000, cpuSeconds: 0.001 })
+  }
+})
+
+test('retired database slots leave other slots and non-database checks usable', async () => {
+  const files = ['apps/api/test/one.integration.test.ts', 'apps/api/test/two.integration.test.ts',
+    'apps/api/test/three.integration.test.ts']
+  const slots = [{ index: 1 }, { index: 2 }]
+  const attempts = []
+  const extras = []
+  const result = await scheduleIntegrationQueue(files, slots, {
+    maxConcurrency: 2, samplePressure: lowPressure, pollIntervalMs: 1,
+    extraItems: [{ id: 'gate:lint' }],
+    executeExtra: async (item) => { extras.push(item.id); return { code: 0, complete: true } },
+    runFile: async (slot, file, context) => {
+      attempts.push([slot.index, file, context.attempt])
+      await new Promise(setImmediate)
+      return { code: slot.index === 1 ? 1 : 0, complete: true, slotUnavailable: slot.index === 1 }
+    },
+  })
+  assert.equal(slots[0].unavailable, true)
+  assert.equal(attempts.filter(([slot]) => slot === 1).length, 1)
+  assert.equal(result.unexecuted.length, 0)
+  assert.deepEqual(extras, ['gate:lint'])
+  assert.equal(result.results.find((entry) => entry.id === files[0]).status, 'FLAKY')
+})
+
+test('a lost database pool reports unexecuted files while gate checks still finish', async () => {
+  const files = ['apps/api/test/one.integration.test.ts', 'apps/api/test/two.integration.test.ts']
+  const slots = [{ index: 1 }]
+  const extras = []
+  const result = await scheduleIntegrationQueue(files, slots, {
+    maxConcurrency: 1, samplePressure: lowPressure, pollIntervalMs: 1,
+    extraItems: [{ id: 'gate:lint' }],
+    executeExtra: async (item) => { extras.push(item.id); return { code: 0, complete: true } },
+    runFile: async () => ({ code: 1, complete: false, slotUnavailable: true }),
+  })
+  assert.deepEqual(extras, ['gate:lint'])
+  assert.deepEqual(result.unexecuted.map((item) => item.id), [files[1]])
+  assert.equal(result.results.find((item) => item.id === files[1]).status, 'NOT_RUN')
+  assert.match(result.results.find((item) => item.id === files[1]).reason, /usable worker/i)
+})
+
+test('environment selectors remain mutually exclusive when passed to the exported runner options', () => {
+  const file = 'apps/api/test/one.integration.test.ts'
+  assert.deepEqual(options([], { GRAPHQL_INTEGRATION_START_AT: file }),
+    { startAt: file, failedFrom: null, files: null })
+  assert.throws(() => options(['--files', file], { GRAPHQL_INTEGRATION_FAILED_LOG: '/tmp/failed.log' }), /Usage/)
+  assert.throws(() => options([], { GRAPHQL_INTEGRATION_START_AT: file,
+    GRAPHQL_INTEGRATION_FAILED_LOG: '/tmp/failed.log' }), /Choose either/)
+})
+
+test('retained process ownership stops extras, exclusive files and retries', async () => {
+  const file = 'apps/api/test/retained.integration.test.ts'
+  const exclusive = 'apps/api/test/dev-startup.integration.test.ts'
+  const slots = [{ index: 1 }]
+  const attempts = []
+  const failures = []
+  const result = await scheduleIntegrationQueue([file, exclusive], slots, {
+    maxConcurrency: 1, samplePressure: lowPressure, pollIntervalMs: 1,
+    extraItems: [{ id: 'gate:lint' }],
+    executeExtra: async (item) => { attempts.push(item.id); return { code: 0, complete: true } },
+    prepareRetest: async () => assert.fail('Retest started with retained process ownership'),
+    onProcessFailure: (reason) => failures.push(reason),
+    runFile: async (_slot, file) => {
+      attempts.push(file)
+      return { code: 1, complete: false, slotUnavailable: true, ownedProcessActive: true,
+        reason: 'Child process group 123 did not exit' }
+    },
+  })
+  assert.deepEqual(attempts, [file])
+  assert.deepEqual(failures, ['Child process group 123 did not exit'])
+  assert.deepEqual(result.unexecuted.map((item) => item.id), [exclusive, 'gate:lint'])
+  assert.equal(result.results.find((item) => item.id === file).attempts.length, 1)
+})
+
+test('retained process ownership cancels controls for already-running extra checks', async () => {
+  const file = 'apps/api/test/retained.integration.test.ts'
+  let cancelled = false
+  let extraStarted = false
+  const result = await scheduleIntegrationQueue([file], [{ index: 1 }], {
+    maxConcurrency: 2, samplePressure: lowPressure, pollIntervalMs: 1,
+    extraItems: [{ id: 'gate:lint' }],
+    onProcessFailure: () => { cancelled = true },
+    runFile: async () => {
+      while (!extraStarted) await new Promise((done) => setTimeout(done, 1))
+      return { code: 1, complete: false, slotUnavailable: true, ownedProcessActive: true }
+    },
+    executeExtra: async () => {
+      extraStarted = true
+      while (!cancelled) await new Promise((done) => setTimeout(done, 1))
+      return { code: 143, complete: false, reason: 'Cancelled after retained integration process' }
+    },
+  })
+  assert.equal(cancelled, true)
+  assert.equal(result.results.find((item) => item.id === 'gate:lint').attempts.length, 1)
+  assert.ok(result.results.every((item) => item.status === 'FAILED'))
+})
+
+test('cleanup failures retain completed queue attempts, persisted facts and cancellation codes', () => {
+  const selected = ['apps/api/test/one.integration.test.ts']
+  const firstPass = [{ file: selected[0], code: 0, complete: true,
+    report: { totals: { total: 2, passed: 2, failed: 0, skipped: 0 }, files: [] } }]
+  const results = [{ id: selected[0], status: 'PASSED', attempts: [{ code: 0, complete: true }] },
+    { id: 'gate:lint', status: 'PASSED', attempts: [{ code: 0, complete: true }] }]
+  const cleanupError = new Error('Disposable database cleanup failed')
+  for (const [interrupted, code] of [[null, 1], ['SIGINT', 130], ['SIGTERM', 143]]) {
+    const report = integrationReport(selected, firstPass, [], {
+      startedAt: '2026-10-05T00:00:00.000Z', finishedAt: '2026-10-05T00:01:00.000Z',
+      interrupted, diagnostic: false, processStopped: false,
+    })
+    const result = finalizeIntegrationResult({ report, results, selectedFiles: selected,
+      reportDirectory: '/tmp/integration-reports', interrupted, diagnostic: false, cleanupError })
+    assert.equal(result.code, code)
+    assert.equal(result.results, results)
+    assert.deepEqual(result.gateResults, [results[1]])
+    assert.equal(result.report.completedPortions, 1)
+    assert.deepEqual(result.report.totals, { total: 2, passed: 2, failed: 0, skipped: 0 })
+    assert.equal(result.cleanupError, cleanupError.message)
+    const persisted = JSON.parse(JSON.stringify(result.report))
+    assert.equal(persisted.cleanupError, cleanupError.message)
+    assert.equal(persisted.error, cleanupError.message)
+    assert.equal(persisted.completeness, 'partial')
+    assert.equal(persisted.outcome, interrupted ? 'cancelled' : 'incomplete')
+  }
 })
