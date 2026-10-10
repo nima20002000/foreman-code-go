@@ -50,7 +50,7 @@ export async function prepareCurrentStagedAgents(client: pg.PoolClient, principa
     if (row && !current) throw new DomainError('AGENT_CONFIGURATION_CONFLICT', 'The original immutable Agent configuration is unavailable.', 409)
     const requested = configurationInput(input.workspaceId, item.agent, current)
     const configInput = { ...requested, harnessProfileSelection: requested.harnessProfileSelection, harness: accounts
-      ? await accounts.resolve(requested.harness, requested.harnessProfileSelection) : requested.harness }
+      ? await accounts.resolve(requested.harness, requested.harnessProfileSelection, { sql: client }) : requested.harness }
     if (accounts) {
       configInput.harnessProfileSelection = await accounts.profile({ principal, source: 'http',
         configuration: configInput.harness, selection: requested.harnessProfileSelection,

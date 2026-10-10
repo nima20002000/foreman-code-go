@@ -6,6 +6,8 @@ import { mkdir, rename } from 'node:fs/promises'
 
 import { CODEX_APPROVAL_OPTIONS_FIXTURE, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction } from '@foreman-code/contracts'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { AgentDefaultsUpdateResultSchema, ManagedAgentDefaultsSchema } from '@foreman-code/contracts/management'
 import pg from 'pg'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -28,6 +30,8 @@ import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 import { buildProductionApp } from '../src/production.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 const connectionString = process.env.TEST_DATABASE_URL!
 let schema: string, root: string, project: string, address: string
@@ -187,6 +191,51 @@ afterEach(async () => {
   await removeFixtureDirectory(root); await removeFixtureDirectory(project)
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
+})
+
+it('updates and reads Operator defaults through authenticated MCP with a one-slot pool', async () => {
+  const writer = await access.issue({ name: 'Settings writer', audience: 'operator', grants: [{
+    actions: ['settings:read', 'settings:update'], scope: {},
+  }], expiresAt: new Date(Date.now() + 60_000) })
+  const reader = await access.issue({ name: 'Settings reader', audience: 'operator', grants: [{
+    actions: ['settings:read'], scope: {},
+  }], expiresAt: new Date(Date.now() + 60_000) })
+  const client = new Client({ name: 'settings-writer', version: '1' })
+  const denied = new Client({ name: 'settings-reader', version: '1' })
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      authProvider: { token: async () => writer.token },
+    }))
+    await denied.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      authProvider: { token: async () => reader.token },
+    }))
+    const read = async () => ManagedAgentDefaultsSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'agent_defaults_get', arguments: {},
+    })))
+    const before = await read()
+    const input = { commandId: randomUUID(), expectedRevision: before.revision, value: {
+      ...before.value, operator: { ...before.value.operator, showThinking: true },
+    } }
+    await expectMcpAccessDenied(denied.callTool({ name: 'agent_defaults_update', arguments: input }))
+    expect(await read()).toEqual(before)
+    const updated = await client.callTool({ name: 'agent_defaults_update', arguments: input })
+    expect(updated.isError, JSON.stringify(updated)).not.toBe(true)
+    const result = AgentDefaultsUpdateResultSchema.parse(decodeMcpToolResult(updated))
+    const saved = await read()
+    expect(saved.revision).toBe(before.revision + 1)
+    expect(saved.value).toEqual(input.value)
+    expect(saved.versionId).toEqual(expect.any(String))
+    expect(saved).toEqual(result.value)
+    expect(await new PostgresFoundationSettingsRepository(database.pool).getAgentDefaults()).toEqual(saved)
+    const replay = AgentDefaultsUpdateResultSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'agent_defaults_update', arguments: input,
+    })))
+    expect(replay).toEqual({ value: saved, replayed: true })
+    expect(await read()).toEqual(saved)
+  } finally {
+    await client.close()
+    await denied.close()
+  }
 })
 
 async function start(handler: 'user' | 'orchestrator', twoWorkers = false) {

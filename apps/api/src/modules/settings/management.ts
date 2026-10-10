@@ -120,7 +120,7 @@ export class FoundationSettingsManagementService {
         if (this.accountConfigurations) {
           for (const role of ['orchestrator', 'coder', 'operator'] as const) {
             value[role].harness = await this.accountConfigurations.resolve(value[role].harness,
-              value[role].harnessProfileSelection)
+              value[role].harnessProfileSelection, { sql: client })
           }
         }
         for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)

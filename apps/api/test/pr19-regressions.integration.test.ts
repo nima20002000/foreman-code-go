@@ -152,7 +152,8 @@ beforeEach(async () => {
     setup: async (manager) => ({ harness: manager.harness, status: 'configured', endpoint: 'http://127.0.0.1:3000/mcp', checkedAt: new Date().toISOString() }),
     prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} }
   chat = new OperatorChatService(repository, new PostgresOperatorRepository(pool),
-    (configuration) => configuration.harness.harness === 'codex' ? codex : claude, '/tmp/pr19-operator-fixture', authority)
+    (configuration) => configuration.harness.harness === 'codex' ? codex : claude, '/tmp/pr19-operator-fixture', authority,
+    async () => (await defaults.getAgentDefaults()).value.operator.harnessProfileSelection)
 }, 30000)
 afterEach(async () => {
   vi.restoreAllMocks()

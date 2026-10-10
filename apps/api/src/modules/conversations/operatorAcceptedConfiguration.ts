@@ -59,7 +59,7 @@ export async function acceptOperatorConfiguration(query: Queryable, current: Ope
   }
   const base = await operatorMessageBase(query, current, input)
   const settings = suppliedHarness ?? (input.settings ? applyOperatorChatSettings(base.harness, input.settings) : base.harness)
-  const requested = accounts ? await accounts.resolve(settings, base.harnessProfileSelection) : settings
+  const requested = accounts ? await accounts.resolve(settings, base.harnessProfileSelection, { sql: query }) : settings
   const harness = isDeepStrictEqual(withAdvancedDefaults(base.harness), withAdvancedDefaults(requested)) ? base.harness : requested
   if (base.harnessProfileSelection && !preparedProfile && !isDeepStrictEqual(base.harness, harness)) {
     throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'Per-message settings cannot rewrite the configuration of an explicitly selected host profile. Save and select that configured profile first.', 409)

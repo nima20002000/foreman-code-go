@@ -52,6 +52,16 @@ const claudeConfiguration = {
 
 const connectionString = process.env.TEST_DATABASE_URL
 
+async function prepareClaudeProfile() {
+  const mainId = '11111111-1111-4111-8111-111111111111'
+  return {
+    instanceId: randomUUID(), instanceRevision: '1', target: {
+      hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+      harnessInstallationId: 'fixture-claude', installationFingerprint: 'fixture-claude-profile',
+    },
+  }
+}
+
 /** Only provider I/O is fake: these tests exercise real migrations, SQL, grants and service transitions. */
 class ChatManager implements NativeHarnessSessionManager {
   constructor(readonly harness: 'codex' | 'claude' = 'codex') {}
@@ -998,7 +1008,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const claude = new ChatManager('claude')
     chat = new OperatorChatService(repository, operators,
       (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
-      runtimeDirectory, authority)
+      runtimeDirectory, authority, prepareClaudeProfile)
     const source = await chat.create(owner)
     const settings = new PostgresFoundationSettingsRepository(pool)
     const defaults = await settings.getAgentDefaults()
@@ -1031,7 +1041,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const claude = new ChatManager('claude')
     chat = new OperatorChatService(repository, operators,
       (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
-      runtimeDirectory, authority)
+      runtimeDirectory, authority, prepareClaudeProfile)
     const source = await chat.create(owner)
     await chat.send(source.id, { requestId: 'source-turn', content: 'Please inspect the release.' }, owner)
     await waitFor(async () => (await chat.get(source.id, owner)).turnState === 'idle')
@@ -1103,7 +1113,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
       const claude = new ChatManager('claude')
       chat = new OperatorChatService(repository, operators,
         (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
-        runtimeDirectory, authority)
+        runtimeDirectory, authority, prepareClaudeProfile)
       const service = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool),
         new PostgresCommandCoordinator(pool), { qualifyConfiguration: async () => ({} as never) }, operators)
       app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -1371,7 +1381,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await operators.update(claudeConfiguration, (await operators.ensure()).configuration.id)
     const claude = new ChatManager('claude')
     chat = new OperatorChatService(repository, operators, (configuration) => configuration.harness.harness === 'claude' ? claude : manager,
-      runtimeDirectory, authority)
+      runtimeDirectory, authority, prepareClaudeProfile)
     const request = { requestId: 'accepted-change', content: 'Synthetic receipt fixture', configurationVersionId: sourcePin,
       defaultsRevision: saved.revision, settings: operatorChatSettings(claudeConfiguration) }
     await chat.send(source.id, request, owner)

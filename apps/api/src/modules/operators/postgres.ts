@@ -95,7 +95,8 @@ export class PostgresOperatorRepository {
     const createdAt = new Date().toISOString()
     const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value.operator
     const requested = this.accountConfigurations
-      ? await this.accountConfigurations.resolve(defaults.harness, defaults.harnessProfileSelection) : defaults.harness
+      ? await this.accountConfigurations.resolve(defaults.harness, defaults.harnessProfileSelection, { sql: client })
+      : defaults.harness
     const harness = acceptedConfiguration(requested)
     const profile = defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}
     // Saved defaults were authorized and resolved when saved; keep those exact references.
@@ -140,7 +141,9 @@ export class PostgresOperatorRepository {
       const previous = (await client.query<{ record: unknown }>('select record from operator_configuration_versions where id = $1', [expectedConfigurationVersionId])).rows[0]
       const previousConfiguration = previous ? OperatorConfigurationVersionSchema.parse(previous.record) : undefined
       const selection = harnessProfileSelection === null ? undefined : harnessProfileSelection ?? previousConfiguration?.harnessProfileSelection
-      if (this.accountConfigurations) harness = await this.accountConfigurations.resolve(harness, selection)
+      if (this.accountConfigurations) {
+        harness = await this.accountConfigurations.resolve(harness, selection, { sql: client })
+      }
       if (selection && harnessProfileSelection === undefined && !isDeepStrictEqual(previousConfiguration?.harness, harness)) {
         throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'Changing the selected profile configuration requires an explicitly validated profile selection.', 409)
       }

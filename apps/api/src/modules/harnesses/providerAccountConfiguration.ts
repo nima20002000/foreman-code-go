@@ -7,6 +7,7 @@ import { providerAccountEnvironment } from '../provider-accounts/environment.js'
 import type { HostHarnessOverrideService } from './instanceSettings/service.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { resolveRuntimeProviderAccount } from './providerAccountRuntime.js'
 
@@ -31,9 +32,10 @@ export class ProviderAccountConfigurationService {
       'Save and check a local harness profile for this Claude account before saving the Agent.', 409)
   }
 
-  async resolve(configuration: HarnessConfiguration, selection?: HarnessProfileSelection): Promise<HarnessConfiguration> {
+  async resolve(configuration: HarnessConfiguration, selection?: HarnessProfileSelection,
+    options?: { sql: GraphSqlClient }): Promise<HarnessConfiguration> {
     if (configuration.harness === 'opencode') return configuration
-    const account = await this.accounts.resolve(configuration.harness, configuration.accountId)
+    const account = await this.accounts.resolve(configuration.harness, configuration.accountId, options)
     if (!account) return configuration
     if (selection?.target.hostRef.kind === 'device') {
       throw new DomainError('PROVIDER_ACCOUNT_LOCAL_ONLY',

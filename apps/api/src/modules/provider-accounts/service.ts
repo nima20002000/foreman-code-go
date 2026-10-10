@@ -23,7 +23,8 @@ export interface ResolvedProviderAccount {
   apiKey?: string
 }
 export interface ProviderAccountResolver {
-  resolve(provider: AccountProvider, accountId?: string): Promise<ResolvedProviderAccount | null>
+  resolve(provider: AccountProvider, accountId?: string,
+    options?: { sql: GraphSqlClient }): Promise<ResolvedProviderAccount | null>
 }
 type CommandSource = 'http' | 'mcp'
 type Change = (snapshot: ProviderAccountsSnapshot) => Promise<void>
@@ -189,8 +190,9 @@ export class ProviderAccountsService implements ProviderAccountResolver {
       }, async () => { if (backup) await this.credentials.restore(backup) })
   }
 
-  async resolve(provider: AccountProvider, accountId?: string): Promise<ResolvedProviderAccount | null> {
-    const snapshot = await this.repository.read()
+  async resolve(provider: AccountProvider, accountId?: string,
+    options?: { sql: GraphSqlClient }): Promise<ResolvedProviderAccount | null> {
+    const snapshot = await this.repository.read(options?.sql)
     const account = accountId ? this.account(snapshot, accountId)
       : snapshot.accounts.find(value => value.provider === provider && value.isDefault)
     if (!account) return null

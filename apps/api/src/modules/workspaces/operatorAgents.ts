@@ -113,7 +113,9 @@ export class OperatorAgentMutationService {
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)
         let configuration = input.configuration ?? defaults.value[input.productRole].harness
         let harnessProfileSelection = input.harnessProfileSelection ?? (input.configuration ? undefined : defaults.value[input.productRole].harnessProfileSelection)
-        if (this.accountConfigurations) configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection)
+        if (this.accountConfigurations) {
+          configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
+        }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
           principal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
         })
@@ -140,7 +142,9 @@ export class OperatorAgentMutationService {
         this.assertRevision(current,input.expectedRevision,input.expectedConfigurationVersionId)
         let configuration = input.configuration ?? current.agent.harnessConfiguration!
         let harnessProfileSelection = input.harnessProfileSelection ?? current.agent.harnessProfileSelection
-        if (this.accountConfigurations) configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection)
+        if (this.accountConfigurations) {
+          configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
+        }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
           principal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
         })
@@ -175,7 +179,7 @@ export class OperatorAgentMutationService {
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The clone Agent ID already exists.',409)
         const source = current.agent
         const configuration = this.accountConfigurations
-          ? await this.accountConfigurations.resolve(source.harnessConfiguration!, source.harnessProfileSelection)
+          ? await this.accountConfigurations.resolve(source.harnessConfiguration!, source.harnessProfileSelection, { sql: client })
           : source.harnessConfiguration!
         const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal, source: 'mcp',
           configuration, selection: source.harnessProfileSelection, commandId: input.commandId, client, check: true,
@@ -207,7 +211,8 @@ export class OperatorAgentMutationService {
         // silently redesign those assignments across shared workflows.
         if (version.productRole !== current.agent.productRole) throw new DomainError('AGENT_ROLE_RESTORE_UNSUPPORTED','Restore role-changing history through an explicitly validated graph change.',409)
         const configuration = this.accountConfigurations
-          ? await this.accountConfigurations.resolve(version.harness, version.harnessProfileSelection) : version.harness
+          ? await this.accountConfigurations.resolve(version.harness, version.harnessProfileSelection, { sql: client })
+          : version.harness
         const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal, source: 'mcp',
           configuration, selection: version.harnessProfileSelection, commandId: input.commandId, client, check: true,
         }) : version.harnessProfileSelection
