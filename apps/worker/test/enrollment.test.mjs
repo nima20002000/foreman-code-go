@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, readFile, rm, chmod } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, writeFile, readFile, rm, chmod, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { createHash, generateKeyPairSync, randomUUID, sign, verify, X509Certificate } from 'node:crypto';
 import { rootCertificates } from 'node:tls';
 const require = createRequire(new URL('../../api/package.json', import.meta.url));
@@ -13,7 +14,7 @@ const { encodeWorkerEnrollmentCode } = await tsImport('../../../packages/contrac
 const { loadOrCreateWorkerIdentity, publicKeyFingerprint, mainEnrollmentProofMessage, mainIdentityProofMessage, pairingProof } = await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
 
 async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'worker-enroll-'));
+  const directory = await realpath(await mkdtemp(join(persistentFixtureRoot, 'worker-enroll-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const identity = await loadOrCreateWorkerIdentity(directory);
   const key = generateKeyPairSync('ed25519');
@@ -23,6 +24,34 @@ async function fixture(t) {
   await writeFile(enrollmentFile, JSON.stringify(input), { mode: 0o600 });
   return { stateDirectory: directory, home: directory, identity, enrollmentFile, appVersion: '0.1.0', input, key, publicKey };
 }
+
+test('rejected noncanonical setup releases its Worker lock and lets the process exit', { timeout: 15_000 }, async t => {
+  const f = await fixture(t);
+  const apiPackage = new URL('../../api/package.json', import.meta.url).href;
+  const setupModule = new URL('../src/managedSetup.mjs', import.meta.url).href;
+  const runtimeModule = new URL('../src/runtime.mjs', import.meta.url).href;
+  const code = `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { acquireWorkerLock, readWorkerStatus } from ${JSON.stringify(runtimeModule)};
+    const require = createRequire(${JSON.stringify(apiPackage)});
+    const { tsImport } = await import(require.resolve('tsx/esm/api'));
+    const { ensurePairedManagedSetup } = await tsImport(${JSON.stringify(setupModule)}, import.meta.url);
+    const stateDirectory = ${JSON.stringify(f.stateDirectory)};
+    await assert.rejects(ensurePairedManagedSetup({ stateDirectory: stateDirectory + '/.' }),
+      { code: 'SOURCE_FILESYSTEM_UNSUPPORTED' });
+    assert.equal(await readWorkerStatus(stateDirectory), null);
+    const unlock = await acquireWorkerLock(stateDirectory);
+    await unlock();
+  `;
+  // A leaked socket keeps the child alive; the parent bounds that failure as well as the assertions.
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+    timeout: 10_000,
+    encoding: 'utf8',
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test('fresh selected-main proof precedes grant; persisted credential never enters CLI result', async (t) => {
   const f = await fixture(t); const calls = [];

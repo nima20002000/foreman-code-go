@@ -137,20 +137,25 @@ export async function ensurePairedManagedSetup({ stateDirectory, pairing, home =
     unlock = await acquireWorkerLock(stateDirectory);
     assertStateOwnership = unlock.assertOwned;
   }
-  const state = await openPrivateRoot(stateDirectory);
+  let state;
   let previous;
   try {
+    state = await openPrivateRoot(stateDirectory);
     previous = await optionalManagedJson(state, 'managed-setup.json') ?? {};
     return await setupManagedStorage({ stateDirectory, pairing, home, assertStateOwnership, inspectInstallation }, state, previous);
   } catch (error) {
+    if (!state) throw error;
     const status = CiManagedSetupSchema.parse({ state: 'failed', migrated: previous?.status?.migrated ?? false,
       message: managedSetupFailure(error), updatedAt: new Date().toISOString() });
     await publishManagedJson(state, 'managed-setup.json', { schemaVersion: 1, target: pairingTarget(pairing),
       journalsInitialized: previous?.journalsInitialized === true, status });
     return status;
   } finally {
-    await state.close();
-    await unlock?.();
+    try {
+      await state?.close();
+    } finally {
+      await unlock?.();
+    }
   }
 }
 
