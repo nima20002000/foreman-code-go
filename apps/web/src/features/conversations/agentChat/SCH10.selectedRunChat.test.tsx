@@ -1,3 +1,4 @@
+import * as controlHooks from '../sessionControls/useSessionControls'
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -291,4 +292,34 @@ describe('SCH-10 historical chat and Activities (real Router/Query/client + MSW)
     expect(writes).not.toHaveBeenCalled()
     expect(snapshot('run-a')).toEqual(original)
   })
+})
+
+it.each(['ordinary text', '/compact', '/plan', '/unknown', 'first line\nsecond line'])('keeps selected Run Stop bound to its original turn during control draft %j', async content => {
+  const source = installSelectedHandlers()
+  const active = source.states.get('run-a')!
+  active.sessionState = 'active'
+  active.activeTurn = { requestId: active.turns[0]!.requestId, nativeTurnId: 'native-a', startedAt: active.turns[0]!.createdAt }
+  active.turns[0]!.delivery = 'accepted'
+  active.turns[0]!.nativeTurnId = 'native-a'
+  const commands = vi.fn()
+  const controls = vi.spyOn(controlHooks, 'useSessionControls').mockReturnValue({
+    query: { isError: false }, mutation: { isPending: true }, command: commands, change: vi.fn(),
+  } as unknown as controlHooks.ComposerSessionControls)
+  const stops: Record<string, unknown>[] = []
+  server.use(http.post(`${selectedRoute}/interrupt`, async ({ request }) => {
+    stops.push(await request.json() as Record<string, unknown>)
+    return HttpResponse.json({ state: active })
+  }))
+  try {
+    await mountSelected()
+    await ready('run-a')
+    draft(content)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop chat' }))
+    await waitFor(() => expect(stops).toHaveLength(1))
+    expect(stops[0]).toMatchObject({ executionId: 'execution-run-a', conversationId: active.conversation!.id,
+      expectedNativeTurnId: 'native-a' })
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(content)
+    expect(source.posts).toEqual([])
+    expect(commands).not.toHaveBeenCalled()
+  } finally { controls.mockRestore() }
 })

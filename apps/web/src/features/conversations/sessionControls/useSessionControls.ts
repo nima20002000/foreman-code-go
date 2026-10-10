@@ -14,20 +14,22 @@ type ControlAttempt = { input: Change; draft?: PendingControl['draft']; scope: s
 
 function mergeSnapshot(previous: SessionControlState | undefined, incoming: SessionControlState) {
   if (!previous) return incoming
-  if (previous.profileKey !== incoming.profileKey
-    || previous.conversationId !== null && previous.conversationId !== incoming.conversationId
-    || incoming.revision < previous.revision) return previous
+  if (previous.conversationId !== null && previous.conversationId !== incoming.conversationId
+    || incoming.revision < previous.revision
+    || previous.profileKey !== incoming.profileKey && incoming.revision === previous.revision) return previous
   return incoming
 }
 
-export function useSessionControls(conversationId: string | undefined, workspaceId?: string, context?: AgentChatContext, executionId?: string) {
+export function useSessionControls(conversationId: string | undefined, {
+  workspaceId, context, executionId, enabled = true,
+}: { workspaceId?: string; context?: AgentChatContext; executionId?: string | undefined; enabled?: boolean } = {}) {
   const client = useQueryClient()
   const generation = sessionGeneration()
   const target = context ? [context.workspaceId, context.workflowId, context.workflowNodeId,
     context.agentId, context.runId ?? null] : conversationId
   const scope = JSON.stringify([workspaceId ?? 'operator', target, executionId ?? null])
   const key = ['session-controls', generation, workspaceId ?? 'operator', conversationId, context, executionId]
-  const query = useQuery({ queryKey: key, enabled: !!conversationId || !!context,
+  const query = useQuery({ queryKey: key, enabled: enabled && (!!conversationId || !!context),
     queryFn: async ({ signal }) => {
       const incoming = conversationId ? await sessionControlsApi.read(conversationId, workspaceId, { signal })
         : await sessionControlsApi.readContext(context!, executionId, { signal })

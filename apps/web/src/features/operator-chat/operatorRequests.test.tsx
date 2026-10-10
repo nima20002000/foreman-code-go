@@ -94,6 +94,7 @@ it('keeps a failed app request and resumes its instruction on explicit retry', a
   expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveValue('Install the selected computer harness')
   expect(useOperatorChatStore.getState().request).toBeUndefined()
   expect(api.create).toHaveBeenCalledTimes(2)
+  expect(api.create.mock.calls[1]![0]).toEqual(api.create.mock.calls[0]![0])
   expect(api.send).not.toHaveBeenCalled()
 })
 
@@ -183,5 +184,33 @@ it('keeps a replacement app request when an earlier creation is still pending', 
   expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveValue('Replacement app instruction')
   expect(useConversationDraftStore.getState().drafts['superseded-chat']).toBeUndefined()
   expect(api.create).toHaveBeenCalledTimes(2)
+  expect(api.send).not.toHaveBeenCalled()
+})
+
+it('keeps a Settings handoff draft reachable after switching chats and reopening history', async () => {
+  const original = operatorState({ turnState: 'idle', activeRequestId: null })
+  const settingsRequest = operatorState({
+    conversation: { ...original.conversation, id: 'new-chat', title: 'Settings request' },
+    messages: [],
+    turnState: 'idle',
+    activeRequestId: null,
+  })
+  api.create.mockResolvedValue({ conversation: settingsRequest.conversation })
+  api.get.mockImplementation(async id => id === 'new-chat' ? settingsRequest : original)
+  api.list.mockResolvedValue({ conversations: [original, settingsRequest].map(summarizeOperatorConversation) })
+  mount()
+  await screen.findByRole('textbox', { name: 'Message' })
+  act(() => askOperator('Configure the selected harness', { send: false }))
+  await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Configure the selected harness')
+  fireEvent.click(screen.getByRole('button', { name: 'Open history' }))
+  fireEvent.click(screen.getByRole('button', { name: /^First conversation/ }))
+  await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('conversation-one'))
+  cleanup()
+  client.clear()
+  mount()
+  fireEvent.click(await screen.findByRole('button', { name: /^Settings request/ }))
+  expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveValue('Configure the selected harness')
+  expect(api.create).toHaveBeenCalledOnce()
   expect(api.send).not.toHaveBeenCalled()
 })

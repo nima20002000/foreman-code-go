@@ -76,3 +76,23 @@ describe('Operator chat SSE lifecycle', () => {
     } finally { await app.close() }
   })
 })
+
+it('numbers only events delivered to this conversation, even when other chats publish between them', async () => {
+  const { app, chat } = fixture()
+  const address = await app.listen({ host: '127.0.0.1', port: 0 })
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  try {
+    const response = await fetch(`${address}/api/operator/conversations/conversation-stream/events`)
+    reader = response.body!.getReader()
+    await reader.read()
+    chat.events.publish('conversation-stream', 'delta', { text: 'first' })
+    chat.events.publish('another-chat', 'delta', { text: 'private' })
+    chat.events.publish('conversation-stream', 'delta', { text: 'second' })
+    let wire = ''
+    while (!wire.includes('second')) wire += new TextDecoder().decode((await reader.read()).value)
+    const events = wire.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+    expect(events.map(event => event.id)).toEqual([0, 1])
+    expect(events.map(event => event.data.text)).toEqual(['first', 'second'])
+    expect(wire).not.toContain('private')
+  } finally { await reader?.cancel(); await app.close() }
+})

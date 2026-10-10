@@ -5,7 +5,8 @@ import { TextTruncationNotice } from '../conversations/TextTruncationNotice'
 import { MessageBubble } from '../../shared/ui/nocturne'
 import { OperatorActivityList } from './OperatorActivityList'
 import { OperatorThinking } from './OperatorThinking'
-import { operatorTextPartKey, type OperatorTextProjection } from './operatorTextProjection'
+import { messageTextPartKey, savedTextPartKeys, selectLiveTextTimeline } from '../conversations/chatTimeline'
+import type { OperatorTextProjection } from './operatorTextProjection'
 
 /** Allocate activity once over the complete loaded message sequence. */
 export function OperatorMessages({ messages, activities, activeRequestId, working = false, partialText = '', thinkingText = '', parts, timeline, modelCatalogs, onBrowse }: {
@@ -13,6 +14,10 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
   partialText?: string; thinkingText?: string; parts?: Record<string, string>; timeline?: OperatorTextProjection; onBrowse(): void;
   modelCatalogs?: Partial<Record<HarnessOptions['harness'], HarnessOptions['models']>>;
 }) {
+  if (timeline && timeline.requestId === activeRequestId) {
+    partialText = selectLiveTextTimeline(messages, activeRequestId, timeline.timeline)
+      .filter(item => item.kind === 'text').map(item => item.text).join('\n\n')
+  }
   // Reasoning stays at its original position: it follows the nearest earlier
   // ordinary message (or leads the list when none precedes it).
   const leadingReasoning: Message[] = []
@@ -24,7 +29,6 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
     reasoningAfter.set(anchorId, [...reasoningAfter.get(anchorId) ?? [], message])
   }
   messages = messages.filter((message) => message.activityChannel !== 'reasoning')
-  const partKey = (message: Message) => message.activityNative ? operatorTextPartKey(message.activityNative, message.activityChannel) : message.nativeMessageId
   const rows: Array<{ key: string; message?: Message; requestId?: string; live?: boolean; reasoning?: Message }> = []
   for (const message of leadingReasoning) rows.push({ key: message.id, reasoning: message })
   const acceptedModels = new Map<string, NonNullable<Message['acceptedModel']>>()
@@ -78,14 +82,17 @@ export function OperatorMessages({ messages, activities, activeRequestId, workin
         && BigInt(entry.sequence) > priorActivity && (live || boundary === undefined || BigInt(entry.sequence) <= boundary)) : []
       if (assistant && requestId) lastActivity.set(requestId,
         boundary ?? entries.reduce((max, entry) => BigInt(entry.sequence) > max ? BigInt(entry.sequence) : max, priorActivity))
-      const savedIds = new Set(messages.filter((entry) => entry.requestId === requestId && entry.nativeMessageId).map(partKey))
-      const nativePartKey = message ? partKey(message) : undefined
+      const savedIds = savedTextPartKeys(messages, requestId)
+      const nativePartKey = message ? messageTextPartKey(message) : undefined
       const streamed = nativePartKey && message?.nativeMessageComplete === false && active ? parts?.[nativePartKey] : undefined
       const content = streamed !== undefined && (timeline?.finalParts?.[nativePartKey ?? ''] || streamed.startsWith(message?.content ?? '')) ? streamed : message?.content
       let orderedTimeline: OperatorTextProjection['timeline'] | undefined
       if (assistant && timeline && timeline.requestId === requestId && timeline.timeline.length) {
-        if (live) orderedTimeline = timeline.timeline.filter((item) => item.kind === 'activity'
-          ? entries.some((entry) => entry.id === item.id) : !savedIds.has(item.partId))
+        if (live) {
+          const selected = selectLiveTextTimeline(messages, requestId, timeline.timeline)
+            .filter(item => item.kind === 'text' || entries.some(entry => entry.id === item.id))
+          if (selected.length) orderedTimeline = selected
+        }
         else if (content) {
           const nativePart = nativePartKey
           const hasPart = timeline.timeline.some((item) => item.kind === 'text' && item.partId === nativePart)

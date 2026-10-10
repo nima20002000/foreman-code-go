@@ -23,3 +23,17 @@ it('requires a fresh bootstrap, deduplicates and repairs gaps without comparing 
   source.snapshot(); source.event(0); expect(calls.event).toHaveBeenCalledTimes(3)
   close(); source.snapshot(); source.event(4); expect(calls.snapshot).toHaveBeenCalledTimes(2)
 })
+
+it('projects consecutive conversation-local events without resetting the live connection', () => {
+  vi.stubGlobal('EventSource', Source)
+  const calls = { snapshot: vi.fn(), event: vi.fn(), reconnect: vi.fn(), connection: vi.fn() }
+  const close = subscribeOperatorChat('chat', calls)
+  try {
+    Source.current.snapshot()
+    Source.current.event(0)
+    Source.current.event(1)
+    expect(calls.event.mock.calls.map(([event]) => event.id)).toEqual([0, 1])
+    expect(calls.reconnect).not.toHaveBeenCalled()
+    expect(calls.connection).toHaveBeenLastCalledWith('connected')
+  } finally { close() }
+})

@@ -78,7 +78,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     description: 'Soft-delete an owned idle Operator chat, removing it from history and revoking its delegated '
       + 'chat credentials. Stop an active turn first. Requires global operator_chat:write. Reuse commandId with '
       + 'the same conversationId after an uncertain response; a replay does not delete the chat again after '
-      + 'restoration. Use operator_chat_restore to undo and operator_chat_list to read persisted history.',
+      + 'restoration. New outcomes include the saved deletion revision; historical replays retain their original response. Use operator_chat_restore to undo and operator_chat_list to read persisted history.',
     inputSchema: OperatorConversationDeletionInputSchema,
     outputSchema: DeleteOperatorConversationResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
@@ -88,7 +88,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
     description: 'Restore an owned deleted Operator chat to history. Previously revoked delegated chat credentials '
       + 'stay revoked. Requires global operator_chat:write and an idle chat. Reuse commandId with the same '
       + 'conversationId after an uncertain response; a replay does not restore the chat again after another deletion. '
-      + 'Read back with operator_chat_list or operator_chat_get, requiring operator_chat:read.',
+      + 'New outcomes include the restored revision; historical replays retain their original response. Read back with operator_chat_list or operator_chat_get, requiring operator_chat:read.',
     inputSchema: OperatorConversationDeletionInputSchema,
     outputSchema: DeleteOperatorConversationResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -128,7 +128,7 @@ export function registerSettingsTools(server: McpServer, context: OperatorReques
       context.services.operatorChat!.activityPage(conversationId, context.principal, query)))
   }
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_send')) server.registerTool('operator_chat_send', {
-    description: 'Use operator_chat_controls_update for bare /compact, /plan and /plan off. For one Plan task send sessionMode: plan with its task text. Send an owned Operator message and return protected conversation state. Reserve configurationVersionId from operator_chat_get. For a different harness, also supply forkExpectedRevision and defaultsRevision from agent_defaults_get; existing chats retain their access policy. Reuse the exact request ID and command fields after a lost response. Set recovery to receipt to read acceptance without starting or retrying native work; OPERATOR_RECEIPT_NOT_FOUND is not proof of non-delivery. Requires operator_chat:read and operator_chat:write, including receipt-only recovery.',
+    description: 'Use operator_chat_controls_update for bare /compact, /plan and /plan off. For one Plan task send sessionMode: plan with its task text. Send an owned Operator message and return protected conversation state. Reserve configurationVersionId from operator_chat_get. For a different harness, also supply forkExpectedRevision and defaultsRevision from agent_defaults_get; existing chats retain their access policy. A showThinking-only change retains the owned native session and immutable prior turn configuration. Reuse the exact request ID and command fields after a lost response. Set recovery to receipt to read acceptance without starting or retrying native work; OPERATOR_RECEIPT_NOT_FOUND is not proof of non-delivery. Requires operator_chat:read and operator_chat:write, including receipt-only recovery.',
     inputSchema: z.object({ conversationId: z.string().min(1), request: SendOperatorMessageRequestSchema }).strict(),
     outputSchema: SendOperatorMessageResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

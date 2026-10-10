@@ -146,3 +146,14 @@ it('accepts independent canonical message advances from equal-scope authorized r
     expect(accepted.activitySnapshot?.sourceRevisions).toEqual(incoming.activitySnapshot.sourceRevisions)
   }
 })
+
+it('keeps native-item identity when the Board adapter merges a canonical empty final and a distinct child at part zero', () => {
+  const native = { harness: 'codex', sessionId: 'session', turnId: 'turn', itemId: 'item', partId: '0' }
+  const partial: Message = { id: 'message', conversationId: 'chat', requestId: 'request', role: 'assistant',
+    content: 'Provisional', revision: '1', activityNative: native, nativeMessageId: 'item', nativeMessageComplete: false }
+  const final = { ...partial, revision: '2', content: '', nativeMessageComplete: true }
+  const child = { ...partial, id: 'child', nativeMessageId: 'child', activityNative: { ...native, itemId: 'child' },
+    content: 'Child answer' }
+  expect(mergeChatMessages([partial], [final, child], [partial])).toEqual([final, child])
+  expect(mergeChatMessages([final], [{ ...child, id: final.id, revision: '3' }])).toEqual([final])
+})

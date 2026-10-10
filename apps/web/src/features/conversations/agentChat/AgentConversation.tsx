@@ -1,3 +1,4 @@
+import { ChatPrimaryActions } from '../ChatPrimaryActions'
 import { CompactionActivity } from '../sessionControls/CompactionActivity'
 import { useSessionControls } from '../sessionControls/useSessionControls'
 import { compactionBlocksSend, parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
@@ -40,7 +41,9 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const conversation = state?.conversation
   const retired = conversation?.harness === 'opencode' || state?.capabilities.harness === 'opencode'
   const conversationId = conversation?.id
-  const sessionControls = useSessionControls(conversationId, context.workspaceId, context, selected?.selection.executionId)
+  const sessionControls = useSessionControls(conversationId, {
+    workspaceId: context.workspaceId, context, executionId: selected?.selection.executionId,
+  })
   const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
     download: `/api/workspaces/${encodeURIComponent(context.workspaceId)}/agent-chat/conversations/${encodeURIComponent(conversationId)}/files/{fileId}/revisions/{revisionId}/content`,
   }) : undefined, [context.workspaceId, conversationId])
@@ -236,7 +239,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
           title={steerReason} aria-describedby={reasonId} onClick={() => submit('steer')}>Steer</Button> : null}
         {state?.activeTurn && (state.capabilities.interruptAndSend || state.capabilities.unavailable.interruptAndSend) ? <Button size="sm" disabled={!!interruptReason || empty}
           title={interruptReason} aria-describedby={reasonId} onClick={() => submit('interrupt_and_send')}>Interrupt and send</Button> : null}
-        {canStop ? <Button size="sm" disabled={!!stopReason} title={stopReason} aria-describedby={reasonId} onClick={() => { chat.stop(); focus() }}>Stop chat</Button> : null}
+        {canStop ? <ChatPrimaryActions stopReason={stopReason} describedBy={reasonId}
+          onStop={() => { chat.stop(); focus() }} /> : null}
       </div> : null}
     </div> : null}
     {commandError?.draftKey === chat.draftKey

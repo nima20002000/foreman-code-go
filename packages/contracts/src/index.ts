@@ -1545,7 +1545,11 @@ export const CreateOperatorConversationRequestSchema = z.object({
   commandId: IdSchema.optional(),
   title: z.string().trim().min(1).optional(),
 }).strict();
-export const DeleteOperatorConversationResponseSchema = z.object({ conversationId: IdSchema }).strict();
+export const DeleteOperatorConversationResponseSchema = z.object({
+  conversationId: IdSchema,
+  // Historical command receipts retain their original response without a revision.
+  revision: z.number().int().nonnegative().optional(),
+}).strict();
 export const OperatorConversationDeletionInputSchema = z.object({
   conversationId: IdSchema,
   commandId: IdSchema,

@@ -118,3 +118,33 @@ describe('Phase 1 API boundary', () => {
     expect(fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([input, input])
   })
 })
+
+it.each(['headers', 'body'])('bounds an Operator send when its response %s never settles and aborts the transport', async phase => {
+  const state = (await import('../../features/operator-chat/pr17-test-fixtures')).operatorState({
+    turnState: 'idle', activeRequestId: null,
+  })
+  let receivedSignal: AbortSignal | undefined
+  let finishHeaders: ((response: Response) => void) | undefined
+  let finishBody: ReadableStreamDefaultController | undefined
+  const fetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    receivedSignal = init?.signal ?? undefined
+    if (phase === 'headers') return await new Promise<Response>(resolve => { finishHeaders = resolve })
+    return new Response(new ReadableStream({ start(controller) { finishBody = controller } }),
+      { headers: { 'content-type': 'application/json' } })
+  })
+  const client = new ApiClient({ fetch })
+  vi.useFakeTimers()
+  try {
+    const sending = client.sendOperatorMessage(state.conversation.id, { requestId: 'same-request', content: 'Continue' },
+      { timeoutMs: 100 })
+    const rejection = expect(sending).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' })
+    await vi.advanceTimersByTimeAsync(100)
+    await rejection
+    expect(receivedSignal?.aborted).toBe(true)
+    expect(fetch).toHaveBeenCalledOnce()
+  } finally {
+    finishHeaders?.(new Response('{}'))
+    finishBody?.close()
+    vi.useRealTimers()
+  }
+})

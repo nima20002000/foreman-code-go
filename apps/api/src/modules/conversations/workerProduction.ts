@@ -37,6 +37,7 @@ import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
 import { createMainWorkerClaudeFiles } from './mainWorkerClaudeFiles.js'
 import type { AgentFileToolService } from '../files/tools/service.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
 import { definedProperties } from '../definedProperties.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
@@ -125,9 +126,17 @@ export function createProductionWorkerConversations(input: {
         ? { kind: 'operator', operatorId: configuration.operatorId }
         : { kind: 'agent', workspaceId: configuration.workspaceId, agentId: configuration.agentId,
           workflowId: original.workflow_id, workflowNodeId: original.workflow_node_id }
+      const savedBinding = original.worker_conversation_binding
+        ? WorkerConversationBindingSchema.parse(original.worker_conversation_binding) : undefined
+      let executionConfiguration = configuration
+      if (savedBinding && savedBinding.owner.configurationVersionId !== configuration.id
+        && savedBinding.owner.kind === 'operator' && 'operatorId' in configuration) {
+        const previous = await input.operators.configuration(savedBinding.owner.configurationVersionId)
+        executionConfiguration = workerExecutionConfiguration(savedBinding, configuration, previous)
+      }
       const requestedBinding = WorkerConversationBindingSchema.parse({ owner: { ...ownerFields,
-        conversationId: options.conversationId, configurationVersionId: configuration.id,
-        configurationHash: commandInputHash(configuration) }, harness: configuration.harness.harness,
+        conversationId: options.conversationId, configurationVersionId: executionConfiguration.id,
+        configurationHash: commandInputHash(executionConfiguration) }, harness: configuration.harness.harness,
         profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess,
         ...(original.kind === 'agent' && original.record.systemPrompt ? { systemPrompt: original.record.systemPrompt } : {}),
         ...(directoryBinding ? { directoryBinding } : {}) })
@@ -238,7 +247,9 @@ export function createProductionWorkerConversations(input: {
       const claudeFiles = configuration.harness.harness === 'claude' && input.fileService
         ? createMainWorkerClaudeFiles({ pool: input.pool, binding: owner, service: input.fileService,
           allowMutation: configuration.harness.sandbox !== 'read-only' }) : undefined
-      const manager = new WorkerConversationManager({ binding, configuration, channel, bridge, current,
+      const manager = new WorkerConversationManager({ binding, configuration: executionConfiguration, channel, bridge, current,
+        ...(executionConfiguration !== configuration && 'operatorId' in configuration
+          ? { acceptedConfiguration: configuration } : {}),
         ...(changingAccess ? { previousBinding: originalBinding } : {}),
         sourceWorkingDirectory: options.workingDirectory,
         ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
