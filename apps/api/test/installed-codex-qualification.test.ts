@@ -163,9 +163,13 @@ describe('actual Main and installed Codex qualification read capability', () => 
 
       f.facts.harness.qualification.status = 'qualified'
       const before = await stat(payload)
-      await writeFile(payload, 'payload-two')
-      await utimes(payload, before.atime, before.mtime)
+      f.readFacts.mockImplementationOnce(async () => {
+        await writeFile(payload, 'payload-two')
+        await utimes(payload, before.atime, before.mtime)
+        return structuredClone(f.facts)
+      })
       await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+      expect(f.readFacts).toHaveBeenCalledTimes(4)
       expect(fs.createReadStream).toHaveBeenCalledTimes(3)
     } finally {
       await rm(root, { recursive: true, force: true })
