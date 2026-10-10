@@ -79,7 +79,6 @@ export async function selectRunChatExecution(
     for (const execution of page) {
       if (executionId && execution.id !== executionId) continue
       if (execution.runId !== context.runId || execution.workflowNodeId !== context.workflowNodeId) {
-        if (executionId) staleRunChat()
         continue
       }
       if (execution.agentId !== context.agentId || execution.agentConfigurationVersionId !== configurationVersionId) staleRunChat()

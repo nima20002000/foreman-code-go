@@ -229,6 +229,34 @@ describe('SCH-06 historical Agent chat identity and fail-closed selection', () =
     expect(f.managers).not.toHaveBeenCalled()
   })
 
+  it('rejects an execution from another node without scanning or selecting the available execution', async () => {
+    const f = fixture()
+    const other = { ...f.source, id: 'other-node-execution', workflowNodeId: 'another-node' }
+    f.executions.set(f.target.runId, [f.source, other])
+    const pages = vi.spyOn(f.runPort, 'executionPages')
+
+    await expect(selected(f, f.target.runId, other.id))
+      .rejects.toMatchObject({ code: 'RUN_CHAT_EXECUTION_NOT_FOUND', status: 404 })
+
+    expect(pages).not.toHaveBeenCalled()
+    expect(f.repository.state).not.toHaveBeenCalled()
+    expect(f.repository.admit).not.toHaveBeenCalled()
+    expect(f.managers).not.toHaveBeenCalled()
+  })
+
+  it.each(['agentId', 'agentConfigurationVersionId'] as const)(
+    'rejects mismatched %s on an execution in the selected Run and node', async field => {
+      const f = fixture()
+      f.executions.set(f.target.runId, [{ ...f.source, [field]: 'mismatched' }])
+
+      await expect(selected(f)).rejects.toMatchObject({ code: 'AGENT_CHAT_CONTEXT_STALE', status: 409 })
+
+      expect(f.repository.state).not.toHaveBeenCalled()
+      expect(f.repository.admit).not.toHaveBeenCalled()
+      expect(f.managers).not.toHaveBeenCalled()
+    },
+  )
+
   it('requires an explicit execution for multiple attempts and never falls back from a missing source to a session-bearing attempt', async () => {
     const f = fixture()
     const later = { ...f.source, id: 'sch06-second-attempt', attempt: 2, nativeSessionId: 'newer-source' }
