@@ -76,21 +76,44 @@ afterEach(() => {
 })
 
 describe('Runs window and URL selection (real HTTP boundary + MSW)', () => {
-  it('contains only saved runs, preserves server order, and disambiguates only the shared date', async () => {
+  it('lists New run first, preserves saved-run order, and disambiguates only the shared date', async () => {
     await mount()
     const menu = await openMenu()
     const labels = labelRuns([runA, runB, runC])
     await within(menu).findByRole('menuitemradio', { name: labels[2]!.label })
     const rows = within(menu).getAllByRole('menuitemradio')
     expect(within(menu).queryByText('Current workflow')).not.toBeInTheDocument()
-    expect(rows.map((row) => row.getAttribute('data-run-id'))).toEqual(['run-a', 'run-b', 'run-c'])
-    expect(rows[0]).toHaveTextContent('short-A')
-    expect(rows[1]).toHaveTextContent('short-B')
-    expect(rows[2]).toHaveTextContent('short-C') // The Run column always names each row.
-    await userEvent.click(rows[1]!)
+    expect(rows[0]).toHaveAccessibleName('New run')
+    expect(rows[0]).toHaveAttribute('aria-checked', 'true')
+    expect(rows.slice(1).map((row) => row.getAttribute('data-run-id'))).toEqual(['run-a', 'run-b', 'run-c'])
+    expect(rows[1]).toHaveTextContent('short-A')
+    expect(rows[2]).toHaveTextContent('short-B')
+    expect(rows[3]).toHaveTextContent('short-C') // The Run column always names each row.
+    await userEvent.click(rows[2]!)
     await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-b')))
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Runs$/ })).toHaveFocus()
+  })
+
+  it('returns to the current workflow through New run and marks it selected', async () => {
+    const { router } = await mount(`${runsUrl('run-a')}&agentId=agent-one#details`)
+    const menu = await openMenu()
+    const draft = within(menu).getByRole('menuitemradio', { name: 'New run' })
+    expect(draft).toHaveAttribute('aria-checked', 'false')
+    await userEvent.click(draft)
+    await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity(null)))
+    expect(screen.getByLabelText('Snapshot identity')).toHaveTextContent('none')
+    expect(router.history.location.href).not.toContain('selectedRunId')
+    expect(router.history.location.href).toContain('agentId=agent-one')
+    expect(router.history.location.href).toContain('#details')
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Runs$/ })).toHaveFocus()
+    const reopened = await openMenu()
+    expect(within(reopened).getByRole('menuitemradio', { name: 'New run' })).toHaveAttribute('aria-checked', 'true')
+    const savedRows = within(reopened).getAllByRole('menuitemradio').slice(1)
+    for (const row of savedRows) expect(row).toHaveAttribute('aria-checked', 'false')
+    await userEvent.keyboard('{Enter}')
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
   it('gives unstarted Runs distinct visible and accessible labels', async () => {
@@ -136,7 +159,7 @@ describe('Runs window and URL selection (real HTTP boundary + MSW)', () => {
     server.use(http.get(listRoute, () => HttpResponse.json(page([newer, runA, runB, runC]))))
     await act(async () => { await client.invalidateQueries({ queryKey: runsSelectorKeys.list(scope) }) })
     await within(menu).findByRole('menuitemradio', { name: labelRuns([newer, runA, runB, runC])[0]!.label })
-    expect(within(menu).getAllByRole('menuitemradio')[0]).toHaveAttribute('data-run-id', 'run-new')
+    expect(within(menu).getAllByRole('menuitemradio')[1]).toHaveAttribute('data-run-id', 'run-new')
     expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-a'))
     expect(router.history.location.href).toBe(href)
     expect(latest!.isCurrent(ticket)).toBe(true)
@@ -234,7 +257,8 @@ describe('Runs window and URL selection (real HTTP boundary + MSW)', () => {
     server.use(http.get(listRoute, () => deniedResponse(403)))
     await act(async () => { await client.invalidateQueries({ queryKey: runsSelectorKeys.list(scope) }) })
     await within(menu).findByText('No access')
-    expect(within(menu).queryAllByRole('menuitemradio')).toHaveLength(0)
+    const draft = within(menu).getByRole('menuitemradio', { name: 'New run' })
+    expect(within(menu).getAllByRole('menuitemradio')).toEqual([draft])
     expect(within(menu).queryByRole('menuitem', { name: 'More' })).not.toBeInTheDocument()
   })
 
@@ -252,7 +276,7 @@ describe('Runs window and URL selection (real HTTP boundary + MSW)', () => {
     await within(menu).findByRole('menuitemradio', { name: labelRuns([runA, runB])[1]!.label })
     expect(calls).toHaveLength(2)
     expect(calls[1]!.searchParams.get('cursor')).toBe('opaque:/+?=&')
-    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(2)
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(3)
     expect(within(menu).getByRole('menuitem', { name: 'No more' })).toHaveAttribute('aria-disabled', 'true')
   })
 
@@ -291,7 +315,7 @@ describe('Runs window and URL selection (real HTTP boundary + MSW)', () => {
       expect(within(menu).getAllByRole('menuitemradio').at(-1)).toHaveFocus()
       await user.keyboard('{Home}')
       expect(within(menu).getAllByRole('menuitemradio')[0]).toHaveFocus()
-      await user.keyboard('{Enter}')
+      await user.keyboard('{ArrowDown}{Enter}')
       await waitFor(() => expect(screen.getByLabelText('Selected identity')).toHaveTextContent(selectedIdentity('run-a')))
       expect(trigger).toHaveFocus()
       await user.keyboard('{ArrowDown}{Escape}')

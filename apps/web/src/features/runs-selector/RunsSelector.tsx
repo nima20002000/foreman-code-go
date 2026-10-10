@@ -102,6 +102,12 @@ export function RunsSelector({ selection, className = '' }: RunsSelectorProps) {
       {rows.length > 0 && <div className="runs-selector-head" aria-hidden="true">
         <span /><span>Status</span><span>Started</span><span>Trigger</span><span>Run</span>
       </div>}
+      <button type="button" role="menuitemradio" aria-label="New run"
+        aria-checked={identity.runId === null && !selection.invalid} tabIndex={-1}
+        className="runs-selector-option" onClick={() => choose(null)}>
+        <span className="runs-selector-mark" aria-hidden="true">{identity.runId === null && !selection.invalid ? '✓' : ''}</span>
+        <span style={{ gridColumn: '2 / -1' }}>New run</span>
+      </button>
       {rows.map(({ run, time, status, label }) => <button key={run.runId} type="button" role="menuitemradio"
         aria-label={label} aria-checked={identity.runId === run.runId} tabIndex={-1} className="runs-selector-option"
         data-run-id={run.runId} data-status={run.status} onClick={() => choose(run.runId)}>
