@@ -331,6 +331,19 @@ it('opens accepted branch and execution facts from an Agent on the standard sele
   expect(screen.queryByRole('button', { name: /Save|Start|Request cancellation/ })).toBeNull()
 })
 
+it('shows the server message and code when a saved execution result cannot be read', async () => {
+  await inspectorApi()
+  const error = { code: 'REPEAT_INPUT_NOT_ACCEPTED',
+    message: 'The repeat operation conflicts with its pinned durable evidence.' }
+  server.use(http.get(`${inspectionRoute}/:executionId`, () => HttpResponse.json({ error }, { status: 409 })))
+  await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' }))
+  const inspector = await screen.findByRole('region', { name: 'Run node inspector: X before rename' })
+  expect(await within(inspector).findByText(`Execution result unavailable. ${error.message}`)).toBeInTheDocument()
+  expect(within(inspector).getByText(error.code)).toBeInTheDocument()
+})
+
 it('shows an Agent active-time timeout in the Run inspector without expanding raw results', async () => {
   const detail = await inspectorApi()
   const failure = { code: 'EXECUTION_ACTIVE_TIMEOUT',

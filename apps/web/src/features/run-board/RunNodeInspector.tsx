@@ -3,6 +3,7 @@ import type { RunBoardNodeSnapshot } from '@foreman-code/contracts/run-snapshots
 import type { RepeatGraphScopeV3, RunExecutionSummary } from '@foreman-code/contracts/wave25'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
+import { ApiError } from '../../shared/api/client'
 import { Button } from '../../shared/ui/nocturne'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { isRunAccessError, runReadErrorLabel } from '../runs-selector/query'
@@ -87,8 +88,13 @@ function NodeExecutionResult({ selection, scope, node, executionId }: {
 }) {
   const query = useRunNodeRead(selection, [node.id, executionId], signal => readRunExecution(scope, executionId, { signal }))
   if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
-  if (query.isError || query.data && !matchesNode(node, query.data.execution)) return <p role="status">
-    Execution result unavailable. {runReadErrorLabel(query.error)}
+  if (query.isError) return <p role="status">
+    Execution result unavailable. {ApiError.is(query.error)
+      ? <>{query.error.message} <code>{query.error.code}</code></>
+      : runReadErrorLabel(query.error)}
+  </p>
+  if (query.data && !matchesNode(node, query.data.execution)) return <p role="status">
+    Execution result unavailable. Execution does not match this saved node.
   </p>
   if (!query.data) return <p role="status">Reading execution result…</p>
   const detail = query.data

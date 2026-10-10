@@ -3,7 +3,7 @@ import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/con
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction } from '../src/modules/run-graph/connection.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
-import { readRepeatAcceptedResultLocked } from '../src/modules/runs/repeatPostgres.js'
+import { readRecordedExecutionResultLocked, readRepeatAcceptedResultLocked } from '../src/modules/runs/repeatPostgres.js'
 import { repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 import { currentExecutionReadUnit } from './helpers/currentExecutionReadUnit.js'
 import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
@@ -42,6 +42,27 @@ async function rejectsRead(f: Fixture) {
 }
 
 describe.each(br2001Providers)('BR2-001: %s durable current choice revalidation', (provider) => {
+  it('reads historical results while retaining digest and canonical receipt checks', async () => {
+    const f = fixture(provider, `historical-result-${provider}`)
+    try {
+      const terminal = br2001Terminal(f.state.execution, provider, br2001Text('pass'))
+      const resolution = claimedResolution(f, terminal.execution)
+      const historical = { ...resolution, value: { ...resolution.value, branchEnded: false } }
+      f.seedAccepted(terminal.execution, historical)
+      const read = () => f.transaction(sql => readRecordedExecutionResultLocked(sql, f.snapshot(), f.candidate.id))
+      expect(await read()).toEqual(terminal.result)
+      expect(f.state.resolution).toEqual(historical)
+      await expect(f.read()).rejects.toMatchObject({ code: 'REPEAT_INPUT_NOT_ACCEPTED' })
+      f.state.result!.result_digest = '0'.repeat(64)
+      await expect(read()).rejects.toMatchObject({ code: 'REPEAT_INPUT_NOT_ACCEPTED' })
+      f.seedAccepted(terminal.execution, historical)
+      f.state.receipts = f.state.receipts.filter(row => row.evidence.sourceKind !== 'node_resolution')
+      await expect(read()).rejects.toMatchObject({ code: 'REPEAT_PUBLICATION_RECEIPT_CONFLICT' })
+    } finally {
+      await f.connection.close()
+    }
+  })
+
   it.each(['pass', 'issues'])('reads %s from the exact accepted raw carrier without rewriting it', async (outcome) => {
     const f = fixture(provider, `br2001-record-${provider}`)
     try {

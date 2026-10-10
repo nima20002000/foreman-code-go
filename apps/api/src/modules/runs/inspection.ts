@@ -24,7 +24,7 @@ import { assertRepeatCanonicalReceiptLocked } from '../run-graph/repeatReceipts.
 import { withCurrentRunRead } from './currentRead.js'
 import { readRecordedRepeatRunLocked, readRecordedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import {
-  readRepeatAcceptedResultLocked, readRepeatDecision, readRepeatExecutionLocked,
+  readRecordedExecutionResultLocked, readRepeatDecision, readRepeatExecutionLocked,
   type StoredRepeatExecution,
 } from './repeatPostgres.js'
 import {
@@ -284,7 +284,7 @@ export class RunInspectionService {
   }
 
   private async acceptedResult(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, stored: StoredInspectionExecution) {
-    if (stored.executorKind === 'agent') return readRepeatAcceptedResultLocked(sql, snapshot, stored.execution.id)
+    if (stored.executorKind === 'agent') return readRecordedExecutionResultLocked(sql, snapshot, stored.execution.id)
     if (!stored.accepted) {
       if (stored.terminalProcessed) await this.jobEffect(sql, scopeOf(snapshot), 'terminal.accept', stored.execution.id)
       return undefined

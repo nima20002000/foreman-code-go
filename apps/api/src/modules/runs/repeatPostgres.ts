@@ -1323,29 +1323,52 @@ export function readRepeatExecutionLocked(sql: GraphTransactionSql, snapshot: Ac
   }, { runId: snapshot.run.id, executionId })
 }
 
-/** An accepted flag alone is not an accepted v3 result. The immutable terminal,
- * exact occurrence resolution, result bytes/digest and canonical receipt agree. */
-export async function readRepeatAcceptedResultLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
-  executionId: string): Promise<HarnessExecution['result']> {
-  const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
+async function readStoredExecutionResultLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
+  stored: StoredRepeatExecution): Promise<HarnessExecution['result']> {
   if (!stored.accepted) return undefined
-  const { run, version } = snapshot, { execution, ref } = stored
+  const { run } = snapshot
+  const { execution, ref } = stored
   const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
     workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
   const rows = await sql.query<{ occurrence_id: string | null; result_json: string; result_digest: string }>(
-    'select occurrence_id,result_json,result_digest from run_repeat_results where execution_id=$1 and run_id=$2', [executionId, run.id])
-  const resolutions = await sql.query<{ record: unknown }>(
-    'select record from run_repeat_resolutions where run_id=$1 and occurrence_key=$2 and workflow_node_id=$3',
-    [run.id, ref.occurrence?.occurrenceId ?? '', ref.nodeId])
-  const result = rows.rows[0], resolution = resolutions.rows[0]
-  if (rows.rows.length !== 1 || resolutions.rows.length !== 1 || !result || !resolution
+    'select occurrence_id,result_json,result_digest from run_repeat_results where execution_id=$1 and run_id=$2',
+    [execution.id, run.id])
+  const result = rows.rows[0]
+  if (rows.rows.length !== 1 || !result
     || execution.state !== 'completed' || execution.result?.outcome !== 'succeeded'
     || result.occurrence_id !== (ref.occurrence?.occurrenceId ?? null)
     || !sameRepeatValue(AcceptedCurrentNodeResultSchema.parse(JSON.parse(result.result_json)), execution.result)
-    || result.result_digest !== repeatDigest(execution.result, 64 * 1024)
-    || !sameRepeatValue(ResolutionSchema.parse(resolution.record), repeatTerminalResolution(version, scope, ref, execution))) {
+    || result.result_digest !== repeatDigest(execution.result, 64 * 1024)) {
     return repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
   }
-  await readRepeatEffectReceipt(sql, scope, 'terminal.accept', executionId)
+  await readRepeatEffectReceipt(sql, scope, 'terminal.accept', execution.id)
   return execution.result
+}
+
+/** Historical result reads validate stored bytes and receipts without recalculating routing. */
+export async function readRecordedExecutionResultLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
+  executionId: string): Promise<HarnessExecution['result']> {
+  const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
+  return readStoredExecutionResultLocked(sql, snapshot, stored)
+}
+
+/** Input admission also requires the result to agree with the terminal routing calculation. */
+export async function readRepeatAcceptedResultLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
+  executionId: string): Promise<HarnessExecution['result']> {
+  const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
+  const result = await readStoredExecutionResultLocked(sql, snapshot, stored)
+  if (!result) return undefined
+  const { run, version } = snapshot
+  const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
+    workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
+  const resolutions = await sql.query<{ record: unknown }>(
+    'select record from run_repeat_resolutions where run_id=$1 and occurrence_key=$2 and workflow_node_id=$3',
+    [run.id, stored.ref.occurrence?.occurrenceId ?? '', stored.ref.nodeId])
+  const resolution = resolutions.rows[0]
+  if (resolutions.rows.length !== 1 || !resolution
+    || !sameRepeatValue(ResolutionSchema.parse(resolution.record),
+      repeatTerminalResolution(version, scope, stored.ref, stored.execution))) {
+    return repeatConflict('REPEAT_INPUT_NOT_ACCEPTED')
+  }
+  return result
 }
