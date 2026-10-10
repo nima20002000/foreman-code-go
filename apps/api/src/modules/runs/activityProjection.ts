@@ -283,6 +283,8 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
         summary = `Agent turn ${status === 'running' ? 'started' : status}`
       } else if (native.type === 'thread.started') {
         summary = 'Native session created'
+      } else if (native.type === 'thread.reconciled') {
+        summary = 'Native session history reconciled'
       }
       if (native.subagent === true) summary = `Subagent: ${summary.replace(/^Agent /, '')}`
       detail = nativeDetail(native)

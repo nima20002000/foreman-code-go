@@ -5,14 +5,15 @@ export const isTerminalSubagent = (status: RunSubagent['status']) => ['completed
 export type SubagentLayoutNode = Pick<RunBoardNodeSnapshot, 'id' | 'kind' | 'position' | 'size'>
 
 /** Orb geometry shared with the stylesheet: a small agent circle with its name underneath. */
-export const SUBAGENT_ORB = { size: 40, labelWidth: 96, gap: 30, ring: 64 } as const
+export const SUBAGENT_ORB = { size: 40, labelWidth: 96, gap: 40, ring: 72 } as const
 
 /**
- * Screen angles in degrees (y grows downward). They avoid the agent card's
- * action buttons (upper right), its edge handles (left and right) and the
- * entry badge (straight down). A tenth child starts a wider ring.
+ * Screen angles in degrees (y grows downward), 40 degrees apart so labels never
+ * touch. They avoid the agent card's action buttons (upper right) and its edge
+ * handles (left and right); straight down clears the entry badge at this
+ * distance. An eighth child starts a wider ring.
  */
-const SLOTS = [135, 45, 160, 20, 112, 68, 205, 235, 265]
+const SLOTS = [130, 50, 90, 170, 10, 210, 250]
 
 export type SubagentOrb = { subagent: RunSubagent; x: number; y: number; from: { x: number; y: number }; parentId: string }
 

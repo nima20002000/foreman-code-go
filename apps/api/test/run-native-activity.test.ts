@@ -86,6 +86,11 @@ describe('native Run activity status', () => {
     }
   })
 
+  it('names reconciled native session history instead of reporting it unavailable', () => {
+    const activity = publicRunActivity({ ...row, native: { type: 'thread.reconciled' } }, fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(activity.summary).toBe('Native session history reconciled')
+  })
+
   it.each(['constructor', 'unknown/providerMethod'])('keeps unknown method %s redacted', (nativeMethod) => {
     const activity = publicRunActivity({ ...row, native: {
       type: 'native.notification', nativeMethod, deltaLength: 20, delta: 'private body',
