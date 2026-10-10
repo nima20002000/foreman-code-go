@@ -16,7 +16,9 @@ TimeoutStopSec=15
 KillMode=control-group
 Delegate=cpu memory pids
 UMask=0077
-NoNewPrivileges=yes
+# The host controller uses installed quota and rootless-container helpers.
+# CI workloads enforce no-new-privileges in their container policy.
+NoNewPrivileges=no
 
 [Install]
 WantedBy=default.target

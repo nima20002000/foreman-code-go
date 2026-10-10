@@ -28,6 +28,7 @@ async function fixture(t, options = {}) {
 
 test('service preview is inert; enabling requires its exact verified plan and only invokes owned user-service commands', async (t) => {
   const f = await fixture(t), plan = await f.service.plan();
+  assert.match(plan.unitText, /^NoNewPrivileges=no$/m);
   assert.deepEqual(f.calls, []);
   await assert.rejects(readFile(plan.unitPath), { code: 'ENOENT' });
   await assert.rejects(f.service.enable('a'.repeat(64)), /service_plan_changed/);
