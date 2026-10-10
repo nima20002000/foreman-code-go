@@ -77,7 +77,7 @@ async function fixture() {
     return { value, replayed: false }
   } } as unknown as PostgresCommandCoordinator
   const endpoint = { capabilities: () => [{ namespace: 'computer-sync-v1', mainCanRequest: true }],
-    request: async (deviceId: string, _namespace: string, payload: unknown, _options?: { signal: AbortSignal }) => {
+    request: async (deviceId: string, _namespace: string, payload: unknown) => {
       const index = targets.findIndex(target => target.hostRef.kind === 'device' && target.hostRef.deviceId === deviceId)
       const input = SyncChannelRequestSchema.parse(payload)
       return { payload: await computers[index]!.handle(input.request) }

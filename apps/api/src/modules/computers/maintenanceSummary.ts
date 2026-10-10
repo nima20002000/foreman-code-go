@@ -26,10 +26,10 @@ export function maintenanceReadResult(
         const recentFailure = task.state === 'failed' && finishedAt >= failureCutoff && finishedAt <= now
         return latest || recentFailure
       })
-      .map(({ outputTail: _outputTail, ...task }) => ({
-        ...task,
-        summary: task.summary.length > 300 ? `${task.summary.slice(0, 299)}…` : task.summary,
-      }))
+      .map(({ outputTail: _outputTail, ...task }) => {
+        void _outputTail
+        return { ...task, summary: task.summary.length > 300 ? `${task.summary.slice(0, 299)}…` : task.summary }
+      })
     return { ...computer, status: { ...status, tasks } }
   }) }
 }
