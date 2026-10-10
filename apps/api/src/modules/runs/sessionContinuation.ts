@@ -34,7 +34,7 @@ export async function readWorkflowSessionContinuation(sql: GraphTransactionSql,
   if (!canContinueWorkflowSession(previous, execution)) return undefined
   const configuration = AgentConfigurationVersionSchema.parse(row.configuration)
   if (configuration.harness.harness === 'codex'
-    && configuration.harness.advanced.sessionPersistence === 'ephemeral') return undefined
+    && configuration.harness.advanced?.sessionPersistence === 'ephemeral') return undefined
   const previousPlacement = await readExecutionPlacement(sql, previous.id)
   const placement = await readExecutionPlacement(sql, execution.id)
   if (!canContinueWorkflowSession(previous, execution, { previous: previousPlacement, current: placement })) return undefined

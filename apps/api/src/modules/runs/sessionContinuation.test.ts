@@ -53,7 +53,7 @@ describe('workflow session continuity', () => {
   it.each(['closed', 'live', 'different-harness', 'ephemeral'] as const)(
     'selects persisted history only when it is resumable (%s)', async scenario => {
       const harness = structuredClone(DEFAULT_HARNESS_DEFAULTS.codex)
-      if (scenario === 'ephemeral') harness.advanced.sessionPersistence = 'ephemeral'
+      if (scenario === 'ephemeral') harness.advanced!.sessionPersistence = 'ephemeral'
       const configuration = { id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1,
         prompt: {}, assignedSkills: [], harness, contentHash: 'fixture', createdAt: previous.createdAt }
       const sql = {

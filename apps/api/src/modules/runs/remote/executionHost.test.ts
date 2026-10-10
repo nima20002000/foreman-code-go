@@ -100,7 +100,7 @@ describe('actual worker native-port adapter', () => {
       }
       const { bindingHash: _bindingHash, ...pins } = f.placement
       const placement = scenario === 'changed-host' ? freezePlacement({ ...pins,
-        hostRef: { ...f.placement.hostRef, deviceId: randomUUID() } }) : f.placement
+        hostRef: { kind: 'device', mainId: f.placement.hostRef.mainId, deviceId: randomUUID() } }) : f.placement
       const intent = deriveDispatch(placement, { executionId: 'reactivated', occurrenceId: null,
         occurrenceIndex: 0, technicalAttempt: 1, attemptId: 'reactivated-attempt',
         operationId: 'reactivated-operation', inputDigest: f.intent.inputDigest, owner: f.intent.owner })
