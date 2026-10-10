@@ -280,8 +280,9 @@ function SelectedRunSubagents({ scope, nodes: flowNodes }: { scope: RepeatGraphS
   const flow = useReactFlow<RunNode>()
   const nodes: SubagentLayoutNode[] = flowNodes.flatMap((node) => {
     const measured = initialized ? flow.getInternalNode(node.id)?.measured : undefined
-    const width = measured?.width
-    const height = measured?.height
+    // A resized node carries its size explicitly; React Flow may not re-measure it.
+    const width = measured?.width ?? node.width
+    const height = measured?.height ?? node.height
     if (!width || !height) return []
     return [{ id: node.id, kind: node.data.kind, position: node.position, size: { width, height } }]
   })
