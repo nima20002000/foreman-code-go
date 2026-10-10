@@ -7,11 +7,21 @@ import { GraphIdSchema } from './protocol.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import { sameExecutableWorkflow } from './meaningfulEdit.js'
 
-/** Metadata-only creation selects current semantics by product policy, never
- * complexity. An explicit retired/unknown tag fails before any command work. */
+// Creation supplies identity, metadata and the workflow default worktree.
+const InitialWorkflowGraphSchema = z.object(WorkflowDefinitionV3Schema.shape).omit({
+  id: true, workspaceId: true, name: true, description: true, defaultWorktree: true,
+  version: true, createdAt: true, updatedAt: true,
+}).strict()
+
+/** An initial save shares the creation transaction; invalid graphs leave no workflow. */
 export const CurrentWorkflowCreateInputSchema = WorkflowCreateInputSchema.extend({
   executionSemanticsVersion: z.literal(3).optional(),
   defaultWorktree: WorkflowWorktreeSettingsSchema.nullable().optional(),
+  initialSave: z.object({
+    graph: InitialWorkflowGraphSchema,
+    expectedAgentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
+    expectedLocationRevision: ExpectedRevisionSchema,
+  }).strict().optional(),
 }).strict()
 export type CurrentWorkflowCreateInput = z.infer<typeof CurrentWorkflowCreateInputSchema>
 

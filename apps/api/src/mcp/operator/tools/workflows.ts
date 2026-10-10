@@ -34,7 +34,22 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_get', () => context.services.workflows.get(context.principal, input.workspaceId, input.workflowId)))
   if (operatorToolAvailable(context, 'workflow_create')) server.registerTool('workflow_create', {
-    description: 'Create a named, unsaved semantics-3 workflow using global workflow defaults. Use workflow_validate_v3 and workflow_save_v3 for any graph, with or without repeat. Omit defaultWorktree to copy the ready workspace project root; pass null to opt out or {rootBinding,branchPrefix?} to select an approved immutable Git source. Worktree selection requires sources:read, source_roots:read and workspace_locations:read. Agents inherit that root unless node.placement overrides it; each writable execution gets its own directory and uniquely suffixed branch.', inputSchema: CurrentWorkflowCreateInputSchema,
+    description: 'Create a named semantics-3 workflow using global workflow defaults. '
+      + 'Omit initialSave for an unsaved workflow, or provide initialSave '
+      + '{graph, expectedAgentConfigurationVersionIds, expectedLocationRevision} to atomically create and save. '
+      + 'The graph omits workflow identity, name, description, defaultWorktree and timestamps; '
+      + 'creation supplies those fields. Invalid graphs or stale pins leave no workflow. '
+      + 'Initial save additionally requires workflows:read/update, graph:read/edit/save, agents:read '
+      + 'and workspace_locations:read, and referenced skill/harness/source grants, '
+      + 'scoped to the workspace without workflow-ID restrictions. '
+      + 'Read back with workflow_saved_get_v3; retry the same commandId and input after an uncertain reply. '
+      + 'Use workflow_validate_v3 and workflow_save_v3 for later graph edits, with or without repeat. '
+      + 'Omit defaultWorktree to copy the ready workspace project root; pass null to opt out '
+      + 'or {rootBinding,branchPrefix?} to select an approved immutable Git source. '
+      + 'Worktree selection requires sources:read, source_roots:read and workspace_locations:read. '
+      + 'Agents inherit that root unless node.placement overrides it; each writable execution gets '
+      + 'its own directory and uniquely suffixed branch.',
+    inputSchema: CurrentWorkflowCreateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_create', () => context.services.workflows.create(context.principal, 'mcp', input)))

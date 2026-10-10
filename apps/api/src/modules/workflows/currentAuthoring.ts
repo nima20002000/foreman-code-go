@@ -237,40 +237,58 @@ export class CurrentWorkflowAuthoring {
           input = completeSaveInput(request, WorkflowDefinitionV3Schema.parse(row.record))
         }
       },
-      perform: async (client) => {
-        if (intentId) await this.editIntents.publication(client, principal, intentId, input)
-        const prepared = await this.prepare(client, principal, input, true, intentId)
-        const agents = prepared.staged ? await persistCurrentStagedAgents(client, input.workspaceId, prepared.staged.prepared) : undefined
-        let revision: number
-        if (prepared.presentationOnly) {
-          // This changes presentation, not accepted execution. No Stop, no new
-          // immutable version or semantic revision, so a staged intent survives
-          // free layout changes. No synthetic publication witness is needed.
-          const row = (await client.query<{ revision: string }>(`update workflows set record=$3::jsonb
-            where workspace_id=$1 and id=$2 and revision=$4 and current_version_id=$5 returning revision::text`,
-          [input.workspaceId, input.workflowId, canonicalGraphJson(prepared.definition), input.expectedRevision,
-            input.expectedWorkflowVersionId])).rows[0]
-          if (!row) return fail('REVISION_CONFLICT', 'The workflow changed during presentation save.')
-          revision = Number(row.revision)
-        } else {
-          await client.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
-            values($1,$2,$3,$4,$5,$6::jsonb,3)`, [prepared.version.id, input.workspaceId, input.workflowId,
-          prepared.version.version, prepared.version.entryNodeId, canonicalGraphJson(prepared.version)])
-          const row = (await client.query<{ revision: string }>(
-            'select eng04_publish_current_workflow($1,$2,$3::jsonb,$4,$5,$6)::text as revision',
-            [principal.id, source, canonicalGraphJson(input), commandInputHash(request), prepared.version.id, prepared.content])).rows[0]
-          if (!row) return fail('REVISION_CONFLICT', 'The typed current workflow publication returned no revision.')
-          revision = Number(row.revision)
-        }
-        const live = await readLiveManagementPrincipal(client, principal.id)
-        authorize(live, input, true)
-        const value = CurrentWorkflowSavedSchema.parse({ workspaceId: input.workspaceId, workflowId: input.workflowId,
-          revision, currentVersionId: prepared.version.id, version: prepared.version,
-          ...(prepared.presentationOnly ? { presentation: prepared.definition } : {}), ...(agents ? { agents } : {}) })
-        if (intentId) await this.editIntents.saved(client, principal, intentId, value)
-        return value
-      },
+      perform: (client) => this.publish(client, principal, source, input, request, intentId),
     })
+  }
+
+  async saveInitial(client: pg.PoolClient, principal: ManagementPrincipal, source: Source, raw: unknown) {
+    const input = CurrentWorkflowSaveInputSchema.parse(raw)
+    authorize(principal, input, true)
+    const value = await this.publish(client, principal, source, input, input)
+    // The publication guard requires its save receipt and audit in this transaction.
+    await client.query(`insert into management_command_receipts
+      (principal_id, operation, command_id, target_key, input_hash, result)
+      values ($1, 'workflow.save.v3', $2, $3, $4, $5::jsonb)`,
+    [principal.id, input.commandId, `workflow:${input.workflowId}:definition`,
+      commandInputHash(input), JSON.stringify(value)])
+    await this.commands.recordAudit(principal.id, source, 'workflow.save.v3',
+      `workflow:${input.workflowId}:definition`, 'succeeded', { commandId: input.commandId }, client)
+    return value
+  }
+
+  private async publish(client: pg.PoolClient, principal: ManagementPrincipal, source: Source,
+    input: CurrentEditSaveInput, request: CurrentEditSaveInput, intentId?: string) {
+    if (intentId) await this.editIntents.publication(client, principal, intentId, input)
+    const prepared = await this.prepare(client, principal, input, true, intentId)
+    const agents = prepared.staged ? await persistCurrentStagedAgents(client, input.workspaceId, prepared.staged.prepared) : undefined
+    let revision: number
+    if (prepared.presentationOnly) {
+      // This changes presentation, not accepted execution. No Stop, no new
+      // immutable version or semantic revision, so a staged intent survives
+      // free layout changes. No synthetic publication witness is needed.
+      const row = (await client.query<{ revision: string }>(`update workflows set record=$3::jsonb
+        where workspace_id=$1 and id=$2 and revision=$4 and current_version_id=$5 returning revision::text`,
+      [input.workspaceId, input.workflowId, canonicalGraphJson(prepared.definition), input.expectedRevision,
+        input.expectedWorkflowVersionId])).rows[0]
+      if (!row) return fail('REVISION_CONFLICT', 'The workflow changed during presentation save.')
+      revision = Number(row.revision)
+    } else {
+      await client.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
+        values($1,$2,$3,$4,$5,$6::jsonb,3)`, [prepared.version.id, input.workspaceId, input.workflowId,
+      prepared.version.version, prepared.version.entryNodeId, canonicalGraphJson(prepared.version)])
+      const row = (await client.query<{ revision: string }>(
+        'select eng04_publish_current_workflow($1,$2,$3::jsonb,$4,$5,$6)::text as revision',
+        [principal.id, source, canonicalGraphJson(input), commandInputHash(request), prepared.version.id, prepared.content])).rows[0]
+      if (!row) return fail('REVISION_CONFLICT', 'The typed current workflow publication returned no revision.')
+      revision = Number(row.revision)
+    }
+    const live = await readLiveManagementPrincipal(client, principal.id)
+    authorize(live, input, true)
+    const value = CurrentWorkflowSavedSchema.parse({ workspaceId: input.workspaceId, workflowId: input.workflowId,
+      revision, currentVersionId: prepared.version.id, version: prepared.version,
+      ...(prepared.presentationOnly ? { presentation: prepared.definition } : {}), ...(agents ? { agents } : {}) })
+    if (intentId) await this.editIntents.saved(client, principal, intentId, value)
+    return value
   }
 
   private async prepare(client: pg.PoolClient, principal: ManagementPrincipal,

@@ -2,6 +2,7 @@ import { workflowCreationWorktree, validateWorkflowWorktrees, requireWorkflowWor
 import { randomUUID } from 'node:crypto'
 
 import { WorkflowDefinitionV3Schema as WorkflowDefinitionSchema, CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from '@foreman-code/contracts/wave25'
+import { requireCurrentWorkflowAccess } from './currentWorkflowPolicy.js'
 import { CurrentWorkflowAuthoring, type WorkflowAuthoringOptions } from './currentAuthoring.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { SavedWorkflowDefinitionSchema as CurrentDefinitionSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema,
@@ -74,6 +75,7 @@ export class WorkflowManagementService {
     const input = CurrentWorkflowCreateInputSchema.parse(raw)
     requireAuthorization(principal, 'workflows:create', { workspaceId: input.workspaceId })
     if (input.defaultWorktree) requireWorkflowWorktreeReads(principal, input.workspaceId)
+    if (input.initialSave) requireCurrentWorkflowAccess(principal, 'save', { workspaceId: input.workspaceId })
     let livePrincipal = principal
     return this.commands.execute({
       principal, source, operation: 'workflow.create', commandId: input.commandId,
@@ -90,6 +92,7 @@ export class WorkflowManagementService {
         const live = await readLiveManagementPrincipal(client, principal.id)
         livePrincipal = live
         requireAuthorization(live, 'workflows:create', { workspaceId: input.workspaceId })
+        if (input.initialSave) requireCurrentWorkflowAccess(live, 'save', { workspaceId: input.workspaceId })
         if (input.defaultWorktree) requireWorkflowWorktreeReads(live, input.workspaceId)
       },
       perform: async (client) => {
@@ -115,7 +118,26 @@ export class WorkflowManagementService {
            returning id, workspace_id, record, revision, current_version_id, archived_at`,
           [workflow.id, input.workspaceId, JSON.stringify(workflow)],
         )
-        return managed(result.rows[0]!)
+        const created = managed(result.rows[0]!)
+        if (!input.initialSave) return created
+        await this.current.saveInitial(client, live, source, {
+          workspaceId: input.workspaceId, workflowId: workflow.id, commandId: randomUUID(),
+          executionSemanticsVersion: 3, expectedRevision: created.revision, expectedWorkflowVersionId: null,
+          expectedAgentConfigurationVersionIds: input.initialSave.expectedAgentConfigurationVersionIds,
+          expectedLocationRevision: input.initialSave.expectedLocationRevision,
+          graph: {
+            ...input.initialSave.graph,
+            id: workflow.id, workspaceId: workflow.workspaceId, name: workflow.name,
+            description: workflow.description, defaultWorktree: workflow.defaultWorktree,
+            version: workflow.version, createdAt: workflow.createdAt, updatedAt: workflow.updatedAt,
+            approval: input.initialSave.graph.approval ?? workflow.approval,
+          },
+        })
+        const saved = await client.query<WorkflowRow>(
+          `select id, workspace_id, record, revision, current_version_id, archived_at from workflows
+           where workspace_id=$1 and id=$2`, [input.workspaceId, workflow.id],
+        )
+        return managed(saved.rows[0]!)
       },
     })
   }
