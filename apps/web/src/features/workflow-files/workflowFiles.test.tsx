@@ -178,6 +178,30 @@ afterEach(async () => {
 })
 
 describe('Board workflow reference files (real client + MSW)', () => {
+  it('pages past removed inherited references to download the later ready revision', async () => {
+    rows.clear()
+    const removed = Array.from({ length: 25 }, (_, index) =>
+      seed(inheritedReferenceScope(A), `removed-${index}`, `removed-${index}.md`, 'removed'))
+    const ready = seed(inheritedReferenceScope(A), 'later', 'later.md')
+    const cursors: (string | null)[] = []
+    server.use(http.get(workspacePath, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      cursors.push(cursor)
+      return HttpResponse.json(cursor ? page([ready]) : page(removed, 'after-removed'))
+    }))
+    const view = mount()
+    await open(view)
+    const more = await screen.findByRole('button', { name: 'More workspace files' })
+    expect(within(workspaceGroup()).queryByText('removed-0.md')).not.toBeInTheDocument()
+    await view.user.click(more)
+    await view.user.click(await screen.findByRole('button', { name: 'Download later.md' }))
+    await waitFor(() => expect(anchorClick).toHaveBeenCalledOnce())
+    expect(cursors).toEqual([null, 'after-removed'])
+    expect(calls).toContainEqual({ step: 'download', scope: inheritedReferenceScope(A),
+      fileId: ready.file.fileId, revisionId: ready.revision.revisionId })
+    expect(screen.queryByRole('button', { name: 'More workspace files' })).not.toBeInTheDocument()
+  })
+
   it('does not open a hover popup or fetch files until explicitly selected, including with the keyboard', async () => {
     const view = mount()
     const trigger = screen.getByRole('button', { name: 'Files' })

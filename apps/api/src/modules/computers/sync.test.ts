@@ -77,14 +77,14 @@ async function fixture() {
     return { value, replayed: false }
   } } as unknown as PostgresCommandCoordinator
   const endpoint = { capabilities: () => [{ namespace: 'computer-sync-v1', mainCanRequest: true }],
-    request: async (deviceId: string, _namespace: string, payload: unknown) => {
+    request: async (deviceId: string, _namespace: string, payload: unknown, _options?: { signal: AbortSignal }) => {
       const index = targets.findIndex(target => target.hostRef.kind === 'device' && target.hostRef.deviceId === deviceId)
       const input = SyncChannelRequestSchema.parse(payload)
       return { payload: await computers[index]!.handle(input.request) }
     } }
   const createService = () => new ComputerSyncService(pool, mainId, () => endpoint, commands, computers[0])
   return { service: createService(), createService, targets, rest, computers, workspaces, hosts, devices,
-    writer, reader, principals, preferences, denied, commands, pool }
+    writer, reader, principals, preferences, denied, commands, pool, endpoint }
 }
 
 it('serves authenticated Agent context while optional shared-file installation is pending', async () => {
@@ -146,6 +146,27 @@ it('serves authenticated Agent context while optional shared-file installation i
   const available = await client.callTool({ name: 'context_get', arguments: {} })
   expect(decodeMcpToolResult(available)).toMatchObject({ sharedFiles: { provider: 'syncthing',
     path: `/computer-0/shared/${sharedFolderId('workspace-a')}` } })
+  const budget = new AbortController()
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds =>
+    milliseconds === 10_000 ? budget.signal : timeout(milliseconds))
+  let entered!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let statusSignal: AbortSignal | undefined
+  vi.spyOn(f.rest[0]!.ports, 'available').mockImplementation(async signal => {
+    statusSignal = signal
+    entered()
+    return new Promise<never>((_, reject) => {
+      signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })
+    })
+  })
+  const slowContext = client.callTool({ name: 'context_get', arguments: {} })
+  await started
+  budget.abort(new DOMException('Context budget expired', 'TimeoutError'))
+  const timedOut = decodeMcpToolResult(await slowContext)
+  expect(timedOut).toMatchObject({ principal: { id: worker.id } })
+  expect(timedOut).not.toHaveProperty('sharedFiles')
+  expect(statusSignal?.aborted).toBe(true)
 })
 
 it('omits an unavailable optional shared folder and preserves unexpected failures', async () => {
@@ -276,4 +297,85 @@ it('removes sharing after archive or Main disable and never gives a replacement 
   expect((await f.service.read(f.reader, 'mcp', { target: f.targets[0] })).folders.map(folder => folder.workspaceId))
     .toEqual(['workspace-a'])
   expect(await f.rest[0]!.rest('GET', '/rest/config/folders')).toEqual([])
+})
+
+it('defers membership replacement after restart while an enabled peer identity is unavailable', async () => {
+  const f = await fixture()
+  await f.service.reconcile()
+  const folders = await f.rest[0]!.rest('GET', '/rest/config/folders')
+  vi.spyOn(f.endpoint, 'request').mockRejectedValue(new DomainError('COMPUTER_OFFLINE', 'Offline.', 409))
+  const restarted = f.createService()
+  await expect(restarted.reconcile()).rejects.toThrow('Shared file setup is pending')
+  expect(await f.rest[0]!.rest('GET', '/rest/config/folders')).toEqual(folders)
+  await restarted.update(f.writer, 'mcp', { target: f.targets[1], workspaceId: 'workspace-a',
+    enabled: false, expectedRevision: 0, commandId: randomUUID() })
+  expect(await f.rest[0]!.rest('GET', '/rest/config/folders')).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: sharedFolderId('workspace-a'), devices: [{ deviceID: mainSyncId }] }),
+  ]))
+})
+
+it('removes a revoked peer from Main after restart even while its app is unavailable', async () => {
+  const f = await fixture()
+  await f.service.reconcile()
+  f.devices.splice(0, 1)
+  vi.spyOn(f.endpoint, 'request').mockRejectedValue(new DomainError('COMPUTER_OFFLINE', 'Offline.', 409))
+  await expect(f.createService().reconcile()).rejects.toThrow('Shared file setup is pending')
+  expect(await f.rest[0]!.rest('GET', '/rest/config/folders')).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: sharedFolderId('workspace-a'), devices: [{ deviceID: mainSyncId }] }),
+  ]))
+})
+
+it('omits slow local shared-folder status at the context budget and stops further status work', async () => {
+  const f = await fixture()
+  const budget = new AbortController()
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds =>
+    milliseconds === 10_000 ? budget.signal : timeout(milliseconds))
+  let release!: () => void
+  let entered!: () => void
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let localSignal: AbortSignal | undefined
+  vi.spyOn(f.rest[0]!.ports, 'available').mockImplementation(async signal => {
+    localSignal = signal
+    entered()
+    await hold
+    return { installed: true, running: true }
+  })
+  const rest = vi.spyOn(f.rest[0]!.ports, 'rest')
+  const read = f.service.sharedFolder('workspace-a', { kind: 'main' })
+  try {
+    await started
+    budget.abort(new DOMException('Context budget expired', 'TimeoutError'))
+    expect(await read).toBeNull()
+    expect(localSignal?.aborted).toBe(true)
+  } finally {
+    release()
+    await read
+  }
+  await Promise.resolve()
+  expect(rest).not.toHaveBeenCalled()
+})
+
+it('forwards the same shared-folder budget to remote status requests', async () => {
+  const f = await fixture()
+  const budget = new AbortController()
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds =>
+    milliseconds === 10_000 ? budget.signal : timeout(milliseconds))
+  let entered!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let remoteSignal: AbortSignal | undefined
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (_deviceId, _namespace, _payload, options) => {
+    remoteSignal = options!.signal
+    entered()
+    return new Promise<never>((_, reject) => {
+      remoteSignal!.addEventListener('abort', () => reject(new DeviceApplicationError('timeout')), { once: true })
+    })
+  })
+  const read = f.service.sharedFolder('workspace-a', { kind: 'device', deviceId: f.devices[0]!.deviceId })
+  await started
+  expect(remoteSignal).toBe(budget.signal)
+  budget.abort(new DOMException('Context budget expired', 'TimeoutError'))
+  expect(await read).toBeNull()
 })

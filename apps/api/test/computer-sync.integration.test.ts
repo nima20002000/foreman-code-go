@@ -52,12 +52,14 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
     const worker = await fakeSyncthing({ deviceId: workerSyncId, address: '100.76.219.118', rootPath: '/worker/shared' })
     const local = new SyncthingComputer(main.ports)
     const remote = new SyncthingComputer(worker.ports)
-    const endpoint = { capabilities: () => [{ namespace: 'computer-sync-v1', mainCanRequest: true }],
+    let online = true
+    const endpoint = { capabilities: () => online ? [{ namespace: 'computer-sync-v1', mainCanRequest: true }] : [],
       request: async (_device: string, _namespace: string, payload: unknown) => ({ payload: await remote.handle(SyncChannelRequestSchema.parse(payload).request) }) }
     const createService = () => new ComputerSyncService(database.pool, mainId, () => endpoint, commands, local)
     const sync = createService()
+    const services = { computerSync: sync, commands } as unknown as OperatorServices
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      operator: { access, services: { computerSync: sync, commands } as unknown as OperatorServices } })
+      operator: { access, services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const clients: Client[] = []
     const connect = async (bearer: string) => {
@@ -68,6 +70,12 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
       return client
     }
     return { sync, createService, app, connect, target, writer, reader, updateOnly, workspaceId, main, worker, registration,
+      setOnline: (value: boolean) => { online = value },
+      restart: () => {
+        const restarted = createService()
+        services.computerSync = restarted
+        return restarted
+      },
       close: async () => { await Promise.all(clients.map(client => client.close())); await app.close();
         await main.close(); await worker.close() } }
   }
@@ -103,6 +111,40 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
         'select action,outcome from management_audit where principal_id=$1', [f.writer.principal.id])
       expect(audits.rows).toEqual(expect.arrayContaining([
         { action: 'computer_sync_update', outcome: 'succeeded' }, { action: 'computer_sync_update', outcome: 'failed' },
+      ]))
+    } finally { await f.close() }
+  })
+
+  it('keeps offline sharing after restart through MCP, persists pending settings and denies ungranted writes', async () => {
+    const f = await fixture()
+    try {
+      await f.sync.paired(f.target)
+      const mainTarget: DeviceProvisioningTarget = { hostRef: { kind: 'main', mainId },
+        applicationInstallationId: mainId, keyRevision: null, authorizationRevision: null }
+      const before = await f.main.rest('GET', '/rest/config/folders')
+      f.setOnline(false)
+      await expect(f.restart().reconcile()).rejects.toThrow('Shared file setup is pending')
+      const writer = await f.connect(f.writer.token)
+      const reader = await f.connect(f.reader.token)
+      const input = { target: mainTarget, workspaceId: f.workspaceId, enabled: true,
+        expectedRevision: 0, commandId: randomUUID() }
+      expect((await reader.callTool({ name: 'computer_sync_update', arguments: input })).isError).toBe(true)
+      const saved = await writer.callTool({ name: 'computer_sync_update', arguments: input })
+      expect(saved.isError).not.toBe(true)
+      expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(saved)).message).toContain('pending')
+      const persisted = await reader.callTool({ name: 'computer_sync_status', arguments: { target: mainTarget } })
+      expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(persisted)).folders
+        .find(folder => folder.workspaceId === f.workspaceId)).toMatchObject({ enabled: true, revision: 1 })
+      expect(await f.main.rest('GET', '/rest/config/folders')).toEqual(before)
+      const disabled = await writer.callTool({ name: 'computer_sync_update', arguments: {
+        target: f.target, workspaceId: f.workspaceId, enabled: false, expectedRevision: 0, commandId: randomUUID(),
+      } })
+      expect(disabled.isError).not.toBe(true)
+      const remoteReadback = await reader.callTool({ name: 'computer_sync_status', arguments: { target: f.target } })
+      expect(ComputerSyncStatusSchema.parse(decodeMcpToolResult(remoteReadback)).folders
+        .find(folder => folder.workspaceId === f.workspaceId)).toMatchObject({ enabled: false, revision: 1 })
+      expect(await f.main.rest('GET', '/rest/config/folders')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: sharedFolderId(f.workspaceId), devices: [{ deviceID: mainSyncId }] }),
       ]))
     } finally { await f.close() }
   })

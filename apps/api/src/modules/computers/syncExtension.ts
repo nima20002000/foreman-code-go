@@ -23,7 +23,9 @@ export function createComputerSyncExtension(computer: Pick<SyncthingComputer, 'h
         }
       }
       assertCurrent()
-      return { payload: await computer.handle(request, { assertCurrent }) }
+      const signal = context.connectionSignal
+        ? AbortSignal.any([context.signal, context.connectionSignal]) : context.signal
+      return { payload: await computer.handle(request, { assertCurrent, signal }) }
     },
   }
 }

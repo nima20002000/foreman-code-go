@@ -122,6 +122,7 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'Use expectedRevision from computer_sync_status and reuse commandId for uncertain saves. '
       + 'Syncthing installs automatically, pairs through the app and uses Tailscale with Main as hub and simple versioning. '
       + 'Only computers selected for workspace Agents receive the folder; enabled preferences apply when they participate. '
+      + 'Unavailable enabled peers defer folder replacement; saved preferences retry when they reconnect. '
       + 'Disabling preserves local files. Main off stops sharing through the hub. Read persisted preferences with computer_sync_status.',
     inputSchema: ComputerSyncUpdateInputSchema, outputSchema: ComputerSyncStatusSchema,
     annotations: { ...writeAnnotations, idempotentHint: true },

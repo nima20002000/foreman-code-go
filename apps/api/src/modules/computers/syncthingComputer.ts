@@ -18,11 +18,13 @@ export class SyncthingComputer {
   private pending: Promise<unknown> = Promise.resolve()
   constructor(private readonly ports: SyncthingPorts = systemSyncthingPorts()) {}
 
-  handle(raw: unknown, options: { assertCurrent?: () => void } = {}): Promise<SyncIdentity | SyncComputerState> {
+  handle(raw: unknown, options: { assertCurrent?: () => void; signal?: AbortSignal } = {}):
+    Promise<SyncIdentity | SyncComputerState> {
     const request = SyncComputerRequestSchema.parse(raw)
     const assertCurrent = options.assertCurrent ?? (() => {})
     assertCurrent()
-    if (request.operation === 'status') return this.status()
+    options.signal?.throwIfAborted()
+    if (request.operation === 'status') return this.status(options.signal)
     const task = this.pending.then(async () => {
       assertCurrent()
       if (request.operation === 'configure' && !request.enabled
@@ -68,20 +70,46 @@ export class SyncthingComputer {
     })
   }
 
-  async status(): Promise<SyncComputerState> {
-    const available = await this.ports.available()
+  async status(signal?: AbortSignal): Promise<SyncComputerState> {
+    signal?.throwIfAborted()
+    if (!signal) return this.readStatus()
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(signal.reason)
+      signal.addEventListener('abort', abort, { once: true })
+      void this.readStatus(signal).then(value => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      }, error => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      })
+    })
+  }
+
+  private async readStatus(signal?: AbortSignal): Promise<SyncComputerState> {
+    const available = await this.ports.available(signal)
+    signal?.throwIfAborted()
     if (!available.installed || !available.running) {
       return SyncComputerStateSchema.parse({ ...available, deviceId: null, folders: [], message: null })
     }
     const identity = z.object({ myID: SyncIdentitySchema.shape.deviceId }).parse(
-      await this.ports.rest('GET', '/rest/system/status'))
-    const folders = z.array(FolderSchema).parse(await this.ports.rest('GET', '/rest/config/folders'))
-    const connections = ConnectionsSchema.parse(await this.ports.rest('GET', '/rest/system/connections')).connections
+      await this.ports.rest('GET', '/rest/system/status', undefined, signal))
+    signal?.throwIfAborted()
+    const folders = z.array(FolderSchema).parse(
+      await this.ports.rest('GET', '/rest/config/folders', undefined, signal))
+    signal?.throwIfAborted()
+    const connections = ConnectionsSchema.parse(
+      await this.ports.rest('GET', '/rest/system/connections', undefined, signal)).connections
+    signal?.throwIfAborted()
     const states = await Promise.all(folders.filter(folder => /^workspace-[a-f0-9]{64}$/u.test(folder.id))
       .map(async folder => {
-        const status = StatusSchema.parse(await this.ports.rest('GET', `/rest/db/status?folder=${folder.id}`))
+        signal?.throwIfAborted()
+        const status = StatusSchema.parse(
+          await this.ports.rest('GET', `/rest/db/status?folder=${folder.id}`, undefined, signal))
+        signal?.throwIfAborted()
         const peers = folder.devices.filter(device => device.deviceID !== identity.myID)
-        const conflicts = (await this.ports.conflicts(folder.path)).slice(0, 100)
+        const conflicts = (await this.ports.conflicts(folder.path, signal)).slice(0, 100)
+        signal?.throwIfAborted()
         let state: 'idle' | 'syncing' | 'error' = status.state === 'idle' ? 'idle' : 'syncing'
         if (status.state === 'error' || status.pullErrors || status.error) state = 'error'
         return { workspaceId: folder.label, path: folder.path, state, conflicts,

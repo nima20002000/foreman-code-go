@@ -106,3 +106,33 @@ it('lists nested conflict copies without exposing deleted versions or following 
   await writeFile(join(folder, 'ordinary.txt'), 'ordinary')
   expect(await f.ports.conflicts(folder)).toEqual(['nested/file.sync-conflict-20261008.txt'])
 })
+
+it('cancels local REST status requests with the caller budget', async () => {
+  const f = await fixture({ installed: true })
+  await f.ports.prepare()
+  const controller = new AbortController()
+  let entered!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let requestSignal: AbortSignal | null | undefined
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    requestSignal = init?.signal
+    entered()
+    return new Promise<Response>((_, reject) => {
+      requestSignal!.addEventListener('abort', () => reject(requestSignal!.reason), { once: true })
+    })
+  }))
+  const pending = f.ports.rest('GET', '/rest/system/status', undefined, controller.signal)
+  const rejected = expect(pending).rejects.toThrow('Context budget expired')
+  await started
+  controller.abort(new Error('Context budget expired'))
+  await rejected
+  expect(requestSignal?.aborted).toBe(true)
+})
+
+it('stops a canceled conflict scan before reading the directory', async () => {
+  const f = await fixture()
+  const controller = new AbortController()
+  controller.abort(new Error('Context budget expired'))
+  await expect(f.ports.conflicts(join(f.home, 'missing-folder'), controller.signal))
+    .rejects.toThrow('Context budget expired')
+})
