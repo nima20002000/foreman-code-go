@@ -103,6 +103,7 @@
 .operator-composer-model { display: flex; align-items: center; min-width: 0; }
 .operator-composer-model:empty { display: none; }
 .operator-composer-send.n-icon-button { flex: 0 0 auto; margin-inline-start: auto; width: 2rem; height: 2rem; min-width: 2rem; min-height: 2rem; padding: .35rem; border: 0; border-radius: var(--radius-full); background: var(--color-text); color: var(--color-surface); }
+.operator-composer-send + .operator-composer-send { margin-inline-start: 0; }
 .operator-composer-send.n-icon-button:disabled { opacity: .35; }
 .operator-composer textarea { display: block; width: 100%; min-height: 36px; max-height: 144px; resize: none; border: 0; outline: 0; box-shadow: none; padding: .4rem .3rem; background: transparent; color: var(--color-text); font: inherit; font-size: 13px; line-height: 1.35rem; }
 .operator-access-rules { display: grid; gap: var(--space-2); }

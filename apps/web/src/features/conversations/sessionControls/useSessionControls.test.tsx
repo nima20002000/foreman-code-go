@@ -19,7 +19,7 @@ const initial = SessionControlStateSchema.parse({ conversationId: 'chat', revisi
 function mount(context?: AgentChatContext) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const wrapper = ({ children }: PropsWithChildren) => createElement(QueryClientProvider, { client }, children)
-  return { ...renderHook(() => useSessionControls(context ? undefined : 'chat', context?.workspaceId, context), { wrapper }), client }
+  return { ...renderHook(() => useSessionControls(context ? undefined : 'chat', context ? { workspaceId: context.workspaceId, context } : {}), { wrapper }), client }
 }
 let originalLocks: PropertyDescriptor | undefined
 beforeEach(() => {
@@ -283,14 +283,59 @@ it.each(['conversation', 'profile'] as const)('ignores a mutation snapshot for a
   expect(mounted.result.current.state).toMatchObject({ revision: 1, desiredMode: 'regular', conversationId: 'chat', profileKey: 'profile' })
 })
 
-it.each(['conversation', 'profile'] as const)('ignores a GET snapshot for a mismatching %s', async target => {
+it('rejects a GET snapshot owned by another conversation', async () => {
   const read = vi.spyOn(sessionControlsApi, 'read').mockResolvedValue(initial)
   const mounted = mount()
   await waitFor(() => expect(mounted.result.current.state).toBeDefined())
-  read.mockResolvedValue({ ...initial, revision: 10, desiredMode: 'plan',
-    ...(target === 'conversation' ? { conversationId: 'other-chat' } : { profileKey: 'other-profile' }) })
+  read.mockResolvedValue({ ...initial, revision: 10, conversationId: 'other-chat' })
   await act(async () => { await mounted.result.current.query.refetch() })
-  expect(mounted.result.current.state).toMatchObject({ revision: 1, desiredMode: 'regular', conversationId: 'chat', profileKey: 'profile' })
+  expect(mounted.result.current.state).toEqual(initial)
+})
+
+it('accepts a newer profile for the same chat, uses its revision and fences delayed old-profile reads', async () => {
+  const read = vi.spyOn(sessionControlsApi, 'read').mockResolvedValue(initial)
+  const change = vi.spyOn(sessionControlsApi, 'change').mockImplementation(async (_id, request) => ({
+    ...initial, profileKey: 'profile-b', capabilities: { ...initial.capabilities, profileKey: 'profile-b' },
+    revision: 11, lastRequestId: request.requestId,
+  }))
+  const mounted = mount()
+  await waitFor(() => expect(mounted.result.current.state?.profileKey).toBe('profile'))
+  const next = { ...initial, profileKey: 'profile-b', revision: 10,
+    capabilities: { ...initial.capabilities, profileKey: 'profile-b' } }
+  read.mockResolvedValue(next)
+  await act(async () => { await mounted.result.current.query.refetch() })
+  expect(mounted.result.current.state).toEqual(next)
+  await act(async () => { await mounted.result.current.change({ kind: 'mode', mode: 'plan' }) })
+  expect(change.mock.calls[0]![1].expectedRevision).toBe(10)
+  read.mockResolvedValue(initial)
+  await act(async () => { await mounted.result.current.query.refetch() })
+  expect(mounted.result.current.state).toMatchObject({ profileKey: 'profile-b', revision: 11 })
+})
+
+it('pauses inactive controls polling and recovers retained commands after reopening', async () => {
+  const read = vi.spyOn(sessionControlsApi, 'read').mockResolvedValue(initial)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const wrapper = ({ children }: PropsWithChildren) => createElement(QueryClientProvider, { client }, children)
+  const mounted = renderHook(({ enabled }) => useSessionControls('chat', { enabled }), {
+    wrapper, initialProps: { enabled: true },
+  })
+  await waitFor(() => expect(mounted.result.current.state).toBeDefined())
+  const scope = JSON.stringify(['operator', 'chat', null])
+  const pending = await reservePendingControl(scope, { kind: 'mode', mode: 'plan' }, 1)
+  mounted.rerender({ enabled: false })
+  const count = read.mock.calls.length
+  vi.useFakeTimers()
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000) })
+    expect(read).toHaveBeenCalledTimes(count)
+    expect(pendingControl(scope)).toEqual(pending)
+  } finally { vi.useRealTimers() }
+  read.mockResolvedValue({ ...initial, revision: 2, lastRequestId: pending.request.requestId })
+  mounted.rerender({ enabled: true })
+  await waitFor(() => expect(pendingControl(scope)).toBeNull())
+  expect(mounted.result.current.state?.revision).toBe(2)
+  mounted.unmount()
+  client.clear()
 })
 
 it('keeps a pending control and its late response owned by the original chat', async () => {

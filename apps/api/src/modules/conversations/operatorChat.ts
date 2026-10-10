@@ -294,9 +294,8 @@ export class OperatorChatService {
     this.assertOpen()
     return this.control(id, async () => {
       const row = await this.assertAccess(id, principal, 'operator_chat:write', true)
-      await this.repository.setDeleted(id, row.owner_principal_id!, deleted,
+      return this.repository.setDeleted(id, row.owner_principal_id!, deleted,
         command ? { ...command, principal } : undefined)
-      return { conversationId: id }
     })
   }
   async list(principal: ManagementPrincipal) {

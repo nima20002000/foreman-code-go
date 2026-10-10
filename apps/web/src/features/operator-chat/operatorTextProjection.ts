@@ -1,3 +1,4 @@
+import { nativeTextPartKey as operatorTextPartKey, type ChatTimelineEntry } from '../conversations/chatTimeline'
 import { ActivityChangeEnvelopeV1Schema, type Message } from '@foreman-code/contracts'
 import { TextTruncationSchema } from '@foreman-code/contracts/activity-text'
 
@@ -6,12 +7,8 @@ export const OPERATOR_TEXT_BYTES = 128 * 1024
 export const OPERATOR_TIMELINE_ITEMS = 512
 
 
-export function operatorTextPartKey(native: NonNullable<Message['activityNative']>, channel: Message['activityChannel'] = 'assistant'): string {
-  const identity = JSON.stringify([native.sessionId, native.turnId ?? null, native.itemId ?? null, native.partId ?? null, native.parentItemId ?? null, native.generation ?? null, channel])
-  return channel === 'reasoning' ? `thinking:${identity}` : identity
-}
-
-export type OperatorTimelineEntry = { kind: 'activity'; id: string } | { kind: 'text'; id: string; partId: string; text: string }
+export { nativeTextPartKey as operatorTextPartKey } from '../conversations/chatTimeline'
+export type OperatorTimelineEntry = ChatTimelineEntry
 /** Bounded presentation bridge between notifications and Query-owned canonical reads.
  * Discarded on rebootstrap; never owns persisted text, lifecycle or scope revision. */
 export interface OperatorTextProjection { requestId: string; parts: Record<string, string>; timeline: OperatorTimelineEntry[]; finalParts?: Record<string, true>; seen?: string[];

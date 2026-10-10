@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Message, OperatorActivity } from '@foreman-code/contracts'
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { OperatorMessages } from './OperatorMessages'
-import { projectOperatorActivity, projectOperatorText } from './operatorTextProjection'
+import { operatorTextPartKey, projectOperatorActivity, projectOperatorText } from './operatorTextProjection'
 
 const user: Message = { id: 'user', conversationId: 'chat', requestId: 'turn', role: 'user', content: 'Read the file' }
 const thinking: OperatorActivity = { id: 'native-thought', requestId: 'turn', sequence: '1', revision: 1, kind: 'thinking', title: 'Thinking', status: 'running', output: 'Checking the requested file.' }
@@ -169,4 +169,23 @@ describe('Operator message ownership', () => {
     stream = projectOperatorText(stream, 'turn', { requestId: 'turn', partId: 'second', mode: 'append', text: 'Second update.' })
     expect(stream?.timeline.filter((item) => item.kind === 'text').map((item) => item.text)).toEqual(['First update.', 'Second update.'])
   })
+})
+
+it('keeps working feedback when a saved full-native part consumes all projected text and retains another item at part zero', () => {
+  const native = { harness: 'codex', sessionId: 'session', turnId: 'native-turn', itemId: 'item', partId: '0' }
+  const key = operatorTextPartKey(native)
+  const saved: Message = { id: 'saved', conversationId: 'chat', requestId: 'turn', role: 'assistant',
+    nativeMessageId: 'item', activityNative: native, nativeMessageComplete: true, content: 'Saved answer' }
+  const timeline = projectOperatorText(undefined, 'turn', { requestId: 'turn', partId: key, mode: 'append', text: 'Saved answer' })
+  const view = render(<OperatorMessages messages={[user, saved]} activities={[]} activeRequestId="turn" working
+    timeline={timeline} partialText="Saved answer" onBrowse={() => {}} />)
+  expect(screen.getAllByText('Saved answer')).toHaveLength(1)
+  expect(screen.getByRole('status', { name: 'Operator is typing' })).toBeVisible()
+  const secondKey = operatorTextPartKey({ ...native, itemId: 'child' })
+  const next = projectOperatorText(timeline, 'turn', { requestId: 'turn', partId: secondKey, mode: 'append', text: 'Child answer' })
+  view.rerender(<OperatorMessages messages={[user, saved]} activities={[]} activeRequestId="turn" working
+    timeline={next} partialText="Saved answer\n\nChild answer" onBrowse={() => {}} />)
+  expect(screen.getAllByText('Saved answer')).toHaveLength(1)
+  expect(screen.getByText('Child answer')).toBeVisible()
+  expect(screen.queryByRole('status', { name: 'Operator is typing' })).not.toBeInTheDocument()
 })

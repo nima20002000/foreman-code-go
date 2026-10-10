@@ -1,3 +1,4 @@
+import { messageTextPartKey } from '../chatTimeline'
 import { activityScopeKey, reconcileActivitySnapshot, sourceVectorIsStale, sourceVectorHasAdvance } from './activityMerge'
 import { isSessionNativeInteraction, type Message } from '@foreman-code/contracts'
 import type { AgentChatContext, AgentChatIntent, AgentChatState, AgentChatTurn } from '@foreman-code/contracts/agent-chat'
@@ -28,6 +29,8 @@ export function mergeChatMessages(...sources: readonly (readonly Message[])[]): 
     for (const message of source) {
       const previous = messages.get(message.id)
       if (previous?.conversationId !== undefined && previous.conversationId !== message.conversationId) continue
+      if (previous?.activityNative && message.activityNative
+        && messageTextPartKey(previous) !== messageTextPartKey(message)) continue
       if (previous?.revision !== undefined) {
         if (message.revision === undefined || BigInt(message.revision) < BigInt(previous.revision)) continue
         if (message.revision === previous.revision) {

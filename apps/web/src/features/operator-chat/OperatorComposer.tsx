@@ -6,6 +6,7 @@ import type { useFileDrop } from '../../shared/ui/useFileDrop'
 import { SessionControls } from '../conversations/sessionControls/SessionControls'
 import { useSlashCommandMenu } from '../conversations/sessionControls/useSlashCommandMenu'
 import type { ComposerSessionControls } from '../conversations/sessionControls/useSessionControls'
+import { ChatPrimaryActions } from '../conversations/ChatPrimaryActions'
 import '../conversations/chatAttachments.css'
 
 export function OperatorComposer({ conversationId, context, attachmentControl, fileDropProps, hasAttachments = false,
@@ -74,8 +75,9 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
       {attachmentControl}
       <div className="operator-composer-model">{context}</div>
       {sessionControls ? <SessionControls controls={sessionControls} /> : null}
-      {onCancel && !commandOnly ? <IconButton label="Stop response" onClick={onCancel} className="operator-composer-send"><Icon name="stop" size={15} /></IconButton>
-        : <IconButton label="Send message" type="submit" disabled={cannotSend} className="operator-composer-send" loading={pending}><Icon name="arrow" className="operator-send-arrow" size={17} /></IconButton>}
+      <ChatPrimaryActions appearance="icon" stopLabel="Stop response" {...(onCancel ? { onStop: onCancel } : {})}>
+        <IconButton label="Send message" type="submit" disabled={cannotSend} className="operator-composer-send" loading={pending}><Icon name="arrow" className="operator-send-arrow" size={17} /></IconButton>
+      </ChatPrimaryActions>
     </div>
     {commandError?.conversationId === conversationId && !recovered
       ? <p role="alert">{compaction?.message ?? commandError.message}</p> : null}

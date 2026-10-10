@@ -1525,9 +1525,9 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(retained.rows).toEqual([{ closureState: 'closed', historyPersisted: true, result: state.lastResult }])
   })
 
-  it('lists chats only after the first message and supports owner-scoped deletion and Undo', async () => {
+  it('lists empty chats for draft recovery and supports owner-scoped deletion and Undo', async () => {
     const conversation = await chat.create(owner)
-    expect(await chat.summaries(owner)).toEqual([])
+    expect(await chat.summaries(owner)).toEqual([expect.objectContaining({ conversationId: conversation.id })])
     await chat.send(conversation.id, { requestId: 'visible-message', content: 'A named topic' }, owner)
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
     expect(await chat.summaries(owner)).toEqual([expect.objectContaining({ conversationId: conversation.id, title: 'A named topic' })])

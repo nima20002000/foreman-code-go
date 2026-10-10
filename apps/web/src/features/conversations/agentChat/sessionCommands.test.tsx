@@ -150,3 +150,20 @@ it('allows resending a mode command when new message turns are unavailable', asy
   await waitFor(() => expect(controls.command).toHaveBeenCalledExactlyOnceWith('/plan off', expect.any(String)))
   expect(mounted.mock.calls.filter(call => call.path.endsWith('/messages') && call.method === 'POST')).toHaveLength(0)
 })
+
+it.each(['ordinary text', '/compact', '/plan', '/unknown', 'first line\nsecond line'])('keeps Board Stop available and preserves draft %j during a pending native control', async content => {
+  controls.mutation.isPending = true
+  const mounted = mountChat(structuredClone(agentChatFixtures.active))
+  try {
+    await mounted.ready()
+    const input = screen.getByRole('textbox', { name: 'Message' })
+    fireEvent.change(input, { target: { value: content } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop chat' }))
+    await waitFor(() => expect(mounted.mock.calls.some(call => call.path.endsWith('/interrupt') && call.method === 'POST')).toBe(true))
+    expect(input).toHaveValue(content)
+    expect(mounted.mock.calls.find(call => call.path.endsWith('/interrupt'))?.body)
+      .toMatchObject({ expectedNativeTurnId: agentChatFixtures.active.activeTurn!.nativeTurnId })
+    expect(mounted.mock.calls.filter(call => call.path.endsWith('/messages') && call.method === 'POST')).toHaveLength(0)
+    expect(controls.command).not.toHaveBeenCalled()
+  } finally { mounted.unmount(); mounted.client.clear() }
+})

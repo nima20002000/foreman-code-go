@@ -329,6 +329,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const original = listed.conversations[0]!
     expect(original.title).toBe(command.title)
     expect((await repository.get(original.id))?.messages).toEqual([])
+    expect((await chat.summaries(owner.principal)).map(item => item.conversationId)).toEqual([original.id])
     const initial = await operators.ensure()
     const defaults = new PostgresFoundationSettingsRepository(database.pool)
     const snapshot = await defaults.getAgentDefaults()
@@ -406,7 +407,7 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
       grants: [{ actions: ['capabilities:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     await database.pool.query('insert into operator_chat_credentials(principal_id,conversation_id) values($1,$2)',
       [delegated.principal.id, conversation.id])
-    expect(decodeMcpToolResult((await call('operator_chat_delete', deletion)))).toEqual({ conversationId: conversation.id })
+    expect(decodeMcpToolResult((await call('operator_chat_delete', deletion)))).toEqual({ conversationId: conversation.id, revision: initialRevision + 1 })
     const deleted = await fresh.active(conversation.id)
     expect(deleted?.deleted_at).toBeTruthy()
     expect(Number(deleted!.revision)).toBe(initialRevision + 1)
@@ -418,11 +419,11 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(JSON.stringify(missing.content)).toContain('CONVERSATION_NOT_FOUND')
     await expect(access.authenticate(delegated.token)).rejects.toThrow()
     for (const retry of await Promise.all([call('operator_chat_delete', deletion), call('operator_chat_delete', deletion)])) {
-      expect(decodeMcpToolResult(retry)).toEqual({ conversationId: conversation.id })
+      expect(decodeMcpToolResult(retry)).toEqual({ conversationId: conversation.id, revision: initialRevision + 1 })
     }
     expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 1)
 
-    expect(decodeMcpToolResult((await call('operator_chat_restore', restoration)))).toEqual({ conversationId: conversation.id })
+    expect(decodeMcpToolResult((await call('operator_chat_restore', restoration)))).toEqual({ conversationId: conversation.id, revision: initialRevision + 2 })
     expect((await fresh.active(conversation.id))?.deleted_at).toBeNull()
     expect(Number((await fresh.active(conversation.id))!.revision)).toBe(initialRevision + 2)
     await expect(access.authenticate(delegated.token)).rejects.toThrow()
@@ -565,4 +566,45 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     expect(await defaults.getAgentDefaults()).toEqual(moved)
     expect(manager.turns).toBe(0)
   })
+
+  it('keeps a thinking-only accepted configuration and controls profile transition readable through authenticated MCP', async () => {
+    const owner = await issue(['operator_chat:read', 'operator_chat:write'])
+    const reader = await issue(['operator_chat:read'])
+    const conversation = await chat.create(owner.principal)
+    const firstRequest = { requestId: 'first-message', content: 'Original request' }
+    await repository.beginTurn(conversation.id, firstRequest, owner.principal.id)
+    await repository.bind(conversation.id, firstRequest.requestId, manager.session.providerVersion, manager.session.nativeSessionId)
+    await repository.finish(conversation.id, firstRequest.requestId, { outcome: 'succeeded' })
+    const original = (await repository.acceptedConfiguration(conversation.id, firstRequest.requestId))!
+    const controlsBefore = await chat.readSessionControls(conversation.id, owner.principal)
+    vi.spyOn(manager, 'history').mockImplementation(async () => ({ ...manager.nativeHistory,
+      ...(manager.turns ? { terminalResult: { outcome: 'succeeded' as const } } : {}) }))
+    const request = { requestId: 'thinking-message', content: 'Continue', settings: {
+      ...((await chat.get(conversation.id, owner.principal)).settings!), showThinking: true,
+    } }
+    await denied(reader.client, 'operator_chat_send', { conversationId: conversation.id, request })
+    expect(manager.turns).toBe(0)
+    const response = await owner.client.callTool({ name: 'operator_chat_send', arguments: {
+      conversationId: conversation.id, request,
+    } })
+    expect(response.isError).not.toBe(true)
+    await vi.waitFor(async () => expect((await chat.get(conversation.id, owner.principal)).turnState).toBe('idle'))
+    const read = await owner.client.callTool({ name: 'operator_chat_get', arguments: { conversationId: conversation.id } })
+    const snapshot = GetOperatorConversationResponseSchema.parse(decodeMcpToolResult(read))
+    expect(snapshot.settings?.showThinking).toBe(true)
+    expect(snapshot.conversation.id).toBe(conversation.id)
+    expect(manager.turns).toBe(1)
+    const accepted = (await repository.acceptedConfiguration(conversation.id, request.requestId))!
+    expect(accepted.id).not.toBe(original.id)
+    expect(await repository.configuration(original.id)).toEqual(original)
+    expect(await repository.acceptedConfiguration(conversation.id, firstRequest.requestId)).toEqual(original)
+    expect((await repository.active(conversation.id))?.native_session_id).toBe(manager.session.nativeSessionId)
+    const controls = await owner.client.callTool({ name: 'operator_chat_controls_get', arguments: { conversationId: conversation.id } })
+    expect(decodeMcpToolResult(controls)).toMatchObject({ profileKey: accepted.contentHash,
+      revision: expect.any(Number) })
+    const persisted = await chat.readSessionControls(conversation.id, owner.principal)
+    expect(persisted.profileKey).toBe(accepted.contentHash)
+    expect(persisted.revision).toBeGreaterThan(controlsBefore.revision)
+  })
+
 })

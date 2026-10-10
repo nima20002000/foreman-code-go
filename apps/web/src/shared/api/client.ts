@@ -89,6 +89,8 @@ import {
 export type RequestOptions = Omit<RequestInit, 'body' | 'method'> & {
   /** The client uses this signal for query cancellation and component unmounts. */
   signal?: AbortSignal
+  /** Bounds both response headers and body consumption. */
+  timeoutMs?: number
 }
 
 export type ApiErrorPayload = {
@@ -178,6 +180,29 @@ export class ApiClient {
     schema: z.ZodType<T>,
     options: RequestOptions & { method?: string; body?: unknown } = {},
   ): Promise<T> {
+    const { timeoutMs, ...requestOptions } = options
+    if (timeoutMs === undefined) return this.readResponse(path, schema, requestOptions)
+    const controller = new AbortController()
+    const signal = requestOptions.signal
+      ? AbortSignal.any([requestOptions.signal, controller.signal]) : controller.signal
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const error = new ApiError({ code: 'REQUEST_TIMEOUT',
+          message: 'The response timed out. Checking the original message receipt.' })
+        reject(error)
+        controller.abort(error)
+      }, timeoutMs)
+    })
+    try {
+      return await Promise.race([this.readResponse(path, schema, { ...requestOptions, signal }), deadline])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private async readResponse<T>(path: string, schema: z.ZodType<T>,
+    options: RequestOptions & { method?: string; body?: unknown }): Promise<T> {
     const { body, method = 'GET', headers, signal, ...init } = options
     const generation = sessionGeneration()
     if (sessionIsSwitching()) throw new SessionChangedError()
@@ -496,7 +521,7 @@ export class ApiClient {
     return this.request('/api/operator/conversations', ListOperatorConversationsResponseSchema, options)
   }
 
-  createOperatorConversation(input: { title?: string } = {}, options?: RequestOptions) {
+  createOperatorConversation(input: z.infer<typeof CreateOperatorConversationRequestSchema> = {}, options?: RequestOptions) {
     const request = parseRequest(CreateOperatorConversationRequestSchema, input)
     return this.request('/api/operator/conversations', CreateOperatorConversationResponseSchema, { ...options, method: 'POST', body: request })
   }
@@ -507,7 +532,7 @@ export class ApiClient {
 
   sendOperatorMessage(conversationId: string, input: unknown, options?: RequestOptions) {
     const request = parseRequest(SendOperatorMessageRequestSchema, input)
-    return this.request(`/api/operator/conversations/${toPath(conversationId)}/messages`, SendOperatorMessageResponseSchema, { ...options, method: 'POST', body: request })
+    return this.request(`/api/operator/conversations/${toPath(conversationId)}/messages`, SendOperatorMessageResponseSchema, { timeoutMs: 30_000, ...options, method: 'POST', body: request })
   }
 
   cancelOperatorTurn(conversationId: string, requestId: string, options?: RequestOptions) {

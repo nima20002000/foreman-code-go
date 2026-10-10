@@ -23,6 +23,8 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import { normalizeResponseAvailability, type NativeResponseAvailabilityQuery } from '../harnesses/responseAvailability.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { MainWorkerConversationBridge, type WorkerConversationCallbacks, type WorkerConversationChannel } from './workerBridge.js'
+import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
+import type { OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { PrepareWorkerFiles } from './mainWorkerFiles.js'
 
@@ -30,6 +32,7 @@ function conflict(message: string): never { throw new DomainError('WORKER_CONVER
 interface ManagerOptions {
   binding: WorkerConversationBinding
   configuration: WorkerConversationConfiguration
+  acceptedConfiguration?: OperatorConfigurationVersion
   channel: WorkerConversationChannel
   bridge: MainWorkerConversationBridge
   current(request: WorkerConversationRpcRequest, signal?: AbortSignal): Promise<void>
@@ -55,7 +58,13 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   private preparationActive = false
   private readonly lifetime = new AbortController()
 
-  constructor(private readonly options: ManagerOptions) { this.harness = options.binding.harness }
+  constructor(private readonly options: ManagerOptions) {
+    this.harness = options.binding.harness
+    if (options.acceptedConfiguration) {
+      if (!('operatorId' in options.configuration)) conflict('Presentation changes require an Operator configuration.')
+      workerExecutionConfiguration(options.binding, options.acceptedConfiguration, options.configuration)
+    }
+  }
 
   private frame(input: Record<string, unknown>): WorkerConversationRpcRequest {
     return { ...input, binding: this.options.binding } as WorkerConversationRpcRequest
@@ -124,7 +133,8 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const configuration = sessionStartConfiguration(start)
     const workingDirectory = sessionStartDirectory(start)
     const roleMatches = this.options.binding.owner.kind === 'operator' ? start.kind === 'operator' : start.kind === 'agent-chat'
-    if (!roleMatches || commandInputHash(configuration) !== this.options.binding.owner.configurationHash
+    if (!roleMatches || commandInputHash(configuration) !== commandInputHash(this.options.acceptedConfiguration ?? this.options.configuration)
+      || commandInputHash(this.options.configuration) !== this.options.binding.owner.configurationHash
       || workingDirectory !== (this.options.sourceWorkingDirectory ?? this.options.binding.workingDirectory) || !start.correlationId) {
       conflict('The native startup differs from its saved conversation admission.')
     }

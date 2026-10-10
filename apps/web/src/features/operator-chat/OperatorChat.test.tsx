@@ -76,6 +76,13 @@ describe('OperatorChat', () => {
     fireEvent.click(retry)
     expect(await screen.findByRole('textbox', { name: 'Message' })).toBeVisible()
     expect(api.create).toHaveBeenCalledTimes(2)
+    const original = api.create.mock.calls[0]![0]
+    expect(original.commandId).toEqual(expect.any(String))
+    expect(api.create.mock.calls[1]![0]).toEqual(original)
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(3))
+    expect(api.create.mock.calls[2]![0].commandId).not.toBe(original.commandId)
+    expect(api.send).not.toHaveBeenCalled()
   })
   it('does not offer the start action after Operator access is denied', async () => {
     api.list.mockRejectedValue(new ApiError({ code: 'ACCESS_DENIED', message: 'Denied' }, 403))

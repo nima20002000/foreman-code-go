@@ -35,3 +35,20 @@ it('starts the suggested new chat while message sending is unavailable', () => {
   expect(start).toHaveBeenCalledOnce()
   expect(send).not.toHaveBeenCalled()
 })
+
+it.each(['ordinary text', '/compact', '/plan', '/unknown', 'first line\nsecond line'])('keeps Stop independent of an active-turn draft %j', content => {
+  const stop = vi.fn()
+  const send = vi.fn()
+  render(<OperatorComposer conversationId="active-chat" sendDisabled isSending hasAttachments
+    onCancel={stop} onSubmit={send} onNewChat={vi.fn()} />)
+  const input = screen.getByRole('textbox', { name: 'Message' })
+  fireEvent.change(input, { target: { value: content } })
+  const button = screen.getByRole('button', { name: 'Stop response' })
+  expect(button).toBeEnabled()
+  button.focus()
+  expect(button).toHaveFocus()
+  fireEvent.click(button)
+  expect(stop).toHaveBeenCalledOnce()
+  expect(input).toHaveValue(content)
+  expect(send).not.toHaveBeenCalled()
+})

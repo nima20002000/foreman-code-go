@@ -34,7 +34,7 @@ export const OPERATOR_RUNTIME_LIMITS = [
       + 'need one human installation of an updater-enabled Worker first. Main is updated with production:install.' },
   {feature:'source_approval',state:'protected',detail:'source_approve accepts either every tracked file in approvedPaths or approveTrackedTree: true with approvedPaths omitted. Both approve only the pinned commit tree, retain sensitive-path/content rejection, executable policy and source limits, and persist the approval choice and exact inventory. Requires sources:approve, sources:read and workspace_locations:read in the workspace.'},
   {feature:'current_workflow_semantics',state:'limited',detail:'One semantics-3 authoring/read/Start contract covers ordinary, parallel/all-required, conditional/approval and optional bounded repeat. Ordinary definitions omit repeat. Read workflow_authoring_capabilities_v3 for separately composed native Start/Stop readiness. Stage/Discard do not execute; Stop-and-save waits for exact settlement.'},
-  {feature:'general_questions_and_forms',state:'unsupported',detail:'Native arbitrary questions/forms do not have a typed durable response path. Approval options are not general answers.'},
+  {feature:'general_questions_and_forms',state:'limited',detail:'Codex supports typed questions, offered choices, free-text answers and schema-validated MCP forms through operator_chat_respond or agent_chat_respond. Responses require the original owned native session/callback and the chat respond grant; read access does not grant response authority. User answers must be supplied explicitly. Other providers and arbitrary untyped forms are not implied; read harness_get interactionSupport for provider-specific support.'},
   {feature:'named_workflow_routing',state:'limited',detail:'Explicit named outcomes, acyclic execution relationships and all-required joins share the current validator. Arbitrary cycles, nested repeats, inferred routes and unknown outcomes are rejected. Valid authoring is not native admission.'},
   {feature:'run_pause_node_retry_and_steering',state:'unsupported',detail:'Pause, selected-node retry, single-execution Stop, and live worker steering are not implemented. A deliberate new full Run uses the current pinned run_start contract; the old unpinned retry adapter is retired.'},
   {feature:'checkpoint_resume',state:'limited',detail:'Automatic current checkpoint continuation requires A’s exact native approval receipts. The old manual run_resume adapter is retired; no caller can skip approval.'},
@@ -150,7 +150,7 @@ const compactRuntimeDetails: Record<string, string> = {
     + 'trigger/retry update-worker with settings:update. Older Workers need an initial updater-enabled installation. '
     + 'Main uses production:install.',
   current_workflow_semantics: 'Semantics 3; optional finite repeat. Read workflow_authoring_capabilities_v3 for native readiness.',
-  general_questions_and_forms: 'General native questions/forms have no supported response path.',
+  general_questions_and_forms: 'Codex typed questions and MCP forms use chat respond tools with the original session/callback and respond grant. Explicit user input required; see harness_get interactionSupport for provider limits.',
   named_workflow_routing: 'Named acyclic routes and all-required joins; no nested repeat or arbitrary cycles.',
   run_pause_node_retry_and_steering: 'No pause, node retry, per-execution Stop or live steering.',
   checkpoint_resume: 'Automatic continuation requires accepted native approvals; no manual bypass.',

@@ -1,4 +1,4 @@
-import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { OperatorCompactCapabilitiesSchema, decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -125,7 +125,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
     const issued = await access.issue({ name: 'Delivery writer', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: {}, actions: [
         'agent_chat:read', 'agent_chat:write', 'agent_chat:cancel', 'agent_chat:respond',
-        'operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond',
+        'operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond', 'capabilities:read',
       ] }] })
     const deniedAccess = await access.issue({ name: 'Other workspace', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ scope: { workspaceIds: ['other-workspace'] },
@@ -856,6 +856,16 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
 
     it(`Operator ${kind} responses deny read-only callers and preserve HTTP/MCP readback after service restart`, async () => {
       const id = await createOperator()
+      for (const detail of ['compact', 'full']) {
+        const result = await writer.callTool({ name: 'operator_get_capabilities', arguments: { detail } })
+        assert.notEqual(result.isError, true)
+        const capabilities = OperatorCompactCapabilitiesSchema.pick({ runtimeLimits: true }).strip()
+          .parse(decodeMcpToolResult(result))
+        const support = capabilities.runtimeLimits.find(limit => limit.feature === 'general_questions_and_forms')
+        assert.equal(support?.state, 'limited')
+        assert.match(support!.detail, /Codex/)
+        assert.match(support!.detail, /session/)
+      }
       await sendOperator(id, 'input-turn', 'wait')
       const submission = await until(async () => {
         const row = await messages.active(id)

@@ -1,3 +1,4 @@
+import { selectLiveTextTimeline } from '../conversations/chatTimeline'
 import { OperatorHistoryActions } from './OperatorHistoryActions'
 import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman-code/contracts'
 import { CompactionActivity } from '../conversations/sessionControls/CompactionActivity'
@@ -69,7 +70,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const { panelRef, size, grip, moveGrip } = useOperatorChatResize()
   const historyLimit = useRef(10)
   const creating = useRef(false)
-  const deletedIds = useRef(new Set<string>())
+  const deletedRevisions = useRef(new Map<string, number>())
   const [removed, setRemoved] = useState<{ id: string; title: string }>()
   const [handoffNotice, setHandoffNotice] = useState<{ id: string; epoch: string }>()
   const [closing, setClosing] = useState(false)
@@ -81,7 +82,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
   const accounts = useProviderAccounts(enabled && open)
-  const sessionControls = useSessionControls(selectedId ?? undefined)
+  const sessionControls = useSessionControls(selectedId ?? undefined, { enabled: enabled && open })
   const preferences = useOperatorSettings(enabled && open)
   const preferencesDenied = useAccessFailureLatch(preferences.query)
   const setOpen = useOperatorChatStore((state) => state.setOpen)
@@ -106,7 +107,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     queryFn: async ({ signal }) => {
       const next = await listOperatorConversationSummaries({ signal }, historyLimit.current)
       const current = queryClient.getQueryData<Summaries>(listKey)
-      const conversations = newerOperatorSummaries(current?.conversations, next.conversations.filter((item) => !deletedIds.current.has(item.conversationId))).map((item) => {
+      const visible = next.conversations.flatMap(item => {
+        const deletedRevision = deletedRevisions.current.get(item.conversationId)
+        if (deletedRevision === undefined || item.revision > deletedRevision) return [item]
+        const restored = current?.conversations.find(entry => entry.conversationId === item.conversationId
+          && entry.revision > deletedRevision)
+        return restored ? [restored] : []
+      })
+      const conversations = newerOperatorSummaries(current?.conversations, visible).map((item) => {
         const detail = queryClient.getQueryData<OperatorConversationState>(detailKey(item.conversationId))
         return detail && detail.revision > item.revision ? summarizeOperatorConversation(detail) : item
       })
@@ -142,14 +150,13 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     && (isMissingOperatorConversation(selected.error) || isMissingOperatorConversation(shownSetup.error))
   const recoveredSelection = useMissingOperatorConversation(selectedId, missingSelection)
   const acceptState = useCallback((id: string, state: OperatorConversationState) => {
-    if (deletedIds.current.has(id) || state.conversation.id !== id) return
+    if (state.revision <= (deletedRevisions.current.get(id) ?? -1) || state.conversation.id !== id) return
     const denial = queryClient.getQueryState(detailKey(id))?.error
     if (ApiError.is(denial) && [401, 403].includes(denial.status)) return
     if (useOperatorChatStore.getState().selectedConversationId === id) readGeneration.current++
     const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
     queryClient.setQueryData(detailKey(id), accepted)
     const summary = summarizeOperatorConversation(accepted)
-    if (!accepted.messages.length && !accepted.hasEarlierMessages) return
     queryClient.setQueryData<Summaries>(listKey, (current) => current ? {
       ...current, conversations: current.conversations.some((item) => item.conversationId === id)
         ? current.conversations.map((item) => item.conversationId === id && summary.revision >= item.revision ? summary : item)
@@ -160,10 +167,10 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     queryClient.invalidateQueries({ queryKey: detailKey(id) }), queryClient.invalidateQueries({ queryKey: listKey }),
   ]) }
   const create = useMutation({ mutationFn: (input: {
-    generation: number; navigationGeneration: number; request?: AppRequest
+    generation: number; navigationGeneration: number; commandId: string; request?: AppRequest
   }) => {
     if (!currentSession(input.generation)) throw new SessionChangedError()
-    return createOperatorConversation()
+    return createOperatorConversation({ commandId: input.commandId })
   },
     onSuccess: async ({ conversation }, input) => {
       if (!currentSession(input.generation)) return
@@ -229,7 +236,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
           assertOperatorMessageReserved(id, command)
         }
       }
-      return confirmed(await sendOperatorMessage(id, command))
+      try {
+        return confirmed(await sendOperatorMessage(id, command))
+      } catch (error) {
+        if (!ApiError.is(error) || error.code !== 'REQUEST_TIMEOUT') throw error
+        if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
+        assertOperatorMessageReserved(id, command)
+        return confirmed(await sendOperatorMessage(id, { ...command, recovery: 'receipt' }))
+      }
     },
     onSuccess: async (result, input) => {
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
@@ -260,7 +274,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
       try { await recordOperatorMessageFailure(input.id, input.command.requestId,
         error instanceof Error ? error.message : 'Message delivery failed.', ApiError.is(error)
-          && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT', 'MESSAGE_ATTACHMENT_NOT_FOUND',
+          && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT', 'HARNESS_PROFILE_SELECTION_CONFLICT', 'MESSAGE_ATTACHMENT_NOT_FOUND',
             'MESSAGE_ATTACHMENT_NOT_READY', 'MESSAGE_ATTACHMENT_UNAVAILABLE', 'MESSAGE_ATTACHMENT_CONVERSATION_REQUIRED'].includes(error.code), input.attemptId) } catch { /* The current error remains visible. */ }
       if (currentSession(input.generation) && input.epoch === identityEpoch()) refreshOutbox((value) => value + 1)
     },
@@ -280,9 +294,11 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
 
   const remove = useMutation({
     mutationFn: ({ id }: { id: string; title: string; generation: number }) => deleteOperatorConversation(id),
-    onSuccess: async (_result, input) => {
+    onSuccess: async (result, input) => {
       if (!currentSession(input.generation)) return
-      deletedIds.current.add(input.id)
+      const previous = queryClient.getQueryData<OperatorConversationState>(detailKey(input.id))?.revision
+        ?? queryClient.getQueryData<Summaries>(listKey)?.conversations.find(item => item.conversationId === input.id)?.revision ?? 0
+      deletedRevisions.current.set(input.id, result.revision ?? previous + 1)
       await queryClient.cancelQueries({ queryKey: listKey })
       await queryClient.cancelQueries({ queryKey: detailKey(input.id) })
       queryClient.setQueryData<Summaries>(listKey, (current) => current && ({ ...current, conversations: current.conversations.filter((item) => item.conversationId !== input.id) }))
@@ -296,13 +312,13 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     },
   })
   const restore = useMutation({
-    mutationFn: ({ id }: { id: string; generation: number }) => restoreOperatorConversation(id),
+    mutationFn: ({ id }: { id: string; generation: number; navigationGeneration: number }) => restoreOperatorConversation(id),
     onSuccess: async (_result, input) => {
       if (!currentSession(input.generation)) return
-      deletedIds.current.delete(input.id)
       setRemoved(undefined)
       await queryClient.invalidateQueries({ queryKey: listKey })
-      select(input.id)
+      if (currentSession(input.generation)
+        && useOperatorChatStore.getState().navigationGeneration === input.navigationGeneration) select(input.id)
     },
   })
 
@@ -394,7 +410,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     if (!enabled || !open || !request || accessDenied || creating.current) return
     if (create.isError && create.variables?.request?.id === request.id) return
     creating.current = true
-    create.mutate({ generation: sessionGeneration(),
+    create.mutate({ generation: sessionGeneration(), commandId: request.id,
       navigationGeneration: useOperatorChatStore.getState().beginNavigation(), request })
   }, [accessDenied, create, enabled, open, request])
   const settings = preferencesDenied ? undefined : preferences.settings
@@ -415,16 +431,15 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     && send.error instanceof Error ? send.error.message : undefined
   const sendError = preparationError && preparationError.id === selectedId ? preparationError.message
     : scopedSendError ?? pending.sendFailure
-  const savedNativeMessages = new Set(conversation?.messages.filter((message) => message.requestId === requestId && message.nativeMessageId)
-    .map((message) => message.nativeMessageId))
-  const partialText = partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
-    ? Object.entries(partial.value.parts).filter(([id]) => !id.startsWith('thinking:') && !savedNativeMessages.has(id)).map(([, text]) => text).join('\n\n') : ''
+  const liveTimeline = partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
+    ? selectLiveTextTimeline(conversation?.messages ?? [], requestId, partial.value.timeline) : []
+  const partialText = liveTimeline.filter(item => item.kind === 'text').map(item => item.text).join('\n\n')
   const thinkingText = conversation?.settings?.showThinking && partial?.value && partial.conversationId === selectedId && partial.value.requestId === requestId
     ? Object.entries(partial.value.parts).filter(([id]) => id.startsWith('thinking:')).map(([, text]) => text).join('\n\n') : ''
   const entries: OperatorConversationSummary[] = accessDenied ? [] : (list.data?.conversations ?? []).map((item) =>
     conversation?.conversation.id === item.conversationId && conversation.revision >= item.revision ? summarizeOperatorConversation(conversation) : item)
   const attention = accessDenied ? [] : newerOperatorSummaries(entries, list.data?.attention ?? entries)
-    .filter((item) => !deletedIds.current.has(item.conversationId) && item.needsAttention)
+    .filter((item) => item.revision > (deletedRevisions.current.get(item.conversationId) ?? -1) && item.needsAttention)
   const liveConnection = connection && connection.id === selectedId ? connection.state : 'connecting'
   const connectionState = selected.isError || selected.failureCount > 0
     ? 'reconnecting' : liveConnection
@@ -442,11 +457,15 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
       else historyTriggerRef.current?.focus()
     })
   }
-  const createConversation = async () => {
+  const createConversation = async ({ retry = false }: { retry?: boolean } = {}) => {
     if (creating.current || accessDenied) return
     creating.current = true
     try {
-      await create.mutateAsync({ generation: sessionGeneration(), navigationGeneration: useOperatorChatStore.getState().beginNavigation() })
+      const failed = create.variables
+      const commandId = retry && create.isError && failed && !failed.request
+        && currentSession(failed.generation) ? failed.commandId : crypto.randomUUID()
+      await create.mutateAsync({ generation: sessionGeneration(), commandId,
+        navigationGeneration: useOperatorChatStore.getState().beginNavigation() })
       if (selectedId) {
         const draft = useConversationDraftStore.getState().drafts[selectedId] ?? ''
         if (/^\/n?e?w?$/.test(draft.trim())) clearDraft(selectedId, draft)
@@ -562,13 +581,14 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
           {create.error instanceof Error ? <Alert live tone="danger" title="Conversation could not be created"
             action={request && create.variables?.request?.id === request.id
               ? <Button size="sm" disabled={create.isPending || accessDenied} onClick={() => create.reset()}>Retry requested chat</Button>
-              : undefined}>
+              : <Button size="sm" disabled={create.isPending || accessDenied}
+                onClick={() => void createConversation({ retry: true })}>Retry new chat</Button>}>
             {create.error.message}
             {request && create.variables?.request?.id === request.id ? <p>{request.content}</p> : null}
           </Alert> : null}
           {!selectedId && !accessDenied ? <div className="operator-chat-start"><EmptyState icon="chat" title="Chat with Operator"
             description="Ask about your workspaces and workflows, or describe a change you need."
-            action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={createConversation}
+            action={<Button variant="primary" leading={<Icon name="plus" size={15} />} onClick={() => void createConversation({ retry: create.isError })}
               disabled={create.isPending} loading={create.isPending} loadingLabel="Starting…">Start chat</Button>} /></div> : null}
           {selected.isLoading ? <LoadingState label="Loading conversation…" rows={4} /> : null}
           {selected.isError && !missingSelection ? <Alert live tone="danger" title={conversation ? 'Conversation refresh failed' : 'Conversation could not be loaded'} action={<Button size="sm" disabled={selected.isFetching} loading={selected.isFetching} onClick={() => void selected.refetch()}>Retry conversation</Button>}>{conversation ? 'Previously loaded messages are still shown.' : 'Try the request again.'}</Alert> : null}
@@ -642,7 +662,8 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         </main>
       </div>
       {removed ? <div className="operator-chat-undo" role="status">Chat deleted. <Button size="sm" variant="ghost" disabled={restore.isPending}
-        onClick={() => restore.mutate({ id: removed.id, generation: sessionGeneration() })}>Undo</Button></div> : null}
+        onClick={() => restore.mutate({ id: removed.id, generation: sessionGeneration(),
+          navigationGeneration: useOperatorChatStore.getState().beginNavigation() })}>Undo</Button></div> : null}
     </section> : null}
     <IconButton ref={launcherRef} className="operator-chat-launcher" variant="primary" label={attention.length ? `Open Operator chat, ${attention.length} conversation${attention.length === 1 ? '' : 's'} need your decision` : 'Open Operator chat'} hidden={open || closing}
       aria-expanded={open} aria-controls={open ? panelId : undefined} aria-haspopup="dialog"

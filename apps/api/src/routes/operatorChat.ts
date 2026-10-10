@@ -91,6 +91,7 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
     let stopped = false
     let bootstrapping = true
     let bytes = 0
+    let sequence = 0
     let heartbeat: NodeJS.Timeout | undefined
     let checking = false
     let unsubscribe = () => {}
@@ -104,7 +105,7 @@ export function registerOperatorChatRoutes(app: FastifyInstance, chat: OperatorC
       () => !stopped && Date.parse(principal.expiresAt) > Date.now(), stop)
     const write = (frame: string) => writer.write(frame)
     const event = (value: OperatorConversationStreamEvent) => {
-      const frame = `event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`
+      const frame = `event: ${value.type}\ndata: ${JSON.stringify({ ...value, id: sequence++ })}\n\n`
       if (bootstrapping) {
         bytes += Buffer.byteLength(frame)
         if (queued.length >= MAX_BOOTSTRAP_EVENTS || bytes > MAX_BOOTSTRAP_BYTES) { stop(); return }
