@@ -19,7 +19,9 @@ it('admits a thinking-only next turn through the production Worker channel witho
     contentHash: `sha256:${'b'.repeat(64)}`, showThinking: true })
   const root = '/approved/runtime'
   const binding = { ...f.binding, workingDirectory: workerOperatorDirectory(root, f.binding.owner) }
-  const first = { correlationId: 'first-turn', inputHash: 'a'.repeat(64), status: 'completed' as const,
+  const first = { correlationId: 'first-turn',
+    inputHash: commandInputHash({ prompt: 'First turn', mode: 'regular', preferences: null }),
+    status: 'completed' as const,
     nativeTurnId: 'first-native-turn', result: { outcome: 'succeeded' as const } }
   const firstSnapshot = structuredClone(first)
   const receipt: WorkerConversationReceipt = { binding, connection: f.connection, session: f.session,
@@ -41,7 +43,9 @@ it('admits a thinking-only next turn through the production Worker channel witho
     const request = WorkerConversationRpcRequestSchema.parse(raw)
     frames.push(request)
     if (request.method === 'conversation.start-turn') {
-      receipt.turns.push({ correlationId: request.correlationId, inputHash: 'c'.repeat(64),
+      receipt.turns.push({ correlationId: request.correlationId,
+        inputHash: commandInputHash({ prompt: request.prompt, mode: request.sessionMode ?? 'regular',
+          preferences: request.preferences ?? null }),
         status: 'completed', nativeTurnId: 'next-native-turn', result: { outcome: 'succeeded' } })
       receipt.revision++
     }
