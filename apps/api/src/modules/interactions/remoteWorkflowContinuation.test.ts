@@ -6,7 +6,7 @@ import { ExclusiveGraphConnection } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { readExecutionPlacement } from '../placement/persistence.js'
 import { recoveryExecution, recoveryIdentity } from '../../../test/helpers/eng06Recovery.testSupport.js'
-import { readRemoteWorkflowContinuation } from './workflowClosure.js'
+import { readRemoteWorkflowContinuation, readWorkflowClosure } from './workflowClosure.js'
 
 vi.mock('../placement/persistence.js', () => ({ readExecutionPlacement: vi.fn() }))
 
@@ -42,6 +42,10 @@ function fixture(detached: boolean) {
     }
     if (text.startsWith('select generation::text')) return result([state.lifetime])
     if (text.startsWith('select b.principal_id')) return result(state.principal ? [{ principal_id: 'original-principal' }] : [])
+    if (text.includes('join lateral (select * from execution_native_closures')) {
+      return result([{ ...state.lifetime, record: execution, reference: session }])
+    }
+    if (text.includes('from execution_native_recoveries p')) return result([])
     throw new Error('Unexpected continuation query')
   } } as unknown as pg.ClientBase
   const connection = new ExclusiveGraphConnection(raw, () => undefined)
@@ -50,6 +54,20 @@ function fixture(detached: boolean) {
 }
 
 describe('original remote workflow continuation', () => {
+  it('keeps a detached Worker session available for reattachment without treating it as closed', async () => {
+    const f = fixture(true)
+    try {
+      expect(await readWorkflowClosure(f.connection, f.execution)).toBeUndefined()
+      expect(await readRemoteWorkflowContinuation(f.owner, f.execution)).toMatchObject({
+        session: f.session, generation: '1', principalId: 'original-principal', detached: true,
+      })
+      expect(f.state.lifetime.closed).toBe(false)
+      expect(f.state.lifetime.detached).toBe(true)
+    } finally {
+      await f.connection.close()
+    }
+  })
+
   it.each([false, true])('keeps the original session, principal and generation after detached=%s', async detached => {
     const f = fixture(detached)
     try {
