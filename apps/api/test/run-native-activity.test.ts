@@ -13,6 +13,72 @@ const row: ActivityReadRow = {
 }
 
 describe('native Run activity status', () => {
+  it.each([
+    ['item/agentMessage/delta', 'Agent message updated'],
+    ['item/commandExecution/outputDelta', 'Command output updated'],
+    ['item/fileChange/outputDelta', 'File change output updated'],
+    ['item/reasoning/textDelta', 'Reasoning text updated'],
+    ['item/reasoning/summaryTextDelta', 'Reasoning summary updated'],
+    ['item/reasoning/summaryPartAdded', 'Reasoning summary added'],
+    ['item/mcpToolCall/progress', 'MCP tool progress updated'],
+    ['mcpServer/startupStatus/updated', 'MCP server startup updated'],
+    ['account/rateLimits/updated', 'Account rate limits updated'],
+    ['thread/tokenUsage/updated', 'Token usage updated'],
+    ['thread/status/changed', 'Native session status updated'],
+    ['turn/diff/updated', 'File changes updated'],
+    ['turn/plan/updated', 'Agent plan updated'],
+    ['serverRequest/resolved', 'Native request resolved'],
+  ])('names %s without exposing its native body', (nativeMethod, summary) => {
+    const activity = publicRunActivity({ ...row, native: { type: 'native.notification', nativeMethod,
+      deltaLength: 12, delta: 'private message', command: 'private command', diff: 'private diff' } },
+    fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(activity).toMatchObject({ kind: 'tool_log', summary, status: 'recorded', detail: 'Received 12 characters.' })
+    expect(JSON.stringify(activity)).not.toContain('private')
+  })
+
+  it.each([
+    { itemType: 'agentMessage', title: 'Agent message', fields: { messagePhase: 'commentary' }, detail: 'Progress update.' },
+    { itemType: 'agentMessage', title: 'Agent message', fields: { messagePhase: 'final_answer' }, detail: 'Final answer.' },
+    { itemType: 'userMessage', title: 'User message', fields: {}, detail: undefined },
+    { itemType: 'reasoning', title: 'Agent reasoning', fields: {}, detail: undefined },
+    { itemType: 'contextCompaction', title: 'Context compaction', fields: {}, detail: undefined },
+    { itemType: 'fileChange', title: 'File change', fields: { fileChangeCount: 2 }, detail: 'Changes cover 2 files.' },
+    { itemType: 'commandExecution', title: 'Command: git', fields: { commandName: 'git', exitCode: -1 },
+      detail: 'Exit code: -1.' },
+    { itemType: 'mcpToolCall', title: 'Tool: workspace_list', fields: { toolName: 'workspace_list' }, detail: undefined },
+    { itemType: 'dynamicToolCall', title: 'Tool action', fields: {}, detail: undefined },
+  ])('names $itemType items and preserves start and completion', ({ itemType, title, fields, detail }) => {
+    for (const [type, status, action] of [
+      ['item.started', 'running', 'started'], ['item.completed', 'completed', 'completed'],
+    ]) {
+      const activity = publicRunActivity({ ...row, native: { type, itemType, ...fields, text: 'private body' } },
+        fixture.version, fixture.run.id, fixture.run.outcome)
+      expect(activity).toMatchObject({ summary: `${title} ${action}`, status })
+      expect(activity.detail).toBe(detail)
+      expect(JSON.stringify(activity)).not.toContain('private body')
+    }
+  })
+
+  it.each(['constructor', 'unknown/providerMethod'])('keeps unknown method %s redacted', (nativeMethod) => {
+    const activity = publicRunActivity({ ...row, native: {
+      type: 'native.notification', nativeMethod, deltaLength: 20, delta: 'private body',
+    } }, fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(activity.summary).toBe('Native activity recorded; details unavailable')
+    expect(activity.detail).toBeUndefined()
+    expect(JSON.stringify(activity)).not.toContain('private body')
+  })
+
+  it.each([
+    ['turn.started', 'inProgress', 'running', 'Agent turn started'],
+    ['turn.completed', 'completed', 'completed', 'Agent turn completed'],
+    ['turn.completed', 'failed', 'failed', 'Agent turn failed'],
+    ['turn.completed', 'interrupted', 'canceled', 'Agent turn canceled'],
+    ['thread.started', undefined, 'recorded', 'Native session created'],
+  ])('names %s lifecycle activity', (type, turnStatus, status, summary) => {
+    expect(publicRunActivity({ ...row, native: { type, turnStatus } },
+      fixture.version, fixture.run.id, fixture.run.outcome)).toMatchObject({ summary, status })
+  })
+
   it.each(['canceled', 'cancelled', 'interrupted'])('keeps %s canceled across native envelopes', (status) => {
     for (const type of ['item.started', 'item.completed', 'item.snapshot']) {
       for (const fields of [{ itemType: 'commandExecution', itemStatus: status, itemError: true },

@@ -28,6 +28,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     description: 'Read an authorized Run from one backend snapshot. Defaults to compact status and the latest 25 executions and activities. '
       + 'Omission counts cover this snapshot; use run_activities_get_v1 for paged history. Pass detail: "full" for input, result, execution bodies and the full snapshot. '
       + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
+      + 'Native activity summaries identify messages, reasoning, commands, file edits and tool calls without exposing bodies or arguments. '
       + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT and WORK_RUN_EXECUTION_BUDGET_EXHAUSTED), '
       + 'failure messages, Stop causes and cleanup status. '
       + 'A Run waiting for approval may still have progressing sibling executions.',
@@ -52,6 +53,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
   if (operatorToolAvailable(context, 'run_activities_get_v1')) server.registerTool('run_activities_get_v1', {
     description: 'Read a bounded, redacted public Activities page for an exact authorized Run. '
       + 'Includes the Run’s Agent-requested CI queue and process states with Job execution references and initiating Agents. '
+      + 'Native summaries identify messages, reasoning, commands, file edits and tool calls; details include safe counts, message phase and command exit code. '
       + 'Pages may return fewer items than limit to fit the 128 KiB public-page budget; follow the returned cursors. '
       + 'Use run_get for execution and normalized activity snapshots. '
       + 'Use nextCursor for incremental catch-up and olderCursor for earlier retained history; '

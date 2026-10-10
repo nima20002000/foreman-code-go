@@ -82,6 +82,24 @@ afterEach(() => {
 })
 
 describe('Activities shared Agent and Job actors', () => {
+  it('renders readable native summaries and safe details from the shared Activities response', async () => {
+    const nativeItems = [
+      { ...event('1', 'Command: git completed', { actor: agent }, 'tool_action'), detail: 'Exit code: 0.' },
+      { ...event('2', 'File change completed', { actor: agent }, 'tool_action'), detail: 'Changes cover 2 files.' },
+      { ...event('3', 'Agent message completed', { actor: agent }, 'agent_work'), detail: 'Progress update.' },
+      { ...event('4', 'Agent message updated', { actor: agent }, 'tool_log'), detail: 'Received 15 characters.' },
+      event('5', 'Tool: workspace_list completed', { actor: agent }, 'tool_action'),
+    ]
+    server.use(http.get(activitiesPath, () => HttpResponse.json(page({ items: nativeItems }))))
+    await mount({ expectedText: 'Command: git completed' })
+    for (const item of nativeItems) {
+      const row = screen.getByText(item.summary).closest('li')!
+      expect(within(row).getByText('Builder')).toBeVisible()
+      if (item.detail) expect(within(row).getByText(item.detail)).toBeVisible()
+    }
+    expect(screen.queryByText('Native activity recorded; details unavailable')).not.toBeInTheDocument()
+  })
+
   it('labels Job actors and subjects while listing only true Agents in the Agent filter', async () => {
     await mount()
     for (const summary of ['Job ran', 'Job notified Agent', 'Job was queued']) {

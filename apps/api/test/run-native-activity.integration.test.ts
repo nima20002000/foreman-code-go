@@ -119,6 +119,81 @@ async function readSnapshot(app: ReturnType<typeof buildApp>, fixture: Awaited<R
 }
 
 describe('persisted native Run activity', () => {
+  it('reads Codex messages, streams, edits and tools through HTTP and MCP with safe details', async () => {
+    await activityFixture(async (pool, fixture, app) => {
+      const events: Array<Pick<NativeHarnessEvent, 'type' | 'payload'>> = [
+        { type: 'native.notification', payload: {
+          nativeMethod: 'item/agentMessage/delta', delta: 'private message',
+        } },
+        { type: 'native.notification', payload: {
+          nativeMethod: 'item/commandExecution/outputDelta', delta: 'private output',
+        } },
+        { type: 'item.started', payload: { item: { id: 'thinking', type: 'reasoning' } } },
+        { type: 'item.completed', payload: { item: { id: 'thinking', type: 'reasoning', summary: ['private reasoning'] } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'progress', type: 'agentMessage', phase: 'commentary', text: 'private progress',
+        } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'private answer',
+        } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'input', type: 'userMessage', content: [{ type: 'text', text: 'private input' }],
+        } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'edit', type: 'fileChange', status: 'completed',
+          changes: [{ path: '/private/file', kind: { type: 'update' }, diff: 'private diff' }],
+        } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'command', type: 'commandExecution', status: 'completed',
+          command: 'git show private-argument', aggregatedOutput: 'private output', exitCode: 0,
+        } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'mcp', type: 'mcpToolCall', tool: 'workspace_list', status: 'completed',
+          arguments: { token: 'private credential' }, result: { text: 'private tool output' }, error: null,
+        } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'dynamic', type: 'dynamicToolCall', tool: 'lookup', status: 'completed', success: false,
+          arguments: { secret: 'private credential' },
+        } } },
+        { type: 'item.completed', payload: { item: {
+          id: 'search', type: 'webSearch', query: 'private search',
+        } } },
+        { type: 'native.notification', payload: { nativeMethod: 'thread/tokenUsage/updated',
+          tokenUsage: { private: 'private token details' } } },
+      ]
+      for (const [index, event] of events.entries()) {
+        await persistEvent(pool, fixture.run.id, { ...event, sequence: index + 1, occurredAt,
+          payload: { ...event.payload, threadId: 'native-session' } })
+      }
+      const page = await readBoth(app, fixture)
+      expect(page.items.map(item => item.summary)).toEqual([
+        'Agent message updated', 'Command output updated', 'Agent reasoning started', 'Agent reasoning completed',
+        'Agent message completed', 'Agent message completed', 'User message completed', 'File change completed',
+        'Command: git completed', 'Tool: workspace_list completed', 'Tool: lookup failed', 'Web search completed',
+        'Token usage updated',
+      ])
+      expect(page.items.map(item => item.detail)).toEqual([
+        'Received 15 characters.', 'Received 14 characters.', undefined, undefined,
+        'Progress update.', 'Final answer.', undefined, 'Changes cover 1 file.', 'Exit code: 0.',
+        undefined, undefined, undefined, undefined,
+      ])
+      expect(JSON.stringify(page)).not.toContain('private')
+      const snapshot = await readSnapshot(app, fixture)
+      const diagnostics = snapshot.activities.filter(item => item.kind === 'diagnostic')
+      expect(diagnostics.map(item => item.message)).toContain('Agent message updated: Received 15 characters.')
+      expect(diagnostics.map(item => item.message)).toContain('File change completed: Changes cover 1 file.')
+      expect(diagnostics.map(item => item.message)).toContain('Agent message completed: Final answer.')
+      expect(snapshot.activities.filter(item => item.kind === 'tool').map(item => [item.title, item.status])).toEqual([
+        ['File change', 'completed'], ['Command: git', 'completed'], ['Tool: workspace_list', 'completed'],
+        ['Tool: lookup', 'failed'], ['Web search', 'completed'],
+      ])
+      expect(snapshot.active.filter(item => item.ref.kind === 'tool')).toEqual([])
+      expect(JSON.stringify(snapshot)).not.toContain('private')
+      expect((await pool.query('select count(*)::integer as count from harness_native_events where execution_id=$1',
+        [executionId])).rows[0]?.count).toBe(events.length)
+    })
+  }, 120000)
+
   it('bounds default MCP detail and names tools and command programs without arguments or credentials', async () => {
     await activityFixture(async (pool, fixture, app) => {
       for (let index = 0; index < 31; index++) {

@@ -77,13 +77,24 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'used',a.payload->'used','maximum',a.payload->'maximum')) as safe_payload,
   case when n.execution_id is null then null else jsonb_strip_nulls(jsonb_build_object(
     'type',left(n.record->>'type',48),
+    'nativeMethod',left(n.record#>>'{payload,nativeMethod}',100),
+    'turnStatus',left(n.record#>>'{payload,turn,status}',48),
     'unsupportedInteractionCode',case when n.record->>'type'='interaction.unsupported'
       then left(n.record#>>'{payload,code}',100) end,
     'itemType',left(n.record#>>'{payload,item,type}',48),
     'toolName',left(n.record#>>'{payload,item,tool}',64),
     'commandName',substring(n.record#>>'{payload,item,command}' from '^[[:space:]]*([A-Za-z0-9_./-]+)'),
     'itemStatus',left(n.record#>>'{payload,item,status}',48),
-    'itemError',coalesce(n.record#>'{payload,item,error}' <> 'null'::jsonb,false),
+    'itemError',coalesce(n.record#>'{payload,item,error}' <> 'null'::jsonb,false)
+      or (n.record#>>'{payload,item,type}'='dynamicToolCall'
+        and coalesce(n.record#>'{payload,item,success}'='false'::jsonb,false)),
+    'messagePhase',left(n.record#>>'{payload,item,phase}',48),
+    'exitCode',case when jsonb_typeof(n.record#>'{payload,item,exitCode}')='number'
+      then n.record#>'{payload,item,exitCode}' end,
+    'fileChangeCount',case when jsonb_typeof(n.record#>'{payload,item,changes}')='array'
+      then jsonb_array_length(n.record#>'{payload,item,changes}') end,
+    'deltaLength',case when jsonb_typeof(n.record#>'{payload,delta}')='string'
+      then length(n.record#>>'{payload,delta}') end,
     'partTool',left(n.record#>>'{payload,part,tool}',48),
     'partStatus',left(n.record#>>'{payload,part,state,status}',48),
     'claudeItemId',case when n.record->>'type'='claude.tool' then n.record#>>'{payload,itemId}' end,
