@@ -11,7 +11,7 @@ import { useGraphDraftStore } from '../features/graph/store'
 import { nextDraftKey } from '../features/graph/nextDraft/state'
 import { nextDraftApi } from '../features/graph/nextDraft/transport'
 import { boardDraftContextKey } from '../features/workflow-board/keys'
-import { reply, runsUrl } from '../features/run-board/testFixtures'
+import { reply, runsUrl, versionReply } from '../features/run-board/testFixtures'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { page, runA, runB } from '../features/runs-selector/testFixtures'
 import { bindMockInstallation } from '../shared/mocks/handlers'
@@ -102,6 +102,8 @@ beforeEach(() => {
       locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' },
     })),
     http.get(`${runsRoute}/summaries`, () => HttpResponse.json(page([runA, runB]))),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/version', ({ params }) =>
+      HttpResponse.json(versionReply(reply(String(params.runId), scope).snapshot))),
     http.get(`${runsRoute}/:runId/snapshot`, ({ params }) => HttpResponse.json(reply(String(params.runId), {
       workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
     }))),

@@ -17,7 +17,7 @@ import { bindMockInstallation } from '../../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../../shared/mocks/scenarios'
 import { useGraphDraftStore } from '../graph/store'
 import { installFlowLayout } from '../run-board/testFlowLayout'
-import { deferred, reply, runsUrl } from '../run-board/testFixtures'
+import { deferred, reply, runsUrl, versionReply } from '../run-board/testFixtures'
 import { page, runA, runB } from '../runs-selector/testFixtures'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { RunsSelector } from '../runs-selector/RunsSelector'
@@ -70,6 +70,8 @@ function installBoardHistory() {
       locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-09-19T00:00:00.000Z' } })),
     http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries', () => HttpResponse.json(page([runA, runB]))),
     http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), scope))),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/version', ({ params }) =>
+      HttpResponse.json(versionReply(reply(String(params.runId), scope).snapshot))),
     http.get('*/api/workspaces/:workspaceId/workflows/:workflowId/reference-files', () =>
       HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
     http.get('*/api/workspaces/:workspaceId/reference-files', () =>
@@ -114,6 +116,8 @@ beforeEach(() => {
   installFlowLayout(320, 480); installChatSource()
   server.use(http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
     HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })), selectedChatUnavailable,
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/version', ({ params }) =>
+      HttpResponse.json(versionReply(chatSnapshot(String(params.runId)).snapshot))),
     http.get('*/api/management/workspaces/workspace-1/runs/:runId/activities', ({ params, request }) => {
       const runId = String(params.runId)
       const snapshot = reply(runId, scope).snapshot

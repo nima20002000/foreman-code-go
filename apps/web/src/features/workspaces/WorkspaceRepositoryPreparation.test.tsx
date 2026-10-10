@@ -70,8 +70,9 @@ describe('workspace project preparation', () => {
     expect(screen.getByText(/approves the supported tracked files/)).toBeVisible()
     await user.click(add)
     expect(await screen.findByText('Project ready')).toBeVisible()
-    expect(screen.getByText(fixture.prepared.location.binding.canonicalProjectRoot)).toBeVisible()
-    expect(screen.getByText(fixture.prepared.source.manifest.git!.commit)).toBeVisible()
+    const project = within(screen.getByRole('region', { name: 'GitHub repository' }))
+    expect(project.getByText(fixture.prepared.location.binding.canonicalProjectRoot)).toBeVisible()
+    expect(project.getByText(fixture.prepared.source.manifest.git!.commit)).toBeVisible()
     expect(fixture.requests).toHaveLength(1)
     expect(fixture.requests[0]).toMatchObject({ expectedRevision: 1, expectedLocationRevision: 0,
       expectedRootPolicyRevision: 0, expectedBindingRevision: 0, allowedBaseId: mainRoot.bases[0]!.baseId,
@@ -119,6 +120,7 @@ describe('workspace project preparation', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Prepare project' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Prepare project' }))
     const retry = await screen.findByRole('button', { name: 'Retry project preparation' })
+    await user.click(screen.getByRole('button', { name: 'Check project status' }))
     expect(await screen.findByText('Last completed step: metadata.')).toBeVisible()
     expect(screen.queryByText('Project ready')).not.toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Repository' })).toBeDisabled()
@@ -271,8 +273,9 @@ describe('workspace project preparation', () => {
       error: { code: 'FORBIDDEN', message: 'Project read denied.' },
     }, { status: 403 })))
     await act(async () => { await view.queryClient.invalidateQueries({ queryKey: workspaceGitKeys.scope('workspace-1') }) })
-    expect(screen.queryByText(fixture.prepared.location.binding.canonicalProjectRoot)).not.toBeInTheDocument()
     expect(await screen.findByText('Project status could not be read.')).toBeVisible()
+    const project = within(screen.getByRole('region', { name: 'GitHub repository' }))
+    expect(project.queryByText(fixture.prepared.location.binding.canonicalProjectRoot)).not.toBeInTheDocument()
   })
 
   it('preserves an Add draft on revision conflict and uses a new command after reapply', async () => {

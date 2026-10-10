@@ -1,4 +1,5 @@
 import { RunBoardSnapshotSchema, type RunBoardSnapshotGetResult } from '@foreman-code/contracts/run-snapshots'
+import { makeCurrentWorkflowFixture, RunVersionDetailSchema } from '@foreman-code/contracts/wave25'
 import type { RunsSelectorScope } from '../runs-selector/types'
 import type { AvailableRunBoardSnapshot } from './model'
 
@@ -34,6 +35,41 @@ export function reply(runId: string, target: RunsSelectorScope = scope): RunBoar
   return { snapshot: RunBoardSnapshotSchema.parse(runId === 'legacy'
     ? { ...target, runId, kind: 'unavailable', reason: 'legacy_run' }
     : { ...(runId === 'run-b' ? runB : runA), ...target, runId }) }
+}
+export function versionReply(snapshot: RunBoardSnapshotGetResult['snapshot']) {
+  if (snapshot.kind !== 'available') throw new Error('The saved version fixture requires an available snapshot.')
+  const { workspaceId, workflowId, runId } = snapshot
+  const { version } = makeCurrentWorkflowFixture('saved-run-board', 'single')
+  const nodes = snapshot.nodes.map(node => {
+    if (node.kind === 'job') throw new Error('The saved version fixture supports agent snapshots.')
+    return node
+  })
+  const entryNodeId = snapshot.nodes[0]!.id
+  return RunVersionDetailSchema.parse({
+    scope: { workspaceId, workflowId, runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3 },
+    version: {
+      ...version,
+      id: snapshot.workflowVersionId,
+      workspaceId,
+      workflowId,
+      entryNodeId,
+      createdAt: snapshot.capturedAt,
+      agentConfigurationVersionIds: Object.fromEntries(nodes.map(node =>
+        [node.agentId, node.agentConfigurationVersionId])),
+      definition: {
+        ...version.definition,
+        id: workflowId,
+        workspaceId,
+        entryNodeId,
+        nodes: nodes.map(node => ({
+          id: node.id, agentId: node.agentId, name: node.name, position: node.position,
+          width: node.size.width, height: node.size.height,
+        })),
+        edges: snapshot.edges,
+        executionPolicy: { maxParallelism: 1, maxNodeExecutions: snapshot.nodes.length },
+      },
+    },
+  })
 }
 export function runsUrl(runId: string | null, target: RunsSelectorScope = scope) {
   const search = new URLSearchParams({ workflowId: target.workflowId })
