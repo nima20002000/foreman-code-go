@@ -1,4 +1,5 @@
 import { runWorktreesMigration } from './runWorktreesMigration.js'
+import { nativeProofSourceLimitMigration } from './nativeProofSourceLimitMigration.js'
 import { workspaceRepositoryImportsMigration } from './workspaceRepositoryImportsMigration.js'
 import { retiredHarnessCredentialsMigration } from './retiredHarnessCredentialsMigration.js'
 import { bugReportsMigration } from './bugReportsMigration.js'
@@ -900,6 +901,7 @@ export const migrations = [
   bugReportsMigration,
   runActivityCommitOrderMigration,
   runWorktreesMigration,
+  nativeProofSourceLimitMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
