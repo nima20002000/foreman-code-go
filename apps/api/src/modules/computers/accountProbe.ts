@@ -33,7 +33,8 @@ async function codex(ports: AccountProbePorts): Promise<ComputerAccount> {
   if (!await ports.find('codex')) return missing('codex')
   const home = ports.environment.CODEX_HOME ?? join(ports.environment.HOME ?? homedir(), '.codex')
   const text = await ports.readText(join(home, 'auth.json'))
-  if (text === null) return { tool: 'codex', installed: true, signedIn: false, account: null, details: [] }
+  // Codex can store credentials in the keyring without an auth.json file.
+  if (text === null) return unknown('codex')
   const auth = JSON.parse(text) as { auth_mode?: unknown; OPENAI_API_KEY?: unknown; tokens?: { id_token?: unknown } | null }
   const email = typeof auth.tokens?.id_token === 'string' ? jwtEmail(auth.tokens.id_token) : null
   const apiKey = typeof auth.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY.length > 0

@@ -34,7 +34,7 @@ export function OperatorActivityList({ entries, activeRequestId, parts, onBrowse
           <div className="operator-activity-details">
           {entry.input ? <div><strong>Input</strong><pre>{entry.input}</pre></div> : null}
           {entry.output ? <div><strong>Output</strong><pre>{entry.output}</pre></div> : null}
-          {!entry.input && !entry.output ? <p>The harness did not provide additional details.</p> : null}
+          {!entry.input && !entry.output ? <p>Details are not included in this view.</p> : null}
           {entry.truncated ? <p className="operator-activity-note">Long details have been shortened.</p> : null}
           </div>
         </details>

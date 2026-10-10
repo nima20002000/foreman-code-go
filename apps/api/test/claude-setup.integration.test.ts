@@ -17,7 +17,7 @@ import { initializeNativeDefaults } from '../src/modules/harnesses/initializeDef
 
 /** Real authenticated transport and persisted settings. Claude's actual factory
  * blocks qualification before native effects; no fabricated proof/model turn. */
-it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MCP with denied writes, persisted readback and truthful blocked readiness', async () => {
+it.skipIf(!postgresEnabled)('repairs a stale Claude MCP endpoint with denied writes, persisted readback and truthful blocked readiness', async () => {
   const f = await currentOperatorIntegration()
   const catalog = new HarnessCatalogService(new NativeHarnessConfigurationQualifier('codex'),
     new PostgresSettingsRepository(f.db.pool), f.commands, f.db.directory, new URL('/mcp', f.address).href)
@@ -41,7 +41,8 @@ it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MC
     expect(http.status).toBe(200); expect(await http.json()).toEqual(setup)
     const original = await new PostgresSettingsRepository(f.db.pool).getManagedHarnessDefaults()
     const configuration = { harness: 'claude', model: 'explicit-model', authMode: 'subscription', configDirectory: f.db.directory,
-      permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: { graphql: setup.graphqlMcp } }
+      permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: 'Keep saved instructions.',
+      mcpServers: { graphql: { type: 'http', url: 'http://127.0.0.1:3999/mcp' } } }
     const input = { commandId: randomUUID(), expectedRevision: original.revision, defaults: { ...original.defaults, claude: configuration } }
     const reader = await f.access.issue({ name: 'Claude setup reader', audience: 'operator', expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['harnesses:read'], scope: {} }] })
     const readClient = await connect(reader.token)
@@ -68,8 +69,30 @@ it.skipIf(!postgresEnabled)('configures Claude MCP through authenticated HTTP/MC
     expect(HarnessDefaultsUpdateResultSchema.parse(result(await client.callTool({ name: 'harness_defaults_update', arguments: input })))).toEqual({ ...saved, replayed: true })
     expect(result(await client.callTool({ name: 'harness_get', arguments: { harness: 'claude' } }))).toMatchObject({ defaults: configuration,
       defaultsRevision: saved.value.revision, capability: null, discoveryError: { code: 'CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE' } })
+    const repairedConfiguration = { ...configuration, mcpServers: { graphql: setup.graphqlMcp } }
+    const repair = {
+      commandId: randomUUID(), expectedRevision: saved.value.revision,
+      defaults: { ...saved.value.defaults, claude: repairedConfiguration },
+    }
+    await expectMcpAccessDenied(readClient.callTool({ name: 'harness_defaults_update', arguments: repair }))
+    expect(await client.callTool({ name: 'harness_defaults_update', arguments: {
+      ...repair, commandId: randomUUID(), expectedRevision: original.revision,
+    } })).toMatchObject({ isError: true,
+      content: [{ type: 'text', text: expect.stringContaining('REVISION_CONFLICT') }] })
+    expect(await new PostgresSettingsRepository(f.db.pool).getManagedHarnessDefaults()).toMatchObject(saved.value)
+    const repaired = HarnessDefaultsUpdateResultSchema.parse(result(await client.callTool({
+      name: 'harness_defaults_update', arguments: repair,
+    })))
+    expect(repaired.value.revision).toBe(saved.value.revision + 1)
+    expect(repaired.value.defaults).toEqual(repair.defaults)
+    expect(await new PostgresSettingsRepository(f.db.pool).getManagedHarnessDefaults()).toMatchObject(repaired.value)
+    expect(result(await readClient.callTool({ name: 'harness_get', arguments: { harness: 'claude' } })))
+      .toMatchObject({ defaults: repairedConfiguration, defaultsRevision: repaired.value.revision })
+    expect(HarnessDefaultsUpdateResultSchema.parse(result(await client.callTool({
+      name: 'harness_defaults_update', arguments: repair,
+    })))).toEqual({ ...repaired, replayed: true })
     expect(ExecutionReadinessSchema.parse(result(await client.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } })))).toMatchObject({
-      status: 'blocked', defaultsRevision: saved.value.revision, reason: { code: 'CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE' },
+      status: 'blocked', defaultsRevision: repaired.value.revision, reason: { code: 'CLAUDE_NATIVE_QUALIFICATION_UNAVAILABLE' },
     })
     const none = await f.access.issue({ name: 'No Claude setup access', audience: 'operator', expiresAt: new Date(Date.now() + 600000), grants: [] })
     await expectMcpAccessDenied((await connect(none.token)).callTool({ name: 'claude_setup_options_get', arguments: {} }))

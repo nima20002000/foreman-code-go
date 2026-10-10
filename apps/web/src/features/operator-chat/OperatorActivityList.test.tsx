@@ -22,6 +22,17 @@ describe('Operator activity disclosures', () => {
     expect(screen.queryByRole('button', { name: 'Thinking' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Waiting for the reasoning/)).not.toBeInTheDocument()
   })
+  it('describes omitted tool details without attributing the omission to the harness', async () => {
+    const entry: OperatorActivity = {
+      id: 'native-tool', requestId: 'request', sequence: '1', revision: 1,
+      kind: 'tool', title: 'Read', status: 'completed',
+    }
+    render(<OperatorActivityList entries={[entry]} onBrowse={vi.fn()} />)
+    await userEvent.setup().click(screen.getByText('Tool · Read'))
+    expect(screen.getByText('Details are not included in this view.')).toBeVisible()
+    expect(screen.queryByText('Input')).not.toBeInTheDocument()
+    expect(screen.queryByText('Output')).not.toBeInTheDocument()
+  })
   it.each(['tool', 'web_search', 'file_read', 'file_write', 'subagent'] as const)('expands %s independently and stays open through a final update', async (kind) => {
     const onBrowse = vi.fn()
     const value = activity(kind)

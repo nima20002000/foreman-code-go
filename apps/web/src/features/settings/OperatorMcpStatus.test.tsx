@@ -61,11 +61,48 @@ it('adds this app MCP endpoint to the saved Claude preset in one click', async (
   expect(Object.values(saved[0]!.defaults.claude!.mcpServers)).toEqual([endpoint])
 })
 
-it('reports Claude as installed when its preset already has the app MCP', () => {
+it.each(['foreman-code', 'graphql'])('reports Claude as installed when %s matches the app MCP endpoint', async (name) => {
+  const endpoint = { type: 'http' as const, url: 'http://127.0.0.1:3000/mcp' }
+  server.use(http.get('/api/management/harnesses/claude/setup-options', () => HttpResponse.json({ graphqlMcp: endpoint })))
   mount(<OperatorMcpStatus harness="claude" revision={3}
-    defaults={{ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: { 'foreman-code': { type: 'http', url: 'http://127.0.0.1:3000/mcp' } } } }} />)
-  expect(screen.getByText('Installed')).toBeVisible()
+    defaults={{ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: { [name]: endpoint } } }} />)
+  expect(await screen.findByText('Installed')).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Install' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Update' })).not.toBeInTheDocument()
+})
+
+it.each([
+  ['foreman-code', 'http://127.0.0.1:3999/mcp'],
+  ['graphql', 'https://example.com/mcp'],
+])('repairs an outdated Claude %s endpoint only after Update is clicked', async (name, url) => {
+  const inputs: DefaultsUpdate[] = []
+  const endpoint = { type: 'http' as const, url: 'http://127.0.0.1:3000/mcp' }
+  const defaults = {
+    ...DEFAULT_HARNESS_DEFAULTS,
+    claude: { ...savedClaudeConfiguration, mcpServers: { [name]: { type: 'http' as const, url } } },
+  }
+  server.use(
+    http.get('/api/management/harnesses/claude/setup-options', () => HttpResponse.json({ graphqlMcp: endpoint })),
+    http.put('/api/management/harnesses/defaults', async ({ request }) => {
+      const input = await request.json() as DefaultsUpdate
+      inputs.push(input)
+      return HttpResponse.json({ value: { defaults: input.defaults, revision: 4 }, replayed: false })
+    }),
+  )
+  const mounted = mount(<OperatorMcpStatus harness="claude" defaults={defaults} revision={3} />)
+  expect(await screen.findByText('Outdated')).toBeVisible()
+  expect(screen.queryByText('Installed')).not.toBeInTheDocument()
+  expect(inputs).toHaveLength(0)
+  fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+  await waitFor(() => expect(inputs).toHaveLength(1))
+  expect(inputs[0]).toMatchObject({
+    expectedRevision: 3,
+    defaults: { ...defaults, claude: { ...defaults.claude, mcpServers: { [name]: endpoint } } },
+  })
+  expect(Object.keys(inputs[0]!.defaults.claude!.mcpServers)).toEqual([name])
+  mounted.update(<OperatorMcpStatus harness="claude" defaults={inputs[0]!.defaults} revision={4} />)
+  expect(screen.getByText('Installed')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Update' })).not.toBeInTheDocument()
 })
 
 it('uses a new Claude command after a completed install is removed in another session', async () => {

@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { probeComputerAccounts, type AccountProbePorts } from './accountProbe.js'
 
 const token = (claims: object) => `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`
@@ -34,8 +34,33 @@ it('separates missing tools, signed-out tools and unreadable sign-in state', asy
     'gh auth status --active --hostname github.com --json hosts': { code: 1, stderr: 'You are not logged into any GitHub hosts.' },
   }))
   expect(result.accounts.map(value => [value.tool, value.installed, value.signedIn])).toEqual([
-    ['codex', true, false], ['claude', true, null], ['github', true, false],
+    ['codex', true, null], ['claude', true, null], ['github', true, false],
   ])
+})
+
+it.each(['missing', 'unreadable', 'malformed'] as const)(
+  'keeps installed Codex sign-in unknown when its auth file is %s', async state => {
+    const run = vi.fn<AccountProbePorts['run']>()
+    const result = await probeComputerAccounts({
+      ...ports(['codex'], {}),
+      run,
+      readText: async () => {
+        if (state === 'unreadable') throw new Error('Access denied')
+        return state === 'missing' ? null : 'not json'
+      },
+    })
+    expect(result.accounts.find(account => account.tool === 'codex')).toEqual({
+      tool: 'codex', installed: true, signedIn: null, account: null, details: [],
+    })
+    expect(run).not.toHaveBeenCalled()
+  },
+)
+
+it('distinguishes unavailable Codex from an installed tool with unknown sign-in', async () => {
+  const result = await probeComputerAccounts(ports([], {}))
+  expect(result.accounts.find(account => account.tool === 'codex')).toEqual({
+    tool: 'codex', installed: false, signedIn: null, account: null, details: [],
+  })
 })
 
 it('reports an installed Claude that cannot start', async () => {

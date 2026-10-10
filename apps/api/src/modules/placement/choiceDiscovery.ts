@@ -97,10 +97,17 @@ export class ProductionPlacementChoiceDiscovery implements PlacementChoiceDiscov
       && sameWorkflowValue(installation.hostRef, policy.hostRef)
       && installation.harnessInstallationId === profile.target.harnessInstallationId
       && installation.installationFingerprint === profile.target.installationFingerprint)
-    const qualified = installed && await services.registry.profileEvidence(profile, sql)
+    const supportedDriver = profile.driverId === 'codex'
+      || profile.driverId === 'claude' && policy.hostRef.kind === 'main'
+    const qualified = supportedDriver && installed && await services.registry.profileEvidence(profile, sql)
+    let reason: string | null = null
+    if (!supportedDriver) {
+      reason = 'This harness does not support workflow execution on this computer.'
+    } else if (!qualified) {
+      reason = 'The matching harness profile needs qualification on this computer.'
+    }
     const hostLabel = policy.hostRef.kind === 'main' ? 'Main' : `Computer ${policy.hostRef.deviceId}`
     return { id: commandInputHash(placement), label: `${hostLabel} · ${profile.driverId} · ${policy.canonicalProjectRoot}`,
-      placement, availability: qualified ? 'ready' : 'unavailable',
-      reason: qualified ? null : 'The matching harness profile needs qualification on this computer.' }
+      placement, availability: reason === null ? 'ready' : 'unavailable', reason }
   }
 }
