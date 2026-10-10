@@ -44,10 +44,11 @@ export type ComputerAccountsList = z.infer<typeof ComputerAccountsListSchema>
 
 export const COMPUTER_GITHUB_NAMESPACE = 'computer-github-v1'
 /** Device-code sign-in to github.com with the GitHub CLI on one computer. The token never leaves that computer. */
+const ExpectedGitHubAccountSchema = z.string().min(1).max(320).nullable()
 export const GitHubLoginRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('login-start') }).strict(),
   z.object({ operation: z.literal('login-status'), loginId: z.uuid() }).strict(),
-  z.object({ operation: z.literal('logout') }).strict(),
+  z.object({ operation: z.literal('logout'), expectedAccount: ExpectedGitHubAccountSchema }).strict(),
   z.object({ operation: z.literal('setup-git'), loginId: z.uuid() }).strict(),
 ])
 export const GitHubLoginStateSchema = z.object({
@@ -60,6 +61,9 @@ export const GitHubLoginStateSchema = z.object({
   message: z.string().max(500).nullable(),
 }).strict()
 export const ComputerGitHubInputSchema = z.object({ target: DeviceProvisioningTargetSchema }).strict()
+export const ComputerGitHubLogoutInputSchema = ComputerGitHubInputSchema.extend({
+  expectedAccount: ExpectedGitHubAccountSchema.describe('Account observed before logout; null only when signed out. Retain on retry.'),
+}).strict()
 export const ComputerGitHubStatusInputSchema = ComputerGitHubInputSchema.extend({ loginId: z.uuid() }).strict()
 export type GitHubLoginRequest = z.infer<typeof GitHubLoginRequestSchema>
 export type GitHubLoginState = z.infer<typeof GitHubLoginStateSchema>

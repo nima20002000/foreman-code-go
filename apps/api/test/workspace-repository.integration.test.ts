@@ -27,7 +27,7 @@ describe('repository settings through authenticated MCP', () => {
       } }))
       expect((await read()).workspace.repository).toEqual(repository)
 
-      const changed = { ...repository, defaultBranch: 'release' }
+      const changed = { ...repository, defaultBranch: 'release/v1.2' }
       expect(await f.owner.client.callTool({ name: 'workspace_update', arguments: {
         ...input, commandId: randomUUID(), repository: changed,
       } })).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('REVISION_CONFLICT') }] })
@@ -46,7 +46,7 @@ describe('repository settings through authenticated MCP', () => {
     }
   }, 30_000)
 
-  it('rejects path segments in structured repository fields through HTTP and MCP', async () => {
+  it('rejects invalid repository fields and Git base branches through HTTP and MCP', async () => {
     const f = await workspaceMcpFixture()
     try {
       const created = await callWorkspaceTool(f.owner.client, 'workspace_create',
@@ -57,6 +57,8 @@ describe('repository settings through authenticated MCP', () => {
         { ...repository, name: 'website/extra' },
         { ...repository, name: 'website/tree/main' },
         { ...repository, owner: 'https://github.com/octo-owner' },
+        ...['release..stable', 'release/', 'release.lock', 'feature:broken', ''].map(defaultBranch =>
+          ({ ...repository, defaultBranch })),
       ]) {
         const input = { workspaceId, expectedRevision: created.value.revision, repository: invalid }
         expect((await f.owner.client.callTool({ name: 'workspace_update', arguments: {

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, lstat, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 
 const reads = vi.hoisted(() => ({ manifest: 0 }))
 vi.mock('node:fs/promises', async original => {
@@ -45,6 +46,53 @@ async function fixture() {
   reads.manifest = 0
   return { directory, bytes, manifest, store, signal: AbortSignal.timeout(5000) }
 }
+
+it('creates private snapshot storage before capture and keeps its identity on retry', async () => {
+  const parent = await mkdtemp(join(persistentFixtureRoot, 'source-storage-'))
+  directories.push(parent)
+  const directory = join(parent, 'storage')
+  const store = new PrivateSourceSnapshotStore(directory)
+  const [first, concurrent] = await Promise.all([store.storageIdentity(), store.storageIdentity()])
+  expect(concurrent).toEqual(first)
+  expect(await store.storageIdentity()).toEqual(first)
+  expect((await stat(directory)).mode & 0o777).toBe(0o700)
+  const bytes = Buffer.from('captured source')
+  const entry = { path: 'README.md', kind: 'file' as const, byteSize: bytes.length,
+    sha256: sourceSha256(bytes), executable: false }
+  const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
+    capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip', entries: [entry], deletions: [] })
+  await store.write(manifest.snapshotId, entry, bytes)
+  await store.commit(manifest)
+  expect(await store.manifest(manifest.snapshotId)).toEqual(manifest)
+  expect(await store.read(manifest, entry, AbortSignal.timeout(5000))).toEqual(bytes)
+})
+
+it('rejects linked or nonprivate storage without changing existing permissions', async () => {
+  const parent = await mkdtemp(join(persistentFixtureRoot, 'source-storage-'))
+  directories.push(parent)
+  const target = join(parent, 'target')
+  await mkdir(target, { mode: 0o700 })
+  const link = join(parent, 'storage')
+  await symlink(target, link)
+  await expect(new PrivateSourceSnapshotStore(link).storageIdentity())
+    .rejects.toMatchObject({ code: 'SOURCE_FILESYSTEM_UNSUPPORTED' })
+  await chmod(target, 0o755)
+  await expect(new PrivateSourceSnapshotStore(target).storageIdentity())
+    .rejects.toMatchObject({ code: 'SOURCE_ROOT_NOT_PRIVATE' })
+  expect((await stat(target)).mode & 0o777).toBe(0o755)
+})
+
+it('rejects a linked parent before creating missing snapshot storage', async () => {
+  const parent = await mkdtemp(join(persistentFixtureRoot, 'source-storage-'))
+  directories.push(parent)
+  const target = join(parent, 'target')
+  await mkdir(target, { mode: 0o700 })
+  const link = join(parent, 'linked-parent')
+  await symlink(target, link)
+  await expect(new PrivateSourceSnapshotStore(join(link, 'storage')).storageIdentity())
+    .rejects.toMatchObject({ code: 'SOURCE_FILESYSTEM_UNSUPPORTED' })
+  await expect(lstat(join(target, 'storage'))).rejects.toMatchObject({ code: 'ENOENT' })
+})
 
 it('reads a stable manifest once while verifying every file in repeated source transfers', async () => {
   const f = await fixture()

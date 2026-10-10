@@ -4,6 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { GitHubLoginRunner, type GitHubLoginPorts } from './githubLogin.js'
 
 function fixture(installed = true, options: {
+  firstLookup?: Promise<void>
   unreadable?: boolean
   setupFails?: boolean
   logoutKeepsAccount?: boolean
@@ -17,6 +18,7 @@ function fixture(installed = true, options: {
   let user: string | null = null
   const children: { stdout: PassThrough; stderr: PassThrough; stdin: PassThrough; emitter: EventEmitter; kill: ReturnType<typeof vi.fn>; args: string[] }[] = []
   const runs: string[] = []
+  let lookups = 0
   const ports: GitHubLoginPorts = {
     now: () => Date.parse('2026-10-07T00:00:00Z'),
     spawn: (_binary, args) => {
@@ -29,7 +31,10 @@ function fixture(installed = true, options: {
     },
     probe: {
       environment: {},
-      find: async name => installed && name === 'gh' ? '/usr/bin/gh' : null,
+      find: async name => {
+        if (++lookups === 1 && options.firstLookup) await options.firstLookup
+        return installed && name === 'gh' ? '/usr/bin/gh' : null
+      },
       readText: async () => null,
       run: async (_binary, args) => {
         runs.push(args.join(' '))
@@ -74,7 +79,7 @@ it('returns the device code, follows the CLI to signed-in and lets git use the a
   await vi.waitFor(async () => expect(await f.runner.handle({ operation: 'login-status', loginId: waiting.loginId! }))
     .toMatchObject({ state: 'signed-in', account: 'octo-owner', code: null }))
   expect(f.runs).toContain('auth setup-git --hostname github.com')
-  expect(await f.runner.handle({ operation: 'logout' })).toMatchObject({ state: 'signed-out', account: null })
+  expect(await f.runner.handle({ operation: 'logout', expectedAccount: 'octo-owner' })).toMatchObject({ state: 'signed-out', account: null })
   expect(f.runs).toContain('auth logout --hostname github.com --user octo-owner')
 })
 
@@ -99,21 +104,21 @@ it('reports a failed sign-in, replaces an earlier one and refuses without the Gi
 
 it('refuses to report signed-out when the probe cannot establish the account', async () => {
   const f = fixture(true, { unreadable: true })
-  await expect(f.runner.handle({ operation: 'logout' })).rejects.toMatchObject({ code: 'GITHUB_STATUS_UNKNOWN' })
+  await expect(f.runner.handle({ operation: 'logout', expectedAccount: 'owner' })).rejects.toMatchObject({ code: 'GITHUB_STATUS_UNKNOWN' })
   expect(f.runs.some(value => value.startsWith('auth logout'))).toBe(false)
 })
 
 it('checks the account after logout and refuses success when credentials remain', async () => {
   const f = fixture(true, { logoutKeepsAccount: true })
   f.signIn('owner')
-  await expect(f.runner.handle({ operation: 'logout' })).rejects.toMatchObject({ code: 'GITHUB_LOGOUT_FAILED' })
+  await expect(f.runner.handle({ operation: 'logout', expectedAccount: 'owner' })).rejects.toMatchObject({ code: 'GITHUB_LOGOUT_FAILED' })
   expect(f.runs.filter(value => value.startsWith('auth status'))).toHaveLength(2)
 })
 
 it('verifies logout on older GitHub CLI releases while another host remains configured', async () => {
   const f = fixture(true, { textStatus: true, otherHost: true })
   f.signIn('owner')
-  expect(await f.runner.handle({ operation: 'logout' })).toMatchObject({ state: 'signed-out', account: null })
+  expect(await f.runner.handle({ operation: 'logout', expectedAccount: 'owner' })).toMatchObject({ state: 'signed-out', account: null })
   expect(f.runs).toContain('auth logout --hostname github.com --user owner')
   expect(f.runs.filter(value => value === 'auth status --active --hostname github.com')).toHaveLength(2)
 })
@@ -151,17 +156,17 @@ it('reports Git setup failure separately after successful sign-in', async () => 
 it('reports another saved account as signed-in when logout makes it active', async () => {
   const f = fixture(true, { nextAccount: 'another-owner' })
   f.signIn('owner')
-  expect(await f.runner.handle({ operation: 'logout' })).toMatchObject({ state: 'signed-in', account: 'another-owner' })
+  expect(await f.runner.handle({ operation: 'logout', expectedAccount: 'owner' })).toMatchObject({ state: 'signed-in', account: 'another-owner' })
   expect(f.runs).toContain('auth logout --hostname github.com --user owner')
 })
 
 it('does not claim signed-out after logout fails or the verification probe fails', async () => {
   const failed = fixture(true, { logoutFails: true })
   failed.signIn('owner')
-  await expect(failed.runner.handle({ operation: 'logout' })).rejects.toMatchObject({ code: 'GITHUB_LOGOUT_FAILED' })
+  await expect(failed.runner.handle({ operation: 'logout', expectedAccount: 'owner' })).rejects.toMatchObject({ code: 'GITHUB_LOGOUT_FAILED' })
   const unknown = fixture(true, { unreadableAfterLogout: true })
   unknown.signIn('owner')
-  await expect(unknown.runner.handle({ operation: 'logout' })).rejects.toMatchObject({ code: 'GITHUB_STATUS_UNKNOWN' })
+  await expect(unknown.runner.handle({ operation: 'logout', expectedAccount: 'owner' })).rejects.toMatchObject({ code: 'GITHUB_STATUS_UNKNOWN' })
 })
 
 
@@ -170,7 +175,7 @@ it('starts a requested account switch only after pending logout has checked the 
   const logoutWait = new Promise<void>(resolve => { finishLogout = resolve })
   const f = fixture(true, { logoutWait })
   f.signIn('owner')
-  const logout = f.runner.handle({ operation: 'logout' })
+  const logout = f.runner.handle({ operation: 'logout', expectedAccount: 'owner' })
   await vi.waitFor(() => expect(f.runs).toContain('auth logout --hostname github.com --user owner'))
   const start = f.runner.handle({ operation: 'login-start' })
   await new Promise(resolve => setTimeout(resolve, 10))
@@ -191,4 +196,36 @@ it('starts a requested account switch only after pending logout has checked the 
   f.children[0]!.emitter.emit('exit', 0)
   await vi.waitFor(async () => expect(await f.runner.handle({ operation: 'login-status', loginId: waiting.loginId! }))
     .toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
+})
+
+
+it('preserves the next saved account on an uncertain logout retry and overlapping duplicates', async () => {
+  const f = fixture(true, { nextAccount: 'another-owner', unreadableAfterLogout: true })
+  f.signIn('owner')
+  const request = { operation: 'logout' as const, expectedAccount: 'owner' }
+  await expect(f.runner.handle(request)).rejects.toMatchObject({ code: 'GITHUB_STATUS_UNKNOWN' })
+  f.options.unreadable = false
+  await Promise.all([1, 2].map(async () => {
+    await expect(f.runner.handle(request)).rejects.toMatchObject({ code: 'GITHUB_ACCOUNT_CHANGED' })
+  }))
+  expect(f.runs.filter(value => value.startsWith('auth logout')))
+    .toEqual(['auth logout --hostname github.com --user owner'])
+  f.runner.close()
+})
+
+it.each(['logout', 'close'] as const)('cancels a login whose executable lookup finishes after %s', async operation => {
+  let release!: () => void
+  const firstLookup = new Promise<void>(resolve => { release = resolve })
+  const f = fixture(true, { firstLookup })
+  const start = f.runner.handle({ operation: 'login-start' })
+  const cancelled = expect(start).rejects.toMatchObject({ code: 'GITHUB_LOGIN_CANCELLED' })
+  if (operation === 'logout') {
+    expect(await f.runner.handle({ operation: 'logout', expectedAccount: null })).toMatchObject({ state: 'signed-out' })
+  } else {
+    f.runner.close()
+  }
+  release()
+  await cancelled
+  expect(f.children).toHaveLength(0)
+  f.runner.close()
 })

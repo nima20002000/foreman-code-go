@@ -61,6 +61,9 @@ export function WorkspaceRepositoryForm({ workspaceId, revision, repository }: {
   const base = bases.find(item => item.base.baseId === selectedBase) ?? (bases.length === 1 ? bases[0] : undefined)
   const fields = repositoryFields(retryInput?.repository) ?? form.draft ?? { slug: '', branch: 'main' }
   const parsed = WorkspaceRepositorySchema.nullable().safeParse(repositoryInput(form.draft ?? null))
+  const issues = parsed.success ? [] : parsed.error.issues
+  const repositoryInvalid = issues.some(issue => issue.path[0] === 'owner' || issue.path[0] === 'name')
+  const branchError = issues.find(issue => issue.path[0] === 'defaultBranch')?.message
   const incomplete = status?.state === 'preparing'
   const busy = form.isSaving || prepare.isPending
   const uncertain = form.uncertain || incomplete || Boolean(recoveredImport)
@@ -163,10 +166,10 @@ export function WorkspaceRepositoryForm({ workspaceId, revision, repository }: {
     <div className="workspace-repository-fields">
       <TextField label="Repository" placeholder="owner/name" value={fields.slug} disabled={locked}
         onChange={event => form.setDraft({ ...fields, slug: event.target.value })}
-        error={fields.slug && !parsed.success
+        error={fields.slug && repositoryInvalid
           ? 'Use owner/name or a GitHub repository URL without extra path segments.' : undefined} />
       <TextField label="Base branch" value={fields.branch} disabled={locked}
-        onChange={event => form.setDraft({ ...fields, branch: event.target.value })} />
+        onChange={event => form.setDraft({ ...fields, branch: event.target.value })} error={branchError} />
     </div>
     {status?.state !== 'ready' && <>
       <p>Add project prepares a clone on Main and approves the supported tracked files from this base branch.</p>

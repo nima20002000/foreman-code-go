@@ -2,7 +2,9 @@ import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
 import { ComputerMaintenanceOperatorListSchema, ComputerMaintenanceOperatorListInputSchema, ComputerMaintenanceStartInputSchema,
   ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
-import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema, ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
+import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema,
+  ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema,
+  ComputerGitHubLogoutInputSchema, ComputerGitHubStatusInputSchema,
   GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema,
@@ -93,7 +95,7 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   if (github && operatorToolAvailable(context, 'computer_github_login_start')) server.registerTool('computer_github_login_start', {
     description: 'Start GitHub CLI sign-in (github.com) on Main or a paired computer. Returns a one-time device code and '
       + 'https://github.com/login/device; the owner enters the code in a browser. Requires global settings:update. The token stays '
-      + 'on that computer. A pending sign-out finishes before this sign-in starts. '
+      + 'on that computer. A pending sign-out finishes before this sign-in starts; a later sign-out cancels a pending start. '
       + 'Follow with computer_github_login_status; git-setup-failed means sign-in succeeded but Git setup needs retry.',
     inputSchema: ComputerGitHubInputSchema, outputSchema: GitHubLoginStateSchema, annotations: writeAnnotations,
   }, input => invokeOperatorTool(context, 'computer_github_login_start',
@@ -112,13 +114,15 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   }, input => invokeOperatorTool(context, 'computer_github_setup_git',
     () => github.handle(context.principal, 'mcp', input.target, { operation: 'setup-git', loginId: input.loginId })))
   if (github && operatorToolAvailable(context, 'computer_github_logout')) server.registerTool('computer_github_logout', {
-    description: 'Remove the active GitHub account on that computer and verify the resulting status. '
+    description: 'Remove the expected active GitHub account on that computer and verify the resulting status. '
+      + 'Read computer_accounts_list first and supply expectedAccount (null only if signed out). '
+      + 'Reuse the original expectedAccount on uncertain retries; a changed active account causes a conflict without removal. '
       + 'If another saved account becomes active, returns signed-in; unknown status or failed removal returns an error. '
       + 'Requires global settings:update.',
-    inputSchema: ComputerGitHubInputSchema, outputSchema: GitHubLoginStateSchema,
+    inputSchema: ComputerGitHubLogoutInputSchema, outputSchema: GitHubLoginStateSchema,
     annotations: { ...writeAnnotations, destructiveHint: true },
   }, input => invokeOperatorTool(context, 'computer_github_logout',
-    () => github.handle(context.principal, 'mcp', input.target, { operation: 'logout' })))
+    () => github.handle(context.principal, 'mcp', input.target, { operation: 'logout', expectedAccount: input.expectedAccount })))
   const sync = context.services.computerSync
   if (sync && operatorToolAvailable(context, 'computer_sync_status')) server.registerTool('computer_sync_status', {
     description: 'Read Syncthing shared file status on Main or a paired computer: installed, running, connected peers, '

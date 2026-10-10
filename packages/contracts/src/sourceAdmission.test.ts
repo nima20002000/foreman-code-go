@@ -10,6 +10,16 @@ const input = {
 }
 
 describe('source approval choice', () => {
+  it('accepts revision zero for repository capture before a workspace folder is configured', () => {
+    expect(SourceApproveInputSchema.parse({ ...input, expectedLocationRevision: 0, approveTrackedTree: true })
+      .expectedLocationRevision).toBe(0)
+  })
+
+  it.each([-1, 0.5])('rejects invalid location revision %s', expectedLocationRevision => {
+    expect(SourceApproveInputSchema.safeParse({ ...input, expectedLocationRevision, approveTrackedTree: true })
+      .success).toBe(false)
+  })
+
   it('accepts an explicit inventory or explicit approval of the tracked commit tree', () => {
     expect(SourceApproveInputSchema.parse({ ...input, approvedPaths: ['src/app.ts'] }))
       .toEqual({ ...input, approvedPaths: ['src/app.ts'] })
