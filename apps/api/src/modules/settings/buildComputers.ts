@@ -6,6 +6,7 @@ import {
 } from '@foreman-code/contracts/build-computers'
 import { sameDeviceProvisioningTarget, DeviceProvisioningTargetSchema, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { ManagementPrincipal, ManagementAction } from '@foreman-code/contracts/management'
+import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -16,6 +17,31 @@ import type { JobSql } from '../jobs/repository.js'
 export function buildComputerKey(target: Pick<DeviceProvisioningTarget, 'hostRef'>): string {
   const host = target.hostRef
   return `${host.mainId}:${host.kind === 'device' ? host.deviceId : 'main'}`
+}
+export async function initializePairedBuildComputer(sql: JobSql, registration: DeviceRegistration,
+  principalId: string): Promise<'created' | 'rebound' | 'unchanged'> {
+  const target = DeviceProvisioningTargetSchema.parse({
+    hostRef: { kind: 'device', mainId: registration.mainId, deviceId: registration.deviceId },
+    applicationInstallationId: registration.workerInstallationId,
+    keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision,
+  })
+  await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`build-order:${registration.mainId}`])
+  const key = buildComputerKey(target)
+  const existing = (await sql.query<{ target: unknown; revision: string }>(
+    'select target,revision from build_computer_preferences where host_key=$1 for update', [key])).rows[0]
+  if (!existing) {
+    await sql.query(`insert into build_computer_preferences
+      (host_key,target,revision,build_enabled,build_priority,build_allowance_percent,updated_by)
+      values($1,$2::jsonb,1,true,50,100,$3)`, [key, JSON.stringify(target), principalId])
+    return 'created'
+  }
+  if (sameDeviceProvisioningTarget(DeviceProvisioningTargetSchema.parse(existing.target), target)) return 'unchanged'
+  const updated = await sql.query(`update build_computer_preferences set target=$2::jsonb,revision=revision+1,updated_by=$3
+    where host_key=$1 and revision=$4`, [key, JSON.stringify(target), principalId, existing.revision])
+  if (updated.rowCount !== 1) {
+    throw new DomainError('REVISION_CONFLICT', 'Build settings changed during pairing.', 409)
+  }
+  return 'rebound'
 }
 export function buildComputerTarget(target: Pick<import('@foreman-code/contracts/jobs').ResolvedJobDefinitionSpec['target'],
   'hostRef' | 'registration' | 'mainInstallationId'>): DeviceProvisioningTarget {

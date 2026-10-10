@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { copyFile, mkdir, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
@@ -10,6 +10,8 @@ import { InstalledVerificationRuntimeCaptureInputSchema, InstalledVerificationRu
   from './installedVerificationConfiguration.js'
 import type { JobResourceRequest, PreparedCiRuntime } from '@foreman-code/contracts'
 import { InstalledJobRuntimeConfigurationRecordSchema } from './installedRuntimeHost.js'
+import { readCiRuntimeInstallation, readCiRuntimeTemplate, relocateCiQuotaSlots } from './ciRuntimeInstallation.js'
+import { DomainError } from '../errors.js'
 
 const run = promisify(execFile)
 
@@ -23,7 +25,9 @@ export function nextCaptureInput(current: unknown, prepared: PreparedCiRuntime, 
     seedReceiptSha256: _seed, tools: _tools, ...machine } = configuration.machine
   void _boot; void _runtime; void _oci; void _configuration; void _seed; void _tools
   return InstalledVerificationRuntimeCaptureInputSchema.parse({
-    schemaVersion: 2, root: input.root, descriptor: { ...configuration.descriptor, resources: input.resources },
+    schemaVersion: 2, root: input.root, descriptor: { ...configuration.descriptor, resources: input.resources,
+      target: { hostRef: input.root.selection.hostRef, registration: input.root.registration,
+        mainInstallationId: input.root.binding.mainId } },
     machine: { ...machine, resources: input.resources, limits: input.resources.limits,
       imageDigest: prepared.imageId, imageConfigDigest: prepared.imageId,
       imageManifestDigest: prepared.imageManifestDigest, sourceCommit: prepared.commit },
@@ -54,27 +58,38 @@ export async function scheduleCiRuntimeRefresh(input: {
   await input.drain()
   const environment = input.environment ?? process.env
   const configurationPath = join(input.stateDirectory, 'job-runtime.json')
-  const currentBytes = await readFile(configurationPath)
-  const base = input.workDirectory ?? dirname(input.stateDirectory)
+  let currentBytes: Buffer | null
+  try { currentBytes = await readFile(configurationPath) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    currentBytes = null
+  }
+  const base = input.workDirectory ?? join(input.stateDirectory, 'managed', 'ci')
   await mkdir(base, { recursive: true, mode: 0o700 })
   const short = input.operationId
   const seedReceiptPath = join(base, `installed-seed-receipt-${short}.json`)
   await copyFile(input.prepared.seedReceiptPath, seedReceiptPath)
   await chmod(seedReceiptPath, 0o600)
-  const configuration = InstalledVerificationRuntimeConfigurationSchema.parse(JSON.parse(currentBytes.toString('utf8')))
+  const original = await readCiRuntimeTemplate(input.stateDirectory)
+  if (!original) throw new DomainError('CI_RUNTIME_INSTALLATION_MISSING', 'No installed CI runtime is available.', 409)
+  const quotaPool = await relocateCiQuotaSlots(original, input.root)
+  const configuration = InstalledVerificationRuntimeConfigurationSchema.parse({ ...original,
+    descriptor: { ...original.descriptor, quotaPool }, machine: { ...original.machine, quotaPool } })
   const toolSources = await recaptureCiTools(configuration.machine.tools, input.prepared, base, environment)
   const captureInput = nextCaptureInput(configuration, input.prepared,
     { root: input.root, manifest: input.manifest, seedReceiptPath, resources: input.resources, toolSources })
   const refreshPath = join(base, `reviewed-refresh-${short}.json`)
-  await writeFile(refreshPath, JSON.stringify({ expectedConfigurationSha256: createHash('sha256').update(currentBytes).digest('hex'),
-    captureInput }), { mode: 0o600 })
+  const refreshInput = currentBytes
+    ? { expectedConfigurationSha256: createHash('sha256').update(currentBytes).digest('hex'), captureInput }
+    : captureInput
+  await writeFile(refreshPath, JSON.stringify(refreshInput), { mode: 0o600 })
   const workerUnit = await currentServiceUnit()
   const unit = `foreman-ci-refresh-${short}`
   const log = join(base, `refresh-${short}.log`)
   await writeFile(join(base, LAST_REFRESH), JSON.stringify({ operationId: input.operationId,
     commit: input.prepared.commit, log }), { mode: 0o600 })
   await pruneCiRuntimeRefreshFiles(input.stateDirectory, base, [seedReceiptPath, refreshPath])
-  const cli = input.cli ?? [process.execPath, process.argv[1]!, 'refresh-job-runtime']
+  const cli = input.cli ?? [process.execPath, process.argv[1]!, currentBytes ? 'refresh-job-runtime' : 'capture-job-runtime']
   const script = 'unit=$1; log=$2; shift 2; systemctl --user stop "$unit"; "$@" > "$log" 2>&1;'
     + ' echo "exit=$?" >> "$log"; systemctl --user start "$unit"'
   await run('systemd-run', ['--user', '--collect', `--unit=${unit}`, `--setenv=PATH=${environment.PATH ?? '/usr/bin:/bin'}`,
@@ -86,7 +101,7 @@ export async function scheduleCiRuntimeRefresh(input: {
 const LAST_REFRESH = 'ci-runtime-last-refresh.json'
 
 /** Keeps refresh files used by retained configurations, the last log, and the pending refresh. */
-export async function pruneCiRuntimeRefreshFiles(stateDirectory: string, workDirectory = dirname(stateDirectory),
+export async function pruneCiRuntimeRefreshFiles(stateDirectory: string, workDirectory = join(stateDirectory, 'managed', 'ci'),
   pendingPaths: readonly string[] = []): Promise<void> {
   const kept = new Set(pendingPaths)
   for (const name of await readdir(stateDirectory)) {
@@ -111,7 +126,7 @@ export async function pruneCiRuntimeRefreshFiles(stateDirectory: string, workDir
   }
 }
 /** The outcome of the last refresh, read by the restarted Worker: null while none ran. */
-export async function lastCiRuntimeRefresh(stateDirectory: string, workDirectory = dirname(stateDirectory)): Promise<{
+export async function lastCiRuntimeRefresh(stateDirectory: string, workDirectory = join(stateDirectory, 'managed', 'ci')): Promise<{
   operationId: string | null; commit: string; ok: boolean; log: string
 } | null> {
   const recorded = await readFile(join(workDirectory, LAST_REFRESH), 'utf8').catch(() => null)
@@ -132,9 +147,8 @@ async function currentServiceUnit(): Promise<string> {
 
 /** The installer paths the current protected runtime uses; preparation keeps them. */
 export async function currentCiRuntimePaths(stateDirectory: string): Promise<string[]> {
-  const text = await readFile(join(stateDirectory, 'job-runtime.json'), 'utf8').catch(() => null)
-  if (!text) return []
-  const configuration = JSON.parse(text) as { qualificationSource?: { directory?: unknown }; seedReceiptPath?: unknown }
+  const configuration = await readCiRuntimeTemplate(stateDirectory)
+  if (!configuration) return []
   return [configuration.qualificationSource?.directory, configuration.seedReceiptPath]
     .filter((path): path is string => typeof path === 'string')
 }
@@ -145,6 +159,11 @@ export async function currentCiRuntimePaths(stateDirectory: string): Promise<str
 export async function retireCiRuntimeConfigurations(stateDirectory: string, keepImages: readonly string[]) {
   const kept = new Set(keepImages)
   const retained = { images: [] as string[], paths: [] as string[] }
+  const installation = await readCiRuntimeInstallation(stateDirectory)
+  if (installation) {
+    retained.images.push(installation.runtime.machine.imageDigest)
+    retained.paths.push(installation.runtime.qualificationSource.directory, installation.runtime.seedReceiptPath)
+  }
   for (const name of (await readdir(stateDirectory)).sort()) {
     if (!/^job-runtime(?:-[a-f0-9]{64})?\.json$/u.test(name)) continue
     const raw = JSON.parse(await readFile(join(stateDirectory, name), 'utf8')) as { qualificationSource?: { directory?: unknown } }

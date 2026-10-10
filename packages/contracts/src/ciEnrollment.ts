@@ -3,6 +3,14 @@ import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { IdSchema } from './schemaPrimitives.js'
 
 export const CiEnrollmentReadSchema = z.object({ workspaceId: IdSchema }).strict()
+/** Pairing authorizes managed storage setup; runtime qualification is reported separately. */
+export const CiManagedSetupSchema = z.object({
+  state: z.enum(['ready', 'runtime-unavailable', 'failed']),
+  migrated: z.boolean(),
+  message: z.string().max(2000).nullable(),
+  updatedAt: z.string().datetime(),
+}).strict()
+export type CiManagedSetup = z.infer<typeof CiManagedSetupSchema>
 export const CiEnrollmentUpdateSchema = CiEnrollmentReadSchema.extend({
   commandId: IdSchema,
   target: DeviceProvisioningTargetSchema,
@@ -20,6 +28,7 @@ export const CiEnrollmentTemplateSchema = z.object({
   message: z.string().max(2000).nullable(),
 }).strict()
 export const CiEnrollmentComputerSchema = z.object({
+  managedSetup: CiManagedSetupSchema.optional(),
   target: DeviceProvisioningTargetSchema,
   revision: z.number().int().nonnegative(),
   enabled: z.boolean(),

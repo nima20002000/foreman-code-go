@@ -93,6 +93,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
       return rows.rows.map(row => ApprovedRootAllowlistSchema.parse(row.record))
     },
     attest: async root => (await installed(root.selection.hostRef)).attest(root),
+    prepareManaged: async root => (await installed(root.selection.hostRef)).prepareManaged(root),
     browse: async (root, path) => (await installed(root.selection.hostRef)).browse(root, path),
     sourceNamespace: async (policy, id) => (await installed(policy.hostRef)).sourceNamespace(policy, id),
   }

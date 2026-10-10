@@ -20,6 +20,7 @@ export const RootAccessSchema = z.enum(['read-only', 'read-write'])
 export const ApprovedRootAllowlistSchema = z.object({ schemaVersion: z.literal(1), hostRef: WorkspaceRootHostSchema,
   applicationInstallationId: z.uuid(), configurationRevision: Revision,
   bases: z.array(z.object({ baseId: z.uuid(), canonicalPath: z.string().startsWith('/'), filesystem: RootFilesystemIdentitySchema,
+    managedBy: z.literal('worker-pairing').optional(),
     accessModes: z.array(RootAccessSchema).min(1).max(2) }).strict()).min(1).max(32),
   managedRuntimeRoot: z.string().startsWith('/'), runtimeFilesystem: RootFilesystemIdentitySchema,
 }).strict()
@@ -37,6 +38,7 @@ export const WorkspaceRootAttestationSchema = z.object({ schemaVersion: z.litera
 }).strict()
 export type WorkspaceRootAttestation = z.infer<typeof WorkspaceRootAttestationSchema>
 export const WorkspaceRootPolicySchema = z.object({ schemaVersion: z.literal(1), rootPolicyId: z.uuid(), rootPolicyRevision: Revision,
+  bindingPurpose: z.literal('ci-enrollment').optional(),
   workspaceId: IdSchema, hostRef: WorkspaceRootHostSchema, applicationInstallationId: z.uuid(),
   registration: z.object({ workerInstallationId: z.uuid(), keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive() }).strict().nullable(),
   locationRevision: Revision, ownerPrincipalId: IdSchema, allowedBaseId: z.uuid(), configurationRevision: Revision,
@@ -56,9 +58,10 @@ export type WorkspaceRootBrowseResult = z.infer<typeof WorkspaceRootBrowseResult
 export const WorkspaceRootWorkerRequestSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(1), operation: z.literal('workspace-roots.configuration') }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('workspace-roots.attest'), selection: WorkspaceRootSelectionSchema }).strict(),
+  z.object({ version: z.literal(1), operation: z.literal('workspace-roots.prepare-managed'), selection: WorkspaceRootSelectionSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('workspace-roots.browse'), selection: WorkspaceRootSelectionSchema, relativePath: z.string().max(1024) }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('workspace-roots.source-namespace'), policy: WorkspaceRootPolicySchema }).strict(),
 ])
 export type WorkspaceRootWorkerRequest = z.infer<typeof WorkspaceRootWorkerRequestSchema>
-export const WORKSPACE_ROOT_WORKER_OPERATIONS = ['workspace-roots.configuration', 'workspace-roots.attest', 'workspace-roots.browse', 'workspace-roots.source-namespace'] as const
+export const WORKSPACE_ROOT_WORKER_OPERATIONS = ['workspace-roots.configuration', 'workspace-roots.attest', 'workspace-roots.prepare-managed', 'workspace-roots.browse', 'workspace-roots.source-namespace'] as const
 export const WORKSPACE_ROOT_EXTENSION = { namespace: 'workspace-roots-v1', version: 1, maxPayloadBytes: 1024 * 1024, maxPending: 8 } as const

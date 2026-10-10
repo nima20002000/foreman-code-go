@@ -39,13 +39,15 @@ export function jobRuntimeCapabilities(context:Context,resource:AuthorizedResour
 function jobRuntimeCapabilityDetail(name: JobRuntimeToolName): string {
   if (name === 'ci_enrollment_get') {
     return 'Read per-computer workspace CI enrollment, persisted disable choices and per-template results, '
-      + 'including missing workspace profiles (templates-required), storage availability, preparation failures '
+      + 'including pairing-managed setup and migration status, missing workspace profiles (templates-required), '
+      + 'storage availability, preparation failures '
       + 'and ordinary templates not enrolled automatically.'
   }
   if (name === 'ci_enrollment_update') {
     return 'Enable, retry or disable workspace CI enrollment with revision checks and idempotent commands. '
-      + 'Enabling preserves verification templates’ resource envelopes and prepares installed runtimes using approved '
-      + 'writable roots. Insufficient storage and ordinary templates are reported without automatic enrollment.'
+      + 'Enabling adopts pairing-approved product-managed storage and binds a writable workspace root when needed, '
+      + 'preserves verification templates’ resource envelopes and prepares installed runtimes. Arbitrary user paths '
+      + 'require explicit root approval. Insufficient storage and ordinary templates are reported without automatic enrollment.'
   }
   if (name === 'build_computer_prepare') {
     return 'Prepare and refresh the protected CI runtime on an authorized build computer using approved workspace roots. '
@@ -72,13 +74,13 @@ export function registerJobRuntimeTools(server:McpServer,context:Context) {
   const enrollment = context.services.ciEnrollment
   if (enrollment && jobRuntimeToolAvailable(context, 'ci_enrollment_get')) {
     server.registerTool('ci_enrollment_get', {
-      description: 'Read automatic workspace CI enrollment per computer, including persisted disable choices and per-template profile IDs, readiness, insufficient storage and setup failures. A workspace without active runtime profiles reports templates-required; save a verification profile with job_runtime_profile_save before enrollment can prepare computers. Ordinary Job templates are reported as not-enrolled-automatically. A partial computer result lists each available and unavailable template. Reads do not install, prepare or qualify runtimes. Requires job_definitions:read.',
+      description: 'Read automatic workspace CI enrollment per computer, including persisted pairing-managed setup and migration status, disable choices and per-template profile IDs, readiness, insufficient storage and setup failures. Pairing automatically sets up product-managed roots and adopts a previous managed installation; qualification remains separate. A workspace without active runtime profiles reports templates-required; save a verification profile with job_runtime_profile_save before enrollment can prepare computers. Ordinary Job templates are reported as not-enrolled-automatically. A partial computer result lists each available and unavailable template. Reads do not install, prepare or qualify runtimes. Requires job_definitions:read.',
       inputSchema: CiEnrollmentReadSchema, outputSchema: CiEnrollmentStateSchema, annotations: read,
     }, input => invoke(context, 'ci_enrollment_get', () => enrollment.read(context.principal, input)))
   }
   if (enrollment && jobRuntimeToolAvailable(context, 'ci_enrollment_update')) {
     server.registerTool('ci_enrollment_update', {
-      description: 'Enable or retry automatic CI enrollment, or disable it for this workspace and computer. Enabling derives verification profiles with their template’s unchanged resource envelope and prepares the installed runtime in the background; read ci_enrollment_get for per-template progress and failures. Computers with insufficient storage are unavailable for that template. Ordinary Job templates require explicit protected runtime setup and qualification and are not enrolled automatically. Disabling serializes with new workspace CI placement without cancelling accepted Jobs. Requires the same workspace grants as build_computer_prepare; expectedRevision protects concurrent changes and commandId makes retries idempotent. Approved writable workspace roots and installed runtimes are required.',
+      description: 'Enable or retry automatic CI enrollment, or disable it for this workspace and computer. Enabling adopts the computer’s pairing-approved product-managed root configuration and binds a writable per-workspace managed root when needed, derives verification profiles with their template’s unchanged resource envelope and prepares the installed runtime in the background. Arbitrary user paths still require explicit owner approval. Read ci_enrollment_get for pairing-managed setup, migration, per-template progress and failures. Computers with insufficient storage are unavailable for that template. Ordinary Job templates require explicit protected runtime setup and qualification and are not enrolled automatically. Disabling serializes with new workspace CI placement without cancelling accepted Jobs. Requires build_computer_prepare grants plus workspace_locations:validate/update; expectedRevision protects concurrent changes and commandId makes retries idempotent.',
       inputSchema: CiEnrollmentUpdateSchema, outputSchema: CiEnrollmentStateSchema,
       annotations: { ...write, openWorldHint: true },
     }, input => invoke(context, 'ci_enrollment_update', () => enrollment.update(context.principal, 'mcp', input)))

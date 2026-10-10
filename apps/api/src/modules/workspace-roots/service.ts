@@ -120,7 +120,8 @@ export class WorkspaceBoundLocationService {
       const locationRevision = Number(row.location_revision)
       if (!row.execution_location) return WorkspaceBoundLocationReadbackSchema.parse({ evidence: 'unconfigured', workspaceId, locationRevision, executionLocation: null })
       const executionLocation = ExecutionLocationSchema.parse(row.execution_location)
-      const policies = (await this.roots.read(sql, live, workspaceId)).filter(policy => policy.locationRevision === row.location_revision)
+      const policies = (await this.roots.read(sql, live, workspaceId))
+        .filter(policy => policy.bindingPurpose !== 'ci-enrollment' && policy.locationRevision === row.location_revision)
       if (!policies.length) return WorkspaceBoundLocationReadbackSchema.parse({ evidence: 'legacy_missing', workspaceId, locationRevision, executionLocation })
       const binding = policies[0]!
       if (policies.length !== 1 || binding.workspaceId !== workspaceId || !sameWorkflowValue(this.projection(binding), executionLocation)) {

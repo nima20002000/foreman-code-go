@@ -61,6 +61,7 @@ export class WorkerUpdater {
     this.timer = undefined;
     this.closed = false;
     this.lifetime = new AbortController();
+    this.recordOperation = Promise.resolve();
     this.statusValue = { currentVersion: options.version, targetVersion: null, state: 'current', lastError: null };
   }
 
@@ -78,21 +79,32 @@ export class WorkerUpdater {
     return this;
   }
 
-  async status() {
-    const retained = await readUpdateRecord(this.options.stateDirectory);
-    if (retained) {
-      this.record = retained;
-      this.statusValue = WorkerUpdateStatusSchema.parse({ ...retained.status, currentVersion: this.options.version });
-    }
-    return { ...this.statusValue };
+  withUpdateRecord(operation) {
+    // Serialize reads with writes so polling cannot replace a status being saved.
+    const result = this.recordOperation.then(operation, operation);
+    this.recordOperation = result;
+    return result;
   }
 
-  async save(change, details = {}) {
-    this.options.assertStateOwnership();
-    this.statusValue = WorkerUpdateStatusSchema.parse({ ...this.statusValue, ...change });
-    const retained = await readUpdateRecord(this.options.stateDirectory);
-    this.record = { ...retained, ...details, format: 1, status: this.statusValue };
-    await writeUpdateRecord(this.options.stateDirectory, this.record);
+  status() {
+    return this.withUpdateRecord(async () => {
+      const retained = await readUpdateRecord(this.options.stateDirectory);
+      if (retained) {
+        this.record = retained;
+        this.statusValue = WorkerUpdateStatusSchema.parse({ ...retained.status, currentVersion: this.options.version });
+      }
+      return { ...this.statusValue };
+    });
+  }
+
+  save(change, details = {}) {
+    return this.withUpdateRecord(async () => {
+      this.options.assertStateOwnership();
+      this.statusValue = WorkerUpdateStatusSchema.parse({ ...this.statusValue, ...change });
+      const retained = await readUpdateRecord(this.options.stateDirectory);
+      this.record = { ...retained, ...details, format: 1, status: this.statusValue };
+      await writeUpdateRecord(this.options.stateDirectory, this.record);
+    });
   }
 
   async maintenanceOutcome(task) {

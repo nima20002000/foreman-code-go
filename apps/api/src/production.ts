@@ -84,6 +84,7 @@ import { createMainResourceTelemetryBindings } from './modules/resource-telemetr
 import { registerResourceTelemetryRoutes } from './routes/resourceTelemetry.js'
 import { registerResourceTelemetrySelectorRoutes } from './routes/resourceTelemetrySelector.js'
 import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
+import { ManagedWorkspaceRootService } from './modules/workspace-roots/managedRoot.js'
 import { bootstrapLocalMainWorkspaceRoot } from './modules/workspace-roots/localMainBootstrap.js'
 import { WorkspaceRepositoryService } from './modules/workspaces/repositoryService.js'
 import { registerWorkspaceRepositoryRoutes } from './modules/workspaces/repositoryRoutes.js'
@@ -1900,7 +1901,8 @@ export function buildProductionApp(
       jobRuntime.jobs.runtimePreparation = runtimeServices.ciRuntime
       runtimeServices.ciEnrollment = new CiEnrollment(database.pool, commands, jobRuntime.profiles,
         runtimeServices.ciRuntime, new ProductionCiEnrollmentInventory(database.pool, jobRuntime.sources,
-          () => deviceRuntime.endpointForDomains(), () => jobRuntime?.mainCiRuntime, workerExecution))
+          () => deviceRuntime.endpointForDomains(), () => jobRuntime?.mainCiRuntime, workerExecution,
+          new ManagedWorkspaceRootService(commands, runtimeServices.workspaceRoots, jobRuntime.policies)))
       jobRuntime.profiles.enrollment = runtimeServices.ciEnrollment
       jobRuntime.buildComputers.enrollment = runtimeServices.ciEnrollment
       runtimeServices.ciEnrollment.request()

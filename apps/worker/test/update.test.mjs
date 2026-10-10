@@ -135,6 +135,26 @@ test('authenticated-ready check detects Main version mismatch, installs and reco
   restarted.close();
 });
 
+test('concurrent status polling preserves saved update transitions and metadata', async t => {
+  const f = await fixture(t);
+  const updater = await new WorkerUpdater(f.options).initialize();
+  t.after(() => updater.close());
+  const manifestSha256 = f.incoming.release.manifestSha256;
+  const pending = updater.save({ targetVersion: '1.1.0', state: 'pending' }, { manifestSha256 });
+  const pendingStatus = updater.status();
+  const draining = updater.save({ state: 'draining' });
+  const drainingStatus = updater.status();
+  await Promise.all([pending, draining]);
+  assert.deepEqual(await pendingStatus, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+    state: 'pending', lastError: null });
+  const status = await drainingStatus;
+  assert.deepEqual(status, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+    state: 'draining', lastError: null });
+  const retained = await readUpdateRecord(f.stateDirectory);
+  assert.deepEqual(retained.status, status);
+  assert.equal(retained.manifestSha256, manifestSha256);
+});
+
 test('busy work drains naturally before any artifact download or restart', async t => {
   const f = await fixture(t);
   let finishWork;
@@ -142,7 +162,10 @@ test('busy work drains naturally before any artifact download or restart', async
   const work = new Promise(resolve => { finishWork = resolve; });
   const updater = await new WorkerUpdater({ ...f.options, drain: () => work,
     resume: () => { resumed++; } }).initialize();
-  t.after(() => updater.close());
+  t.after(() => {
+    finishWork();
+    return updater.close();
+  });
   const update = updater.start();
   await until(async () => (await updater.status()).state === 'draining');
   assert.equal(f.requests.filter(request => request.operation === 'chunk').length, 0);

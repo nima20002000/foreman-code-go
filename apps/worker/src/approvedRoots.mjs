@@ -4,8 +4,7 @@ import { ApprovedRootAllowlistSchema } from '../../../packages/contracts/src/wor
 import { verifyApprovedRootAllowlist } from '../../../apps/api/src/modules/sources/rootAttestation.ts';
 import { hostFacts, requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
 
-// This file is supplied only through the human-approved installation/configuration
-// gate. Neither a connection request nor an Operator path can write this allowlist.
+// Pairing installs managed roots. Arbitrary bases still require local human approval.
 export async function loadApprovedRoots(stateDirectory, pairing) {
   await requirePrivateDirectory(stateDirectory);
   const file = join(stateDirectory, 'approved-roots.json');

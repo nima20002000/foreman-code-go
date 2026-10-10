@@ -9,6 +9,8 @@ import { InstalledVerificationRuntimeConfigurationSchema } from './installedVeri
 import { currentCiRuntimePaths, nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations,
   pruneCiRuntimeRefreshFiles, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { refreshMainJobRuntime } from '../../cli/refreshMainJobRuntime.js'
+import { identity, openPrivateRoot } from '../sources/privateFilesystem.js'
+import { relocateCiQuotaSlots } from './ciRuntimeInstallation.js'
 
 const commands = vi.hoisted(() => ({ run: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
@@ -54,13 +56,16 @@ function fixture() {
     { kind: 'claude', executable: '/usr/bin/claude', version: '1.0', binarySha256: '3'.repeat(64) },
     ...fingerprint.tools,
   ]
-  const current = InstalledVerificationRuntimeConfigurationSchema.parse({ schemaVersion: 2, root: fingerprint.root,
+  const runtimeRoot = '/ci/runtime'
+  const root = { ...fingerprint.root, binding: { ...fingerprint.root.binding,
+    canonicalPath: join(runtimeRoot, 'source-materializations', fingerprint.root.selection.rootPolicyId) } }
+  const current = InstalledVerificationRuntimeConfigurationSchema.parse({ schemaVersion: 2, root,
     machine: { ...machine, tools }, seedReceiptPath: '/ci/seed-receipt.json',
     seedReceiptSha256: fingerprint.seedReceiptSha256, qualificationSource: { directory: '/ci/source', manifest },
     descriptor: { target: { hostRef: fingerprint.hostRef, registration: fingerprint.registration,
       mainInstallationId: fingerprint.mainInstallationId }, runtimeExecutable: fingerprint.runtimeExecutable,
       ociExecutable: fingerprint.ociExecutable, findmntExecutable: '/usr/bin/findmnt', findmntBinarySha256: 'f'.repeat(64),
-      runtimeRoot: '/ci/runtime', backingFile: null, volumeCapacityBytes: fingerprint.quota.volumeCapacityBytes,
+      runtimeRoot, backingFile: null, volumeCapacityBytes: fingerprint.quota.volumeCapacityBytes,
       controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/1000', LANG: 'C.UTF-8' },
       quota: fingerprint.quota, quotaPool: fingerprint.quotaPool, resources: fingerprint.resources,
       network: fingerprint.network, approvalConfig: fingerprint.approvalConfig,
@@ -109,6 +114,74 @@ describe('CI runtime refresh', () => {
     }
     await pruneCiRuntimeRefreshFiles(state, work)
     for (const path of pending) await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects an unchanged source binding outside managed source storage', async () => {
+    const f = fixture()
+    const root = { ...f.current.root,
+      binding: { ...f.current.root.binding, canonicalPath: '/approved/source' } }
+    const current = { ...f.current, root }
+    await expect(relocateCiQuotaSlots(current, root)).rejects.toMatchObject({ code: 'JOB_RUNTIME_CONTEXT_CHANGED' })
+  })
+
+  it('moves adopted quota directories to the new source binding and resumes an interrupted move', async () => {
+    const f = fixture()
+    const directory = await privateFixtureDirectory('ci-quota-adoption-')
+    roots.push(directory)
+    const runtimeRoot = join(directory, 'runtime')
+    const oldPolicyId = randomUUID()
+    const newPolicyId = randomUUID()
+    const oldSource = join(runtimeRoot, 'source-materializations', oldPolicyId)
+    const newSource = join(runtimeRoot, 'source-materializations', newPolicyId)
+    for (const path of [oldSource, newSource]) await mkdir(path, { recursive: true, mode: 0o700 })
+    const filesystem = async (path: string) => {
+      const handle = await openPrivateRoot(path)
+      try { return await identity(handle) } finally { await handle.close() }
+    }
+    const pool = f.current.descriptor.quotaPool!
+    const slots = []
+    for (const slot of pool.slots) {
+      const path = join(oldSource, slot.namespace)
+      await mkdir(path, { mode: 0o700 })
+      await writeFile(join(path, 'retained'), slot.namespace)
+      slots.push({ ...slot, filesystem: await filesystem(path) })
+    }
+    const quotaPool = { ...pool, slots }
+    const current = { ...f.current,
+      root: { ...f.current.root, selection: { ...f.current.root.selection, rootPolicyId: oldPolicyId },
+        binding: { ...f.current.root.binding, canonicalPath: oldSource, filesystem: await filesystem(oldSource) } },
+      descriptor: { ...f.current.descriptor, runtimeRoot, quotaPool },
+      machine: { ...f.current.machine, quotaPool } }
+    const root = { ...current.root, selection: { ...current.root.selection, rootPolicyId: newPolicyId },
+      binding: { ...current.root.binding, canonicalPath: newSource, filesystem: await filesystem(newSource) } }
+    const moved = await relocateCiQuotaSlots(current, root)
+    expect(moved?.slots).toEqual(slots)
+    for (const slot of slots) {
+      expect(await readFile(join(newSource, slot.namespace, 'retained'), 'utf8')).toBe(slot.namespace)
+      await expect(stat(join(oldSource, slot.namespace))).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    expect(await relocateCiQuotaSlots(current, root)).toEqual(moved)
+    await expect(relocateCiQuotaSlots(current, { ...root,
+      binding: { ...root.binding, canonicalPath: directory } })).rejects.toMatchObject({ code: 'JOB_RUNTIME_CONTEXT_CHANGED' })
+  })
+  it('captures the new pairing target from its fresh source binding without relabelling historical inputs', () => {
+    const f = fixture()
+    const mainId = randomUUID()
+    const deviceId = randomUUID()
+    const workerInstallationId = randomUUID()
+    const root = { ...f.current.root,
+      selection: { ...f.current.root.selection, hostRef: { kind: 'device' as const, mainId, deviceId } },
+      registration: { workerInstallationId, keyRevision: 2, authorizationRevision: 3 },
+      binding: { ...f.current.root.binding, mainId, deviceId, workerInstallationId } }
+    const next = nextCaptureInput(f.current, f.prepared, { root,
+      manifest: f.current.qualificationSource.manifest, seedReceiptPath: f.prepared.seedReceiptPath,
+      resources: f.current.machine.resources })
+    expect(next.descriptor.target).toEqual({ hostRef: root.selection.hostRef,
+      registration: root.registration, mainInstallationId: mainId })
+    expect(f.current.descriptor.target.mainInstallationId).not.toBe(mainId)
+    expect(next.root).toEqual(root)
+    expect(next.machine).not.toHaveProperty('bootId')
+    expect(next.machine).not.toHaveProperty('runtimeBinarySha256')
   })
   it('captures a project runtime without claiming a Codex binary that it does not contain', async () => {
     const f = fixture()
@@ -259,7 +332,9 @@ describe('CI runtime refresh', () => {
     await writeFile(join(stateDirectory, 'job-runtime.json'), JSON.stringify(f.current), { mode: 0o600 })
     const seedReceiptPath = join(directory, 'prepared-seed.json')
     await writeFile(seedReceiptPath, '{}')
-    const stale = join(directory, 'refresh-stale.log')
+    const work = join(stateDirectory, 'managed', 'ci')
+    await mkdir(work, { recursive: true })
+    const stale = join(work, 'refresh-stale.log')
     await writeFile(stale, 'old refresh')
     const operationId = randomUUID()
     let finishJob!: () => void
@@ -288,9 +363,36 @@ describe('CI runtime refresh', () => {
       expect(await refreshing).toMatchObject({ workerUnit: 'worker.service' })
       expect(commands.run.mock.calls.some(([file]) => file === 'systemd-run')).toBe(true)
       await expect(readFile(stale)).rejects.toMatchObject({ code: 'ENOENT' })
-      expect(await readFile(join(directory, `installed-seed-receipt-${operationId}.json`), 'utf8')).toBe('{}')
-      expect(JSON.parse(await readFile(join(directory, `reviewed-refresh-${operationId}.json`), 'utf8')))
+      expect(await readFile(join(work, `installed-seed-receipt-${operationId}.json`), 'utf8')).toBe('{}')
+      expect(JSON.parse(await readFile(join(work, `reviewed-refresh-${operationId}.json`), 'utf8')))
         .toHaveProperty('captureInput')
     } finally { finishJob(); finishAgent(); await refreshing }
+  })
+
+  it('automatically schedules initial capture from adopted installation inputs', async () => {
+    const f = fixture()
+    const directory = await privateFixtureDirectory('ci-initial-capture-')
+    roots.push(directory)
+    await writeFile(join(directory, 'ci-runtime-installation.json'), JSON.stringify({ schemaVersion: 1,
+      target: f.current.descriptor.target, runtime: f.current }), { mode: 0o600 })
+    const seedReceiptPath = join(directory, 'prepared-seed.json')
+    await writeFile(seedReceiptPath, '{}', { mode: 0o600 })
+    commands.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('create')) return 'container'
+      if (args.includes('cp')) await writeFile(args.at(-1)!, 'new-binary')
+      return 'new-version'
+    })
+    const operationId = randomUUID()
+    await scheduleCiRuntimeRefresh({ operationId, stateDirectory: directory,
+      prepared: { ...f.prepared, seedReceiptPath }, root: f.current.root,
+      manifest: f.current.qualificationSource.manifest, resources: f.current.machine.resources,
+      drain: async () => {} })
+    const call = commands.run.mock.calls.find(([file]) => file === 'systemd-run')!
+    expect(call[1]).toContain('capture-job-runtime')
+    expect(call[1]).not.toContain('refresh-job-runtime')
+    const captured = JSON.parse(await readFile(join(directory, 'managed', 'ci', `reviewed-refresh-${operationId}.json`), 'utf8'))
+    expect(captured.schemaVersion).toBe(2)
+    expect(captured.descriptor.target).toEqual(f.current.descriptor.target)
+    expect(captured).not.toHaveProperty('expectedConfigurationSha256')
   })
 })

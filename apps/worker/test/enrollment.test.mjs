@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, readFile, rm, chmod } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, writeFile, readFile, rm, chmod, realpath, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { createHash, generateKeyPairSync, randomUUID, sign, verify, X509Certificate } from 'node:crypto';
 import { rootCertificates } from 'node:tls';
 const require = createRequire(new URL('../../api/package.json', import.meta.url));
@@ -11,18 +12,61 @@ const { tsImport } = await import(require.resolve('tsx/esm/api'));
 const { enrollWorker, enrollWorkerCode, boundedPost, pairingErrorMessage } = await tsImport('../src/enrollment.mjs', import.meta.url);
 const { encodeWorkerEnrollmentCode } = await tsImport('../../../packages/contracts/src/deviceSetup.ts', import.meta.url);
 const { loadOrCreateWorkerIdentity, publicKeyFingerprint, mainEnrollmentProofMessage, mainIdentityProofMessage, pairingProof } = await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
+const { ensurePairedManagedSetup } = await tsImport('../src/managedSetup.mjs', import.meta.url);
+const { loadApprovedRoots } = await tsImport('../src/approvedRoots.mjs', import.meta.url);
+const { openPrivateRoot } = await tsImport('../../api/src/modules/sources/privateFilesystem.ts', import.meta.url);
 
-async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'worker-enroll-'));
+async function fixture(t, { symlinkedParent = false } = {}) {
+  // Enrollment qualifies ancestors too; shared job scratch may have other owners or writers.
+  const directory = await realpath(await mkdtemp(join(homedir(), '.worker-enroll-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const identity = await loadOrCreateWorkerIdentity(directory);
+  let stateDirectory = directory;
+  if (symlinkedParent) {
+    await mkdir(join(directory, 'storage/state'), { recursive: true, mode: 0o700 });
+    await symlink(join(directory, 'storage'), join(directory, 'cache'));
+    stateDirectory = join(directory, 'cache/state');
+  }
+  const identity = await loadOrCreateWorkerIdentity(stateDirectory);
   const key = generateKeyPairSync('ed25519');
   const publicKey = key.publicKey.export({ type: 'spki', format: 'pem' }).toString();
   const input = { mainId: randomUUID(), mainPublicKeyFingerprint: publicKeyFingerprint(publicKey), endpoint: 'wss://main.example/device/connect', grant: 'a'.repeat(43), requestId: randomUUID() };
-  const enrollmentFile = join(directory, 'enrollment.json');
+  const enrollmentFile = join(stateDirectory, 'enrollment.json');
   await writeFile(enrollmentFile, JSON.stringify(input), { mode: 0o600 });
-  return { stateDirectory: directory, identity, enrollmentFile, appVersion: '0.1.0', input, key, publicKey };
+  return { stateDirectory, home: directory, identity, enrollmentFile, appVersion: '0.1.0', input, key, publicKey };
 }
+
+test('rejected unsafe setup releases its Worker lock and lets the process exit', { timeout: 15_000 }, async t => {
+  const f = await fixture(t);
+  await assert.rejects(openPrivateRoot(`${f.stateDirectory}/.`), { code: 'SOURCE_FILESYSTEM_UNSUPPORTED' });
+  const unsafe = join(f.home, 'unsafe');
+  const state = join(unsafe, 'state');
+  await mkdir(state, { recursive: true, mode: 0o700 });
+  await chmod(unsafe, 0o777);
+  const apiPackage = new URL('../../api/package.json', import.meta.url).href;
+  const setupModule = new URL('../src/managedSetup.mjs', import.meta.url).href;
+  const runtimeModule = new URL('../src/runtime.mjs', import.meta.url).href;
+  const code = `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { acquireWorkerLock, readWorkerStatus } from ${JSON.stringify(runtimeModule)};
+    const require = createRequire(${JSON.stringify(apiPackage)});
+    const { tsImport } = await import(require.resolve('tsx/esm/api'));
+    const { ensurePairedManagedSetup } = await tsImport(${JSON.stringify(setupModule)}, import.meta.url);
+    const stateDirectory = ${JSON.stringify(state)};
+    await assert.rejects(ensurePairedManagedSetup({ stateDirectory }),
+      { code: 'SOURCE_FILESYSTEM_UNSUPPORTED' });
+    assert.equal(await readWorkerStatus(stateDirectory), null);
+    const unlock = await acquireWorkerLock(stateDirectory);
+    await unlock();
+  `;
+  // A leaked socket keeps the child alive; the parent bounds that failure as well as the assertions.
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+    timeout: 10_000,
+    encoding: 'utf8',
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test('fresh selected-main proof precedes grant; persisted credential never enters CLI result', async (t) => {
   const f = await fixture(t); const calls = [];
@@ -70,6 +114,48 @@ test('bounded enrollment response classifies overflow, HTTP, JSON and network fa
 function mainProof(f, body) {
   return { request: body, mainApplicationVersion: '0.1.0', mainPublicKey: f.publicKey, mainPublicKeyFingerprint: f.input.mainPublicKeyFingerprint, signature: sign(null, Buffer.from(mainEnrollmentProofMessage(body, '0.1.0')), f.key.privateKey).toString('base64url') };
 }
+
+for (const inputKind of ['file', 'code']) {
+  test(`pairing from ${inputKind} through a symlinked cache parent persists canonical roots and resumes setup`, async t => {
+    const f = await fixture(t, { symlinkedParent: true });
+    await assert.rejects(openPrivateRoot(f.stateDirectory), { code: 'SOURCE_FILESYSTEM_UNSUPPORTED' });
+    const enrollmentCode = encodeWorkerEnrollmentCode({ version: 1, kind: 'enrollment',
+      workerInstallationId: f.identity.workerInstallationId, publicKeyFingerprint: f.identity.publicKeyFingerprint,
+      enrollment: f.input, expiresAt: '2099-01-01T00:00:00.000Z' });
+    const post = async (url, body) => {
+      if (url.endsWith('/device/challenge')) return mainProof(f, body);
+      return { registration: { mainId: f.input.mainId, deviceId: randomUUID(),
+        workerInstallationId: f.identity.workerInstallationId, publicKeyFingerprint: f.identity.publicKeyFingerprint,
+        keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'] },
+        credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' };
+    };
+    const enroll = inputKind === 'file' ? enrollWorker : enrollWorkerCode;
+    const result = await enroll({ ...f, enrollmentCode, post });
+    const canonicalState = await realpath(f.stateDirectory);
+    const pairing = JSON.parse(await readFile(join(canonicalState, 'pairing.json'), 'utf8'));
+    assert.equal(pairing.deviceId, result.deviceId);
+    const approved = await loadApprovedRoots(f.stateDirectory, pairing);
+    assert.equal(approved.bases[0].canonicalPath, join(canonicalState, 'managed/workspaces'));
+    assert.equal(approved.managedRuntimeRoot, join(canonicalState, 'managed/runtime'));
+    const status = await ensurePairedManagedSetup({ stateDirectory: f.stateDirectory, pairing, home: f.home });
+    assert.equal(status.state, 'runtime-unavailable');
+    assert.deepEqual(await loadApprovedRoots(canonicalState, pairing), approved);
+  });
+}
+
+test('pairing rejects a symlinked state directory before transport or managed approval', async t => {
+  const f = await fixture(t);
+  const stateLink = join(f.home, 'state-link');
+  await symlink(f.stateDirectory, stateLink);
+  let calls = 0;
+  await assert.rejects(enrollWorker({ ...f, stateDirectory: stateLink, post: async () => { calls++; } }),
+    { code: 'private_directory_required' });
+  assert.equal(calls, 0);
+  await assert.rejects(ensurePairedManagedSetup({ stateDirectory: stateLink }),
+    { code: 'private_directory_required' });
+  await assert.rejects(readFile(join(f.stateDirectory, 'pairing.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(f.stateDirectory, 'approved-roots.json')), { code: 'ENOENT' });
+});
 
 test('private setup code delegates fresh proof and persists only target-scoped public trust', async (t) => {
   const f = await fixture(t);

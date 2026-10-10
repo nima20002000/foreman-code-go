@@ -37,7 +37,16 @@ export function workerPath(home, node) {
     } catch { /* Missing or untrusted installations do not extend PATH. */ }
   }
   add('/usr/local/bin', '/usr', 0);
-  if (typeof home === 'string' && home.startsWith('/') && resolve(home) === home && /^[/a-zA-Z0-9_.-]+$/.test(home)) {
+  let canonicalHome;
+  try {
+    if (typeof home === 'string' && home.startsWith('/') && resolve(home) === home
+      && /^[/a-zA-Z0-9_.-]+$/.test(home) && owned(home, true)) {
+      canonicalHome = realpathSync(home);
+    }
+  } catch { /* Missing or untrusted homes do not extend PATH. */ }
+  if (canonicalHome && /^[/a-zA-Z0-9_.-]+$/.test(canonicalHome)) {
+    // Resolve ancestors before checking installations; the home itself cannot be a symlink.
+    home = canonicalHome;
     add(join(home, '.local/bin'));
     const versions = join(home, '.nvm/versions/node');
     try {

@@ -312,6 +312,8 @@ export async function createInstalledWorkerDomains(input: {
       }, request,
       journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
     extensions.push(qualification)
+  }
+  if (approved) {
     runtimeDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
       active: () => [...active].filter(([, namespace]) => namespace !== CI_RUNTIME_NAMESPACE).map(([task]) => task),
       drainJobs: async () => { if (jobOpening) await (await jobOpening).beginDrain() },
@@ -324,38 +326,39 @@ export async function createInstalledWorkerDomains(input: {
           value.snapshot().launches.some(launch => launch.lifecycle !== 'closed'))
         return quiet.every(Boolean) && !nativeActive
       } })
-    ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
-      managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot,
-      prepare: async options => {
-        const retained = await jobJournal()
-        const executions = await retained.jobOperations()
-        const qualifications = await retained.pendingQualifications()
-        const used = [...options.keepImages ?? [],
-          ...executions.map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
-          ...qualifications.map(receipt => receipt.candidate.fingerprint.imageDigest)]
-        const configurations = await retireCiRuntimeConfigurations(input.stateDirectory, used)
-        return prepareCiRuntime({ ...options, stateDirectory: input.stateDirectory, keepImages: [...used, ...configurations.images],
-          keepPaths: [...options.keepPaths ?? [], ...configurations.paths] })
-      },
-      refresh: async options => {
-        try { return await scheduleCiRuntimeRefresh({ ...options, drain: () => runtimeDrain!.run() }) }
-        catch (error) {
-          runtimeDrain!.resume()
-          jobs?.resumeAdmissions()
-          throw error
-        }
-      },
-      lastRefresh: lastCiRuntimeRefresh, currentRuntimePaths: currentCiRuntimePaths,
-      now: () => new Date() }, lifetime.signal)
-    extensions.push({ namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
-      async handle(payload, context) {
-        if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
-          throw new DomainError('CI_RUNTIME_STALE', 'CI runtime preparation requires the actual authenticated worker channel.', 409)
-        }
-        return { payload: await ciRuntime!.handle(payload) }
-      },
-    })
   }
+  ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
+    managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot,
+    prepare: async options => {
+      const retained = await jobJournal()
+      const executions = await retained.jobOperations()
+      const qualifications = await retained.pendingQualifications()
+      const used = [...options.keepImages ?? [],
+        ...executions.map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
+        ...qualifications.map(receipt => receipt.candidate.fingerprint.imageDigest)]
+      const configurations = await retireCiRuntimeConfigurations(input.stateDirectory, used)
+      return prepareCiRuntime({ ...options, stateDirectory: input.stateDirectory, keepImages: [...used, ...configurations.images],
+        keepPaths: [...options.keepPaths ?? [], ...configurations.paths] })
+    },
+    refresh: async options => {
+      if (!runtimeDrain) throw new DomainError('CI_RUNTIME_SETUP_REQUIRED', 'Managed CI storage is unavailable.', 409)
+      try { return await scheduleCiRuntimeRefresh({ ...options, drain: () => runtimeDrain!.run() }) }
+      catch (error) {
+        runtimeDrain!.resume()
+        jobs?.resumeAdmissions()
+        throw error
+      }
+    },
+    lastRefresh: lastCiRuntimeRefresh, currentRuntimePaths: currentCiRuntimePaths,
+    now: () => new Date() }, lifetime.signal)
+  extensions.push({ namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('CI_RUNTIME_STALE', 'CI runtime preparation requires the actual authenticated worker channel.', 409)
+      }
+      return { payload: await ciRuntime!.handle(payload) }
+    },
+  })
   extensions.push({ namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 65_536, maxBinaryBytes: 0,
     async handle(payload, context) {
       ComputerAccountsRequestSchema.parse(payload)

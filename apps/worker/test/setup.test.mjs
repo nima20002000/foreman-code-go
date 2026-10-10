@@ -1,18 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, stat, rm, chmod } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, writeFile, readFile, stat, rm, chmod, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { setupCompanion } from '../src/setup.mjs';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.17.1', rootPersistent: true, homePersistent: true, storagePersistent: true };
 async function fixture(t, artifactName = 'fixture') {
-  const directory = await mkdtemp(join(tmpdir(), 'worker-setup-'));
+  const directory = await mkdtemp(join(await realpath(persistentFixtureRoot), 'worker-setup-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const home = join(directory, 'home'), artifact = join(directory, 'artifact');
   await mkdir(home); await mkdir(join(artifact, 'src'), { recursive: true });

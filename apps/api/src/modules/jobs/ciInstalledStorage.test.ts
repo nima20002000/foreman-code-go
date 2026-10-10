@@ -74,3 +74,21 @@ it('rejects a symlink in place of the protected runtime configuration', async ()
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it('reads adopted storage while requiring a fresh executable runtime capture for the new pairing', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ci-adopted-storage-'))
+  try {
+    const runtime = configuration()
+    const target = { ...runtime.descriptor.target,
+      hostRef: { kind: 'device', mainId: '22222222-2222-4222-8222-222222222222',
+        deviceId: '33333333-3333-4333-8333-333333333333' },
+      mainInstallationId: '22222222-2222-4222-8222-222222222222' }
+    await writeFile(join(directory, 'ci-runtime-installation.json'), JSON.stringify({ schemaVersion: 1, target, runtime }),
+      { mode: 0o600 })
+    const slot = runtime.descriptor.quotaPool!.slots[0]!
+    expect(await readCiInstalledStorage(directory)).toEqual({ diskBytes: slot.hardLimitBytes, mutableInodes: slot.hardInodes })
+    await expect(import('./installedRuntimeHost.js').then(module => module.readInstalledRuntimeConfiguration({
+      path: join(directory, 'job-runtime.json'), ownerUid: process.getuid!(),
+    }))).rejects.toMatchObject({ code: 'JOB_RUNTIME_INSTALLATION_UNAVAILABLE' })
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})

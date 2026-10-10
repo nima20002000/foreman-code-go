@@ -3,14 +3,15 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomUUID, sign, verify } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, symlink, link, readdir, rename } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, symlink, link, readdir, rename, realpath } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { acquireWorkerLock } from '../src/runtime.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const bundleDirectory = await mkdtemp(join(persistentFixtureRoot, 'job-cleanup-test-bundle-'));
+const fixtureRoot = await realpath(persistentFixtureRoot);
+const bundleDirectory = await mkdtemp(join(fixtureRoot, 'job-cleanup-test-bundle-'));
 after(() => rm(bundleDirectory, { recursive: true, force: true }));
 const exports = [
   ['apps/worker/src/jobCancellationCleanup.mjs', ['cleanupJobBeforeEntry', 'validateRestoredJobFilesystem', 'validateRestoredQuotaFilesystem']],
@@ -43,7 +44,7 @@ const worker = await import(pathToFileURL(join(bundleDirectory, 'cleanup.mjs')).
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(t, { verification = false, preparatory = false } = {}) {
-  const directory = await mkdtemp(join(persistentFixtureRoot, 'job-cleanup-state-'));
+  const directory = await realpath(await mkdtemp(join(fixtureRoot, 'job-cleanup-state-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const state = join(directory, 'state');
   const runtime = join(directory, 'managed');
@@ -182,6 +183,20 @@ async function fixture(t, { verification = false, preparatory = false } = {}) {
   return { state, directory, namespace, grant, grantPath, saveGrant, claim, claimPath, journalPath, journalChange,
     keys, identity, pairing, sourcePath: join(namespace, receipt.materializationId, 'tree/source.txt'), bytes };
 }
+
+test('approved roots reject symlink aliases and qualify their canonical private directories', async t => {
+  const f = await fixture(t);
+  const alias = join(f.directory, 'managed-alias');
+  await symlink(join(f.directory, 'managed'), alias);
+  const approved = JSON.parse(await readFile(join(f.state, 'approved-roots.json'), 'utf8'));
+  const input = { ...approved, managedRuntimeRoot: alias };
+  await assert.rejects(worker.openPrivateRoot(alias), { code: 'SOURCE_FILESYSTEM_UNSUPPORTED' });
+  await assert.rejects(worker.qualifyApprovedRootAllowlist(input), { code: 'SOURCE_FILESYSTEM_UNSUPPORTED' });
+  const canonical = await worker.qualifyApprovedRootAllowlist({
+    ...input, managedRuntimeRoot: await realpath(alias),
+  });
+  assert.deepEqual(canonical, approved);
+});
 
 test('signed no-entry cleanup archives only the original claim and replays without touching its successor', async t => {
   const f = await fixture(t);

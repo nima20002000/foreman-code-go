@@ -7,7 +7,7 @@ import {
 import { DomainError } from '../errors.js'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { SourceError } from './manifest.js'
-import { attestWorkspaceRoot, browseApprovedRoot, attestSourceNamespace } from './rootAttestation.js'
+import { attestWorkspaceRoot, browseApprovedRoot, attestSourceNamespace, prepareManagedWorkspaceRoot } from './rootAttestation.js'
 import type { AuthorizedWorkspaceRoot, WorkspaceRootHostPort } from './rootPolicyPorts.js'
 
 export interface RootWorkerClient {
@@ -76,6 +76,19 @@ export class InstalledWorkspaceRootHosts implements WorkspaceRootHostPort {
     const registration = root.registration
     return WorkspaceRootAttestationSchema.parse(await publicRootFailure(() => this.remote.request(root.selection.hostRef, registration,
       { version: 1, operation: 'workspace-roots.attest', selection: root.selection })))
+  }
+  async prepareManaged(root: AuthorizedWorkspaceRoot) {
+    if (root.selection.hostRef.kind === 'main') {
+      this.local(root)
+      return publicRootFailure(() => prepareManagedWorkspaceRoot(this.main, root.selection))
+    }
+    if (!root.registration) {
+      throw new DomainError('ROOT_DEVICE_CONFLICT', 'The selected device has no current approved registration.', 409)
+    }
+    const registration = root.registration
+    return WorkspaceRootAttestationSchema.parse(await publicRootFailure(() => this.remote.request(
+      root.selection.hostRef, registration,
+      { version: 1, operation: 'workspace-roots.prepare-managed', selection: root.selection })))
   }
   async browse(root: AuthorizedWorkspaceRoot, relativePath: string) {
     if (root.selection.hostRef.kind === 'main') { this.local(root); return publicRootFailure(() => browseApprovedRoot(this.main, root.selection, relativePath)) }

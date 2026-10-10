@@ -12,7 +12,11 @@ import { rootSelectionDigest, rootAttestationDigest } from './rootAttestation.js
 import type { AuthorizedWorkspaceRoot, WorkspaceRootHostPort, WorkspaceRootPolicyPort } from './rootPolicyPorts.js'
 
 type Sql = GraphSqlClient
+type RootBindingKind = 'location' | 'managed'
 export function workspaceRootHostScope(host: ApprovedRootAllowlist['hostRef']): string { return host.kind === 'main' ? `main:${host.mainId}` : `main:${host.mainId}:device:${host.deviceId}` }
+function policyScope(host: ApprovedRootAllowlist['hostRef'], kind: RootBindingKind): string {
+  return workspaceRootHostScope(host) + (kind === 'managed' ? ':ci-enrollment' : '')
+}
 /** One generic root authority. Source bindings merely reference its accepted
  * policies; no Workflow, Agent, provider token or source snapshot is required.
  */
@@ -97,6 +101,16 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     return configuration
   }
   async authorize(sql: Sql, principal: ManagementPrincipal, raw: WorkspaceRootSelection): Promise<AuthorizedWorkspaceRoot> {
+    return this.authorizeRoot(sql, principal, raw, 'location')
+  }
+  async authorizeManaged(sql: Sql, principal: ManagementPrincipal,
+    selection: WorkspaceRootSelection): Promise<AuthorizedWorkspaceRoot> {
+    const root = await this.authorizeRoot(sql, principal, selection, 'managed')
+    this.assertManagedSelection(root)
+    return root
+  }
+  private async authorizeRoot(sql: Sql, principal: ManagementPrincipal, raw: WorkspaceRootSelection,
+    kind: RootBindingKind): Promise<AuthorizedWorkspaceRoot> {
     const selection = WorkspaceRootSelectionSchema.parse(raw), live = await this.authorizeWorkspace(sql, principal, selection.workspaceId)
     requireAuthorization(principal, 'workspace_locations:validate', { workspaceId: selection.workspaceId }); requireAuthorization(live.principal, 'workspace_locations:validate', { workspaceId: selection.workspaceId })
     if (live.locationRevision !== selection.expectedLocationRevision) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed since it was selected.', 409)
@@ -104,14 +118,35 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     const registration = await this.hosts.authorize(sql, live.principal, selection.hostRef, allowlist.applicationInstallationId)
     if (allowlist.configurationRevision !== selection.configurationRevision || !allowlist.bases.some(base => base.baseId === selection.allowedBaseId && base.accessModes.includes(selection.accessMode)))
       throw new DomainError('ROOT_ACCESS_DENIED', 'Select an allowed base/access mode from the current human-approved host configuration.', 403)
-    const row = (await sql.query<{ root_policy_revision: string }>('select root_policy_revision from workspace_root_policy_heads where workspace_id=$1 and host_scope=$2 for share', [selection.workspaceId, workspaceRootHostScope(selection.hostRef)])).rows[0]
+    const row = (await sql.query<{ root_policy_revision: string }>('select root_policy_revision from workspace_root_policy_heads where workspace_id=$1 and host_scope=$2 for share', [selection.workspaceId, policyScope(selection.hostRef, kind)])).rows[0]
     if (Number(row?.root_policy_revision ?? 0) !== selection.expectedRootPolicyRevision) throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The selected host root policy changed.', 409, { currentRootPolicyRevision: Number(row?.root_policy_revision ?? 0) })
     const root = { selection, allowlist, ownerPrincipalId: live.ownerId, registration }
     this.actors.set(root, structuredClone(principal)); return root
   }
   async attest(root: AuthorizedWorkspaceRoot): Promise<WorkspaceRootAttestation> {
     if (!this.actors.has(root)) throw new DomainError('ROOT_AUTHORIZATION_MISSING', 'Attestation requires the actual main-authorized root object.', 403)
-    const attestation = WorkspaceRootAttestationSchema.parse(await this.hosts.attest(root))
+    return this.validateAttestation(root, await this.hosts.attest(root))
+  }
+  private assertManagedSelection(root: AuthorizedWorkspaceRoot): void {
+    const base = root.allowlist.bases.find(value => value.baseId === root.selection.allowedBaseId)
+    const relativePath = sourceSha256(Buffer.from(root.selection.workspaceId))
+    if (base?.managedBy !== 'worker-pairing' || root.selection.accessMode !== 'read-write'
+      || root.selection.relativePath !== relativePath) {
+      throw new DomainError('ROOT_ACCESS_DENIED', 'Automatic roots require this workspace’s product-managed folder.', 403)
+    }
+  }
+  async prepareManaged(root: AuthorizedWorkspaceRoot): Promise<WorkspaceRootAttestation> {
+    if (!this.actors.has(root)) {
+      throw new DomainError('ROOT_AUTHORIZATION_MISSING', 'Managed folder setup requires an authorized root.', 403)
+    }
+    this.assertManagedSelection(root)
+    if (!this.hosts.prepareManaged) {
+      throw new DomainError('ROOT_CONFIGURATION_UNAVAILABLE', 'Managed folder setup is unavailable on this host.', 409)
+    }
+    return this.validateAttestation(root, await this.hosts.prepareManaged(root))
+  }
+  private validateAttestation(root: AuthorizedWorkspaceRoot, raw: unknown): WorkspaceRootAttestation {
+    const attestation = WorkspaceRootAttestationSchema.parse(raw)
     const { attestationDigest, ...facts } = attestation
     if (attestation.requestDigest !== rootSelectionDigest(root.selection) || attestationDigest !== rootAttestationDigest(facts)
       || !isDeepStrictEqual(attestation.hostRef, root.selection.hostRef) || attestation.applicationInstallationId !== root.allowlist.applicationInstallationId
@@ -141,24 +176,39 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
     // authorizer is still called on bind/resolve with the actual principal.
   }
   async bind(sql: Sql, principal: ManagementPrincipal, root: AuthorizedWorkspaceRoot, raw: WorkspaceRootAttestation, nextLocationRevision: number): Promise<WorkspaceRootPolicy> {
+    return this.bindPolicy(sql, principal, root, raw, { kind: 'location', locationRevision: nextLocationRevision })
+  }
+  async bindManaged(sql: Sql, principal: ManagementPrincipal, root: AuthorizedWorkspaceRoot,
+    attestation: WorkspaceRootAttestation): Promise<WorkspaceRootPolicy> {
+    this.assertManagedSelection(root)
+    return this.bindPolicy(sql, principal, root, attestation,
+      { kind: 'managed', locationRevision: root.selection.expectedLocationRevision })
+  }
+  private async bindPolicy(sql: Sql, principal: ManagementPrincipal, root: AuthorizedWorkspaceRoot,
+    raw: WorkspaceRootAttestation, location: { kind: RootBindingKind; locationRevision: number }): Promise<WorkspaceRootPolicy> {
     if (this.actors.get(root)?.id !== principal.id) throw new DomainError('ROOT_AUTHORIZATION_MISSING', 'Root binding belongs to another scoped caller.', 403)
     const live = await this.authorizeWorkspace(sql, principal, root.selection.workspaceId, true)
     requireAuthorization(principal, 'workspace_locations:update', { workspaceId: root.selection.workspaceId }); requireAuthorization(live.principal, 'workspace_locations:update', { workspaceId: root.selection.workspaceId })
-    if (nextLocationRevision !== root.selection.expectedLocationRevision + 1 || live.locationRevision !== nextLocationRevision)
-      throw new DomainError('LOCATION_REVISION_CONFLICT', 'Root binding must join the existing workspace location CAS on the same transaction.', 409)
+    const expectedRevision = root.selection.expectedLocationRevision + (location.kind === 'location' ? 1 : 0)
+    if (location.locationRevision < 1 || location.locationRevision !== expectedRevision
+      || live.locationRevision !== location.locationRevision)
+      throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed during root binding.', 409)
     const configuration = await this.configuration(sql, root.selection.hostRef)
     if (!isDeepStrictEqual(configuration, root.allowlist) || live.ownerId !== root.ownerPrincipalId) throw new DomainError('ROOT_CONFIGURATION_CONFLICT', 'The accepted root owner/configuration changed.', 409)
     const registration = await this.hosts.authorize(sql, live.principal, root.selection.hostRef, configuration.applicationInstallationId)
     if (!isDeepStrictEqual(registration, root.registration)) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The host registration changed during attestation.', 409)
-    const attestation = WorkspaceRootAttestationSchema.parse(raw), { attestationDigest, ...facts } = attestation
-    if (attestation.requestDigest !== rootSelectionDigest(root.selection) || attestationDigest !== rootAttestationDigest(facts)) throw new DomainError('ROOT_ATTESTATION_CONFLICT', 'Root attestation was changed.', 409)
-    const scope = workspaceRootHostScope(root.selection.hostRef)
+    const attestation = this.validateAttestation(root, raw)
+    const scope = policyScope(root.selection.hostRef, location.kind)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-root:${root.selection.workspaceId}:${scope}`])
     const head = (await sql.query<{ root_policy_id: string; root_policy_revision: string }>('select root_policy_id,root_policy_revision from workspace_root_policy_heads where workspace_id=$1 and host_scope=$2 for update', [root.selection.workspaceId, scope])).rows[0]
-    if (Number(head?.root_policy_revision ?? 0) !== root.selection.expectedRootPolicyRevision) throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The root policy changed during location CAS.', 409, { currentRootPolicyRevision: Number(head?.root_policy_revision ?? 0) })
+    if (Number(head?.root_policy_revision ?? 0) !== root.selection.expectedRootPolicyRevision) {
+      throw new DomainError('ROOT_POLICY_REVISION_CONFLICT', 'The selected root policy changed during binding.', 409,
+        { currentRootPolicyRevision: Number(head?.root_policy_revision ?? 0) })
+    }
     const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId: head?.root_policy_id ?? randomUUID(), rootPolicyRevision: String(root.selection.expectedRootPolicyRevision + 1),
+      ...(location.kind === 'managed' ? { bindingPurpose: 'ci-enrollment' as const } : {}),
       workspaceId: root.selection.workspaceId, hostRef: root.selection.hostRef, applicationInstallationId: root.allowlist.applicationInstallationId,
-      registration, locationRevision: String(nextLocationRevision), ownerPrincipalId: live.ownerId, allowedBaseId: root.selection.allowedBaseId,
+      registration, locationRevision: String(location.locationRevision), ownerPrincipalId: live.ownerId, allowedBaseId: root.selection.allowedBaseId,
       configurationRevision: root.allowlist.configurationRevision, relativePath: root.selection.relativePath, accessMode: root.selection.accessMode,
       canonicalProjectRoot: attestation.canonicalProjectRoot, filesystem: attestation.filesystem, directoryIdentityHash: attestation.directoryIdentityHash,
       managedRuntimeRoot: attestation.managedRuntimeRoot, runtimeFilesystem: attestation.runtimeFilesystem, attestationId: attestation.attestationId, attestationDigest: attestation.attestationDigest })
