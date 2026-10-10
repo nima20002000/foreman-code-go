@@ -105,6 +105,22 @@ describe('Operator MCP presentation', () => {
     } finally { await f.close() }
   })
 
+  it('returns a source approval as one JSON text item even above the mirror threshold', async () => {
+    const f = await fixture()
+    const value = { value: { entries: Array.from({ length: 3000 }, (_, index) => ({
+      path: `source-${index}`, digest: 'a'.repeat(64),
+    })) }, replayed: false }
+    f.server.registerTool('source_approve', { inputSchema: z.object({}) }, async () => toolResult(value))
+    await f.connect()
+    try {
+      const result = await f.client.callTool({ name: 'source_approve', arguments: {} })
+      expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(256 * 1024)
+      expect(result.structuredContent).toBeUndefined()
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(value) }])
+      expect(decodeMcpToolResult(result)).toEqual(value)
+    } finally { await f.close() }
+  })
+
   it('removes identical mirrors while retaining wrapped array and primitive results', async () => {
     const f = await fixture()
     for (const [name, value] of [['array', [1, 2]], ['primitive', false]] as const) {

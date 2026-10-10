@@ -7,13 +7,13 @@ type ListHandler = (request: ListToolsRequest, context: ServerContext) => ListTo
 type CallHandler = (request: CallToolRequest, context: ServerContext) => CallToolResult | Promise<CallToolResult>
 export type OperatorCatalog = (context: ServerContext) => Promise<ListToolsResult['tools']>
 
-function singlePayloadResult(result: CallToolResult): CallToolResult {
+function singlePayloadResult(result: CallToolResult, name: string): CallToolResult {
   if (result.isError || result.structuredContent === undefined) return result
   const { structuredContent, ...envelope } = result
   const json = JSON.stringify(structuredContent)
   const content = result.content.filter((part) => part.type !== 'text' || part.text !== json)
   // Large text envelopes escape JSON twice and can exceed the remote relay limit.
-  if (Buffer.byteLength(json, 'utf8') > TEXT_MIRROR_BYTES) {
+  if (name !== 'source_approve' && Buffer.byteLength(json, 'utf8') > TEXT_MIRROR_BYTES) {
     return { ...envelope, structuredContent, content }
   }
   return { ...envelope, content: [{ type: 'text', text: json }, ...content] }
@@ -36,7 +36,8 @@ export function installOperatorPresentation(server: McpServer): OperatorCatalog 
       }
       if (arguments_[0] === 'tools/call') {
         const call = arguments_[1] as CallHandler
-        const handler: CallHandler = async (request, context) => singlePayloadResult(await call(request, context))
+        const handler: CallHandler = async (request, context) =>
+          singlePayloadResult(await call(request, context), request.params.name)
         return Reflect.apply(register, target, ['tools/call', handler])
       }
       return Reflect.apply(register, target, arguments_)

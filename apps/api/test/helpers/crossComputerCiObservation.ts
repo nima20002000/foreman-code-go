@@ -103,7 +103,7 @@ async function observeTicket(client: Client, workflow: RunningCiWorkflow,
 
 async function observeWorkflow(client: Client, workflow: RunningCiWorkflow, observation: ScenarioObservation) {
   const details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', {
-    workspaceId: workflow.workspace.workspaceId, runId: workflow.runId,
+    workspaceId: workflow.workspace.workspaceId, runId: workflow.runId, detail: 'full',
   }))
   expect(details.run.workflowId).toBe(workflow.graph.id)
   observation.runs.set(workflow.runId, details)
@@ -213,7 +213,7 @@ async function verifyTicketReport(client: Client, ticket: TicketObservation, out
 
 async function verifyWorkflow(client: Client, workflow: RunningCiWorkflow, observation: ScenarioObservation) {
   const scope = { workspaceId: workflow.workspace.workspaceId, runId: workflow.runId }
-  const details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', scope))
+  const details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', { ...scope, detail: 'full' }))
   expect(details.run.outcome).toBe('succeeded')
   expect(details.executions).toHaveLength(workflow.assignments.length)
   const executions = RunExecutionsPageSchema.parse(await callCiTool(client, 'run_executions_list', { ...scope, limit: 100 }))

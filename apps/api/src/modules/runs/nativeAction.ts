@@ -80,6 +80,23 @@ export function safeNodeName(value: unknown): string | undefined {
   return name
 }
 
+const commandPrograms = new Set(['git', 'rg', 'grep', 'find', 'ls', 'cat', 'sed', 'awk', 'head', 'tail',
+  'pwd', 'echo', 'printf', 'pnpm', 'npm', 'node', 'python', 'python3', 'pytest', 'vitest', 'tsc',
+  'bash', 'sh', 'curl', 'make', 'cargo', 'go', 'docker', 'apply_patch'])
+
+/** Command arguments and unknown executable names can contain credentials. */
+export function nativeToolTitle(itemType: string, toolName?: string | null, commandName?: string | null): string {
+  if (itemType === 'commandExecution') {
+    const program = commandName?.split('/').at(-1)
+    return program && commandPrograms.has(program) ? `Command: ${program}` : 'Command action'
+  }
+  if (itemType === 'subagent' || itemType === 'collabAgentToolCall') return 'Subagent action'
+  const name = safeNodeName(toolName)
+  if (name) return `Tool: ${name}`
+  if (itemType === 'mcpToolCall') return 'MCP tool action'
+  return 'Tool action'
+}
+
 export function nodeAction(kind: RunNodeActionKind, peerName?: string) {
   const peer = safeNodeName(peerName)
   const label = kind === 'reviewing_request' && peer ? `Reviewing ${peer}’s request…`

@@ -3,9 +3,12 @@ import {
   ManagedWorkspaceSchema, ManagementPageInfoSchema, OperatorCapabilitiesSchema,
   ManagementActionSchema,
   WorkspaceListInputSchema, WorkflowListInputSchema,
-  AgentListInputSchema, RunListInputSchema,
+  AgentListInputSchema, RunListInputSchema, RunGetInputSchema,
 } from './management/index.js'
-import { SavedManagedWorkflowSchema } from './wave25/saved.js'
+import { SavedManagedWorkflowSchema, SavedRunDetailsSchema, WorkflowRunV3Schema } from './wave25/saved.js'
+import { HarnessExecutionSchema } from './index.js'
+import { SourceListInputSchema, SourceListResultSchema, ApprovedSourceSchema } from './sourceAdmission.js'
+import { SourceManifestSchema } from './sourceMaterialization.js'
 
 const detail = z.enum(['compact', 'full']).default('compact')
 const limit = z.number().int().min(1).max(100).default(10)
@@ -14,6 +17,40 @@ export const OperatorWorkspaceListInputSchema = WorkspaceListInputSchema.extend(
 export const OperatorWorkflowListInputSchema = WorkflowListInputSchema.extend({ detail, limit })
 export const OperatorAgentListInputSchema = AgentListInputSchema.extend({ limit })
 export const OperatorRunListInputSchema = RunListInputSchema.extend({ limit })
+
+export const OperatorSourceListInputSchema = SourceListInputSchema.extend({ detail, limit })
+export const SourceSummarySchema = ApprovedSourceSchema.extend({
+  manifest: SourceManifestSchema.omit({ entries: true, deletions: true }),
+  detailsOmitted: z.literal(true),
+}).strict()
+export const OperatorSourceListResultSchema = z.union([
+  z.object({ detail: z.literal('compact'), items: z.array(SourceSummarySchema).max(100),
+    nextSnapshotId: SourceListResultSchema.shape.nextSnapshotId }).strict(),
+  SourceListResultSchema,
+])
+
+export const OperatorRunGetInputSchema = RunGetInputSchema.extend({ detail })
+export const OperatorRunSummarySchema = z.object(WorkflowRunV3Schema.shape).omit({
+  input: true, result: true, executionLocation: true, authorizationPrincipalId: true,
+})
+export const OperatorExecutionSummarySchema = z.object(HarnessExecutionSchema.shape).pick({
+  id: true, runId: true, workflowNodeId: true, agentId: true, agentConfigurationVersionId: true,
+  attempt: true, state: true, createdAt: true, startedAt: true, finishedAt: true,
+})
+export const OperatorActivitySummarySchema = z.object({
+  id: z.string(), kind: z.string(), title: z.string().max(256), status: z.string().optional(),
+  order: z.string(),
+}).strict()
+export const OperatorRunCompactSchema = z.object({
+  detail: z.literal('compact'), detailsOmitted: z.literal(true), run: OperatorRunSummarySchema,
+  executions: z.array(OperatorExecutionSummarySchema).max(25),
+  activities: z.array(OperatorActivitySummarySchema).max(25),
+  executionsOmitted: z.number().int().nonnegative(), activitiesOmitted: z.number().int().nonnegative(),
+  activitiesHasMore: z.boolean(),
+  cleanupPending: z.boolean().optional(),
+}).strict()
+export const OperatorRunGetResultSchema = z.union([OperatorRunCompactSchema, SavedRunDetailsSchema])
+
 
 export const WorkspaceSummarySchema = z.object({
   workspace: ManagedWorkspaceSchema.shape.workspace.pick({ id: true, name: true }),

@@ -32,6 +32,23 @@ import {
 
 type Source = 'http' | 'mcp'
 type Scope = { workspaceId: string; workflowId: string }
+function completeSaveInput(
+  request: CurrentEditSaveInput,
+  metadata: CurrentEditSaveInput['graph'],
+) {
+  const { version, createdAt, updatedAt, ...graph } = request.graph
+  const stamps = {
+    version: version ?? metadata.version,
+    createdAt: createdAt ?? metadata.createdAt,
+    updatedAt: updatedAt ?? metadata.updatedAt,
+  }
+  return CurrentWorkflowSaveInputSchema.parse({ ...request, graph: {
+    ...graph,
+    ...(stamps.version === undefined ? {} : { version: stamps.version }),
+    ...(stamps.createdAt === undefined ? {} : { createdAt: stamps.createdAt }),
+    ...(stamps.updatedAt === undefined ? {} : { updatedAt: stamps.updatedAt }),
+  } })
+}
 const fail = (code: string, message: string): never => { throw new DomainError(code, message, 409) }
 const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
 function authorize(principal: ManagementPrincipal, scope: Scope, write: boolean) {
@@ -149,10 +166,13 @@ export class CurrentWorkflowAuthoring {
   }
   private async write(principal: ManagementPrincipal, source: Source, raw: unknown, intentId?: string) {
     // Preserve optional-repeat omission in the exact HTTP/MCP command hash.
-    const input: CurrentEditSaveInput = intentId ? CurrentEditSaveInputSchema.parse(raw) : CurrentWorkflowSaveInputSchema.parse(raw)
+    let input: CurrentEditSaveInput = intentId ? CurrentEditSaveInputSchema.parse(raw) : CurrentWorkflowSaveInputSchema.parse(raw)
+    const request = input
+    const needsMetadata = !intentId && (input.graph.version === undefined
+      || input.graph.createdAt === undefined || input.graph.updatedAt === undefined)
     authorize(principal, input, true)
     return this.commands.execute({ principal, source, operation: 'workflow.save.v3', commandId: input.commandId,
-      targetKey: `workflow:${input.workflowId}:definition`, payload: input,
+      targetKey: `workflow:${input.workflowId}:definition`, payload: request,
       replayResult: (raw) => {
         const saved = CurrentWorkflowSavedSchema.parse(raw)
         if (saved.workspaceId !== input.workspaceId || saved.workflowId !== input.workflowId) {
@@ -172,10 +192,18 @@ export class CurrentWorkflowAuthoring {
         const receipt = (await client.query<{ result: unknown; input_hash: string; target_key: string }>(`select result,input_hash,target_key from management_command_receipts
           where principal_id=$1 and operation='workflow.save.v3' and command_id=$2`, [principal.id, input.commandId])).rows[0]
         if (receipt) {
-          if (receipt.input_hash !== commandInputHash(input) || receipt.target_key !== `workflow:${input.workflowId}:definition`) {
+          if (receipt.input_hash !== commandInputHash(request) || receipt.target_key !== `workflow:${input.workflowId}:definition`) {
             return fail('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.')
           }
           const saved = CurrentWorkflowSavedSchema.parse(receipt.result)
+          const witness = (await client.query<{ workflow_version_id: string; input_hash: string; input: unknown }>(
+            `select workflow_version_id,input_hash,input from current_workflow_publications where principal_id=$1 and command_id=$2`,
+            [principal.id, input.commandId])).rows[0]
+          if (needsMetadata) {
+            const metadata = witness ? CurrentWorkflowSaveInputSchema.parse(witness.input).graph
+              : saved.presentation ?? saved.version.definition
+            input = completeSaveInput(request, metadata)
+          }
           const version = await versionAt(client, input, saved.currentVersionId)
           if (!sameWorkflowValue(version, saved.version) || !sameWorkflowValue(version.agentConfigurationVersionIds, input.resultantAgentConfigurationVersionIds ?? input.expectedAgentConfigurationVersionIds)) {
             return fail('WORKFLOW_RECEIPT_CONFLICT', 'The receipt differs from its exact immutable version/configuration pins.')
@@ -183,10 +211,7 @@ export class CurrentWorkflowAuthoring {
           if (saved.presentation && !sameAuthoredWorkflow(saved.presentation, input.graph)) {
             return fail('WORKFLOW_RECEIPT_CONFLICT', 'The saved presentation differs from the submitted node names.')
           }
-          const witness = (await client.query<{ workflow_version_id: string; input_hash: string; input: unknown }>(
-            `select workflow_version_id,input_hash,input from current_workflow_publications where principal_id=$1 and command_id=$2`,
-            [principal.id, input.commandId])).rows[0]
-          if (witness ? witness.workflow_version_id !== version.id || witness.input_hash !== commandInputHash(input)
+          if (witness ? witness.workflow_version_id !== version.id || witness.input_hash !== commandInputHash(request)
               || !sameWorkflowValue(witness.input, input) || saved.revision !== input.expectedRevision + 1
               || !sameExecutableWorkflow(version.definition, input.graph)
             : version.id !== input.expectedWorkflowVersionId || saved.revision !== input.expectedRevision
@@ -194,6 +219,13 @@ export class CurrentWorkflowAuthoring {
                 { ...input.graph, name: version.definition.name, description: version.definition.description })) {
             return fail('WORKFLOW_RECEIPT_CONFLICT', 'The stored command result has no matching typed publication or exact presentation-save backing.')
           }
+        } else if (needsMetadata) {
+          await lockActiveWorkspace(client, input.workspaceId)
+          const row = (await client.query<{ record: unknown }>(
+            'select record from workflows where workspace_id=$1 and id=$2 for update',
+            [input.workspaceId, input.workflowId])).rows[0]
+          if (!row) return fail('WORKFLOW_UNAVAILABLE', 'The active workflow was not found in this scope.')
+          input = completeSaveInput(request, WorkflowDefinitionV3Schema.parse(row.record))
         }
       },
       perform: async (client) => {
@@ -217,7 +249,7 @@ export class CurrentWorkflowAuthoring {
           prepared.version.version, prepared.version.entryNodeId, canonicalGraphJson(prepared.version)])
           const row = (await client.query<{ revision: string }>(
             'select eng04_publish_current_workflow($1,$2,$3::jsonb,$4,$5,$6)::text as revision',
-            [principal.id, source, canonicalGraphJson(input), commandInputHash(input), prepared.version.id, prepared.content])).rows[0]
+            [principal.id, source, canonicalGraphJson(input), commandInputHash(request), prepared.version.id, prepared.content])).rows[0]
           if (!row) return fail('REVISION_CONFLICT', 'The typed current workflow publication returned no revision.')
           revision = Number(row.revision)
         }

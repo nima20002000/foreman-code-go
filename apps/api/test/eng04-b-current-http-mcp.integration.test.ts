@@ -423,7 +423,7 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const detailUrl = `/api/management/workspaces/${t.input.workspaceId}/runs/${accepted.run.id}`
     const detailHttp = await t.app.inject({ method: 'GET', url: detailUrl, headers: graphHeaders(reader.token) })
     expect(detailHttp.statusCode, detailHttp.body).toBe(200)
-    const detailMcp = await t.call('run_get', { workspaceId: t.input.workspaceId, runId: accepted.run.id }, reader.token)
+    const detailMcp = await t.call('run_get', { workspaceId: t.input.workspaceId, runId: accepted.run.id, detail: 'full' }, reader.token)
     expect(detailMcp.result?.isError).not.toBe(true)
     expect(graphRpcValue(detailMcp.result)).toEqual(detailHttp.json())
     expect(detailHttp.json().run.executionSemanticsVersion).toBe(3)
