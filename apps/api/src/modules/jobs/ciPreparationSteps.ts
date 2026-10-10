@@ -18,6 +18,8 @@ export interface CiPreparationStepPorts {
   /** Images every current verification profile on this computer uses, across workspaces. */
   deviceImages(): Promise<string[]>
   repository(workspaceId: string): Promise<string>
+  /** GitHub serves the approved commit: the computer fetches it there, faster than Main can send it. */
+  published(repository: string): Promise<boolean>
   deliverSource(repository: string): Promise<void>
   wait(): Promise<void>
   now(): Date
@@ -43,7 +45,7 @@ export async function runCiPreparation(record: CiPreparationRecord, ports: CiPre
     const repository = record.manifest.git!.repository ?? await ports.repository(record.input.workspaceId)
     const current = await ports.device({ operation: 'status' })
     if (record.manifest.git?.metadata && (current.operationId !== record.id || current.commit !== commit
-      || !['preparing', 'prepared'].includes(current.state))) {
+      || !['preparing', 'prepared'].includes(current.state)) && !await ports.published(repository)) {
       await ports.deliverSource(repository)
     }
     let state = await ports.device({ operation: 'prepare', operationId: record.id,

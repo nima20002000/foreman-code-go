@@ -338,7 +338,7 @@ describe('runtime preparation ownership and recovery', () => {
 })
 
 it.each(['direct', 'lost first chunk acknowledgment', 'lost final chunk acknowledgment',
-  'changed retried chunk', 'Main restart after source delivery'] as const)(
+  'changed retried chunk', 'Main restart after source delivery', 'published on GitHub'] as const)(
   'delivers an unpublished snapshot through authenticated MCP: %s', async scenario => {
     const directory = await mkdtemp(join(tmpdir(), 'ci-unpublished-'))
     let f: Awaited<ReturnType<typeof fixture>> | undefined
@@ -368,6 +368,7 @@ it.each(['direct', 'lost first chunk acknowledgment', 'lost final chunk acknowle
       const snapshot = await snapshotAgentWorktree(system, { path: agent, baseCommit: git(origin, 'rev-parse', 'HEAD') }, signal)
       await importAgentSnapshot(system, main, snapshot, signal)
       const acceptedCommit = snapshot.commit
+      if (scenario === 'published on GitHub') git(main, 'push', '-q', 'origin', `${acceptedCommit}:refs/heads/published`)
       const storage = join(directory, 'snapshots')
       await mkdir(storage, { mode: 0o700 })
       const store = new PrivateSourceSnapshotStore(storage)
@@ -382,6 +383,7 @@ it.each(['direct', 'lost first chunk acknowledgment', 'lost final chunk acknowle
       f = await fixture({ source: { manifest: acceptedManifest, store, git: workerGit },
         ...(losesSourceAck ? { loseSourceAck: ackKind } : {}),
         corruptSourceRetry: scenario === 'changed retried chunk',
+        published: scenario === 'published on GitHub',
         pause: async stage => {
           if (scenario === 'Main restart after source delivery' && stage === 'source-transfer' && !restarting) {
             reached()
@@ -412,6 +414,12 @@ it.each(['direct', 'lost first chunk acknowledgment', 'lost final chunk acknowle
       expect(f.profiles.get('p-unit')?.sourceCommit).toBe(acceptedCommit)
       expect((await workerGit.git(['show', `${acceptedCommit}:pnpm-lock.yaml`],
         { cwd: workerGit.cloneDirectory('octo/site'), signal })).stdout).toBe(unpublishedLockfile)
+      if (scenario === 'published on GitHub') {
+        // The computer fetched the commit from the repository; Main sent no source bytes.
+        expect(f.calls.sourceChunks).toBe(0)
+        return
+      }
+      expect(f.calls.sourceChunks).toBeGreaterThan(0)
       expect(git(origin, 'rev-parse', 'HEAD')).not.toBe(acceptedCommit)
       expect(await readFile(join(origin, 'pnpm-lock.yaml'), 'utf8')).toBe('published lockfile\n')
     } finally {

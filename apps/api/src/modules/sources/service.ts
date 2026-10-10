@@ -424,6 +424,12 @@ export class PostgresSourceService implements SourceAdmissionPort {
         return record
       } })
   }
+  /** Whether GitHub serves this commit, so a build computer fetches it there instead of receiving its bytes from Main. */
+  async published(repository: string, commit: string, signal: AbortSignal): Promise<boolean> {
+    const clone = await ensureClone(this.git, repository, signal)
+    return (await this.git.git(['fetch', '--no-tags', '--no-write-fetch-head', 'origin', commit], { cwd: clone, signal })).code === 0
+  }
+
   async sourcePackage(principal: ManagementPrincipal, workspaceId: string, pin: ApprovedSourcePin) {
     const approved = await this.transaction(sql => this.resolveApprovedSource(sql, principal, workspaceId, pin))
     return sourcePackageStream(approved.manifest, this.store, AbortSignal.timeout(SOURCE_LIMITS.preparationMs))

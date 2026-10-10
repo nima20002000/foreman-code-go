@@ -92,6 +92,8 @@ export async function ciPreparationFixture(options: {
   refreshGate?: Promise<void>
   loseSourceAck?: 'first' | 'complete'
   corruptSourceRetry?: boolean
+  /** GitHub serves the approved commit, so Main sends no source bytes. */
+  published?: boolean
   source?: { manifest: SourceManifest; store: PrivateSourceSnapshotStore; git: GitWorktreePorts }
   pause?(stage: Stage): Promise<void>
 } = {}) {
@@ -106,7 +108,7 @@ export async function ciPreparationFixture(options: {
   ])
   const calls = { prepare: [] as unknown[], bind: [] as unknown[],
     saves: [] as Array<{ id: string; spec: { bindingRevision: number; policy: { imageDigest: string } } }>,
-    refresh: [] as unknown[], qualified: [] as string[] }
+    refresh: [] as unknown[], qualified: [] as string[], sourceChunks: 0 }
   const memory = ciPreparationMemory()
   const reader: ManagementPrincipal = { ...data.readonly, id: 'runtime-reader', grants: [{
     actions: ['job_definitions:read'], scope: { workspaceIds: [workspaceId] },
@@ -207,6 +209,7 @@ export async function ciPreparationFixture(options: {
         worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
       }
       if (payload.operation === 'status' && statusDrops-- > 0) throw new DeviceConnectionError('transport')
+      if (payload.operation === 'source') calls.sourceChunks++
       const state = await worker.handle(payload)
       if (payload.operation === 'source' && payload.complete) {
         await options.pause?.('source-transfer')
@@ -236,6 +239,7 @@ export async function ciPreparationFixture(options: {
       await options.pause?.('source')
       return approved
     },
+    published: async () => options.published ?? false,
     sourcePackage: async () => {
       if (!options.source) throw new Error('This fixture has no source package.')
       return sourcePackageStream(options.source.manifest, options.source.store, AbortSignal.timeout(30_000))

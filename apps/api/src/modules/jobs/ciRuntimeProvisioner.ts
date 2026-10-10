@@ -34,7 +34,7 @@ export const BUILD_COMPUTER_PREPARE_ACTIONS = CI_PREPARATION_ACTIONS
 const PREPARE_LIMIT_MS = 3 * 60 * 60_000
 const stopped = () => new DomainError('CI_PREPARATION_STOPPED', 'Runtime preparation will resume on Main.', 503)
 type Profiles = Pick<JobRuntimeProfiles, 'list' | 'save' | 'requestQualification' | 'qualify'>
-type Sources = Pick<PostgresSourceService, 'approveProject' | 'rootList' | 'bindRoot' | 'sourcePackage'>
+type Sources = Pick<PostgresSourceService, 'approveProject' | 'rootList' | 'bindRoot' | 'sourcePackage' | 'published'>
 interface PreparationPorts {
   repository?: CiPreparationRepository
   acquire?: typeof JobOwnership.acquire
@@ -188,6 +188,7 @@ export class CiRuntimeProvisioner {
       if (['qualified', 'failed'].includes(record.status.state)) return
       await runCiPreparation(record, { profiles: this.profiles, sources: this.sources, principal, signal, checkpoint,
         repository: workspaceId => this.projectRepository(workspaceId), now: this.timing.now,
+        published: repository => this.sources.published(repository, record.manifest!.git!.commit, signal),
         deliverSource: repository => this.deliverSource(record, repository, principal, signal),
         wait: () => this.wait(signal), device: request => this.device(record, request, principal, signal),
         deviceImages: () => this.deviceImages(record.profile.root.selection.hostRef) })
