@@ -1850,9 +1850,9 @@ export class ApprovalExecutionCoordinator {
             const observed = new Promise<NativeSessionReference>((resolve, reject) => { resolveObserved = resolve; rejectObserved = reject })
             const opening = this.openingSession(ownedSession, observed)
             void opening.catch(() => undefined) // Joined by the existing owned-session lifecycle.
-            nativeTurnOffered = true
             nativeEvents = manager.startInitialTurnBatches(start, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              onTurnOffered: () => { nativeTurnOffered = true },
               onSessionObserved: async (native) => {
                 resolveObserved(native)
                 await publishObservedSession(await opening)
@@ -1861,9 +1861,9 @@ export class ApprovalExecutionCoordinator {
           } else {
             await publishObservedSession(await this.openingSession(ownedSession,
               timeRuntimeOperation('harness', 'native.create_session', () => manager!.createSession(start, signal))))
-            nativeTurnOffered = true
             nativeEvents = manager.startTurnBatches(session!, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              onTurnOffered: () => { nativeTurnOffered = true },
             }, signal)
           }
           for await (const events of nativeEvents) {
@@ -1978,7 +1978,8 @@ export class ApprovalExecutionCoordinator {
       const credential = manager && this.managerCredentials.get(manager)
       if (credential) knownSecrets.push(...Object.values(credential.environment.variables))
       const error = safeError(signal.aborted && signal.reason instanceof DomainError
-        && signal.reason.code === 'WORKER_CREDENTIAL_EXPIRING' ? signal.reason : rawError)
+        && ['WORKER_CREDENTIAL_EXPIRING', 'EXECUTION_ACTIVE_TIMEOUT'].includes(signal.reason.code)
+        ? signal.reason : rawError)
       // Codes only: provider messages may carry model content or secrets.
       componentLogger('engine').warn({ executionId: execution.id, aborted: signal.aborted,
         code: error instanceof DomainError ? error.code : rawError instanceof HarnessExecutionError
@@ -2033,7 +2034,14 @@ export class ApprovalExecutionCoordinator {
         if (error instanceof DomainError) code = error.code
         componentLogger('harness').warn({ executionId: execution.id, code, err: error },
           'Workflow native execution failed before cleanup')
-        await this.runs.requestCleanup(execution.runId, input.owner)
+        const failure = error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT'
+          ? { outcome: 'failed' as const, error: { code: error.code, message: error.message, retryable: false } }
+          : undefined
+        if (failure) {
+          await this.runs.requestCleanup(execution.runId, input.owner, failure, { executionId: execution.id })
+        } else {
+          await this.runs.requestCleanup(execution.runId, input.owner)
+        }
         if (ownedSession) {
           resolved?.markFailed?.()
           ownedSession.failed = true

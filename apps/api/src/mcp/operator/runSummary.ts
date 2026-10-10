@@ -18,8 +18,10 @@ export function compactRunDetails(details: SavedRunDetails) {
   return OperatorRunCompactSchema.parse({
     detail: 'compact',
     detailsOmitted: true,
-    run: OperatorRunSummarySchema.parse(details.run),
-    executions: details.executions.slice(-25).map(execution => OperatorExecutionSummarySchema.parse(execution)),
+    run: OperatorRunSummarySchema.parse({ ...details.run, failure: details.run.result?.error }),
+    executions: details.executions.slice(-25).map(execution => OperatorExecutionSummarySchema.parse({
+      ...execution, failure: execution.result?.error,
+    })),
     activities: recent.map(item => {
       let title: string = item.kind
       if ('title' in item) title = item.title

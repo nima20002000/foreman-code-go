@@ -29,6 +29,7 @@ import { ciRuntimeMainComputerMigration } from './ciRuntimeMainComputerMigration
 import { ciEnrollmentMigration } from './ciEnrollmentMigration.js'
 import { workflowFailureCauseMigration } from './workflowFailureCauseMigration.js'
 import { workflowJobAttemptIdentityMigration } from './workflowJobAttemptIdentityMigration.js'
+import { workflowExecutionFailureMigration } from './workflowExecutionFailureMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
 import { jobSourceCapacityWaitMigration } from './jobSourceCapacityWaitMigration.js'
@@ -888,6 +889,7 @@ export const migrations = [
   ciEnrollmentMigration,
   workflowFailureCauseMigration,
   workflowJobAttemptIdentityMigration,
+  workflowExecutionFailureMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

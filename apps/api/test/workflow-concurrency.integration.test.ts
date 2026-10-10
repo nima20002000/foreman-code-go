@@ -29,7 +29,7 @@ it('completes concurrent Runs of the same single Agent without sharing native ow
   }
 }, 90_000)
 
-it.each(['before turn', 'session reply'] as const)(
+it.each(['before turn', 'session reply', 'lane bind'] as const)(
   'closes a created session after a database failure at %s before offering a turn', async timing => {
     const f = await checkpointRuntimeFixture(1, 1, {
       fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'),
@@ -38,13 +38,17 @@ it.each(['before turn', 'session reply'] as const)(
     let sessionSaved = false
     const update = f.runs.updateExecution.bind(f.runs)
     const authorize = f.locations.revalidateRunAuthorization.bind(f.locations)
+    if (timing === 'lane bind') {
+      vi.spyOn(f.repository.coordination, 'bindLaneTurn').mockRejectedValueOnce(
+        Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }))
+    }
     vi.spyOn(f.runs, 'updateExecution').mockImplementation(async (...args) => {
       await update(...args)
       if (args[0].state === 'running') {
         if (timing === 'session reply') {
           throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
         }
-        sessionSaved = true
+        sessionSaved = timing === 'before turn'
       }
     })
     vi.spyOn(f.locations, 'revalidateRunAuthorization').mockImplementation(async (...args) => {

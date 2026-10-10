@@ -47,6 +47,7 @@ function scopeOf({ run }: AcceptedRepeatRunSnapshot): RepeatScope {
 function runSummary(snapshot: AcceptedRepeatRunSnapshot) {
   const { run } = snapshot
   return RunInspectionRunSchema.parse({ ...scopeOf(snapshot), executionState: run.executionState, outcome: run.outcome,
+    ...(run.result?.error ? { failure: run.result.error } : {}),
     createdAt: run.createdAt, ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
     ...(run.finishedAt === undefined ? {} : { finishedAt: run.finishedAt }),
     ...(run.stopCause === undefined ? {} : { stopCause: run.stopCause }), cleanupPending: snapshot.cleanupPending })
@@ -70,6 +71,7 @@ function summaryOf(stored: StoredInspectionExecution): RunExecutionSummary {
       ...(ref.occurrence ? { occurrence: ref.occurrence } : {}), acceptedResultAvailable: accepted })
   }
   return RunExecutionSummarySchema.parse({ ...repeatExecutionIdentity(stored.execution), state: stored.execution.state,
+    ...(stored.execution.result?.error ? { failure: stored.execution.result.error } : {}),
     createdAt: execution.createdAt, ...(execution.startedAt === undefined ? {} : { startedAt: execution.startedAt }),
     ...(execution.finishedAt === undefined ? {} : { finishedAt: execution.finishedAt }),
     ...(ref.occurrence ? { occurrence: ref.occurrence } : {}), acceptedResultAvailable: accepted })

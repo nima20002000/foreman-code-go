@@ -2,7 +2,7 @@ import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readSystemPromptSetting } from '../settings/foundation.js'
 import { readWorkflowJobSourceLocked } from '../jobs/workflowSource.js'
 import { z } from 'zod'
-import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
+import { AgentConfigurationVersionSchema, ExecutionResultSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
   type HarnessExecution, type HarnessExecutionContext } from '@foreman-code/contracts'
 import {
   AcceptedCurrentNodeResultSchema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
@@ -754,7 +754,11 @@ export class RepeatRunRepository {
           }
         })
       } else return repeatConflict('NATIVE_ENTRY_CONFLICT')
-      const result = canceled ? { outcome: 'canceled' as const } : { outcome: 'failed' as const,
+      const budget = (await context.sql.query<{ failure_result: unknown }>(
+        'select failure_result from approval_execution_state where execution_id=$1', [executionId])).rows[0]
+      const failure = budget?.failure_result ? ExecutionResultSchema.parse(budget.failure_result) : undefined
+      if (failure && failure.outcome !== 'failed') return repeatConflict('RUN_FAILURE_CAUSE_INVALID')
+      const result = canceled ? { outcome: 'canceled' as const } : failure ?? { outcome: 'failed' as const,
         error: { code: 'EXECUTION_INTERRUPTED', message: 'The native attempt was closed without an accepted result. It was not resubmitted.', retryable: false } }
       const next = HarnessExecutionSchema.parse({ ...stored.execution, state: 'completed', result, finishedAt: context.now })
       const source = { scope: context.scope, ref: stored.ref, previous: stored.execution, next,

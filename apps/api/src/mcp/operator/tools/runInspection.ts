@@ -50,7 +50,7 @@ export function registerRunInspectionTools(server: McpServer, context: OperatorR
     inputSchema: RunRecordGetInputSchema, outputSchema: RunRecordDetailSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.record, () => reads.record(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.executions)) server.registerTool(RUN_INSPECTION_TOOLS.executions, {
-    description: 'Read a bounded page of current V3 Run executions, optionally filtered by node and real repeat occurrence. Default 25, maximum 100; newest creation time then ID. Replay opaque cursors with unchanged scope/filters. Metadata only: no input/result/native bodies; use this, not aggregate run_get, for inspector refresh.',
+    description: 'Read a bounded page of current V3 Run executions, optionally filtered by node and real repeat occurrence. Default 25, maximum 100; newest creation time then ID. Replay opaque cursors with unchanged scope/filters. Includes recorded Run and execution failure codes and explanations, including EXECUTION_ACTIVE_TIMEOUT. Metadata only: no input/output/native bodies; use this, not aggregate run_get, for inspector refresh.',
     inputSchema: RunExecutionsListInputSchema, outputSchema: RunExecutionsPageSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.executions, () => reads.executions(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.execution)) server.registerTool(RUN_INSPECTION_TOOLS.execution, {

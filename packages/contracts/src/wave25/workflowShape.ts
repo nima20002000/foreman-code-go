@@ -66,7 +66,7 @@ export const ExecutionConditionSchema = z
   .strict();
 export type ExecutionCondition = z.infer<typeof ExecutionConditionSchema>;
 
-export const DEFAULT_AGENT_ACTIVE_TIMEOUT_MS = 300_000
+export const DEFAULT_AGENT_ACTIVE_TIMEOUT_MS = 6 * 60 * 60 * 1000
 export const MAX_AGENT_ACTIVE_TIMEOUT_MS = 2_147_483_647
 export const AgentActiveTimeoutMsSchema = z.number().int().positive().max(MAX_AGENT_ACTIVE_TIMEOUT_MS)
 

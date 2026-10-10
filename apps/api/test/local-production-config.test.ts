@@ -5,6 +5,10 @@ import { NativeRollout } from '../src/modules/harnesses/nativeRollout.js'
 const environment = { NODE_ENV: 'production', GRAPHQL_LOCAL_PRODUCTION: '1', HOST: '127.0.0.1',
   DATABASE_URL: 'postgresql://owner:password@127.0.0.1:55440/graphql_production' }
 
+it('defaults Agent active time to six hours', () => {
+  expect(loadConfig(environment).harnesses.timeoutMs).toBe(21_600_000)
+})
+
 it('validates supported production operator overrides and retains their effective values', () => {
   expect(loadConfig({ ...environment, CODEX_BINARY: '/opt/codex',
     HARNESS_TIMEOUT_MS: '600000', DATABASE_QUERY_TIMEOUT_MS: '2000' }))

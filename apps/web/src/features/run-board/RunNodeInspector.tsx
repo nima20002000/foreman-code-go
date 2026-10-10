@@ -47,6 +47,7 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
   const items = pages.data?.pages.flatMap(page => page.items) ?? []
   const invalid = node && items.some(item => !matchesNode(node, item))
   const unavailable = pages.isError || invalid
+  const runFailure = pages.data?.pages[0]?.run.failure
   return <section className="run-execution-inspector" aria-label={`Run node inspector: ${node?.name ?? nodeId}`}>
     <header><h2>{node?.name ?? nodeId}</h2><span>Read only</span>
       <Button size="sm" onClick={() => onInspect()}>Close inspector</Button></header>
@@ -54,13 +55,17 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
       <SelectedNodePlacement selection={selection} nodeId={node.id} />
       {unavailable ? <p role="status">{invalid ? 'Execution does not match this saved node.' : runReadErrorLabel(pages.error)}</p> : <>
         {pages.isPending ? <p role="status">Reading node executions…</p> : null}
+        {runFailure ? <p role="status">Run failed: {runFailure.message} <code>{runFailure.code}</code></p> : null}
         {!pages.isPending && !items.length ? <p>No execution recorded for this node yet.</p> : null}
         <ol>{items.map(execution => <li key={execution.executionId}>
           <Button size="sm" aria-pressed={executionId === execution.executionId}
             onClick={() => onInspect(node.id, execution.executionId)}>
             Attempt {execution.attempt} · {execution.executionId}
           </Button>
-          <p>Recorded state: {execution.state}</p><ExecutionBranch execution={execution} />
+          <p>Recorded state: {execution.state}</p>
+          {execution.failure ? <p role="status">Agent failed: {execution.failure.message}
+            {' '}<code>{execution.failure.code}</code></p> : null}
+          <ExecutionBranch execution={execution} />
         </li>)}</ol>
         {pages.hasNextPage ? <Button size="sm" disabled={pages.isFetching}
           onClick={() => void pages.fetchNextPage()}>Load more executions</Button> : null}

@@ -15,6 +15,22 @@ describe('workflow Agent active-time budget through authenticated MCP', () => {
   afterEach(async () => { await Promise.all(fixtures.splice(0).map((f) => f.app.close())) })
   afterAll(async () => { await db?.close() })
 
+  it('discovers the six-hour default without adding it to saved workflow facts', async () => {
+    const f = await writerFixture(db)
+    fixtures.push(f)
+    const capabilities = CurrentWorkflowCapabilitiesSchema.parse(graphRpcValue(
+      (await f.call(CURRENT_WORKFLOW_TOOLS.capabilities, {})).result))
+    expect(capabilities.agentActiveTimeBudget.defaultMs).toBe(21_600_000)
+    const saved = CurrentWorkflowSaveResultSchema.parse(graphRpcValue(
+      (await f.call(CURRENT_WORKFLOW_TOOLS.save, f.input)).result)).value
+    const read = CurrentWorkflowReadResultSchema.parse(graphRpcValue(
+      (await f.call(CURRENT_WORKFLOW_TOOLS.saved, {
+        workspaceId: f.input.workspaceId, workflowId: f.input.workflowId,
+      })).result))
+    expect(read.version).toEqual(saved.version)
+    expect(read.version.definition.executionPolicy).not.toHaveProperty('agentActiveTimeoutMs')
+  })
+
   it('discovers defaults, denies a reader, saves and resets an override, and preserves historical versions', async () => {
     const f = await writerFixture(db, 'sequential', { agentActiveTimeoutMs: 600_000 })
     fixtures.push(f)

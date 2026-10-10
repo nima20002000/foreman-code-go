@@ -331,6 +331,22 @@ it('opens accepted branch and execution facts from an Agent on the standard sele
   expect(screen.queryByRole('button', { name: /Save|Start|Request cancellation/ })).toBeNull()
 })
 
+it('shows an Agent active-time timeout in the Run inspector without expanding raw results', async () => {
+  const detail = await inspectorApi()
+  const failure = { code: 'EXECUTION_ACTIVE_TIMEOUT',
+    message: 'The execution exhausted its active-time budget.', retryable: false }
+  server.use(http.get(inspectionRoute, () => HttpResponse.json({
+    run: { ...detail.run, executionState: 'completed', outcome: 'failed', failure },
+    items: [{ ...detail.execution, state: 'completed', failure }], pageInfo: { nextCursor: null },
+  })))
+  await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  const inspector = await screen.findByRole('region', { name: 'Run node inspector: X before rename' })
+  expect(await within(inspector).findByText(/Agent failed: The execution exhausted its active-time budget/))
+    .toBeInTheDocument()
+  expect(within(inspector).getAllByText('EXECUTION_ACTIVE_TIMEOUT')).toHaveLength(2)
+})
+
 it('opens job-node logs, artifacts and verification through the persisted relationship without historical editing controls', async () => {
   const detail = await inspectorApi('job')
   const snapshot = { ...runA, nodes: [{ kind: 'job', id: 'build', name: 'Build',

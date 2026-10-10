@@ -295,7 +295,7 @@ export async function hasWorkDirectionWait(owner: RunOwnership): Promise<boolean
  * Ownerless calls are restricted to an already authorized Stop or terminal Run;
  * active-run cancellation must use its actual existing owner. */
 export async function requestWorkflowCleanup(pool: pg.Pool, runId: string, owner?: RunOwnership,
-  failure?: ExecutionResult): Promise<void> {
+  failure?: ExecutionResult, options?: { executionId: string }): Promise<void> {
   if (owner && owner.runId !== runId) return fail('RUN_OWNERSHIP_LOST')
   const result = failure ? ExecutionResultSchema.parse(failure) : null
   if (result && (!owner || result.outcome !== 'failed')) return fail('RUN_FAILURE_CAUSE_INVALID')
@@ -306,13 +306,28 @@ export async function requestWorkflowCleanup(pool: pg.Pool, runId: string, owner
     const failureResult = snapshot.stopRequested || snapshot.run.executionState === 'completed' ? null : result
     const prior = (await sql.query<{ failure_result: unknown }>(
       'select failure_result from run_cleanup_intents where run_id=$1', [runId])).rows[0]
-    if (snapshot.cleanupPending && (!failureResult || prior?.failure_result)) return
+    let executionFailureNeeded = false
+    if (failureResult && options) {
+      const budget = (await sql.query<{ failure_result: unknown }>(
+        `select b.failure_result from approval_execution_state b join harness_executions e on e.id=b.execution_id
+         where b.execution_id=$1 and e.run_id=$2`, [options.executionId, runId])).rows[0]
+      if (!budget) return fail('RUN_FAILURE_CAUSE_INVALID')
+      executionFailureNeeded = !budget.failure_result
+    }
+    if (snapshot.cleanupPending && (!failureResult || prior?.failure_result) && !executionFailureNeeded) return
     await lifecycleSource(publication, { kind: 'cleanup_requested', runId, failure: failureResult,
+      ...(executionFailureNeeded ? { executionId: options!.executionId } : {}),
       at: new Date().toISOString() }, async () => {
       await sql.query(`insert into run_cleanup_intents(run_id,failure_result) values($1,$2::jsonb)
         on conflict(run_id) do update set pending=true,updated_at=clock_timestamp(),
           failure_result=coalesce(run_cleanup_intents.failure_result,excluded.failure_result)`,
       [runId, failureResult ? canonicalGraphJson(failureResult) : null])
+      if (executionFailureNeeded) {
+        const changed = await sql.query(`update approval_execution_state
+          set failure_result=coalesce(failure_result,$2::jsonb) where execution_id=$1`,
+        [options!.executionId, canonicalGraphJson(failureResult)])
+        if (changed.rowCount !== 1) return fail('RUN_FAILURE_CAUSE_INVALID')
+      }
     })
   }
   if (owner) await owner.oneShotConnection().transaction(work)

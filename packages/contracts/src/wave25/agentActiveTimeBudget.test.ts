@@ -4,9 +4,16 @@ import { CurrentWorkflowSaveInputSchema } from './currentAuthoring.js'
 import { makeCurrentWorkflowFixture } from './currentFixture.js'
 import { sameExecutableWorkflow } from './meaningfulEdit.js'
 import { GraphDraftOperationV3Schema } from './currentBoardAuthoring.js'
+import { CURRENT_WORKFLOW_CAPABILITIES } from './currentAuthoring.js'
 
 describe('Agent active-time budget', () => {
   const policy = { maxParallelism: 2, maxNodeExecutions: 10 }
+  it('offers six hours per execution while excluding approval waits', () => {
+    expect(CURRENT_WORKFLOW_CAPABILITIES.agentActiveTimeBudget).toEqual({
+      defaultMs: 21_600_000, maximumMs: MAX_AGENT_ACTIVE_TIMEOUT_MS,
+      perExecution: true, approvalWaitExcluded: true,
+    })
+  })
   it('preserves omission instead of writing a default into saved facts', () => {
     expect(WorkflowExecutionPolicySchema.parse(policy)).toEqual(policy)
   })

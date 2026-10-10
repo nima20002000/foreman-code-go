@@ -6,7 +6,7 @@ import {
   AgentListInputSchema, RunListInputSchema, RunGetInputSchema,
 } from './management/index.js'
 import { SavedManagedWorkflowSchema, SavedRunDetailsSchema, WorkflowRunV3Schema } from './wave25/saved.js'
-import { HarnessExecutionSchema } from './index.js'
+import { ExecutionResultSchema, HarnessExecutionSchema } from './index.js'
 import { SourceListInputSchema, SourceListResultSchema, ApprovedSourceSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
@@ -32,11 +32,11 @@ export const OperatorSourceListResultSchema = z.union([
 export const OperatorRunGetInputSchema = RunGetInputSchema.extend({ detail })
 export const OperatorRunSummarySchema = z.object(WorkflowRunV3Schema.shape).omit({
   input: true, result: true, executionLocation: true, authorizationPrincipalId: true,
-})
+}).extend({ failure: ExecutionResultSchema.shape.error })
 export const OperatorExecutionSummarySchema = z.object(HarnessExecutionSchema.shape).pick({
   id: true, runId: true, workflowNodeId: true, agentId: true, agentConfigurationVersionId: true,
   attempt: true, state: true, createdAt: true, startedAt: true, finishedAt: true,
-})
+}).extend({ failure: ExecutionResultSchema.shape.error })
 export const OperatorActivitySummarySchema = z.object({
   id: z.string(), kind: z.string(), title: z.string().max(256), status: z.string().optional(),
   order: z.string(),
