@@ -13,7 +13,9 @@ import { RunInspectionService } from './inspection.js'
 import { RunActivitiesService } from './activities.js'
 import { RunHandoffReadService } from './handoffRead.js'
 import { readCurrentRunDetails, withCurrentRunRead } from './currentRead.js'
-import { readAcceptedRepeatRunLocked, readAcceptedRepeatRunSnapshot } from './repeatStartRead.js'
+import {
+  readAcceptedRepeatRunLocked, readAcceptedRepeatRunSnapshot, readRecordedRepeatRunSnapshot,
+} from './repeatStartRead.js'
 import { admitRepeatRun } from './repeatStartAdmission.js'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { intersectGrants } from '../access/operatorDelegation.js'
@@ -97,8 +99,11 @@ export class RunManagementService {
 
   async list(principal: ManagementPrincipal, input: RunListInput) {
     const page = await this.listPage(principal, input)
-    const items = await Promise.all(page.items.map(({ run }) => withCurrentRunRead(this.pool, principal,
-      run.workspaceId, run.id, 'runs:read', async (_sql, snapshot, live) => this.visibleRun(live, snapshot.run))))
+    // Listing committed facts must not queue behind lifecycle writers or credential cleanup.
+    const items = await Promise.all(page.items.map(({ run }) => withCurrentRunRead(
+      this.pool, principal, run.workspaceId, run.id, 'runs:read',
+      async (_sql, snapshot, live) => this.visibleRun(live, snapshot.run), readRecordedRepeatRunSnapshot,
+    )))
     requireRunListScope(principal, input)
     return { ...page, items }
   }

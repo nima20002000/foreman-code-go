@@ -16,18 +16,28 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
     super(approvalPool, approvalAccess, ttlMs)
   }
   private async subject(executionId: string) { return isCurrentApprovalRun(this.approvalPool, await runFor(this.approvalPool, 'execution', executionId)) }
-  private async locked<T>(executionId: string, work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  private async locked<T>(executionId: string, work: (client: pg.PoolClient) => Promise<T>,
+    lockWait: 'wait' | 'nowait' = 'wait'): Promise<T> {
     const client = await this.approvalPool.connect()
-    let broken = false, committing = false
+    let broken = false
+    let committing = false
     try {
       await client.query('begin')
       const runId = await runFor(client, 'execution', executionId)
-      await client.query('select id from runs where id=$1 for no key update', [runId])
-      await client.query('select id from harness_executions where id=$1 for update', [executionId])
+      const lock = lockWait === 'nowait' ? 'nowait' : ''
+      await client.query(`select id from runs where id=$1 for no key update ${lock}`, [runId])
+      await client.query(`select id from harness_executions where id=$1 for update ${lock}`, [executionId])
       if (await runFor(client, 'execution', executionId) !== runId) return fail('AUTH_REVOKED')
-      const value = await work(client); committing = true; await client.query('commit'); return value
-    } catch (error) { broken = committing; await client.query('rollback').catch(() => { broken = true }); throw error }
-    finally { client.release(broken) }
+      const value = await work(client)
+      committing = true
+      await client.query('commit')
+      return value
+    } catch (error) {
+      broken = committing
+      try { await client.query('rollback') }
+      catch { broken = true }
+      throw error
+    } finally { client.release(broken) }
   }
   private async issueV2(executionId: string, purpose: Purpose): Promise<IssuedWorkerCredential> {
     return this.locked(executionId, async (client) => {
@@ -102,22 +112,27 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
       where v.execution_semantics_version=3 and (b.revoked_at is null or p.revoked_at is null)
         and ($1::text is null or b.principal_id>$1) order by b.principal_id limit 100`, [this.sweepAfter])).rows
     for (const row of rows) {
-      await this.locked(row.execution_id, async (client) => {
-        await client.query('select id from management_principals where id=$1 for update', [row.principal_id])
-        await client.query('select principal_id from worker_credential_bindings where principal_id=$1 for update', [row.principal_id])
-        try { await assertWave25WorkerBinding(client, row.principal_id) }
-        catch (error) {
-          if (error instanceof Error && 'code' in error && error.code === 'REVIEWER_BINDING_REBIND_REQUIRED') return
-          if (!(error instanceof Error) || !('code' in error) || ![
-            'AUTH_REVOKED', 'REVIEWER_EXECUTION_NOT_READY', 'APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE',
-            'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED', 'APPROVAL_REVIEWER_APP_MCP_REQUIRED',
-          ].includes(String(error.code))) throw error
-          // Recheck and revoke under the same parent/principal/binding locks;
-          // never act on a stale sweep snapshot or on a database outage.
-          await client.query('update management_principals set revoked_at=coalesce(revoked_at,clock_timestamp()) where id=$1', [row.principal_id])
-          await client.query('update worker_credential_bindings set revoked_at=coalesce(revoked_at,clock_timestamp()) where principal_id=$1', [row.principal_id])
-        }
-      })
+      try {
+        await this.locked(row.execution_id, async (client) => {
+          await client.query('select id from management_principals where id=$1 for update nowait', [row.principal_id])
+          await client.query('select principal_id from worker_credential_bindings where principal_id=$1 for update nowait', [row.principal_id])
+          try { await assertWave25WorkerBinding(client, row.principal_id) }
+          catch (error) {
+            if (error instanceof Error && 'code' in error && error.code === 'REVIEWER_BINDING_REBIND_REQUIRED') return
+            if (!(error instanceof Error) || !('code' in error) || ![
+              'AUTH_REVOKED', 'REVIEWER_EXECUTION_NOT_READY', 'APPROVAL_REVIEWER_BOOTSTRAP_INTERACTIVE',
+              'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED', 'APPROVAL_REVIEWER_APP_MCP_REQUIRED',
+            ].includes(String(error.code))) throw error
+            // Recheck and revoke under the same parent/principal/binding locks;
+            // never act on a stale sweep snapshot or on a database outage.
+            await client.query('update management_principals set revoked_at=coalesce(revoked_at,clock_timestamp()) where id=$1', [row.principal_id])
+            await client.query('update worker_credential_bindings set revoked_at=coalesce(revoked_at,clock_timestamp()) where principal_id=$1', [row.principal_id])
+          }
+        }, 'nowait')
+      } catch (error) {
+        // Busy credentials remain persisted for the next sweep; authentication still validates them.
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === '55P03')) throw error
+      }
     }
     // Pagination position only, not permission/lease state. Restart scans safely.
     this.sweepAfter = rows.length === 100 ? rows.at(-1)!.principal_id : null

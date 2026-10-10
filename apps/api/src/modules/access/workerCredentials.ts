@@ -176,14 +176,16 @@ export class WorkerCredentialService {
     return result.rows[0].expires_at.toISOString()
   }
 
-  private async lockParents(client: pg.PoolClient, executionId: string): Promise<void> {
+  private async lockParents(client: pg.PoolClient, executionId: string,
+    lockWait: 'wait' | 'nowait' = 'wait'): Promise<void> {
     const found = await client.query<{ run_id: string }>(
       `select run_id from harness_executions where id=$1
        union select run_id from worker_credential_bindings where execution_id=$1`, [executionId],
     )
-    await client.query('select id from runs where id=any($1::text[]) order by id for update',
+    const lock = lockWait === 'nowait' ? 'nowait' : ''
+    await client.query(`select id from runs where id=any($1::text[]) order by id for update ${lock}`,
       [found.rows.map((row) => row.run_id).sort()])
-    await client.query('select id from harness_executions where id=$1 for update', [executionId])
+    await client.query(`select id from harness_executions where id=$1 for update ${lock}`, [executionId])
   }
 
   private async revokeIds(client: pg.PoolClient, principalIds: string[]): Promise<void> {
@@ -286,13 +288,21 @@ export class WorkerCredentialService {
     for (const row of pending.rows) {
       try {
         await this.transaction(async (client) => {
-          await this.lockParents(client, row.execution_id)
-          await client.query('select id from management_principals where id=$1 for update', [row.principal_id])
+          await this.lockParents(client, row.execution_id, 'nowait')
+          await client.query('select id from management_principals where id=$1 for update nowait', [row.principal_id])
+          await client.query(
+            'select principal_id from worker_credential_bindings where principal_id=$1 for update nowait',
+            [row.principal_id],
+          )
           // Recheck after locking. A stale sweep observation must not revoke a valid reviewer.
           const current = await client.query(`select b.principal_id ${ineligible} and b.principal_id=$1`, [row.principal_id])
           if (current.rowCount) await this.revokeIds(client, [row.principal_id])
         })
-      } catch (error) { failure ??= error }
+      } catch (error) {
+        // Contended rows are retried from persisted eligibility on the next sweep.
+        if (error && typeof error === 'object' && 'code' in error && error.code === '55P03') continue
+        failure ??= error
+      }
     }
     // Heal unbound worker principals left by the old non-atomic issuer as well.
     await this.pool.query(
