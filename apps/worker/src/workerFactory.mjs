@@ -6,7 +6,7 @@ import { codexQualificationSuite } from '../../../apps/api/src/modules/harnesses
 import { qualificationRevisionWithIdentity } from '../../../apps/api/src/modules/harnesses/qualification/identity.ts';
 import { loadApprovedRoots } from './approvedRoots.mjs';
 import { createWorkerExecutionDomains } from '../../../apps/api/src/modules/runs/remote/workerComposition.ts';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { loadOrCreateWorkerIdentity, loadWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { createWorkerConnection } from '../../../apps/api/src/modules/devices/workerConnection.ts';
 import { hostFacts, requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
@@ -64,6 +64,7 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
 // The package never manufactures dispatch handlers or another workflow authority.
 export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync }) {
   const manifest = await prepareWorkerState(stateDirectory);
+  stateDirectory = await realpath(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
   let installed, connection, rsyncEntrypoint, updater, managedSetup;
   const bindingDrains = new Set();

@@ -2,10 +2,10 @@ import { request as httpsRequest } from 'node:https';
 import { deviceTlsOptions } from '../../../packages/contracts/src/deviceTlsNode.ts';
 import { verifiedWorkerEnrollmentCode } from '../../../packages/contracts/src/deviceSetupNode.ts';
 import { randomBytes, sign } from 'node:crypto';
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { WorkerEnrollmentInputSchema, DevicePairingResultSchema } from '../../../packages/contracts/src/deviceIdentity.ts';
 import { pairingProof, verifyMainEnrollmentProof, persistWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
-import { WorkerError } from './diagnostics.mjs';
+import { requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
 import { ensurePairedManagedSetup } from './managedSetup.mjs';
 
 const retryHint = 'Keep the original state directory, identity, enrollment file and requestId. Retry the same pair command; do not create a new identity or requestId.';
@@ -120,6 +120,8 @@ export async function enrollWorkerCode({stateDirectory,identity,enrollmentCode,a
   return enrollWorkerInput({stateDirectory,identity,enrollment:code.enrollment,appVersion,post:post??(code.tlsTrust?scopedEnrollmentPost(code.tlsTrust):boundedPost),tlsTrust:code.tlsTrust,home});
 }
 async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,post,tlsTrust,home}) {
+  await requirePrivateDirectory(stateDirectory);
+  stateDirectory = await realpath(stateDirectory);
   const endpoint = new URL(enrollment.endpoint);
   if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.pathname !== '/device/connect' || endpoint.search || endpoint.hash) throw new WorkerError('enrollment_endpoint_invalid');
   const http = new URL(endpoint); http.protocol = 'https:';
