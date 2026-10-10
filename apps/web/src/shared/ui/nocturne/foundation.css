@@ -3,7 +3,7 @@
   --n-canvas: var(--canvas); --n-bg: var(--canvas); --n-sidebar: var(--sidebar); --n-surface: var(--surface); --n-raised: var(--surface-raised);
   --n-hover: var(--surface-hover); --n-border: var(--border); --n-border-strong: var(--border-strong); --n-control-border: var(--border-strong);
   --n-text: var(--text); --n-muted: var(--text-muted); --n-faint: var(--text-faint);
-  --n-accent: var(--accent); --n-accent-hover: var(--accent-hover); --n-accent-ink: var(--on-accent); --n-accent-subtle: var(--surface-selected);
+  --n-accent: var(--accent); --n-accent-hover: var(--accent-hover); --n-accent-ink: var(--on-accent); --n-accent-subtle: var(--accent-subtle);
   --n-success: var(--success); --n-success-subtle: var(--success-subtle); --n-warning: var(--warning); --n-warning-subtle: var(--warning-subtle);
   --n-danger: var(--danger); --n-danger-subtle: var(--danger-subtle); --n-info: var(--info); --n-info-subtle: var(--info-subtle); --n-focus: var(--focus);
   --n-radius-sm: var(--radius-sm); --n-radius: var(--radius-md); --n-radius-lg: var(--radius-lg);
@@ -44,8 +44,10 @@
 .n-button { display: inline-flex; min-height: 36px; min-width: 36px; align-items: center; justify-content: center; gap: 8px; padding: 7px 13px; border: 1px solid var(--n-border-strong); border-radius: var(--n-radius-sm); background: var(--n-raised); color: var(--n-text); font: 500 12px/1.5 var(--n-font); text-decoration: none; cursor: pointer; transition: background var(--n-fast), border-color var(--n-fast), box-shadow var(--n-fast); white-space: normal; }
 .n-button:hover:not(:disabled) { background: var(--n-hover); border-color: var(--n-control-border); }
 .n-button:active:not(:disabled) { box-shadow: inset 0 2px 3px #0004; }
-.n-button--primary { background: var(--n-accent); color: var(--n-accent-ink); border-color: var(--n-accent); font-weight: 600; }
-.n-button--primary:hover:not(:disabled) { background: var(--n-accent-hover); border-color: var(--n-accent-hover); }
+.n-button--primary { background: linear-gradient(135deg, var(--n-accent-hover), var(--n-accent) 55%, color-mix(in srgb, var(--n-accent) 70%, var(--info))); color: var(--n-accent-ink); border-color: var(--n-accent); font-weight: 600;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--n-accent) 30%, transparent), 0 4px 14px color-mix(in srgb, var(--n-accent) 28%, transparent); }
+.n-button--primary:hover:not(:disabled) { background: var(--n-accent-hover); border-color: var(--n-accent-hover);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--n-accent) 40%, transparent), 0 6px 20px color-mix(in srgb, var(--n-accent) 38%, transparent); }
 .n-button--ghost { border-color: transparent; background: transparent; color: var(--n-muted); }
 .n-button--ghost:hover:not(:disabled) { border-color: transparent; color: var(--n-text); }
 .n-button--danger { color: var(--n-danger); background: var(--n-danger-subtle); border-color: var(--danger-border); }
@@ -130,7 +132,7 @@
 .n-nav-item { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 8px 11px; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--n-muted) !important; text-decoration: none; font-size: 12px; font-weight: 400; }
 .n-nav-item > span:not(.n-count) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .n-nav-item:hover { color: var(--n-text) !important; background: var(--n-raised); }
-.n-nav-item[aria-current='page'] { background: var(--n-accent-subtle); color: var(--n-text) !important; border-color: var(--border-strong); font-weight: 500; }
+.n-nav-item[aria-current='page'] { background: var(--n-accent-subtle); color: var(--n-text) !important; border-color: color-mix(in srgb, var(--n-accent) 45%, transparent); box-shadow: inset 3px 0 0 var(--n-accent); font-weight: 500; }
 .n-nav-item[aria-current='page'] > svg { color: var(--n-accent); }
 .n-accordion { border: 1px solid var(--n-border); border-radius: var(--n-radius); }
 .n-accordion details + details { border-top: 1px solid var(--n-border); }
@@ -305,6 +307,7 @@ button.n-node:disabled { opacity: .5; cursor: not-allowed; }
 .n-node > .n-progress > .n-between { display: none; }
 .n-node[data-harness] { --n-harness: var(--harness-neutral); }
 .n-node[data-harness='codex'] { --n-harness: var(--harness-codex); }
+.n-node[data-harness='claude'] { --n-harness: var(--harness-claude); }
 .n-node[data-harness]::before { content: ''; position: absolute; inset: -1px auto -1px -1px; width: 3px; border-radius: var(--radius-md) 0 0 var(--radius-md); background: var(--n-harness); pointer-events: none; }
 .n-approval { padding: 19px; border: 1px solid var(--warning); border-radius: var(--radius-md); background: var(--n-surface); }
 .n-approval > header { display: flex; gap: 11px; align-items: center; }

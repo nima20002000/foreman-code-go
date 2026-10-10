@@ -68,7 +68,8 @@ body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
-  background: var(--color-canvas);
+  background: var(--canvas-glow, none), var(--color-canvas);
+  background-attachment: fixed;
 }
 
 button,
@@ -133,7 +134,7 @@ h1 {
   grid-template-rows: minmax(0, 1fr);
   /* Clip without creating a scroll container that would trap the sticky sidebar. */
   overflow: clip;
-  background: var(--color-canvas);
+  background: var(--canvas-glow, none), var(--color-canvas);
 }
 
 .workspace-shell-navigation-collapsed {
