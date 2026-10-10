@@ -611,6 +611,12 @@ export const NativeSessionReferenceSchema = z.object({
   nativeSessionId: IdSchema,
 }).strict();
 export type NativeSessionReference = z.infer<typeof NativeSessionReferenceSchema>;
+export const WorkflowSessionContinuationSchema = z.object({
+  previousExecutionId: IdSchema,
+  session: NativeSessionReferenceSchema,
+  previousOperationId: IdSchema.optional(),
+}).strict();
+export type WorkflowSessionContinuation = z.infer<typeof WorkflowSessionContinuationSchema>;
 const NativeInteractionIdentitySchema = z.object({
   nativeTurnId: IdSchema.optional(),
   nativeMessageId: IdSchema.optional(),
@@ -941,6 +947,7 @@ export const HarnessExecutionSchema = z
     systemPrompt: PromptSettingSnapshotSchema.optional(),
     parallelGroupId: IdSchema.optional(),
     nativeSessionId: IdSchema.optional(),
+    sessionContinuation: WorkflowSessionContinuationSchema.optional(),
     /** User project directory selected on the Run. Optional only for legacy history. */
     workingDirectory: z.string().min(1).optional(),
     /** Foreman Code-owned attempt storage, always separate from workingDirectory. */
@@ -954,6 +961,11 @@ export const HarnessExecutionSchema = z
   })
   .strict()
   .superRefine((execution, context) => {
+    if (execution.sessionContinuation && (execution.sessionContinuation.previousExecutionId === execution.id
+      || execution.nativeSessionId !== undefined
+        && execution.nativeSessionId !== execution.sessionContinuation.session.nativeSessionId)) {
+      context.addIssue({ code: 'custom', path: ['sessionContinuation'], message: 'Invalid session continuation.' });
+    }
     if (execution.state === "completed" && (!execution.result || !execution.finishedAt)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

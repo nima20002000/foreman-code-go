@@ -73,6 +73,7 @@ interface ExecutionRow {
   execution_occurrence_id: string | null; record_id: string; record_run_id: string; record_node_id: string;
   record_agent_id: string; record_configuration_id: string; record_attempt: number;
   state: string; result_outcome: string | null; slot_run_id: string; slot_occurrence_id: string | null;
+  continued_from_execution_id: string | null;
   slot_node_id: string; input_digest: string; occurrence: unknown;
 }
 /** Whitelisted SQL expressions: never select input_json, result_json, an entire
@@ -83,6 +84,7 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
   if (executionIds && executionIds.length > REPEAT_GRAPH_LIMITS.executions) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const rows = await sql.query<ExecutionRow>(`select x.execution_id,x.run_id,x.slot_id,x.occurrence_id,x.technical_attempt,
       x.work_activation_id,
+      e.record#>>'{sessionContinuation,previousExecutionId}' as continued_from_execution_id,
       x.previous_execution_id,x.identity,e.run_id as execution_run_id,e.workflow_node_id as execution_node_id,
       e.agent_id as execution_agent_id,e.attempt as execution_attempt,e.repeat_occurrence_id as execution_occurrence_id,
       e.work_activation_id as native_work_activation_id,
@@ -116,6 +118,7 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
         ? workActivationSlotId(scope.runId, row.work_activation_id)
         : repeatSlotId(scope.runId, { nodeId: identity.workflowNodeId, occurrence }))) return conflict()
     return RepeatGraphExecutionV3Schema.parse({ identity, inputDigest: row.input_digest,
+      ...(row.continued_from_execution_id ? { continuedFromExecutionId: row.continued_from_execution_id } : {}),
       ...(row.work_activation_id ? { workActivationId: row.work_activation_id } : {}),
       previousExecutionId: row.previous_execution_id, state: row.state, resultOutcome: row.result_outcome })
   })

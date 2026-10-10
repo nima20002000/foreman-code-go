@@ -12,6 +12,41 @@ import { saveClaudeCompactionResult } from './compactionResults.js'
 import { scope, qualification, start, fixture, workflowRequest, deferred, drain } from './__tests__/sessionManager.js'
 
 describe('Claude native session manager admission', () => {
+  it.each([false, true])('resumes workflow history before the reactivation turn (inspected=%s)', async inspected => {
+    const f = fixture()
+    const session = { harness: 'claude' as const, providerVersion: '2.1.284', nativeSessionId: 'native-session' }
+    const acceptedStart = { kind: 'workflow' as const, request: workflowRequest(), correlationId: 'execution:reactivated' }
+    let frames = f.frames
+    let nextMessage = f.nextMessage
+    try {
+      if (inspected) {
+        await f.manager.prepareInspection(acceptedStart)
+        frames = new ClaudeBoundedQueue<unknown>(8)
+        let messages!: AsyncIterator<ClaudeSdkUserMessage>
+        f.client.query = input => {
+          f.queries(input)
+          messages = input.prompt[Symbol.asyncIterator]()
+          return { [Symbol.asyncIterator]: () => frames[Symbol.asyncIterator](), interrupt: async () => {},
+            initializationResult: async () => ({ models: [], account: {} }), mcpServerStatus: f.statuses,
+            close: () => frames.close() }
+        }
+        nextMessage = async () => (await messages.next()).value!
+      }
+      const resumed = await f.manager.createSession({ ...acceptedStart,
+        sessionContinuation: { previousExecutionId: 'previous', session } })
+      expect(resumed).toEqual(session)
+      expect(f.queries.mock.calls.at(-1)?.[0].options.resume).toBe(session.nativeSessionId)
+      const output = drain(f.manager.startTurn(session,
+        { prompt: 'Address the review feedback', clientCorrelationId: 'execution:reactivated' }))
+      const message = await nextMessage()
+      await frames.offer({ type: 'assistant', session_id: session.nativeSessionId,
+        uuid: 'reply', user_message_uuid: message.uuid })
+      await frames.offer({ type: 'result', session_id: session.nativeSessionId,
+        uuid: 'result', user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'revised' })
+      await output
+      expect((await f.manager.reconcile(session, 'execution:reactivated')).terminalResult?.output).toBe('revised')
+    } finally { await f.manager.dispose?.() }
+  })
   it.each(['DATABASE_URL', 'TEST_DATABASE_URL', 'PGPASSWORD', 'GRAPHQL_PRODUCTION_DB_PASSWORD',
     'FOREMAN_CODE_PRODUCTION_DB_PASSWORD'])(
     'rejects scoped %s before SDK inspection or resume', async key => {

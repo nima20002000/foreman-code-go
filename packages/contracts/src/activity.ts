@@ -33,6 +33,7 @@ export const WorkSummarySchema = z.object({
   delivery: z.enum(['queued', 'submitting', 'accepted', 'completed', 'failed', 'canceled', 'unknown']).nullable(),
   evidence: z.enum(['confirmed', 'reconciling', 'unknown']), startedAt: timestamp.nullable(),
   native: ActivityNativeIdentitySchema.optional(),
+  continuedFromExecutionId: id.optional(),
 }).strict()
 export type WorkSummary = z.infer<typeof WorkSummarySchema>
 export const ActivitySourceSchema = z.object({ schemaVersion: z.literal(1), system: id, eventId: id.optional(), sequence: ActivityRevisionSchema.optional(), observedAt: timestamp.nullable() }).strict()

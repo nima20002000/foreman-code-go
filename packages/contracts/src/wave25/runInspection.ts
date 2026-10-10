@@ -62,6 +62,7 @@ export const RunInspectionRunSchema = CurrentRunScopeSchema.extend({
 }).strict()
 export const RunExecutionSummarySchema = extendGraphExecutionIdentitySchema({
   state: HarnessExecutionStateSchema,
+  continuedFromExecutionId: GraphIdSchema.optional(),
   failure: ExecutionResultSchema.shape.error,
   createdAt: TimestampSchema, startedAt: TimestampSchema.optional(), finishedAt: TimestampSchema.optional(),
   /** Omitted outside a REAL configured repeat occurrence; attempt is not occurrenceIndex. */

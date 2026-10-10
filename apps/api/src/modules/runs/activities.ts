@@ -33,6 +33,7 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
   case when a.kind in ('result_recorded','work_result_accepted','work_needs_direction')
     then e.record->'result' end as work_result,
   jsonb_strip_nulls(jsonb_build_object(
+    'continuedFromExecutionId',e.record#>>'{sessionContinuation,previousExecutionId}',
     'executionState',a.payload->>'executionState','state',a.payload->>'state',
     'status',a.payload->>'status','deliveryState',a.payload->>'deliveryState',
     'selectedSemantic',a.payload->>'selectedSemantic',

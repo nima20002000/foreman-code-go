@@ -1,4 +1,4 @@
-import { sessionStartDirectory, sessionStartOwner, sessionStartCorrelation, sessionStartConfiguration,
+import { isWorkflowStart, sessionStartDirectory, sessionStartOwner, sessionStartCorrelation, sessionStartConfiguration,
   sessionStartSystemPrompt } from '../sessionStart.js'
 import { claudeCompactionResultMatches } from './compactionResults.js'
 import { recoveredClaudeCompaction } from './compactionHistory.js'
@@ -1002,7 +1002,11 @@ export function createClaudeNativeSessionManager(options: {
       if (runtime.closed || disposed) throw new HarnessExecutionError('CLAUDE_INSPECTION_CLOSED', 'The owned SDK query closed during inspection.')
       return claudeMcpDetection(decodeClaudeMcpControl(rows, runtime.generation, now(), inspectionCredentials(runtime)), expectedMcp)
     },
-    async createSession() {
+    async createSession(start, signal) {
+      if (isWorkflowStart(start) && start.sessionContinuation) {
+        const { sessionContinuation, ...acceptedStart } = start
+        return manager.attachSession(sessionContinuation.session, acceptedStart, signal)
+      }
       throw new HarnessExecutionError('CLAUDE_INITIAL_TURN_REQUIRED', 'Claude reports a native session only after first input; use the admitted atomic initial-turn lifecycle.')
     },
     startInitialTurn(start, input, signal) {

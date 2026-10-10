@@ -161,12 +161,14 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const fromRelationship = id(payload.fromRelationshipId)
   const requesterNode = id(payload.requesterNodeId)
   const destinationNode = id(payload.destinationNodeId)
+  const continuedFromExecutionId = id(payload.continuedFromExecutionId)
   const refs = {
     ...(row.ci_ticket_id && row.ci_execution_id ? { jobExecutionId: row.ci_execution_id,
       jobAttemptId: id(row.ci_attempt_id), jobOperationId: id(row.ci_operation_id) } : {}),
     ...(jobActor ? { executionId: row.job_execution_id, jobExecutionId: row.job_execution_id,
       jobAttemptId: id(row.job_attempt_id), jobOperationId: id(row.job_operation_id), nodeExecutionId: row.node_execution_id } : {}),
     ...(!jobActor && row.harness_execution_id && row.execution_node_id ? { executionId: row.harness_execution_id } : {}),
+    ...(continuedFromExecutionId ? { continuedFromExecutionId } : {}),
     ...(id(row.work_activation_id ?? payload.activationId) ? { activationId: id(row.work_activation_id ?? payload.activationId) } : {}),
     ...(id(payload.requestId) ? { requestId: id(payload.requestId) } : {}),
     ...(id(payload.returnId) ? { returnId: id(payload.returnId) } : {}),

@@ -22,6 +22,7 @@ export function compactRunDetails(details: SavedRunDetails) {
     run: OperatorRunSummarySchema.parse({ ...details.run, failure: details.run.result?.error }),
     executions: details.executions.slice(-25).map(execution => OperatorExecutionSummarySchema.parse({
       ...execution, failure: execution.result?.error,
+      continuedFromExecutionId: execution.sessionContinuation?.previousExecutionId,
     })),
     activities: recent.map(item => {
       let title: string = item.kind
