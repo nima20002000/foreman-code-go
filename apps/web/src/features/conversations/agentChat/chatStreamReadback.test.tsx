@@ -50,7 +50,7 @@ it('keeps one stream for scalar-equivalent Board contexts and replaces it when t
 })
 
 it('accepts a slow state read during activity traffic and coalesces one trailing read', async () => {
-  const { initial, mounted, source } = await openChat()
+  const { initial, source } = await openChat()
   const first = deferred<void>()
   const trailing = deferred<void>()
   releases.push(() => first.resolve(), () => trailing.resolve())
