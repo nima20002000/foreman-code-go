@@ -40,6 +40,10 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       'An accepted return approves the deliverable. Any remaining findings are preserved for direction and do not automatically reactivate the requester. Use needs_changes to request another revision.',
       'To finish this activation, use {"kind":"finish"}; on a choice node this ends the branch without selecting a downstream route. Include a declared outcome to select a final downstream branch. Include unresolved findings honestly.',
       'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
+      'remainingFindings lists unresolved task requirements, defects, or blockers that need further work or owner direction. Use [] when the assigned work is complete.',
+      'Finishing or returning accepted with non-empty remainingFindings makes the Run wait for owner direction; it does not mean successful completion of the workflow.',
+      'Put verification status, tests not run, intentionally deferred checks assigned to another lane, and handoff notes in latestDeliverable. They are remainingFindings only when they leave an assigned task requirement unresolved.',
+      'If the requested change is already implemented, report its existing commit and verification status in latestDeliverable; do not invent a finding or create a redundant commit merely to report completion.',
       ...(saved ? [
         `Required saved output keys: ${JSON.stringify(saved.outputKeys)}`,
         'artifactOutputs has exactly version: 1 and outputs: an array containing each required key exactly once.',

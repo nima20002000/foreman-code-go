@@ -104,6 +104,18 @@ describe('BR1-007: immutable finite choices reach the actual request builder', (
       .toMatch(/^Check the implementation\.\n\nForeman Code finite-choice/)
     expect(declaration).toEqual(before)
   })
+  it('explains direction waits and separates deferred verification from unresolved task work', () => {
+    const node = { initialPrompt: 'Implement the fix. Do not run tests; another lane verifies it.' }
+    const before = structuredClone(node)
+    const prompt = currentInitialPrompt(node, false, true)!
+    expect(prompt.startsWith(`${node.initialPrompt}\n\n`)).toBe(true)
+    expect(prompt).toContain('Use [] when the assigned work is complete.')
+    expect(prompt).toContain('non-empty remainingFindings makes the Run wait for owner direction')
+    expect(prompt).toContain('intentionally deferred checks assigned to another lane')
+    expect(prompt).toContain('They are remainingFindings only when they leave an assigned task requirement unresolved.')
+    expect(prompt).toContain('report its existing commit and verification status in latestDeliverable')
+    expect(node).toEqual(before)
+  })
   it('keeps the derived instruction bounded at the schema maximum', () => {
     const declaration: WorkflowChoice = { outcomes: Array.from({ length: 16 }, (_, index) => ({
       outcome: `o${index.toString().padStart(2, '0')}${'x'.repeat(45)}`, target: { kind: 'branch_end' as const },
