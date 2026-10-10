@@ -516,6 +516,21 @@ export async function remoteReviewProduction(options: {
       hostRef: executionHostRef, profiles, version, startupCatalog,
       start, call, value, details, reconcile, registry, close, origin: () => origin,
       failures: () => structuredClone(failures),
+      async workerWorkflowStartup() {
+        const journal = JSON.parse(await readFile(join(stateDirectory, 'workflow-operations.json'), 'utf8')) as {
+          receipts: unknown[]
+        }
+        return journal.receipts.flatMap(raw => {
+          const parsed = RemoteOperationReceiptSchema.safeParse(raw)
+          if (!parsed.success) return []
+          const receipt = parsed.data
+          return [{ executionId: receipt.intent.executionId, operationId: receipt.intent.operationId,
+            phase: receipt.phase, sequence: receipt.sequence, entryAttempted: receipt.entryAttempted,
+            turnEntryAttempted: receipt.turnEntryAttempted, stopFence: receipt.stopFence,
+            sessionId: receipt.native?.sessionId, turnId: receipt.native?.turnId,
+            terminal: receipt.terminal?.kind }]
+        })
+      },
       entryCapture: (operationId: string) => new InstalledWorkflowRecovery(
         join(stateDirectory, 'workflow-recovery'), registry).readEntry(operationId),
       workerPid: () => worker?.pid,

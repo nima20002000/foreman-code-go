@@ -10,7 +10,12 @@ const root = process.argv[2]
 const args = process.argv.slice(3)
 const executableSha256 = createHash('sha256').update(readFileSync(join(root, 'codex'))).digest('hex')
 const settings = JSON.parse(readFileSync(join(root, 'settings.json'), 'utf8'))
-const log = value => appendFileSync(join(root, 'calls.jsonl'), `${JSON.stringify(value)}\n`)
+const startup = value => appendFileSync(join(root, 'startup.jsonl'),
+  `${JSON.stringify({ occurredAt: new Date().toISOString(), ...value })}\n`)
+const log = value => {
+  appendFileSync(join(root, 'calls.jsonl'), `${JSON.stringify(value)}\n`)
+  if (value.nativeStarted || value.method || value.workflowTurn || value.workflowCompleted) startup(value)
+}
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`)
 const reply = (id, result) => send({ id, result })
 const notify = (method, params) => send({ method, params })
@@ -20,6 +25,7 @@ const mcp = {
   name: mcpName, enabled: !disabled, required: true,
   transport: { type: 'stdio', command: process.execPath, args: [settings.launcher], env_vars: ['FOREMAN_CODE_MCP_TOKEN'] },
 }
+startup({ nativeCommand: { pid: process.pid, command: args[0] ?? null, subcommand: args[1] ?? null } })
 
 if (args[0] === '--version') {
   process.stdout.write('codex-cli 0.154.0\n')

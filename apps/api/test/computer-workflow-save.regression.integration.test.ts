@@ -56,7 +56,8 @@ it('saves a completed computer workflow using each accepted native directory and
   } catch (error) {
     console.error('Computer workflow failure codes', fixture.failures())
     console.error('Computer workflow executions', (await fixture.db.pool.query(`select id,record->>'state' as state,
-      record->'error' as error from harness_executions order by id`)).rows)
+      record->'error' as error,record->>'startedAt' as started_at,record->>'finishedAt' as finished_at
+      from harness_executions order by id`)).rows)
     console.error('Computer workflow cleanup', (await fixture.db.pool.query(`select r.id,r.execution_state,
       r.record->>'outcome' as outcome,
       exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending
@@ -64,6 +65,16 @@ it('saves a completed computer workflow using each accepted native directory and
     console.error('Computer workflow remote receipts', (await fixture.db.pool.query(`select
       receipt->'intent'->>'executionId' as execution_id,receipt->>'phase' as phase,
       receipt->'terminal' as terminal from remote_execution_receipts`)).rows)
+    try {
+      console.error('Computer workflow Worker startup', await fixture.workerWorkflowStartup())
+    } catch (diagnosticError) {
+      console.error('Computer workflow Worker startup diagnostics unavailable', diagnosticError)
+    }
+    try {
+      console.error('Computer workflow recent provider activity', (await fixture.provider.startupActivity()).slice(-40))
+    } catch (diagnosticError) {
+      console.error('Computer workflow provider startup diagnostics unavailable', diagnosticError)
+    }
     throw error
   } finally { await fixture.close() }
 }, 240_000)

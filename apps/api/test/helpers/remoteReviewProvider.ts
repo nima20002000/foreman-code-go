@@ -50,6 +50,15 @@ int main(int argc, char **argv) {
     join(directory, 'experimental', 'codex_app_server_protocol.schemas.json')]
   const originalBinary = await readFile(binary)
   const originalScript = await readFile(script, 'utf8')
+  const readActivity = async (filename: string): Promise<Array<Record<string, unknown>>> => {
+    try {
+      const contents = await readFile(join(directory, filename), 'utf8')
+      return contents.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+  }
   return { directory, binary, payloadPaths,
     removePayload: () => rename(binary, join(directory, 'codex-unavailable')),
     async restorePayload() {
@@ -73,15 +82,8 @@ int main(int argc, char **argv) {
     releaseModels: () => rm(join(directory, 'block-models')),
     blockQualification: () => writeFile(join(directory, 'block-qualification'), '', { mode: 0o600 }),
     releaseQualification: () => rm(join(directory, 'block-qualification')),
-    async calls(): Promise<Array<Record<string, unknown>>> {
-      try {
-        const contents = await readFile(join(directory, 'calls.jsonl'), 'utf8')
-        return contents.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-        throw error
-      }
-    },
+    calls: () => readActivity('calls.jsonl'),
+    startupActivity: () => readActivity('startup.jsonl'),
     releaseReview: () => writeFile(join(directory, 'release-review'), '', { mode: 0o600 }),
     blockWorkflowTurns: () => writeFile(join(directory, 'block-workflow-turns'), '', { mode: 0o600 }),
     releaseWorkflowTurns: () => rm(join(directory, 'block-workflow-turns')),

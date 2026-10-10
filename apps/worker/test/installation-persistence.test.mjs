@@ -100,7 +100,8 @@ for (const updating of [false, true]) {
           if (published) {
             const current = await readInstalledRelease(f);
             await assertFiles(current);
-            assert(['1.0.0', '1.1.0'].includes(current.manifest.version));
+            assert(['1.0.0', '1.1.0'].includes(current.manifest.version),
+              `Unexpected current version ${current.manifest.version} at ${snapshot.label}`);
             if (snapshot === recording.snapshots.at(-1)) assert.equal(current.manifest.version, '1.1.0');
           }
           const previous = await retained(f.root);
@@ -120,6 +121,39 @@ for (const updating of [false, true]) {
       }
     });
 }
+
+test('power-cut snapshots preserve an updated current when a removed symlink inode is reused', async t => {
+  const f = await fixture(t);
+  await installVersion({ ...f, ...await artifact(join(f.directory, 'retained'), '0.9.0') });
+  await installVersion({ ...f, ...await artifact(join(f.directory, 'first'), '1.0.0'),
+    updatePolicy: async () => true });
+  const incoming = await artifact(join(f.directory, 'incoming'), '1.1.0');
+  const incomingTarget = `versions/1.1.0-${incoming.approvedManifestSha256}`;
+  const replaced = await fs.lstat(join(f.root, 'previous'));
+  const lstat = fs.lstat;
+  const mocked = t.mock.method(fs, 'lstat', async (path, ...args) => {
+    const info = await lstat(path, ...args);
+    if (path === join(f.root, 'current') && await readlink(path) === incomingTarget) {
+      info.ino = replaced.ino;
+    }
+    return info;
+  });
+  const recording = await recordPersistence(t, f.root);
+  try {
+    await installVersion({ ...f, ...incoming, updatePolicy: async () => true });
+  } finally {
+    recording.stop();
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
+  await recording.reboot(recording.snapshots.at(-1));
+  const current = await readInstalledRelease(f);
+  assert.equal(current.manifest.version, '1.1.0');
+  await assertFiles(current);
+  const previous = await readRetainedRelease(f.root);
+  assert.equal(previous.manifest.version, '1.0.0');
+  await assertFiles(previous);
+});
 
 test('creating nested installation roots persists the root before publishing current', async t => {
   const f = await fixture(t);

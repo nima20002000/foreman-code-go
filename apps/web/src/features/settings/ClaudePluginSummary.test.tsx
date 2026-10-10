@@ -34,13 +34,15 @@ it('reads the real client boundary, keeps discovery in the URL, and drafts chang
   }))
   const router = mount()
   const user = userEvent.setup()
+  // App connection and harness defaults load before the plugin catalog can mount.
+  expect(await screen.findByText('1 installed plugins', {}, { timeout: 10_000 })).toBeVisible()
   expect(await screen.findByRole('button', { name: 'Ask Operator to manage notes' })).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Discover' }))
   await waitFor(() => expect(router.state.location.search).toMatchObject({ pluginView: 'available' }))
   await user.click(await screen.findByRole('button', { name: 'Ask Operator to install notes' }))
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Claude plugins' })).not.toBeInTheDocument())
   expect(await screen.findByPlaceholderText('Message the operator…')).toHaveValue('Install the Claude Code plugin notes@official. ')
-})
+}, 20_000)
 it('shows access failures without plugin data or edit controls for a plugin', async () => {
   server.use(http.get('/api/management/harnesses/claude/plugins', () => HttpResponse.json({
     error: { code: 'ACCESS_DENIED', message: 'Plugin access denied.' },

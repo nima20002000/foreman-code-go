@@ -2,11 +2,10 @@ import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, relative, isAbsolute, sep } from 'node:path';
 
-const disk = { ...fs };
-
 // A reboot keeps flushed file contents and flushed directory entries separately.
 // The real filesystem still performs every install operation and recovery read.
 export async function recordPersistence(t, root) {
+  const disk = { ...fs };
   const persisted = new Map();
   const snapshots = [];
   const rootId = String((await disk.lstat(root)).ino);
@@ -23,6 +22,8 @@ export async function recordPersistence(t, root) {
     if (info.isSymbolicLink()) {
       node.kind = 'link';
       node.target = await disk.readlink(path);
+      // Symlink targets are immutable; a reused inode can belong to a different link.
+      node.id = `${id}:${node.target}`;
     }
     return node;
   }

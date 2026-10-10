@@ -55,8 +55,10 @@ it('does not treat request resolution or a canceled turn as consumed user input'
   const pending = await until(async () => manager.pending(session))
   const option = withInteractionResponse(pending.responseOptions[0]!, { answer: { answers: ['Entered'] } })
   const response = manager.respond(session, pending.turn.nativeRequestId!, option)
-  await manager.cancel(session)
-  await expect(response).rejects.toThrow('cleared')
+  await Promise.all([
+    expect(response).rejects.toThrow('cleared'),
+    manager.cancel(session),
+  ])
   expect((await manager.history(session)).responseDeliveries).toEqual([])
   await stream.return?.()
 })
