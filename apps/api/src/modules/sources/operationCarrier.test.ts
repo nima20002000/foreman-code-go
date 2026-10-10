@@ -131,14 +131,14 @@ it('keeps a Worker retained-tree measurement bound to the original materializati
       sharedTree: { id: treeId, referenceIdentity: f.record.receipt.binding.filesystem } } })
   const payload = { version: 1, operation: 'sources.release', materializationId: record.receipt.materializationId,
     operationId: record.operationId, released: true, retainedBytes: 2 * 1024 * 1024 * 1024,
-    sharedTree: { id: treeId, bytes: 4096 } }
+    sharedTree: { id: treeId, bytes: 4096 }, worktree: { state: 'retained' as const, message: 'Uncommitted changes remain.' } }
   const identity: DeviceConnectionIdentity & { connectionEpoch?: string } = { ...f.binding }
   delete identity.connectionEpoch
   const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity,
     request: async () => ({ payload }) }) },
   { prepareIdentity: async () => { throw new Error('No preparation') }, resolve: async () => ({ root: f.root }) as never },
   { send: async () => { throw new Error('No transfer') } })
-  expect(await host.releaseClaim(record)).toEqual({ retainedBytes: payload.retainedBytes, sharedTree: payload.sharedTree })
+  expect(await host.releaseClaim(record)).toEqual({ retainedBytes: payload.retainedBytes, sharedTree: payload.sharedTree, worktree: payload.worktree })
   payload.sharedTree.id = randomUUID()
   await expect(host.releaseClaim(record)).rejects.toMatchObject({ code: 'SOURCE_RESPONSE_INVALID' })
 })

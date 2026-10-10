@@ -1,6 +1,6 @@
 import { AgentConfigurationVersionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import {
-  AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, WorkflowVersionV3Schema,
+  AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, WorkflowVersionV3Schema, RunWorktreeSchema,
   CurrentRunVersionSnapshotSchema, type AcceptedWorkflowRunV3, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
@@ -242,7 +242,11 @@ export class RepeatRepositoryFactory {
           const placement = await readAcceptedPlacement(sql, run.id, execution.workflowNodeId)
           const native = placement && await readNativePlacement(sql, execution.id)
           if (placement && !native) return repeatConflict('RUN_LOCATION_MISSING')
-          if (paths.workingDirectory !== (native?.workingTree.canonicalCwd ?? run.executionLocation.rootPath)
+          const worktreeRow = !placement && (await sql.query<{ record: unknown }>(
+            'select record from run_worktrees where run_id=$1', [run.id])).rows[0]
+          const worktree = worktreeRow ? RunWorktreeSchema.parse(worktreeRow.record) : undefined
+          if (worktree && worktree.state !== 'active') return repeatConflict('RUN_LOCATION_MISSING')
+          if (paths.workingDirectory !== (native?.workingTree.canonicalCwd ?? worktree?.workingDirectory ?? run.executionLocation.rootPath)
             || paths.runtimeDirectory !== repeatRuntimeDirectory(placement?.destination.managedRuntimeRoot ?? this.runtimeRoot, scope, execution)) return repeatConflict('RUN_LOCATION_MISSING')
         },
         assertBoundaryLocked: async (transaction, execution, ref, evidence) => {

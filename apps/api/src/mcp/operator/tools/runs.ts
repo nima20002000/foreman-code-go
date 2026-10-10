@@ -25,7 +25,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_get')) server.registerTool('run_get', {
-    description: 'Read an authorized Run from one backend snapshot. Defaults to compact status and the latest 25 executions and activities. '
+    description: 'Read an authorized Run, including Git worktree paths, branches and retained-change status when workspace location read is granted, from one backend snapshot. Defaults to compact status and the latest 25 executions and activities. '
       + 'Omission counts cover this snapshot; use run_activities_get_v1 for paged history. Pass detail: "full" for input, result, execution bodies and the full snapshot. '
       + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
       + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT and WORK_RUN_EXECUTION_BUDGET_EXHAUSTED), '

@@ -58,7 +58,11 @@ export const MaterializationReceiptSchema = z.object({
   verifiedBytes: z.number().int().nonnegative(), verifiedAt: z.string().datetime(),
   claimScope: z.literal('execution').optional(),
   sharedTree: z.object({ id: z.uuid(), referenceIdentity: RootBindingSchema.shape.filesystem }).strict().optional(),
-  worktree: SourceWorktreeRequestSchema.extend({ commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/) }).strict().optional(),
+  worktree: SourceWorktreeRequestSchema.extend({
+    commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),
+    /** The default-branch commit used at execution start; the approved reference stays immutable. */
+    startCommit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/).optional(),
+  }).strict().optional(),
   localTreeIdentity: z.object({ device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/), mountId: z.string().regex(/^\d+$/) }).strict(),
 }).strict().superRefine((value, context) => {
   if (value.sharedTree && (value.binding.accessMode !== 'exclusive-write' || value.claimScope !== 'execution')) {

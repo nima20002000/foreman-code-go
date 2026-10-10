@@ -1,3 +1,4 @@
+import { closeSourceWorktree } from './worktreeCleanup.js'
 import type { RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
 import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
@@ -112,7 +113,8 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
       keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }
     await releaseMaterializationClaim(receipt, async () => 'released',
       await this.quotaPoolFor?.(receipt.binding, attempt), options?.signal)
-    return measureRetainedMaterializationFootprint(record.receipt)
+    const worktree = await closeSourceWorktree(receipt, options?.signal)
+    return { ...await measureRetainedMaterializationFootprint(record.receipt), ...(worktree ? { worktree } : {}) }
   }
   /** CI-only explicit detached write copy; read-only references cannot acquire
    * write authority or Git working metadata through this helper. */

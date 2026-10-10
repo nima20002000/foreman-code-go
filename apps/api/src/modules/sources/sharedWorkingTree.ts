@@ -1,3 +1,5 @@
+import { approvedGitTreePaths, captureGitSource } from './capture.js'
+import { latestDefaultCommit } from './defaultBranch.js'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, rename, type FileHandle } from 'node:fs/promises'
@@ -8,7 +10,7 @@ import { RootBindingSchema, type RootBinding, type MaterializationReceipt,
 import { anchored, entryParent, identity, openChildDirectory } from './privateFilesystem.js'
 import { SourceError, verifySourceBytes } from './manifest.js'
 import { join } from 'node:path'
-import { addGitWorktree, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
+import { addGitWorktree, ensureCommit, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
 
 const SharedTreeSchema = z.object({
   version: z.literal(1),
@@ -69,6 +71,10 @@ async function copyEntry(reference: FileHandle, target: FileHandle, entry: Sourc
       verifySourceBytes(entry, bytes)
     } finally { await file.close() }
   } finally { await original.parent.close() }
+  await writeEntry(target, entry, bytes)
+}
+
+async function writeEntry(target: FileHandle, entry: SourceManifest['entries'][number], bytes: Uint8Array) {
   const destination = await entryParent(target, entry.path, true)
   try {
     const file = await open(anchored(destination.parent, destination.leaf),
@@ -160,7 +166,7 @@ export async function verifySharedWorkingTree(root: FileHandle, receipt: Materia
 
 const WorktreeMarkerSchema = SharedTreeSchema.extend({
   executionId: z.string().min(1),
-  worktree: z.object({ repository: z.string(), branch: z.string(), commit: z.string() }).strict(),
+  worktree: z.object({ repository: z.string(), branch: z.string(), commit: z.string(), startCommit: z.string().optional() }).strict(),
 }).strict()
 const worktreeMarker = (id: string) => `worktree-${id}.json`
 
@@ -179,25 +185,41 @@ export async function prepareAgentWorktree(input: {
   const { root, binding, manifest, signal } = input
   const commit = manifest.git?.commit
   if (!commit) throw new SourceError('SOURCE_WORKTREE_INVALID', 'Only Git sources can become agent worktrees.')
+  const clone = await ensureCommit(input.ports, input.request.repository, commit, signal)
+  const startCommit = await latestDefaultCommit(input.ports, clone, signal)
   const id = randomUUID()
   await mkdir(anchored(root, id), { mode: 0o700 })
   const path = join(binding.canonicalPath, id, 'tree')
-  const added = await addGitWorktree(input.ports, input.request, commit, path, signal, { checkout: 'deferred' })
+  const added = await addGitWorktree(input.ports, input.request, startCommit, path, signal, { checkout: 'deferred' })
   const directory = await openChildDirectory(root, id)
   try {
     const tree = await openChildDirectory(directory, 'tree')
     let filesystem: RootBinding['filesystem']
     try {
-      for (const entry of manifest.entries) {
-        signal.throwIfAborted()
-        await copyEntry(input.reference, tree, entry)
+      if (startCommit === commit) {
+        for (const entry of manifest.entries) {
+          signal.throwIfAborted()
+          await copyEntry(input.reference, tree, entry)
+        }
+        await verifyWorktreeContent(tree, manifest, signal)
+      } else {
+        // Keep the approved reference; bootstrap the writable checkout from verified Git objects.
+        const current = await captureGitSource({ root: clone, approvedSourceId: manifest.approvedSourceId,
+          commit: startCommit, repository: input.request.repository,
+          approvedPaths: await approvedGitTreePaths(clone, startCommit), executablePolicy: manifest.executablePolicy,
+          sink: { write: async (_snapshot, entry, bytes) => {
+            signal.throwIfAborted()
+            await writeEntry(tree, entry, bytes)
+          }, commit: input.authorize, abort: async () => {
+            signal.throwIfAborted()
+          } } })
+        await verifyWorktreeContent(tree, current, signal)
       }
-      await verifyWorktreeContent(tree, manifest, signal)
       await input.authorize()
       filesystem = await identity(tree)
     } finally { await tree.close() }
     const record = WorktreeMarkerSchema.parse({ version: 1, id, binding, filesystem, executionId: input.executionId,
-      worktree: { repository: input.request.repository, branch: added.branch, commit: added.commit } })
+      worktree: { repository: input.request.repository, branch: added.branch, commit, ...(startCommit !== commit ? { startCommit } : {}) } })
     const file = await open(anchored(root, worktreeMarker(id)),
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
     try { await file.writeFile(JSON.stringify(record)); await file.sync() } finally { await file.close() }

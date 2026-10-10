@@ -128,6 +128,7 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
       || response.operationId !== record.operationId || response.sharedTree?.id !== record.receipt.sharedTree?.id)
       throw new DomainError('SOURCE_RESPONSE_INVALID', 'Closure acknowledgment belongs to another original materialization.', 409)
     return { retainedBytes: response.retainedBytes,
+      ...(response.worktree ? { worktree: response.worktree } : {}),
       ...(response.sharedTree ? { sharedTree: response.sharedTree } : {}) }
   }
 }

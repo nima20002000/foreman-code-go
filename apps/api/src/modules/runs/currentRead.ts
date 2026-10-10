@@ -1,8 +1,11 @@
+import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
+import { RetainedSourceFootprintSchema } from '@foreman-code/contracts/source-operations'
+import { sourceWorkingTreePath } from '../sources/sourceTreePaths.js'
 import { readRunActivitySnapshot } from './activitySnapshot.js'
 import type pg from 'pg'
 import { RunActivitySchema } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { SavedRunDetailsSchema, REPEAT_GRAPH_LIMITS, graphJsonBytes, RUN_GRAPH_LIMITS } from '@foreman-code/contracts/wave25'
+import { RunWorktreeSchema, SavedRunDetailsSchema, REPEAT_GRAPH_LIMITS, graphJsonBytes, RUN_GRAPH_LIMITS } from '@foreman-code/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
@@ -58,7 +61,27 @@ export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrinci
     if (!cleanup || typeof cleanup.pending !== 'boolean') throw new DomainError('RUN_DETAIL_INVALID', 'Cleanup status is unavailable.', 409)
     const activitySnapshot = await readRunActivitySnapshot(sql as unknown as Pick<pg.PoolClient, 'query'>,
       { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId }, snapshot.version)
-    const detail = { run, executions, activity, activitySnapshot, activityPageInfo: { hasEarlier: activityRows.length > 100 }, cleanupPending: cleanup.pending }
+    const treeRows = await sql.query<{ record: unknown }>('select record from run_worktrees where run_id=$1', [run.id])
+    const worktrees = treeRows.rows.map(row => RunWorktreeSchema.parse(row.record))
+    const sourceTrees = await sql.query<{ execution_id: string; worktree_cleanup: unknown; record: unknown }>(
+      `select m.execution_id,m.record,m.worktree_cleanup from source_execution_materializations m
+        join harness_executions e on e.id=m.execution_id
+        where e.run_id=$1 and m.record#>'{receipt,worktree}' is not null`, [run.id])
+    for (const source of sourceTrees.rows) {
+      const execution = executions.find(item => item.id === source.execution_id)
+      const record = SourceMaterializationRecordSchema.parse(source.record)
+      const tree = record.receipt.worktree
+      const cleanup = RetainedSourceFootprintSchema.shape.worktree.parse(source.worktree_cleanup ?? undefined)
+      if (tree) worktrees.push(RunWorktreeSchema.parse({
+        executionId: source.execution_id,
+        workingDirectory: execution?.workingDirectory ?? sourceWorkingTreePath(record.receipt),
+        branch: tree.branch,
+        baseCommit: tree.startCommit ?? tree.commit,
+        state: cleanup?.state ?? 'active',
+        ...(cleanup?.message ? { message: cleanup.message } : {}),
+      }))
+    }
+    const detail = { run, ...(worktrees.length ? { worktrees } : {}), executions, activity, activitySnapshot, activityPageInfo: { hasEarlier: activityRows.length > 100 }, cleanupPending: cleanup.pending }
     if (graphJsonBytes(detail) > RUN_GRAPH_LIMITS.snapshotBytes) throw new DomainError('RUN_DETAIL_TOO_LARGE', 'Use bounded graph metadata and activity pages for this Run.', 409)
     const parsed = SavedRunDetailsSchema.parse(detail)
     // Redaction uses the live grants locked on this same read, not the possibly
@@ -66,6 +89,7 @@ export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrinci
     delete parsed.run.authorizationPrincipalId
     if (!isAuthorized(live, 'workspace_locations:read', { workspaceId })) {
       delete parsed.run.executionLocation
+      delete parsed.worktrees
       for (const execution of parsed.executions) {
         delete execution.workingDirectory
         delete execution.runtimeDirectory

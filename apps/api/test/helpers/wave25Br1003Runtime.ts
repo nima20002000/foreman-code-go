@@ -51,6 +51,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     approvalNodeIds?: string[]; insertRun?: boolean; workerParallelism?: number;
     outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
     admitPlacementExecutionLocked?: RepeatRepositoryServices['admitPlacementExecutionLocked'];
+    preparePlacementExecution?: RepeatRepositoryServices['preparePlacementExecution'];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
     recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
   const db = await agent3Database(options.databaseUrl)
@@ -102,6 +103,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
       const repositoryServices = createWorkflowRepositoryServices(workflowCapture.verify, undefined, options.nativeSourcePersisted)
       const runs = new PostgresRunRepository(db.pool, workflows, locations,
         { runtimeRoot: db.directory, ...repositoryServices, services: { ...repositoryServices.services,
+          ...(options.preparePlacementExecution ? { preparePlacementExecution: options.preparePlacementExecution } : {}),
           ...(options.admitPlacementExecutionLocked
             ? { admitPlacementExecutionLocked: options.admitPlacementExecutionLocked } : {}) } },
         options.nativeCommitted)

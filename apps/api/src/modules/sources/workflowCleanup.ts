@@ -40,7 +40,8 @@ export async function closeCompletedWorkflowSources(
     join harness_executions e on e.id=m.execution_id
     join runs r on r.id=e.run_id
     join source_storage_reservations s on s.reservation_id=m.reservation_id
-    where (m.state<>'closed' or (
+    where (m.record#>'{receipt,worktree}' is null or r.execution_state in ('completed','interrupted'))
+      and (m.state<>'closed' or (
         s.state='retained' and s.reserved_bytes=(s.record->>'reservedBytes')::bigint
         and not exists(select 1 from source_preparation_reconciliations c
           where c.operation_id::text=m.record->>'operationId' and c.status='closed')

@@ -1,3 +1,4 @@
+import { RunWorktreeSchema } from './runWorktrees.js'
 import { z } from 'zod'
 import {
   ManagedWorkspaceSchema, ManagementPageInfoSchema, OperatorCapabilitiesSchema,
@@ -42,6 +43,7 @@ export const OperatorActivitySummarySchema = z.object({
   order: z.string(),
 }).strict()
 export const OperatorRunCompactSchema = z.object({
+  worktrees: z.array(RunWorktreeSchema).max(25).optional(),
   detail: z.literal('compact'), detailsOmitted: z.literal(true), run: OperatorRunSummarySchema,
   executions: z.array(OperatorExecutionSummarySchema).max(25),
   activities: z.array(OperatorActivitySummarySchema).max(25),
