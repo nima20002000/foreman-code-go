@@ -19,7 +19,8 @@ import { HarnessRegistryReadbackSchema, HostHarnessOverrideSaveResultSchema,
   HostHarnessInstanceCheckResultSchema } from '@foreman-code/contracts/harness-registry'
 import { SourceApproveResultSchema, SourceRootBindResultSchema } from '@foreman-code/contracts/source-admission'
 import { WorkspaceRootListResultSchema } from '@foreman-code/contracts/workspace-root-policies'
-import { WorkspaceBoundLocationSetResultSchema } from '@foreman-code/contracts/workspace-bound-location'
+import { WorkspaceBoundLocationSetResultSchema,
+  WorkspaceRootConfigurationAdoptResultSchema } from '@foreman-code/contracts/workspace-bound-location'
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
   ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { loadConfig } from '../../src/config.js'
@@ -418,12 +419,12 @@ export async function remoteReviewProduction(options: {
     }
     let location = mainLocation
     if (options.executionHost !== 'main') {
-      await value('workspace_root_configuration_adopt', {
+      const adopted = WorkspaceRootConfigurationAdoptResultSchema.parse(await value('workspace_root_configuration_adopt', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef,
-      })
+      })).value
       location = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef, allowedBaseId: roots.bases[0]!.baseId,
-        configurationRevision: roots.configurationRevision, relativePath: 'project', accessMode: 'read-only',
+        configurationRevision: adopted.configurationRevision, relativePath: 'project', accessMode: 'read-only',
         expectedLocationRevision: mainLocation.locationRevision, expectedRootPolicyRevision: 0,
       })).value
     }
