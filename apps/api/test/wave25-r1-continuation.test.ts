@@ -1,18 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { makeCurrentWorkflowFixture, type RunWorktree } from '@foreman-code/contracts/wave25'
 import { candidateFor } from './helpers/wave25Agent3.js'
 import { continuationValidator } from '../src/modules/runs/continuation.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 
-function fixture() {
+function fixture(worktree?: RunWorktree) {
   const f = makeCurrentWorkflowFixture('r1-continuation-v3')
   const run: Record<string, unknown> = { ...f.run, executionState: 'running', authorizationPrincipalId: 'authorized-user',
     executionLocation: { runnerId: 'local', rootPath: '/synthetic/project', locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` } }
-  const row = { run, execution: { ...candidateFor(f), state: 'running', workingDirectory: '/synthetic/project' },
+  const row = { run, execution: { ...candidateFor(f), state: 'running', workingDirectory: worktree?.workingDirectory ?? '/synthetic/project' },
     configuration: structuredClone(f.configurations[0]!), stopped: false, cleanup_pending: false,
     workflow_version_id: f.version.id, location_revision: '1', runner_id: 'local', root: '/synthetic/project' }
-  const query = vi.fn(async () => ({ rows: [row] }))
+  const query = vi.fn(async (sql: string) => {
+    if (sql.includes('from run_worktrees')) return { rows: worktree ? [{ record: worktree }] : [] }
+    if (sql.includes('from harness_executions')) return { rows: [row] }
+    throw new Error(`Unexpected query: ${sql}`)
+  })
   const authorization = vi.fn(async () => undefined), location = vi.fn(async () => undefined)
   const pool = { query } as unknown as pg.Pool
   const locations = { revalidateRunAuthorization: authorization, revalidateSnapshot: location } as unknown as WorkspaceLocationService
@@ -25,6 +29,21 @@ describe('BR1-001: real shared continuation validator', () => {
     await f.validate(f.row.execution.id, signal)
     expect(f.authorization).toHaveBeenCalledWith('authorized-user', f.run.workspaceId, f.run.workflowId, f.pool)
     expect(f.location).toHaveBeenCalledWith(f.run.workspaceId, f.row.run.executionLocation, requiredLocationAccess([f.row.configuration]), signal)
+  })
+  it('continues an execution in its active Run worktree', async () => {
+    const f = fixture({ workingDirectory: '/synthetic/worktree', branch: 'run-branch',
+      baseCommit: 'a'.repeat(40), state: 'active' })
+    await f.validate(f.row.execution.id)
+    expect(f.authorization).toHaveBeenCalledOnce()
+    expect(f.location).toHaveBeenCalledWith(f.run.workspaceId, f.row.run.executionLocation,
+      requiredLocationAccess([f.row.configuration]), undefined)
+  })
+  it.each(['removed', 'retained'] as const)('rejects a %s Run worktree before native preflight', async (state) => {
+    const f = fixture({ workingDirectory: '/synthetic/worktree', branch: 'run-branch',
+      baseCommit: 'a'.repeat(40), state })
+    await expect(f.validate(f.row.execution.id)).rejects.toMatchObject({ code: 'RUN_WORKTREE_CLOSED' })
+    expect(f.authorization).not.toHaveBeenCalled()
+    expect(f.location).not.toHaveBeenCalled()
   })
   it('malformed current records are still strictly rejected', async () => {
     const f = fixture()

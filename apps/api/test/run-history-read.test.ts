@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { ManagementPrincipalSchema, type ManagementGrant } from '@foreman-code/contracts/management'
-import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, type RunWorktree } from '@foreman-code/contracts/wave25'
 import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
 import { readAcceptedRepeatRunLocked, readRecordedRepeatRunLocked } from '../src/modules/runs/repeatStartRead.js'
 import { readRepeatExecutionLocked } from '../src/modules/runs/repeatPostgres.js'
@@ -24,6 +24,8 @@ function fixture() {
   const execution = { ...identity, id: executionId, runId: run.id,
     input: {}, state: 'completed' as const, result: run.result, createdAt: f.createdAt, finishedAt: f.createdAt,
     workingDirectory: '/private/project', runtimeDirectory: '/private/runtime' }
+  const worktree: RunWorktree = { workingDirectory: '/private/worktree', branch: 'run-branch',
+    baseCommit: 'a'.repeat(40), state: 'retained' }
   const principal = ManagementPrincipalSchema.parse({ id: 'history-reader', name: 'History reader', audience: 'operator',
     expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
     grants: [{ actions: ['runs:read'], scope: { workspaceIds: [run.workspaceId], workflowIds: [run.workflowId], runIds: [run.id] } }] })
@@ -62,11 +64,13 @@ function fixture() {
     if (sql.includes('from harness_executions')) return { rows: [{ id: execution.id }] }
     if (sql.includes('from run_activity')) return { rows: [] }
     if (sql.includes('from run_cleanup_intents')) return { rows: [{ pending: false }] }
+    if (sql.includes('from run_worktrees')) return { rows: [{ record: worktree }] }
+    if (sql.includes('from source_execution_materializations')) return { rows: [] }
     throw new Error(`Unexpected query: ${sql}`)
   })
   const release = vi.fn()
   const pool = { connect: async () => ({ query, release, on() {}, removeListener() {} }) } as unknown as pg.Pool
-  return { ...f, run, execution, principal, query, release,
+  return { ...f, run, execution, worktree, principal, query, release,
     read: () => readCurrentRunDetails(pool, principal, run.workspaceId, run.id),
     grants: (value: ManagementGrant[]) => { liveGrants = value }, revoke: () => { revoked = true } }
 }
@@ -79,7 +83,8 @@ describe('saved current Run read', () => {
       agentConfigurationVersionIds: f.version.agentConfigurationVersionIds, result: { output: { text: 'saved-result' } } })
     expect(value.executions[0]).toMatchObject({ id: f.execution.id, agentConfigurationVersionId: f.configurations[0]!.id })
     expect(value.activitySnapshot).toMatchObject({ scope: { runId: f.run.id, workflowVersionId: f.version.id }, active: [], queued: [] })
-    expect(JSON.stringify(value)).not.toMatch(/private-authority|private\/project|private\/runtime/)
+    expect(JSON.stringify(value)).not.toMatch(/private-authority|private\/project|private\/runtime|private\/worktree/)
+    expect(value).not.toHaveProperty('worktrees')
     expect(readRepeatExecutionLocked).toHaveBeenCalledWith(expect.objectContaining({ transaction: true }),
       expect.objectContaining({ run: f.run }), f.execution.id)
     expect(f.query).toHaveBeenCalledWith('commit')
@@ -92,6 +97,7 @@ describe('saved current Run read', () => {
     const value = await f.read()
     expect(value.run.executionLocation).toEqual(f.run.executionLocation)
     expect(value.executions[0]?.workingDirectory).toBe('/private/project')
+    expect(value.worktrees).toEqual([f.worktree])
     expect(value.run).not.toHaveProperty('authorizationPrincipalId')
   })
 
