@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash, generateKeyPairSync } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, stat, symlink, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
@@ -24,7 +24,7 @@ async function saveIdentity(state, workerInstallationId) {
 async function fixture(t) {
   assert.ok(artifact, 'Managed setup tests require the committed Worker artifact');
   t.after(mockHostMounts(t.mock, persistentHostMounts));
-  const home = await mkdtemp(join(persistentFixtureRoot, 'managed-worker-'));
+  const home = await realpath(await mkdtemp(join(persistentFixtureRoot, 'managed-worker-')));
   t.after(() => rm(home, { recursive: true, force: true }));
   const worker = await import(pathToFileURL(join(artifact, 'src/worker.mjs')).href);
   const state = join(home, '.local/state/graphql-worker');
@@ -53,6 +53,32 @@ test('pairing prepares private managed roots and native journals without a roots
   const second = await f.worker.ensurePairedManagedSetup({ stateDirectory: f.state, pairing: f.pairing, home: f.home });
   assert.equal(second.state, 'runtime-unavailable');
   assert.deepEqual(JSON.parse(await readFile(join(f.state, 'approved-roots.json'), 'utf8')), approved);
+});
+
+test('pairing persists canonical managed roots through a symlinked storage ancestor', async t => {
+  const f = await fixture(t);
+  const alias = join(f.home, 'storage-alias');
+  await symlink(join(f.home, '.local'), alias);
+  const stateDirectory = join(alias, 'state/graphql-worker');
+  const options = { stateDirectory, pairing: f.pairing, home: f.home };
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'runtime-unavailable');
+  const approved = JSON.parse(await readFile(join(f.state, 'approved-roots.json'), 'utf8'));
+  assert.equal(approved.bases[0].canonicalPath, join(f.state, 'managed/workspaces'));
+  assert.equal(approved.managedRuntimeRoot, join(f.state, 'managed/runtime'));
+  const [extension] = await f.worker.approvedRootExtensions(stateDirectory, f.pairing, randomUUID());
+  assert.equal(extension.namespace, 'workspace-roots-v1');
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'runtime-unavailable');
+  assert.deepEqual(JSON.parse(await readFile(join(f.state, 'approved-roots.json'), 'utf8')), approved);
+});
+
+test('automatic setup rejects a symlinked state directory before approving roots', async t => {
+  const f = await fixture(t);
+  const alias = join(f.home, 'state-alias');
+  await symlink(f.state, alias);
+  await assert.rejects(f.worker.ensurePairedManagedSetup({
+    stateDirectory: alias, pairing: f.pairing, home: f.home,
+  }), { code: 'private_directory_required' });
+  await assert.rejects(readFile(join(f.state, 'approved-roots.json')), { code: 'ENOENT' });
 });
 
 test('automatic setup never follows a symlink or widens an owner directory', async t => {

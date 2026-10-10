@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { unlink } from 'node:fs/promises';
+import { realpath, unlink } from 'node:fs/promises';
 import { CiManagedSetupSchema } from '../../../packages/contracts/src/ciEnrollment.ts';
 import { loadWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { ApprovedRootAllowlistSchema } from '../../../packages/contracts/src/workspaceRootPolicies.ts';
@@ -14,7 +14,7 @@ import { acquireWorkerLock } from './runtime.mjs';
 import { createManagedStorage, optionalManagedJson, managedEntryExists, publishManagedJson } from './managedState.mjs';
 import { discoverManagedInstallation, inspectManagedInstallation, retireManagedInstallation,
   pairingTarget, samePairingTarget } from './managedInstallation.mjs';
-import { hostFacts, WorkerError } from './diagnostics.mjs';
+import { hostFacts, requirePrivateDirectory, WorkerError } from './diagnostics.mjs';
 import { DomainError } from '../../../apps/api/src/modules/errors.ts';
 import { assertRuntimeQuiescent } from './jobRuntimeCapture.mjs';
 
@@ -132,6 +132,8 @@ async function setupManagedStorage(options, state, previous) {
 /** Pairing is the human approval for fixed private product storage. Startup resumes an interrupted setup. */
 export async function ensurePairedManagedSetup({ stateDirectory, pairing, home = process.env.HOME ?? '',
   assertStateOwnership, inspectInstallation }) {
+  await requirePrivateDirectory(stateDirectory);
+  stateDirectory = await realpath(stateDirectory);
   let unlock;
   if (!assertStateOwnership) {
     unlock = await acquireWorkerLock(stateDirectory);
