@@ -63,7 +63,7 @@ function toolLabel(native: Record<string, unknown>): string | undefined {
   if (item === 'fileChange' || ['write','edit','apply_patch','multiedit'].includes(part ?? '')) return 'File change'
   if (item === 'webSearch' || ['websearch','webfetch','codesearch'].includes(part ?? '')) return 'Web search'
   if (item === 'mcpToolCall' || part?.startsWith('foreman-code_') || part?.startsWith('foreman_code_') || part?.startsWith('graphql_') || part?.startsWith('graphql-app_')) return 'MCP tool action'
-  if (item === 'collabAgentToolCall' || part === 'task') return 'Subagent action'
+  if (item === 'collabAgentToolCall' || item === 'subAgentActivity' || part === 'task') return 'Subagent action'
   if (part === 'read') return 'File read'
   if (part === 'grep' || part === 'glob' || part === 'list') return 'File search'
   return undefined
@@ -89,6 +89,9 @@ const itemLabels = new Map([
   ['agentMessage', 'Agent message'], ['userMessage', 'User message'], ['reasoning', 'Agent reasoning'],
   ['plan', 'Agent plan'], ['contextCompaction', 'Context compaction'],
 ])
+// Any other provider item type still names itself, e.g. imageView -> "Image view".
+const itemTypeLabel = (itemType: string | undefined) => itemType && /^[A-Za-z]{1,48}$/.test(itemType)
+  ? itemType.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().replace(/^./, (letter) => letter.toUpperCase()) : undefined
 
 function nativeDetail(native: Record<string, unknown>): string | undefined {
   const item = string(native.itemType)
@@ -265,7 +268,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
         itemId: native.claudeItemId, taskId: native.claudeTaskId, name: native.claudeName, status: native.claudeStatus,
       } }, runId)
       const tool = claude?.title ?? toolLabel(native)
-      const label = tool ?? itemLabels.get(string(native.itemType) ?? '')
+      const label = tool ?? itemLabels.get(string(native.itemType) ?? '') ?? itemTypeLabel(string(native.itemType))
       kind = 'tool_log'
       if (label) kind = 'agent_work'
       if (tool) kind = 'tool_action'
@@ -281,6 +284,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
       } else if (native.type === 'thread.started') {
         summary = 'Native session created'
       }
+      if (native.subagent === true) summary = `Subagent: ${summary.replace(/^Agent /, '')}`
       detail = nativeDetail(native)
       break
     }

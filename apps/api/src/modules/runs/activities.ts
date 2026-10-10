@@ -78,6 +78,7 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'used',a.payload->'used','maximum',a.payload->'maximum')) as safe_payload,
   case when n.execution_id is null then null else jsonb_strip_nulls(jsonb_build_object(
     'type',left(n.record->>'type',48),
+    'subagent',case when n.record->>'subagent'='true' then true end,
     'nativeMethod',left(n.record#>>'{payload,nativeMethod}',100),
     'turnStatus',left(n.record#>>'{payload,turn,status}',48),
     'unsupportedInteractionCode',case when n.record->>'type'='interaction.unsupported'
@@ -122,10 +123,18 @@ left join job_executions j on j.id=w.job_execution_id and j.id=w.node_execution_
   and j.accepted_spec=j.record->'acceptedSpec' and j.attempt_id=j.record->>'attemptId' and j.operation_id=j.record->>'operationId'
   and w.reference->>'workspaceId'=r.workspace_id and w.reference->>'workflowVersionId'=r.workflow_version_id
   and w.reference->>'runId'=a.run_id and w.reference->>'workflowId'=r.workflow_id
-left join harness_native_events n on n.execution_id=a.harness_execution_id
-  and n.sequence=case when a.kind='harness_output'
-    and (a.payload->>'nativeEventSequence') ~ '^[0-9]{1,9}$'
-    then (a.payload->>'nativeEventSequence')::integer end
+left join lateral (
+  -- Child-thread notifications wrap the item in params; present them in the parent's shape, marked as subagent work.
+  select n0.execution_id,case when n0.record->>'type'='native.unlinked_notification'
+      and jsonb_typeof(n0.record#>'{payload,params}')='object' then jsonb_build_object(
+        'type',case n0.record#>>'{payload,method}' when 'item/started' then 'item.started' when 'item/completed' then 'item.completed'
+          when 'turn/started' then 'turn.started' when 'turn/completed' then 'turn.completed' else 'native.notification' end,
+        'subagent',true,'payload',(n0.record#>'{payload,params}') || jsonb_build_object('nativeMethod',n0.record#>>'{payload,method}'))
+    else n0.record end as record
+  from harness_native_events n0 where n0.execution_id=a.harness_execution_id
+    and n0.sequence=case when a.kind='harness_output'
+      and (a.payload->>'nativeEventSequence') ~ '^[0-9]{1,9}$'
+      then (a.payload->>'nativeEventSequence')::integer end) n on true
 where a.run_id=$1 and a.sequence __COMPARATOR__ $2::bigint and a.sequence<=$3::bigint
   and a.sequence>=$4::bigint
 order by a.sequence __ORDER__ limit $5`

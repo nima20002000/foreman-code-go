@@ -78,12 +78,8 @@ async function activityFixture(work: (pool: pg.Pool, fixture: Awaited<ReturnType
   })
 }
 
-async function persistEvent(pool: pg.Pool, runId: string, event: NativeHarnessEvent) {
-  await pool.query('insert into harness_native_events(execution_id,sequence,record) values($1,$2,$3::jsonb)',
-    [executionId, event.sequence, JSON.stringify(event)])
-  await pool.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
-    values($1,'harness','harness_output',$2,$3,$4::jsonb)`,
-  [runId, executionId, event.occurredAt, JSON.stringify({ nativeEventSequence: event.sequence, nativeEventType: event.type })])
+async function persistEvent(pool: pg.Pool, event: NativeHarnessEvent) {
+  await pool.query('select append_harness_native_event($1::jsonb)', [JSON.stringify({ ...event, executionId })])
 }
 
 async function readBoth(app: ReturnType<typeof buildApp>, fixture: Awaited<ReturnType<typeof graphFixture>>) {
@@ -189,29 +185,32 @@ describe('persisted native Run activity', () => {
         } } },
         { type: 'native.notification', payload: { nativeMethod: 'thread/tokenUsage/updated',
           tokenUsage: { private: 'private token details' } } },
+        { type: 'native.unlinked_notification', payload: { method: 'item/completed', params: { threadId: 'child-thread', item: {
+          id: 'child-command', type: 'commandExecution', status: 'completed', command: 'ls private-argument', exitCode: 0,
+        } } } },
       ]
       for (const [index, event] of events.entries()) {
-        await persistEvent(pool, fixture.run.id, { ...event, sequence: index + 1, occurredAt,
+        await persistEvent(pool, { ...event, sequence: index + 1, occurredAt,
           payload: { ...event.payload, threadId: 'native-session' } })
       }
       const page = await readBoth(app, fixture)
       expect(page.items.map(item => item.summary)).toEqual([
         'Run queued', 'Agent work queued',
-        'Agent message updated', 'Command output updated', 'Agent reasoning started', 'Agent reasoning completed',
+        'Agent reasoning started', 'Agent reasoning completed',
         'Agent message completed', 'Agent message completed', 'User message completed', 'File change completed',
         'Command: git completed', 'Tool: workspace_list completed', 'Tool: lookup failed', 'Web search completed',
-        'Token usage updated',
+        'Subagent: Command: ls completed',
       ])
       expect(page.items.map(item => item.detail)).toEqual([
         undefined, undefined,
-        'Received 15 characters.', 'Received 14 characters.', undefined, undefined,
+        undefined, undefined,
         'Progress update.', 'Final answer.', undefined, 'Changes cover 1 file.', 'Exit code: 0.',
-        undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, 'Exit code: 0.',
       ])
       expect(JSON.stringify(page)).not.toContain('private')
       const snapshot = await readSnapshot(app, fixture)
       const diagnostics = snapshot.activities.filter(item => item.kind === 'diagnostic')
-      expect(diagnostics.map(item => item.message)).toContain('Agent message updated: Received 15 characters.')
+      expect(diagnostics.map(item => item.message).join()).not.toMatch(/updated|Received/)
       expect(diagnostics.map(item => item.message)).toContain('File change completed: Changes cover 1 file.')
       expect(diagnostics.map(item => item.message)).toContain('Agent message completed: Final answer.')
       expect(snapshot.activities.filter(item => item.kind === 'tool').map(item => [item.title, item.status])).toEqual([
@@ -259,20 +258,20 @@ describe('persisted native Run activity', () => {
   it('bounds default MCP detail and names tools and command programs without arguments or credentials', async () => {
     await activityFixture(async (pool, fixture, app) => {
       for (let index = 0; index < 31; index++) {
-        await persistEvent(pool, fixture.run.id, { sequence: index + 1, occurredAt,
+        await persistEvent(pool, { sequence: index + 1, occurredAt,
           type: 'item.completed', payload: { threadId: 'native-session', item: {
             id: `command-${index}`, type: 'commandExecution', status: 'completed',
             command: '/usr/bin/git --token private-command-secret status',
           } },
         })
       }
-      await persistEvent(pool, fixture.run.id, { sequence: 32, occurredAt,
+      await persistEvent(pool, { sequence: 32, occurredAt,
         type: 'item.completed', payload: { threadId: 'native-session', item: {
           id: 'mcp-call', type: 'mcpToolCall', tool: 'workspace_list', status: 'completed',
           arguments: { token: 'private-tool-secret' },
         } },
       })
-      await persistEvent(pool, fixture.run.id, { sequence: 33, occurredAt,
+      await persistEvent(pool, { sequence: 33, occurredAt,
         type: 'item.completed', payload: { threadId: 'native-session', item: {
           id: 'opaque-command', type: 'commandExecution', command: 'privateExecutableSecret --password private-secret',
           status: 'completed',
@@ -305,7 +304,7 @@ describe('persisted native Run activity', () => {
     await activityFixture(async (pool, fixture, app) => {
       const errors = [{}, { error: null }, { error: { message: 'private failure body' } }]
       for (const [index, error] of errors.entries()) {
-        await persistEvent(pool, fixture.run.id, { sequence: index + 1, occurredAt, type: 'item.completed', payload: {
+        await persistEvent(pool, { sequence: index + 1, occurredAt, type: 'item.completed', payload: {
           threadId: 'native-session', item: { id: `command-${index}`, type: 'commandExecution', status: 'completed', ...error },
         } })
       }
@@ -334,7 +333,7 @@ describe('persisted native Run activity', () => {
           const payload = type === 'message.part.updated'
             ? { part: { id: itemId, type: 'tool', tool: 'bash', sessionID: 'native-session', state: { status } } }
             : { threadId: 'native-session', item: { id: itemId, type: 'commandExecution', status, error: null } }
-          await persistEvent(pool, fixture.run.id, { sequence: sequence++, occurredAt, type, payload })
+          await persistEvent(pool, { sequence: sequence++, occurredAt, type, payload })
         }
       }
       const page = await readBoth(app, fixture)
@@ -380,7 +379,7 @@ describe('persisted native Run activity', () => {
           ...(change.kind === 'tool' ? { toolUseId: change.itemId.slice('claude:tool:'.length) } : {}),
           ...(change.kind === 'text' ? { parentToolUseId: 'read' } : {}),
         } }, index + 1)
-        await persistEvent(pool, fixture.run.id, event)
+        await persistEvent(pool, event)
       }
       const page = await readBoth(app, fixture)
       expect(page.items.filter((item) => item.kind === 'tool_action').map((item) => [item.summary, item.status])).toEqual([

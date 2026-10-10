@@ -6,6 +6,7 @@ import pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { applyApplicationMigrations, migrations } from '../src/infrastructure/migrations.js'
+import { nativeActivityNoiseMigration } from '../src/infrastructure/nativeActivityNoiseMigration.js'
 import { nativeEventSequenceMigration } from '../src/infrastructure/nativeEventSequenceMigration.js'
 import { ensureAcceptanceSeed } from '../src/infrastructure/seed.js'
 import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
@@ -27,7 +28,8 @@ async function createDatabase(existingPR17 = false) {
         await client.query('begin')
         await client.query('select pg_advisory_xact_lock($1)', [810_001])
         for (const migration of migrations) {
-          if (migration.version === nativeEventSequenceMigration.version) continue
+          // Later redefinitions of the append function belong after 1702 as well.
+          if ([nativeEventSequenceMigration.version, nativeActivityNoiseMigration.version].includes(migration.version)) continue
           await client.query(migration.sql)
           await client.query('insert into application_migrations(version) values($1)', [migration.version])
         }
@@ -321,7 +323,8 @@ describe('native event sequence migration upgrades', () => {
       expect(await nextSequence(pool)).toBe('43')
       await applyApplicationMigrations(pool)
       expect(await nextSequence(pool)).toBe('43')
-      expect((await pool.query('select * from application_migrations where version<>1702 order by version')).rows).toEqual(oldReceipts)
+      expect((await pool.query('select * from application_migrations where version<>all($1::bigint[]) order by version',
+        [[1702, nativeActivityNoiseMigration.version]])).rows).toEqual(oldReceipts)
       expect((await pool.query('select version from application_migrations where version=1702')).rowCount).toBe(1)
       expect(await counts(pool)).toEqual({ events: 3, activity: 3 })
     })
