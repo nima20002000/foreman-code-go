@@ -156,6 +156,7 @@ export function createWorkerArtifactExtension(options: { directory: string; vers
       if (request.operation === 'release') {
         return { payload: { operation: 'release', release: {
           version: options.version, manifestSha256: artifact.manifestSha256, manifest,
+          ...(index.github ? { github: index.github } : {}),
         } } }
       }
       const file = manifest.files.find(entry => entry.path === request.path)

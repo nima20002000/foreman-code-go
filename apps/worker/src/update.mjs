@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateStatusSchema,
@@ -15,11 +16,51 @@ const expected = { protocolVersion: 1, identityFormat: 1 };
 export const workerUpdateExtension = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
   role: 'client', maxJsonBytes: WORKER_UPDATE_MAX_JSON_BYTES, maxBinaryBytes: WORKER_UPDATE_MAX_BINARY_BYTES };
 
-export async function downloadWorkerArtifact({ release, request, directory, facts, signal }) {
+const runCommand = (file, args, signal) => new Promise((resolve, reject) => {
+  execFile(file, args, { signal, timeout: 600_000, maxBuffer: 1024 * 1024 }, error => error ? reject(error) : resolve());
+});
+
+/** Downloads <manifestSha256>.tar.gz from the release's GitHub release with this computer's gh login. */
+export async function fetchGitHubAsset({ github, asset, destination, signal }) {
+  await runCommand('gh', ['release', 'download', github.tag, '--repo', github.repository, '--pattern', asset,
+    '--output', destination], signal).catch(() => { throw new WorkerError('worker_update_github_unavailable'); });
+}
+
+/** The release asset is only a carrier: every installed byte is still checked against the announced manifest. */
+async function downloadFromGitHub({ release, announced, directory, signal, fetchAsset }) {
+  const scratch = await mkdtemp(join(dirname(directory), '.worker-github-'));
+  try {
+    const archive = join(scratch, 'artifact.tar.gz'), extracted = join(scratch, 'artifact');
+    await mkdir(extracted, { mode: 0o700 });
+    await fetchAsset({ github: release.github, asset: `${release.manifestSha256}.tar.gz`, destination: archive, signal });
+    await runCommand('tar', ['-xzf', archive, '-C', extracted, '--no-same-owner', '--no-same-permissions'], signal)
+      .catch(() => { throw new WorkerError('artifact_archive_invalid'); });
+    const manifestBytes = await readFile(join(extracted, 'manifest.json'));
+    if (hash(manifestBytes) !== release.manifestSha256) throw new WorkerError('manifest_checksum_mismatch');
+    const manifest = WorkerArtifactManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8')));
+    if (!isDeepStrictEqual(manifest, announced)) throw new WorkerError('manifest_metadata_mismatch');
+    await writeFile(join(directory, 'manifest.json'), manifestBytes, { mode: 0o600 });
+    for (const file of manifest.files) {
+      signal?.throwIfAborted();
+      const bytes = await readFile(join(extracted, file.path));
+      if (bytes.length !== file.size || hash(bytes) !== file.sha256) throw new WorkerError('artifact_checksum_mismatch');
+      const path = join(directory, file.path);
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await writeFile(path, bytes, { mode: 0o600 });
+    }
+    return manifest;
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+export async function downloadWorkerArtifact({ release, request, directory, facts, signal, fetchAsset = fetchGitHubAsset }) {
   const announced = WorkerArtifactManifestSchema.parse(release.manifest);
   validateManifest(announced, facts, expected);
   if (announced.version !== release.version) throw new WorkerError('manifest_version_mismatch');
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  // Main names a GitHub release: download from GitHub, which is far faster than chunks through Main.
+  if (release.github) return downloadFromGitHub({ release, announced, directory, signal, fetchAsset });
   const download = async (path, size) => {
     const chunks = [];
     let offset = 0;

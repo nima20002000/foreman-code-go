@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
-import { WorkerUpdater } from '../src/update.mjs';
+import { WorkerUpdater, downloadWorkerArtifact } from '../src/update.mjs';
 import { installVersion, readInstalledRelease, readRetainedRelease } from '../src/installation.mjs';
 import { startWorker, acquireWorkerLock } from '../src/runtime.mjs';
 import { WorkerError } from '../src/diagnostics.mjs';
@@ -110,6 +110,32 @@ async function until(predicate) {
   }
   throw new Error('Worker update did not reach the expected state.');
 }
+
+test('downloads a release from its GitHub release asset and still verifies every byte against the manifest', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'worker-github-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const built = await artifact(base, '1.2.0');
+  const archive = join(base, 'asset.tar.gz');
+  spawnSync('tar', ['-czf', archive, '-C', built.directory, '.']);
+  const github = { repository: 'octo/site', tag: `worker-${'c'.repeat(40)}` };
+  const requested = [];
+  const fetchAsset = async input => {
+    requested.push({ github: input.github, asset: input.asset });
+    await writeFile(input.destination, await readFile(archive));
+  };
+  const request = async () => { throw new Error('No chunk may come through Main.'); };
+  const release = { ...built.release, github };
+  const installed = join(base, 'installed');
+  const manifest = await downloadWorkerArtifact({ release, request, directory: installed, facts, fetchAsset });
+  assert.deepEqual(requested, [{ github, asset: `${built.release.manifestSha256}.tar.gz` }]);
+  assert.equal(manifest.version, '1.2.0');
+  assert.equal(await readFile(join(installed, 'src/cli.mjs'), 'utf8'), "console.log('1.2.0');\n");
+
+  await writeFile(join(built.directory, 'src/cli.mjs'), "console.log('tampered');\n");
+  spawnSync('tar', ['-czf', archive, '-C', built.directory, '.']);
+  await assert.rejects(downloadWorkerArtifact({ release, request, directory: join(base, 'tampered'), facts, fetchAsset }),
+    { code: 'artifact_checksum_mismatch' });
+});
 
 test('authenticated-ready check detects Main version mismatch, installs and reconnects at the matching version', async t => {
   const f = await fixture(t);

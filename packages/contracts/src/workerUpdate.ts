@@ -47,9 +47,15 @@ export const WorkerArtifactManifestSchema = z.object({
 }, 'Invalid artifact file list')
 export type WorkerArtifactManifest = z.infer<typeof WorkerArtifactManifestSchema>
 
+/** Where Workers download a release: a GitHub release asset per artifact, named <manifestSha256>.tar.gz. */
+export const WorkerArtifactGitHubSchema = z.object({
+  repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u),
+  tag: z.string().regex(/^worker-[a-f0-9]{12,64}$/u),
+}).strict()
 export const WorkerArtifactIndexSchema = z.object({
   format: z.literal(1),
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+  github: WorkerArtifactGitHubSchema.optional(),
   artifacts: z.array(z.object({
     target: WorkerArtifactTargetSchema,
     manifestSha256: digest,
@@ -69,6 +75,7 @@ export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
       version: z.string().regex(/^\d+\.\d+\.\d+$/u),
       manifestSha256: digest,
       manifest: z.unknown(),
+      github: WorkerArtifactGitHubSchema.optional(),
     }).strict().nullable(),
   }).strict(),
   z.object({
