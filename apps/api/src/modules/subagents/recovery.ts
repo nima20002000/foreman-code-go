@@ -70,8 +70,11 @@ export async function backfillRunSubagents(service: RunSubagentService, principa
   const sources = await service.scoped(principal, input, 'runs:read', async scope => (await scope.sql.query<{ id: string; reference: unknown; child_cursor: string | null }>(
     `select e.id,s.reference,b.child_cursor from harness_executions e join execution_native_sessions s on s.execution_id=e.id
      left join run_subagent_backfill_state b on b.execution_id=e.id where e.run_id=$1 and not coalesce(b.complete,false)
-     -- An unavailable provider is retried once a minute, not on every Board poll.
-     and (b.last_failure is null or b.updated_at < clock_timestamp() - interval '1 minute') order by e.id limit 8`, [input.runId])).rows)
+     -- An unavailable provider is retried once a minute while the Run is live, hourly once it has finished
+     -- (a finished Main-local session is usually gone; a Worker may still come back), never on every Board poll.
+     and (b.last_failure is null or b.updated_at < clock_timestamp() - case when exists(select 1 from runs r
+       where r.id=e.run_id and r.execution_state='completed') then interval '1 hour' else interval '1 minute' end)
+     order by e.id limit 8`, [input.runId])).rows)
   for (const source of sources) {
     const session = NativeSessionReferenceSchema.parse(source.reference)
     let page

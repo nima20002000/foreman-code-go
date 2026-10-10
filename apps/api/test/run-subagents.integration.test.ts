@@ -435,6 +435,27 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
       expect((await pool.query('select count(*)::int as count from harness_native_events where execution_id=$1', [f.executionId])).rows[0].count).toBe(2)
     } finally { await freshPool.end() }
   })
+  it('retries an unavailable native child readback each minute while the Run is live and hourly once it finished', async () => {
+    const f = await fixture()
+    const read = vi.fn(async () => { throw new Error('native session gone') })
+    const recovering = new RunSubagentService(pool, undefined, read)
+    const age = (interval: string) => pool.query(`update run_subagent_backfill_state set updated_at=clock_timestamp()-$2::interval where execution_id=$1`, [f.executionId, interval])
+    await backfillRunSubagents(recovering, f.reader.principal, f.input)
+    await backfillRunSubagents(recovering, f.reader.principal, f.input)
+    expect(read).toHaveBeenCalledTimes(1)
+    await age('2 minutes')
+    await backfillRunSubagents(recovering, f.reader.principal, f.input)
+    expect(read).toHaveBeenCalledTimes(2)
+    await pool.query(`update runs set execution_state='completed', record=record || jsonb_build_object('executionState','completed',
+      'outcome','failed','result',jsonb_build_object('outcome','failed'),'finishedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+      where id=$1`, [f.input.runId])
+    await age('2 minutes')
+    await backfillRunSubagents(recovering, f.reader.principal, f.input)
+    expect(read).toHaveBeenCalledTimes(2)
+    await age('2 hours')
+    await backfillRunSubagents(recovering, f.reader.principal, f.input)
+    expect(read).toHaveBeenCalledTimes(3)
+  })
   it.each(['codex-multi-agent-v2', 'codex-collab'] as const)('controls the owned %s child through HTTP and MCP with persisted receipts', async nativeMode => {
     const f = await fixture('codex')
     if (nativeMode === 'codex-multi-agent-v2') await f.discover()
