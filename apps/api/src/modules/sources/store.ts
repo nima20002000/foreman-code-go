@@ -1,5 +1,6 @@
 import { constants } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
+import { basename, dirname } from 'node:path'
 import { lstat, mkdir, open, readdir, rename, rmdir, unlink, type FileHandle } from 'node:fs/promises'
 import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
@@ -174,8 +175,26 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
     } finally { await snapshot.close(); await root.close() }
   }
   async storageIdentity(): Promise<RootBinding['filesystem']> {
-    const root = await openPrivateRoot(this.canonicalRoot)
-    try { return await identity(root) } finally { await root.close() }
+    let root: FileHandle
+    try {
+      root = await openPrivateRoot(this.canonicalRoot)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const parent = await openPrivateRoot(dirname(this.canonicalRoot), false)
+      try {
+        const directory = await openChildDirectory(parent, basename(this.canonicalRoot), true)
+        await directory.close()
+        await parent.sync()
+      } finally {
+        await parent.close()
+      }
+      root = await openPrivateRoot(this.canonicalRoot)
+    }
+    try {
+      return await identity(root)
+    } finally {
+      await root.close()
+    }
   }
 
   /** The caller has persisted unavailability and holds the snapshot and storage locks. */
