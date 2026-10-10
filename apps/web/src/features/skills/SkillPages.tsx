@@ -95,12 +95,19 @@ function SkillUsersBanner({ workspaceId, skillId }: { workspaceId: string; skill
   const update = useUpdateSkillUsersMutation(workspaceId, skillId)
   const commandId = useRef(crypto.randomUUID())
   const failed = update.data?.failed ?? []
-  if (!usage.data || (!usage.data.agents.length && !failed.length)) return null
+  if (usage.isError) return <Alert tone="warning" title="Skill usage could not be loaded."
+    action={<Button size="sm" disabled={usage.isFetching} onClick={() => void usage.refetch()}>Try again</Button>}>
+    {usage.error.message}
+  </Alert>
+  if (!usage.data || (!usage.data.agents.length && !usage.data.workflows.length && !failed.length)) return null
   const { agents, workflows } = usage.data
   const count = (value: number, word: string) => `${value} ${word}${value === 1 ? '' : 's'}`
-  return <Alert tone={failed.length ? 'warning' : 'info'} title={agents.length
-    ? `${count(agents.length, 'Agent')}${workflows.length ? ` and ${count(workflows.length, 'workflow')}` : ''} still use an older version`
-    : 'Some updates did not finish'} action={<Button size="sm" variant="primary" disabled={update.isPending} onClick={() => {
+  const users = [agents.length ? count(agents.length, 'Agent') : '', workflows.length ? count(workflows.length, 'workflow') : '']
+    .filter(Boolean).join(' and ')
+  const verb = agents.length + workflows.length === 1 ? 'uses' : 'use'
+  return <Alert tone={failed.length ? 'warning' : 'info'} title={users
+    ? `${users} still ${verb} an older version` : 'Some updates did not finish'}
+    action={<Button size="sm" variant="primary" disabled={update.isPending} onClick={() => {
       update.mutate(commandId.current, { onSuccess: () => { commandId.current = crypto.randomUUID() } })
     }}>{update.isPending ? 'Updating…' : `Update to v${usage.data.headVersion}`}</Button>}>
     {agents.length ? <p className="skills-users">{agents.map(agent => `${agent.name} (v${agent.version})`).join(', ')}</p> : null}

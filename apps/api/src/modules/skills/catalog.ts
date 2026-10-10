@@ -7,6 +7,7 @@ import {
   type SkillUpdateInput, type SkillVersion,
 } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { authorizedPage } from '../access/authorizedPage.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -149,8 +150,8 @@ export class SkillCatalogService {
     requireAuthorization(principal, 'skills:publish', { workspaceId: input.workspaceId })
     return this.commands.execute({ principal, source, operation: 'skill.create', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:skills`, payload: input,
+      authorize: async (client) => { await this.authorizePublish(client, principal, input.workspaceId) },
       perform: async (client) => {
-        await lockActiveWorkspace(client, input.workspaceId)
         const skillId = `skill-${randomUUID()}`
         const version = await this.insertVersion(client, input.workspaceId, skillId, 1, input)
         await client.query(`insert into workspace_skills(workspace_id,skill_id,head_version,revision,version_count) values($1,$2,$3,1,1)`,
@@ -165,8 +166,8 @@ export class SkillCatalogService {
     requireAuthorization(principal, 'skills:publish', { workspaceId: input.workspaceId })
     return this.commands.execute({ principal, source, operation: 'skill.update', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:skill:${input.skillId}`, payload: input,
+      authorize: async (client) => { await this.authorizePublish(client, principal, input.workspaceId) },
       perform: async (client) => {
-        await lockActiveWorkspace(client, input.workspaceId)
         const head = await this.lockedHead(client, input)
         if (head.archived) throw new DomainError('SKILL_ARCHIVED', 'Restore this archived skill before editing it.', 409)
         const current = verifiedVersion((await client.query<{ record: unknown }>(
@@ -192,8 +193,11 @@ export class SkillCatalogService {
     requireAuthorization(principal, 'skills:read', { workspaceId: input.workspaceId })
     return this.commands.execute({ principal, source, operation: 'skill.archive', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:skill:${input.skillId}`, payload: input,
+      authorize: async (client) => {
+        const live = await this.authorizePublish(client, principal, input.workspaceId)
+        requireAuthorization(live, 'skills:read', { workspaceId: input.workspaceId })
+      },
       perform: async (client) => {
-        await lockActiveWorkspace(client, input.workspaceId)
         const head = await this.lockedHead(client, input)
         const changed = head.archived !== input.archived
         if (changed) await client.query(`update workspace_skills set archived_at=case when $3 then now() else null end,revision=revision+1,updated_at=now()
@@ -205,6 +209,13 @@ export class SkillCatalogService {
         return { skill, version, changed }
       },
     })
+  }
+
+  private async authorizePublish(client: pg.PoolClient, principal: ManagementPrincipal, workspaceId: string) {
+    await lockActiveWorkspace(client, workspaceId)
+    const live = await readLiveManagementPrincipal(client, principal.id)
+    requireAuthorization(live, 'skills:publish', { workspaceId })
+    return live
   }
 
   private async head(client: pg.ClientBase | pg.Pool, workspaceId: string, skillId: string, lock = false): Promise<SkillSummary> {

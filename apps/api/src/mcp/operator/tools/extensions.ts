@@ -121,11 +121,11 @@ export function registerExtendedOperatorTools(server: McpServer, context: Operat
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_archive', () => extension.skills.archive(context.principal,input,'mcp')))
   if (skillTools) server.registerTool('skill_usage_get', {
-    description: "List the Agents still assigned an older version of a skill and the saved workflows that use them (or already use a changed Agent). Requires skills:read.", inputSchema: contracts.SkillUsageInputSchema, outputSchema: contracts.SkillUsageSchema,
+    description: "List all Agents still assigned an older version of this skill and their affected saved workflows, including workflows still pinned before a consumer's Agent update. Unrelated Agents and workflows are excluded. Requires skills:read.", inputSchema: contracts.SkillUsageInputSchema, outputSchema: contracts.SkillUsageSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_usage_get', () => extension.skillUsage.usage(context.principal,input)))
   if (skillTools) server.registerTool('skill_users_update', {
-    description: "Move every Agent on an older version of this skill to its current version (normal Agent saves: agents:update and graph edit on their workflows), then re-save each affected workflow so its next Runs use the updated Agents. Running Agents keep their exact version. Per-item failures (for example a busy Agent) are returned in failed; retry with the same commandId.", inputSchema: contracts.SkillUsersUpdateInputSchema, outputSchema: contracts.SkillUsersUpdateResultSchema,
+    description: "Move this skill's consumers to its current version through normal Agent and workflow saves. Requires skills:read, agents:update and the saves' scoped graph/workflow permissions. Unrelated workflow pins are preserved; concurrent configuration changes can cause per-item conflicts. Running Agents keep their saved version. The original head and consumer plan are retained before any child save: retry the same commandId to resume failures or replay the completed result. Use a new commandId to include newer skill versions or new consumers.", inputSchema: contracts.SkillUsersUpdateInputSchema, outputSchema: contracts.SkillUsersUpdateResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => invokeOperatorTool(context, 'skill_users_update', () => extension.skillUsage.updateUsers(context.principal,'mcp',input)))
 }

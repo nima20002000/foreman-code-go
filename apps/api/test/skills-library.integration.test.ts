@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import * as c from '@foreman-code/contracts/management'
 import { AgentConfigurationVersionSchema, OperatorConfigurationVersionSchema, type HarnessConfiguration } from '@foreman-code/contracts'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -34,11 +34,18 @@ const qualify = { qualifyConfiguration: async (value: HarnessConfiguration) => {
 } }
 const codex = { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } as const
 
+function barrier() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
+
 describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and the unified MCP', () => {
   let database: Awaited<ReturnType<typeof currentDatabase>>
   let app: FastifyInstance
   let address: string
   let access: PostgresAccessService
+  let commands: PostgresCommandCoordinator
   let services: OperatorServices
   let owner: string
   let workspaceA: string
@@ -67,7 +74,7 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
   beforeAll(async () => {
     database = await currentDatabase()
     const runtime = await mkdtemp(join(tmpdir(), 'skills-runtime-')); directories.push(runtime)
-    const commands = new PostgresCommandCoordinator(database.pool)
+    commands = new PostgresCommandCoordinator(database.pool)
     access = new PostgresAccessService(database.pool)
     const locations = new WorkspaceLocationService(database.pool, commands, runtime)
     const workspaces = new WorkspaceManagementService(database.pool, commands, locations)
@@ -161,6 +168,107 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
     expect(editArchived.json.code).toBe('SKILL_ARCHIVED')
     const audit = await database.pool.query<{ source: string }>(`select distinct source from management_audit where action like 'skill.%'`)
     expect(audit.rows.map((row) => row.source)).toEqual(['http'])
+  })
+
+  it.each(['create', 'update', 'archive'] as const)('rejects a skill %s after its publisher grant is revoked during admission',
+    async (operation) => {
+      const created = c.SkillMutationResultSchema.parse((await http('POST',
+        `/api/management/workspaces/${workspaceB}/skills`, owner,
+        { commandId: randomUUID(), name: 'Admission', instructions: 'Original instructions' })).json).value.skill
+      const publisher = await access.issue({ name: 'Revoked publisher', audience: 'operator',
+        grants: [{ actions: ['skills:read', 'skills:publish'], scope: { workspaceIds: [workspaceB] } }],
+        expiresAt: new Date(Date.now() + 600_000) })
+      const client = await mcp(publisher.token)
+      const commandId = randomUUID()
+      const entered = barrier()
+      const released = barrier()
+      const execute = commands.execute.bind(commands)
+      const paused: typeof commands.execute = async (input) => {
+        if (input.commandId === commandId && input.operation === `skill.${operation}`) {
+          entered.resolve()
+          await released.promise
+        }
+        return execute(input)
+      }
+      const spy = vi.spyOn(commands, 'execute').mockImplementation(paused)
+      const before = await database.pool.query('select record from workspace_skill_versions where workspace_id=$1 order by skill_id,version',
+        [workspaceB])
+      const args: Record<string, unknown> = { workspaceId: workspaceB, commandId }
+      if (operation === 'create') {
+        args.name = 'Denied create'
+        args.instructions = 'Denied instructions'
+      } else {
+        args.skillId = created.skillId
+        args.expectedRevision = created.revision
+        if (operation === 'archive') args.archived = true
+        else {
+          args.name = 'Denied update'
+          args.instructions = 'Denied instructions'
+        }
+      }
+      const pending = client.callTool({ name: `skill_${operation}`, arguments: args })
+      try {
+        await entered.promise
+        await database.pool.query('update management_principals set grants=$2::jsonb where id=$1',
+          [publisher.principal.id, JSON.stringify([{ actions: ['skills:read'], scope: { workspaceIds: [workspaceB] } }])])
+        released.resolve()
+        const denied = await pending
+        expect(denied.isError).toBe(true)
+        expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+        const read = c.SkillGetResultSchema.parse(decodeMcpToolResult(await (await mcp(owner)).callTool({
+          name: 'skill_get', arguments: { workspaceId: workspaceB, skillId: created.skillId },
+        })))
+        expect(read.skill).toEqual(created)
+        expect(read.version.instructions).toBe('Original instructions')
+        expect((await database.pool.query('select record from workspace_skill_versions where workspace_id=$1 order by skill_id,version',
+          [workspaceB])).rows).toEqual(before.rows)
+        expect((await database.pool.query('select count(*)::int as count from management_command_receipts where principal_id=$1 and command_id=$2',
+          [publisher.principal.id, commandId])).rows[0].count).toBe(0)
+      } finally {
+        released.resolve()
+        await pending
+        spy.mockRestore()
+      }
+    })
+
+  it('rejects a skill create when the principal is revoked while waiting for command admission', async () => {
+    const publisher = await access.issue({ name: 'Revoked principal', audience: 'operator',
+      grants: [{ actions: ['skills:publish'], scope: { workspaceIds: [workspaceB] } }],
+      expiresAt: new Date(Date.now() + 600_000) })
+    const client = await mcp(publisher.token)
+    const commandId = randomUUID()
+    const entered = barrier()
+    const released = barrier()
+    const execute = commands.execute.bind(commands)
+    const paused: typeof commands.execute = async (input) => {
+      if (input.commandId === commandId) {
+        entered.resolve()
+        await released.promise
+      }
+      return execute(input)
+    }
+    const spy = vi.spyOn(commands, 'execute').mockImplementation(paused)
+    const pending = client.callTool({ name: 'skill_create', arguments: {
+      workspaceId: workspaceB, commandId, name: 'Revoked create', instructions: 'Denied instructions',
+    } })
+    try {
+      await entered.promise
+      await access.revoke(publisher.principal.id)
+      released.resolve()
+      const denied = await pending
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('AUTH_REVOKED')
+      const list = c.SkillPageSchema.parse(decodeMcpToolResult(await (await mcp(owner)).callTool({
+        name: 'skill_list', arguments: { workspaceId: workspaceB, query: 'Revoked create' },
+      })))
+      expect(list.items).toEqual([])
+      expect((await database.pool.query('select count(*)::int as count from management_command_receipts where principal_id=$1 and command_id=$2',
+        [publisher.principal.id, commandId])).rows[0].count).toBe(0)
+    } finally {
+      released.resolve()
+      await pending
+      spy.mockRestore()
+    }
   })
 
   it('serializes concurrent saves: one new version, one recoverable conflict', async () => {

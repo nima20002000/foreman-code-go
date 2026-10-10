@@ -41,7 +41,13 @@ export function SkillsLibrary({ search, onSearchChange }: { search: SkillLibrary
   }, [text, search, onSearchChange])
   const pages = useSkillPages({ workspaceId: search.workspace, query: search.q, includeArchived: search.archived })
   const accessError = useProtectedAccessError(pages)
-  const items = pages.data?.pages.flatMap((page) => page.items) ?? []
+  const skillsById = new Map<string, SkillSummary>()
+  for (const skill of pages.data?.pages.flatMap((page) => page.items) ?? []) {
+    const key = `${skill.workspaceId}:${skill.skillId}`
+    const previous = skillsById.get(key)
+    if (!previous || skill.revision > previous.revision) skillsById.set(key, skill)
+  }
+  const items = [...skillsById.values()]
   const filtered = Boolean(search.q || search.workspace || search.archived)
   const addSkill = <Link to="/settings/skills/new" search={search.workspace ? { workspace: search.workspace } : {}} className="n-button n-button--primary n-button--md skill-add-button">
     <Icon name="plus" size={16} /> Add skill</Link>

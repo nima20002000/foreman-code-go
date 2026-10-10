@@ -56,10 +56,16 @@ prompt sections, so existing sessions do not switch behavior.
 | Create | `POST /api/management/workspaces/:ws/skills` | `skill_create` | `skills:publish` |
 | Save new version | `PATCH …/skills/:id` | `skill_update` | `skills:publish` |
 | Archive / restore | `PUT …/skills/:id/archive` | `skill_archive` | `skills:publish` + `skills:read` |
+| Read all consumers needing updates | `GET …/skills/:id/usage` | `skill_usage_get` | `skills:read` |
+| Update consumers and workflow pins | `POST …/skills/:id/update-users` | `skill_users_update` | `skills:read` + `agents:update` + normal Agent/workflow save permissions |
 | Assign to a board Agent | Agent create/update, board Save | `agent_create`, `agent_update`, `workflow_edit_v3`/`workflow_save_v3` staged Agents | `skills:read` (source) + Agent/graph edit (destination) |
 | Assign to the Operator | `PUT /api/management/settings/agents` | `agent_defaults_update` | `settings:update` + `skills:read` on each referenced workspace |
 
 `skill_publish` (caller-chosen version labels) is replaced by `skill_create`/`skill_update`.
+Consumer reads and updates cover the full workspace. Bulk updates retain the skill head, consumer set,
+revisions and workflow pins before the first child save. Retry the same command ID to resume failed items
+or replay the completed result; use a new ID to include newer skill versions or consumers. Unrelated
+workflow pins stay unchanged; conflicting concurrent Agent edits are reported as item failures.
 Skill tools are Operator-role tools on the one `/mcp` server. They stay listed for every Operator
 credential and the service checks grants and workspace scope on each call, so a forbidden call returns
 an audited `ACCESS_DENIED` with no side effects. Orchestrator/Coder credentials are not offered them.
