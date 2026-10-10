@@ -1,4 +1,4 @@
-export const runWorktreesMigration = { version: 2026101010, sql: `
+export const runWorktreesMigration = { version: 2026101012, sql: `
   create table run_worktrees (
     run_id text primary key references runs(id),
     repository_root text not null,

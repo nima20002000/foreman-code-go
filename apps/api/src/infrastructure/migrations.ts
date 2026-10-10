@@ -898,8 +898,8 @@ export const migrations = [
   workflowExecutionFailureMigration,
   workspaceRepositoryImportsMigration,
   bugReportsMigration,
-  runWorktreesMigration,
   runActivityCommitOrderMigration,
+  runWorktreesMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
