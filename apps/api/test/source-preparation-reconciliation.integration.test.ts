@@ -137,7 +137,6 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     worker = new SourceOperationWorkerService({authenticate:async context=>{expect(context.binding).toEqual(binding)},approvedRoots:async()=>approved,
       currentOwner:(operation,context)=>owners.resolve(operation,DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
         workerInstallationId:context.binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:context.binding.bootId,connectionGeneration:1})),
-      transfers:{resolveVerifiedReceipt:unused,openVerified:unused},transferContext:async()=>binding,
       quotaPoolFor: async binding => {
         if (!sourceQuotaConfiguration) return verificationQuota
         const pool = await installedSourceQuotaPool(sourceQuotaConfiguration, binding)
@@ -146,7 +145,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       preparationNativeClosed:async operationId=>allowPreparationClosure && (await journal.jobNativeOwner(operationId))===null})
     const remote = new CarrierRemoteSourceMaterializationHost({capture:()=>({identity:DeviceConnectionIdentitySchema.parse({mainId,deviceId:binding.deviceId,
       workerInstallationId:binding.workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:binding.bootId,connectionGeneration:1}),
-      request:async(_namespace,request)=>({payload:await worker.handle(SourceFilesystemOperationSchema.parse(request),{binding,signal:new AbortController().signal})})})},owners,{send:unused})
+      request:async(_namespace,request)=>({payload:await worker.handle(SourceFilesystemOperationSchema.parse(request),{binding,signal:new AbortController().signal})})})},owners,{publish:unused})
     const commands = new PostgresCommandCoordinator(database.pool)
     sources = new PostgresSourceService(database.pool,commands,{} as never,snapshots,mainId,{} as never,
       {authorize:async()=>{},authorizeFinal:async()=>{},prepare: async (manifest, root, attempt) => {

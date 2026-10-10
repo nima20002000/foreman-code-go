@@ -5,14 +5,12 @@ import { constants } from 'node:fs'
 import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsage.js'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
 import { assertWorktreeReceipt } from './worktreeRequest.js'
 import { z } from 'zod'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, SourceOperationResponseSchema,
   SOURCE_OPERATION_EXTENSION, type SourceFilesystemOperation, type SourceOperationOwner, type SourceOperationResponse } from '@foreman-code/contracts/source-operations'
-import { VerifiedTransferReceiptSchema, type VerifiedTransferReceipt, type TransferContext } from '@foreman-code/contracts/byte-transfer'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { SourceManifest, MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
 import type { SourcePreparationClosure, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
@@ -24,16 +22,13 @@ import { createPrivateSourceRepository } from './repository.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
 import { assertSourceNativeSession, sourceNativeSessionContinues, verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import type { SourceNativeSessionCapture, SourceInstalledNativeOwnerReader } from './executionHosts.js'
-import { VerifiedSourcePackageReader } from './operationPackage.js'
+import { openGitHubSource } from './githubSource.js'
+import { systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 import { SourceReservationReclamationRequestSchema, SourceReservationReclamationSchema,
   SourceReservationReclamationResponseSchema, type SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
 import { reclaimSourceReservation } from './reclaimSourceReservation.js'
 
 export interface SourceOperationWorkerContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; bytes?: Uint8Array }
-export interface VerifiedSourceTransfers {
-  resolveVerifiedReceipt(id: string, context: TransferContext): Promise<VerifiedTransferReceipt>
-  openVerified(receipt: VerifiedTransferReceipt, context: TransferContext): Promise<Readable>
-}
 export interface SourceOperationWorkerOptions {
   currentReclamation?(reservationId: string, reclamationId: string,
     context: SourceOperationWorkerContext): Promise<SourceReservationReclamation>
@@ -44,8 +39,8 @@ export interface SourceOperationWorkerOptions {
   quotaPoolFor?(binding: MaterializationReceipt['binding']): Promise<SourceQuotaPool | undefined>
   /** Real sources.authorize on the sole authenticated W07 Main channel. */
   currentOwner(request: SourceFilesystemOperation, context: SourceOperationWorkerContext): Promise<SourceOperationOwner>
-  transfers: VerifiedSourceTransfers
-  transferContext(context: SourceOperationWorkerContext): Promise<TransferContext>
+  /** This computer's GitHub clone; it fetches approved commits with its own login. */
+  git?: GitWorktreePorts
   /** Actual original installed native manager/session; no caller-supplied flag. */
   nativeOwnerFor?: SourceInstalledNativeOwnerReader
   /** Original protected installed Job journal. Missing evidence fails closed. */
@@ -182,7 +177,6 @@ export class SourceOperationWorkerService {
     if (Buffer.byteLength(JSON.stringify(request)) > SOURCE_OPERATION_EXTENSION.maxJsonBytes) throw new SourceError('SOURCE_CAPACITY', 'Source operation metadata exceeds its carrier budget.')
     if (this.active >= SOURCE_OPERATION_EXTENSION.maxPending) throw new SourceError('SOURCE_CAPACITY', 'Source operation capacity is exhausted.')
     this.active++
-    let packageReader: VerifiedSourcePackageReader | undefined
     let preparation: string | undefined
     try {
       let owner = await this.authority(request, context)
@@ -230,27 +224,14 @@ export class SourceOperationWorkerService {
           await reauthorize()
           return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: recovered })
         }
-        const transferContext = await this.options.transferContext(context)
-        for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const)
-          if (transferContext[key] !== context.binding[key]) throw new SourceError('SOURCE_TRANSFER_CONFLICT', 'Transfer reader is not bound to the actual current authenticated device.')
-        const receipt = VerifiedTransferReceiptSchema.parse(await this.options.transfers.resolveVerifiedReceipt(request.package.transferId, transferContext)), intent = receipt.intent
-        if (receipt.receiptId !== request.package.receiptId || receipt.sha256 !== request.package.sha256 || receipt.byteSize !== request.package.byteSize
-          || intent.sha256 !== receipt.sha256 || intent.byteSize !== receipt.byteSize || intent.byteClass !== 'source' || intent.direction !== 'to-worker'
-          || intent.operationId !== owner.identity.operationId || intent.executionId !== owner.attempt.executionId || intent.attemptId !== owner.attempt.attemptId
-          || intent.placementHash !== owner.attempt.placementHash || intent.rootId !== owner.root.binding.rootId || intent.rootBindingRevision !== owner.root.binding.bindingRevision
-          || intent.manifestDigest !== owner.source.manifestDigest) throw new SourceError('SOURCE_TRANSFER_CONFLICT', 'The verified source package belongs to another exact operation/root/snapshot.')
-        for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const)
-          if (intent[key] !== transferContext[key]) throw new SourceError('SOURCE_TRANSFER_CONFLICT', 'The verified source package belongs to another receiver authority.')
-        packageReader = new VerifiedSourcePackageReader(await this.options.transfers.openVerified(receipt, transferContext), receipt.byteSize, context.signal)
-        const manifest = await packageReader.open(owner.source)
-        const receiptValue = await new PrivateSourceMaterializer(packageReader, async () => { await reauthorize()
-          // Complete framing is checked BEFORE activation in the materializer's
-          // final authorization callback, not after a partial ready receipt.
-          if (packageReader!.readyToComplete) await packageReader!.complete()
-        }, quotaPool).prepare({ manifest, binding: owner.root.binding, attempt: owner.attempt, signal: context.signal,
+        const github = await openGitHubSource(this.options.git ?? systemGitWorktreePorts(), request.github, owner.source, context.signal)
+        await reauthorize()
+        const manifest = github.manifest
+        const receiptValue = await new PrivateSourceMaterializer(github.reader, reauthorize, quotaPool).prepare({ manifest,
+          binding: owner.root.binding, attempt: owner.attempt, signal: context.signal,
           ...(owner.preparationKind === 'workflow' && owner.root.binding.accessMode === 'exclusive-write'
             ? { sharedWritableTree: true, ...(request.worktree ? { worktree: request.worktree } : {}) } : {}) })
-        await packageReader.complete(); await reauthorize()
+        await reauthorize()
         assertWorktreeReceipt(receiptValue, owner.worktree, manifest.git?.commit)
         return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: receiptValue })
       }
@@ -304,7 +285,7 @@ export class SourceOperationWorkerService {
       await reauthorize()
       return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation,
         materializationId: record.receipt.materializationId, operationId: record.operationId, released: true, ...footprint })
-    } finally { if (preparation) this.preparing.delete(preparation); packageReader?.close(); this.active-- }
+    } finally { if (preparation) this.preparing.delete(preparation); this.active-- }
   }
 }
 export function createSourceOperationWorkerHandler(options: SourceOperationWorkerOptions) {

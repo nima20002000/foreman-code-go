@@ -1,15 +1,14 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { gitFixtureEnvironment } from './helpers/gitFixture.js'
-import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
+import { publishCommit } from '../src/modules/sources/githubPublisher.js'
 import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
 import { captureGitSource } from '../src/modules/sources/capture.js'
 import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
-import type { CiRuntimeProvisioner } from '../src/modules/jobs/ciRuntimeProvisioner.js'
 import { describe, expect, it } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
 import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, dexter, oldImage, newImage, commit, newPin,
@@ -337,20 +336,14 @@ describe('runtime preparation ownership and recovery', () => {
   })
 })
 
-it.each(['direct', 'lost first chunk acknowledgment', 'lost final chunk acknowledgment',
-  'changed retried chunk', 'Main restart after source delivery', 'published on GitHub'] as const)(
-  'delivers an unpublished snapshot through authenticated MCP: %s', async scenario => {
-    const directory = await mkdtemp(join(tmpdir(), 'ci-unpublished-'))
+it.each(['unpublished Agent commit', 'published commit', 'computer without GitHub', 'Main without push access'] as const)(
+  'prepares a build computer from GitHub only, through authenticated MCP: %s', async scenario => {
+    const directory = await mkdtemp(join(tmpdir(), 'ci-github-'))
     let f: Awaited<ReturnType<typeof fixture>> | undefined
-    let recovered: CiRuntimeProvisioner | undefined
-    let release!: () => void
-    const paused = new Promise<void>(resolve => { release = resolve })
-    let reached!: () => void
-    const delivered = new Promise<void>(resolve => { reached = resolve })
-    let restarting = false
     const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
       { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
     try {
+      // `origin` stands in for GitHub; `main` is Main's clone of it.
       const origin = join(directory, 'origin')
       await mkdir(origin)
       git(origin, 'init', '-q', '-b', 'main')
@@ -361,70 +354,49 @@ it.each(['direct', 'lost first chunk acknowledgment', 'lost final chunk acknowle
       git(directory, 'clone', '-q', origin, main)
       const agent = join(directory, 'agent')
       git(directory, 'clone', '-q', origin, agent)
-      const unpublishedLockfile = `unpublished lockfile\n${'\n'.repeat(600 * 1024)}`
-      await writeFile(join(agent, 'pnpm-lock.yaml'), unpublishedLockfile)
+      await writeFile(join(agent, 'pnpm-lock.yaml'), 'agent lockfile\n')
       const system = systemGitWorktreePorts(gitFixtureEnvironment())
       const signal = AbortSignal.timeout(30_000)
       const snapshot = await snapshotAgentWorktree(system, { path: agent, baseCommit: git(origin, 'rev-parse', 'HEAD') }, signal)
       await importAgentSnapshot(system, main, snapshot, signal)
       const acceptedCommit = snapshot.commit
-      if (scenario === 'published on GitHub') git(main, 'push', '-q', 'origin', `${acceptedCommit}:refs/heads/published`)
-      const storage = join(directory, 'snapshots')
-      await mkdir(storage, { mode: 0o700 })
-      const store = new PrivateSourceSnapshotStore(storage)
-      const acceptedManifest = await captureGitSource({ root: main, commit: acceptedCommit,
-        approvedSourceId: randomUUID(), approvedPaths: ['pnpm-lock.yaml'], executablePolicy: 'preserve-approved',
-        repository: 'octo/site', sink: store })
-      const workerGit: GitWorktreePorts = { cloneDirectory: () => join(directory, 'worker-clone'),
-        git: (args, options) => system.git(args[0] === 'clone'
-          ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
-      const losesSourceAck = scenario.startsWith('lost ') || scenario === 'changed retried chunk'
-      const ackKind = scenario === 'lost final chunk acknowledgment' ? 'complete' : 'first'
-      f = await fixture({ source: { manifest: acceptedManifest, store, git: workerGit },
-        ...(losesSourceAck ? { loseSourceAck: ackKind } : {}),
-        corruptSourceRetry: scenario === 'changed retried chunk',
-        published: scenario === 'published on GitHub',
-        pause: async stage => {
-          if (scenario === 'Main restart after source delivery' && stage === 'source-transfer' && !restarting) {
-            reached()
-            await paused
-          }
-        } })
-      const input = { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'unpublished-runtime' }
+      if (scenario === 'published commit') git(main, 'push', '-q', 'origin', `${acceptedCommit}:refs/heads/published`)
+      const acceptedManifest = await captureGitSource({ root: main, commit: acceptedCommit, approvedSourceId: randomUUID(),
+        approvedPaths: ['pnpm-lock.yaml'], executablePolicy: 'preserve-approved', repository: 'octo/site',
+        sink: { write: async () => {}, writeGitMetadata: async () => {}, commit: async () => {}, abort: async () => {} } })
+      const refused = { code: 128, stdout: '', stderr: 'fatal: could not read Username for https://github.com' }
+      const mainGit: GitWorktreePorts = { cloneDirectory: () => main, git: (args, options) =>
+        scenario === 'Main without push access' && args[0] === 'push' ? Promise.resolve(refused) : system.git(args, options) }
+      const workerGit: GitWorktreePorts = { cloneDirectory: () => join(directory, 'worker-clone'), git: (args, options) =>
+        scenario === 'computer without GitHub' && ['clone', 'fetch'].includes(args[0]!) ? Promise.resolve(refused)
+          : system.git(args[0] === 'clone' ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
+      f = await fixture({ source: { manifest: acceptedManifest, git: workerGit },
+        publish: (repository, commit) => publishCommit(mainGit, repository, commit, signal) })
+      const input = { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'github-runtime' }
       expect((await f.call('build_computer_prepare', input, 'readonly')).isError).toBe(true)
       expect(f.calls.prepare).toEqual([])
       expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
-      if (scenario === 'changed retried chunk') {
-        expect(await f.settle('p-unit')).toMatchObject({ state: 'failed',
-          message: 'A retried CI source chunk differs from its original bytes.' })
+      const settled = await f.settle('p-unit')
+      expect(f.calls.publish).toEqual([{ repository: 'octo/site', commit: acceptedCommit }])
+      if (scenario === 'computer without GitHub') {
+        expect(settled).toMatchObject({ state: 'failed', message: expect.stringContaining('Connect GitHub on this computer') })
         expect(f.calls.prepare).toEqual([])
         return
       }
-      if (scenario === 'Main restart after source delivery') {
-        await delivered
-        restarting = true
-        const closing = f.ciRuntime.close()
-        release()
-        await closing
-        recovered = f.createProvisioner()
-        await recovered.recover()
-      }
-      expect(await f.settle('p-unit', recovered ?? f.ciRuntime)).toMatchObject({ state: 'qualified', commit: acceptedCommit })
-      expect(f.calls.prepare).toHaveLength(1)
-      expect(f.profiles.get('p-unit')?.sourceCommit).toBe(acceptedCommit)
-      expect((await workerGit.git(['show', `${acceptedCommit}:pnpm-lock.yaml`],
-        { cwd: workerGit.cloneDirectory('octo/site'), signal })).stdout).toBe(unpublishedLockfile)
-      if (scenario === 'published on GitHub') {
-        // The computer fetched the commit from the repository; Main sent no source bytes.
-        expect(f.calls.sourceChunks).toBe(0)
+      if (scenario === 'Main without push access') {
+        expect(settled).toMatchObject({ state: 'failed', message: expect.stringContaining('Connect GitHub with push access on Main') })
+        expect(git(origin, 'branch', '--list', 'foreman/*')).toBe('')
+        expect(f.calls.prepare).toEqual([])
         return
       }
-      expect(f.calls.sourceChunks).toBeGreaterThan(0)
-      expect(git(origin, 'rev-parse', 'HEAD')).not.toBe(acceptedCommit)
-      expect(await readFile(join(origin, 'pnpm-lock.yaml'), 'utf8')).toBe('published lockfile\n')
+      expect(settled).toMatchObject({ state: 'qualified', commit: acceptedCommit })
+      expect(f.calls.prepare).toHaveLength(1)
+      expect(f.profiles.get('p-unit')?.sourceCommit).toBe(acceptedCommit)
+      // The computer fetched the commit from GitHub itself.
+      expect((await workerGit.git(['show', `${acceptedCommit}:pnpm-lock.yaml`],
+        { cwd: workerGit.cloneDirectory('octo/site'), signal })).stdout).toBe('agent lockfile\n')
+      expect(git(origin, 'branch', '--list', 'foreman/ci/*').length > 0).toBe(scenario === 'unpublished Agent commit')
     } finally {
-      release()
-      await recovered?.close()
       await f?.ciRuntime.close()
       await f?.app.close()
       await rm(directory, { recursive: true, force: true })

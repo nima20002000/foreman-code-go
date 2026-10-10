@@ -18,6 +18,7 @@ import { WorkspaceSchema, type RunExecutionLocation } from '@foreman-code/contra
 import { approvedGitTreePaths, captureGitSource, qualifiedGit } from './capture.js'
 import { ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 import { importAgentSnapshot } from './agentSnapshot.js'
+import { publishCommit } from './githubPublisher.js'
 import { SOURCE_LIMITS, sourceSha256, verifySourceManifest } from './manifest.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
 import { authorizeSource } from './authority.js'
@@ -33,7 +34,6 @@ import type { SourceOperationOwner } from '@foreman-code/contracts/source-operat
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { QueuedSourcePreparationCleanup } from './queuedPreparationCleanup.js'
-import { sourcePackageStream } from './operationPackage.js'
 import { releaseUnusedSourceSnapshots } from './snapshotRetention.js'
 import { readPlacement } from '../placement/binding.js'
 import { assertWorktreeReceipt, bindGeneratedWorktreeRun, generatedWorktreePrefix } from './worktreeRequest.js'
@@ -424,16 +424,11 @@ export class PostgresSourceService implements SourceAdmissionPort {
         return record
       } })
   }
-  /** Whether GitHub serves this commit, so a build computer fetches it there instead of receiving its bytes from Main. */
-  async published(repository: string, commit: string, signal: AbortSignal): Promise<boolean> {
-    const clone = await ensureClone(this.git, repository, signal)
-    return (await this.git.git(['fetch', '--no-tags', '--no-write-fetch-head', 'origin', commit], { cwd: clone, signal })).code === 0
+  /** Build computers fetch code only from GitHub; an Agent's unpublished commit is pushed there first. */
+  async publish(repository: string, commit: string, signal: AbortSignal): Promise<void> {
+    await publishCommit(this.git, repository, commit, signal)
   }
 
-  async sourcePackage(principal: ManagementPrincipal, workspaceId: string, pin: ApprovedSourcePin) {
-    const approved = await this.transaction(sql => this.resolveApprovedSource(sql, principal, workspaceId, pin))
-    return sourcePackageStream(approved.manifest, this.store, AbortSignal.timeout(SOURCE_LIMITS.preparationMs))
-  }
   async prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord> {
     const state = await this.transaction(async sql => {

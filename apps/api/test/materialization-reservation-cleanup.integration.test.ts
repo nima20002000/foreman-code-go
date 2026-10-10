@@ -92,7 +92,7 @@ async function setup() {
   let reachable = true
   let nativeClosed = true
   const worker = new SourceOperationWorkerService({ authenticate: async () => {}, approvedRoots: async () => allowlist,
-    currentOwner: unused, transfers: { resolveVerifiedReceipt: unused, openVerified: unused }, transferContext: unused,
+    currentOwner: unused,
     currentReclamation: async (reservationId, reclamationId) => {
       const sql = await pool.connect()
       try {

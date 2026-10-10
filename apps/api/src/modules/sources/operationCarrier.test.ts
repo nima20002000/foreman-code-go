@@ -69,7 +69,7 @@ it.each(['timeout', 'source-repository-timeout'])('maps %s from the exact reposi
   void _epoch
   const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity, request }) },
     { prepareIdentity: async () => { throw new Error('No new owner') }, resolve: async () => ({ root }) as never },
-    { send: async () => { throw new Error('No new transfer') } })
+    { publish: async () => { throw new Error('No new publication') } })
   await expect(host.privateRepository(f.record, {} as never)).rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_TIMEOUT', status: 503, details: { retryable: true } })
   expect(request).toHaveBeenCalledOnce()
 })
@@ -82,8 +82,8 @@ it('waits out the Worker preparation budget instead of cancelling an activation 
   const request = vi.fn<(namespace: string, payload: unknown, options?: { timeoutMs?: number }) => Promise<{ payload: unknown }>>(
     async () => ({ payload: { version: 1, operation: 'sources.prepare', receipt: f.record.receipt } }))
   const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity, request }) },
-    { prepareIdentity: async () => ({ operationId: f.intent.operationId }) as never, resolve: async () => ({ root }) as never },
-    { send: async () => ({ transferId: f.intent.transferId, receiptId: randomUUID(), sha256: 'b'.repeat(64), byteSize: 4 }) })
+    { prepareIdentity: async () => ({ operationId: f.intent.operationId, expiresAt: new Date(Date.now() + 600_000).toISOString() }) as never, resolve: async () => ({ root }) as never },
+    { publish: async () => ({ repository: 'octo/site', commit: 'e'.repeat(40), executablePolicy: 'preserve-approved' as const }) })
   const manifest = { manifestDigest: f.intent.manifestDigest, totalEntries: 1, totalBytes: 4 } as never
   const attempt = { placementHash: f.intent.placementHash, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
     keyRevision: 1, authorizationRevision: 1 }
@@ -106,17 +106,18 @@ it('carries a selected remote root and accepted prefix and rejects a substituted
     async () => ({ payload: { version: 1, operation: 'sources.prepare', receipt } }))
   const capture = vi.fn(() => ({ identity, request }))
   const host = new CarrierRemoteSourceMaterializationHost({ capture },
-    { prepareIdentity: async () => ({ operationId: f.intent.operationId }) as never,
+    { prepareIdentity: async () => ({ operationId: f.intent.operationId, expiresAt: new Date(Date.now() + 600_000).toISOString() }) as never,
       resolve: async () => ({ root: f.root }) as never },
-    { send: async () => ({ transferId: f.intent.transferId, receiptId: randomUUID(),
-      sha256: 'b'.repeat(64), byteSize: 4 }) })
+    { publish: async () => ({ repository: worktree.repository, commit, executablePolicy: 'preserve-approved' as const }) })
   const manifest = { manifestDigest: f.intent.manifestDigest, totalEntries: 1, totalBytes: 4,
     git: { commit, repository: worktree.repository } } as never
   const attempt = { placementHash: f.intent.placementHash, executionId: f.intent.executionId,
     attemptId: f.intent.attemptId, keyRevision: 1, authorizationRevision: 1 }
   expect(await host.prepare(manifest, f.root, attempt, { worktree })).toEqual(receipt)
   expect(capture).toHaveBeenCalledWith(f.binding.deviceId)
-  expect(request.mock.calls[0]?.[1]).toMatchObject({ operation: 'sources.prepare', root: f.root, worktree })
+  // The Worker fetches the approved commit from GitHub; Main sends only the reference.
+  expect(request.mock.calls[0]?.[1]).toMatchObject({ operation: 'sources.prepare', root: f.root, worktree,
+    github: { repository: worktree.repository, commit } })
   receipt.worktree.branch = `foreman/substituted-${randomUUID()}`
   await expect(host.prepare(manifest, f.root, attempt, { worktree }))
     .rejects.toMatchObject({ code: 'SOURCE_WORKTREE_CONFLICT' })
@@ -137,7 +138,7 @@ it('keeps a Worker retained-tree measurement bound to the original materializati
   const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity,
     request: async () => ({ payload }) }) },
   { prepareIdentity: async () => { throw new Error('No preparation') }, resolve: async () => ({ root: f.root }) as never },
-  { send: async () => { throw new Error('No transfer') } })
+  { publish: async () => { throw new Error('No publication') } })
   expect(await host.releaseClaim(record)).toEqual({ retainedBytes: payload.retainedBytes, sharedTree: payload.sharedTree, worktree: payload.worktree })
   payload.sharedTree.id = randomUUID()
   await expect(host.releaseClaim(record)).rejects.toMatchObject({ code: 'SOURCE_RESPONSE_INVALID' })

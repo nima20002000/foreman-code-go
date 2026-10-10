@@ -7,6 +7,7 @@ export class SourceError extends DomainError {
     let status = 400
     if (code === 'SOURCE_CAPACITY') status = 413
     if (code === 'SOURCE_CAPTURE_TIMEOUT') status = 503
+    if (code === 'COMPUTER_GITHUB_REQUIRED') status = 409
     super(code, message, status)
     if (options && 'cause' in options) this.cause = options.cause
     this.name = 'SourceError'

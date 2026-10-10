@@ -13,7 +13,6 @@ import { qualifyApprovedRootAllowlist } from './rootAttestation.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { sourceMaterializationClaimName } from './quotaClaims.js'
 import { sourceBindingHash } from './bindingHash.js'
-import { sourcePackageHeader } from './operationPackage.js'
 import { PostgresSourceRsyncLifecycle, createWorkerSourceRsyncAcknowledgement } from './rsyncTransferLifecycle.js'
 
 const directories: string[] = []
@@ -44,7 +43,7 @@ async function fixture() {
   for (const key of ['bootId', 'connectionEpoch', 'keyRevision', 'authorizationRevision']) delete (root.binding as unknown as Record<string, unknown>)[key]
   const operationId = randomUUID(), attempt = { executionId: randomUUID(), attemptId: randomUUID(), placementHash: '', keyRevision: 1, authorizationRevision: 1 }
   attempt.placementHash = sourceBindingHash(root, attempt, operationId)
-  const packageBytes = Buffer.concat([sourcePackageHeader(manifest), bytes])
+  const packageBytes = Buffer.concat([Buffer.from(JSON.stringify(manifest)), bytes])
   const admitted = { root, attempt, identity: { operationId, ownerPrincipalId: root.authorizedByPrincipalId, expiresAt: new Date(Date.now() + 120000).toISOString() },
     intent: { ...context, version: 1, transferId: randomUUID(), operationId, executionId: attempt.executionId, attemptId: attempt.attemptId,
       placementHash: attempt.placementHash, rootId: root.binding.rootId, rootBindingRevision: 1, direction: 'to-worker', byteClass: 'source',

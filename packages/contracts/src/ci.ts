@@ -4,7 +4,7 @@ import { JobOrdinaryVerificationSuiteSchema, JobVerificationReportReadSchema } f
 import { JobPlacementIntentSchema, JobQueueCancelSchema, JobQueueTicketSchema } from './jobAdmission.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { JobArtifactSchema, JobArtifactReadInputSchema, JobArtifactReadOutputSchema, JobLogPageSchema, JobExecutionSchema } from './jobs.js'
-import { SourceRootRecordSchema, SourcePinSchema } from './sourceAdmission.js'
+import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
 export const CiRunInputSchema = z.object({
@@ -64,10 +64,6 @@ export const PreparedCiRuntimeSchema = z.object({
     binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
 }).strict()
 export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('source'), transferId: z.uuid(), repository: z.string().min(3).max(140),
-    source: SourcePinSchema, byteSize: z.number().int().positive().max(128 * 1024 * 1024),
-    sha256: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().nonnegative(),
-    dataBase64: z.string().max(700 * 1024), complete: z.boolean() }).strict(),
   z.object({ operation: z.literal('prepare'), operationId: z.uuid(), repository: z.string().min(3).max(140), commit: CommitSchema,
     review: z.object({ reviewedByPrincipalId: IdSchema, decisionDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
     keepImages: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).max(64) }).strict(),

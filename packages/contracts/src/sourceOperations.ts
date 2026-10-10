@@ -10,11 +10,14 @@ export const SOURCE_OPERATION_EXTENSION = { namespace: 'source-operations-v1', v
 export const SourceOperationAttemptSchema = z.object({ placementHash: SourceHashSchema, executionId: IdSchema, attemptId: IdSchema,
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable() }).strict()
 export const SourcePreparationIdentitySchema = z.object({ operationId: IdSchema, ownerPrincipalId: IdSchema, expiresAt: z.string().datetime() }).strict()
-export const SourcePackageReferenceSchema = z.object({ transferId: z.uuid(), receiptId: z.uuid(), sha256: SourceHashSchema,
-  byteSize: z.number().int().nonnegative().max(128 * 1024 * 1024) }).strict()
+/** The approved snapshot's commit on GitHub; the computer fetches it there and verifies it against the exact pin. */
+export const SourceGitHubReferenceSchema = z.object({
+  repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/),
+  commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+  executablePolicy: z.enum(['strip', 'preserve-approved']) }).strict()
 export const SourceFilesystemOperationSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(1), operation: z.literal('sources.prepare'), identity: SourcePreparationIdentitySchema,
-    root: SourceRootRecordSchema, attempt: SourceOperationAttemptSchema, package: SourcePackageReferenceSchema,
+    root: SourceRootRecordSchema, attempt: SourceOperationAttemptSchema, github: SourceGitHubReferenceSchema,
     worktree: SourceWorktreeRequestSchema.optional() }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.verify'), record: SourceMaterializationRecordSchema,
     relativeCwd: z.string().max(1024).default('') }).strict(),

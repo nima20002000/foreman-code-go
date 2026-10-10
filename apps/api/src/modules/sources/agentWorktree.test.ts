@@ -14,8 +14,6 @@ import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsag
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import { captureGitSource } from './capture.js'
 import { PrivateSourceSnapshotStore } from './store.js'
-import { sourcePackageStream, VerifiedSourcePackageReader } from './operationPackage.js'
-import { Readable } from 'node:stream'
 import { PrivateSourceMaterializer } from './materialization.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
@@ -164,18 +162,13 @@ it('prepares an approved unpublished commit on a fresh worker using the transfer
   const store = new PrivateSourceSnapshotStore(canonical)
   const manifest = await captureGitSource({ root: main, commit, repository: 'octo/site',
     approvedSourceId: randomUUID(), approvedPaths: ['src/app.ts'], executablePolicy: 'strip', sink: store })
-  const chunks: Buffer[] = []
   const signal = AbortSignal.timeout(30_000)
-  for await (const chunk of sourcePackageStream(manifest, store, signal)) chunks.push(chunk as Buffer)
-  const reader = new VerifiedSourcePackageReader(Readable.from(chunks),
-    chunks.reduce((total, chunk) => total + chunk.length, 0), signal)
-  await reader.open(manifest)
+  const reader = store
   const binding = { ...f.binding, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   const materializer = new PrivateSourceMaterializer(reader, async () => {}, undefined, f.ports)
   const input = { manifest, binding, attempt: f.attempt(), sharedWritableTree: true as const,
     worktree: { repository: 'octo/site', branch: 'foreman/review/unpublished' } }
   const receipt = await materializer.prepare(input)
-  await reader.complete()
   expect(receipt.worktree?.commit).toBe(commit)
   expect(receipt.worktree?.startCommit).toBeUndefined()
   expect(git(sourceWorkingTreePath(receipt), 'rev-parse', 'HEAD')).toBe(commit)
