@@ -22,6 +22,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   private readonly terminals = new Map<string, NonNullable<NativeHistory['terminalResult']>>()
   private readonly continuationEvents = new Map<string, NativeHarnessEvent>()
   private readonly receipts = new Map<string, NativeResponseDeliveryEvidence[]>()
+  private readonly histories = new Map<string, NativeHistory>()
   /** Fault/timing observation only; receives no SQL or authority capability. */
   beforeRespond?: () => Promise<void>
   beforeClose?: () => Promise<void>
@@ -31,13 +32,31 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     private readonly outputFor?: (nodeId: string, request: HarnessExecutionRequest) => NonNullable<NativeHistory['terminalResult']>['output']) {}
 
   connection(): NativeHarnessSessionManager {
+    const sessions = new Map<string, NativeSessionReference>()
+    let disposed = false
     // Separate transport facades per execution; only external history is shared.
     return { harness: this.harness, capabilities: this.capabilities.bind(this), inspectMcp: this.inspectMcp.bind(this),
-      createSession: this.createSession.bind(this), attachSession: this.attachSession.bind(this),
+      createSession: async (input) => {
+        if (disposed) throw new Error('The checkpoint connection is disposed')
+        const session = await this.createSession(input)
+        sessions.set(session.nativeSessionId, session)
+        return session
+      },
+      attachSession: async (reference, input) => {
+        if (disposed) throw new Error('The checkpoint connection is disposed')
+        const session = await this.attachSession(reference, input)
+        sessions.set(session.nativeSessionId, session)
+        return session
+      },
       startTurn: this.startTurn.bind(this), pending: this.pending.bind(this), respond: this.respond.bind(this),
       inspectResponseAvailability: this.inspectResponseAvailability.bind(this),
       history: this.history.bind(this), reconcile: this.reconcile.bind(this),
-      cancel: this.cancel.bind(this), close: this.close.bind(this), closeForRestart: this.close.bind(this) }
+      cancel: this.cancel.bind(this), close: this.close.bind(this), closeForRestart: this.close.bind(this),
+      dispose: async () => {
+        disposed = true
+        for (const session of sessions.values()) await this.close(session)
+        sessions.clear()
+      } }
   }
   async capabilities(): Promise<NativeHarnessCapabilities> {
     return { provider: this.harness, providerVersion: '0.154.0', persistentSessions: true,
@@ -50,9 +69,23 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   }
   async createSession(input: NativeSessionStart): Promise<NativeSessionReference> {
     if (!isWorkflowStart(input)) throw new Error('The checkpoint fixture accepts only workflow requests')
-    const session = { harness: this.harness, providerVersion: '0.154.0', nativeSessionId: `native-${input.request.executionId}` }
-    if (this.requests.has(session.nativeSessionId)) throw new Error('Duplicate native session creation')
-    this.counts.sessions++
+    const continuation = input.sessionContinuation
+    const session = continuation?.session
+      ?? { harness: this.harness, providerVersion: '0.154.0', nativeSessionId: `native-${input.request.executionId}` }
+    const previous = this.requests.get(session.nativeSessionId)
+    if (continuation) {
+      if (previous?.executionId !== continuation.previousExecutionId) throw new Error('Unknown session continuation')
+      const correlationId = `execution:${previous.executionId}`
+      this.histories.set(correlationId, structuredClone(await this.reconcile(session, correlationId)))
+      this.closedSessions.delete(session.nativeSessionId)
+      this.terminals.delete(session.nativeSessionId)
+      this.continuationEvents.delete(session.nativeSessionId)
+      this.waits.delete(session.nativeSessionId)
+      this.receipts.delete(session.nativeSessionId)
+    } else {
+      if (previous) throw new Error('Duplicate native session creation')
+      this.counts.sessions++
+    }
     this.requests.set(session.nativeSessionId, input.request)
     return session
   }
@@ -156,6 +189,8 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       ...(terminalResult ? { terminalResult } : {}) }
   }
   async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
+    const retained = this.histories.get(correlationId)
+    if (retained) return structuredClone(retained)
     const history = await this.history(session), request = this.requests.get(session.nativeSessionId)
     return { ...history, ...(request && correlationId === `execution:${request.executionId}` ? {
       correlationId, nativeTurnId: `turn-${request.executionId}`,

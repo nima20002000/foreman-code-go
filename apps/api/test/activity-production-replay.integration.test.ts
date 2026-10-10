@@ -100,7 +100,8 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   const replay = new ActivityProductionReplay()
   const database = { pool: db.pool, ping: async () => { await db.pool.query('select 1') },
     migrate: () => applyApplicationMigrations(db.pool), close: async () => {} }
-  let production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, replay.infrastructure())
+  const infrastructure = replay.infrastructure(workspace.harnessWorkspaceRoot)
+  let production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, infrastructure)
   let origin = await startActivityReplayProduction(production, replay, closes, config.port)
   const headers = { authorization: `Bearer ${writer.token}` }
   async function http(method: 'GET' | 'POST' | 'PUT', url: string, payload?: Record<string, unknown>, token = writer.token) {
@@ -127,7 +128,7 @@ async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write
   expect(changed.statusCode, changed.body).toBe(200)
   async function restart() {
     await production.shutdown()
-    production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, replay.infrastructure())
+    production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, infrastructure)
     origin = await startActivityReplayProduction(production, replay, closes, config.port)
   }
   return { db, saved, location, access, writer, denied, replay, headers, http, call, restart, reconcile: () => production.reconcile((error) => { throw error }), get origin() { return origin } }

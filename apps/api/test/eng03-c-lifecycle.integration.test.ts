@@ -27,7 +27,7 @@ describe.skipIf(!postgresEnabled)('ENG-03 C current native lifecycle with durabl
       await entered.promise
       await f.stop()
       release.resolve()
-      expect(await started).toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+      expect(await started).toBeUndefined()
       await f.engine.cancel(f.f.run.id)
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('canceled')
       expect(await f.runs.hasPendingCleanup(f.f.run.id)).toBe(false)

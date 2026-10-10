@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { AgentConfigurationVersionSchema, type Agent } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, AgentSchema, type Agent } from '@foreman-code/contracts'
 import * as c from '@foreman-code/contracts/management'
 import * as current from '@foreman-code/contracts/wave25'
 import type { FastifyInstance } from 'fastify'
@@ -14,6 +14,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
+import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { SkillCatalogService } from '../src/modules/skills/catalog.js'
 import { SkillUsageService } from '../src/modules/skills/usage.js'
 import { OperatorAgentMutationService } from '../src/modules/workspaces/operatorAgents.js'
@@ -139,6 +140,52 @@ describe.skipIf(!postgresEnabled)('Skill consumer update plans over authenticate
     return call('skill_update', c.SkillMutationResultSchema, {
       workspaceId, skillId, commandId: randomUUID(), expectedRevision: revision, name: 'Guide', instructions,
     })
+  }
+
+  async function seedConsumerFixtures(f: Awaited<ReturnType<typeof fixture>>) {
+    const baseConfiguration = await configurationOf(f.workspaceId, f.consumer.agent.id)
+    const records = JSON.stringify(Array.from({ length: 1000 }, (_, index) => {
+      const agentId = `consumer-${f.workspaceId}-${index}`
+      const configuration = AgentConfigurationVersionSchema.parse({
+        ...baseConfiguration, id: randomUUID(), agentId,
+      })
+      const agent = AgentSchema.parse({ ...f.consumer.agent, id: agentId, name: `Consumer ${index}`,
+        configurationVersionId: configuration.id })
+      const workflowId = randomUUID()
+      const version = current.WorkflowVersionV3Schema.parse({ ...f.workflow.version, id: randomUUID(), workflowId,
+        agentConfigurationVersionIds: { [agentId]: configuration.id },
+        definition: { ...f.workflow.version.definition, id: workflowId,
+          nodes: [{ ...f.workflow.version.definition.nodes[0]!, agentId, name: agent.name }] } })
+      version.contentHash = graphSourceDigest({ definition: version.definition,
+        configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
+      return { agent, configuration, version, graph: version.definition }
+    }))
+    const sql = await database.pool.connect()
+    try {
+      await sql.query('begin')
+      await sql.query(`insert into agents(id,workspace_id,record)
+        select item#>>'{agent,id}',$2,item->'agent' from jsonb_array_elements($1::jsonb) item`, [records, f.workspaceId])
+      await sql.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
+        select item#>>'{configuration,id}',$2,item#>>'{agent,id}',
+          (item#>>'{configuration,version}')::integer,item->'configuration'
+        from jsonb_array_elements($1::jsonb) item`, [records, f.workspaceId])
+      await sql.query(`update agents set current_configuration_version_id=item#>>'{configuration,id}'
+        from jsonb_array_elements($1::jsonb) item where agents.id=item#>>'{agent,id}'`, [records])
+      await sql.query(`insert into workflows(id,workspace_id,current_version_id,record,revision)
+        select item#>>'{graph,id}',$2,item#>>'{version,id}',item->'graph',$3
+        from jsonb_array_elements($1::jsonb) item`, [records, f.workspaceId, f.workflow.revision])
+      await sql.query(`insert into workflow_versions
+        (id,workspace_id,workflow_id,version,entry_node_id,record,execution_semantics_version)
+        select item#>>'{version,id}',$2,item#>>'{graph,id}',(item#>>'{version,version}')::integer,
+          item#>>'{version,entryNodeId}',item->'version',3 from jsonb_array_elements($1::jsonb) item`,
+      [records, f.workspaceId])
+      await sql.query('commit')
+    } catch (error) {
+      await sql.query('rollback')
+      throw error
+    } finally {
+      sql.release()
+    }
   }
 
   async function configurationOf(workspaceId: string, agentId: string) {
@@ -287,13 +334,7 @@ describe.skipIf(!postgresEnabled)('Skill consumer update plans over authenticate
 
   it('lists all consumers in a supported workspace with more than 1000 Agents and workflows', async () => {
     const f = await fixture()
-    for (let index = 0; index < 1000; index++) {
-      const agent = await agents.create(principal, {
-        workspaceId: f.workspaceId, agentId: `consumer-${f.workspaceId}-${index}`, commandId: randomUUID(),
-        name: `Consumer ${index}`, productRole: 'coder', configuration, assignedSkills: [{ skillId: f.skillId, version: '1' }],
-      })
-      await makeWorkflow(f.workspaceId, [agent.value.agent])
-    }
+    await seedConsumerFixtures(f)
     await publish(f.workspaceId, f.skillId, 1, 'Version two')
     const usage = await call('skill_usage_get', c.SkillUsageSchema, { workspaceId: f.workspaceId, skillId: f.skillId })
     expect(usage.agents).toHaveLength(1001)

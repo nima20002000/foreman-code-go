@@ -27,7 +27,7 @@ const replacementConfiguration = {
 it.skipIf(!postgresEnabled)(
   'retires historical defaults and file credentials without changing saved configurations, workflows, or Runs',
   async () => {
-    const database = await currentDatabase({ beforeMigration: retiredHarnessCredentialsMigration.version })
+    const database = await currentDatabase({ deferMigration: retiredHarnessCredentialsMigration.version })
     try {
       const fixture = await seedAgent3(database.pool, database.directory)
       const operators = new PostgresOperatorRepository(database.pool)

@@ -285,9 +285,17 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
   if (placementMode === 'verification') {
   it('retains unavailable runtime capabilities through authenticated MCP after report cleanup', async () => {
     await pool.query('update job_fixture_owner set revoked=false')
-    const environment = await integrationEnvironmentCapabilities({
+    const isolatedEnvironment = await integrationEnvironmentCapabilities({
       FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
     })
+    const environment = {
+      ...isolatedEnvironment,
+      capabilities: {
+        ...isolatedEnvironment.capabilities,
+        nativeCgroupDelegation: false,
+        testDatabaseStartup: false,
+      },
+    }
     const selected = [
       'apps/api/test/local-human-native.integration.test.ts',
       'apps/api/test/test-database-startup.integration.test.ts',
@@ -371,7 +379,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       totals: { total: 0, passed: 0, failed: 0, skipped: 0 },
       files: [
         { complete: false, requiredCapabilities: ['nativeCgroupDelegation'] },
-        { complete: false, requiredCapabilities: ['dockerCompose'] },
+        { complete: false, requiredCapabilities: ['testDatabaseStartup'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },

@@ -190,7 +190,7 @@ describe.skipIf(!postgresEnabled)('ENG07-B S3-01..05 / real PostgreSQL + HTTP + 
           .map((index) => scenario.nodes[index]!.id)).flat()
         expect([...f.base.provider.startedNodes].sort()).toEqual([...expectedNodes].sort())
         expect(new Set(f.base.provider.startedExecutions).size).toBe(expectedNodes.length)
-        expect(f.base.provider.counts).toMatchObject({ sessions: expectedNodes.length, starts: expectedNodes.length,
+        expect(f.base.provider.counts).toMatchObject({ sessions: scenario.executedIndexes.length, starts: expectedNodes.length,
           responses: id === 'S3-04' ? 1 : 0 })
         if (id === 'S3-01' || id === 'S3-04' || scenario.repeat) expect(f.base.provider.startedNodes).toEqual(expectedNodes)
         if (scenario.joinNodeId) {

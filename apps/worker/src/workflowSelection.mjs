@@ -57,7 +57,12 @@ async function codexSelection(environment, signal) {
     binary = image.paths[0];
     payloadPaths = [launcher];
   }
-  const expectedVersion = await new Promise((resolve, reject) => {
+  const expectedVersion = await codexVersion(binary, environment, signal);
+  return { codexBinary: binary, expectedVersion, payloadPaths };
+}
+
+async function codexVersion(binary, environment, signal) {
+  return new Promise((resolve, reject) => {
     execFile(binary, ['--version'], { env: { ...environment, NO_COLOR: '1' }, signal,
       timeout: 15_000, maxBuffer: 4096, encoding: 'utf8' }, (error, stdout) => {
       const version = stdout.trim();
@@ -66,7 +71,6 @@ async function codexSelection(environment, signal) {
       } else { resolve(version); }
     });
   });
-  return { codexBinary: binary, expectedVersion, payloadPaths };
 }
 
 async function claudeSelection(environment, release, signal) {
@@ -91,6 +95,34 @@ async function claudeSelection(environment, release, signal) {
   return null;
 }
 
+/** A launcher from one of this Worker's own releases follows the running release; an explicit one stays. */
+function currentLauncher(configuration, release) {
+  const launcher = join(release, 'artifacts/graphql-mcp.mjs');
+  const releases = `${dirname(release.replace(/\/$/, ''))}/`;
+  return configuration.appMcpLauncher.startsWith(releases) ? { ...configuration, appMcpLauncher: launcher } : configuration;
+}
+
+async function retainedSelection(previous, environment, release, signal) {
+  if (!previous) return null;
+  const configuration = currentLauncher(previous, release);
+  const binaries = [configuration.codexBinary, configuration.claude?.binary].filter(Boolean);
+  const payloads = [configuration.appMcpLauncher, ...(configuration.payloadPaths ?? []),
+    configuration.claude?.installedLockPath, configuration.claude?.sdkEntrypoint].filter(Boolean);
+  try {
+    for (const path of binaries) await access(path, constants.X_OK);
+    for (const path of payloads) await access(path, constants.R_OK);
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
+    throw error;
+  }
+  // Explicit script selections keep their separate native qualification checks.
+  if (configuration.codexBinary && (await passiveDriverPayloads('codex', configuration.codexBinary)).complete) {
+    const expectedVersion = await codexVersion(configuration.codexBinary, environment, signal);
+    return { ...configuration, expectedVersion };
+  }
+  return configuration;
+}
+
 /** Pairing approves selection; native qualification and profile grants remain separate. */
 export async function refreshWorkflowSelection({ stateDirectory, release = releaseDirectory,
   environment = { ...process.env, PATH: workerPath(process.env.HOME ?? '', process.execPath) },
@@ -103,6 +135,15 @@ export async function refreshWorkflowSelection({ stateDirectory, release = relea
     const location = { path: join(stateDirectory, 'workflow-runtime.json'), ownerUid: process.getuid() };
     const exists = await managedEntryExists(state, 'workflow-runtime.json');
     const previous = exists ? await readInstalledWorkflowConfiguration(location) : null;
+    const retained = await retainedSelection(previous, environment, release, signal);
+    if (retained) {
+      signal.throwIfAborted();
+      assertStateOwnership();
+      if (!isDeepStrictEqual(retained, previous)) {
+        await publishManagedJson(state, 'workflow-runtime.json', retained);
+      }
+      return location;
+    }
     const selections = await Promise.allSettled([
       codexSelection(environment, signal), claudeSelection(environment, release, signal),
     ]);

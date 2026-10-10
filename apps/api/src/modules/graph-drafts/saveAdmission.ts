@@ -149,7 +149,9 @@ interface AffectedRow {
  * Runs. Advisory edit readback is revalidated under those locks before any Stop
  * or publication; it never grants authority from a stale affected-Run set. */
 async function readAffectedRows(client: Pick<pg.PoolClient, 'query'>, input: AffectedGraphScope): Promise<AffectedRow[]> {
-  await client.query(`select r.id from runs r where ${affected} order by r.id for share of r`, values(input).slice(0, 3))
+  const affectedRuns = await client.query(
+    `select r.id from runs r where ${affected} order by r.id for share of r`, values(input).slice(0, 3))
+  if (affectedRuns.rowCount === 0) return []
   const rows = await client.query<AffectedRow>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.record,
     not ((${invalidTerminal}) or (${currentTerminal})) as terminal, ${cleanup} as cleanup,
     ((${native}) or (${currentNative})) as native,

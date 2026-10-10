@@ -3,6 +3,7 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import pg from 'pg'
 import { expect, it } from 'vitest'
+import { runWorktreesMigration } from '../src/infrastructure/runWorktreesMigration.js'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
 import { verificationJobLifecycle } from '@foreman-code/contracts/job-verification-policy'
@@ -30,7 +31,8 @@ it('reclaims source and releases computer capacity after a disconnect outlasts t
   const pool = new pg.Pool({ connectionString: url.toString() })
   const root = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/job-cleanup-`)
   try {
-    await pool.query(`create table source_execution_materializations
+    await pool.query(`create table runs (id text primary key);
+      create table source_execution_materializations
       (materialization_id uuid primary key, record jsonb, state text, execution_id text, operation_id text);
       create table source_storage_reservations
       (reservation_id uuid primary key, scope_id text, owner_kind text, owner_id text, state text,
@@ -42,6 +44,7 @@ it('reclaims source and releases computer capacity after a disconnect outlasts t
       create table job_runtime_qualification_approvals
       (id text, run_principal_id text, record jsonb, run_result jsonb);
       create table source_preparation_reconciliations (operation_id text, status text, closure jsonb)`)
+    await pool.query(runWorktreesMigration.sql)
     const bytes = Buffer.from('retained original source')
     const manifest = createSourceManifest({ version: 1, approvedSourceId: randomUUID(), snapshotId: randomUUID(),
       capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip', deletions: [],
@@ -69,7 +72,8 @@ it('reclaims source and releases computer capacity after a disconnect outlasts t
         lifecycle: verificationJobLifecycle(new Date(0).toISOString(), runtime.spec.policy) },
       publication: 'failed', resultIssue: 'publication_failed',
       process: { phase: 'terminal', outcome: 'build_failed', exitCode: 1, signal: null, processStopped: true } })
-    await pool.query("insert into source_execution_materializations values($1,$2,'prepared',$3,$4)",
+    await pool.query(`insert into source_execution_materializations
+      (materialization_id,record,state,execution_id,operation_id) values($1,$2,'prepared',$3,$4)`,
       [receipt.materializationId, record, execution.id, execution.operationId])
     await pool.query("insert into source_storage_reservations values($1,$2,$3,$4,'owned',$5,$6)",
       [reservation.reservationId, reservation.scopeId, reservation.ownerKind, reservation.ownerId,

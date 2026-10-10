@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { join } from 'node:path'
 import pg from 'pg'
 import { expect, it } from 'vitest'
+import { runWorktreesMigration } from '../src/infrastructure/runWorktreesMigration.js'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
 import { PostgresSourceService, type SourceExecutionHostPort } from '../src/modules/sources/service.js'
@@ -43,6 +44,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
       create table job_computer_selections (operation_id text, workspace_id text, spec jsonb, released_at timestamptz);
       create table source_storage_reservations (reservation_id uuid primary key, scope_id text not null, owner_kind text not null,
       owner_id text not null, state text not null, reserved_bytes bigint not null, record jsonb not null)`)
+    await pool.query(runWorktreesMigration.sql)
     const bytes = Buffer.from('retained original bytes\n')
     const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
       capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip',
@@ -73,7 +75,8 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     const reservation = { reservationId: randomUUID(), scopeId: `main:${filesystem.device}:${filesystem.mountId}`, ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: randomUUID(), rootPolicyRevision: '1', operationId: reservation.ownerId,
       reservationId: reservation.reservationId, sourceBindingHash: attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
-    await pool.query(`insert into source_execution_materializations values ($1,$2,'prepared',$3,$4)`,
+    await pool.query(`insert into source_execution_materializations
+      (materialization_id,record,state,execution_id,reservation_id) values ($1,$2,'prepared',$3,$4)`,
       [receipt.materializationId, record, receipt.executionId, record.reservationId])
     await pool.query(`insert into runs(id,execution_state) values ('ongoing-workflow','running')`)
     await pool.query(`insert into harness_executions values ($1,'ongoing-workflow',$2)`,

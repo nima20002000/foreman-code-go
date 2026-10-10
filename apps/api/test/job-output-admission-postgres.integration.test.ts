@@ -1,3 +1,6 @@
+import { buildComputersMigration } from '../src/infrastructure/buildComputersMigration.js'
+import { buildComputerRoleMigration } from '../src/infrastructure/buildComputerRoleMigration.js'
+import { buildComputerPriorityMigration } from '../src/infrastructure/buildComputerPriorityMigration.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
@@ -69,6 +72,9 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
       create table source_execution_materializations(materialization_id uuid,workspace_id text,execution_id text,attempt_id text,record jsonb,state text);
       create table source_snapshots(workspace_id text,snapshot_id uuid,approved_source_id uuid,manifest_digest text,record jsonb,availability text);`)
     await pool.query(jobRunCleanupMigration.sql)
+    await pool.query(buildComputersMigration.sql)
+    await pool.query(buildComputerRoleMigration.sql)
+    await pool.query(buildComputerPriorityMigration.sql)
     await pool.query('insert into application_installation values(true,$1)',[mainId])
     await pool.query("insert into management_principals values('owner','Owner','operator',null,$1,$2::jsonb,'2099-01-01',null,null)",[hash(operatorToken),JSON.stringify([{actions:['settings:read','settings:update','jobs:start','job_artifacts:read'],scope:{}}])])
     await pool.query(deviceIdentityMigration.sql);await pool.query(fileStorageMigration.sql);await pool.query(fileToolsMigration.sql);await pool.query(jobArtifactStorageMigration.sql);await pool.query(jobOutputAdmissionMigration.sql)

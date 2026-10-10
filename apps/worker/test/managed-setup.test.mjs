@@ -231,7 +231,7 @@ test('a new pairing adopts an idle managed runtime, retains image inputs and ret
   } finally { await unlock(); }
   const selection = JSON.parse(await readFile(join(f.state, 'workflow-runtime.json'), 'utf8'));
   assert.equal(selection.codexBinary, join(bin, 'codex'));
-  assert.equal(selection.appMcpLauncher, join(artifact, 'artifacts/graphql-mcp.mjs'));
+  assert.equal(selection.appMcpLauncher, join(await realpath(artifact), 'artifacts/graphql-mcp.mjs'));
   await assert.rejects(readFile(join(old.state, 'workflow-runtime.json')), { code: 'ENOENT' });
   const installation = JSON.parse(await readFile(join(f.state, 'ci-runtime-installation.json'), 'utf8'));
   assert.equal(installation.target.hostRef.mainId, f.pairing.mainId);

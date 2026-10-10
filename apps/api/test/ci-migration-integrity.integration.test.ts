@@ -1,5 +1,6 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
+import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import { buildApp } from '../src/app.js'
@@ -18,6 +19,17 @@ import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 const ledger = async (database: Awaited<ReturnType<typeof currentDatabase>>) =>
   (await database.pool.query('select version,applied_at from application_migrations order by version')).rows
 
+async function migrateConcurrently(database: Awaited<ReturnType<typeof currentDatabase>>) {
+  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!,
+    // A fresh migration batch can outlast ordinary fixture query deadlines.
+    options: `-c search_path=${database.schema} -c statement_timeout=90000 -c lock_timeout=60000` })
+  try {
+    await Promise.all([applyApplicationMigrations(pool), applyApplicationMigrations(pool)])
+  } finally {
+    await pool.end()
+  }
+}
+
 function createPreparation(database: Awaited<ReturnType<typeof currentDatabase>>,
   record: ReturnType<Awaited<ReturnType<typeof ciMigrationFixture>>['record']>) {
   const repository = new PostgresCiPreparationRepository(database.pool)
@@ -29,7 +41,7 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
   it('serializes fresh migration callers and makes repeated startup a data-preserving operation', async () => {
     const database = await currentDatabase({ beforeMigration: migrations[0].version })
     try {
-      await Promise.all([applyApplicationMigrations(database.pool), applyApplicationMigrations(database.pool)])
+      await migrateConcurrently(database)
       expect((await ledger(database)).map(row => row.version))
         .toEqual(migrations.map(migration => migration.version).sort((left, right) => left - right))
       const seeded = await ciMigrationFixture(database)
@@ -38,7 +50,7 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
         await createPreparation(database, original)
         const before = await seeded.facts()
         const applied = await ledger(database)
-        await Promise.all([applyApplicationMigrations(database.pool), applyApplicationMigrations(database.pool)])
+        await migrateConcurrently(database)
         expect(await ledger(database)).toEqual(applied)
         expect(await seeded.facts()).toEqual(before)
         expect(await new PostgresCiPreparationRepository(database.pool).get(original.id)).toEqual(original)

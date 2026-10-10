@@ -111,6 +111,7 @@ export class ApprovalTransportFaults {
         if (!isWorkflowStart(input)) throw new Error('This fixture owns workflow sessions only')
         const session = await raw.createSession(input, signal)
         await faults.processes.start(input.request.executionId, session.nativeSessionId)
+        faults.deadSessions.delete(session.nativeSessionId)
         attached.set(session.nativeSessionId, session)
         return session
       },
@@ -269,6 +270,12 @@ export async function approvalFaultFixture(form: FaultForm, options: { approvals
     // At most two occurrences in this fixture; the third iteration also detects
     // a bogus new request/repeated occurrence instead of silently draining it.
     for (let count = 0; count < 3; count++) {
+      await vi.waitFor(async () => {
+        const run = await runtime.runs.get(runId)
+        if (run?.executionState === 'completed') return
+        expect(run?.executionState).toBe('waiting')
+        expect(await currentPending()).toHaveLength(1)
+      }, { timeout: 30000, interval: 50 })
       if ((await runtime.runs.get(runId))?.executionState === 'completed') {
         await settled('succeeded'); await assertShape(form === 'repeat' ? 2 : 0)
         return

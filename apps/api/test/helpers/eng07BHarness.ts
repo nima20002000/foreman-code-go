@@ -74,15 +74,17 @@ export async function scenarioHarness(scenario: Scenario) {
   const connection = base.provider.connection.bind(base.provider)
   const wrapper = vi.spyOn(base.provider, 'connection').mockImplementation(() => {
     const raw = connection()
+    let acceptedRequest: HarnessExecutionRequest | undefined
     return { ...raw,
       async createSession(input, signal) {
         if (!isWorkflowStart(input)) throw new Error('ENG07 only supplies workflow-provider sessions')
         const session = await raw.createSession(input, signal)
-        requests.set(session.nativeSessionId, structuredClone(input.request))
+        acceptedRequest = structuredClone(input.request)
+        requests.set(acceptedRequest.executionId, acceptedRequest)
         return session
       },
       async *startTurn(session, input, signal) {
-        const request = requests.get(session.nativeSessionId)
+        const request = acceptedRequest
         if (!request) throw new Error('Missing exact provider request')
         for await (const event of raw.startTurn(session, input, signal)) {
           if (event.type === 'turn.started' || event.type === 'turn.completed') trace.push({
