@@ -102,10 +102,13 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
       await second.query('begin')
       const holder = (await first.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       const waiter = (await second.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
-      const cancel = `update job_admission_queue set record=record||
-        '{"state":"terminal","terminalReason":"cancelled"}'::jsonb where id=$1`
-      await first.query(cancel, [ticketA.id])
-      secondUpdate = second.query(cancel, [ticketB.id])
+      const canceledAt = new Date().toISOString()
+      const cancel = `update job_admission_queue set record=record||jsonb_build_object(
+        'revision',(record->>'revision')::bigint+1,
+        'state','terminal','terminalReason','cancelled',
+        'cancelRequestedAt',$2::text,'finishedAt',$2::text) where id=$1`
+      await first.query(cancel, [ticketA.id, canceledAt])
+      secondUpdate = second.query(cancel, [ticketB.id, canceledAt])
       const pending = secondUpdate.then(() => ({ error: null }), error => ({ error }))
       const deadline = Date.now() + 4000
       let blocked = false
@@ -123,6 +126,16 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
       const afterFirst = await f.activity({ cursor: during.nextCursor, limit: 1 })
       expect(afterFirst.items).toMatchObject([{ status: 'canceled', refs: { jobExecutionId: ticketA.executionId } }])
       await second.query('commit')
+      const canceledTickets = await f.database.pool.query<{ record: Record<string, unknown> }>(
+        'select record from job_admission_queue where id=any($1::uuid[])', [[ticketA.id, ticketB.id]])
+      expect(canceledTickets.rows).toHaveLength(2)
+      for (const ticket of [ticketA, ticketB]) {
+        const saved = canceledTickets.rows.find(row => row.record.id === ticket.id)?.record
+        expect(saved).toMatchObject({
+          id: ticket.id, revision: ticket.revision + 1, state: 'terminal', terminalReason: 'cancelled',
+          cancelRequestedAt: canceledAt, finishedAt: canceledAt,
+        })
+      }
       const afterSecond = await f.activity({ cursor: afterFirst.nextCursor, limit: 1 })
       expect(afterSecond.items).toMatchObject([{ status: 'canceled', refs: { jobExecutionId: ticketB.executionId } }])
       const delivered = [...afterFirst.items, ...afterSecond.items]
