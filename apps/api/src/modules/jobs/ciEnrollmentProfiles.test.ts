@@ -56,6 +56,20 @@ describe('CI enrollment resource envelopes', () => {
     expect(ciEnrollmentTemplateDigest(refreshed)).not.toBe(digest)
   })
 
+  it('reuses enrollment after preparation approves a fresh snapshot of the same commit', () => {
+    const template = verificationCapacityFixture('device')
+    const prepared = structuredClone(template)
+    prepared.root.source = { approvedSourceId: randomUUID(), snapshotId: randomUUID(), manifestDigest: '9'.repeat(64) }
+    prepared.root.binding.bindingRevision++
+    prepared.root.binding.snapshotId = prepared.root.source.snapshotId
+    prepared.root.binding.manifestDigest = prepared.root.source.manifestDigest
+    prepared.revision++
+    prepared.spec.policy.imageDigest = `sha256:${'8'.repeat(64)}`
+    expect(ciEnrollmentTemplateDigest(prepared)).toBe(ciEnrollmentTemplateDigest(template))
+    prepared.sourceCommit = '7'.repeat(40)
+    expect(ciEnrollmentTemplateDigest(prepared)).not.toBe(ciEnrollmentTemplateDigest(template))
+  })
+
   it('preserves ordinary job budgets and runtime policy requirements', () => {
     const template = buildComputerFixture(randomUUID(), randomUUID()).candidate.profile
     template.policy.maxOutputBytes = 1024

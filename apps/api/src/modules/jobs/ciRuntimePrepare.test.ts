@@ -7,6 +7,8 @@ import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDir
 import { codexBinary, extractQualificationSource, prepareCiRuntime, reclaimInterruptedPreparation }
   from './ciRuntimePrepare.js'
 import { pruneCiImages } from './ciRuntimeImages.js'
+import { writeCiRuntimeCache } from './ciRuntimeCache.js'
+import { ciRuntimeInputDigest } from './ciRuntimeContext.mjs'
 import { ciPreparationLimits, ciPreparationResourceArgs } from './ciPreparationLimits.js'
 import { PreparedCiRuntimeSchema } from '@foreman-code/contracts'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
@@ -64,6 +66,47 @@ async function repository() {
 }
 
 describe('CI runtime preparation boundaries', () => {
+  it('prunes stale images and cache artifacts when reusing an image, keeping the reused image', async () => {
+    const f = await repository()
+    await writeFile(join(f.source, 'package.json'), JSON.stringify({ packageManager: 'pnpm@11.27.0' }))
+    await writeFile(join(f.source, 'pnpm-lock.yaml'), 'lockfileVersion: 9\npackages: {}\n')
+    await writeFile(join(f.source, 'pnpm-workspace.yaml'), 'minimumReleaseAge: 2880\n')
+    const commit = f.save()
+    const installer = join(f.root, 'installer')
+    await mkdir(installer, { mode: 0o700 })
+    const seedReceiptPath = join(installer, `seed-receipt-${'a'.repeat(64)}.json`)
+    const contextReceiptPath = join(installer, `context-receipt-${'b'.repeat(64)}.json`)
+    const staleReceiptPath = join(installer, `seed-receipt-${'c'.repeat(64)}.json`)
+    for (const path of [seedReceiptPath, contextReceiptPath, staleReceiptPath]) {
+      await writeFile(path, '{}', { mode: 0o600 })
+    }
+    const imageId = 'a'.repeat(64)
+    const staleId = 'b'.repeat(64)
+    const intermediate = 'c'.repeat(64)
+    const images = new Set([imageId, staleId, intermediate])
+    const installation = createHash('sha256').update(installer).digest('hex')
+    await writeCiRuntimeCache({ installer, inputDigest: await ciRuntimeInputDigest({ repository: f.source, commit }),
+      prepared: { commit, imageId: `sha256:${imageId}`, imageManifestDigest: `sha256:${'d'.repeat(64)}`,
+        seedReceiptPath, contextReceiptPath, qualificationSource: f.source } })
+    command.run.mockImplementation(async (_file, args: string[]) => {
+      if (args.includes('ps')) return '[]'
+      if (args.includes('images')) return JSON.stringify([...images].map(Id => ({ Id,
+        Names: Id === intermediate ? [] : [`localhost/foreman-code-verification:${Id.slice(0, 12)}`] })))
+      if (args.includes('inspect')) return JSON.stringify([{ Id: args.at(-1),
+        Labels: { 'io.foreman-code.installation': installation } }])
+      if (args.includes('rmi')) images.delete(args.at(-1)!)
+      if (args.includes('build')) throw new Error('Cache reuse must not build')
+      return ''
+    })
+    const prepared = await prepareCiRuntime({ repository: f.source, commit, installer,
+      review: { reviewedByPrincipalId: 'owner', decisionDigest: 'a'.repeat(64) } })
+    expect(prepared.reusedImage).toBe(true)
+    expect([...images]).toEqual([imageId])
+    expect(await readFile(seedReceiptPath, 'utf8')).toBe('{}')
+    expect(await readFile(contextReceiptPath, 'utf8')).toBe('{}')
+    await expect(readFile(staleReceiptPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(join(prepared.qualificationSource, 'a-first.txt'), 'utf8')).toBe('first')
+  })
   it.each([
     { code: 125, stderr: 'Error: writing layer: disk quota exceeded', worker: false },
     { code: 'ENOSPC', stderr: '', worker: false },

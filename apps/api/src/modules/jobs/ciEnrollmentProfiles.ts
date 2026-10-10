@@ -8,9 +8,11 @@ import { jobDigest } from './digest.js'
 
 export function ciEnrollmentTemplateDigest(profile: JobRuntimeProfileRecord): string {
   const policy = jobPolicyRequirementsRecord(jobRuntimeProfilePolicy(profile))
+  // Preparation creates fresh snapshot IDs even when the pinned Git commit is unchanged.
+  const sourceCommit = profile.schemaVersion === 2 ? profile.sourceCommit : null
   return jobDigest({ name: profile.name, policy: { ...policy, imageDigest: null },
     limits: jobRuntimeProfileLimits(profile),
-    source: profile.root.source, sourceCommit: profile.schemaVersion === 2 ? profile.sourceCommit : null,
+    source: sourceCommit ? null : profile.root.source, sourceCommit,
     verification: profile.schemaVersion === 2 ? {
       resources: profile.spec.resources, suites: profile.spec.suites, approvalConfig: profile.spec.approvalConfig,
     } : null })

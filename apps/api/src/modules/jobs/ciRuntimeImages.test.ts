@@ -61,6 +61,37 @@ describe('CI image pruning', () => {
     expect([...images]).toEqual([parent])
   })
 
+  it('reclaims intermediate chains while preserving retained, foreign and container-referenced images', async () => {
+    const images = new Map([
+      ['parent', { Names: [] as string[], owner: undefined as string | undefined }],
+      ['child', { Names: [] as string[], owner: installation }],
+      ['old', { Names: [name], owner: installation }],
+      ['kept', { Names: [] as string[], owner: installation }],
+      ['foreign', { Names: [] as string[], owner: 'other-installation' }],
+      ['container', { Names: [] as string[], owner: undefined }],
+      ['kept-parent', { Names: [] as string[], owner: undefined }],
+      ['foreign-parent', { Names: [] as string[], owner: undefined }],
+    ])
+    const parents = new Map([['old', 'child'], ['child', 'parent'],
+      ['kept', 'kept-parent'], ['foreign', 'foreign-parent']])
+    command.run.mockImplementation(async (args: string[]) => {
+      const id = args.at(-1)!
+      if (args[0] === 'images') return JSON.stringify([...images].map(([Id, image]) => ({ Id, Names: image.Names })))
+      if (args[0] === 'image') return JSON.stringify([{ Id: id,
+        Labels: { 'io.foreman-code.installation': images.get(id)!.owner } }])
+      if (args[0] === 'rmi') {
+        if (id === 'container' || [...parents].some(([child, parent]) => parent === id && images.has(child))) {
+          throw Object.assign(new Error('image is referenced'), { code: 2 })
+        }
+        images.delete(id)
+        if (!args.includes('--no-prune') && parents.has(id)) images.delete(parents.get(id)!)
+      }
+      return ''
+    })
+    await pruneCiImages({ keep: ['sha256:kept'], env: process.env, installer })
+    expect([...images.keys()]).toEqual(['kept', 'foreign', 'container', 'kept-parent', 'foreign-parent'])
+  })
+
   it.each([2, 1, 125])('skips only Podman reference conflicts and surfaces exit status %s', async code => {
     const failure = Object.assign(new Error('permission denied: .local/share/containers/storage'), { code })
     command.run.mockImplementation(async (args: string[]) => {

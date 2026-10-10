@@ -26,4 +26,28 @@ export async function pruneCiImages({ keep, env, installer, signal }: {
       if (error.code !== 2) throw error
     })
   }
+  // Include intermediate build images. Removal without force or parent pruning preserves
+  // layers still referenced by kept images, foreign images, or containers.
+  let removed: boolean
+  do {
+    removed = false
+    const dangling = JSON.parse((await podman(['images', '--all', '--filter', 'dangling=true', '--format', 'json'])).stdout) as
+      { Id: string; Names?: string[] }[]
+    for (const image of dangling) {
+      const id = image.Id.replace(/^sha256:/u, '')
+      if (kept.has(id) || image.Names?.length) continue
+      const inspected = JSON.parse((await podman(['image', 'inspect', image.Id])).stdout) as
+        { Id: string; Labels?: Record<string, string> }[]
+      const owned = inspected[0]
+      const owner = owned?.Labels?.['io.foreman-code.installation']
+      if (inspected.length !== 1 || owned?.Id.replace(/^sha256:/u, '') !== id
+        || (owner !== undefined && owner !== installation)) continue
+      try {
+        await podman(['rmi', '--no-prune', image.Id])
+        removed = true
+      } catch (error) {
+        if ((error as { code?: unknown }).code !== 2) throw error
+      }
+    }
+  } while (removed)
 }

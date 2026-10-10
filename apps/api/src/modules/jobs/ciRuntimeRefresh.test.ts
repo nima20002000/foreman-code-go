@@ -7,7 +7,7 @@ import { verificationRuntimeFixture } from '../../../test/helpers/verificationRu
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { InstalledVerificationRuntimeConfigurationSchema } from './installedVerificationConfiguration.js'
 import { currentCiRuntimePaths, nextCaptureInput, recaptureCiTools, retireCiRuntimeConfigurations,
-  scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
+  pruneCiRuntimeRefreshFiles, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { refreshMainJobRuntime } from '../../cli/refreshMainJobRuntime.js'
 
 const commands = vi.hoisted(() => ({ run: vi.fn() }))
@@ -76,6 +76,40 @@ function fixture() {
 }
 
 describe('CI runtime refresh', () => {
+  it.each(['worker', 'main'])('reclaims stale refresh files while preserving retained inputs and the last log on %s', async host => {
+    const f = fixture()
+    const directory = await privateFixtureDirectory('ci-refresh-cleanup-')
+    roots.push(directory)
+    const state = join(directory, 'state')
+    const work = host === 'worker' ? directory : join(directory, 'ci-runtime-refresh')
+    await mkdir(state)
+    await mkdir(work, { recursive: true })
+    const current = join(work, 'installed-seed-receipt-current.json')
+    const retained = join(work, 'installed-seed-receipt-retained.json')
+    const stale = join(work, 'installed-seed-receipt-stale.json')
+    const lastLog = join(work, 'refresh-last.log')
+    const pending = [join(work, 'installed-seed-receipt-pending.json'), join(work, 'reviewed-refresh-pending.json')]
+    for (const path of [current, retained, stale, lastLog, ...pending,
+      join(work, 'refresh-stale.log'), join(work, 'reviewed-refresh-stale.json'), join(work, 'unrelated.json')]) {
+      await writeFile(path, 'preserved bytes')
+    }
+    await writeFile(join(state, 'job-runtime.json'), JSON.stringify({ ...f.current, seedReceiptPath: current }))
+    await writeFile(join(state, `job-runtime-${'a'.repeat(64)}.json`), JSON.stringify({ ...f.current,
+      machine: { ...f.current.machine, imageDigest: `sha256:${'b'.repeat(64)}` }, seedReceiptPath: retained }))
+    await writeFile(join(state, `job-runtime-${'c'.repeat(64)}.json`), JSON.stringify({ ...f.current,
+      machine: { ...f.current.machine, imageDigest: `sha256:${'d'.repeat(64)}` }, seedReceiptPath: stale }))
+    await writeFile(join(work, 'ci-runtime-last-refresh.json'), JSON.stringify({ log: lastLog }))
+    await retireCiRuntimeConfigurations(state, [`sha256:${'b'.repeat(64)}`])
+    await pruneCiRuntimeRefreshFiles(state, work, pending)
+    for (const path of [current, retained, lastLog, ...pending, join(work, 'unrelated.json')]) {
+      expect(await readFile(path, 'utf8')).toBe('preserved bytes')
+    }
+    for (const path of [stale, join(work, 'refresh-stale.log'), join(work, 'reviewed-refresh-stale.json')]) {
+      await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    await pruneCiRuntimeRefreshFiles(state, work)
+    for (const path of pending) await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
   it('captures a project runtime without claiming a Codex binary that it does not contain', async () => {
     const f = fixture()
     delete f.prepared.unitCodex
@@ -225,6 +259,9 @@ describe('CI runtime refresh', () => {
     await writeFile(join(stateDirectory, 'job-runtime.json'), JSON.stringify(f.current), { mode: 0o600 })
     const seedReceiptPath = join(directory, 'prepared-seed.json')
     await writeFile(seedReceiptPath, '{}')
+    const stale = join(directory, 'refresh-stale.log')
+    await writeFile(stale, 'old refresh')
+    const operationId = randomUUID()
     let finishJob!: () => void
     let finishAgent!: () => void
     let beganDrain!: () => void
@@ -236,7 +273,7 @@ describe('CI runtime refresh', () => {
       if (args.includes('cp')) await writeFile(args.at(-1)!, 'new-binary')
       return 'new-version'
     })
-    const refreshing = scheduleCiRuntimeRefresh({ operationId: randomUUID(), stateDirectory,
+    const refreshing = scheduleCiRuntimeRefresh({ operationId, stateDirectory,
       prepared: { ...f.prepared, seedReceiptPath },
       root: f.current.root, manifest: f.current.qualificationSource.manifest, resources: f.current.machine.resources,
       drain: async () => { beganDrain(); await Promise.all([job, agent]) } })
@@ -250,6 +287,10 @@ describe('CI runtime refresh', () => {
       finishAgent()
       expect(await refreshing).toMatchObject({ workerUnit: 'worker.service' })
       expect(commands.run.mock.calls.some(([file]) => file === 'systemd-run')).toBe(true)
+      await expect(readFile(stale)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await readFile(join(directory, `installed-seed-receipt-${operationId}.json`), 'utf8')).toBe('{}')
+      expect(JSON.parse(await readFile(join(directory, `reviewed-refresh-${operationId}.json`), 'utf8')))
+        .toHaveProperty('captureInput')
     } finally { finishJob(); finishAgent(); await refreshing }
   })
 })

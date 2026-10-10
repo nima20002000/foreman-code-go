@@ -73,6 +73,7 @@ export async function scheduleCiRuntimeRefresh(input: {
   const log = join(base, `refresh-${short}.log`)
   await writeFile(join(base, LAST_REFRESH), JSON.stringify({ operationId: input.operationId,
     commit: input.prepared.commit, log }), { mode: 0o600 })
+  await pruneCiRuntimeRefreshFiles(input.stateDirectory, base, [seedReceiptPath, refreshPath])
   const cli = input.cli ?? [process.execPath, process.argv[1]!, 'refresh-job-runtime']
   const script = 'unit=$1; log=$2; shift 2; systemctl --user stop "$unit"; "$@" > "$log" 2>&1;'
     + ' echo "exit=$?" >> "$log"; systemctl --user start "$unit"'
@@ -83,6 +84,32 @@ export async function scheduleCiRuntimeRefresh(input: {
 }
 
 const LAST_REFRESH = 'ci-runtime-last-refresh.json'
+
+/** Keeps refresh files used by retained configurations, the last log, and the pending refresh. */
+export async function pruneCiRuntimeRefreshFiles(stateDirectory: string, workDirectory = dirname(stateDirectory),
+  pendingPaths: readonly string[] = []): Promise<void> {
+  const kept = new Set(pendingPaths)
+  for (const name of await readdir(stateDirectory)) {
+    if (!/^job-runtime(?:-[a-f0-9]{64})?\.json$/u.test(name)) continue
+    const configuration = JSON.parse(await readFile(join(stateDirectory, name), 'utf8')) as { seedReceiptPath?: string }
+    if (configuration.seedReceiptPath) kept.add(configuration.seedReceiptPath)
+  }
+  const recorded = await readFile(join(workDirectory, LAST_REFRESH), 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null
+    throw error
+  })
+  if (recorded) {
+    const last = JSON.parse(recorded) as { log: string }
+    kept.add(last.log)
+  }
+  for (const entry of await readdir(workDirectory, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^(?:installed-seed-receipt-.+\.json|reviewed-refresh-.+\.json|refresh-.+\.log)$/u.test(entry.name)) {
+      continue
+    }
+    const path = join(workDirectory, entry.name)
+    if (!kept.has(path)) await rm(path)
+  }
+}
 /** The outcome of the last refresh, read by the restarted Worker: null while none ran. */
 export async function lastCiRuntimeRefresh(stateDirectory: string, workDirectory = dirname(stateDirectory)): Promise<{
   operationId: string | null; commit: string; ok: boolean; log: string

@@ -104,6 +104,10 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   }
   const cached = await readCiRuntimeCache({ installer, inputDigest, imageExists })
   if (cached) {
+    stage('prune-images')
+    await pruneCiImages({ keep: [...keepImages, cached.imageId], env, installer, signal })
+    await pruneCiRuntimeCache({ installer, imageExists, keepPaths: [...keepPaths,
+      cached.seedReceiptPath, cached.contextReceiptPath, ...(cached.unitCodex ? [cached.unitCodex.sourceExecutable] : [])] })
     stage('reusing-runtime-image')
     const qualificationSource = await extractQualificationSource(repository, commit,
       join(installer, `qualification-source-${short}`), env, signal)
