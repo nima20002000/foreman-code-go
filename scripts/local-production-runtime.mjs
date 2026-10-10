@@ -320,6 +320,36 @@ export function renderEnvironment(environment) {
   }).join('\n') + '\n'
 }
 
+/**
+ * An API restart closes every native agent process it owns, and their Runs fail without replay.
+ * Install therefore waits until no Run is queued, running or waiting, unless the operator accepts the interruption.
+ */
+export async function waitForIdleRuns({ query, timeoutMs, pollMs = 15_000, interrupt = false, log = console.log, sleep = delay }) {
+  if (interrupt) return
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const active = (await query("select id from runs where execution_state in ('queued','running','waiting') order by id")).rows.map(row => row.id)
+    if (!active.length) return
+    if (Date.now() >= deadline) {
+      throw new Error(`${active.length} Run(s) still active (${active.join(', ')}). Restarting the API would interrupt them. `
+        + 'Let them finish, stop them, or rerun with FOREMAN_INSTALL_INTERRUPT_RUNS=1.')
+    }
+    log(`Waiting for ${active.length} active Run(s) to finish before restarting the API: ${active.join(', ')}`)
+    await sleep(pollMs)
+  }
+}
+
+export async function readActiveRuns(release, databaseUrl, wait) {
+  const require = createRequire(join(release, 'apps/api/package.json'))
+  const { Pool } = require('pg')
+  const pool = new Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 5000, query_timeout: 5000 })
+  try {
+    await wait((text) => pool.query(text))
+  } finally {
+    await pool.end()
+  }
+}
+
 export async function readProductionIdentity(release, databaseUrl) {
   const require = createRequire(join(release, 'apps/api/package.json'))
   const { Pool } = require('pg')

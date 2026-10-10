@@ -12,7 +12,7 @@ import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
-  removeUninstalledRelease, readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
+  removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
   shouldOpenDashboardAfterInstall,
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, launchProduction, launchBrowser,
 } from './local-production-runtime.mjs'
@@ -215,6 +215,11 @@ async function install() {
   const environment = await configureEnvironment()
   const release = await stageRelease()
   try {
+    if (previousRelease) {
+      await readActiveRuns(release, environment.DATABASE_URL, (query) => waitForIdleRuns({ query,
+        timeoutMs: Number(process.env.FOREMAN_INSTALL_RUN_WAIT_MINUTES ?? 120) * 60_000,
+        interrupt: process.env.FOREMAN_INSTALL_INTERRUPT_RUNS === '1' }))
+    }
     await copyFile(join(source, 'compose.production.yaml'), join(app, 'compose.production.yaml'))
     await run('/usr/bin/docker', ['volume', 'create', '--label', 'io.graphql.environment=production', 'graphql-production-postgres'])
     await installServices()
