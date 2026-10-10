@@ -3,17 +3,22 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
 import { server } from '../../mocks/server'
-import { ComputerActivityIcons } from './ComputerActivity'
+import { SidebarComputers } from './ComputerActivity'
 import { computersFixture, deviceName } from './computersTestFixture'
 
-it('hides idle computers and opens the active computer with Jobs, agents and utilization', async () => {
-  const f = computersFixture(<ComputerActivityIcons />)
-  expect(screen.queryByRole('button', { name: 'Activity on Main PC' })).not.toBeInTheDocument()
+it('lists every computer with live meters and opens the active one with Jobs, agents and utilization', async () => {
+  const f = computersFixture(<SidebarComputers />)
+  const list = await screen.findByRole('list', { name: 'Computers' })
+  expect(within(list).getByRole('button', { name: 'Activity on Main PC' })).toBeVisible()
+  expect(within(list).getByRole('button', { name: `Activity on ${deviceName}` })).toBeVisible()
+  expect(within(list).getAllByRole('meter', { name: 'Disk' })).toHaveLength(2)
+  expect(within(list).queryByTestId('computer-busy')).not.toBeInTheDocument()
   f.activity.computers[0]!.jobs.push({ id: 'job-1', name: 'Web build', workspaceId: 'workspace-1', workspaceName: 'Store',
     phase: 'running', startedAt: new Date(Date.now() - 65_000).toISOString() })
   f.activity.computers[0]!.agents.push({ id: 'execution-1', workspaceId: 'workspace-1', workflowId: 'workflow-1',
     workflowName: 'Release', runId: 'run-1', nodeId: 'review', agentName: 'Reviewer', state: 'waiting' })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
+  expect(await within(list).findByTestId('computer-busy')).toBeInTheDocument()
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Activity on Main PC' }))
   const modal = screen.getByRole('dialog', { name: 'Main PC' })
@@ -26,7 +31,6 @@ it('hides idle computers and opens the active computer with Jobs, agents and uti
   expect(within(modal).getByText('Release · review')).toBeVisible()
   expect(within(modal).getByText('waiting')).toBeVisible()
   expect(within(modal).getByRole('meter', { name: 'CPU' })).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: `Activity on ${deviceName}` })).not.toBeInTheDocument()
   await user.click(within(modal).getByText('Web build'))
   expect(modal).toBeVisible()
   fireEvent.pointerDown(within(modal).getByText('Web build'))
@@ -37,7 +41,7 @@ it('hides idle computers and opens the active computer with Jobs, agents and uti
   await waitFor(() => expect(modal).not.toBeVisible())
 })
 it('shows workflow-only activity and keeps an open modal readable when the computer becomes idle', async () => {
-  const f = computersFixture(<ComputerActivityIcons />)
+  const f = computersFixture(<SidebarComputers />)
   f.activity.computers[1]!.online = true
   f.activity.computers[1]!.agents.push({ id: 'execution-1', workspaceId: 'workspace-1', workflowId: 'workflow-1',
     workflowName: 'Release', runId: 'run-1', nodeId: 'build', agentName: 'Builder', state: 'starting' })
@@ -49,14 +53,14 @@ it('shows workflow-only activity and keeps an open modal readable when the compu
   f.activity.computers[1]!.agents = []
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
   await waitFor(() => expect(within(modal).getByText('Idle')).toBeVisible())
-  expect(screen.queryByRole('button', { name: `Activity on ${deviceName}` })).not.toBeInTheDocument()
+  expect(screen.queryByTestId('computer-busy')).not.toBeInTheDocument()
   expect(within(modal).getByText('No running Jobs')).toBeVisible()
   expect(within(modal).getByText('No running agents')).toBeVisible()
   await user.keyboard('{Escape}')
   await waitFor(() => expect(modal).not.toBeVisible())
 })
-it('reports an activity read error and retries without showing stale computer icons', async () => {
-  const f = computersFixture(<ComputerActivityIcons />)
+it('reports an activity read error and retries without showing stale computers', async () => {
+  const f = computersFixture(<SidebarComputers />)
   f.activity.computers[0]!.jobs.push({ id: 'job-1', name: 'Build', workspaceId: 'workspace-1', workspaceName: 'Store',
     phase: 'preparing', startedAt: null })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))

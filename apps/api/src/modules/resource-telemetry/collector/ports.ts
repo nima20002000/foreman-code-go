@@ -1,3 +1,5 @@
+import { statfs } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import type { ResourceCollector, TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
 import { boundedReader } from './io.js'
 import { qualifyHostConstants, type HostConstants } from './linuxProcfs.js'
@@ -30,6 +32,12 @@ export async function createLinuxResourceCollector(input: {
   const io = boundedReader(8)
   return createResourceCollector({ identity: input.identity,
     ...(input.clock ? { clock: input.clock } : {}),
-    ports: { ...io, ownership: input.ownership, wholeHostVisible: input.wholeHostVisible, constants: hostConstants,
+    ports: { ...io, ownership: input.ownership, wholeHostVisible: input.wholeHostVisible, constants: hostConstants, storage: readHomeStorage,
       now: input.clock?.now ?? (() => process.hrtime.bigint()) } })
+}
+
+async function readHomeStorage(signal: AbortSignal) {
+  const stats = await statfs(homedir())
+  signal.throwIfAborted()
+  return { totalBytes: stats.blocks * stats.bsize, availableBytes: stats.bavail * stats.bsize }
 }

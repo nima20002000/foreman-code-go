@@ -84,6 +84,9 @@ export const TelemetryMemorySchema = z.object({ kind: z.enum(['host-used-estimat
   if (value.kind === 'rss-sum' && !value.sharedPagesMayDoubleCount)
     ctx.addIssue({ code: 'custom', message: 'RSS must report possible shared-page double counting.' })
 })
+/** Free space on the filesystem holding the computer's home directory; computer scope only. */
+export const TelemetryStorageSchema = z.object({ totalBytes: Bytes, availableBytes: Bytes }).strict()
+  .refine(value => value.availableBytes <= value.totalBytes, 'Available storage cannot exceed total storage.')
 const metric = <T extends z.ZodType>(value: T) => z.discriminatedUnion('state', [
   z.object({ state: z.literal('fresh'), value, reason: z.null(), sampledAtUnixMs: Time, freshUntilUnixMs: Time }).strict(),
   z.object({ state: z.enum(['warmup', 'stale', 'unavailable', 'permission-denied']), value: z.null(),
@@ -97,12 +100,14 @@ export const TelemetrySampleSchema = z.object({ schemaVersion: z.literal(1), sel
   ageUpperBoundMs: z.number().finite().nonnegative(), freshUntilUnixMs: Time,
   presence: z.enum(['online', 'offline']), ownershipState: z.enum(['active', 'ended', 'closure-unconfirmed', 'closed']),
   coverage: TelemetryCoverageSchema, diagnostics: z.array(TelemetryReasonSchema).max(16), cpu: TelemetryCpuMetricSchema, memory: TelemetryMemoryMetricSchema,
+  /** Present only while the sample is current; older Workers omit it. */
+  storage: TelemetryStorageSchema.nullable().optional(),
 }).strict().superRefine((sample, ctx) => {
   if (sample.selectorKey !== telemetrySelectorKey(sample.selector) || sample.identity.mainId !== sample.selector.mainId
     || telemetryCanonical(sample.identity.host) !== telemetryCanonical(sample.selector.host))
     ctx.addIssue({ code: 'custom', message: 'Sample belongs to a different full selector.' })
   if ((sample.presence === 'offline' || sample.ownershipState === 'ended' || sample.ownershipState === 'closed'
-    || sample.ageUpperBoundMs >= TELEMETRY_LIMITS.freshMs) && (sample.cpu.state === 'fresh' || sample.memory.state === 'fresh'))
+    || sample.ageUpperBoundMs >= TELEMETRY_LIMITS.freshMs) && (sample.cpu.state === 'fresh' || sample.memory.state === 'fresh' || sample.storage))
     ctx.addIssue({ code: 'custom', message: 'Noncurrent sample cannot expose current values.' })
 })
 export const TelemetryReadResultSchema = z.discriminatedUnion('kind', [
@@ -119,6 +124,7 @@ export type TelemetrySample = z.infer<typeof TelemetrySampleSchema>
 export type TelemetryReadResult = z.infer<typeof TelemetryReadResultSchema>
 export type TelemetryCpu = z.infer<typeof TelemetryCpuSchema>
 export type TelemetryMemory = z.infer<typeof TelemetryMemorySchema>
+export type TelemetryStorage = z.infer<typeof TelemetryStorageSchema>
 /** Counter endpoints belong to the actual capture window, never the configured cadence. */
 export const TelemetryCpuCaptureSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('ok'), basis: TelemetryCpuSchema.shape.basis, windowStartMonoNs: TelemetryUIntSchema, windowEndMonoNs: TelemetryUIntSchema,
@@ -132,10 +138,13 @@ export const TelemetryMemoryCaptureSchema = z.discriminatedUnion('state', [
   z.object({ state: z.enum(['unavailable', 'permission-denied']), reason: TelemetryReasonSchema }).strict(),
 ])
 export const TelemetryCollectedRowSchema = z.object({ selector: TelemetrySelectorSchema, coverage: TelemetryCoverageSchema,
-  cpu: TelemetryCpuCaptureSchema, memory: TelemetryMemoryCaptureSchema }).strict().superRefine((row, ctx) => {
+  cpu: TelemetryCpuCaptureSchema, memory: TelemetryMemoryCaptureSchema,
+  storage: TelemetryStorageSchema.nullable().optional() }).strict().superRefine((row, ctx) => {
   if (row.memory.state === 'ok' && (row.selector.scope === 'computer') !== (row.memory.value.kind === 'host-used-estimate')
     || row.cpu.state === 'ok' && (row.selector.scope === 'computer') !== (row.cpu.basis === 'host-active-ticks'))
     ctx.addIssue({ code: 'custom', message: 'Computer counters cannot be relabeled as owned-scope counters.' })
+  if (row.storage && row.selector.scope !== 'computer')
+    ctx.addIssue({ code: 'custom', message: 'Storage belongs to the computer scope only.' })
 })
 export const CollectionChallengeSchema = z.object({ schemaVersion: z.literal(1), identity: TelemetryIdentitySchema,
   challengeId: Id, issuedAtUnixMs: Time, freshUntilUnixMs: Time }).strict()

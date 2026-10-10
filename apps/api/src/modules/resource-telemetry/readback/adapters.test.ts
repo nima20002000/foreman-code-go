@@ -34,7 +34,8 @@ describe('authenticated HTTP/Operator MCP ResourceTelemetry parity', () => {
       coverage: { boundary: 'partial', shared: false, reasons: mode === 'truncated-full-coverage' ? TelemetryReasonSchema.options.filter(reason => reason !== 'limit').slice(0, 16) : ['process-tree-partial'] }, cpu: { state: 'warmup', reason: 'warmup' },
       memory: { state: 'ok', value: selector.scope === 'computer'
         ? { kind: 'host-used-estimate', bytes: 0, totalBytes: 8192, availableBytes: 8192, sharedPagesMayDoubleCount: false }
-        : { kind: 'rss-sum', bytes: 4096, totalBytes: null, availableBytes: null, sharedPagesMayDoubleCount: true } } })
+        : { kind: 'rss-sum', bytes: 4096, totalBytes: null, availableBytes: null, sharedPagesMayDoubleCount: true } },
+      ...(selector.scope === 'computer' ? { storage: { totalBytes: 1000, availableBytes: 250 } } : {}) })
     if (mode === 'fractional-monotonic') mono = Number(123456n) / 1_000_000
     await service.ingest(context, JSON.stringify({ schemaVersion: 1, identity: challenge.identity,
       challengeId: challenge.challengeId, sequence: '1', collectedAtUnixMs: 1000,
@@ -88,6 +89,7 @@ describe('authenticated HTTP/Operator MCP ResourceTelemetry parity', () => {
               continue
             }
             expect(read.lastKnown!.memory.value).toEqual(read.sample.memory.value)
+            expect(read.sample.storage).toEqual(selector.scope === 'computer' ? { totalBytes: 1000, availableBytes: 250 } : undefined)
             if (mode === 'fractional-monotonic') {
               expect(read.sample.freshUntilUnixMs).toBe(6999)
               expect(read.lastKnown!.freshUntilUnixMs).toBe(6999)

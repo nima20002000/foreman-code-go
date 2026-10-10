@@ -2,24 +2,35 @@ import { Monitor } from 'lucide-react'
 import type { ComputerActivity, ComputerActivityList } from '@foreman-code/contracts/computer-activity'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
-import { Alert, Button, Dialog, IconButton, LoadingState } from '../../shared/ui/nocturne'
+import { Alert, Button, Dialog, LoadingState } from '../../shared/ui/nocturne'
 import { formatDuration } from '../resource-telemetry/telemetryView'
 import { ComputerUtilization } from './ComputerUtilization'
 import { computerState } from './computerState'
 import { useComputerUi } from './computerUiStore'
 import './computers.css'
 
-export function ComputerActivityIcons() {
+/** Every paired computer with live CPU, memory and disk; selecting one opens its activity. */
+export function SidebarComputers() {
   const query = useComputerActivity()
   const open = useComputerUi(state => state.openActivity)
-  const active = query.isError ? [] : query.data?.computers.filter(value => value.jobs.length || value.agents.length) ?? []
+  const computers = query.isError ? [] : query.data?.computers ?? []
   return <>
-    {active.length > 0 && <div className="computer-activity-icons" aria-label="Active computers">
-      {active.map(computer => <IconButton key={computerKey(computer.target)} variant="ghost"
-        label={`Activity on ${computer.name}`} onClick={() => open(computerKey(computer.target))}>
-        <Monitor size={18} aria-hidden="true" /><span className="computer-activity-dot" aria-hidden="true" />
-      </IconButton>)}
-    </div>}
+    {computers.length > 0 && <ul className="sidebar-computers" aria-label="Computers">
+      {computers.map(computer => {
+        const busy = computer.jobs.length > 0 || computer.agents.length > 0
+        return <li key={computerKey(computer.target)} data-online={computer.online}>
+          <button type="button" className="sidebar-computer" aria-label={`Activity on ${computer.name}`}
+            title={`${computer.name}: ${computerState(computer, query.data?.activityComplete ?? false)}`}
+            onClick={() => open(computerKey(computer.target))}>
+            <span className="sidebar-computer-icon"><Monitor size={16} aria-hidden="true" />
+              {busy && <span className="computer-activity-dot" data-testid="computer-busy" aria-hidden="true" />}</span>
+            <span className="sidebar-computer-name">{computer.name}</span>
+            <span className="computer-presence-dot" data-online={computer.online} aria-hidden="true" />
+          </button>
+          <ComputerUtilization target={computer.target} online={computer.online} compact />
+        </li>
+      })}
+    </ul>}
     <ComputerActivityModal />
   </>
 }
