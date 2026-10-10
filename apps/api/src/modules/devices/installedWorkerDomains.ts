@@ -97,7 +97,6 @@ export async function createInstalledWorkerDomains(input: {
   const active = new Map<Promise<unknown>, string>()
   let runtimeDrain: ReturnType<typeof createWorkerRuntimeDrain> | undefined
   let maintenance: Promise<ComputerMaintenance> | undefined
-  let ciRuntime: CiRuntimeWorker | undefined
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
@@ -327,7 +326,7 @@ export async function createInstalledWorkerDomains(input: {
         return quiet.every(Boolean) && !nativeActive
       } })
   }
-  ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
+  const ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
     managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot,
     prepare: async options => {
       const retained = await jobJournal()
@@ -356,7 +355,7 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('CI_RUNTIME_STALE', 'CI runtime preparation requires the actual authenticated worker channel.', 409)
       }
-      return { payload: await ciRuntime!.handle(payload) }
+      return { payload: await ciRuntime.handle(payload) }
     },
   })
   extensions.push({ namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 65_536, maxBinaryBytes: 0,
@@ -555,7 +554,7 @@ export async function createInstalledWorkerDomains(input: {
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
-      try { await ciRuntime?.close() } catch (error) { failures.push(error) }
+      try { await ciRuntime.close() } catch (error) { failures.push(error) }
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
       try { await telemetry?.close() } catch (error) { failures.push(error) }
       try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }

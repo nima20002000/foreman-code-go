@@ -1171,8 +1171,10 @@ export function buildProductionApp(
     if (!native) {
       throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The chat source working tree is unavailable.', 409)
     }
+    const harness = configuration.harness.harness
+    if (harness === 'opencode') throw new DomainError('HARNESS_RETIRED', 'OpenCode is retired; this chat source cannot continue.', 409)
     const profileSelection = workflowProfileSelection({ executionId, runId: source.runId, agentId: source.agentId,
-      harness: configuration.harness.harness, configuration, workingDirectory, acceptedPlacement: placement },
+      harness, configuration, workingDirectory, acceptedPlacement: placement },
     native?.workingTree.canonicalCwd)
     return { profileSelection, sourceExecution: { executionId, placement, workingTree: native.workingTree } }
   }
