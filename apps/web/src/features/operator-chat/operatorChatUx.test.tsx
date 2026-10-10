@@ -448,15 +448,29 @@ describe('Operator chat UX', () => {
     expect(screen.getAllByRole('button', { name: 'Close Operator chat' })).toHaveLength(1)
   })
   it('removes a chat through its menu and restores it with Undo, without stale polls resurrecting it', async () => {
-    api.list.mockResolvedValue({ conversations: [summarizeOperatorConversation(operatorState({ turnState: 'idle', activeRequestId: null }))] })
+    const original = operatorState({ turnState: 'idle', activeRequestId: null })
+    const restored = operatorState({ turnState: 'idle', activeRequestId: null, revision: original.revision + 2 })
+    const staleList = { conversations: [summarizeOperatorConversation(original)] }
+    api.list.mockResolvedValue(staleList)
+    api.remove.mockResolvedValue({ conversationId: original.conversation.id, revision: original.revision + 1 })
+    api.restore.mockImplementation(async () => {
+      api.list.mockResolvedValue({ conversations: [summarizeOperatorConversation(restored)] })
+      api.get.mockResolvedValue(restored)
+      return { conversationId: restored.conversation.id, revision: restored.revision }
+    })
     chat()
     fireEvent.click(await screen.findByRole('button', { name: 'Chat options: First conversation' }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith('conversation-one'))
     await waitFor(() => expect(screen.queryByRole('button', { name: /^First conversation/ })).not.toBeInTheDocument())
+    await act(async () => { await client.invalidateQueries({ queryKey: ['operator-chat', 'summaries'] }) })
+    expect(screen.queryByRole('button', { name: /^First conversation/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
     await waitFor(() => expect(api.restore).toHaveBeenCalledWith('conversation-one'))
     expect(await screen.findByRole('button', { name: /^First conversation/ })).toBeInTheDocument()
+    api.list.mockResolvedValue(staleList)
+    await act(async () => { await client.invalidateQueries({ queryKey: ['operator-chat', 'summaries'] }) })
+    expect(screen.getByRole('button', { name: /^First conversation/ })).toBeInTheDocument()
   })
 
   it('exposes all eight resize handles and keeps titles out of the modal header', async () => {

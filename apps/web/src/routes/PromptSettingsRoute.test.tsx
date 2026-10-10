@@ -34,6 +34,22 @@ function mount(path: string) {
   return { router, client }
 }
 
+async function expectAppAccessFailure(status: number, editor: HTMLElement) {
+  if (status === 403) {
+    expect(await screen.findByRole('heading', { name: 'Access unavailable' })).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: 'Initial prompt' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Settings' })).not.toBeInTheDocument()
+  } else {
+    const dialog = await screen.findByRole('dialog', { name: 'Reconnecting to the server' })
+    expect(dialog).toBeVisible()
+    expect(within(dialog).getByRole('button', { name: 'Close dialog' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Initial prompt' })).toBe(editor)
+    expect(editor).toHaveAttribute('readonly')
+    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+  }
+  expect(screen.queryByRole('button', { name: 'Save initial prompt' })).not.toBeInTheDocument()
+}
+
 beforeEach(() => {
   clearRevisionedFormPersistence()
   server.use(
@@ -179,15 +195,13 @@ it.each([503, 403])('recovers edited prompts after a %s app access failure and r
     error: { code: 'ACCESS_UNAVAILABLE', message: 'Access check failed.' },
   }, { status })))
   await client.invalidateQueries({ queryKey: settingsExperienceKeys.access() })
-  expect(await screen.findByRole('heading', { name: status === 403 ? 'Access unavailable' : 'Cannot reach the server' }))
-    .toBeVisible()
-  expect(screen.queryByRole('textbox', { name: 'Initial prompt' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Save initial prompt' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('link', { name: 'Settings' })).not.toBeInTheDocument()
+  await expectAppAccessFailure(status, editor)
   server.use(http.get('/api/local-human', () => HttpResponse.json(ownerAccess)))
   await user.click(screen.getByRole('button', { name: 'Try again' }))
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reconnecting to the server' })).not.toBeInTheDocument())
   expect(await screen.findByRole('textbox', { name: 'Initial prompt' }))
     .toHaveValue('Operator instructions\nKeep these edits')
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Initial prompt' })).not.toHaveAttribute('readonly'))
   const unload = new Event('beforeunload', { cancelable: true })
   window.dispatchEvent(unload)
   expect(unload.defaultPrevented).toBe(true)
@@ -221,13 +235,10 @@ it.each([503, 403])('retries the original uncertain prompt save after a %s app a
     error: { code: 'ACCESS_UNAVAILABLE', message: 'Access check failed.' },
   }, { status })))
   await client.invalidateQueries({ queryKey: settingsExperienceKeys.access() })
-  expect(await screen.findByRole('heading', { name: status === 403 ? 'Access unavailable' : 'Cannot reach the server' }))
-    .toBeVisible()
-  expect(screen.queryByRole('textbox', { name: 'Initial prompt' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Save initial prompt' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('link', { name: 'Settings' })).not.toBeInTheDocument()
+  await expectAppAccessFailure(status, editor)
   server.use(http.get('/api/local-human', () => HttpResponse.json(ownerAccess)))
   await user.click(screen.getByRole('button', { name: 'Try again' }))
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reconnecting to the server' })).not.toBeInTheDocument())
   expect(await screen.findByRole('textbox', { name: 'Initial prompt' }))
     .toHaveValue('Operator instructions\nSubmitted edit')
   expect(screen.getByRole('textbox', { name: 'Initial prompt' })).toBeDisabled()

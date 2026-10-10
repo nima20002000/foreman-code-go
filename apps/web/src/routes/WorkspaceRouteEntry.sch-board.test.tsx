@@ -376,7 +376,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
   it('canonicalizes a legacy Run link and preserves unrelated selection and hash', async () => {
     const entry = `/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/run-a/graph/version-a/3?workflowId=${scope.workflowId}&agentId=agent-researcher#board`
     const { router } = await mount(entry)
-    await screen.findByRole('group', { name: 'Y, saved agent, read only' })
+    await savedY()
     const hash = router.history.location.hash
     await choose('run-b')
     await screen.findByRole('button', { name: 'Inspect Run node X in B' })

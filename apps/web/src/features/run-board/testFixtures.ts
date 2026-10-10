@@ -69,6 +69,8 @@ export function versionReply(snapshot: RunBoardSnapshotGetResult['snapshot']) {
           width: node.size.width, height: node.size.height,
         })),
         edges: snapshot.edges,
+        ...(snapshot.edges.some(edge => edge.maxWorkHandoffsPerRun !== undefined
+          || edge.workRequestDirection !== undefined) ? { handoffs: { contractVersion: 1 } } : {}),
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: snapshot.nodes.length },
       },
     },
@@ -121,9 +123,11 @@ export function pinnedRunHandlers(target: RunsSelectorScope) {
         createdAt: saved(runId).version.createdAt, cleanupPending: false },
         items: [], pageInfo: { nextCursor: null } })
     }),
-    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/handoffs', ({ params }) =>
-      HttpResponse.json({ scope: saved(String(params.runId)).scope, policy: 'not_configured',
-        runState: 'completed', connections: [], routes: [], notices: [], unresolved: [], directionWait: false })),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/handoffs', ({ params }) => {
+      const { scope, version } = saved(String(params.runId))
+      return HttpResponse.json({ scope, policy: version.definition.handoffs ? 'work' : 'not_configured',
+        runState: 'completed', connections: [], routes: [], notices: [], unresolved: [], directionWait: false })
+    }),
     http.get('*/api/management/workspaces/:workspaceId/agents/:agentId/versions/:versionId', ({ params }) =>
       HttpResponse.json({ version: AgentConfigurationVersionSchema.parse({ ...source.configurations[0],
         workspaceId: target.workspaceId, agentId: String(params.agentId), id: String(params.versionId) }) })),
