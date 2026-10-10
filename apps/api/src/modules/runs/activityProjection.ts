@@ -34,6 +34,7 @@ function toolLabel(native: Record<string, unknown>): string | undefined {
   if ((item === 'mcpToolCall' || item === 'dynamicToolCall') && native.toolName) {
     return nativeToolTitle(item, string(native.toolName))
   }
+  if (item === 'dynamicToolCall') return 'Tool action'
   if (item === 'commandExecution' || part === 'bash') return 'Command action'
   if (item === 'fileChange' || ['write','edit','apply_patch','multiedit'].includes(part ?? '')) return 'File change'
   if (item === 'webSearch' || ['websearch','webfetch','codesearch'].includes(part ?? '')) return 'Web search'
@@ -41,6 +42,47 @@ function toolLabel(native: Record<string, unknown>): string | undefined {
   if (item === 'collabAgentToolCall' || part === 'task') return 'Subagent action'
   if (part === 'read') return 'File read'
   if (part === 'grep' || part === 'glob' || part === 'list') return 'File search'
+  return undefined
+}
+
+const notificationSummaries = new Map([
+  ['item/agentMessage/delta', 'Agent message updated'],
+  ['item/commandExecution/outputDelta', 'Command output updated'],
+  ['item/fileChange/outputDelta', 'File change output updated'],
+  ['item/reasoning/textDelta', 'Reasoning text updated'],
+  ['item/reasoning/summaryTextDelta', 'Reasoning summary updated'],
+  ['item/reasoning/summaryPartAdded', 'Reasoning summary added'],
+  ['item/mcpToolCall/progress', 'MCP tool progress updated'],
+  ['mcpServer/startupStatus/updated', 'MCP server startup updated'],
+  ['account/rateLimits/updated', 'Account rate limits updated'],
+  ['thread/tokenUsage/updated', 'Token usage updated'],
+  ['thread/status/changed', 'Native session status updated'],
+  ['turn/diff/updated', 'File changes updated'],
+  ['turn/plan/updated', 'Agent plan updated'],
+  ['serverRequest/resolved', 'Native request resolved'],
+])
+const itemLabels = new Map([
+  ['agentMessage', 'Agent message'], ['userMessage', 'User message'], ['reasoning', 'Agent reasoning'],
+  ['plan', 'Agent plan'], ['contextCompaction', 'Context compaction'],
+])
+
+function nativeDetail(native: Record<string, unknown>): string | undefined {
+  const item = string(native.itemType)
+  const files = count(native.fileChangeCount)
+  if (item === 'fileChange' && files !== undefined) {
+    return `Changes cover ${files} ${files === 1 ? 'file' : 'files'}.`
+  }
+  if (item === 'commandExecution' && Number.isSafeInteger(native.exitCode)) {
+    return `Exit code: ${native.exitCode}.`
+  }
+  if (item === 'agentMessage') {
+    if (native.messagePhase === 'commentary') return 'Progress update.'
+    if (native.messagePhase === 'final_answer') return 'Final answer.'
+  }
+  const characters = count(native.deltaLength)
+  if (characters !== undefined && notificationSummaries.has(string(native.nativeMethod) ?? '')) {
+    return `Received ${characters} ${characters === 1 ? 'character' : 'characters'}.`
+  }
   return undefined
 }
 
@@ -197,11 +239,24 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
       const claude = claudeConversationActivity({ type: string(native.type) ?? '', payload: {
         itemId: native.claudeItemId, taskId: native.claudeTaskId, name: native.claudeName, status: native.claudeStatus,
       } }, runId)
-      const label = claude?.title ?? toolLabel(native)
-      kind = label ? 'tool_action' : 'tool_log'
+      const tool = claude?.title ?? toolLabel(native)
+      const label = tool ?? itemLabels.get(string(native.itemType) ?? '')
+      kind = 'tool_log'
+      if (label) kind = 'agent_work'
+      if (tool) kind = 'tool_action'
       status = claude?.status ?? toolStatus(native)
       const action = status === 'running' ? 'started' : status
       summary = label ? `${label} ${action}` : 'Native activity recorded; details unavailable'
+      if (native.type === 'native.notification') {
+        summary = notificationSummaries.get(string(native.nativeMethod) ?? '') ?? summary
+      } else if (native.type === 'turn.started' || native.type === 'turn.completed') {
+        status = nativeActivityStatus(string(native.turnStatus))
+          ?? (native.type === 'turn.started' ? 'running' : 'completed')
+        summary = `Agent turn ${status === 'running' ? 'started' : status}`
+      } else if (native.type === 'thread.started') {
+        summary = 'Native session created'
+      }
+      detail = nativeDetail(native)
       break
     }
     case 'result_recorded': case 'work_result_accepted':

@@ -90,6 +90,8 @@ export function nativeToolTitle(itemType: string, toolName?: string | null, comm
     const program = commandName?.split('/').at(-1)
     return program && commandPrograms.has(program) ? `Command: ${program}` : 'Command action'
   }
+  if (itemType === 'fileChange') return 'File change'
+  if (itemType === 'webSearch') return 'Web search'
   if (itemType === 'subagent' || itemType === 'collabAgentToolCall') return 'Subagent action'
   const name = safeNodeName(toolName)
   if (name) return `Tool: ${name}`

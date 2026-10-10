@@ -149,7 +149,9 @@ export async function readRunActivitySnapshot(sql: Queryable, scope: RunActivity
     const owner: WorkRef = execution ? ref(execution) : job ? jobRef(job) : { kind: 'run', ...scope }
     return [{ kind: 'diagnostic' as const, id: publicItem.id, revision: '0', order: row.sequence, orderSource: 'run_activity', owner,
       source: { schemaVersion: 1, system: 'run_activity', eventId: publicItem.id, sequence: row.sequence, observedAt: row.occurred_at.toISOString() },
-      evidence: publicItem.status === 'unknown' ? 'unknown' : 'confirmed', code: publicItem.kind, message: publicItem.summary }]
+      evidence: publicItem.status === 'unknown' ? 'unknown' : 'confirmed', code: publicItem.kind,
+      message: row.kind === 'harness_output' && publicItem.detail
+        ? `${publicItem.summary}: ${publicItem.detail}` : publicItem.summary }]
   })
   const nativeWork = projectNativeActivityFacts(await readNativeActivityFacts(sql, scope.runId), (executionId) => {
     const execution = before.executions.find((entry) => entry.id === executionId)
