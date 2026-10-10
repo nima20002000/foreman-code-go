@@ -1,4 +1,5 @@
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
+import { isCodexStagingRenameError, removeCodexStagingDirectories } from './npmStaging.js'
 import { syncFingerprint } from './syncFingerprint.js'
 import { MaintenanceTaskStore } from './maintenanceTaskStore.js'
 import { MaintenanceCommandStore } from './maintenanceCommandStore.js'
@@ -443,8 +444,26 @@ export class ComputerMaintenance {
     }
     const npm = await this.ports.find('npm')
     if (!npm) throw new Error('npm is not installed on this computer, so Codex cannot be installed.')
-    await step(npm, ['install', '--global', '--include=optional', '--prefix', join(home, '.local'),
-      `${PACKAGES.codex}@latest`], 'npm install @openai/codex@latest')
+    const args = ['install', '--global', '--include=optional', '--prefix', join(home, '.local'),
+      `${PACKAGES.codex}@latest`]
+    const label = 'npm install @openai/codex@latest'
+    const result = await step(npm, args, label, { allowFailure: true })
+    if (result.code === 0) return
+    const scope = join(home, '.local', 'lib', 'node_modules', '@openai')
+    if (!isCodexStagingRenameError(`${result.stdout}\n${result.stderr}`, scope)) {
+      throw new Error(`${label} failed${result.code === null ? '' : ` (exit ${result.code})`}.`)
+    }
+    try {
+      await removeCodexStagingDirectories(scope)
+    } catch (error) {
+      throw new Error(`Codex update could not clean stale npm staging directories: ${maintenanceError(error,
+        'Cleanup failed.')} Check the user-owned @openai/.codex-* directories before retrying.`, { cause: error })
+    }
+    const retried = await step(npm, args, `${label} (retry after stale npm staging cleanup)`, { allowFailure: true })
+    if (retried.code !== 0) {
+      throw new Error('Codex update failed after stale npm staging cleanup and one retry. '
+        + 'Check the maintenance output and the user-owned @openai/.codex-* directories before retrying.')
+    }
   }
 
   /** Adds Main's servers this computer lacks and removes the ones it received from Main earlier that Main has since

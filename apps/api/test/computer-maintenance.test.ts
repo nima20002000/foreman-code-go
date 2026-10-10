@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ComputerMaintenance, type MaintenancePorts } from '../src/modules/computers/maintenance.js'
 import { syncableServers } from '../src/modules/computers/fleet.js'
 
@@ -68,6 +71,11 @@ async function settle(maintenance: ComputerMaintenance) {
   throw new Error('task did not finish')
 }
 
+const homes: string[] = []
+afterEach(async () => {
+  await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true })))
+})
+
 describe('computer maintenance', () => {
   it('reports harness versions against the latest release, OS updates, restart, sudo and disk', async () => {
     const fake = ports({ files: { '/var/run/reboot-required': '1' } })
@@ -88,6 +96,56 @@ describe('computer maintenance', () => {
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/npm', args: ['install', '--global', '--include=optional',
       '--prefix', '/home/owner/.local', '@openai/codex@latest'] })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/claude', args: ['update'] })
+  })
+
+  it.each([false, true])('retries a Codex staging rename once and persists the result (fails again: %s)', async failsAgain => {
+    const home = await mkdtemp(join(tmpdir(), 'maintenance-staging-'))
+    homes.push(home)
+    const scope = join(home, '.local', 'lib', 'node_modules', '@openai')
+    await mkdir(join(scope, '.codex-stale123'), { recursive: true })
+    await writeFile(join(scope, '.codex-stale123', 'package.json'), '{}')
+    await mkdir(join(scope, 'codex'))
+    const fake = ports()
+    fake.value.environment.HOME = home
+    const run = fake.value.run
+    let installs = 0
+    fake.value.run = async (binary, args, options) => {
+      if (args[0] === 'install') {
+        installs++
+        if (installs === 1 || failsAgain) return { code: 217, stdout: '',
+          stderr: `npm error ENOTEMPTY: directory not empty, rename '${scope}/codex' -> '${scope}/.codex-stale123'` }
+        expect(await readdir(scope)).toEqual(['codex'])
+      }
+      return run(binary, args, options)
+    }
+    const maintenance = new ComputerMaintenance(fake.value)
+    const started = await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    const task = (await settle(maintenance)).tasks.find(task => task.id === started.id)
+    expect(installs).toBe(2)
+    expect(await readdir(scope)).toEqual(['codex'])
+    expect(task?.state).toBe(failsAgain ? 'failed' : 'succeeded')
+    if (failsAgain) expect(task?.summary).toContain('failed after stale npm staging cleanup and one retry')
+    else expect(task?.summary).toBe('Codex 0.160.0 → 0.161.0')
+    expect(task?.outputTail).toContain('retry after stale npm staging cleanup')
+    const persisted = await new ComputerMaintenance(fake.value).status(AbortSignal.timeout(1000))
+    expect(persisted.tasks.find(task => task.id === started.id)).toEqual(task)
+  })
+
+  it('does not retry an unrelated npm failure', async () => {
+    const fake = ports()
+    const run = fake.value.run
+    let installs = 0
+    fake.value.run = async (binary, args, options) => {
+      if (args[0] === 'install') {
+        installs++
+        return { code: 1, stdout: '', stderr: 'npm error EACCES permission denied' }
+      }
+      return run(binary, args, options)
+    }
+    const maintenance = new ComputerMaintenance(fake.value)
+    await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    expect((await settle(maintenance)).tasks[0]?.state).toBe('failed')
+    expect(installs).toBe(1)
   })
 
   it('runs a non-interactive sudo apt upgrade and refuses OS work without passwordless sudo', async () => {
