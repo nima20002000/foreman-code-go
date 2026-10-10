@@ -18,6 +18,9 @@ import {
   PromptTextSchema, DEFAULT_PROMPT_TEXT, type PromptText, type PromptSettingSnapshot,
 } from '@foreman-code/contracts/management'
 
+import { RemoteExecutionSettingsSchema, DEFAULT_REMOTE_EXECUTION_SETTINGS,
+  type RemoteExecutionSettings } from '@foreman-code/contracts/management'
+
 import { inTransaction } from '../../infrastructure/transaction.js'
 
 import { DomainError } from '../errors.js'
@@ -63,6 +66,14 @@ export class PostgresFoundationSettingsRepository {
 
   updateOperatorInitialPrompt(value: PromptText, expectedRevision: number, client: pg.ClientBase) {
     return this.write('operator-initial-prompt', PromptTextSchema.parse(value), expectedRevision, client)
+  }
+
+  getRemoteExecutionSettings(client?: pg.ClientBase): Promise<VersionedSetting<RemoteExecutionSettings>> {
+    return this.read('remote-execution-settings', RemoteExecutionSettingsSchema, DEFAULT_REMOTE_EXECUTION_SETTINGS, client)
+  }
+
+  updateRemoteExecutionSettings(value: RemoteExecutionSettings, expectedRevision: number, client: pg.ClientBase) {
+    return this.write('remote-execution-settings', RemoteExecutionSettingsSchema.parse(value), expectedRevision, client)
   }
 
   getGeneralSettings(client?: pg.ClientBase): Promise<VersionedSetting<GeneralSettings>> {

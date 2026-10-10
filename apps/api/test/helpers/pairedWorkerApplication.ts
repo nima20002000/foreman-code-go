@@ -162,6 +162,8 @@ async function certificates(root: string) {
     '-keyout', key, '-out', request])
   await execute('openssl', ['x509', '-req', '-in', request, '-CA', ca, '-CAkey', join(root, 'ca.key'),
     '-set_serial', '1', '-days', '1', '-extfile', extensions, '-out', certificate])
+  await chmod(certificate, 0o600)
+  await chmod(key, 0o600)
   return { certificateFile: certificate, privateKeyFile: key, trustCertificateFile: ca }
 }
 

@@ -26,6 +26,7 @@ export interface OperatorServices {
   bugReports?: import('../../modules/bug-reports/service.js').BugReportService
   providerAccounts?: import('../../modules/provider-accounts/service.js').ProviderAccountsService
   ci?: import('../../modules/jobs/ci.js').CiService
+  remoteExecution?: import('../../modules/settings/remoteExecution.js').RemoteExecutionSettingsService
   workerExecution?: import('../../modules/settings/workerExecution.js').WorkerExecutionPolicy
   jobs?: import('../../modules/jobs/service.js').JobService
   jobRuntimeProfiles?: import('../../modules/jobs/runtimeProfiles.js').JobRuntimeProfiles

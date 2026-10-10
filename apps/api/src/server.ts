@@ -12,7 +12,6 @@ import { installProcessLifecycleLogging } from './infrastructure/processLifecycl
 import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { buildProductionApp } from './production.js'
 import { registerBuiltWeb } from './builtWeb.js'
-import { readDeviceListenerConfig } from './modules/devices/productionConfig.js'
 import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
 import { join } from 'node:path'
 import { readMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
@@ -37,7 +36,6 @@ async function main() {
   await enableFileLogging(process.env)
   lifecycle.info({ node: process.version }, 'api starting')
   const config = loadConfig(process.env)
-  const deviceListener = readDeviceListenerConfig(process.env, config.port)
   const database = createDatabase(config.database)
   const rsyncInstallation = await readMainRsyncEntrypoint(join(config.harnesses.workspaceRoot, 'rsync-selection.json'))
   if (rsyncInstallation.kind === 'unavailable') lifecycle.info({ reason: rsyncInstallation.reason }, 'rsync unavailable')
@@ -49,7 +47,7 @@ async function main() {
   const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, undefined,
     { codex: codexQualificationSuite },
-    { mode: 'native', rsyncInstallation, ...(deviceListener ? { deviceListener } : {}) })
+    { mode: 'native', rsyncInstallation })
   let reconciliationTimer: NodeJS.Timeout | undefined
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')

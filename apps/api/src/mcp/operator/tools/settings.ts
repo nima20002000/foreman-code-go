@@ -12,6 +12,9 @@ import { OperatorConversationHistoryPageSchema, OperatorConversationHistoryQuery
 
 import {
   WorkerExecutionSettingsSchema,
+  ManagedRemoteExecutionSettingsSchema,
+  RemoteExecutionSettingsUpdateInputSchema,
+  RemoteExecutionSettingsUpdateResultSchema,
   ManagedGeneralSettingsSchema,
   GeneralSettingsUpdateInputSchema,
   GeneralSettingsUpdateResultSchema,
@@ -32,12 +35,35 @@ import type { OperatorRequestContext } from '../types.js'
 export function registerSettingsTools(server: McpServer, context: OperatorRequestContext): void {
   if (context.services.workerExecution && operatorToolAvailable(context, 'worker_execution_settings_get')) {
     server.registerTool('worker_execution_settings_get', {
-      description: 'Read whether Main permits execution on connected Worker computers. Requires global settings:read. This deployment setting is controlled at startup by a person; MCP cannot change it. History, cancellation and cleanup remain available through their existing permissions.',
+      description: 'Read whether Main permits execution on connected Worker computers. Requires global settings:read. Use remote_execution_settings_get/update to change persisted settings. Explicit environment overrides remain controlled at startup. History, cancellation and cleanup remain available through their existing permissions.',
       inputSchema: z.object({}).strict(),
       outputSchema: WorkerExecutionSettingsSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     }, () => invokeOperatorTool(context, 'worker_execution_settings_get', async () =>
       context.services.workerExecution!.read(context.principal)))
+  }
+  const remoteExecution = context.services.remoteExecution
+  if (remoteExecution && operatorToolAvailable(context, 'remote_execution_settings_get')) {
+    server.registerTool('remote_execution_settings_get', {
+      description: 'Read Main’s persisted remote execution and device listener settings, revision, effective values, '
+        + 'explicit environment overrides and listener runtime status. Requires global settings:read. '
+        + 'TLS file paths refer to Main; certificate and key contents are never returned.',
+      inputSchema: z.object({}).strict(), outputSchema: ManagedRemoteExecutionSettingsSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    }, () => invokeOperatorTool(context, 'remote_execution_settings_get', () => remoteExecution.read(context.principal)))
+  }
+  if (remoteExecution && operatorToolAvailable(context, 'remote_execution_settings_update')) {
+    server.registerTool('remote_execution_settings_update', {
+      description: 'Replace Main’s persisted global remote execution and device listener settings. Requires global '
+        + 'settings:update. Use expectedRevision from remote_execution_settings_get and reuse commandId with identical '
+        + 'input after an uncertain save. Explicit environment values override saved values. TLS certificate/key paths '
+        + 'must name owner-only files owned by Main’s OS user. Execution enablement applies live. Listener changes '
+        + 'apply live when no computers are connected; otherwise restart Main. Read back effective values and '
+        + 'restartRequired with remote_execution_settings_get. This grants no device, harness or workflow permissions.',
+      inputSchema: RemoteExecutionSettingsUpdateInputSchema, outputSchema: RemoteExecutionSettingsUpdateResultSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    }, input => invokeOperatorTool(context, 'remote_execution_settings_update',
+      () => remoteExecution.update(context.principal, 'mcp', input)))
   }
   registerOperatorControlTools(server, context)
   if (context.services.operatorChat && operatorToolAvailable(context, 'operator_chat_create')) server.registerTool('operator_chat_create', {

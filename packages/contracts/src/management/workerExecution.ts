@@ -5,12 +5,12 @@ export const WORKER_EXECUTION_STARTUP_VARIABLE = 'FOREMAN_CODE_LAPTOP_EXECUTION_
 /** The Main deployment controls execution on connected Worker computers. */
 export const WorkerExecutionSettingsSchema = z.object({
   enabled: z.boolean(),
-  managedBy: z.literal('startup'),
+  managedBy: z.enum(['startup', 'settings']),
 }).strict()
 
 export type WorkerExecutionSettings = z.infer<typeof WorkerExecutionSettingsSchema>
 
 export const DEFAULT_WORKER_EXECUTION_SETTINGS: WorkerExecutionSettings = {
   enabled: false,
-  managedBy: 'startup',
+  managedBy: 'settings',
 }

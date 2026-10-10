@@ -1,6 +1,4 @@
-import { X509Certificate, createHash } from 'node:crypto'
-import { isIP } from 'node:net'
-import { readFile } from 'node:fs/promises'
+import { readDeviceTlsMaterials } from './tlsMaterials.js'
 import { createServer, type Server } from 'node:https'
 import type { Socket } from 'node:net'
 import { WebSocketServer } from 'ws'
@@ -32,30 +30,9 @@ export class ProductionDeviceListener {
     return this.starting
   }
   private async open(): Promise<void> {
-    const materials = await Promise.allSettled([
-      readFile(this.config.certificateFile), readFile(this.config.privateKeyFile),
-      ...(this.config.trustCertificateFile ? [readFile(this.config.trustCertificateFile)] : []),
-    ])
-    if (materials.some((item) => item.status === 'rejected')) throw new Error('The approved device TLS materials are unavailable.')
+    const { certificate, key, publicTrust } = await readDeviceTlsMaterials(this.config)
     if (this.closing) throw new Error('Device listener startup was canceled.')
-    const certificate = materials[0] as PromiseFulfilledResult<Buffer>
-    const key = materials[1] as PromiseFulfilledResult<Buffer>
-    const x509 = new X509Certificate(certificate.value)
-    if (this.config.advertisedEndpoint) {
-      const hostname = new URL(this.config.advertisedEndpoint).hostname.replace(/^\[|\]$/g, '')
-      if (!(isIP(hostname) ? x509.checkIP(hostname) : x509.checkHost(hostname))) throw new Error('The approved device TLS certificate does not match its public endpoint.')
-    }
-    let publicTrust: import('@foreman-code/contracts/device-identity').DeviceTlsTrust | undefined
-    const anchor = materials[2]
-    if (anchor?.status === 'fulfilled') {
-      const certificatePem = anchor.value.toString('utf8')
-      if (Buffer.byteLength(certificatePem) > 8192 || /PRIVATE KEY/.test(certificatePem)
-        || (certificatePem.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length !== 1) throw new Error('The approved public device trust anchor is invalid.')
-      const ca = new X509Certificate(certificatePem)
-      if (!ca.ca || !x509.verify(ca.publicKey)) throw new Error('The approved device TLS leaf is not signed by its app-specific CA.')
-      publicTrust = { certificatePem, sha256: createHash('sha256').update(ca.raw).digest('hex') }
-    }
-    const server = createServer({ cert: certificate.value, key: key.value, minVersion: 'TLSv1.2',
+    const server = createServer({ cert: certificate, key, minVersion: 'TLSv1.2',
       handshakeTimeout: 10_000, maxHeaderSize: DEVICE_FRAME_BYTES }, deviceHttpHandler(this.http))
     this.server = server
     server.headersTimeout = 10_000; server.requestTimeout = 15_000; server.keepAliveTimeout = 5_000
@@ -73,9 +50,10 @@ export class ProductionDeviceListener {
     if (this.closing) throw new Error('Device listener startup was canceled.')
     this.publicTrust = publicTrust
   }
-  close(): Promise<void> {
+  hasConnections(): boolean { return this.sockets.size > 0 }
+  close(options?: { preserveEndpoint: true }): Promise<void> {
     this.closing = true
-    this.endpoint.close()
+    if (!options?.preserveEndpoint) this.endpoint.close()
     if (this.stopping) return this.stopping
     const attempt = this.finish()
     this.stopping = attempt

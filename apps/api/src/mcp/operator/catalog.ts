@@ -20,6 +20,8 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'operator_initial_prompt_get', action: 'settings:read' },
   { name: 'operator_initial_prompt_update', action: 'settings:update' },
   { name: 'worker_execution_settings_get', action: 'settings:read' },
+  { name: 'remote_execution_settings_get', action: 'settings:read' },
+  { name: 'remote_execution_settings_update', action: 'settings:update' },
   { name: 'harness_registry_get', action: 'harnesses:read' },
   { name: 'workspace_repository_add', action: 'workspaces:update' },
   { name: 'workspace_repository_get', action: 'workspaces:read' },

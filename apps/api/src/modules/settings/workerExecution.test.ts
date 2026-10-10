@@ -17,15 +17,24 @@ const reader: ManagementPrincipal = {
 describe('Worker execution deployment setting', () => {
   it('defaults off and leaves Main permitted', () => {
     const policy = new WorkerExecutionPolicy()
-    expect(policy.read(reader)).toEqual({ enabled: false, managedBy: 'startup' })
+    expect(policy.read(reader)).toEqual({ enabled: false, managedBy: 'settings' })
     expect(() => policy.requireEnabled({ kind: 'main' })).not.toThrow()
     expect(() => policy.requireEnabled({ kind: 'device' })).toThrow('Execution on connected computers is disabled')
   })
 
-  it('permits Worker execution only with explicit startup opt-in', () => {
+  it('permits Worker execution with explicit startup opt-in', () => {
     const policy = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
     expect(() => policy.requireEnabled({ kind: 'device' })).not.toThrow()
     expect(policy.read(reader).enabled).toBe(true)
+  })
+
+  it('applies persisted execution enablement live', () => {
+    const policy = new WorkerExecutionPolicy()
+    policy.apply({ enabled: true, managedBy: 'settings' })
+    expect(() => policy.requireEnabled({ kind: 'device' })).not.toThrow()
+    expect(policy.read(reader)).toEqual({ enabled: true, managedBy: 'settings' })
+    policy.apply({ enabled: false, managedBy: 'settings' })
+    expect(() => policy.requireEnabled({ kind: 'device' })).toThrow()
   })
 
   it('requires global settings read permission', () => {
@@ -38,7 +47,7 @@ describe('Worker execution deployment setting', () => {
 
   it('parses only explicit deployment flag values', () => {
     const environment = { DATABASE_URL: 'postgresql://example:example@127.0.0.1/test' }
-    expect(loadConfig(environment).workerExecution).toEqual({ enabled: false, managedBy: 'startup' })
+    expect(loadConfig(environment).workerExecution).toEqual({ enabled: false, managedBy: 'settings' })
     expect(loadConfig({ ...environment, GRAPHQL_LAPTOP_EXECUTION_ENABLED: '1' }).workerExecution?.enabled).toBe(true)
     expect(() => loadConfig({ ...environment, GRAPHQL_LAPTOP_EXECUTION_ENABLED: 'true' })).toThrow()
   })

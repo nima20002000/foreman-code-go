@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { LocalHumanAccessSchema, DEFAULT_WORKSPACE_DEFAULTS, ManagedWorkspaceDefaultsSchema,
+import { DEFAULT_REMOTE_EXECUTION_SETTINGS, LocalHumanAccessSchema, DEFAULT_WORKSPACE_DEFAULTS, ManagedWorkspaceDefaultsSchema,
   WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import { getMockScenarioState } from './scenarios'
 import { ProviderAccountsSnapshotSchema } from '@foreman-code/contracts/provider-accounts'
@@ -17,6 +17,11 @@ function failure() {
     ? HttpResponse.json({ error: { code: 'MOCK_READ_FAILED', message: 'The selected mock scenario fails read requests.' } }, { status: 503 }) : undefined
 }
 export const settingsExperienceHandlers = [
+  http.get('/api/management/settings/remote-execution', () => failure() ?? HttpResponse.json({
+    value: DEFAULT_REMOTE_EXECUTION_SETTINGS, revision: 0, versionId: null,
+    effective: DEFAULT_REMOTE_EXECUTION_SETTINGS, environmentOverrides: [],
+    runtime: { listenerEnabled: false, listenerEndpoint: null, restartRequired: false, reason: null },
+  })),
   http.get('/api/provider-accounts', () => failure() ?? HttpResponse.json(
     ProviderAccountsSnapshotSchema.parse({ revision: 0, accounts: [] }),
   )),
