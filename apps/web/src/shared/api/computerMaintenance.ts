@@ -10,14 +10,20 @@ import { useHarnessSessionEpoch } from './harnessSettings'
 import { assertSession, sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 
 const key = () => ['computer-maintenance', sessionGeneration()] as const
-const running = (value: ComputerMaintenanceList | undefined) =>
-  Boolean(value?.computers.some(computer => computer.status?.tasks.some(task => task.state === 'running')))
+const needsFrequentRefresh = (value: ComputerMaintenanceList | undefined) =>
+  Boolean(value?.computers.some(computer => {
+    if (computer.target.hostRef.kind === 'device' && computer.status === null) return true
+    const worker = computer.status?.worker
+    const updatingWorker = worker !== undefined && worker.state !== 'current'
+      && worker.state !== 'failed' && worker.state !== 'rolled-back'
+    return updatingWorker || computer.status?.tasks.some(task => task.state === 'running')
+  }))
 
-/** Versions, OS updates, restart need, disk and recent maintenance tasks for every computer. Polls faster while a task runs. */
+/** Versions and maintenance. Polls faster through Worker updates and reconnects so restarts retain timely readback. */
 export function useComputerMaintenance() {
   useHarnessSessionEpoch()
   return useQuery<ComputerMaintenanceList>({ queryKey: key(), enabled: !sessionIsSwitching(), retry: false, staleTime: 15_000,
-    refetchInterval: query => running(query.state.data) ? 5_000 : 60_000,
+    refetchInterval: query => needsFrequentRefresh(query.state.data) ? 5_000 : 60_000,
     queryFn: ({ signal }) => apiClient.request('/api/management/computers/maintenance', ComputerMaintenanceListSchema, { signal }) })
 }
 

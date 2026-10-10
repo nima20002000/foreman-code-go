@@ -21,6 +21,14 @@ import { placementCapabilityLimit } from '../../../modules/placement/transports.
 import type { OperatorCatalog } from '../presentation.js'
 
 export const OPERATOR_RUNTIME_LIMITS = [
+  { feature: 'worker_updates', state: 'limited',
+    detail: 'Paired Workers automatically match Main through the authenticated device connection. '
+      + 'Updates wait for active work to drain, verify the artifact and install side-by-side; '
+      + 'a failed release rolls back and reports the error. computers_maintenance_status requires global settings:read '
+      + 'and exposes current/target versions, update state and last error. computers_maintenance_start with update-worker '
+      + 'requires global settings:update; omitted targets select paired Workers only. Reuse the original commandId '
+      + 'and input to recover the saved task, or a new commandId to retry. Older Workers without worker-update-v1 '
+      + 'need one human installation of an updater-enabled Worker first. Main is updated with production:install.' },
   {feature:'source_approval',state:'protected',detail:'source_approve accepts either every tracked file in approvedPaths or approveTrackedTree: true with approvedPaths omitted. Both approve only the pinned commit tree, retain sensitive-path/content rejection, executable policy and source limits, and persist the approval choice and exact inventory. Requires sources:approve, sources:read and workspace_locations:read in the workspace.'},
   {feature:'current_workflow_semantics',state:'limited',detail:'One semantics-3 authoring/read/Start contract covers ordinary, parallel/all-required, conditional/approval and optional bounded repeat. Ordinary definitions omit repeat. Read workflow_authoring_capabilities_v3 for separately composed native Start/Stop readiness. Stage/Discard do not execute; Stop-and-save waits for exact settlement.'},
   {feature:'general_questions_and_forms',state:'unsupported',detail:'Native arbitrary questions/forms do not have a typed durable response path. Approval options are not general answers.'},
@@ -135,6 +143,9 @@ export function operatorCapabilities(context: OperatorRequestContext, input: {
 }
 
 const compactRuntimeDetails: Record<string, string> = {
+  worker_updates: 'Workers drain, verify and match Main automatically; failures roll back. Read status with settings:read; '
+    + 'trigger/retry update-worker with settings:update. Older Workers need an initial updater-enabled installation. '
+    + 'Main uses production:install.',
   current_workflow_semantics: 'Semantics 3; optional finite repeat. Read workflow_authoring_capabilities_v3 for native readiness.',
   general_questions_and_forms: 'General native questions/forms have no supported response path.',
   named_workflow_routing: 'Named acyclic routes and all-required joins; no nested repeat or arbitrary cycles.',

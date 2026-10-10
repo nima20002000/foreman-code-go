@@ -1108,5 +1108,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       && !registry.snapshot().launches.some(launch => launch.owner === `execution:${receipt.intent.executionId}`
         && launch.lifecycle !== 'closed'))
   }
-  return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,reservationClosed,close}
+  const drainForUpdate = async () => {
+    await Promise.allSettled([...active])
+    await Promise.all([...hosts.values()].map(host => host.drain()))
+  }
+  return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,reservationClosed,close,drainForUpdate}
 }

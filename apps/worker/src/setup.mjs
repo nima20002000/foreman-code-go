@@ -35,7 +35,7 @@ export async function setupCompanion({ home, node, artifact, approvedManifestSha
   async function publishLaunchers(result) {
     const release = join(root, 'versions', `${result.version}-${result.manifestSha256}`);
     const unit = renderUserService(serviceTemplate, {
-      node, app: root, state, home, path, entrypoint: join(release, 'src/cli.mjs'),
+      node, app: root, state, home, path,
     });
     const appMcpLauncher = join(home, '.local/share/graphql/mcp/launcher.mjs');
     await mkdir(dirname(appMcpLauncher), { recursive: true, mode: 0o700 });
