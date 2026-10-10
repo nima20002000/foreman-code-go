@@ -6,6 +6,7 @@ import { registerBuildComputerRoutes } from './buildComputers.js'
 import { registerRunSubagentRoutes } from './runSubagents.js'
 import { registerHarnessRegistryRoutes } from '../modules/harnesses/registryManagement.js'
 import { registerDeviceManagementRoutes } from '../modules/devices/management.js'
+import { registerWorkspaceRepositoryRoutes } from '../modules/workspaces/repositoryRoutes.js'
 import { registerWorkspaceRootRoutes } from '../modules/workspace-roots/transports.js'
 import { registerSourceRoutes } from '../modules/sources/routes.js'
 import { registerJobRoutes } from './jobs.js'
@@ -88,6 +89,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   if (services.computerSync) registerComputerSyncRoutes(app, services.computerSync)
   if (services.buildComputers) registerBuildComputerRoutes(app, services.buildComputers)
   if (services.devices) registerDeviceManagementRoutes(app, services.devices, async request => requirePrincipal(request))
+  if (services.workspaceRepositories) registerWorkspaceRepositoryRoutes(app, services.workspaceRepositories)
   if (services.workspaceRoots) registerWorkspaceRootRoutes(app, services.workspaceRoots)
   if (services.sources) registerSourceRoutes(app, services.sources)
   if (services.jobs) registerJobRoutes(app, services.jobs)

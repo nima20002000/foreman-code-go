@@ -204,6 +204,31 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(bound.binding.deviceId).toBeNull(); expect(bound.binding.workerInstallationId).toBeNull()
     const rootRead = SourceRootRecordSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_root_get', arguments: { workspaceId: workspace.id, rootId: bound.binding.rootId, bindingRevision: 1 } }))))
     expect(rootRead).toEqual(bound)
+    const sourceReader = await access.issue({ name: 'Source reader without locations', audience: 'operator',
+      grants: [{ actions: ['sources:read', 'source_roots:read'], scope: { workspaceIds: [workspace.id] } }],
+      expiresAt: new Date(Date.now() + 120_000) })
+    const sourceReaderClient = await connect(sourceReader.token)
+    const readerTools = await sourceReaderClient.listTools()
+    expect(readerTools.tools.map(tool => tool.name)).not.toContain('source_root_get')
+    expect(readerTools.tools.map(tool => tool.name)).not.toContain('source_root_list')
+    const rootInput = { workspaceId: workspace.id, rootId: bound.binding.rootId, bindingRevision: 1 }
+    for (const name of ['source_root_get', 'source_root_list']) {
+      const deniedRead = await sourceReaderClient.callTool({ name,
+        arguments: name === 'source_root_get' ? rootInput : { workspaceId: workspace.id } })
+      expect(deniedRead.isError).toBe(true)
+      expect(JSON.stringify(deniedRead.content)).not.toContain(bound.binding.canonicalPath)
+    }
+    const deniedRootGet = await app.inject({ method: 'POST',
+      url: `/api/management/workspaces/${workspace.id}/source-roots/get`,
+      headers: { authorization: `Bearer ${sourceReader.token}` }, payload: rootInput })
+    const deniedRootList = await app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${workspace.id}/source-roots`,
+      headers: { authorization: `Bearer ${sourceReader.token}` } })
+    for (const response of [deniedRootGet, deniedRootList]) {
+      expect(response.statusCode).toBe(403)
+      expect(response.json().error.code).toBe('ACCESS_DENIED')
+      expect(response.body).not.toContain(bound.binding.canonicalPath)
+    }
     const replayedBind = await client.callTool({ name: 'source_root_bind', arguments: bind })
     expect(SourceRootBindResultSchema.parse(decodeMcpToolResult(replayedBind))).toEqual({ value: bound, replayed: true })
     const bindingAudit = await pool.query<{ count: number }>(`select count(*)::int as count from management_audit

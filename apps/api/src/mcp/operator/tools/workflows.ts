@@ -34,7 +34,7 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_get', () => context.services.workflows.get(context.principal, input.workspaceId, input.workflowId)))
   if (operatorToolAvailable(context, 'workflow_create')) server.registerTool('workflow_create', {
-    description: 'Create a named, unsaved semantics-3 workflow using global workflow defaults. Use workflow_validate_v3 and workflow_save_v3 for any graph, with or without repeat. It inherits the workspace execution folder; do not configure a separate workflow path.', inputSchema: CurrentWorkflowCreateInputSchema,
+    description: 'Create a named, unsaved semantics-3 workflow using global workflow defaults. Use workflow_validate_v3 and workflow_save_v3 for any graph, with or without repeat. Omit defaultWorktree to copy the ready workspace project root; pass null to opt out or {rootBinding,branchPrefix?} to select an approved immutable Git source. Worktree selection requires sources:read, source_roots:read and workspace_locations:read. Agents inherit that root unless node.placement overrides it; each writable execution gets its own directory and uniquely suffixed branch.', inputSchema: CurrentWorkflowCreateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_create', () => context.services.workflows.create(context.principal, 'mcp', input)))

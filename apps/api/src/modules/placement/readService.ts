@@ -9,6 +9,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
 import { readPlacement } from './binding.js'
+import { readNativePlacement } from './persistence.js'
 
 async function readUnplacedNode(client: pg.PoolClient, input: RunPlacementGetInput): Promise<RunPlacementGetResult> {
   const saved = await client.query<{ run: unknown; version: unknown }>(`
@@ -84,7 +85,20 @@ export class RunPlacementReadService {
           throw new DomainError('WORKER_OBSERVATION_CONFLICT', 'Persisted observation does not match the accepted placement.', 409)
         }
       }
-      const result = RunPlacementGetResultSchema.parse({ ...input, readback: { evidence: 'accepted', placement, observations } })
+      const nativeRows = await client.query<{ execution_id: string }>(`select n.execution_id
+        from execution_native_placements n join execution_dispatch_intents i on i.execution_id=n.execution_id
+        where i.run_id=$1 and i.node_id=$2 order by n.execution_id`, [input.runId, input.nodeId])
+      const nativePlacements = []
+      for (const row of nativeRows.rows) {
+        const native = await readNativePlacement(client, row.execution_id)
+        if (!native || native.runId !== input.runId || native.nodeId !== input.nodeId) {
+          throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'Native placement is outside the requested Run node.', 409)
+        }
+        nativePlacements.push(native)
+      }
+      const result = RunPlacementGetResultSchema.parse({ ...input,
+        readback: { evidence: 'accepted', placement, observations,
+          ...(nativePlacements.length ? { nativePlacements } : {}) } })
       authorize(principal); authorize(live)
       await client.query('commit')
       return result

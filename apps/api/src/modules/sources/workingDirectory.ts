@@ -11,6 +11,7 @@ import { SourceError, sourcePath, sourceSha256 } from './manifest.js'
 import { verifiedSourceWorkingTree } from './nativeStamp.js'
 import { SourceActiveNativeSessionSchema, type SourceActiveNativeSession } from '@foreman-code/contracts/source-operations'
 import type { SourceNativeSessionCapture } from './executionHosts.js'
+import { verifyWorktreeBranch } from './worktreeRequest.js'
 
 export async function assertSourceNativeSession(record: SourceMaterializationRecord, capture: SourceNativeSessionCapture): Promise<void> {
   capture.signal.throwIfAborted()
@@ -66,6 +67,7 @@ export async function verifyMaterializedWorkingDirectory(record: SourceMateriali
       await directory.close(); directory = child
     }
     if (!isDeepStrictEqual(await identity(directory), receipt.localTreeIdentity)) throw new SourceError('SOURCE_TREE_CHANGED', 'Verified source tree identity changed.')
+    if (capture) await verifyWorktreeBranch(receipt, { signal: capture.signal })
     for (const component of relativeCwd ? relativeCwd.split('/') : []) {
       const child = await openChildDirectory(directory, component)
       await directory.close(); directory = child

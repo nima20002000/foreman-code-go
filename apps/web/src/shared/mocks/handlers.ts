@@ -219,6 +219,21 @@ function sessionControlsResponse(conversationId: string) {
 }
 
 export const handlers: RequestHandler[] = [
+  http.get('/api/management/workspaces/:workspaceId/repository', ({ params, request }) => {
+    const workspaceId = String(params.workspaceId)
+    if (new URL(request.url).searchParams.has('commandId')) {
+      return apiError('IMPORT_NOT_FOUND', 'The requested import is not in this fixture.', 404)
+    }
+    const workspace = visibleManagedWorkspace(workspaceId)
+    return HttpResponse.json({ workspaceId, state: workspace?.workspace.repository ? 'metadata-only' : 'unconfigured',
+      repository: workspace?.workspace.repository ?? null, revision: workspace?.revision ?? 0 })
+  }),
+  http.get('/api/management/workspaces/:workspaceId/source-roots', () =>
+    HttpResponse.json({ items: [], readiness: 'metadata-only' })),
+  http.get('/api/management/workspaces/:workspaceId/root-policies', ({ params }) =>
+    HttpResponse.json({ workspaceId: String(params.workspaceId), policies: [], allowlists: [], readiness: 'metadata-only' })),
+  http.get('/api/management/workspaces/:workspaceId/root-location', ({ params }) =>
+    HttpResponse.json({ evidence: 'unconfigured', workspaceId: String(params.workspaceId), locationRevision: 0, executionLocation: null })),
   http.get('/api/workspaces/:workspaceId/agent-chat/session-controls', () =>
     sessionControlsResponse('mock-conversation')),
   http.get('/api/operator/conversations/:conversationId/session-controls', ({ params }) =>

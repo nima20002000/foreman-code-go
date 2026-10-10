@@ -42,6 +42,19 @@ export const GRAPHQL_AGENT_TOOLS = {
 
 /** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */
 export const GRAPHQL_OPERATOR_TOOLS = {
+  workspace_repository_get: {
+    label: 'Read workspace project', description: 'Read the prepared repository or an incomplete import by its original command ID.',
+    roles: ['operator'], action: 'read-workspace-repository',
+    actions: ['workspaces:read', 'workspace_locations:read', 'sources:read', 'source_roots:read'],
+    scope: 'workspace', readOnly: true,
+  },
+  workspace_repository_add: {
+    label: 'Prepare workspace project', description: 'Clone a GitHub project, save its location, approve its tracked snapshot and bind its source in one revision-checked command.',
+    roles: ['operator'], action: 'prepare-workspace-repository',
+    actions: ['workspaces:read', 'workspaces:update', 'workspace_locations:read', 'workspace_locations:validate',
+      'workspace_locations:update', 'workspace_locations:provision', 'sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind'],
+    scope: 'workspace', readOnly: false,
+  },
   operator_tool_schema_get: { label: 'Read Operator tool schema', description: 'Read one caller-available tool’s input schema and instructions; output schema is opt-in.', roles: ['operator'], action: 'read-operator-tool-schema', actions: ['capabilities:read'], scope: 'caller', readOnly: true },
   workspace_root_configuration_adopt: { label: "Adopt protected root configuration", description: "Audit adoption of the selected host's existing approved roots; no caller paths or execution authority.", roles: ["operator"], action: "adopt-workspace-root-configuration", actions: ["source_roots:bind", "workspace_locations:update"], scope: "workspace", readOnly: false },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[]; action: string; actions: readonly string[]; scope: "run" | "workspace" | "caller"; readOnly: boolean }>;

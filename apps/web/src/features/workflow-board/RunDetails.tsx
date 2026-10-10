@@ -1,4 +1,5 @@
 import { PinnedNodePlacement } from '../node-placement/PinnedNodePlacement'
+import { SavedWorkflowWorktree } from './SavedWorkflowWorktree'
 import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -115,6 +116,8 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
     {runActions !== undefined && outbox.journal && settlement.isError ? <Alert tone="warning" title="Stop journal settlement is not confirmed.">
       {settlement.error.message} The retained command was not replaced. Refresh the exact Run and use the cleanup verification control to retry.
     </Alert> : null}
+    {version && !denied && !pinnedDenied && <SavedWorkflowWorktree workspaceId={scope.workspaceId}
+      value={version.definition.defaultWorktree} />}
     {detail ? <dl><dt>Saved configuration pins</dt><dd><JsonValue label="Run configuration pins" value={detail.run.agentConfigurationVersionIds} /></dd>
       <dt>Accepted execution folder</dt><dd>{detail.run.executionLocation ? <JsonValue label="Run execution folder" value={detail.run.executionLocation} /> : 'Restricted or unavailable; the current workspace folder is not substituted.'}</dd>
       <dt>Accepted Run input</dt><dd><JsonValue label="Accepted Run input" value={detail.run.input} /></dd>

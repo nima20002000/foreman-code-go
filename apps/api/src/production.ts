@@ -82,6 +82,8 @@ import { registerResourceTelemetryRoutes } from './routes/resourceTelemetry.js'
 import { registerResourceTelemetrySelectorRoutes } from './routes/resourceTelemetrySelector.js'
 import { WorkspaceBoundLocationService } from './modules/workspace-roots/service.js'
 import { bootstrapLocalMainWorkspaceRoot } from './modules/workspace-roots/localMainBootstrap.js'
+import { WorkspaceRepositoryService } from './modules/workspaces/repositoryService.js'
+import { registerWorkspaceRepositoryRoutes } from './modules/workspaces/repositoryRoutes.js'
 import { registerWorkspaceRootRoutes } from './modules/workspace-roots/transports.js'
 import { RemoteJobMainRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { JOB_INPUT_NAMESPACE } from './modules/files/jobInputs/service.js'
@@ -1396,7 +1398,32 @@ export function buildProductionApp(
     agentChat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings, projectRoot),
     locations,
-    workflows: new WorkflowManagementService(database.pool, commands, config.harnesses.timeoutMs, accountConfigurations),
+    workflows: new WorkflowManagementService(database.pool, commands, {
+      agentActiveTimeoutMs: config.harnesses.timeoutMs,
+      accountConfigurations,
+      worktrees: {
+        readyRoot: (principal, workspaceId, sql) => {
+          if (!runtimeServices.workspaceRepositories) return Promise.resolve(undefined)
+          return runtimeServices.workspaceRepositories.readyRoot(principal, workspaceId, sql)
+        },
+        sources: {
+          resolveRootBinding: (...args) => {
+            if (!jobRuntime) throw new DomainError('SOURCE_UNAVAILABLE', 'Source services are not initialized.', 503)
+            return jobRuntime.sources.resolveRootBinding(...args)
+          },
+          resolveApprovedSource: (...args) => {
+            if (!jobRuntime) throw new DomainError('SOURCE_UNAVAILABLE', 'Source services are not initialized.', 503)
+            return jobRuntime.sources.resolveApprovedSource(...args)
+          },
+        },
+        roots: {
+          resolve: (...args) => {
+            if (!jobRuntime) throw new DomainError('SOURCE_UNAVAILABLE', 'Root services are not initialized.', 503)
+            return jobRuntime.policies.resolve(...args)
+          },
+        },
+      },
+    }),
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
     harnessCompatibility,
@@ -1745,6 +1772,10 @@ export function buildProductionApp(
       locations.setRootPolicies(jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
       runtimeServices.sources = jobRuntime.sources
+      runtimeServices.workspaceRepositories = new WorkspaceRepositoryService(database.pool, commands,
+        runtimeServices.workspaces, runtimeServices.workspaceRoots, jobRuntime.policies, jobRuntime.sources,
+        machine.installationId, projectRoot)
+      registerWorkspaceRepositoryRoutes(app, runtimeServices.workspaceRepositories)
       runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
         id => deviceRuntime.presenceFor(id), commands)
       registerComputerActivityRoutes(app, runtimeServices.computerActivity)

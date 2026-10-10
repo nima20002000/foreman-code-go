@@ -18,6 +18,7 @@ import { readBoardStop } from './stopOutbox'
 import { readEditOutbox } from '../graph/nextDraft/editIntentStorage'
 import { queryKeys } from '../../shared/api/query'
 import { boardDraftContextKey } from './keys'
+import { worktreeFixture } from './worktree.fixtures'
 
 // The route tree, RootShell, sidebar, creation dialog, persisted boundary, Board,
 // canvas, form, Query hooks, Zustand store, HTTP clients and schemas are REAL.
@@ -146,6 +147,43 @@ async function start(mock: Mock, user: ReturnType<typeof userEvent.setup>, expec
 }
 
 describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
+  it('saves the topbar worktree draft and restores its persisted selection when the Board reopens', async () => {
+    const mock = newBoardMock()
+    const user = userEvent.setup()
+    const mounted = await mount(mock)
+    const project = worktreeFixture(mock.workspaceId)
+    const path = `/api/management/workspaces/${mock.workspaceId}`
+    const sourceHandlers = [
+      http.get(`${path}/source-roots`, () => HttpResponse.json({ items: [project.root], readiness: 'metadata-only' })),
+      http.get(`${path}/root-policies`, () => HttpResponse.json({ workspaceId: mock.workspaceId,
+        policies: [project.location.binding], allowlists: [], readiness: 'metadata-only' })),
+      http.post(`${path}/sources/get`, () => HttpResponse.json(project.source)),
+      http.get(`${path}/repository`, () => HttpResponse.json(project.ready)),
+      http.get(path, () => HttpResponse.json({ workspace: { id: mock.workspaceId, name: 'Website', repository: project.repository },
+        revision: 2, archivedAt: null, executionLocation: project.location.executionLocation, locationRevision: 1,
+        locationValidation: { status: 'ready', checkedAt: project.source.approvedAt } })),
+    ]
+    server.use(...sourceHandlers)
+    mock.handlers.unshift(...sourceHandlers)
+    const { id, key } = await create(mock, user)
+    stageShape(key, 'single', mock)
+    await user.click(screen.getByRole('button', { name: 'Default worktree' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Default worktree' })
+    const workspaceProject = await within(dialog).findByRole('button', { name: 'Use workspace project' })
+    await waitFor(() => expect(workspaceProject).toBeEnabled())
+    await user.click(workspaceProject)
+    await user.type(within(dialog).getByRole('textbox', { name: 'Agent branch prefix' }), 'foreman/site')
+    await user.click(within(dialog).getByRole('button', { name: 'Apply worktree' }))
+    expect(screen.getByText('Draft')).toBeVisible()
+    expect(mock.workflows.get(id)).not.toHaveProperty('defaultWorktree')
+    const version = await save(mock, user, 1)
+    expect(version.definition.defaultWorktree).toEqual({ rootBinding: project.rootBinding, branchPrefix: 'foreman/site' })
+    mounted.unmount()
+    await mount(mock, `/workspaces/${mock.workspaceId}?workflowId=${id}`)
+    expect(await screen.findByRole('button', { name: 'Default worktree' })).toHaveTextContent('Main · octo-owner/website')
+    expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.defaultWorktree).toEqual(version.definition.defaultWorktree)
+    expect(screen.getByText('Saved')).toBeVisible()
+  })
   it('puts unavailable update reads in recovery rows without losing local edits or relaxing fresh Start reads', async () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup()
     const mounted = await mount(mock)

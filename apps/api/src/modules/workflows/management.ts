@@ -1,8 +1,8 @@
+import { workflowCreationWorktree, validateWorkflowWorktrees, requireWorkflowWorktreeReads } from './worktreeSettings.js'
 import { randomUUID } from 'node:crypto'
 
 import { WorkflowDefinitionV3Schema as WorkflowDefinitionSchema, CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from '@foreman-code/contracts/wave25'
-import { CurrentWorkflowAuthoring } from './currentAuthoring.js'
-import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
+import { CurrentWorkflowAuthoring, type WorkflowAuthoringOptions } from './currentAuthoring.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { SavedWorkflowDefinitionSchema as CurrentDefinitionSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema,
   type SavedManagedWorkflow as ManagedWorkflow } from '@foreman-code/contracts/wave25'
@@ -35,8 +35,8 @@ export class WorkflowManagementService {
   readonly current: CurrentWorkflowAuthoring
   readonly schedules: WorkflowScheduleService
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    agentActiveTimeoutMs?: number, accountConfigurations?: ProviderAccountConfigurationService) {
-    this.current = new CurrentWorkflowAuthoring(pool, commands, agentActiveTimeoutMs, accountConfigurations)
+    private readonly options: WorkflowAuthoringOptions = {}) {
+    this.current = new CurrentWorkflowAuthoring(pool, commands, options)
     this.schedules = new WorkflowScheduleService(pool, commands)
   }
 
@@ -73,17 +73,32 @@ export class WorkflowManagementService {
   async create(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: CurrentWorkflowCreateInput) {
     const input = CurrentWorkflowCreateInputSchema.parse(raw)
     requireAuthorization(principal, 'workflows:create', { workspaceId: input.workspaceId })
+    if (input.defaultWorktree) requireWorkflowWorktreeReads(principal, input.workspaceId)
+    let livePrincipal = principal
     return this.commands.execute({
       principal, source, operation: 'workflow.create', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:workflows:new`, payload: input,
-      replayResult: (value) => ManagedWorkflowSchema.parse(value),
+      replayResult: (value) => {
+        const saved = ManagedWorkflowSchema.parse(value)
+        if (saved.workflow.defaultWorktree) {
+          requireWorkflowWorktreeReads(principal, input.workspaceId)
+          requireWorkflowWorktreeReads(livePrincipal, input.workspaceId)
+        }
+        return saved
+      },
       authorize: async (client) => {
         const live = await readLiveManagementPrincipal(client, principal.id)
+        livePrincipal = live
         requireAuthorization(live, 'workflows:create', { workspaceId: input.workspaceId })
+        if (input.defaultWorktree) requireWorkflowWorktreeReads(live, input.workspaceId)
       },
       perform: async (client) => {
         await lockActiveWorkspace(client, input.workspaceId)
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getWorkflowDefaults(client)
+        const live = await readLiveManagementPrincipal(client, principal.id)
+        const defaultWorktree = await workflowCreationWorktree({ sql: client, principal,
+          workspaceId: input.workspaceId, requested: input.defaultWorktree, services: this.options.worktrees })
+        if (defaultWorktree) requireWorkflowWorktreeReads(live, input.workspaceId)
         const now = new Date().toISOString()
         const workflow = WorkflowDefinitionSchema.parse({
           id: `workflow-${randomUUID()}`, workspaceId: input.workspaceId, name: input.name,
@@ -91,8 +106,10 @@ export class WorkflowManagementService {
           approval: { handler: defaults.value.approvalHandler },
           executionSemanticsVersion: 3, entryNodeId: null,
           handoffs: { contractVersion: 1 },
+          ...(defaultWorktree ? { defaultWorktree } : {}),
           executionCondition: { kind: 'manual' }, nodes: [], edges: [], createdAt: now, updatedAt: now,
         })
+        await validateWorkflowWorktrees({ sql: client, principal, definition: workflow, services: this.options.worktrees })
         const result = await client.query<WorkflowRow>(
           `insert into workflows (id, workspace_id, record) values ($1, $2, $3::jsonb)
            returning id, workspace_id, record, revision, current_version_id, archived_at`,

@@ -1,0 +1,172 @@
+import { createHash, randomUUID } from 'node:crypto'
+import type pg from 'pg'
+import { beforeEach, expect, it, vi } from 'vitest'
+import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
+import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
+import { canonicalGraphJson, makeCurrentWorkflowFixture, RunStartV3InputSchema } from '@foreman-code/contracts/wave25'
+import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.js'
+import type { SourceAdmissionPort } from '../sources/admissionPorts.js'
+import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
+import { createSourceManifest } from '../sources/manifest.js'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
+import { AgentPlacementProducer } from './agentProducer.js'
+import { readPlacement } from './binding.js'
+import { readPlacementHarnessFacts } from './harnessFacts.js'
+import { DomainError } from '../errors.js'
+
+vi.mock('./harnessFacts.js', () => ({ readPlacementHarnessFacts: vi.fn() }))
+beforeEach(() => {
+  vi.mocked(readPlacementHarnessFacts).mockImplementation(async () => ({ profileProof: { qualified: true } }) as never)
+})
+
+function fixture() {
+  const seed = makeCurrentWorkflowFixture('workflow-worktree', 'single')
+  const version = structuredClone(seed.version)
+  const node = version.definition.nodes[0]!
+  const configuration = seed.configurations[0]!
+  const mainId = randomUUID()
+  const deviceId = randomUUID()
+  const workerInstallationId = randomUUID()
+  const digest = 'a'.repeat(64)
+  const hostRef = { kind: 'device' as const, mainId, deviceId }
+  const manifest = createSourceManifest({ version: 1, approvedSourceId: randomUUID(), snapshotId: randomUUID(),
+    capturePolicy: 'git-tree-v1', executablePolicy: 'strip', entries: [], deletions: [],
+    git: { commit: 'b'.repeat(40), tree: 'c'.repeat(40), objectFormat: 'sha1', repository: 'octo/site' } })
+  const root = SourceRootRecordSchema.parse({ version: 1,
+    source: { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
+      manifestDigest: manifest.manifestDigest },
+    selection: { hostRef, rootPolicyId: randomUUID(), rootPolicyRevision: '1', locationRevision: '1' },
+    binding: { version: 1, mainId, deviceId, workerInstallationId, workspaceId: version.workspaceId,
+      rootId: randomUUID(), bindingRevision: 1, locationRevision: 1, canonicalPath: '/worker/runtime/source',
+      filesystem: { device: '1', inode: '2', mountId: '3' }, accessMode: 'exclusive-write',
+      snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest },
+    registration: { workerInstallationId, keyRevision: 1, authorizationRevision: 1 },
+    ownerPrincipalId: 'operator', authorizedByPrincipalId: 'operator',
+    attestationId: randomUUID(), attestationDigest: digest, boundAt: seed.createdAt })
+  version.definition.defaultWorktree = { rootBinding: { rootId: root.binding.rootId, bindingRevision: 1 },
+    branchPrefix: 'foreman/site/default' }
+  const target = { hostRef, applicationInstallationId: workerInstallationId,
+    harnessInstallationId: 'installed-codex', installationFingerprint: digest }
+  const profile: HostHarnessOverride = { instanceId: randomUUID(), revision: 1, instanceRevision: '1', target,
+    presetId: 'codex', enabled: true, driverId: 'codex', configuration: configuration.harness,
+    configurationFingerprint: digest, qualification: 'qualified' }
+  const profiles = [profile]
+  const sources = { resolveRootBinding: vi.fn(async () => root),
+    resolveApprovedSource: vi.fn(async () => ({ manifest })) } as unknown as SourceAdmissionPort
+  const policy = { ...root.selection, canonicalProjectRoot: '/worker/project', managedRuntimeRoot: '/worker/runtime',
+    registration: root.registration, applicationInstallationId: workerInstallationId }
+  const roots = { resolve: vi.fn(async () => policy) } as unknown as WorkspaceRootPolicyPort
+  const installations = { list: () => [{ ...target, installed: true,
+    driverRevision: '1', protocolRevision: 'native-v1' }], assertCurrent: vi.fn() }
+  const registry = { installations, pinOverride: (value: HostHarnessOverride) => ({
+    selection: { driverId: 'codex', instanceId: value.instanceId, instanceRevision: value.instanceRevision,
+      harnessInstallationId: value.target.harnessInstallationId, installationFingerprint: digest },
+    installation: { driverRevision: '1', protocolRevision: 'native-v1' },
+  }) } as unknown as Pick<ProductionHarnessRegistry, 'installations' | 'pinOverride'>
+  const client = { query: async (text: string) => {
+    let rows: unknown[] = []
+    if (text.includes('from workflow_versions')) {
+      rows = [{ id: version.id, workspace_id: version.workspaceId, workflow_id: version.workflowId,
+        version: version.version, entry_node_id: version.entryNodeId, execution_semantics_version: 3, record: version }]
+    } else if (text.includes('from agent_configuration_versions')) rows = [{ record: configuration }]
+    else if (text.includes('from source_root_bindings')) rows = [{ record: root }]
+    else if (text.includes('from harness_instance_settings')) rows = profiles.map(record => ({ record }))
+    return { rows, rowCount: rows.length }
+  }, on: () => {}, removeListener: () => {}, release: () => {} }
+  const refresh = vi.fn(async () => {})
+  const producer = new AgentPlacementProducer({ connect: async () => client } as unknown as pg.Pool, mainId,
+    sources, roots, registry, { codex: 'suite' }, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }),
+    undefined, refresh)
+  const principal = { id: 'operator', name: 'Operator', audience: 'operator' as const,
+    grants: [], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }
+  async function prepare() {
+    version.contentHash = `sha256:${createHash('sha256').update(canonicalGraphJson({ definition: version.definition,
+      configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })).digest('hex')}`
+    return producer.prepare(RunStartV3InputSchema.parse({ workspaceId: version.workspaceId,
+      workflowId: version.workflowId, workflowVersionId: version.id,
+      expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
+      commandId: randomUUID(), executionSemanticsVersion: 3, expectedWorkflowRevision: 1,
+      expectedLocationRevision: 1, input: {} }), principal)
+  }
+  return { prepare, node, version, root, profile, profiles, policy, refresh, configuration, sources }
+}
+
+it('refreshes the inherited computer and freezes the workflow root and Agent prefix override', async () => {
+  const f = fixture()
+  f.node.worktree = { branchPrefix: 'foreman/site/reviewer' }
+  const prepared = await f.prepare()
+  const placement = prepared!.bind('run-one')[0]!
+  expect(f.refresh).toHaveBeenCalledWith([f.root.selection.hostRef], undefined)
+  expect(placement).toMatchObject({ labelAtAcceptance: 'Workflow default', hostRef: f.root.selection.hostRef,
+    source: { snapshotId: f.root.source.snapshotId, rootId: f.root.binding.rootId },
+    payload: { worktree: { repository: 'octo/site', branch: 'foreman/site/reviewer' } } })
+  f.node.worktree.branchPrefix = 'foreman/changed'
+  f.version.definition.defaultWorktree!.branchPrefix = 'foreman/changed-default'
+  expect(prepared!.bind('run-one')).toEqual([placement])
+  const substituted = structuredClone(placement)
+  if (substituted.payload.kind !== 'agent') throw new Error('Expected Agent placement')
+  substituted.payload.worktree!.branch = 'foreman/substituted'
+  expect(() => readPlacement(substituted)).toThrow('Accepted placement hash')
+})
+
+it('binds generated branch naming to the Run using immutable workflow and node names', async () => {
+  const f = fixture()
+  delete f.version.definition.defaultWorktree!.branchPrefix
+  const prepared = await f.prepare()
+  const first = prepared!.bind('run-first')[0]!
+  const second = prepared!.bind('run-second')[0]!
+  expect(first.payload).toMatchObject({ worktree: { branch: expect.stringContaining('-first') } })
+  expect(second.payload).toMatchObject({ worktree: { branch: expect.stringContaining('-second') } })
+  expect(first.bindingHash).not.toBe(second.bindingHash)
+})
+
+it('uses an explicit node placement without resolving the workflow default root', async () => {
+  const f = fixture()
+  f.node.placement = { schemaVersion: 1, ...f.root.selection, projectRoot: f.policy.canonicalProjectRoot,
+    cwdPolicy: 'project-subdirectory', relativeCwd: 'src', instanceId: f.profile.instanceId,
+    instanceRevision: f.profile.instanceRevision, harnessInstallationId: f.profile.target.harnessInstallationId,
+    source: f.root.source, rootBinding: { rootId: f.root.binding.rootId, bindingRevision: 1 } }
+  f.version.definition.defaultWorktree!.rootBinding.rootId = randomUUID()
+  const prepared = await f.prepare()
+  expect(prepared!.bind('run-one')[0]).toMatchObject({
+    destination: { canonicalCwd: '/worker/project/src' }, payload: { instanceId: f.profile.instanceId } })
+})
+
+it('rejects ambiguous compatible profiles and read-only branch requests without selecting Main', async () => {
+  const f = fixture()
+  f.profiles.push({ ...f.profile, instanceId: randomUUID() })
+  await expect(f.prepare()).rejects.toMatchObject({ code: 'PLACEMENT_ADMISSION_CONFLICT' })
+  f.profiles.pop()
+  f.root.binding.accessMode = 'read-only'
+  await expect(f.prepare()).rejects.toMatchObject({ code: 'WORKTREE_BRANCH_UNAVAILABLE' })
+  delete f.version.definition.defaultWorktree!.branchPrefix
+  expect((await f.prepare())!.bind('run-one')[0]?.payload).not.toHaveProperty('worktree')
+})
+
+it('selects the qualified profile when an identical installed profile is unqualified', async () => {
+  const f = fixture()
+  const unqualified = { ...f.profile, instanceId: randomUUID(), qualification: 'unqualified' as const }
+  f.profiles.push(unqualified)
+  vi.mocked(readPlacementHarnessFacts).mockImplementation(async (_sql, placement) => {
+    if (placement.payload.kind === 'agent' && placement.payload.instanceId === unqualified.instanceId) {
+      throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Qualification has not completed.', 409)
+    }
+    return { profileProof: { qualified: true } } as never
+  })
+  expect((await f.prepare())!.bind('run-one')[0]?.payload)
+    .toMatchObject({ instanceId: f.profile.instanceId })
+})
+
+it('preserves qualification denial when no compatible profile is qualified', async () => {
+  const f = fixture()
+  vi.mocked(readPlacementHarnessFacts).mockRejectedValue(
+    new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Qualification has not completed.', 409))
+  await expect(f.prepare()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+})
+
+it('fails an unavailable inherited source before refreshing a replacement computer', async () => {
+  const f = fixture()
+  vi.mocked(f.sources.resolveRootBinding).mockRejectedValueOnce(new Error('Retained source unavailable'))
+  await expect(f.prepare()).rejects.toThrow('Retained source unavailable')
+  expect(f.refresh).not.toHaveBeenCalled()
+})

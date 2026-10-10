@@ -40,7 +40,7 @@ async function fixture(options: { executablePolicy?: 'strip' | 'preserve-approve
   const root = join(base, 'root'); await mkdir(root); await chmod(root, 0o700)
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
     capturePolicy: 'git-tree-v1', executablePolicy: options.executablePolicy ?? 'preserve-approved', deletions: [],
-    git: { commit, tree: git(origin, 'rev-parse', 'HEAD^{tree}'), objectFormat: 'sha1' },
+    git: { commit, tree: git(origin, 'rev-parse', 'HEAD^{tree}'), objectFormat: 'sha1', repository: 'octo/site' },
     entries: [
       ...(options.attributes ? [{ path: '.gitattributes', kind: 'file' as const, byteSize: Buffer.byteLength('*.ts text eol=crlf filter=alter\n'),
         sha256: sourceSha256(Buffer.from('*.ts text eol=crlf filter=alter\n')), executable: false }] : []),
@@ -89,6 +89,42 @@ it('keeps the shared working copy for workspaces without a repository', async ()
   expect(receipt.worktree).toBeUndefined()
   const other = await f.materializer().prepare({ ...input, attempt: f.attempt() })
   expect(sourceWorkingTreePath(other)).toBe(sourceWorkingTreePath(receipt))
+})
+
+it('reuses one attempt and rejects a different requested branch prefix without allocating another worktree', async () => {
+  const f = await fixture()
+  const input = { manifest: f.manifest, binding: f.binding, attempt: f.attempt(), sharedWritableTree: true as const,
+    worktree: { repository: 'octo/site', branch: 'foreman/site/review' } }
+  const receipt = await f.materializer().prepare(input)
+  expect(await f.materializer().prepare(input)).toEqual(receipt)
+  await expect(f.materializer().prepare({ ...input,
+    worktree: { ...input.worktree, branch: 'foreman/site/substituted' } }))
+    .rejects.toMatchObject({ code: 'SOURCE_WORKTREE_CONFLICT' })
+  const repeats = await Promise.all([f.attempt(), f.attempt()].map(attempt => f.materializer().prepare({ ...input, attempt })))
+  expect(new Set([receipt, ...repeats].map(value => value.worktree?.branch)).size).toBe(3)
+  expect(new Set([receipt, ...repeats].map(sourceWorkingTreePath)).size).toBe(3)
+  for (const repeated of repeats) expect(repeated.worktree?.commit).toBe(f.commit)
+})
+
+it('rejects a substituted repository and a branch request on a read-only root before Git allocation', async () => {
+  const f = await fixture()
+  const input = { manifest: f.manifest, binding: f.binding, attempt: f.attempt(), sharedWritableTree: true as const,
+    worktree: { repository: 'octo/site', branch: 'foreman/site/review' } }
+  await expect(f.materializer().prepare({ ...input, worktree: { ...input.worktree, repository: 'other/site' } }))
+    .rejects.toMatchObject({ code: 'SOURCE_PIN_CONFLICT' })
+  await expect(f.materializer().prepare({ ...input, binding: { ...f.binding, accessMode: 'read-only' } }))
+    .rejects.toMatchObject({ code: 'SOURCE_READ_ONLY' })
+})
+
+it('rejects a retained worktree that changed branches before supplying its working directory', async () => {
+  const f = await fixture()
+  const attempt = f.attempt()
+  const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt,
+    sharedWritableTree: true, worktree: { repository: 'octo/site', branch: 'foreman/site/review' } })
+  const tree = sourceWorkingTreePath(receipt)
+  git(tree, 'checkout', '-qb', 'foreman/site/replaced')
+  await expect(f.materializer().resolve(receipt, { binding: f.binding, attempt }))
+    .rejects.toMatchObject({ code: 'SOURCE_WORKTREE_CONFLICT' })
 })
 
 

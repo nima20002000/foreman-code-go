@@ -1,3 +1,4 @@
+import { WorkflowWorktreeSettingsSchema } from '../worktreeSettings.js'
 import { z } from 'zod'
 import { CurrentCommonGraphOperationSchema } from '../management/index.js'
 import { WorkflowRelationshipSchema, WorkflowChoiceSchema } from './workflow.js'
@@ -14,6 +15,7 @@ import {
 export const WorkflowNodeV3Schema = CurrentWorkflowNodeSchema
 export type WorkflowNodeV3 = z.infer<typeof WorkflowNodeV3Schema>
 export const GraphDraftOperationV3Schema = z.union([
+  z.object({ type: z.literal('workflow.set_worktree'), worktree: WorkflowWorktreeSettingsSchema.nullable() }).strict(),
   z.object({ type: z.literal('workflow.set_entry'), entryNodeId: z.string().nullable() }).strict(),
   z.object({ type: z.literal('node.set_choice'), nodeId: z.string(), choice: WorkflowChoiceSchema.nullable() }).strict(),
   z.object({ type: z.literal('relationship.put'), relationship: WorkflowRelationshipSchema }).strict(),

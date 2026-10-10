@@ -271,7 +271,7 @@ export class WorkspaceLocationService {
   }
 
   async snapshot(
-    client: pg.PoolClient,
+    client: GraphSqlClient,
     workspaceId: string,
     expectedLocationRevision: number,
     accessMode: WorkspaceLocationAccessMode,
@@ -288,7 +288,7 @@ export class WorkspaceLocationService {
   /** Records the workspace selection for a Run whose complete Agent placement
    * admission validates execution directories through their owning hosts. */
   async snapshotAssigned(
-    client: pg.PoolClient,
+    client: GraphSqlClient,
     workspaceId: string,
     expectedLocationRevision: number,
     signal?: AbortSignal,

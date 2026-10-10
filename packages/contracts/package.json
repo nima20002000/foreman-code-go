@@ -5,6 +5,8 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./worktree-settings": { "types": "./dist/worktreeSettings.d.ts", "import": "./dist/worktreeSettings.js" },
+    "./workspace-git": { "types": "./dist/workspaceGit.d.ts", "import": "./dist/workspaceGit.js" },
     "./provider-accounts": { "types": "./dist/providerAccounts.d.ts", "import": "./dist/providerAccounts.js" },
     "./operator-mcp": { "types": "./dist/operatorMcp.d.ts", "import": "./dist/operatorMcp.js" },
     "./local-client-node": {

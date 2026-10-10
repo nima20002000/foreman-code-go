@@ -26,7 +26,8 @@ import { readPlacementHarnessFacts } from './harnessFacts.js'
 import { freezePlacement, deriveDispatch, directoryIdentityHash, placementDigest } from './binding.js'
 import { readAcceptedPlacement, insertDispatchIntent } from './persistence.js'
 import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from './startPort.js'
-import { resolveLocalMainPlacement } from './localMainPlacement.js'
+import { resolveBoundRootPlacement, resolveLocalMainPlacement, resolveWorkflowRootBinding } from './localMainPlacement.js'
+import { bindGeneratedWorktreeRun, generatedWorktreePrefix } from '../sources/worktreeRequest.js'
 
 /** Installed main-owned producer: saved immutable versions and W09/W07/HRT
  * authorities supply every pin. No request/Board JSON becomes a runtime grant. */
@@ -43,11 +44,20 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
     signal?: AbortSignal): Promise<PreparedRunPlacementAdmission | undefined> {
     signal?.throwIfAborted()
-    const savedVersion = await withExclusiveGraphConnection(this.pool, connection => this.readVersion(connection, input))
+    const initial = await withExclusiveGraphConnection(this.pool, async connection => {
+      const version = await this.readVersion(connection, input)
+      const needsDefault = version.definition.nodes.some(node => node.kind !== 'job' && !node.placement)
+      const root = needsDefault && version.definition.defaultWorktree
+        ? await resolveWorkflowRootBinding({ sql: connection, principal, workspaceId: input.workspaceId,
+          reference: version.definition.defaultWorktree.rootBinding, sources: this.sources }) : undefined
+      return { version, root }
+    })
+    const savedVersion = initial.version
     signal?.throwIfAborted()
     if (!sameWorkflowValue(savedVersion.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
     const hosts = savedVersion.definition.nodes.filter(node => node.kind !== 'job')
-      .map(node => node.placement?.hostRef ?? { kind: 'main' as const, mainId: this.mainId })
+      .map(node => node.placement?.hostRef ?? initial.root?.selection.hostRef
+        ?? { kind: 'main' as const, mainId: this.mainId })
     if (hosts.length) await this.refreshProfileInventory?.(hosts, signal)
     signal?.throwIfAborted()
     for (const host of hosts) this.assertProfileReady?.(host)
@@ -62,9 +72,19 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       if (!workflowUsesAgentPlacements(version.definition)) return undefined
       const resolveMain = (sql: GraphTransactionSql, principal: ManagementPrincipal, configuration: AgentConfigurationVersion) =>
         resolveLocalMainPlacement({ sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
-          roots: this.roots, installations: this.registry.installations })
+          roots: this.roots, installations: this.registry.installations, qualificationSuites: this.qualificationSuites })
+      const resolveInherited = async (sql: GraphTransactionSql, principal: ManagementPrincipal,
+        configuration: AgentConfigurationVersion) => {
+        if (!version.definition.defaultWorktree) return resolveMain(sql, principal, configuration)
+        const root = await resolveWorkflowRootBinding({ sql, principal, workspaceId: input.workspaceId,
+          reference: version.definition.defaultWorktree.rootBinding, sources: this.sources })
+        return resolveBoundRootPlacement({ sql, principal, configuration, root, mainId: this.mainId,
+          workspaceId: input.workspaceId, roots: this.roots, installations: this.registry.installations,
+          qualificationSuites: this.qualificationSuites })
+      }
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection;
-        saved: SavedNodePlacement; configuration: AgentConfigurationVersion; implicit: boolean }[] = []
+        saved: SavedNodePlacement; configuration: AgentConfigurationVersion; implicit: boolean;
+        generatedBranch: boolean }[] = []
       for (const node of nodes) {
         signal?.throwIfAborted()
         if (node.placement && (!node.placement.source || !node.placement.rootBinding
@@ -72,14 +92,24 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const configRow = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
           [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
         const config = AgentConfigurationVersionSchema.parse(configRow?.record)
-        this.assertProfileReady?.(node.placement?.hostRef ?? { kind: 'main', mainId: this.mainId })
-        const saved = node.placement ?? await resolveMain(sql, principal, config)
+        const saved = node.placement ?? await resolveInherited(sql, principal, config)
+        this.assertProfileReady?.(saved.hostRef)
         if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
           || saved.relativeCwd.split('/').some(component => component === '..' || component === '.' || component === '' && saved.relativeCwd !== '')
           || saved.cwdPolicy === 'project-root' && saved.relativeCwd !== '' || saved.cwdPolicy === 'project-subdirectory' && saved.relativeCwd === '')) this.conflict()
         if (!saved?.source || !saved.rootBinding || saved.hostRef.mainId !== this.mainId) this.conflict()
         const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId: input.workspaceId, ...saved!.rootBinding!, source: saved!.source! })
+        const approved = await this.sources.resolveApprovedSource(sql, principal, input.workspaceId, root.source)
+        const branchPrefix = node.worktree?.branchPrefix ?? version.definition.defaultWorktree?.branchPrefix
+        const repository = approved.manifest.git?.repository
+        if (branchPrefix && (!repository || root.binding.accessMode !== 'exclusive-write')) {
+          throw new DomainError('WORKTREE_BRANCH_UNAVAILABLE',
+            'An Agent branch prefix requires a writable Git repository source.', 409)
+        }
+        const worktree = repository && root.binding.accessMode === 'exclusive-write'
+          ? { repository, branch: branchPrefix ?? generatedWorktreePrefix(version.definition.name,
+            node.name ?? node.label ?? config.agentId) } : undefined
         signal?.throwIfAborted()
         if (requiredLocationAccess([config]) === 'read-write' && root.binding.accessMode !== 'exclusive-write') this.conflict()
         const policy = await this.roots.resolve(sql, principal, { workspaceId: input.workspaceId, hostRef: saved!.hostRef,
@@ -95,8 +125,10 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           || instance.driverId !== config.harness.harness) this.conflict()
         this.assertProfileReady?.(instance.target.hostRef)
         const selection = this.registry.pinOverride(instance)
-        prepared.push({ selection, saved, configuration: config, implicit: !node.placement, pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
-          ...(!node.placement ? { labelAtAcceptance: 'Main' } : {}),
+        prepared.push({ selection, saved, configuration: config, implicit: !node.placement,
+          generatedBranch: !!worktree && !branchPrefix,
+          pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
+          ...(!node.placement ? { labelAtAcceptance: version.definition.defaultWorktree ? 'Workflow default' : 'Main' } : {}),
           nodeId: node.id, hostRef: saved!.hostRef, registration: root.registration,
           destination: { canonicalProjectRoot: policy.canonicalProjectRoot, canonicalCwd: posix.join(policy.canonicalProjectRoot, saved!.relativeCwd),
             managedRuntimeRoot: policy.managedRuntimeRoot,
@@ -106,6 +138,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           source: { kind: 'pending', ...root.source, revisionId: root.source.snapshotId, rootId: root.binding.rootId,
             bindingRevision: root.binding.bindingRevision, materializationId: null, materializationDigest: null },
           payload: { kind: 'agent', agentId: config.agentId, agentConfigurationVersionId: config.id,
+            ...(worktree ? { worktree } : {}),
             ...(node.artifactOutputs ? { artifactOutputs: structuredClone(node.artifactOutputs) } : {}),
             driverId: selection.selection.driverId, driverRevision: selection.installation.driverRevision,
             instanceId: selection.selection.instanceId, instanceRevision: selection.selection.instanceRevision,
@@ -119,13 +152,20 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         item.pins.payload.profileProofDigest = placementDigest(facts.profileProof)
         if (facts.qualification) item.pins.payload.qualificationDigest = placementDigest(facts.qualification)
       }
-      return { bind: runId => prepared.map(({ pins }) => freezePlacement({ ...pins, runId })),
+      const bind = (item: typeof prepared[number], runId: string) => {
+        const pins = structuredClone(item.pins)
+        if (item.generatedBranch && pins.payload.kind === 'agent' && pins.payload.worktree) {
+          pins.payload.worktree.branch = bindGeneratedWorktreeRun(pins.payload.worktree.branch, runId)
+        }
+        return freezePlacement({ ...pins, runId })
+      }
+      return { bind: runId => prepared.map(item => bind(item, runId)),
         fence: transaction => ({ assertCurrent: async pin => {
           const saved = prepared.find(item => item.pins.nodeId === pin.nodeId)
-          if (!saved || !sameWorkflowValue(freezePlacement({ ...saved.pins, runId: pin.runId }), pin)) this.conflict()
+          if (!saved || !sameWorkflowValue(bind(saved, pin.runId), pin)) this.conflict()
           this.registry.installations.assertCurrent(saved!.selection)
           const live = await readLiveManagementPrincipal(transaction, principal.id)
-          if (saved.implicit && !sameWorkflowValue(saved.saved, await resolveMain(transaction, live, saved.configuration))) {
+          if (saved.implicit && !sameWorkflowValue(saved.saved, await resolveInherited(transaction, live, saved.configuration))) {
             this.conflict()
           }
           await this.assertPinsCurrent(transaction, pin, live, input.workspaceId)

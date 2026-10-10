@@ -13,7 +13,6 @@ import { SkillCatalogService } from '../../modules/skills/catalog.js'
 import { SkillUsageService } from '../../modules/skills/usage.js'
 import { CurrentWorkflowAuthoring } from '../../modules/workflows/currentAuthoring.js'
 import type { ProviderAccountConfigurationService } from '../../modules/harnesses/providerAccountConfiguration.js'
-import { DEFAULT_AGENT_ACTIVE_TIMEOUT_MS } from '@foreman-code/contracts/wave25'
 
 export function createOperatorExtensions(input: {
   pool:pg.Pool;commands:PostgresCommandCoordinator;catalog:HarnessCatalogService;native:NativeConfigurationService;
@@ -28,7 +27,7 @@ export function createOperatorExtensions(input: {
     native:input.native,
     agents,
     skillUsage:new SkillUsageService(input.pool,agents,new CurrentWorkflowAuthoring(input.pool,input.commands,
-      DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, input.accountConfigurations)),
+      { accountConfigurations: input.accountConfigurations })),
     history:new VersionHistoryService(input.pool),
     lifecycle:new OperatorLifecycleService(input.commands),
     workspace:new OperatorWorkspaceControls(input.pool,input.commands,input.locations,input.detection,input.provisioningRoot),

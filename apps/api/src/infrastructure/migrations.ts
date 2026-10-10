@@ -1,3 +1,4 @@
+import { workspaceRepositoryImportsMigration } from './workspaceRepositoryImportsMigration.js'
 import { retiredHarnessCredentialsMigration } from './retiredHarnessCredentialsMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
@@ -890,6 +891,7 @@ export const migrations = [
   workflowFailureCauseMigration,
   workflowJobAttemptIdentityMigration,
   workflowExecutionFailureMigration,
+  workspaceRepositoryImportsMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

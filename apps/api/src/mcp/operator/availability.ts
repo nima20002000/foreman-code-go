@@ -1,4 +1,5 @@
 import { type ManagementAction, type ManagementScope, type OperatorToolName } from '@foreman-code/contracts/management'
+import { REPOSITORY_ADD_ACTIONS, REPOSITORY_READ_ACTIONS } from '../../modules/workspaces/repositoryService.js'
 import { placementChoiceRequirements } from '../../modules/placement/choicesService.js'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { OPERATOR_TOOL_ACTIONS } from './catalog.js'
@@ -122,6 +123,10 @@ export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:met
 
 export function operatorToolRequirements(name: OperatorToolName, resource?: AuthorizedResource): Requirement[] {
   void resource
+  if (name === 'workspace_repository_add' || name === 'workspace_repository_get') {
+    const actions = name === 'workspace_repository_add' ? REPOSITORY_ADD_ACTIONS : REPOSITORY_READ_ACTIONS
+    return actions.map(action => ({ action, scope: 'workspace' as const }))
+  }
   if (name === 'workflow_node_placement_choices') return [...placementChoiceRequirements]
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') return TELEMETRY_READ_ACTIONS.map(action => ({ action, scope: action === 'devices:metrics:read' ? 'global' : 'resource' }))
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
@@ -165,7 +170,10 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'source_approve') result.push({action:'sources:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
   if (name.startsWith('source_preparation_')) result.push({action:'source_roots:read',scope:'workspace'})
   if (name === 'source_preparation_reconcile') result.push({action:'sources:read',scope:'workspace'})
-  if (name.startsWith('source_root_')) result.push({action:'sources:read',scope:'workspace'})
+  if (name.startsWith('source_root_')) {
+    result.push({action:'sources:read',scope:'workspace'})
+    if (name !== 'source_root_bind') result.push({action:'workspace_locations:read',scope:'workspace'})
+  }
   if (name === 'source_root_bind') result.push({action:'source_roots:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
   // Every chat command returns protected state. Discovery requires overlapping
   // read and command grants, including grants restricted to a selected Run.
@@ -229,6 +237,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
       : resource && Object.keys(resource).length ? isAuthorized(context.principal, action, resource) : hasAction(context.principal, action))
   }
   if (name === 'harness_registry_get' && !service.harnessRegistry) return false
+  if (name.startsWith('workspace_repository_') && !service.workspaceRepositories) return false
   if (name.startsWith('workspace_root_') && !service.workspaceRoots) return false
   if (name.startsWith('source_') && !service.sources) return false
   if (name.startsWith('device_connection_') && !service.trustedConnections) return false

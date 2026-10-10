@@ -43,7 +43,7 @@ export async function writerFixture(db: Awaited<ReturnType<typeof currentDatabas
     const writer = await credential([{ actions: ['capabilities:read'], scope: {} }, {
       actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'), scope: { workspaceIds: [f.scope.workspaceId] },
     }])
-    const workflows = new WorkflowManagementService(db.pool, commands, options.agentActiveTimeoutMs)
+    const workflows = new WorkflowManagementService(db.pool, commands, { agentActiveTimeoutMs: options.agentActiveTimeoutMs })
     const services = { workflows, commands,
       runGraph: new RunGraphReadService(db.pool, { qualifiedReads: true }) } as unknown as OperatorServices
     const app = buildApp({ readiness: { database: { ping: async () => { await db.pool.query('select 1') } }, checkpoints: { ping: async () => undefined } },

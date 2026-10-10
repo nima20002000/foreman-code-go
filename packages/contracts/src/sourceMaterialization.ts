@@ -1,3 +1,4 @@
+import { AgentBranchPrefixSchema } from './worktreeSettings.js'
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
 
@@ -45,7 +46,7 @@ export type SourceProjectQuotaSlot = z.infer<typeof SourceProjectQuotaSlotSchema
 /** An agent's own git worktree and branch of the workspace repository, created at the approved commit. */
 export const SourceWorktreeRequestSchema = z.object({
   repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/),
-  branch: z.string().regex(/^foreman\/[A-Za-z0-9._/-]{1,200}$/),
+  branch: AgentBranchPrefixSchema,
 }).strict()
 export type SourceWorktreeRequest = z.infer<typeof SourceWorktreeRequestSchema>
 export const MaterializationReceiptSchema = z.object({
