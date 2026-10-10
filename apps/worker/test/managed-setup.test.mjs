@@ -1,16 +1,33 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
+import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash, generateKeyPairSync } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, stat, symlink, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
 import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { mockHostMounts, persistentHostMounts } from './fixtures/hostMounts.mjs';
 import { managedRuntimeFixture } from './fixtures/managedRuntime.mjs';
 import { acquireWorkerLock } from '../src/runtime.mjs';
 
-const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
+let artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY');
+let artifactDirectory;
+
+before(async () => {
+  if (artifact) return;
+  const repository = fileURLToPath(new URL('../../../', import.meta.url));
+  artifactDirectory = await mkdtemp(join(persistentFixtureRoot, 'managed-worker-artifact-'));
+  artifact = join(artifactDirectory, 'release');
+  execFileSync(process.execPath, ['scripts/build-worker-artifact.mjs',
+    'apps/worker/artifacts/ubuntu-26.04-x64-target.json', artifact,
+    'apps/worker/artifacts/node-22.23.3-linux-x64.json'],
+  { cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+});
+
+after(async () => {
+  if (artifactDirectory) await rm(artifactDirectory, { recursive: true, force: true });
+});
 
 async function saveIdentity(state, workerInstallationId) {
   const keys = generateKeyPairSync('ed25519');
