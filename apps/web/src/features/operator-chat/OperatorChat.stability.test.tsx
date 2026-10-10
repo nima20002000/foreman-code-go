@@ -118,7 +118,7 @@ it('shows a newer restoration from another client and fences pre-deletion histor
   states.a = state('a', 'Restored in other tab', 3)
   api.list.mockResolvedValue({ conversations: [summarizeOperatorConversation(states.a!), summarizeOperatorConversation(states.b!)] })
   await act(async () => { await client.invalidateQueries({ queryKey: listKey }) })
-  expect(screen.getByRole('button', { name: /^Restored in other tab/ })).toBeVisible()
+  expect(await screen.findByRole('button', { name: /^Restored in other tab/ })).toBeVisible()
   api.list.mockResolvedValue({ conversations: [summarizeOperatorConversation(state('a', 'Stale topic', 1)),
     summarizeOperatorConversation(states.b!)] })
   await act(async () => { await client.invalidateQueries({ queryKey: listKey }) })
@@ -170,7 +170,7 @@ it('recovers the original receipt after a send timeout even when completed GET r
   states.a = { ...states.a!, revision: 4, messages: [{ id: 'accepted', conversationId: 'a', requestId: command.requestId,
     role: 'user', content: command.content }] }
   await act(async () => { await client.invalidateQueries({ queryKey: ['operator-chat', 'conversation', 'a'] }) })
-  expect(screen.getByText('Continue once', { selector: 'p' })).toBeVisible()
+  expect(await screen.findByText('Continue once', { selector: 'p' })).toBeVisible()
   await act(async () => { response.reject(new ApiError({ code: 'REQUEST_TIMEOUT', message: 'Timed out' })) })
   await waitFor(() => expect(client.isMutating()).toBe(0))
   expect(api.send.mock.calls[1]).toEqual(['a', { ...command, recovery: 'receipt' }])
@@ -264,12 +264,12 @@ it.each([false, true])('uses saved full native identity for live-text readiness 
     nativeMessageComplete: false, content: 'Live answer' }
   states.a = { ...states.a!, revision: 2, messages: [...states.a!.messages, saved] }
   await act(async () => { await client.invalidateQueries({ queryKey: ['operator-chat', 'conversation', 'a'] }) })
+  expect(await screen.findByRole('status', { name: 'Operator is typing' })).toBeVisible()
   expect(screen.getAllByText('Live answer')).toHaveLength(1)
-  expect(screen.getByRole('status', { name: 'Operator is typing' })).toBeVisible()
   states.a = { ...states.a!, revision: 3, messages: [states.a!.messages[0]!,
     { ...saved, nativeMessageComplete: true, content: emptyFinal ? '' : 'Saved final answer' }] }
   await act(async () => { await client.invalidateQueries({ queryKey: ['operator-chat', 'conversation', 'a'] }) })
-  expect(screen.queryByText('Live answer')).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByText('Live answer')).not.toBeInTheDocument())
   if (!emptyFinal) expect(screen.getByText('Saved final answer')).toBeVisible()
   expect(screen.getByRole('status', { name: 'Operator is typing' })).toBeVisible()
 })

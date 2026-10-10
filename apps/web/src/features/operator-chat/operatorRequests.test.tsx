@@ -195,6 +195,7 @@ it('keeps a Settings handoff draft reachable after switching chats and reopening
   act(() => askOperator('Configure the selected harness', { send: false }))
   await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))
   expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Configure the selected harness')
+  fireEvent.click(screen.getByRole('button', { name: 'Open history' }))
   fireEvent.click(screen.getByRole('button', { name: /^First conversation/ }))
   await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('conversation-one'))
   cleanup()

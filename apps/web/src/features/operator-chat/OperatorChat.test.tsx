@@ -79,6 +79,7 @@ describe('OperatorChat', () => {
     const original = api.create.mock.calls[0]![0]
     expect(original.commandId).toEqual(expect.any(String))
     expect(api.create.mock.calls[1]![0]).toEqual(original)
+    fireEvent.click(screen.getByRole('button', { name: 'Open history' }))
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     await waitFor(() => expect(api.create).toHaveBeenCalledTimes(3))
     expect(api.create.mock.calls[2]![0].commandId).not.toBe(original.commandId)

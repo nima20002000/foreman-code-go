@@ -304,9 +304,10 @@ it('accepts a newer profile for the same chat, uses its revision and fences dela
     capabilities: { ...initial.capabilities, profileKey: 'profile-b' } }
   read.mockResolvedValue(next)
   await act(async () => { await mounted.result.current.query.refetch() })
-  expect(mounted.result.current.state).toEqual(next)
+  await waitFor(() => expect(mounted.result.current.state).toEqual(next))
   await act(async () => { await mounted.result.current.change({ kind: 'mode', mode: 'plan' }) })
   expect(change.mock.calls[0]![1].expectedRevision).toBe(10)
+  await waitFor(() => expect(mounted.result.current.state).toMatchObject({ profileKey: 'profile-b', revision: 11 }))
   read.mockResolvedValue(initial)
   await act(async () => { await mounted.result.current.query.refetch() })
   expect(mounted.result.current.state).toMatchObject({ profileKey: 'profile-b', revision: 11 })
