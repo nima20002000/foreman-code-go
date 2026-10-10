@@ -1,8 +1,8 @@
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { createInstalledWorkerDomains, createWorkerRuntimeDrain } from './installedWorkerDomains.js'
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
@@ -15,6 +15,14 @@ import { resourceTelemetryExtension } from '../resource-telemetry/ingestion/port
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { qualifyApprovedRootAllowlist } from '../sources/rootAttestation.js'
 import { identity, openPrivateRoot } from '../sources/privateFilesystem.js'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { HarnessRegistryReadbackSchema } from '@foreman-code/contracts/harness-registry'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { OperatorServices } from '../../mcp/operator/types.js'
+import type { PostgresAccessService } from '../access/postgres.js'
+import { requireAuthorization } from '../access/policy.js'
+import { buildApp } from '../../app.js'
+import { DomainError } from '../errors.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -22,6 +30,87 @@ afterEach(async () => {
 })
 
 describe('actual installed worker mount availability, no physical acceptance', () => {
+  it('refreshes selections on authenticated discovery and denies stale bindings before refresh', async () => {
+    const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-discovery-refresh-'))
+    roots.push(stateDirectory)
+    const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(),
+      deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
+      endpoint: 'wss://unconnected.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64),
+      credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' })
+    const binding = { mainId: pairing.mainId, deviceId: pairing.deviceId,
+      workerInstallationId: pairing.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+      bootId: bootIdentity(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
+    const location = { path: join(stateDirectory, 'workflow-runtime.json'), ownerUid: process.getuid!() }
+    const refresh = vi.fn(async (): Promise<typeof location | null> => {
+      await writeFile(location.path, JSON.stringify({ schemaVersion: 1, codexBinary: process.execPath,
+        expectedVersion: 'codex-cli 0.162.0', payloadPaths: [], appMcpLauncher: '/installed/launcher.mjs' }),
+      { mode: 0o600 })
+      return location
+    })
+    const mounted = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId: binding.bootId,
+      configuration: null, refreshWorkflowConfiguration: refresh, approvedRoots: async () => null,
+      connection: () => ({ currentBinding: () => binding, captureRequest: () => undefined, mainNow: () => Date.now() }),
+      codexSuiteRevision: 'discovery-fixture' })
+    try {
+      const discovery = mounted.extensions.find(extension => extension.namespace === 'harness-discovery-v1')!
+      const context = { binding, signal: AbortSignal.timeout(10_000) }
+      const request = { operation: 'discover', refreshId: randomUUID() }
+      await expect(discovery.handle!(request, { ...context, binding: { ...binding, authorizationRevision: 2 } }))
+        .rejects.toMatchObject({ code: 'HARNESS_INVENTORY_STALE' })
+      expect(refresh).not.toHaveBeenCalled()
+      const result = await discovery.handle!(request, context)
+      expect(result.payload).toMatchObject({ installations: [{ driverId: 'codex', installed: true,
+        hostRef: { kind: 'device', mainId: pairing.mainId, deviceId: pairing.deviceId } }] })
+      expect(refresh).toHaveBeenCalledOnce()
+      const principal: ManagementPrincipal = { id: 'worker-inventory-reader', name: 'Reader', audience: 'operator',
+        expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
+        grants: [{ actions: ['harnesses:read'], scope: {} }] }
+      const access = { authenticate: async (token: string) => {
+        if (token === 'inventory-reader') return principal
+        if (token === 'denied-reader') return { ...principal, grants: [] }
+        throw new DomainError('AUTH_REQUIRED', 'Authentication required.', 401)
+      } } as unknown as PostgresAccessService
+      const get = vi.fn(async (caller: ManagementPrincipal) => {
+        requireAuthorization(caller, 'harnesses:read')
+        return (await discovery.handle!(request, context)).payload
+      })
+      const commands = { recordDenied: vi.fn(async () => {}) }
+      const services = { harnessRegistry: { get }, commands } as unknown as OperatorServices
+      const app = buildApp({ logger: false,
+        readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+        operator: { access, services } })
+      const host = { kind: 'device', mainId: pairing.mainId, deviceId: pairing.deviceId }
+      try {
+        const address = await app.listen({ host: '127.0.0.1', port: 0 })
+        const rpc = async (token: string) => {
+          const response = await fetch(new URL('/mcp', address), { method: 'POST',
+            headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream',
+              'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+              params: { name: 'harness_registry_get', arguments: host } }) })
+          return { statusCode: response.status, body: await response.text() }
+        }
+        const response = await rpc('inventory-reader')
+        expect(response.statusCode, response.body).toBe(200)
+        const json = response.body.startsWith('event:')
+          ? response.body.split('\n').find(line => line.startsWith('data: '))!.slice(6) : response.body
+        const direct = HarnessRegistryReadbackSchema.parse(result.payload)
+        expect(decodeMcpToolResult(JSON.parse(json).result)).toEqual({ ...direct,
+          installations: direct.installations.map(installation => ({ ...installation,
+            launcher: { ...installation.launcher, checkedAt: expect.any(String) } })) })
+        expect(get).toHaveBeenLastCalledWith(principal, host)
+        expect(JSON.parse(await readFile(location.path, 'utf8')))
+          .toMatchObject({ codexBinary: process.execPath, expectedVersion: 'codex-cli 0.162.0' })
+        const reads = get.mock.calls.length
+        const denied = await rpc('denied-reader')
+        expect(denied.body).toContain('isError')
+        expect(get).toHaveBeenCalledTimes(reads)
+        expect((await rpc('invalid-token')).statusCode).toBe(401)
+      } finally { await app.close() }
+      refresh.mockImplementationOnce(async () => null)
+      expect((await discovery.handle!(request, context)).payload).toMatchObject({ installations: [] })
+    } finally { await mounted.close() }
+  })
   it('drains active Jobs and Agent sessions before refresh while preserving status and controls', async () => {
     let finishJob!: () => void
     const job = new Promise<void>(resolve => { finishJob = resolve })
