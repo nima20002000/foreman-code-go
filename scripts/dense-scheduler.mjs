@@ -232,27 +232,33 @@ export async function scheduleQueue(items, {
     await waitForFeedback()
   }
 
-  for (const item of items.filter(item => records.get(item.id).status === 'FAILED')) {
-    if (!retest || shouldStop() || pressureFailure) break
-    const workerIndex = usableWorker(item)
-    if (workerIndex === undefined) {
-      records.get(item.id).retestReason = 'No usable worker for isolated retest'
-      continue
-    }
+  // Retests run at a quarter of the workers: low enough load to separate flakes, without one file at a time.
+  const failures = items.filter(item => records.get(item.id).status === 'FAILED')
+  const retestOne = async item => {
     const started = performance.now()
     let pressure
     while (!shouldStop() && !pressureFailure) {
       pressure = await readPressure()
       if (!pressure || fitsPressure(item, pressure, [], updatedProfiles,
-        { cpuTarget, memoryTarget, allowOversize: true })) break
+        { cpuTarget, memoryTarget, allowOversize: !active.size })) break
       if (performance.now() - started >= stallTimeoutMs) {
         records.get(item.id).retestReason = 'Pressure prevented isolated retest'
         break
       }
       await sleep(pollIntervalMs)
     }
-    if (shouldStop() || pressureFailure || records.get(item.id).retestReason) continue
+    if (shouldStop() || pressureFailure || records.get(item.id).retestReason) return
+    const workerIndex = usableWorker(item)
+    if (workerIndex === undefined) {
+      records.get(item.id).retestReason = 'No usable worker for isolated retest'
+      return
+    }
     await launch(item, workerIndex, pressure, 2)
+  }
+  if (retest) {
+    await Promise.all(Array.from({ length: Math.min(failures.length, Math.ceil(maxConcurrency / 4)) }, async () => {
+      while (failures.length && !shouldStop() && !pressureFailure) await retestOne(failures.shift())
+    }))
   }
   const results = items.map(item => records.get(item.id))
   return { results, unexecuted: items.filter(item => !records.get(item.id).attempts.length), profiles: updatedProfiles }

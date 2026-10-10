@@ -169,6 +169,23 @@ test('retests failures once in isolation and preserves flaky and incomplete outc
   assert.deepEqual(events.slice(-2), [['flaky', 2], ['broken', 2]])
 })
 
+test('retests many failures at a quarter of the workers instead of one at a time', async () => {
+  let active = 0
+  let peak = 0
+  const outcome = await scheduleQueue(Array.from({ length: 8 }, (_, index) => ({ id: `failing-${index}` })), {
+    ...defaults,
+    maxConcurrency: 8,
+    execute: async (_item, context) => {
+      if (context.isRetest) peak = Math.max(peak, ++active)
+      await delay(8)
+      if (context.isRetest) active--
+      return { code: 1 }
+    },
+  })
+  assert.equal(peak, 2)
+  assert.ok(outcome.results.every(result => result.status === 'FAILED' && result.attempts.length === 2))
+})
+
 test('an executor exception is a failed attempt and can retire a worker', async () => {
   const outcome = await scheduleQueue([{ id: 'crash' }, { id: 'retire' }, { id: 'not-run' }], {
     ...defaults,
