@@ -183,7 +183,7 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
       ...(lifecycle.persistDirectionWait ? { persistDirectionWait: () => lifecycle.persistDirectionWait!() } : {}),
       cancelNativeAndRequestCleanup: () => lifecycle.cancelNativeAndRequestCleanup(),
       settleRun: (stopped, interrupted) => lifecycle.settleRun(stopped, interrupted),
-      requestCleanup: () => lifecycle.requestCleanup(),
+      requestCleanup: (failure) => lifecycle.requestCleanup(failure),
       finishNative: () => lifecycle.finishNative(),
       finishCleanup: () => lifecycle.finishCleanup(),
       preflight: async () => {

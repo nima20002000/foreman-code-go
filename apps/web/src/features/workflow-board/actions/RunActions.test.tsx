@@ -53,6 +53,7 @@ function fixture(outcome: 'pending' | 'failed' | 'canceled' = 'pending') {
   }
   const metadata = () => RunInspectionRunSchema.parse({ ...f.scope, executionState: state.run.executionState,
     outcome: state.run.outcome, createdAt: f.createdAt, ...(state.run.finishedAt ? { finishedAt: state.run.finishedAt } : {}),
+    ...(state.run.result?.error ? { failure: state.run.result.error } : {}),
     cleanupPending: state.cleanupPending })
   const rows = () => f.identities.map((identity) => RunExecutionSummarySchema.parse({ ...identity,
     state: state.run.executionState === 'completed' ? 'completed' : 'waiting', createdAt: f.createdAt,
@@ -348,6 +349,26 @@ describe('ENG-05 contextual Run actions on current S3 contracts', () => {
     expect(screen.getByRole('button', { name: approveOption(mock).label })).toBeDisabled()
     expect(screen.getByText(/does not permit this caller to respond/)).toBeInTheDocument()
     expect(writes(mock, '/respond')).toEqual([])
+  })
+  it('shows the persisted rework budget cause in status and recorded Run details', async () => {
+    const mock = fixture('failed')
+    const user = userEvent.setup()
+    const error = {
+      code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
+      message: 'The Run reached its execution limit and cannot start more work.',
+      retryable: false,
+    }
+    mock.state.run = WorkflowRunV3Schema.parse({ ...mock.state.run, result: { outcome: 'failed', error } })
+    await mount(mock)
+    const status = screen.getByText(/Run failed:/)
+    expect(status).toHaveAttribute('role', 'status')
+    expect(status).toHaveTextContent(error.message)
+    expect(status).toHaveTextContent(error.code)
+    expect(mock.state.requests.some((call) => call.path === `${mock.runPath}/record`)).toBe(false)
+    await user.click(screen.getByText('Failure details and execution reports'))
+    await user.click(screen.getByText('Recorded Run-level result'))
+    const result = await screen.findByLabelText('Exact recorded Run result')
+    expect(JSON.parse(result.textContent!)).toEqual(mock.state.run.result)
   })
   it('loads exact failure reports only on explicit disclosure, and pages without polling private content', async () => {
     const mock = fixture('failed'), user = userEvent.setup()

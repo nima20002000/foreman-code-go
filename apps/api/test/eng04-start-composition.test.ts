@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type ExecutionResult } from '@foreman-code/contracts'
 import { DomainError } from '../src/modules/errors.js'
 import { repeatNativeStartStore, executeRepeatEngineStart, type RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'
 import type { RepeatRepositoryFactory } from '../src/modules/runs/repeatRepositoryHost.js'
@@ -152,6 +152,23 @@ describe('ENG04 NATIVE-3 existing-engine entry guards (not registered lifecycle)
     await forwarded.lifecycle.preflight()
     expect(calls.read).toHaveBeenCalledTimes(2)
     expect(f.context.lifecycle.preflight).toHaveBeenCalledTimes(1)
+  })
+  it('forwards the rework budget failure to cleanup before settlement', async () => {
+    const f = fixture()
+    const failure: ExecutionResult = { outcome: 'failed', error: {
+      code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
+      message: 'The Run reached its execution limit and cannot start more work.',
+      retryable: false,
+    } }
+    calls.runtime.mockImplementation(async ({ lifecycle }: { lifecycle: RepeatEngineStartContext['lifecycle'] }) => {
+      await lifecycle.requestCleanup(failure)
+      await lifecycle.settleRun(false, false)
+      await lifecycle.finishCleanup()
+    })
+    await executeRepeatEngineStart(f.context)
+    expect(f.context.lifecycle.requestCleanup).toHaveBeenCalledWith(failure)
+    expect(f.context.lifecycle.settleRun).toHaveBeenCalledWith(false, false)
+    expect(f.context.lifecycle.finishCleanup).toHaveBeenCalledOnce()
   })
   it.each(['Stop', 'cleanup', 'terminal', 'interrupted', 'abort', 'owner'] as const)('%s blocks before observer/runtime/factory use', async (kind) => {
     const f = fixture()

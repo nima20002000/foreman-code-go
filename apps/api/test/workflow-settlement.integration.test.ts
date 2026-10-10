@@ -5,6 +5,8 @@ import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
 import { CANONICAL_RUN_GRAPH_MCP_TOOLS, CanonicalRunGraphCurrentSchema,
   type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { executeRepeatRuntime } from '../src/modules/runs/repeatRuntime.js'
+import { executeRepeatEngineStart, type RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'
+import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
@@ -285,22 +287,47 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement and e
     })
   }, timeout)
 
-  it.each([false, true])('refuses a review-return continuation beyond the budget without committing a return (restart: %s)', async (restart) => {
+  it.each([false, true])('persists a review-return budget failure through engine composition (restart: %s)', async (restart) => {
     await withFixture(handoffs(2), async (f) => {
-      const { request } = await sourceAndRequest(f)
+      const { source, request } = await sourceAndRequest(f)
       const reviewer = await acceptedActivation(f, request.destinationActivationId, { outcome: 'succeeded', output: {
         routing: { kind: 'return', requestId: request.requestId, outcome: 'needs_changes' },
         data: { latestDeliverable: { revision: 1 }, remainingFindings: [{ id: 'revise' }] },
       } })
       if (restart) await f.restart()
-      const execute = runtime(f, async (execution) => { assert.equal(execution.state, 'completed') })
-      await expect(execute()).rejects.toMatchObject({ code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED' })
+      const unexpectedLaunch = vi.fn(async () => { throw new Error('No native continuation may start beyond the budget') })
+      const factory = {
+        forOwner: () => f.store,
+        preparePlacementExecution: unexpectedLaunch,
+        reconcileWorkflowArtifacts: async () => undefined,
+      } as unknown as RepeatEngineStartContext['factory']
+      await expect(executeRepeatEngineStart({
+        owner: f.owner,
+        signal: new AbortController().signal,
+        checkpointer: new MemorySaver(),
+        admission: new RunnerAdmission(2),
+        configuredParallelism: 2,
+        runtimeRoot: f.db.directory,
+        factory,
+        native: { observeExact: unexpectedLaunch, assertResume: unexpectedLaunch },
+        workflows: { getAgentConfiguration: unexpectedLaunch },
+        locations: { revalidateRunAuthorization: unexpectedLaunch, revalidateSnapshot: unexpectedLaunch },
+        nativeBoundaryEvidence: unexpectedLaunch,
+        lifecycle: f.lifecycle,
+      })).rejects.toMatchObject({ code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED' })
+      expect(unexpectedLaunch).not.toHaveBeenCalled()
       expect(await f.readRun()).toMatchObject({ executionState: 'completed', outcome: 'failed', result: {
-        outcome: 'failed', error: { code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED', retryable: false },
+        outcome: 'failed', error: {
+          code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
+          message: 'The Run reached its execution limit and cannot start more work.',
+          retryable: false,
+        },
       } })
+      expect(f.failureSettlements).toBe(1)
       expect((await f.db.pool.query('select 1 from run_work_returns where run_id=$1', [f.run.id])).rowCount).toBe(0)
       expect((await f.db.pool.query('select 1 from run_work_activations where run_id=$1', [f.run.id])).rowCount).toBe(2)
       expect((await f.store.readExecution(reviewer.id)).execution.result).toEqual(reviewer.result)
+      expect((await f.store.readExecution(source.id)).execution.result).toEqual(source.result)
       await f.restart()
       await assertWorkflowFailureReadback(f, 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED')
     })

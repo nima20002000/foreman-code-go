@@ -1,4 +1,5 @@
 import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
+import { DomainError } from '../errors.js'
 import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatConflict } from './repeatResolution.js'
 
@@ -29,7 +30,10 @@ export async function hasWorkflowExecutionCapacityLocked(sql: GraphTransactionSq
 export async function assertWorkflowExecutionCapacityLocked(sql: GraphTransactionSql, runId: string,
   version: WorkflowVersionV3, activationId: string | null = null): Promise<void> {
   if (!await hasWorkflowExecutionCapacityLocked(sql, runId, version, activationId)) {
-    return repeatConflict(version.definition.handoffs
-      ? 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED' : 'REPEAT_EXECUTION_BUDGET_EXHAUSTED')
+    if (version.definition.handoffs) {
+      throw new DomainError('WORK_RUN_EXECUTION_BUDGET_EXHAUSTED',
+        'The Run reached its execution limit and cannot start more work.', 409)
+    }
+    return repeatConflict('REPEAT_EXECUTION_BUDGET_EXHAUSTED')
   }
 }

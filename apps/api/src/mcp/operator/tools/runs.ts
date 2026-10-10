@@ -28,7 +28,8 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     description: 'Read an authorized Run from one backend snapshot. Defaults to compact status and the latest 25 executions and activities. '
       + 'Omission counts cover this snapshot; use run_activities_get_v1 for paged history. Pass detail: "full" for input, result, execution bodies and the full snapshot. '
       + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
-      + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT), Stop causes and cleanup status. '
+      + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT and WORK_RUN_EXECUTION_BUDGET_EXHAUSTED), '
+      + 'failure messages, Stop causes and cleanup status. '
       + 'A Run waiting for approval may still have progressing sibling executions.',
     inputSchema: OperatorRunGetInputSchema,
     outputSchema: OperatorRunGetResultSchema,

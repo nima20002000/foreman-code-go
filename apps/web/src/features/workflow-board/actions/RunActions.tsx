@@ -85,6 +85,7 @@ function SelectedRunActions({ selection, access }: {
     {scope && run ? <>
       <p role="status">Recorded {run.executionState} · {run.outcome} · saved version <code>{scope.workflowVersionId}</code>.
         {run.stopCause ? ` Recorded Stop cause: ${run.stopCause}.` : ''}</p>
+      {run.failure ? <p role="status">Run failed: {run.failure.message} <code>{run.failure.code}</code></p> : null}
       {capability.isError ? <p role="alert">Runtime capabilities are unavailable. New Start and Stop are disabled until a refresh succeeds.</p> : null}
       <StopControl scope={scope} run={run} permitted={allowed('runs:stop')}
         available={!capability.isError && capability.data?.stopAvailable === true} refresh={refresh} />
