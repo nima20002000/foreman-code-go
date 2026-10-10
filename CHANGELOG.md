@@ -7,6 +7,48 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.57] - 2026-10-10
+
+### Production and paired computers
+
+- Automatically update paired Workers to Main's release over the authenticated computer connection. Updates wait for active work to finish, support rollback, and expose saved status and retries in Computers settings and Operator MCP.
+- Refresh managed launchers when upgrading the canonical production instance. Open the production dashboard automatically only on an interactive first install.
+- Package newly required Worker modules with the installed Worker so paired computers can use the release's shared services.
+
+### Bug reports
+
+- Agents can report problems with Foreman Code features and MCP tools. Settings > Bugs lists reports newest first, with status and severity filters and report details; the Operator can manage reports through MCP.
+
+### Prompt settings
+
+- Edit the app system prompt and the Operator's initial prompt in Settings or through Operator MCP, with revision checks, audited changes and safe retries.
+- Capture prompts when a session starts and use the saved app prompt in Codex and Claude workflow and chat contexts. Prompt editors show clearer breadcrumbs and navigation.
+
+### Provider accounts
+
+- Add multiple named Codex and Claude accounts with isolated credentials, subscription sign-in or API-key authentication, status refresh and per-provider defaults.
+- Select provider accounts for Agents and the Operator through shared settings and MCP services, keeping credentials on their computer.
+
+### Workspace Git and worktrees
+
+- Prepare workspace GitHub repositories from workspace settings or Operator MCP, with saved recovery for interrupted imports.
+- Configure workflow and Agent worktree choices, inherit saved selections during execution, and show the selected worktree in saved workflow and Run views.
+
+### Verification
+
+- Add a dense repository test gate that schedules the complete unit, integration, web smoke and script suites alongside lint, typecheck and build according to available CPU and memory. Reports identify missing coverage, failures and flaky retries; acceptance remains a separate gate.
+
+### Fixes
+
+- Read saved execution results without recomputing routing, and show server errors and failure codes in the saved Run inspector.
+- Preserve Agent timeout causes through cleanup and recovery, allow six-hour defaults, and keep Stop authoritative. Recover failures around native session creation and uncertain publication without leaving idle sessions behind.
+- Keep Board edits recoverable after rejected Agent worktree changes, and preserve browser drafts through temporary local authentication lookup failures.
+- Report missing workspace CI templates during enrollment instead of implying readiness.
+- Improve harness discovery and fleet maintenance retries, preserve explicit harness selections, and show quota errors and skipped credentials in the UI and Operator MCP.
+- Reuse database transaction connections for provider account lookups so production startup and settings writes work with a single-connection pool.
+- Avoid repeated Worker payload hashing during workflow startup while retaining fresh identity and launch checks. Reject missing explicit Claude API keys before session admission.
+- Improve workflow, settings, computer pairing, plugin and MCP error handling, cancellation and saved-state readback.
+
 ## [0.0.56] - 2026-10-10
 
 ### CI across computers
