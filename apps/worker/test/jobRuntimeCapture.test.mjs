@@ -5,7 +5,7 @@ import { readProductEnvironment } from '../../../packages/contracts/src/productE
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile, stat, readdir, rm, chmod, symlink, link, realpath, rename } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -21,7 +21,7 @@ const artifact = readProductEnvironment(process.env, 'WORKER_ARTIFACT_DIRECTORY'
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 async function offlineSeedFixture(t) {
-  const directory = await mkdtemp(join(persistentFixtureRoot, 'verification-seed-'));
+  const directory = await realpath(await mkdtemp(join(persistentFixtureRoot, 'verification-seed-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const metadata = { name: 'fixture', time: { '1.0.0': '2026-09-30T00:00:00Z' },
     versions: { '1.0.0': { dist: { integrity: 'sha512-fixture' } } } };
@@ -115,6 +115,18 @@ test('offline seed validates every locked release at the strict 48-hour boundary
   }
   await writeFile(join(f.directory, 'pnpm-store/index.db'), 'changed');
   await assert.rejects(verifySeedFiles(f.directory, f.receipt), /integrity/);
+});
+
+test('offline seed requires a canonical root when its parent is a symlink', async t => {
+  const f = await offlineSeedFixture(t);
+  const parent = await mkdtemp(join(persistentFixtureRoot, 'verification-seed-parent-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const alias = join(parent, 'linked-parent');
+  await symlink(dirname(f.directory), alias);
+  const seedRoot = join(alias, basename(f.directory));
+  await assert.rejects(verifySeedFiles(seedRoot, f.receipt), /Canonical offline seed root required/);
+  const measured = await verifySeedFiles(await realpath(seedRoot), f.receipt);
+  assert.equal(measured.bytes, f.receipt.files.reduce((sum, file) => sum + file.bytes, 0));
 });
 
 test('offline seed rejects links, undeclared files, missing registry times and quota pressure', async t => {
