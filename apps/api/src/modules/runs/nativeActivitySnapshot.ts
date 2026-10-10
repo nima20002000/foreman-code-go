@@ -47,26 +47,39 @@ export const RUN_NATIVE_ACTIVITY_FACTS_SQL = `with normalized as (
   where item_id is not null and item_type in
     ('commandExecution','fileChange','webSearch','mcpToolCall','dynamicToolCall','collabAgentToolCall','tool','subagent')
   order by execution_id,native_session_id,generation,item_id,sequence desc
+), classified as (
+  select *, coalesce(status in ('completed','failed','declined','error','canceled','cancelled','interrupted'),false)
+    or item_error as finished from latest
+), bounded as (
+  (select * from classified where not finished order by execution_id,sequence limit 1001)
+  union all
+  (select * from classified where finished order by execution_id,sequence limit 1000)
 ) select execution_id,sequence::text,item_id,item_type,status,native_session_id,native_turn_id,generation,observed_at,
   native_type,tool_name,command_name,item_error
-  from latest order by execution_id,latest.sequence limit 1001`
+  from bounded order by execution_id,bounded.sequence`
 
 export async function readNativeActivityFacts(sql: Pick<pg.PoolClient, 'query'>, runId: string) {
   return (await sql.query<NativeActivityFact>(RUN_NATIVE_ACTIVITY_FACTS_SQL, [runId])).rows
 }
 export function projectNativeActivityFacts(rows: readonly NativeActivityFact[], resolve: (executionId: string) =>
   { owner: WorkRef; harness: string | null; sessionId: string | null; terminal: boolean }) {
-  const activities: ActivityItem[] = []; const active: WorkSummary[] = []
-  for (const row of rows.slice(0, 1000)) {
+  const activities: ActivityItem[] = []
+  const active: WorkSummary[] = []
+  let finishedCount = 0
+  let unfinishedCount = 0
+  for (const row of rows) {
+    let observed = nativeActivityStatus(row.status)
+    if (observed !== 'canceled' && row.item_error) observed = 'failed'
+    const provenTerminal = observed === 'completed' || observed === 'failed' || observed === 'canceled'
+    if (provenTerminal) {
+      if (++finishedCount > 1000) continue
+    } else if (++unfinishedCount > 1000) continue
     const context = resolve(row.execution_id)
     const child = row.item_type === 'subagent'
     const kind = child ? 'subagent' : 'tool'
     const claude = claudeConversationActivity({ type: row.native_type ?? '', payload: {
       itemId: row.item_id, taskId: row.item_id, name: row.tool_name, status: row.status,
     } }, row.execution_id)
-    let observed = nativeActivityStatus(row.status)
-    if (observed !== 'canceled' && row.item_error) observed = 'failed'
-    const provenTerminal = observed === 'completed' || observed === 'failed' || observed === 'canceled'
     let status: Extract<ActivityItem, { kind: 'tool' }>['status'] = observed ?? 'running'
     if (!provenTerminal && context.terminal) status = 'unknown'
     const nativeSession = row.native_session_id ?? (child ? null : context.sessionId)
@@ -82,5 +95,5 @@ export function projectNativeActivityFacts(rows: readonly NativeActivityFact[], 
     if (!provenTerminal) active.push({ ref, phase: 'active', outcome: null, delivery: null, startedAt: null,
       evidence: context.terminal || status === 'unknown' ? 'unknown' : 'confirmed', ...(native ? { native } : {}) })
   }
-  return { activities, active, hasMore: rows.length > 1000 }
+  return { activities, active, hasMore: unfinishedCount > 1000 }
 }

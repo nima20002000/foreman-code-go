@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { publicRunActivity, type ActivityReadRow } from '../src/modules/runs/activityProjection.js'
-import { projectNativeActivityFacts } from '../src/modules/runs/nativeActivitySnapshot.js'
+import { projectNativeActivityFacts, type NativeActivityFact } from '../src/modules/runs/nativeActivitySnapshot.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
 
@@ -77,6 +77,39 @@ describe('native Run activity status', () => {
   ])('names %s lifecycle activity', (type, turnStatus, status, summary) => {
     expect(publicRunActivity({ ...row, native: { type, turnStatus } },
       fixture.version, fixture.run.id, fixture.run.outcome)).toMatchObject({ summary, status })
+  })
+
+  const resolve = (executionId: string) => ({
+    owner: { kind: 'execution' as const, ...fixture.scope, executionId, attemptKey: '1' },
+    harness: 'codex', sessionId: 'session', terminal: executionId === 'terminated-parent' })
+  const fact = (index: number, status: string, execution = 'execution'): NativeActivityFact => ({
+    execution_id: execution, sequence: String(index + 1), item_id: `command-${index}`, item_type: 'commandExecution',
+    status, native_session_id: 'session', native_turn_id: null, generation: null, observed_at: fixture.createdAt,
+  })
+
+  it('retains unfinished tools beyond completed history and reports only unfinished overflow', () => {
+    const history = Array.from({ length: 1001 }, (_, index) => fact(index, 'completed'))
+    const completed = projectNativeActivityFacts(history, resolve)
+    expect(completed.activities).toHaveLength(1000)
+    expect(completed.active).toEqual([])
+    expect(completed.hasMore).toBe(false)
+    const withActive = projectNativeActivityFacts([...history, fact(1001, 'running', 'other-execution')], resolve)
+    expect(withActive.active).toHaveLength(1)
+    expect(withActive.active[0]?.native?.itemId).toBe('command-1001')
+    expect(withActive.activities.at(-1)).toMatchObject({ status: 'running', owner: { executionId: 'other-execution' } })
+    expect(withActive.hasMore).toBe(false)
+  })
+
+  it('bounds unfinished work independently and retains uncertain children of terminated parents', () => {
+    const unfinished = Array.from({ length: 1001 }, (_, index) => fact(index, 'running'))
+    const projected = projectNativeActivityFacts(unfinished, resolve)
+    expect(projected.active).toHaveLength(1000)
+    expect(projected.hasMore).toBe(true)
+    const child = { ...fact(1002, 'running', 'terminated-parent'), item_type: 'subagent' }
+    const uncertain = projectNativeActivityFacts([child], resolve)
+    expect(uncertain.activities[0]).toMatchObject({ kind: 'subagent', status: 'unknown', evidence: 'unknown' })
+    expect(uncertain.active[0]).toMatchObject({ evidence: 'unknown', native: { itemId: child.item_id } })
+    expect(uncertain.hasMore).toBe(false)
   })
 
   it.each(['canceled', 'cancelled', 'interrupted'])('keeps %s canceled across native envelopes', (status) => {

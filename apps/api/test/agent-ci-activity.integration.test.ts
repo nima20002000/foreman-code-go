@@ -40,8 +40,10 @@ async function fixture(options: { deferMigration?: number } = {}) {
   const request = { workspaceId: graph.scope.workspaceId, runId: graph.run.id, limit: 100 }
   const snapshotScope = { workspaceId: graph.scope.workspaceId, workflowId: graph.scope.workflowId,
     runId: graph.run.id, workflowVersionId: graph.version.id }
-  async function activity() {
-    const response = await graphRpc(app, reader.token, 'tools/call', { name: 'run_activities_get_v1', arguments: request })
+  async function activity(page: { cursor?: string; limit?: number } = {}) {
+    const response = await graphRpc(app, reader.token, 'tools/call', {
+      name: 'run_activities_get_v1', arguments: { ...request, ...page },
+    })
     expect(response.result?.isError).not.toBe(true)
     return RunActivitiesPageSchema.parse(graphRpcValue(response.result))
   }
@@ -85,6 +87,81 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
+  it('serializes same-Run CI commits so incremental cursors see both events exactly once', async () => {
+    const f = await fixture()
+    const first = await f.database.pool.connect()
+    const second = await f.database.pool.connect()
+    let secondUpdate: Promise<pg.QueryResult> | undefined
+    try {
+      const ticketA = await f.submit()
+      const ticketB = await f.submit()
+      const initial = await f.activity()
+      const before = (await f.database.pool.query<{ sequence: string }>(
+        'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence',
+        [f.graph.run.id])).rows
+      await first.query('begin')
+      await second.query('begin')
+      const holder = (await first.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      const waiter = (await second.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      const canceledAt = new Date().toISOString()
+      const cancel = `update job_admission_queue set record=record||jsonb_build_object(
+        'revision',(record->>'revision')::bigint+1,
+        'state','terminal','terminalReason','cancelled',
+        'cancelRequestedAt',$2::text,'finishedAt',$2::text) where id=$1`
+      await first.query(cancel, [ticketA.id, canceledAt])
+      secondUpdate = second.query(cancel, [ticketB.id, canceledAt])
+      const pending = secondUpdate.then(() => ({ error: null }), error => ({ error }))
+      const deadline = Date.now() + 4000
+      let blocked = false
+      while (!blocked && Date.now() < deadline) {
+        blocked = (await f.database.pool.query<{ blocked: boolean }>(
+          'select $2::integer=any(pg_blocking_pids($1::integer)) as blocked', [waiter, holder])).rows[0]!.blocked
+        if (!blocked) await new Promise<void>(resolve => setTimeout(resolve, 10))
+      }
+      expect(blocked).toBe(true)
+      const during = await f.activity({ cursor: initial.nextCursor })
+      expect(during.items).toEqual([])
+      await first.query('commit')
+      const settled = await pending
+      if (settled.error) throw settled.error
+      const afterFirst = await f.activity({ cursor: during.nextCursor, limit: 1 })
+      expect(afterFirst.items).toMatchObject([{ status: 'canceled', refs: { jobExecutionId: ticketA.executionId } }])
+      await second.query('commit')
+      const canceledTickets = await f.database.pool.query<{ record: Record<string, unknown> }>(
+        'select record from job_admission_queue where id=any($1::uuid[])', [[ticketA.id, ticketB.id]])
+      expect(canceledTickets.rows).toHaveLength(2)
+      for (const ticket of [ticketA, ticketB]) {
+        const saved = canceledTickets.rows.find(row => row.record.id === ticket.id)?.record
+        expect(saved).toMatchObject({
+          id: ticket.id, revision: ticket.revision + 1, state: 'terminal', terminalReason: 'cancelled',
+          cancelRequestedAt: canceledAt, finishedAt: canceledAt,
+        })
+      }
+      const afterSecond = await f.activity({ cursor: afterFirst.nextCursor, limit: 1 })
+      expect(afterSecond.items).toMatchObject([{ status: 'canceled', refs: { jobExecutionId: ticketB.executionId } }])
+      const delivered = [...afterFirst.items, ...afterSecond.items]
+      expect(new Set(delivered.map(item => item.id)).size).toBe(2)
+      expect(BigInt(delivered[1]!.sequence)).toBeGreaterThan(BigInt(delivered[0]!.sequence))
+      expect((await f.activity({ cursor: afterSecond.nextCursor })).items).toEqual([])
+      const retained = (await f.database.pool.query<{ sequence: string }>(
+        'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence limit $2',
+        [f.graph.run.id, before.length])).rows
+      expect(retained).toEqual(before)
+      const denied = await graphRpc(f.app, f.denied.token, 'tools/call', {
+        name: 'run_activities_get_v1', arguments: { ...f.request, cursor: initial.nextCursor },
+      })
+      expect(denied.error || denied.result?.isError).toBeTruthy()
+    } finally {
+      await first.query('rollback')
+      // Drain the blocked query before releasing its connection after a failed assertion.
+      if (secondUpdate) await Promise.allSettled([secondUpdate])
+      await second.query('rollback')
+      first.release()
+      second.release()
+      await f.close()
+    }
+  }, 120000)
+
   it('publishes queued, running and completed CI with its initiating Agent through authenticated MCP', async () => {
     const f = await fixture()
     try {

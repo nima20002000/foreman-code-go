@@ -109,7 +109,8 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const node = version.definition.nodes.find((item) => item.id === row.execution_node_id)
   const actorKind = new Set(['node_scheduled','node_state_changed','harness_session_started',
     'harness_output','harness_session_finished','result_recorded','work_result_accepted',
-    'work_handoff_accepted','work_handoff_returned','work_handoff_denied','work_rerouted','ci_state_changed'])
+    'work_handoff_accepted','work_handoff_returned','work_handoff_denied','work_rerouted','ci_state_changed',
+    'interaction_pending','interaction_decided','interaction_delivery_state','interaction_resolved','interaction_worker_ack'])
   const jobActor = node?.kind === 'job' && row.job_execution_id && row.node_execution_id === row.job_execution_id
     && row.job_definition_id === node.jobDefinitionId && row.job_definition_revision === node.jobDefinitionRevision
     && row.job_definition_version_id === node.jobDefinitionVersionId
@@ -318,16 +319,27 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
       break
     case 'interaction_delivery_state': case 'interaction_resolved': {
       kind = 'approval'
-      const delivery = string(payload.deliveryState), resolution = string(payload.status)
-      status = !refs.interactionId ? 'unknown'
-        : delivery === 'delivered' && resolution === 'delivered' ? 'delivered'
-        : resolution === 'delivery_failed' || delivery === 'failed' ? 'delivery_failed'
-          : delivery === 'unknown' ? 'unknown' : resolution === 'canceled' ? 'canceled' : 'pending'
-      summary = !refs.interactionId ? 'Approval details unavailable'
-        : status === 'delivered' ? 'Approval delivered to provider'
-        : status === 'delivery_failed' ? 'Approval delivery failed'
-          : status === 'unknown' ? 'Approval delivery uncertain'
-            : status === 'canceled' ? 'Approval canceled' : 'Approval delivery pending'
+      const delivery = string(payload.deliveryState)
+      const resolution = string(payload.status)
+      if (!refs.interactionId) {
+        status = 'unknown'
+        summary = 'Approval details unavailable'
+      } else if (resolution === 'canceled') {
+        status = 'canceled'
+        summary = 'Approval canceled'
+      } else if (delivery === 'delivered' && resolution === 'delivered') {
+        status = 'delivered'
+        summary = 'Approval delivered to provider'
+      } else if (resolution === 'delivery_failed' || delivery === 'failed') {
+        status = 'delivery_failed'
+        summary = 'Approval delivery failed'
+      } else if (delivery === 'uncertain') {
+        status = 'unknown'
+        summary = 'Approval delivery uncertain'
+      } else {
+        status = 'pending'
+        summary = 'Approval delivery pending'
+      }
       break
     }
     case 'interaction_worker_ack':
