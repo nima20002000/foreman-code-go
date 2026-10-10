@@ -20,7 +20,12 @@ it.skipIf(!postgresEnabled)('settles an owner direction choice without a native 
     remainingFindings: ['The owner still needs to review the result'] } }
   const f = await codexApprovalRuntime('user', { fixture, workflowOutput: async () => JSON.stringify(output) })
   const commands = new PostgresCommandCoordinator(f.db.pool)
-  const app = buildApp({ operator: { access: f.access, services: {
+  const app = buildApp({
+    readiness: {
+      database: { ping: async () => { await f.db.pool.query('select 1') } },
+      checkpoints: { ping: async () => undefined },
+    },
+    operator: { access: f.access, services: {
     commands, interactions: new OperatorInteractionService(f.service),
     runGraph: new RunGraphReadService(f.db.pool, { qualifiedReads: true }),
   } as unknown as OperatorServices } })

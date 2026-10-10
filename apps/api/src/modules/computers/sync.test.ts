@@ -15,6 +15,7 @@ import { PostgresAppInteractionService } from '../interactions/app.js'
 import { ComputerSyncService } from './sync.js'
 import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
+import type { DeviceApplicationRequestOptions } from '../devices/deviceApplicationChannel.js'
 import { fakeSyncthing, mainSyncId, workerSyncId } from '../../../test/helpers/syncthing.js'
 
 const cleanups: (() => Promise<void>)[] = []
@@ -77,7 +78,8 @@ async function fixture() {
     return { value, replayed: false }
   } } as unknown as PostgresCommandCoordinator
   const endpoint = { capabilities: () => [{ namespace: 'computer-sync-v1', mainCanRequest: true }],
-    request: async (deviceId: string, _namespace: string, payload: unknown) => {
+    request: async (deviceId: string, _namespace: string, payload: unknown, options?: DeviceApplicationRequestOptions) => {
+      void options
       const index = targets.findIndex(target => target.hostRef.kind === 'device' && target.hostRef.deviceId === deviceId)
       const input = SyncChannelRequestSchema.parse(payload)
       return { payload: await computers[index]!.handle(input.request) }
