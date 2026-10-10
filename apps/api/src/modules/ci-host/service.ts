@@ -4,7 +4,6 @@ import { CI_HOST_NAMESPACE, CiHostReplySchema, CiRunRecordSchema, WorkspaceSchem
   type CiHostRequest, type CiHostReply, type CiPartition, type CiRunRecord, type CiSuite } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
-import type { PostgresSourceService } from '../sources/service.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
@@ -17,6 +16,11 @@ export interface HostCiEndpoint {
   computers(): Promise<HostCiComputer[]>
   request(computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply>
 }
+/** Resolves the commit to test and makes sure GitHub has it, so build computers can fetch it. */
+export interface CiCommits {
+  resolve(repository: string, defaultBranch: string, commit: string | undefined,
+    snapshot: { baseCommit: string; commit: string; bundle: Buffer } | null): Promise<string>
+}
 export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: string; commit: string; bundle: Buffer } | null>
 
 const log = componentLogger('jobs')
@@ -28,7 +32,7 @@ export class HostCiService {
   private timer: NodeJS.Timeout | undefined
 
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly authority: CiAuthority, private readonly sources: PostgresSourceService,
+    private readonly authority: CiAuthority, private readonly commits: CiCommits,
     private readonly endpoint: HostCiEndpoint, private readonly snapshots?: AgentSnapshots) {}
 
   start(intervalMs = 5000) {
@@ -52,11 +56,7 @@ export class HostCiService {
         const repository = `${workspace.repository.owner}/${workspace.repository.name}`
         // An Agent's CI tests its current files; they are published to GitHub so build computers can fetch them.
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
-        const approved = await this.sources.approveProject(scope.principal, { workspaceId: scope.workspaceId,
-          commandId: `${input.commandId}:source`, ...(input.commit ? { commit: input.commit } : {}),
-          ...(snapshot ? { snapshot } : {}) })
-        const commit = approved.manifest.git!.commit
-        await this.sources.publish(repository, commit, AbortSignal.timeout(120_000))
+        const commit = await this.commits.resolve(repository, workspace.repository.defaultBranch, input.commit, snapshot)
         const groupId = randomUUID(), now = new Date().toISOString()
         const partitions: (CiPartition | null)[] = input.partitions
           ? Array.from({ length: input.partitions }, (_, index) => ({ index, count: input.partitions! })) : [null]

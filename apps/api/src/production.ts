@@ -11,6 +11,7 @@ import { CiEnrollment } from './modules/jobs/ciEnrollment.js'
 import { ProductionCiEnrollmentInventory } from './modules/jobs/ciEnrollmentInventory.js'
 import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
 import { HostCiService } from './modules/ci-host/service.js'
+import { GitCiCommits } from './modules/ci-host/commits.js'
 import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
 import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
 import { HostCiRunner } from './modules/ci-host/runner.js'
@@ -1956,7 +1957,7 @@ export function buildProductionApp(
         return { commit: reply.commit, bundle: Buffer.from(reply.bundleBase64, 'base64') }
       }
       // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
-      const hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), jobRuntime.sources,
+      const hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),
         new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner()),
         agentSnapshots(database.pool, readAgentFiles))
       hostCi.start()

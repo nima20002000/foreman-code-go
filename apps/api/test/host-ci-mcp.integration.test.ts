@@ -10,7 +10,6 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { RunCiAuthority, CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
-import type { PostgresSourceService } from '../src/modules/sources/service.js'
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { DomainError } from '../src/modules/errors.js'
 
@@ -68,19 +67,15 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     await runtime.db.pool.query(`update workspaces set record=record || '{"repository":{"provider":"github","owner":"octo","name":"site","defaultBranch":"main"}}'::jsonb where id=$1`,
       [workspaceId])
   }
-  const commits = new Map<string, string>()
   const published: string[] = []
-  const sources = {
-    approveProject: async (_principal: unknown, input: { commandId: string; commit?: string }) => {
-      const commit = input.commit ?? commits.get(input.commandId) ?? randomUUID().replaceAll('-', '').padEnd(40, 'a').slice(0, 40)
-      commits.set(input.commandId, commit)
-      return { manifest: { git: { commit } } }
-    },
-    publish: async (_repository: string, commit: string) => { published.push(commit) },
-  } as unknown as PostgresSourceService
+  const commits = { resolve: async (_repository: string, _branch: string, commit: string | undefined) => {
+    const resolved = commit ?? 'a'.repeat(40)
+    published.push(resolved)
+    return resolved
+  } }
   const computers = fakeComputers(options.github)
   const commands = new PostgresCommandCoordinator(runtime.db.pool)
-  const ci = new HostCiService(runtime.db.pool, commands, new RunCiAuthority(runtime.db.pool), sources, computers.endpoint)
+  const ci = new HostCiService(runtime.db.pool, commands, new RunCiAuthority(runtime.db.pool), commits, computers.endpoint)
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access: runtime.access, services: { commands, ci } as unknown as OperatorServices } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
