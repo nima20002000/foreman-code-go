@@ -1,3 +1,4 @@
+import { canonicalGraphJson } from './json.js'
 import { ActivitySnapshotV1Schema } from '../activity.js'
 import { z } from 'zod'
 import { GraphIdSchema, GraphSequenceSchema, RunGraphScopeSchema } from './graphPrimitives.js'
@@ -48,6 +49,16 @@ export const RunActivityJobSchema = z.object({
   jobDefinitionId: GraphIdSchema, jobDefinitionRevision: z.number().int().positive(),
   jobDefinitionVersionId: GraphIdSchema,
 }).strict()
+export const RunActivityWorkResultSchema = z.object({
+  outcome: z.string().min(1).max(48),
+  latestDeliverable: z.json(),
+  remainingFindings: z.array(z.json()).max(1000),
+}).strict().superRefine((value, context) => {
+  try { canonicalGraphJson(value, 96 * 1024) } catch {
+    context.addIssue({ code: 'custom', message: 'ACTIVITY_WORK_RESULT_TOO_LARGE' })
+  }
+})
+
 export const RunActivityPublicSchema = z.object({
   id: GraphIdSchema, scope: RunGraphScopeSchema, sequence: GraphSequenceSchema,
   occurredAt: TimestampSchema,
@@ -58,6 +69,7 @@ export const RunActivityPublicSchema = z.object({
   actor: z.union([RunActivityAgentSchema, RunActivityJobSchema]).optional(),
   subject: z.union([RunActivityAgentSchema, RunActivityJobSchema]).optional(),
   refs: RunActivityReferenceSchema,
+  workResult: RunActivityWorkResultSchema.optional(),
   usage: z.object({ used: z.number().int().nonnegative(),
     limit: z.number().int().positive().nullable() }).strict()
     .refine((value) => value.limit === null || value.used <= value.limit,

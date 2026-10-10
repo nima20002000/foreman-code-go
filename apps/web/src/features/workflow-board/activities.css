@@ -13,3 +13,5 @@
 .board-activity-status.is-warning { color: var(--warning, var(--text-strong)); }
 .board-activity-status.is-error { color: var(--danger, var(--text-strong)); }
 @media (max-width: 640px) { .board-activities-list li, .board-activities-filters { grid-template-columns: 1fr; gap: 3px; } }
+
+.board-activity-work-result pre { white-space: pre-wrap; overflow-wrap: anywhere; }

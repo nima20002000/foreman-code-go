@@ -13,6 +13,33 @@ const row: ActivityReadRow = {
 }
 
 describe('native Run activity status', () => {
+  it.each(['result_recorded', 'work_result_accepted', 'work_needs_direction'])(
+    'exposes only redacted work result details for %s', (kind) => {
+      const token = `opm_${'a'.repeat(43)}`
+      const workResult = { outcome: 'succeeded', output: { text: JSON.stringify({
+        routing: { kind: 'finish', outcome: 'done' },
+        data: { latestDeliverable: { text: `Implemented the fix ${token}` },
+          remainingFindings: [{ message: `Review is incomplete ${token}` }] },
+      }) } }
+      const activity = publicRunActivity({ ...row, kind, work_result: workResult, safe_payload: { unresolvedId: 'unresolved', prompt: 'private prompt',
+      } }, fixture.version, fixture.run.id, fixture.run.outcome)
+      expect(activity.workResult).toEqual({ outcome: 'done',
+        latestDeliverable: { text: 'Implemented the fix [REDACTED]' },
+        remainingFindings: [{ message: 'Review is incomplete [REDACTED]' }] })
+      expect(activity.kind).toBe(kind === 'work_needs_direction' ? 'needs_direction' : 'agent_work')
+      expect(JSON.stringify(activity)).not.toContain(token)
+      expect(JSON.stringify(activity)).not.toContain('private prompt')
+      expect(JSON.stringify(workResult)).toContain(token)
+    })
+
+  it('keeps malformed result text from breaking the activity page', () => {
+    const activity = publicRunActivity({ ...row, kind: 'work_result_accepted',
+      work_result: { outcome: 'succeeded', output: 'unfinished JSON' } },
+    fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(activity.summary).toBe('Work result recorded')
+    expect(activity.workResult).toBeUndefined()
+  })
+
   it.each([
     ['item/agentMessage/delta', 'Agent message updated'],
     ['item/commandExecution/outputDelta', 'Command output updated'],

@@ -82,6 +82,24 @@ afterEach(() => {
 })
 
 describe('Activities shared Agent and Job actors', () => {
+  it('shows recorded results and remaining findings on needs-direction rows', async () => {
+    const workResult = { outcome: 'done', latestDeliverable: 'Implemented the requested change',
+      remainingFindings: ['Review needs a decision', { message: 'One finding remains' }] }
+    const resultItems = [
+      { ...event('1', 'Work result recorded', { actor: agent }, 'agent_work'), workResult },
+      { ...event('2', 'Work needs direction', { actor: agent }, 'needs_direction'), workResult },
+    ]
+    server.use(http.get(activitiesPath, () => HttpResponse.json(page({ items: resultItems }))))
+    await mount({ expectedText: 'Work result recorded' })
+    for (const item of resultItems) {
+      const row = within(screen.getByText(item.summary).closest('li')!)
+      expect(row.getByText('Outcome: done')).toBeVisible()
+      expect(row.getByText('Implemented the requested change')).toBeVisible()
+      expect(row.getByText('Review needs a decision')).toBeVisible()
+      expect(row.getByText(/One finding remains/)).toBeVisible()
+    }
+  })
+
   it('renders readable native summaries and safe details from the shared Activities response', async () => {
     const nativeItems = [
       { ...event('1', 'Command: git completed', { actor: agent }, 'tool_action'), detail: 'Exit code: 0.' },
