@@ -18,24 +18,31 @@ async function existingPath(path: string) {
   }
 }
 
-async function previousInstallation(directory: string) {
+async function managedInstallation(directory: string) {
   const launcher = join(directory, 'launcher.mjs')
   const installation = readLauncherInstallation(launcher)
   if (!(await existingPath(directory))?.isDirectory() || !installation?.executables.length
     || !(await existingPath(launcher))?.isFile()) {
-    throw new Error('The previous production MCP launcher has no valid managed installation record.')
+    throw new Error('The production MCP launcher has no valid managed installation record.')
   }
   return installation
 }
 
 async function registerPreviousLauncher(launcher: string, directory: string, alias: string): Promise<void> {
-  const installation = await previousInstallation(directory)
+  const installation = await managedInstallation(directory)
   await installManagedLauncher(launcherSource, launcher)
   await writeLauncherInstallation(launcher, {
     version: 1,
     executables: installation.executables,
     launcherAliases: [alias],
   })
+}
+
+async function refreshSharedLauncher(directory: string): Promise<void> {
+  const launcher = join(directory, 'launcher.mjs')
+  if (!(await existingPath(launcher))) return
+  await managedInstallation(directory)
+  await installManagedLauncher(launcherSource, launcher)
 }
 
 /** Called under the production installation lock while the old API is stopped. */
@@ -47,13 +54,19 @@ export async function upgradeProductionMcpLauncher(desktopHome: string): Promise
   const retained = `${previous}.previous`
   const previousState = await existingPath(previous)
   const retainedState = await existingPath(retained)
-  if (!previousState && !retainedState) return
+  if (!previousState && !retainedState) {
+    await refreshSharedLauncher(destination)
+    return
+  }
   if (previousState?.isDirectory() && !retainedState) {
     const entries = await readdir(previous)
     const routes = join(previous, 'routes')
     // Older installers create this directory even when no native launcher is installed.
     if (!entries.length || entries.length === 1 && entries[0] === 'routes'
-      && (await existingPath(routes))?.isDirectory() && !(await readdir(routes)).length) return
+      && (await existingPath(routes))?.isDirectory() && !(await readdir(routes)).length) {
+      await refreshSharedLauncher(destination)
+      return
+    }
   }
   if (previousState?.isSymbolicLink()) {
     const installation = readLauncherInstallation(launcher)
