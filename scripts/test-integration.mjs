@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, openSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
@@ -14,6 +13,8 @@ import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGr
   superviseIntegrationProcess } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
   readVitestReport, privateDirectory, writeReport } from './verification-reports.mjs'
+import { scheduleQueue } from './dense-scheduler.mjs'
+import { readProfiles, startProcessMetrics, writeProfiles } from './dense-resources.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
@@ -119,8 +120,8 @@ export function failForSkippedCases(summary, startAt) {
   return !startAt && Boolean(summary?.skipped)
 }
 
-export function autoRetestFiles(failedFiles, { diagnostic, interrupted }) {
-  return diagnostic || interrupted ? [] : [...new Set(failedFiles)].sort()
+export function autoRetestFiles(failedFiles, { interrupted }) {
+  return interrupted ? [] : [...new Set(failedFiles)].sort()
 }
 
 export function integrationVitestArguments(file, testNamePattern, json) {
@@ -180,6 +181,26 @@ export function fullRunExitCode(failed, interrupted) {
   return interrupted === 'SIGINT' ? 130 : interrupted ? 143 : failed ? 1 : 0
 }
 
+export function finalizeIntegrationResult({ report, results = [], selectedFiles, reportDirectory,
+  interrupted, diagnostic, cleanupError, error }) {
+  const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : cleanupError
+  const runnerMessage = error instanceof Error ? error.message : error
+  if (cleanupMessage) report.cleanupError = cleanupMessage
+  if (runnerMessage || cleanupMessage) {
+    report.error = runnerMessage ?? cleanupMessage
+    report.completeness = 'partial'
+    report.outcome = interrupted ? 'cancelled' : 'incomplete'
+  }
+  const gateResults = results.filter((result) => !selectedFiles.includes(result.id))
+  const failed = report.files.some((file) => file.code !== 0 || !file.complete)
+    || gateResults.some((result) => result.status !== 'PASSED')
+    || report.disallowedSkipped || report.publicationError || runnerMessage || cleanupMessage
+    || (!diagnostic && report.outcome !== 'passed')
+  return { code: fullRunExitCode(failed, interrupted), results, gateResults, selectedFiles,
+    reportDirectory, report, ...(cleanupMessage ? { cleanupError: cleanupMessage } : {}),
+    ...(report.error ? { error: report.error } : {}) }
+}
+
 function recordFileAttempt(reports, file, details) {
   const existing = reports.find((record) => record.file === file)
   if (existing) Object.assign(existing, details)
@@ -194,7 +215,13 @@ export function integrationReport(selected, firstPass, retests, { startedAt, fin
     if (!result) return { file, code: null, complete: false, reason: 'not executed' }
     if (result.report) for (const name of Object.keys(totals)) totals[name] += result.report.totals[name]
     const { report, ...details } = result
-    return { ...details, totals: report?.totals ?? emptyCounts() }
+    const retest = retests.find((record) => record.file === file)
+    let status = result.status
+    if (!status && result.code !== null) {
+      status = result.code === 0 ? 'PASSED' : 'FAILED'
+      if (result.code !== 0 && retest?.code === 0 && retest.complete) status = 'FLAKY'
+    }
+    return { ...details, ...(status ? { status } : {}), totals: report?.totals ?? emptyCounts() }
   })
   const completedPortions = files.filter((file) => file.complete).length
   const firstPassFailed = files.filter((file) => file.code !== null && file.code !== 0).length
@@ -246,6 +273,47 @@ export async function scheduleFiles(files, slots, runFile, shouldStop = () => fa
     }
   }))
   return { outcomes, skipped: files.length - next, unexecuted: files.slice(next) }
+}
+
+export async function scheduleIntegrationQueue(files, slots, {
+  extraItems = [], executeExtra, runFile, prepareRetest = async () => {},
+  maxConcurrency, profiles = {}, samplePressure, shouldStop = () => false, onEvent,
+  pollIntervalMs, onProcessFailure = () => {},
+}) {
+  const integrationItems = files.map((file) => ({ id: file, file, kind: 'integration',
+    exclusive: exclusiveFiles.includes(file) }))
+  const items = [...integrationItems, ...extraItems]
+  const busy = new Set()
+  let processFailure
+  const freeSlot = () => slots.find((slot) => !slot.unavailable && !busy.has(slot.index))
+  return scheduleQueue(items, {
+    maxConcurrency, profiles, samplePressure,
+    shouldStop: () => Boolean(processFailure) || shouldStop(),
+    onEvent, pollIntervalMs, retest: true,
+    canUseWorker: (_index, item) => item.kind !== 'integration' || Boolean(freeSlot()),
+    execute: async (item, context) => {
+      if (item.kind !== 'integration') return executeExtra(item, context)
+      const slot = freeSlot()
+      if (!slot) return { code: 1, complete: false, reason: 'No usable integration slot' }
+      busy.add(slot.index)
+      try {
+        if (context.isRetest) await prepareRetest(slot, item.file)
+        const result = await runFile(slot, item.file, context)
+        if (result.slotUnavailable) slot.unavailable = true
+        if (result.ownedProcessActive) {
+          processFailure = result.reason ?? `Integration slot ${slot.index} still owns a child process group`
+          onProcessFailure(processFailure)
+        }
+        // Database retirement does not retire a worker used by non-database gate checks.
+        return { ...result, slotUnavailable: false }
+      } catch (error) {
+        slot.unavailable = true
+        return { code: 1, complete: false, reason: error.message }
+      } finally {
+        busy.delete(slot.index)
+      }
+    },
+  })
 }
 
 export function integrationTimeouts(environment) {
@@ -316,9 +384,9 @@ export function integrationEnvironment(environment, slot) {
   return testEnvironment(environment, slot)
 }
 
-export function options(argv) {
-  const startAt = readProductEnvironment(process.env, 'INTEGRATION_START_AT') || null
-  const failedFrom = readProductEnvironment(process.env, 'INTEGRATION_FAILED_LOG') || null
+export function options(argv, environment = process.env) {
+  const startAt = readProductEnvironment(environment, 'INTEGRATION_START_AT') || null
+  const failedFrom = readProductEnvironment(environment, 'INTEGRATION_FAILED_LOG') || null
   if (!argv.length) {
     if (startAt && failedFrom) throw new Error('Choose either a resume cursor or a failed-file log')
     return { startAt, failedFrom, files: null }
@@ -332,7 +400,7 @@ export function options(argv) {
 }
 
 async function main() {
-  const { startAt, failedFrom, files } = options(process.argv.slice(2))
+  options(process.argv.slice(2))
   const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8' })
   if (commonResult.status !== 0) throw new Error('Could not find the project heavy-job queue')
   const common = realpathSync(commonResult.stdout.trim())
@@ -341,29 +409,39 @@ async function main() {
     process.exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code ?? 1)) })
     return
   }
-  const contractsBuild = spawnSync('corepack', ['pnpm', '--dir', 'packages/contracts', 'build'],
-    { cwd: root, stdio: 'inherit' })
-  if (contractsBuild.status !== 0) throw new Error('Integration contracts build failed')
+  const result = await runIntegration(process.argv.slice(2))
+  process.exitCode = result.code
+}
+
+export async function runIntegration(argv = [], {
+  extraItems = [], executeExtra, reportDirectory, profilePath, env = process.env, contractsBuilt = false,
+} = {}) {
+  const { startAt, failedFrom, files } = options(argv, env)
+  if (!contractsBuilt) {
+    const contractsBuild = spawnSync('corepack', ['pnpm', '--dir', 'packages/contracts', 'build'],
+      { cwd: root, stdio: 'inherit', env })
+    if (contractsBuild.status !== 0) throw new Error('Integration contracts build failed')
+  }
   const allFiles = discoverFiles()
   let selected = selectFiles(allFiles, startAt)
   if (failedFrom) selected = failedFilesFromLog(readFileSync(failedFrom, 'utf8'), allFiles)
   if (files) selected = selectExactFiles(allFiles, files)
-  const environment = await integrationEnvironmentCapabilities()
+  const environment = await integrationEnvironmentCapabilities(env)
   const { runnable, unavailable } = partitionIntegrationCapabilities(selected, environment)
-  const testNamePattern = readProductEnvironment(process.env, 'INTEGRATION_TEST_NAME_PATTERN')
+  const testNamePattern = readProductEnvironment(env, 'INTEGRATION_TEST_NAME_PATTERN')
   const diagnostic = Boolean(startAt || failedFrom || files || testNamePattern)
-  // Worktrees and fresh snapshot checkouts on this machine share one schedule.
-  const durationsPath = join(homedir(), '.cache', 'graphql-disposable-tests', 'integration-durations.json')
-  const durations = readDurations(durationsPath)
-  const recordedDurations = {}
+  const profilesPath = resolve(profilePath ?? env.GRAPHQL_TEST_PROFILE_PATH ?? join(root, '.logs', 'test-profiles.json'))
+  const profiles = readProfiles(profilesPath)
   // TEST_DATABASE_URL only selects the loopback server; every slot still gets
   // its own disposable database there, so the run stays fully parallel.
-  if (process.env.TEST_DATABASE_URL) requireTestServerUrl(process.env.TEST_DATABASE_URL)
-  if (process.env.FOREMAN_CODE_VERIFICATION_ROOT && !process.env.TEST_DATABASE_URL) {
+  if (env.TEST_DATABASE_URL) requireTestServerUrl(env.TEST_DATABASE_URL)
+  if (env.FOREMAN_CODE_VERIFICATION_ROOT && !env.TEST_DATABASE_URL) {
     throw new Error('Integration Jobs require an explicit Job-local test database URL')
   }
-  const shardCount = Math.min(reservedIntegrationShards(process.env), runnable.length)
-  const timeouts = integrationTimeouts(process.env)
+  const maximum = reservedIntegrationShards(env)
+  const shardCount = Math.min(maximum, runnable.length)
+  const concurrency = Math.max(1, Math.min(maximum, runnable.length + extraItems.length))
+  const timeouts = integrationTimeouts(env)
   const admin = await testAdminPool()
   const slots = []
   const active = new Map()
@@ -371,19 +449,31 @@ async function main() {
   const tempRoot = createTestRoot(undefined, 'graphql-integration-')
   const retainedDirectory = join(root, '.logs', 'test-integration')
   mkdirSync(retainedDirectory, { recursive: true })
-  const failedLogs = process.env.FOREMAN_CODE_VERIFICATION_REPORT_DIR
-    ? privateDirectory(join(process.env.FOREMAN_CODE_VERIFICATION_REPORT_DIR, 'parts', 'integration'))
+  const destination = reportDirectory ?? env.FOREMAN_CODE_VERIFICATION_REPORT_DIR
+  const failedLogs = destination
+    ? privateDirectory(join(destination, 'parts', 'integration'))
     : createTestRoot(retainedDirectory).directory
   const startedAt = new Date().toISOString()
   const firstPass = [...unavailable]
   const retestReports = []
-  const logBytes = positiveInteger(Number(process.env.FOREMAN_CODE_VERIFICATION_LOG_BYTES
-    ?? readProductEnvironment(process.env, 'INTEGRATION_LOG_BYTES') ?? 8 * 1024 * 1024), 'Integration log byte limit')
-  const reportBytes = positiveInteger(Number(process.env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES
-    ?? readProductEnvironment(process.env, 'INTEGRATION_REPORT_BYTES') ?? 32 * 1024 * 1024), 'Integration report byte limit')
+  const logBytes = positiveInteger(Number(env.FOREMAN_CODE_VERIFICATION_LOG_BYTES
+    ?? readProductEnvironment(env, 'INTEGRATION_LOG_BYTES') ?? 8 * 1024 * 1024), 'Integration log byte limit')
+  const reportBytes = positiveInteger(Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES
+    ?? readProductEnvironment(env, 'INTEGRATION_REPORT_BYTES') ?? 32 * 1024 * 1024), 'Integration report byte limit')
+  const abortController = new AbortController()
   let interrupted = null
+  let fatalProcessError
+  const shouldStopQueue = () => Boolean(interrupted || fatalProcessError)
+  const stopForProcessFailure = (reason) => {
+    if (fatalProcessError) return
+    fatalProcessError = reason
+    abortController.abort(reason)
+    signalOwnedChildren(active, killTimers, 'SIGTERM')
+    console.error(`[integration] queue stopped: ${reason}`)
+  }
   const interrupt = (signal) => {
     interrupted ??= signal
+    abortController.abort(signal)
     signalOwnedChildren(active, killTimers, signal)
   }
   const onSigint = () => interrupt('SIGINT')
@@ -401,6 +491,8 @@ async function main() {
   let phase = 'first pass'
   let phaseTotal = runnable.length
   let heartbeat
+  let queueResult
+  let finalResult
   const reportProgress = () => {
     const counts = phase.startsWith('retest') ? retest : { passed, failed }
     console.log(integrationProgressLine({ phase, total: phaseTotal, ...counts, active, slotCount: shardCount,
@@ -411,7 +503,7 @@ async function main() {
     Object.assign(slot, await createTestDatabase(admin, slot))
     delete slot.resetError
   }
-  const recordUnexecuted = (files, phase = 'first') => {
+  const recordUnexecuted = (files, phase = 'first', reason = 'no usable integration slots') => {
     const isRetest = phase === 'retest'
     for (const file of files) {
       if (isRetest) {
@@ -424,8 +516,10 @@ async function main() {
         unreported++
         failedFiles.push(file)
       }
+      recordFileAttempt(isRetest ? retestReports : firstPass, file,
+        { code: isRetest ? 1 : null, complete: false, reason, status: 'NOT_RUN' })
       console.error(`[integration] ${isRetest ? 'RETEST ' : ''}FAIL ${file} (slot 0, exit 1);`
-        + ' not executed: no usable integration slots; log: unavailable')
+        + ` not executed: ${reason}; log: unavailable`)
     }
   }
   try {
@@ -444,12 +538,11 @@ async function main() {
     if (failedFrom) console.log(`[integration] RETEST ${selected.length} failed files from ${failedFrom}: partial run only; a clean full run is required for suite proof.`)
     if (files) console.log('[integration] Selected-file run; results cover only the requested files.')
     if (testNamePattern) console.log(`[integration] DIAGNOSTIC case selection: ${JSON.stringify(testNamePattern)}; not a verification gate.`)
-    const runFile = async (slot, file, phase = 'first') => {
+    const runFile = async (slot, file, { isRetest, timeoutScale }) => {
       if (interrupted) return { code: 128 + (interrupted === 'SIGINT' ? 2 : 15) }
       if (active.has(slot.index)) throw new Error(`Slot ${slot.index} still has an owned process group`)
       if (slot.unavailable) throw new Error(`Slot ${slot.index} is retired`)
       const started = Date.now()
-      const isRetest = phase === 'retest'
       const label = isRetest ? 'RETEST ' : ''
       recordFileAttempt(isRetest ? retestReports : firstPass, file, { slot: slot.index,
         startedAt: new Date(started).toISOString(), code: null, complete: false, reason: 'no terminal file report' })
@@ -457,7 +550,7 @@ async function main() {
       mkdirSync(dirname(log), { recursive: true })
       const output = boundedLog(log, logBytes)
       const json = `${log}.json`
-      const vitest = vitestCommand(integrationEnvironment(process.env, slot), file, testNamePattern, json)
+      const vitest = vitestCommand(integrationEnvironment(env, slot), file, testNamePattern, json)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
       const child = spawn(vitest.command, vitest.args,
         { cwd: vitest.cwd, env: vitest.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -469,24 +562,48 @@ async function main() {
       }
       child.stdout.on('data', recordOutput)
       child.stderr.on('data', recordOutput)
-      const outputClosed = new Promise((done) => child.once('close', () => done(output.close())))
+      let outputResult
+      const closeOutput = () => {
+        outputResult ??= output.close()
+        return outputResult
+      }
+      const outputClosed = new Promise((done) => child.once('close', () => done(closeOutput())))
       active.set(slot.index, { child, file, progress })
       console.log(`[integration] ${label}START ${file} (slot ${slot.index}, pid ${child.pid ?? 'unavailable'}); log: ${log}`)
       if (interrupted) signalOwnedChildren(active, killTimers, interrupted)
-      const result = await superviseIntegrationProcess(child, { log, progress, ...timeouts,
-        onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
-        resetAfterTimeout: async () => {
-          try { await resetSlotDatabase(slot) }
-          catch (reason) { slot.resetError = reason; throw reason }
-          console.log(`[integration] slot ${slot.index} database reset after timeout; remaining queue continues.`)
-        },
-      })
-      const retainedLog = await outputClosed
-      let code = result.code
-      let error = result.error
+      const metricsTracker = child.pid ? startProcessMetrics(child.pid) : null
+      let metrics
+      let result
+      try {
+        result = await superviseIntegrationProcess(child, { log, progress, ...timeouts,
+          idleTimeoutMs: Math.ceil(timeouts.idleTimeoutMs * timeoutScale),
+          fileTimeoutMs: Math.ceil(timeouts.fileTimeoutMs * timeoutScale),
+          onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
+          resetAfterTimeout: async () => {
+            try { await resetSlotDatabase(slot) }
+            catch (reason) { slot.resetError = reason; throw reason }
+            console.log(`[integration] slot ${slot.index} database reset after timeout; remaining queue continues.`)
+          },
+        })
+      } finally {
+        metrics = metricsTracker?.stop()
+      }
+      const ownedProcessActive = groupUsed(child.pid)
+      if (ownedProcessActive) {
+        slot.unavailable = true
+        stopForProcessFailure(result.error?.message
+          ?? `Integration slot ${slot.index} still owns child process group ${child.pid}`)
+        child.stdout.off('data', recordOutput)
+        child.stderr.off('data', recordOutput)
+        child.stdout.destroy()
+        child.stderr.destroy()
+      }
+      const retainedLog = ownedProcessActive ? closeOutput() : await outputClosed
+      let code = ownedProcessActive ? 1 : result.code
+      let error = ownedProcessActive ? new Error(fatalProcessError) : result.error
       clearTimeout(killTimers.get(slot.index))
       killTimers.delete(slot.index)
-      if (!groupUsed(child.pid)) active.delete(slot.index)
+      if (!ownedProcessActive) active.delete(slot.index)
       if (result.slotUnavailable) {
         slot.unavailable = true
         console.error(`[integration] slot ${slot.index} RETIRED; healthy slots continue the remaining queue.`)
@@ -495,7 +612,6 @@ async function main() {
       mkdirSync(dirname(retained), { recursive: true })
       copyFileSync(log, retained)
       const elapsedMs = Date.now() - started
-      if (!isRetest && !interrupted) recordedDurations[file] = elapsedMs
       let fileReport
       let reportError
       try {
@@ -538,19 +654,22 @@ async function main() {
         if (result.resetError) console.error(`[integration] ${result.resetError.message}`)
       }
       const record = { file, slot: slot.index, code, elapsedMs,
-        complete: Boolean(fileReport?.complete && !reportError), timedOut: result.timedOut,
-        report: fileReport, reportError, log: retainedLog, reason: error?.message ?? reportError }
+        complete: Boolean(fileReport?.complete && !reportError && !ownedProcessActive), timedOut: result.timedOut,
+        report: fileReport, reportError, log: retainedLog, metrics, reason: error?.message ?? reportError }
       recordFileAttempt(isRetest ? retestReports : firstPass, file, record)
       writeReport(`${retained}.result.json`, record, reportBytes)
-      return { code, slotUnavailable: result.slotUnavailable }
+      return { code, complete: record.complete, metrics, reason: record.reason,
+        timedOut: result.timedOut, slotUnavailable: slot.unavailable, ownedProcessActive }
     }
-    const runSafely = async (slot, file, phase = 'first') => {
-      try { return await runFile(slot, file, phase) }
+    const runSafely = async (slot, file, context) => {
+      try { return await runFile(slot, file, context) }
       catch (error) {
         const owned = active.get(slot.index)
         if (owned && !groupUsed(owned.child.pid)) active.delete(slot.index)
         if (active.has(slot.index) || slot.resetError) slot.unavailable = true
-        const isRetest = phase === 'retest'
+        const ownedProcessActive = active.has(slot.index)
+        if (ownedProcessActive) stopForProcessFailure(error.message)
+        const { isRetest } = context
         if (isRetest) {
           if (!retestFailedFiles.has(file)) { retest.failed++; retestFailedFiles.add(file) }
         } else if (!failedFiles.includes(file)) { failed++; failedFiles.push(file) }
@@ -568,80 +687,67 @@ async function main() {
         recordFileAttempt(isRetest ? retestReports : firstPass, file,
           { code: 1, complete: false, reason: error.message })
         console.error(`[integration] runner error: ${error instanceof Error ? error.message : String(error)}`)
-        return { code: 1, error, slotUnavailable: slot.unavailable }
+        return { code: 1, complete: false, reason: error.message,
+          slotUnavailable: slot.unavailable, ownedProcessActive }
       }
     }
-    const partition = partitionIntegrationFiles(runnable)
-    for (const [index, file] of partition.exclusive.entries()) {
-      phase = `bounded resource checks (exclusive): ${file}`
-      const slot = slots.find(slot => !slot.unavailable)
-      if (!slot) {
-        recordUnexecuted([...partition.exclusive.slice(index), ...partition.parallel])
-        return
-      }
-      await runSafely(slot, file)
-      if (interrupted) { skipped = selected.length - index - 1; return }
-    }
-    phase = 'first pass'
-    const result = await scheduleFiles(orderByDuration(partition.parallel, durations),
-      slots.filter((slot) => !slot.unavailable),
-      runSafely, () => Boolean(interrupted))
-    skipped = interrupted ? result.skipped : 0
-    if (!interrupted) recordUnexecuted(result.unexecuted)
-    for (const outcome of result.outcomes) if (outcome.code !== 0 && !failedFiles.includes(outcome.file)) {
-      failed++
-      failedFiles.push(outcome.file)
-      console.error(`[integration] FAIL ${outcome.file} (slot ${outcome.slot.index}, exit 1); log: unavailable`)
-      if (outcome.error) console.error(`[integration] runner error: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`)
-    }
-    const toRetest = autoRetestFiles(failedFiles, { diagnostic, interrupted })
-    if (toRetest.length) {
-      phase = 'retest setup'
-      phaseTotal = toRetest.length
-      retest.skipped = toRetest.length
-      console.log(`[integration] RETEST ${toRetest.length} first-pass failed files on fresh disposable databases.`)
-      const retestSlots = []
-      const candidates = slots.filter((slot) => !slot.unavailable).slice(0, toRetest.length)
-      for (const slot of candidates) {
-        if (interrupted) break
-        try {
-          await dropTestDatabase(admin, slot)
-          removeTestRoot(slot)
-          const resource = createTestRoot(tempRoot.directory, `retest-slot-${slot.index}-`)
-          Object.assign(slot, await createTestDatabase(admin, resource))
-          retestSlots.push(slot)
-        } catch (error) {
-          slot.unavailable = true
-          slot.resetError = error
-          console.error(`[integration] slot ${slot.index} RETIRED during retest setup: ${error.message}`)
-        }
-      }
-      if (!interrupted) {
-        phase = 'retest'
-        reportProgress()
-        const retestPartition = partitionIntegrationFiles(toRetest)
-        for (const file of retestPartition.exclusive) {
-          if (interrupted) break
-          const slot = retestSlots.find(slot => !slot.unavailable)
-          if (!slot) { recordUnexecuted([file], 'retest'); continue }
-          phase = `retest bounded resource checks (exclusive): ${file}`
-          await runSafely(slot, file, 'retest')
-        }
-        phase = 'retest'
-        const retestResult = await scheduleFiles(orderByDuration(retestPartition.parallel, durations),
-          retestSlots.filter((slot) => !slot.unavailable),
-          (slot, file) => runSafely(slot, file, 'retest'), () => Boolean(interrupted))
-        retest.skipped = interrupted ? toRetest.length - retest.passed - retest.failed : 0
-        if (!interrupted) recordUnexecuted(retestResult.unexecuted, 'retest')
+    const prepareRetest = async (slot, file) => {
+      phase = 'retest'
+      phaseTotal = failedFiles.length
+      recordFileAttempt(retestReports, file,
+        { slot: slot.index, code: 1, complete: false, reason: 'retest database setup failed' })
+      try {
+        await dropTestDatabase(admin, slot)
+        removeTestRoot(slot)
+        const resource = createTestRoot(tempRoot.directory, `retest-slot-${slot.index}-`)
+        delete slot.name
+        delete slot.databaseUrl
+        Object.assign(slot, resource)
+        Object.assign(slot, await createTestDatabase(admin, resource))
+        delete slot.resetError
+      } catch (error) {
+        slot.resetError = error
+        retest.failed++
+        retestFailedFiles.add(file)
+        recordFileAttempt(retestReports, file, { reason: error.message })
+        console.error(`[integration] slot ${slot.index} RETIRED during retest setup: ${error.message}`)
+        throw error
       }
     }
+    queueResult = await scheduleIntegrationQueue(runnable, slots, {
+      maxConcurrency: concurrency, profiles, runFile: runSafely, prepareRetest,
+      extraItems,
+      executeExtra: (item, context) => executeExtra(item, context, {
+        shouldStop: shouldStopQueue, signal: abortController.signal,
+      }),
+      shouldStop: shouldStopQueue,
+      onProcessFailure: stopForProcessFailure,
+    })
+    const notRun = queueResult.unexecuted.filter((item) => item.kind === 'integration')
+    skipped = interrupted ? notRun.length : 0
+    if (!interrupted) for (const item of notRun) {
+      const result = queueResult.results.find((entry) => entry.id === item.id)
+      recordUnexecuted([item.file], 'first', result?.reason ?? 'no usable integration slots')
+    }
+    for (const result of queueResult.results) {
+      const record = firstPass.find((entry) => entry.file === result.id)
+      if (record) record.status = result.status
+      if (result.status === 'FLAKY' && record) {
+        console.error(`[integration] FLAKY ${result.id}: failed first pass, passed isolated retest; first pass still fails this run.`)
+      }
+      if (record && record.code !== null && record.code !== 0 && result.attempts.length === 1 && !interrupted) {
+        recordUnexecuted([result.id], 'retest',
+          result.retestReason ?? result.reason ?? 'no usable integration slots for isolated retest')
+      }
+    }
+    retest.skipped = interrupted ? Math.max(0, failedFiles.length - retest.passed - retest.failed) : 0
   } finally {
     clearInterval(heartbeat)
-    if (Object.keys(recordedDurations).length) {
+    if (queueResult) {
       try {
-        writeDurations(durationsPath, mergeDurations(durations, recordedDurations, allFiles))
+        writeProfiles(profilesPath, queueResult.profiles)
       } catch (error) {
-        console.error(`[integration] could not record file durations: ${error.message}`)
+        console.error(`[integration] could not record test profiles: ${error.message}`)
       }
     }
     let cleanupError
@@ -666,12 +772,12 @@ async function main() {
       catch (error) { cleanupError ??= error }
       const report = integrationReport(selected, firstPass, retestReports, { startedAt,
         finishedAt: new Date().toISOString(), interrupted, diagnostic, environment,
-        processStopped: !active.size && !cleanupError })
+        processStopped: !active.size && !cleanupError && !fatalProcessError })
       const fileResults = firstPass.flatMap((file) => file.report?.files ?? [])
       try {
         writeReport(join(failedLogs, 'vitest.json'), mergedVitestReport(fileResults, startedAt, report.outcome), reportBytes)
         writeReport(join(failedLogs, 'junit.xml'), junitReport(fileResults, report.outcome), reportBytes)
-    const archiveBytes = positiveInteger(Number(readProductEnvironment(process.env, 'INTEGRATION_ARCHIVE_BYTES')
+        const archiveBytes = positiveInteger(Number(readProductEnvironment(env, 'INTEGRATION_ARCHIVE_BYTES')
           ?? reportBytes), 'Integration archive byte limit')
         writeReport(join(failedLogs, 'logs.tar.gz'), logArchive(failedLogs, archiveBytes), archiveBytes)
       } catch (error) {
@@ -679,6 +785,10 @@ async function main() {
         if (!interrupted) report.outcome = 'incomplete'
         report.publicationError = error.message
       }
+      finalResult = finalizeIntegrationResult({ report, results: queueResult?.results ?? [],
+        selectedFiles: selected, reportDirectory: failedLogs, interrupted, diagnostic,
+        cleanupError, error: fatalProcessError })
+      if (finalResult.error) console.error(`[integration] cleanup/process error: ${finalResult.error}`)
       writeReport(join(failedLogs, 'summary.json'), report, reportBytes)
       console.log(`[integration] machine-readable reports: ${failedLogs}`)
       if (!active.size && !cleanupError) removeTestRoot(tempRoot)
@@ -688,11 +798,9 @@ async function main() {
         + `${diagnostic || files ? '; partial run is not full-suite proof' : ''}.`)
       if (retest.passed || retest.failed || retest.skipped) console.log(`[integration] retest files: ${retest.passed} passed, ${retest.failed} failed, ${retest.skipped} skipped; first-pass failures still fail this run.`)
       if (failedFiles.length) console.error(`[integration] failed files: ${failedFiles.sort().join(', ')}`)
-      process.exitCode = fullRunExitCode(failed || unavailable.length
-        || (!diagnostic && report.outcome !== 'passed'), interrupted)
     }
-    if (cleanupError) throw cleanupError
   }
+  return finalResult
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
