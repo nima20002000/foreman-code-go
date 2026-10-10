@@ -25,6 +25,12 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
     return parseFloat(this.style.height) || 800
   })
+  vi.stubGlobal('PointerEvent', class extends MouseEvent {
+    pointerId: number
+    constructor(type: string, options: PointerEventInit) { super(type, options); this.pointerId = options.pointerId ?? 1 }
+  })
+  SVGElement.prototype.setPointerCapture = vi.fn()
+  SVGElement.prototype.releasePointerCapture = vi.fn()
   useGraphDraftStore.getState().installNextDraft(key, structuredClone(context))
   geometry.mockClear(); change.mockClear()
 })
@@ -92,58 +98,55 @@ it('refits the draft after a stationary canvas click and resize', async () => {
   expect(change).not.toHaveBeenCalled()
 })
 
-it('resizes from a corner at minimum zoom in graph coordinates without moving or connecting the node', async () => {
+function pointer(ring: Element, type: 'pointerDown' | 'pointerMove' | 'pointerUp' | 'pointerCancel', x: number, y: number) {
+  const viewport = ring.closest('.react-flow')!.querySelector<HTMLElement>('.react-flow__viewport')!
+  const [, tx, ty, zoom] = /translate\(([-\d.]+)px,\s*([-\d.]+)px\) scale\(([-\d.]+)\)/.exec(viewport.style.transform)!
+  fireEvent[type](ring, { pointerId: 1, button: 0, clientX: Number(tx) + x * Number(zoom), clientY: Number(ty) + y * Number(zoom) })
+}
+
+it('resizes from the circular rim at minimum zoom, keeping the center without connecting', async () => {
   const { container } = mount()
   fireEvent.click(screen.getByRole('button', { name: /^Node 0, / }))
-  const corner = await waitFor(() => {
-    const control = container.querySelector('.react-flow__node[data-id="node-0"] .board-agent-resize-handle.bottom.right')
-    expect(control).not.toBeNull(); return control!
-  })
+  const ring = await screen.findByRole('slider', { name: 'Resize Node 0' })
   fireEvent.click(screen.getByRole('button', { name: 'Minimum zoom' }))
   await waitFor(() => expect(container.querySelector('.react-flow__viewport')?.getAttribute('style')).toContain('scale(0.1)'))
-  expect(container.querySelector<HTMLElement>('.board-agent-resize-line')?.style.getPropertyValue('--resize-hit-size')).toBe('100px')
-  const view = document.defaultView!
-  mouse(corner, 'mousedown', 22, 22)
-  mouse(view, 'mousemove', 30, 27)
-  mouse(view, 'mouseup', 30, 27)
-  await waitFor(() => expect(geometry).toHaveBeenCalledOnce())
-  expect(geometry).toHaveBeenCalledWith([{ id: 'node-0', width: 292, height: 262 }])
-  expect(container.querySelector('.react-flow__node[data-id="node-0"]')).toHaveStyle({ width: '292px', height: '262px' })
+  pointer(ring, 'pointerDown', 212, 106)
+  pointer(ring, 'pointerMove', 252, 106)
+  expect(geometry).not.toHaveBeenCalled()
+  expect(container.querySelector('.react-flow__node[data-id="node-0"]')).toHaveStyle({ width: '292px', height: '292px' })
+  pointer(ring, 'pointerUp', 252, 106)
+  expect(geometry).toHaveBeenCalledWith([{ id: 'node-0', position: { x: -40, y: -40 }, width: 292, height: 292 }])
   expect(change).not.toHaveBeenCalled()
-  // Resizing clears the click-to-connect source armed by selecting the node.
   fireEvent.click(screen.getByRole('button', { name: /^Node 1, / }))
   expect(change).not.toHaveBeenCalled()
 })
 
-it('keeps the opposite rim anchored while resizing the top-left corner', async () => {
-  const { container } = mount()
-  fireEvent.click(screen.getByRole('button', { name: /^Node 0, / }))
-  const corner = await waitFor(() => {
-    const control = container.querySelector('.react-flow__node[data-id="node-0"] .board-agent-resize-handle.top.left')
-    expect(control).not.toBeNull(); return control!
-  })
-  fireEvent.click(screen.getByRole('button', { name: 'Minimum zoom' }))
-  await waitFor(() => expect(container.querySelector('.react-flow__viewport')?.getAttribute('style')).toContain('scale(0.1)'))
-  mouse(corner, 'mousedown', 0, 0)
-  mouse(document.defaultView!, 'mousemove', -4, -3)
-  mouse(document.defaultView!, 'mouseup', -4, -3)
-  await waitFor(() => expect(geometry).toHaveBeenCalledOnce())
-  expect(geometry).toHaveBeenCalledWith([{ id: 'node-0', position: { x: -40, y: -30 }, width: 252, height: 242 }])
+it('resizes from the top rim and clamps the circular diameter to the existing limits', async () => {
+  mount()
+  const ring = await screen.findByRole('slider', { name: 'Resize Node 0' })
+  pointer(ring, 'pointerDown', 106, 0)
+  pointer(ring, 'pointerUp', 106, -400)
+  expect(geometry).toHaveBeenLastCalledWith([{ id: 'node-0', position: { x: -54, y: -54 }, width: 320, height: 320 }])
+  for (let index = 0; index < 6; index++) fireEvent.keyDown(ring, { key: 'ArrowLeft', shiftKey: true })
+  expect(ring).toHaveAttribute('aria-valuenow', '208')
+  expect(geometry).toHaveBeenLastCalledWith([{ id: 'node-0', position: { x: 2, y: 2 }, width: 208, height: 208 }])
   expect(change).not.toHaveBeenCalled()
 })
 
-it('offers edge and corner controls, keyboard sizing and no edit on a stationary gesture', async () => {
+it('offers a focusable circular control, keyboard sizing and no edit on stationary or cancelled gestures', async () => {
   const { container } = mount()
-  fireEvent.click(screen.getByRole('button', { name: /^Node 0, / }))
-  const group = await screen.findByRole('group', { name: 'Resize Node 0' })
-  await waitFor(() => expect(group.querySelectorAll('.react-flow__resize-control')).toHaveLength(8))
-  const corner = group.querySelector('.board-agent-resize-handle.bottom.right')!
-  const view = document.defaultView!
-  mouse(corner, 'mousedown', 212, 212)
-  mouse(view, 'mouseup', 212, 212)
+  const ring = await screen.findByRole('slider', { name: 'Resize Node 0' })
+  expect(ring).toHaveAttribute('tabindex', '0')
+  expect(container.querySelector('.react-flow__resize-control')).toBeNull()
+  pointer(ring, 'pointerDown', 212, 106)
+  pointer(ring, 'pointerUp', 212, 106)
   expect(geometry).not.toHaveBeenCalled()
-  act(() => { group.focus(); fireEvent.keyDown(group, { key: 'ArrowRight' }) })
-  expect(geometry).toHaveBeenCalledWith([{ id: 'node-0', width: 220, height: 212 }])
-  expect(container.querySelector('.react-flow__node[data-id="node-0"]')).toHaveStyle({ width: '220px' })
+  pointer(ring, 'pointerDown', 212, 106)
+  pointer(ring, 'pointerMove', 250, 106)
+  pointer(ring, 'pointerCancel', 250, 106)
+  expect(geometry).not.toHaveBeenCalled()
+  expect(container.querySelector('.react-flow__node[data-id="node-0"]')).toHaveStyle({ width: '212px', height: '212px' })
+  act(() => { ring.focus(); fireEvent.keyDown(ring, { key: 'ArrowRight' }) })
+  expect(geometry).toHaveBeenCalledWith([{ id: 'node-0', position: { x: -4, y: -4 }, width: 220, height: 220 }])
   expect(change).not.toHaveBeenCalled()
 })
