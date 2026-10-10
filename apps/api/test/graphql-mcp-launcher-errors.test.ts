@@ -51,8 +51,7 @@ describe('MCP launcher failure guidance', () => {
     } finally { await f.close() }
   }, 10_000)
 
-  it.each(['truncated-json', 'truncated-sse', 'broken-body', 'empty-accepted'])
-    ('reports uncertain delivery after a committed request with %s', async fault => {
+  it.each(['truncated-json', 'truncated-sse', 'broken-body', 'empty-accepted'])('reports uncertain delivery after a committed request with %s', async fault => {
       const committed: string[] = []
       const commandId = '695abeb8-598a-49a4-8c3c-c6e3533053e8'
       const f = await mcpLauncherFixture((message, response) => {

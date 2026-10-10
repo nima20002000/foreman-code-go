@@ -49,7 +49,8 @@ export class ComputerGitHubService {
         const result = remote ? (await remote.request(parsed, { signal: AbortSignal.timeout(45_000) })).payload
           : await this.local.handle(parsed)
         state = GitHubLoginStateSchema.parse(result)
-      } catch (error) {
+      } catch (caught) {
+        let error = caught
         if (error instanceof DeviceApplicationError && error.code === 'GITHUB_ACCOUNT_CHANGED') {
           error = new DomainError('GITHUB_ACCOUNT_CHANGED',
             'The active GitHub account changed. Read account status before requesting another sign-out.', 409)
