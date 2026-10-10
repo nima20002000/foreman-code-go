@@ -47,6 +47,26 @@ afterEach(() => {
 })
 
 describe('F12: cross-tab durable Operator reservations', () => {
+  it('recovers the same uncertain send after a release update and protects a newer send from late acknowledgement', async () => {
+    const installationId = 'd95abeb8-598a-49a4-8c3c-c6e3533053e8'
+    localStorage.setItem('graphql.chat-instance-binding', `${'a'.repeat(64)}:${installationId}`)
+    const first = await tab()
+    const binding = await import('../../shared/api/protectedChatStorage')
+    expect(binding.bindProtectedChatInstance(`installation:${installationId}`)).toBe(false)
+    const submitted = await first.reserveOperatorMessage('conversation-one', 'Uncertain send.', '/original')
+    await first.recordOperatorMessageFailure('conversation-one', submitted.requestId, 'Response lost after dispatch.')
+    const second = await tab()
+    const updatedBinding = await import('../../shared/api/protectedChatStorage')
+    expect(updatedBinding.bindProtectedChatInstance(`installation:${installationId}`)).toBe(false)
+    const recovered = second.readPendingOperatorMessage('conversation-one').command!
+    expect(recovered).toEqual(submitted)
+    expect(await second.reserveOperatorMessage('conversation-one', recovered.content, '/after-update')).toEqual(submitted)
+    expect(nextId).toBe(1)
+    await second.acknowledgeOperatorMessage('conversation-one', submitted.requestId)
+    const newer = await second.reserveOperatorMessage('conversation-one', 'Newer message.', '/after-update')
+    expect(await first.acknowledgeOperatorMessage('conversation-one', submitted.requestId)).toBe(false)
+    expect(second.readPendingOperatorMessage('conversation-one').command).toEqual(newer)
+  })
   it('generates no identity until the browser-wide lock is acquired and shares the winner across two tabs', async () => {
     const first = await tab(), second = await tab(), hold = gate()
     const held = locks.request(lockName, {}, () => hold.promise)

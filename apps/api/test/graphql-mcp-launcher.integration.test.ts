@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { copyFile, mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { afterEach, expect, it } from 'vitest'
@@ -73,7 +74,7 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   const readerClient = await connect(reader.token)
   expect(second.requests()).toBeGreaterThan(0)
   const initial = decodeMcpToolResult((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} }))) as { revision: number; value: Record<string, unknown> }
-  const value = { ...initial.value, description: `automatic routing ${randomUUID()}` }
+  let value = { ...initial.value, description: `automatic routing ${randomUUID()}` }
   const saved = await ownerClient.callTool({ name: 'workspace_defaults_update', arguments: { commandId: randomUUID(), expectedRevision: initial.revision, value } })
   expect(saved.isError).not.toBe(true)
   const readback = await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })
@@ -84,6 +85,41 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   } })
   expect(deniedUpdate.isError).toBe(true)
   expect(JSON.stringify(deniedUpdate.content)).toContain('ACCESS_DENIED')
+  const commandId = randomUUID()
+  const uncertainValue = { ...value, description: `response lost ${randomUUID()}` }
+  let writes = 0
+  const proxy = createServer(async (request, response) => {
+    let body = ''
+    for await (const chunk of request) body += chunk.toString()
+    const upstream = await fetch(second.endpoint, { method: 'POST', body,
+      headers: { authorization: request.headers.authorization!, 'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-protocol-version': String(request.headers['mcp-protocol-version'] ?? '2025-03-26') },
+    })
+    await upstream.text()
+    writes++
+    // The real authenticated endpoint has finished committing before the reply is cut.
+    response.writeHead(200, { 'content-type': 'application/json' }).end('{"jsonrpc":"2.0","result":')
+  })
+  await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  cleanup.push(async () => {
+    proxy.closeAllConnections()
+    await new Promise<void>(resolve => proxy.close(() => resolve()))
+  })
+  const proxyAddress = proxy.address()
+  if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('Expected a TCP proxy')
+  await removeOwner()
+  removeOwner = await registerAppRoute(owner.token, `http://127.0.0.1:${proxyAddress.port}/mcp`, owner.principal.expiresAt, launcher)
+  await expect(ownerClient.callTool({ name: 'workspace_defaults_update', arguments: {
+    commandId, expectedRevision: initial.revision + 1, value: uncertainValue,
+  } })).rejects.toThrow('Read back the original command')
+  expect(writes).toBe(1)
+  const persisted = await readerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })
+  expect(decodeMcpToolResult(persisted)).toMatchObject({ value: uncertainValue, revision: initial.revision + 2 })
+  const receipt = await database.pool.query('select command_id from management_command_receipts where principal_id=$1 and command_id=$2',
+    [owner.principal.id, commandId])
+  expect(receipt.rows).toHaveLength(1)
+  value = uncertainValue
   // The SAME launcher and client follow a refreshed owner route after a port change.
   await first.app.close()
   await removeOwner()

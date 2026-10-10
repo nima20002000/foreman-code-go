@@ -40,9 +40,9 @@ function git(cwd, ...args) {
   assert.equal(result.status, 0, result.stderr)
   return result.stdout.trim()
 }
-function fixture() {
+function fixture(checkoutName = 'one') {
   const home = mkdtempSync(join(tmpdir(), 'graphql-heavy-test-'))
-  const first = join(home, 'one')
+  const first = join(home, checkoutName)
   mkdirSync(join(first, 'scripts'), { recursive: true })
   copyFileSync(source, join(first, 'scripts/heavy-job.mjs'))
   copyFileSync(new URL('./heavy-job-slots.mjs', import.meta.url), join(first, 'scripts/heavy-job-slots.mjs'))
@@ -65,6 +65,22 @@ function fixture() {
   const tempRoot = join(home, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
   return { home, first, second, common, state, tempRoot }
 }
+test('checkout paths with spaces, Unicode and percent characters retain queue ownership', async () => {
+  const f = fixture('space فارسی 100%')
+  try {
+    for (const cwd of [f.first, f.second]) {
+      const result = await run(cwd, ['--', process.execPath, '-e',
+        'console.log(JSON.stringify({cwd:process.cwd(),common:process.env.FOREMAN_CODE_HEAVY_JOB_COMMON}))'])
+      assert.equal(result.code, 0, result.output)
+      const receipt = JSON.parse(result.output.trim().split('\n').at(-1))
+      assert.deepEqual(receipt, { cwd, common: f.common })
+    }
+    assert.deepEqual(readdirSync(join(f.state, 'queue')), [])
+    assert.deepEqual(readdirSync(join(f.state, 'running')), [])
+  } finally {
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
 test('temporary directories exclude other writers under a shared group umask', t => {
   const f = fixture()
   t.after(() => rmSync(f.home, { recursive: true, force: true }))

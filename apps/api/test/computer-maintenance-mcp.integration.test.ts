@@ -44,6 +44,100 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     await Promise.all(homes.map(home => rm(home, { recursive: true, force: true })))
   })
 
+  it('closes maintenance admission, drains the accepted command, and reads it back through authenticated MCP', async () => {
+    const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    const access = new PostgresAccessService(database.pool)
+    const writer = await access.issue({ name: 'Shutdown maintainer', audience: 'operator',
+      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }] })
+    const reader = await access.issue({ name: 'Shutdown reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['settings:read'], scope: {} }] })
+    const computer = fakeComputer()
+    const nativeRun = computer.ports.run
+    let updating = false
+    let releaseUpdate!: () => void
+    const updateGate = new Promise<void>(resolve => { releaseUpdate = resolve })
+    computer.ports.run = async (binary, args, options) => {
+      if (args[0] === 'update') {
+        updating = true
+        await updateGate
+      }
+      return nativeRun(binary, args, options)
+    }
+    const commands = new PostgresCommandCoordinator(database.pool)
+    const sources = {
+      codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}),
+      codexPlugins: async () => [], codexMarketplaces: async () => [],
+      claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
+    }
+    const fleet = new FleetMaintenanceService(database.pool, mainId, () => undefined, commands, computer.maintenance, sources)
+    const services = { computerMaintenance: fleet, commands } as unknown as OperatorServices
+    const app = buildApp({ operator: { access, services },
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } } })
+    apps.push(app)
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'maintenance-shutdown-test', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      }))
+      return client
+    }
+    const operator = await connect(writer.token)
+    const readOnly = await connect(reader.token)
+    const commandId = randomUUID()
+    const request = { commandId, task: { kind: 'update-harnesses', harnesses: ['claude'] } }
+    try {
+      const accepted = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult(await operator.callTool({
+        name: 'computers_maintenance_start', arguments: request,
+      })))
+      expect(accepted.computers[0]?.task?.id).toBe(commandId)
+      await expect.poll(() => updating, POLL).toBe(true)
+      fleet.stopAdmission()
+      let drained = false
+      const draining = fleet.drain().then(() => { drained = true })
+      const denied = await readOnly.callTool({ name: 'computers_maintenance_start', arguments: {
+        commandId: randomUUID(), task: { kind: 'update-system' },
+      } })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+      const refused = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult(await operator.callTool({
+        name: 'computers_maintenance_start', arguments: { ...request, commandId: randomUUID() },
+      })))
+      expect(refused.computers[0]).toMatchObject({ task: null, error: 'Computer maintenance is shutting down.' })
+      expect(drained).toBe(false)
+      releaseUpdate()
+      await draining
+      const restartedFleet = new FleetMaintenanceService(database.pool, mainId, () => undefined,
+        commands, new ComputerMaintenance(computer.ports), sources)
+      const restartedApp = buildApp({ operator: { access, services: {
+        computerMaintenance: restartedFleet, commands,
+      } as unknown as OperatorServices },
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } } })
+      apps.push(restartedApp)
+      const restartedAddress = await restartedApp.listen({ host: '127.0.0.1', port: 0 })
+      const recoveredReader = new Client({ name: 'maintenance-readback-test', version: '1' })
+      clients.push(recoveredReader)
+      await recoveredReader.connect(new StreamableHTTPClientTransport(new URL('/mcp', restartedAddress), {
+        requestInit: { headers: { authorization: `Bearer ${reader.token}` } },
+      }))
+      const persisted = ComputerMaintenanceListSchema.parse(decodeMcpToolResult(await recoveredReader.callTool({
+        name: 'computers_maintenance_status', arguments: { detail: 'full', refresh: true },
+      })))
+      expect(persisted.computers[0]?.status?.tasks).toEqual([
+        expect.objectContaining({ id: commandId, state: 'succeeded' }),
+      ])
+      expect(persisted.computers[0]?.status?.harnesses).toContainEqual(
+        expect.objectContaining({ harness: 'claude', version: '1.2.4', latest: '1.2.4' }),
+      )
+      expect(computer.calls.filter(call => call.args[0] === 'update')).toHaveLength(1)
+    } finally {
+      releaseUpdate()
+      fleet.stopAdmission()
+      await fleet.drain()
+    }
+  })
+
   it('reads fleet status, starts updates and syncs Main\'s MCP servers and plugins, and denies a read-only caller', async () => {
     const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
     const access = new PostgresAccessService(database.pool)

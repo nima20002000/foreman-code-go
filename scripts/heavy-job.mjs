@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = resolve(dirname(new URL(import.meta.url).pathname), '..')
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
 const commonResult = git('rev-parse', '--path-format=absolute', '--git-common-dir')

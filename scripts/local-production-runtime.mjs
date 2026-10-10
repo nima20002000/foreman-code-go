@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -8,6 +8,82 @@ import { readProductEnvironment, resolveProductEnvironment } from '../packages/c
 
 export function shouldOpenDashboardAfterInstall({ previousRelease, stdin, stdout }) {
   return !previousRelease && stdin.isTTY === true && stdout.isTTY === true
+}
+
+export function productionIntegrationPaths(home, environment) {
+  const config = environment.XDG_CONFIG_HOME || join(home, '.config')
+  const data = environment.XDG_DATA_HOME || join(home, '.local/share')
+  if (!isAbsolute(config) || !isAbsolute(data)) {
+    throw new Error('XDG_CONFIG_HOME and XDG_DATA_HOME must be absolute paths.')
+  }
+  return {
+    units: join(config, 'systemd/user'),
+    desktop: join(data, 'applications/graphql-production.desktop'),
+    autostart: join(config, 'autostart/graphql-production.desktop'),
+    icon: join(data, 'icons/hicolor/scalable/apps/graphql-production.svg'),
+  }
+}
+
+export async function publishDesktopIntegration(paths, { desktop, autostart, icon, firstInstall }) {
+  await publish(paths.icon, icon, 0o644)
+  await publish(paths.desktop, desktop, 0o644)
+  // Updates leave both deleted entries and user-edited startup preferences intact.
+  if (firstInstall) await publish(paths.autostart, autostart, 0o644)
+}
+
+export async function enableProductionServices(run, units, { firstInstall }) {
+  if (firstInstall) await run('/usr/bin/systemctl', ['--user', 'enable', ...units])
+}
+
+export async function launchProduction({ lockPath, start, ready, openDashboard, timeoutMs = 90_000 }) {
+  await withInstallationLock(lockPath, async () => {
+    const deadline = Date.now() + timeoutMs
+    let failure
+    while (Date.now() < deadline) {
+      try {
+        await start()
+        await ready(Math.min(2000, Math.max(1, deadline - Date.now())))
+        await openDashboard()
+        return
+      } catch (error) {
+        failure = error
+        // A healthy backend with a failed browser handoff must not spawn repeated browsers.
+        if (error.browserLaunchFailed) throw error
+      }
+      await delay(Math.min(500, Math.max(0, deadline - Date.now())))
+    }
+    throw new Error(`Foreman Code could not become ready. ${failure?.message ?? ''}`)
+  }, { timeoutMs })
+}
+
+export function launchBrowser(command, args, { environment, observeMs = 1000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'], env: environment })
+    let diagnostic = ''
+    let timer
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.stderr?.unref?.()
+      child.unref()
+      if (error) {
+        error.browserLaunchFailed = true
+        reject(error)
+      } else resolve()
+    }
+    child.stderr?.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-4096) })
+    child.once('error', () => finish(new Error('The backend is ready, but Chrome could not be started.')))
+    child.once('exit', (code, signal) => {
+      if (code === 0) return finish()
+      let guidance = 'Check the desktop session and Chrome profile.'
+      if (/display|X server|ozone_platform/i.test(diagnostic)) guidance = 'Check that a graphical desktop session is available.'
+      else if (/Singleton|profile|ProcessSingleton/i.test(diagnostic)) guidance = 'Check that the Chrome profile is available.'
+      finish(new Error(`The backend is ready, but Chrome exited (${signal ?? code}). ${guidance}`))
+    })
+    child.once('spawn', () => { timer = setTimeout(() => finish(), observeMs) })
+  })
 }
 
 export function desktopLaunchEnvironment(source) {
@@ -119,18 +195,19 @@ export async function publish(path, content, mode = 0o600) {
   }
 }
 
-export async function withInstallationLock(path, action) {
+export async function withInstallationLock(path, action, { timeoutMs } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const handle = await open(path, 'a', 0o600)
   try {
     // flock and this process share the open file description, so the lock lasts
     // until the parent closes it, including if the parent exits unexpectedly.
     await new Promise((resolve, reject) => {
-      const child = spawn('/usr/bin/flock', ['--exclusive', '3'], {
+      const args = ['--exclusive', ...(timeoutMs ? ['--wait', String(timeoutMs / 1000)] : []), '3']
+      const child = spawn('/usr/bin/flock', args, {
         stdio: ['ignore', 'inherit', 'inherit', handle.fd],
       })
       child.once('error', reject)
-      child.once('exit', code => code === 0 ? resolve() : reject(new Error('Installation lock failed.')))
+      child.once('exit', code => code === 0 ? resolve() : reject(new Error('An installation is still in progress. Try again later.')))
     })
     return await action()
   } finally {

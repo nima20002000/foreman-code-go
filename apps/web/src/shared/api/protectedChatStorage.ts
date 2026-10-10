@@ -41,12 +41,20 @@ const instanceBindingKey = 'graphql.chat-instance-binding'
 let instanceReloadRequired = false
 /** Bind protected state before rendering it. True means the caller must reload
  * with children hidden: document-scoped stores still belong to the old epoch.
- * Old drafts/outbox remain stored for deliberate recovery; they are never
- * automatically restored or adopted, even when returning to an old instance.
+ * Drafts/outbox from different installations remain stored for deliberate recovery;
+ * returning to an old installation never automatically adopts them.
  * Storage errors propagate so the caller can fail closed and offer retry.
  */
 export function bindProtectedChatInstance(instanceId: string): boolean {
-  if (window.localStorage.getItem(instanceBindingKey) === instanceId) return instanceReloadRequired
+  const previous = window.localStorage.getItem(instanceBindingKey)
+  if (previous === instanceId) return instanceReloadRequired
+  // Release paths change on updates; the database installation owns recovery state.
+  const installation = instanceId.match(/^installation:([0-9a-f-]{36})$/i)?.[1]
+  if (installation && previous?.match(/^[0-9a-f]{64}:[0-9a-f-]{36}$/i)
+    && previous.endsWith(`:${installation}`)) {
+    window.localStorage.setItem(instanceBindingKey, instanceId)
+    return instanceReloadRequired
+  }
   // Existing unbound state has no trustworthy instance owner either.
   const epoch = rotateProtectedSession()
   instanceReloadRequired = true

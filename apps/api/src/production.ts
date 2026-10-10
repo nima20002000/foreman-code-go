@@ -1530,6 +1530,7 @@ export function buildProductionApp(
   let nativeDefaultsInitialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
   let applicationClose: Promise<void> | undefined
+  let stopComputerTimers = () => {}
   const runtimeOwner = new OperatorRuntimeOwner(config.database.connectionString, (error) => {
     app.log.error({ err: error }, 'native runtime ownership lost; stopping execution')
     beginShutdown()
@@ -1541,6 +1542,10 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'computer maintenance admission', run: () => {
+        stopComputerTimers()
+        runtimeServices.computerMaintenance?.stopAdmission()
+      } },
       { name: 'passive resource telemetry admission', run: async () => { telemetryLifetime.abort() } },
       { name: 'device admission', run: () => deviceRuntime.stopAdmission() },
       { name: 'original rsync byte ownership', run: () => rsync.kind === 'configured' ? rsync.rsyncWriters.close() : undefined },
@@ -1569,6 +1574,7 @@ export function buildProductionApp(
       { name: 'reconciliation', run: () => reconciliation },
     ],
     dispose: [
+      { name: 'computer maintenance tasks', run: () => runtimeServices.computerMaintenance?.drain() },
       { name: 'worker conversation callback admissions', run: async () => { await workerChats?.close() } },
       { name: 'installed rsync canonical receiver', run: () => entrypoint ? entrypoint.close() : undefined },
       { name: 'workflow artifact byte receiver', run: async () => { await workflowArtifacts?.receiver.close() } },
@@ -1825,6 +1831,7 @@ export function buildProductionApp(
               .flatMap(marketplace => marketplace.gitSource ? [{ name: marketplace.name, source: marketplace.gitSource }] : []) : [],
         })
       registerComputerMaintenanceRoutes(app, runtimeServices.computerMaintenance)
+      if (closing) runtimeServices.computerMaintenance.stopAdmission()
       // Keep harnesses current and Main's MCP servers and plugins on every computer. Never under the test runners.
       if (!process.env.VITEST && process.env.NODE_ENV !== 'test' && process.env.FOREMAN_CODE_COMPUTER_UPKEEP !== '0') {
         const upkeep = () => { void runtimeServices.computerMaintenance!.keepCurrent().catch(error => app.log.warn({ err: error }, 'Computer upkeep failed')) }
@@ -1834,7 +1841,12 @@ export function buildProductionApp(
         const sourceSync = setInterval(() => { void runtimeServices.computerMaintenance!.syncChangedSources()
           .catch(error => app.log.warn({ err: error }, 'Fleet MCP and plugin sync failed')) }, 60_000)
         firstUpkeep.unref(); upkeepTimer.unref(); sourceSync.unref()
-        app.addHook('onClose', async () => { clearTimeout(firstUpkeep); clearInterval(upkeepTimer); clearInterval(sourceSync) })
+        stopComputerTimers = () => {
+          clearTimeout(firstUpkeep)
+          clearInterval(upkeepTimer)
+          clearInterval(sourceSync)
+        }
+        if (closing) stopComputerTimers()
       }
       runtimeServices.computerGitHub = new ComputerGitHubService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands, {

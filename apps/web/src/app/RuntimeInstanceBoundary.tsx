@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useRuntimeIdentityQuery } from '../shared/api/runtimeIdentity'
+import { useRuntimeIdentityQuery, useRuntimeInstallationId } from '../shared/api/runtimeIdentity'
 import { bindProtectedChatInstance } from '../shared/api/protectedChatStorage'
 import { Button } from '../shared/ui/nocturne'
 import './runtimeBoundary.css'
@@ -7,7 +7,8 @@ import './runtimeBoundary.css'
 /** Check installation ownership before document-scoped drafts or outbox can render. */
 export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
   const identity = useRuntimeIdentityQuery()
-  const current = identity.data ? `${identity.data.checkoutId}:${identity.data.installationId}` : undefined
+  const installationId = useRuntimeInstallationId()
+  const current = installationId ? `installation:${installationId}` : undefined
   const [accepted, setAccepted] = useState<string>()
   const [storageFailed, setStorageFailed] = useState(false)
   const reloading = useRef(false)

@@ -93,6 +93,7 @@ export class ComputerMaintenance {
   private readonly commandStore: MaintenanceCommandStore
   private readonly taskCommands = new Map<string, Map<string, string>>()
   private admissions: Promise<unknown> = Promise.resolve()
+  private closing = false
   private loadedTasks: Promise<void> | undefined
   private storageFailure: unknown
   private latest: { at: number; value: Promise<Partial<Record<MaintainedHarness, string | null>>> } | undefined
@@ -160,6 +161,7 @@ export class ComputerMaintenance {
 
   /** Saves the task before acknowledgement; status readback follows its background progress. */
   async start(raw: MaintenanceTaskStart, commandId: string = randomUUID()): Promise<MaintenanceTask> {
+    this.assertOpen()
     const id = z.uuid().parse(commandId)
     const request = MaintenanceTaskStartSchema.parse(raw)
     const admission = this.admissions.then(() => this.admit(request, id))
@@ -172,6 +174,16 @@ export class ComputerMaintenance {
     await this.admissions
     await Promise.all([...this.activeTasks.values()].map(task => task.completion))
     await this.loadTasks()
+  }
+
+  stopAdmission(): void {
+    this.closing = true
+  }
+
+  private assertOpen(): void {
+    if (this.closing) {
+      throw new DomainError('COMPUTER_MAINTENANCE_CLOSING', 'Computer maintenance is shutting down.', 503)
+    }
   }
 
   async drainForWorkerUpdate(): Promise<void> {
@@ -211,6 +223,7 @@ export class ComputerMaintenance {
       await this.commandStore.save(commandId, requestHash, retained)
       return structuredClone(retained)
     }
+    this.assertOpen()
     const previous = this.tasks.findLast(task => task.state === 'running' && task.kind === request.kind)
     if (previous && this.activeTasks.get(previous.id)?.requestHash === requestHash) {
       await this.taskStore.flushed()

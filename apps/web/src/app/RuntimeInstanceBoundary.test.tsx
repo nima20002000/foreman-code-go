@@ -36,7 +36,7 @@ it('withholds protected content until the local installation is bound', async ()
   mount()
   expect(screen.queryByText('Protected content')).not.toBeInTheDocument()
   expect(await screen.findByText('Protected content')).toBeVisible()
-  expect(bindProtectedChatInstance).toHaveBeenCalledWith(`${identity.checkoutId}:${identity.installationId}`)
+  expect(bindProtectedChatInstance).toHaveBeenCalledWith(`installation:${identity.installationId}`)
 })
 it.each(['network', 502, 503] as const)('automatically recovers from an initial %s outage', async (failure) => {
   let requests = 0
@@ -116,4 +116,32 @@ it('keeps content hidden on storage failure and allows a real retry', async () =
   vi.mocked(bindProtectedChatInstance).mockReturnValue(false)
   await userEvent.setup().click(screen.getByRole('button', { name: 'Try again' }))
   await waitFor(() => expect(screen.getByText('Protected content')).toBeVisible())
+})
+
+it('keeps the same mounted draft and storage owner across release changes and reinstall', async () => {
+  const client = mount()
+  const draft = await screen.findByRole('textbox', { name: 'Draft' })
+  await userEvent.setup().type(draft, 'Unsaved settings')
+  const calls = vi.mocked(bindProtectedChatInstance).mock.calls.length
+  for (const checkoutId of ['c'.repeat(64), 'd'.repeat(64)]) {
+    server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId })))
+    await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+    expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(draft)
+    expect(draft).toHaveValue('Unsaved settings')
+  }
+  expect(bindProtectedChatInstance).toHaveBeenCalledTimes(calls)
+})
+
+it('hides the previous document state when the database installation changes', async () => {
+  const client = mount()
+  await screen.findByText('Protected content')
+  await userEvent.setup().type(screen.getByRole('textbox', { name: 'Draft' }), 'Previous installation draft')
+  vi.mocked(bindProtectedChatInstance).mockImplementation(() => { throw new Error('Different installation') })
+  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({
+    ...identity, installationId: 'a95abeb8-598a-49a4-8c3c-c6e3533053e8',
+  })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+  expect(screen.queryByText('Protected content')).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Draft' })).not.toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: 'Could not verify this app' })).toBeVisible()
 })
