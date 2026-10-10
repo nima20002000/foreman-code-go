@@ -24,8 +24,10 @@ async function fixture(models: unknown[], emitReceipt = false) {
     driverId: 'claude', configuration, configurationFingerprint: 'unit-configuration', qualification: 'unqualified' }
   const binding = { installation: { driverRevision: '1', protocolRevision: 'unit-protocol', environmentGeneration: 'unit-env', connectionGeneration: 'unit-connection', launcher: { resolvedLauncher: '/unit/claude' } } } as RegistryHarnessSelection
   const offered = vi.fn(), close = vi.fn(), frames = new ClaudeBoundedQueue<unknown>(10)
+  const environments: unknown[] = []
   const client: ClaudeSdkClient = { sdkVersion: '0.3.284', getSessionInfo: async sessionId => ({ sessionId }), getSessionMessages: async () => [], forkSession: async () => ({ sessionId: 'fork' }),
     query(input) {
+      environments.push(input.options.env)
       void (async () => { for await (const prompt of input.prompt) {
         offered(prompt)
         if (emitReceipt) void frames.offer({ type: 'result', subtype: 'success', is_error: false, session_id: 'synthetic-unit-session',
@@ -36,20 +38,22 @@ async function fixture(models: unknown[], emitReceipt = false) {
         interrupt: async () => {}, close() { close(); frames.close() }, joinClosed: async () => {} }
     } }
   const loadClient = vi.fn(async () => client)
-  return { offered, close, value, input: { value, checkId: 'synthetic-unit-check', binding,
+  return { offered, close, environments, value, input: { value, checkId: 'synthetic-unit-check', binding,
     pin: { sdkVersion: '0.3.284', sdkIntegrity: 'unit-integrity', cliVersion: '2.1.284', executableSha256: 'a'.repeat(64), profilePath: '/unit/profile', configRevision: '1' },
     directory, recovery: { root: directory, owner: 'unit-producer' }, signal: AbortSignal.timeout(3000), assertCurrent: async () => {}, loadClient } }
 }
 
-it('rejects a different process profile before loading the SDK or offering paid diagnostic input', async () => {
+it('qualifies the selected profile without inheriting the API process profile or credentials', async () => {
   const f = await fixture([{ value: 'unit-model', supportedEffortLevels: ['medium'] }])
   vi.stubEnv('CLAUDE_CONFIG_DIR', '/other/profile')
-  await expect(qualifyClaudeNativeProfile(f.input)).rejects.toMatchObject({
-    code: 'CLAUDE_PROFILE_DIRECTORY_MISMATCH',
-    message: expect.stringContaining('CLAUDE_CONFIG_DIR'),
-  })
-  expect(f.input.loadClient).not.toHaveBeenCalled()
-  expect(f.offered).not.toHaveBeenCalled()
+  vi.stubEnv('ANTHROPIC_API_KEY', 'inherited-key')
+  const result = await qualifyClaudeNativeProfile(f.input)
+  expect(result).toMatchObject({ qualified: false, failure: { code: 'CLAUDE_NATIVE_RECEIPT_UNQUALIFIED' } })
+  expect(f.input.loadClient).toHaveBeenCalledWith('/unit/profile', f.input.recovery, '/unit/claude', undefined)
+  expect(f.environments).toHaveLength(1)
+  expect(f.environments[0]).toMatchObject({ CLAUDE_CONFIG_DIR: '/unit/profile' })
+  expect(f.environments[0]).not.toHaveProperty('ANTHROPIC_API_KEY')
+  expect(process.env.CLAUDE_CONFIG_DIR).toBe('/other/profile')
 })
 
 it('does not turn initialization/model metadata into basic, auth or full-access proof', async () => {

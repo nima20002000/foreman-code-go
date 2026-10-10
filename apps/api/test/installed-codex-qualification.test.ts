@@ -24,7 +24,7 @@ const mount = vi.hoisted(() => ({ revision: '', manifest: {} as unknown,
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
   return { ...actual, readFile: async (...args: Parameters<typeof actual.readFile>) =>
-    args[0] instanceof URL && args[0].pathname.endsWith('/apps/worker/manifest.json')
+    (args[0] instanceof URL ? args[0].pathname : String(args[0])).endsWith('/apps/worker/manifest.json')
       ? JSON.stringify(mount.manifest) : actual.readFile(...args) }
 })
 vi.mock('node:fs', async importOriginal => {
@@ -40,8 +40,8 @@ vi.mock('../src/modules/devices/installedWorkerDomains.ts', () => ({
 vi.mock('../src/modules/devices/workerConnection.ts', () => ({ createWorkerConnection: () => ({}) }))
 vi.mock('../../worker/src/runtime.mjs', () => ({
   acquireWorkerLock: async () => async () => {},
-  startWorker: async (input: { createConnection(input: { bootId: string }): Promise<unknown>; beforeUnlock(): Promise<void> }) => {
-    await input.createConnection({ bootId: mount.bootId })
+  startWorker: async (input: { createConnection(input: { bootId: string; assertStateOwnership(): void }): Promise<unknown>; beforeUnlock(): Promise<void> }) => {
+    await input.createConnection({ bootId: mount.bootId, assertStateOwnership() {} })
     return { stop: input.beforeUnlock }
   },
 }))

@@ -181,7 +181,7 @@ describe('native launch, outcome and credential lifecycle', () => {
       await assert.rejects(f.execute(), /session publication failed/)
       assert.equal(f.counters().creates, 1)
       assert.equal(f.counters().starts, 0)
-      assert.equal(f.counters().disposals, 0)
+      assert.equal(f.counters().disposals, 1)
     } finally {
       await f.close()
     }

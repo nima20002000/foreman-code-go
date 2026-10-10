@@ -191,6 +191,24 @@ it('does not mistake allocation or startup for residency, and fences stale handl
   expect(() => first.markResident!()).toThrow('released')
 })
 
+it('rejects changed Run ownership, configuration and accepted input while retaining the original manager', () => {
+  const f = fixture()
+  const original = f.resolver.resolve(f.context)
+  const contexts = [
+    { ...f.context, runId: 'other-run' },
+    { ...f.context, configuration: { ...f.configuration, prompt: { system: 'Changed instructions' } } },
+    { ...f.context, workflowRequest: { ...f.context.workflowRequest, input: { changed: true } } },
+    { ...f.context, workflowRequest: { ...f.context.workflowRequest,
+      systemPrompt: { value: { text: 'Changed prompt' }, revision: 1, versionId: 'prompt-version' } } },
+  ]
+  for (const context of contexts) {
+    expect(() => f.resolver.resolve(context)).toThrow('cannot change native manager ownership context')
+  }
+  expect(f.resolver.resolve(f.context)).toBe(original)
+  expect(f.managers).toHaveLength(1)
+  expect(f.credentials.prepare).not.toHaveBeenCalled()
+})
+
 it('rejects a cold requester before preflight and never allocates a replacement lifetime', async () => {
   const f = fixture()
   const first = f.resolver.resolve(f.context)

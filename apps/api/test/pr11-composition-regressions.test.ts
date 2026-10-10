@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { readFile } from 'node:fs/promises'
-
-import { describe, it } from 'vitest'
+import { afterEach, describe, it, vi } from 'vitest'
 
 import { loadConfig } from '../src/config.js'
 import { createAppMcpRuntime, localAppMcpEndpoint } from '../src/modules/app-runtime/composition.js'
 import { McpDetectionService, WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
 import { registerMcpDetectionRoute } from '../src/routes/mcpDetection.js'
+import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
+
+afterEach(() => vi.restoreAllMocks())
 
 function route(service: McpDetectionService) {
   let handler!: (request: unknown, reply: unknown) => Promise<unknown>
@@ -26,9 +27,10 @@ function route(service: McpDetectionService) {
   return { handler, request, reply }
 }
 
-describe('PR #11 production composition and HTTP detection', () => {
-  it('provides the same credential and detection services consumed by production startup', async () => {
+describe('application MCP composition and HTTP detection', () => {
+  it('preflights, issues and renews credentials with an execution timeout longer than the credential lease', async () => {
     const config = loadConfig({ DATABASE_URL: 'postgresql://fixture:fixture@localhost/fixture' })
+    assert(config.harnesses.timeoutMs > 900_000)
     const pool = {} as never
     const access = {} as never
     const runtime = createAppMcpRuntime({ pool, access, commands: {} as never, interactions: {} as never, config, runnerId: 'runner-local' })
@@ -36,10 +38,21 @@ describe('PR #11 production composition and HTTP detection', () => {
     assert(runtime.mcpDetection.service instanceof McpDetectionService)
     assert.equal(runtime.mcpDetection.pool, pool)
     assert.equal(runtime.appMcp.access, access)
-    const bootstrap = await readFile(new URL('../src/production.ts', import.meta.url), 'utf8')
-    assert(bootstrap.includes('const launchCredentials: ExecutionCredentialProvider'))
-    assert(bootstrap.includes('locations, launchCredentials, repository'))
-    assert(bootstrap.includes('mcpDetection: { pool: database.pool, service: detection }'))
+    const credential = { principalId: 'worker', environment: { agentId: 'agent', variables: { FOREMAN_CODE_MCP_TOKEN: 'token' } },
+      expiresAt: new Date(Date.now() + 900_000).toISOString() }
+    const inspected = {} as Awaited<ReturnType<McpDetectionService['preflight']>>
+    const preflight = vi.spyOn(runtime.mcpDetection.service, 'preflight').mockResolvedValue(inspected)
+    const revoke = vi.spyOn(Wave25WorkerCredentialService.prototype, 'revokeSupersededForExecution').mockResolvedValue(0)
+    const issue = vi.spyOn(Wave25WorkerCredentialService.prototype, 'issueForExecution').mockResolvedValue(credential)
+    const renewedExpiry = new Date(Date.now() + 1_800_000).toISOString()
+    const renew = vi.spyOn(Wave25WorkerCredentialService.prototype, 'renewForExecution').mockResolvedValue(renewedExpiry)
+    const prepared = await runtime.executionCredentials.prepare({ executionId: 'execution', harness: 'codex', workingDirectory: '/workspace' })
+    assert.deepEqual(prepared, { credential, detection: inspected })
+    assert.deepEqual(preflight.mock.calls, [[{ harness: 'codex', runnerId: 'runner-local', workingDirectory: '/workspace' }]])
+    assert.deepEqual(revoke.mock.calls, [['execution']])
+    assert.deepEqual(issue.mock.calls, [['execution']])
+    assert.equal(await runtime.executionCredentials.renew('execution', credential), renewedExpiry)
+    assert.deepEqual(renew.mock.calls, [['execution', credential]])
   })
 
   it('normalizes wildcard listen addresses to usable local endpoints', () => {

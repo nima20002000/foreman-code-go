@@ -1742,6 +1742,7 @@ export class ApprovalExecutionCoordinator {
         workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, systemPrompt: execution.systemPrompt, input: execution.input,
       })
+      if (request.systemPrompt === undefined) delete request.systemPrompt
       context = { ...await this.managerContext(execution, input.request.configuration), workflowRequest: request }
       await this.validateContinuation?.(execution.id, signal)
       {

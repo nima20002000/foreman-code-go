@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_HARNESS_DEFAULTS,
   type AgentConfigurationVersion,
@@ -168,7 +168,7 @@ describe('conversation prompt snapshots', () => {
         requestId: 'first', content: 'User request', intent: 'next_turn', expectedConversationId: store.row.id,
         context: { workflowId: context.workflowId, workflowNodeId: context.workflowNodeId, agentId: context.agentId },
       })
-      await eventually(() => !store.row.active_request_id)
+      await vi.waitFor(() => expect(store.row.active_request_id).toBeNull())
       expect(starts).toHaveLength(1)
       expect(starts[0]).toMatchObject({ kind: 'agent-chat', instructionsDelivered: true,
         systemPrompt: snapshot('Original app instructions', 4) })

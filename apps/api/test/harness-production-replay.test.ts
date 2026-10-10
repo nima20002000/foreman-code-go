@@ -1,16 +1,33 @@
 import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
-import { expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { loadConfig } from '../src/config.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
-import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
+import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
 import type { ProductionHarnessInfrastructure } from '../src/modules/harnesses/productionInfrastructure.js'
 import { buildProductionApp } from '../src/production.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 import { StrictProtocolReplay } from './support/harnessReplay.js'
+import { ProviderAccountsService } from '../src/modules/provider-accounts/service.js'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const composition = vi.hoisted(() => ({ resolvers: [] as ExecutionScopedNativeSessionManagerResolver[] }))
+vi.mock('../src/modules/interactions/runtimePorts.js', async original => {
+  const actual = await original<typeof import('../src/modules/interactions/runtimePorts.js')>()
+  return { ...actual, ExecutionScopedNativeSessionManagerResolver: class extends actual.ExecutionScopedNativeSessionManagerResolver {
+    constructor(...args: ConstructorParameters<typeof actual.ExecutionScopedNativeSessionManagerResolver>) {
+      super(...args)
+      composition.resolvers.push(this)
+    }
+  } }
+})
+afterEach(() => { composition.resolvers.splice(0); vi.restoreAllMocks() })
 
 it('replays native creation through production construction and the real manager with no native fallback', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-replay-'))
   const source = input('/nonexistent-recorded-workspace')
   delete source.environment
   const draft = source.request.configuration.harness
@@ -55,8 +72,8 @@ it('replays native creation through production construction and the real manager
     inventoryDiscovery: { launcher: async () => { throw new Error('Unexpected replay inventory discovery.') },
       payloads: async () => { throw new Error('Unexpected replay payload discovery.') } },
 
-    auxiliary: { recovery: { scope: (owner) => ({ root: '/unused-replay-registry', owner }),
-      reserveLaunch: (owner) => ({ root: '/unused-replay-registry', owner, launchId: 'recorded-launch' }),
+    auxiliary: { recovery: { scope: (owner) => ({ root: join(directory, 'registry'), owner }),
+      reserveLaunch: (owner) => ({ root: join(directory, 'registry'), owner, launchId: 'recorded-launch' }),
       abandonReservedLaunch: async () => true,
       closeOwner: async () => true }, command: unavailable, plugins: { recoveryIdentity: '', list: unavailable, detail: unavailable, change: unavailable },
       mcp: { codex: { read: unavailable, apply: unavailable } },
@@ -67,10 +84,10 @@ it('replays native creation through production construction and the real manager
     CODEX_BINARY: '/nonexistent-recorded-codex' })
   const database = createDatabase(config.database)
   const checkpoints = createCheckpointStore(config.database.connectionString, 'replay', config.database)
+  vi.spyOn(ProviderAccountsService.prototype, 'resolve').mockResolvedValue(null)
   const production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, infrastructure)
   try {
-    const approvals = Reflect.get(production.engine, 'nativeExecutions') as object
-    const resolver = Reflect.get(approvals, 'managers') as NativeSessionManagerResolver
+    const resolver = composition.resolvers[0]!
     const allocation = resolver.resolve({ executionId: source.request.executionId,
       agentId: source.request.configuration.agentId, harness: 'codex',
       workingDirectory: source.request.workingDirectory, configuration: source.request.configuration })
@@ -83,6 +100,7 @@ it('replays native creation through production construction and the real manager
   } finally {
     await production.app.close()
     await Promise.all([database.close(), checkpoints.close()])
+    await rm(directory, { recursive: true, force: true })
   }
   expect(transportCloses).toBeGreaterThan(0)
 })

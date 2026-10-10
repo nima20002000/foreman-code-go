@@ -1,14 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OperatorConfigurationVersionSchema, withAdvancedDefaults, type HarnessQualification } from '@foreman-code/contracts'
 import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
-import { buildApp } from '../src/app.js'
-import { loadConfig } from '../src/config.js'
-import { createDatabase } from '../src/infrastructure/database.js'
-import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
-import { buildProductionApp } from '../src/production.js'
-import type { NativeManagerResolver } from '../src/modules/conversations/operatorChat.js'
-import type { AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
-import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
+import type pg from 'pg'
+import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
+import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import { NativeHarnessConfigurationQualifier } from '../src/modules/harnesses/nativeConfigurationQualifier.js'
 import { NativeConfigurationService } from '../src/modules/harnesses/nativeConfiguration.js'
@@ -17,11 +12,12 @@ import type { ProductionHarnessRegistry } from '../src/modules/harnesses/product
 import { input } from './fixtures/codex-test-helpers.js'
 import { commandInputHash } from '../src/modules/commands/postgres.js'
 import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
-
-vi.mock('../src/app.js', async original => {
-  const actual = await original<typeof import('../src/app.js')>()
-  return { ...actual, buildApp: vi.fn(actual.buildApp) }
-})
+import { productionClaudeManager } from '../src/modules/harnesses/claudeSdk/production.js'
+import type { ClaudeDomainBinding } from '../src/modules/harnesses/claudeSdk/domainAuthority.js'
+import type { AcceptedClaudeProfileAdmission } from '../src/modules/harnesses/instanceSettings/acceptedProfile.js'
+import type { ClaudeProfileOwner } from '../src/modules/harnesses/claudeSdk/production.js'
+import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
+import { requireClaudeProductionCredentialDelivery } from '../src/modules/harnesses/claudeSdk/productionCredentials.js'
 
 const harness = { harness: 'claude' as const, model: 'recorded-model', authMode: 'api-key' as const,
   configDirectory: '/recorded/profile', permissionMode: 'default' as const, sandbox: 'read-only' as const,
@@ -32,35 +28,63 @@ const qualified: HarnessQualification = { harness: 'claude', version: 'recorded'
   supportsStartupPrompt: true, supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [] }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs() })
 
-describe('HRT-F14 production without an authorized Claude credential source', () => {
-  it.each(['workflow', 'operator', 'agent-chat'] as const)('refuses %s API-key allocation before admitted SDK setup despite ambient authentication', async role => {
+describe('production without an authorized Claude credential source', () => {
+  it.each(['workflow', 'operator', 'agent-chat'] as const)('refuses %s API-key preparation before profile admission or SDK setup', async role => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'synthetic-inherited-key')
-    const config = loadConfig({ DATABASE_URL: 'postgresql://unused:unused@127.0.0.1:1/hrt_f14', CODEX_BINARY: '/nonexistent-recorded-codex' })
-    const database = createDatabase(config.database)
-    const checkpoints = createCheckpointStore(config.database.connectionString, 'hrt_f14', config.database)
-    const allocate = vi.spyOn(NativeHarnessFactories.prototype, 'allocateAdmittedClaude')
-    const production = buildProductionApp(config, database, checkpoints, false)
-    try {
-      const services = vi.mocked(buildApp).mock.calls.at(-1)![0]!.operator!.services
-      const agent = { ...input('/recorded/work').request.configuration, harness }
-      const operator = OperatorConfigurationVersionSchema.parse({ id: 'configuration-1', operatorId: 'operator', version: 1,
-        harness, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: '2026-10-01T00:00:00.000Z' })
-      const resolve = () => {
-        if (role === 'workflow') {
-          const approvals = Reflect.get(production.engine, 'nativeExecutions') as object
-          const managers = Reflect.get(approvals, 'managers') as NativeSessionManagerResolver
-          return managers.resolve({ executionId: 'execution', agentId: agent.agentId, harness: 'claude',
-            workingDirectory: '/recorded/work', configuration: agent, runId: 'run', attempt: 1 })
-        }
-        if (role === 'operator') return (Reflect.get(services.operatorChat!, 'managers') as NativeManagerResolver)(operator, 'conversation')
-        return (Reflect.get(services.agentChat!, 'managers') as AgentChatManagerFactory)('conversation', agent, '/recorded/work')
-      }
-      expect(resolve).toThrowError(expect.objectContaining(blocked))
-      expect(allocate).not.toHaveBeenCalled()
-    } finally {
-      await production.app.close()
-      await Promise.all([database.close(), checkpoints.close()])
+    const pool = {} as pg.Pool
+    const factories = new NativeHarnessFactories({ codexBinary: '/nonexistent-recorded-codex' })
+    const admit = vi.fn(async () => { throw new Error('Unexpected profile admission') })
+    const loadClient = vi.fn(async () => { throw new Error('Unexpected SDK load') })
+    const resolve = vi.fn(async () => null)
+    const agent = { ...input('/recorded/work').request.configuration, harness }
+    let binding: ClaudeDomainBinding
+    let start: NativeSessionStart
+    if (role === 'workflow') {
+      binding = { kind: 'workflow', runId: 'run', executionId: 'execution', attempt: 1, getOwner: () => undefined }
+      start = { request: { ...input('/recorded/work').request, configuration: agent } }
+    } else if (role === 'operator') {
+      binding = { kind: 'operator', conversationId: 'conversation', repository: new PostgresOperatorConversationRepository(pool) }
+      const configuration = OperatorConfigurationVersionSchema.parse({ id: 'configuration', operatorId: 'operator',
+        version: 1, harness, contentHash: 'sha256:fixture', createdAt: '2026-10-01T00:00:00.000Z' })
+      start = { kind: 'operator', correlationId: 'request', configuration, workingDirectory: '/recorded/work' }
+    } else {
+      binding = { kind: 'agent', conversationId: 'conversation', workspaceId: 'workspace', repository: new PostgresAgentChatRepository(pool) }
+      start = { kind: 'agent-chat', conversationId: 'conversation', workflowId: 'workflow', workflowNodeId: 'node',
+        correlationId: 'request', configuration: agent, workingDirectory: '/recorded/work' }
     }
+    const production = productionClaudeManager({ pool, factories, registry: {} as ProductionHarnessRegistry,
+      profiles: { admit } as unknown as AcceptedClaudeProfileAdmission<ClaudeProfileOwner>,
+      binding, role, configuration: harness, workingDirectory: '/recorded/work', ownerAgentId: 'agent',
+      accounts: { resolve }, recovery: { root: '/unused', owner: role }, appMcpAccess: role === 'agent-chat' ? 'none' : 'scoped',
+      inspectionStart: async () => start, mode: 'native', loadClient })
+    try {
+      expect(resolve).not.toHaveBeenCalled()
+      expect(admit).not.toHaveBeenCalled()
+      await expect(production.manager.prepareInspection(start)).rejects.toMatchObject(blocked)
+      expect(resolve).not.toHaveBeenCalled()
+      expect(admit).not.toHaveBeenCalled()
+      expect(loadClient).not.toHaveBeenCalled()
+    } finally {
+      await production.manager.dispose?.()
+    }
+  })
+
+  it('uses the selected local account key and refuses a missing key or remote account', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'inherited-key')
+    const configuration = { ...harness, accountId: 'managed-account' }
+    let apiKey = 'provisioned-key'
+    const resolve = vi.fn(async () => ({ accountId: configuration.accountId,
+      homePath: configuration.configDirectory, authMode: 'api-key' as const, apiKey }))
+    expect(await requireClaudeProductionCredentialDelivery(configuration, { resolve })).toBe('provisioned-key')
+    expect(resolve).toHaveBeenCalledWith('claude', configuration.accountId)
+    apiKey = '  '
+    await expect(requireClaudeProductionCredentialDelivery(configuration, { resolve })).rejects.toMatchObject(blocked)
+    const host = { kind: 'device' as const, mainId: '00000000-0000-4000-8000-000000000001',
+      deviceId: '00000000-0000-4000-8000-000000000002' }
+    const calls = resolve.mock.calls.length
+    await expect(requireClaudeProductionCredentialDelivery(configuration, { resolve }, host))
+      .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_LOCAL_ONLY' })
+    expect(resolve).toHaveBeenCalledTimes(calls)
   })
 
   it('refuses launch-ready defaults qualification before querying a native factory', async () => {

@@ -8,6 +8,10 @@ import {
   type OperatorToolName,
 } from '@foreman-code/contracts/management'
 import { describe, expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { ManagedPromptSettingSchema, PromptSettingUpdateResultSchema } from '@foreman-code/contracts/management'
+import { reviewAuthMcpDatabase } from './helpers/reviewAuthMcpDatabase.js'
 
 import { registerAgentTools } from '../src/mcp/operator/tools/agents.js'
 import { registerHarnessTools } from '../src/mcp/operator/tools/harnesses.js'
@@ -73,6 +77,43 @@ function registered(context: OperatorRequestContext): string[] {
 }
 
 describe('Operator tool registration permissions', () => {
+  it.each([
+    ['system_prompt_get', 'system_prompt_update'],
+    ['operator_initial_prompt_get', 'operator_initial_prompt_update'],
+  ] as const)('persists %s settings through authenticated MCP and denies read-only updates', async (readTool, updateTool) => {
+    const database = await reviewAuthMcpDatabase({ hostProfiles: false })
+    try {
+      const expiresAt = new Date(Date.now() + 600_000)
+      const owner = await database.access.issue({ name: 'Settings owner', audience: 'operator', expiresAt,
+        grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }] })
+      const reader = await database.access.issue({ name: 'Settings reader', audience: 'operator', expiresAt,
+        grants: [{ actions: ['settings:read'], scope: {} }] })
+      const writeClient = await database.connect(owner.token)
+      const readClient = await database.connect(reader.token)
+      const input = { value: { text: 'Stored prompt' }, expectedRevision: 0, commandId: randomUUID() }
+      const saved = PromptSettingUpdateResultSchema.parse(decodeMcpToolResult(await writeClient.callTool({
+        name: updateTool, arguments: input,
+      })))
+      expect(saved).toMatchObject({ value: { value: input.value, revision: 1 }, replayed: false })
+      const replay = PromptSettingUpdateResultSchema.parse(decodeMcpToolResult(await writeClient.callTool({
+        name: updateTool, arguments: input,
+      })))
+      expect(replay).toEqual({ ...saved, replayed: true })
+      const denied = await readClient.callTool({ name: updateTool,
+        arguments: { ...input, commandId: randomUUID(), expectedRevision: 1, value: { text: 'Denied edit' } } })
+      expect(denied.isError).toBe(true)
+      const readback = ManagedPromptSettingSchema.parse(decodeMcpToolResult(await readClient.callTool({
+        name: readTool, arguments: {},
+      })))
+      expect(readback).toEqual(saved.value)
+      const persisted = readTool === 'system_prompt_get'
+        ? await database.repository.getSystemPrompt() : await database.repository.getOperatorInitialPrompt()
+      expect(persisted).toEqual(saved.value)
+    } finally {
+      await database.close()
+    }
+  })
+
   it.each(actionTools)('registers only the tools allowed by %s', (action, expected) => {
     expect(registered(context([{ actions: [action], scope: {} }]))).toEqual(expected)
   })

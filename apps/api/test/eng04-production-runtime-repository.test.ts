@@ -46,7 +46,12 @@ test('cleanup uses current lifecycle writers and preserves owner scope', async (
   const f = await fixture()
   await f.repository.requestCleanup(f.f.run.id, f.owner)
   await f.repository.finishCleanup(f.f.run.id, false, f.owner)
-  assert.deepEqual(calls.cleanup, [[f.pool, f.f.run.id, f.owner, undefined]])
+  const [pool, runId, owner, failure] = calls.cleanup[0]!
+  assert.equal(calls.cleanup.length, 1)
+  assert.equal(pool, f.pool)
+  assert.equal(runId, f.f.run.id)
+  assert.equal(owner, f.owner)
+  assert.equal(failure, undefined)
   assert.deepEqual(calls.finished, [[f.owner, false]])
   await assert.rejects(f.repository.finishCleanup(f.f.run.id, false,
     { ...f.owner, runId: 'other-run' } as RunOwnership), { code: 'GRAPH_SCOPE_MISMATCH' })
@@ -58,5 +63,10 @@ test('cleanup forwards the specific failure without dropping its Run owner', asy
     code: 'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED', message: 'No execution capacity remains.', retryable: false,
   } }
   await f.repository.requestCleanup(f.f.run.id, f.owner, failure)
-  assert.deepEqual(calls.cleanup, [[f.pool, f.f.run.id, f.owner, failure]])
+  const [pool, runId, owner, forwardedFailure] = calls.cleanup[0]!
+  assert.equal(calls.cleanup.length, 1)
+  assert.equal(pool, f.pool)
+  assert.equal(runId, f.f.run.id)
+  assert.equal(owner, f.owner)
+  assert.deepEqual(forwardedFailure, failure)
 })

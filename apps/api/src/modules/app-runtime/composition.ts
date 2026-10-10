@@ -36,6 +36,6 @@ export function createAppMcpRuntime(input: {
       interactions: new PostgresAppInteractionService(input.pool, input.interactions, input.commands),
     },
     mcpDetection: { pool: input.pool, service: detection },
-    executionCredentials: new WorkerLaunchCredentialService(detection, credentials, input.runnerId, input.config.harnesses.timeoutMs),
+    executionCredentials: new WorkerLaunchCredentialService(detection, credentials, input.runnerId),
   }
 }

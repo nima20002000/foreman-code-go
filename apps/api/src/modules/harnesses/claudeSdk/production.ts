@@ -27,6 +27,7 @@ import type { ClaudeNativeSessionManager } from './sessionManager.js'
 import type { OperatorProfileObservation } from '../operatorProfileObservation.js'
 import type { ProviderAccountResolver } from '../../provider-accounts/service.js'
 import { resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
+import { requireClaudeApiKey } from './productionCredentials.js'
 
 /** Private lifetime signal is never serialized into accepted configuration or provenance. */
 export type ClaudeProfileOwner = (ClaudeDomainBinding | OperatorProfileObservation | {
@@ -74,6 +75,7 @@ export function productionClaudeManager(input: {
   let fileServer: ReturnType<typeof createClaudeFileMcpServer> | undefined
   let allocated: ((manager: ClaudeNativeSessionManager) => void) | undefined
   const result = input.factories.allocateAdmittedClaude(async signal => {
+    if (!input.configuration.accountId) requireClaudeApiKey(input.configuration, input.apiKey)
     if (!input.profiles || !input.selector) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
       'Claude requires an explicit accepted profile and current native qualification authority.', 409)
     if (input.mode === 'replay' && !input.loadClient) throw new DomainError('HARNESS_REPLAY_INCOMPLETE',
@@ -88,10 +90,12 @@ export function productionClaudeManager(input: {
       throw new DomainError('PROVIDER_ACCOUNT_CONFIGURATION_CONFLICT',
         'Save the selected account settings before starting this Claude session.', 409)
     }
+    const apiKey = account?.apiKey ?? input.apiKey
+    requireClaudeApiKey(input.configuration, apiKey)
     const accepted = await input.profiles.admit(profileOwner, input.selector)
     signal.throwIfAborted()
     const compiled = compileClaudeConfiguration(input.configuration, input.workingDirectory, accepted,
-      process.env, account?.apiKey ?? input.apiKey)
+      process.env, apiKey)
     const installation = input.registry.pinOverride(accepted.override)
     const binary = installation.installation.launcher.resolvedLauncher
     if (!binary) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The accepted Claude launcher is unavailable.', 409)
