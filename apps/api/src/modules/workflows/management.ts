@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { WorkflowDefinitionV3Schema as WorkflowDefinitionSchema, CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from '@foreman-code/contracts/wave25'
 import { CurrentWorkflowAuthoring } from './currentAuthoring.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { SavedWorkflowDefinitionSchema as CurrentDefinitionSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema,
   type SavedManagedWorkflow as ManagedWorkflow } from '@foreman-code/contracts/wave25'
@@ -34,8 +35,8 @@ export class WorkflowManagementService {
   readonly current: CurrentWorkflowAuthoring
   readonly schedules: WorkflowScheduleService
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    agentActiveTimeoutMs?: number) {
-    this.current = new CurrentWorkflowAuthoring(pool, commands, agentActiveTimeoutMs)
+    agentActiveTimeoutMs?: number, accountConfigurations?: ProviderAccountConfigurationService) {
+    this.current = new CurrentWorkflowAuthoring(pool, commands, agentActiveTimeoutMs, accountConfigurations)
     this.schedules = new WorkflowScheduleService(pool, commands)
   }
 

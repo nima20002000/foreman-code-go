@@ -18,6 +18,7 @@ import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { lockActiveWorkspace } from './admission.js'
 import { lockAgentConfigurations, saveAgentConfiguration } from './agentConfiguration.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 
 export function agentWithConfiguration(agent: Agent, configuration: HarnessConfiguration): Agent {
   return AgentSchema.parse({...agent, harness: configuration.harness, model: configuration.model,
@@ -75,7 +76,8 @@ export async function assertAgentIdle(client: pg.ClientBase, workspaceId: string
 export class OperatorAgentMutationService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly harnesses: Pick<HarnessCatalogService,'qualifyConfiguration'>,
-    private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'>) {}
+    private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'>,
+    private readonly accountConfigurations?: ProviderAccountConfigurationService) {}
 
   private validateProfile(principal: ManagementPrincipal) {
     return async (selection: HarnessProfileSelection, configuration: HarnessConfiguration, client: pg.PoolClient) => {
@@ -109,8 +111,12 @@ export class OperatorAgentMutationService {
         const existing = await client.query('select id from agents where id=$1',[input.agentId])
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The Agent ID already exists.',409)
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)
-        const configuration = input.configuration ?? defaults.value[input.productRole].harness
-        const harnessProfileSelection = input.harnessProfileSelection ?? (input.configuration ? undefined : defaults.value[input.productRole].harnessProfileSelection)
+        let configuration = input.configuration ?? defaults.value[input.productRole].harness
+        let harnessProfileSelection = input.harnessProfileSelection ?? (input.configuration ? undefined : defaults.value[input.productRole].harnessProfileSelection)
+        if (this.accountConfigurations) configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection)
+        if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
+          principal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+        })
         authorizeAgentConfiguration(principal,input.workspaceId,configuration,input.assignedSkills)
         if (!harnessProfileSelection) await this.harnesses.qualifyConfiguration(configuration)
         const agent = await saveAgentConfiguration(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({
@@ -132,9 +138,13 @@ export class OperatorAgentMutationService {
       perform:async(client) => {
         const current = await this.authorizeWrite(client,principal,input.workspaceId,input.agentId)
         this.assertRevision(current,input.expectedRevision,input.expectedConfigurationVersionId)
-        const configuration = input.configuration ?? current.agent.harnessConfiguration!
+        let configuration = input.configuration ?? current.agent.harnessConfiguration!
+        let harnessProfileSelection = input.harnessProfileSelection ?? current.agent.harnessProfileSelection
+        if (this.accountConfigurations) configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection)
+        if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
+          principal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+        })
         authorizeAgentConfiguration(principal,input.workspaceId,configuration,input.assignedSkills ?? current.agent.assignedSkills)
-        const harnessProfileSelection = input.harnessProfileSelection ?? current.agent.harnessProfileSelection
         if (!harnessProfileSelection && !isDeepStrictEqual(withAdvancedDefaults(configuration),withAdvancedDefaults(current.agent.harnessConfiguration!))) {
           await this.harnesses.qualifyConfiguration(configuration)
         }
@@ -164,11 +174,17 @@ export class OperatorAgentMutationService {
         const existing = await client.query('select id from agents where id=$1',[input.agentId])
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The clone Agent ID already exists.',409)
         const source = current.agent
-        authorizeAgentConfiguration(principal,input.workspaceId,source.harnessConfiguration!,source.assignedSkills)
-        if (!source.harnessProfileSelection) await this.harnesses.qualifyConfiguration(source.harnessConfiguration!)
+        const configuration = this.accountConfigurations
+          ? await this.accountConfigurations.resolve(source.harnessConfiguration!, source.harnessProfileSelection)
+          : source.harnessConfiguration!
+        const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal, source: 'mcp',
+          configuration, selection: source.harnessProfileSelection, commandId: input.commandId, client, check: true,
+        }) : source.harnessProfileSelection
+        authorizeAgentConfiguration(principal,input.workspaceId,configuration,source.assignedSkills)
+        if (!selection) await this.harnesses.qualifyConfiguration(configuration)
         const agent = await saveAgentConfiguration(client,input.workspaceId,AgentSchema.parse({
           id:input.agentId,name:input.name,description:source.description,role:source.role,productRole:source.productRole,
-          harnessConfiguration:source.harnessConfiguration,harnessProfileSelection:source.harnessProfileSelection,prompt:source.prompt,assignedSkills:source.assignedSkills,
+          harnessConfiguration:configuration,harnessProfileSelection:selection,prompt:source.prompt,assignedSkills:source.assignedSkills,
           graphqlTools:source.graphqlTools,
         }),false,this.validateProfile(principal))
         const revision = await client.query<{metadata_revision:string}>('select metadata_revision from agents where id=$1',[agent.id])
@@ -190,10 +206,15 @@ export class OperatorAgentMutationService {
         // Role changes can invalidate Orchestrator assignments. A restore does not
         // silently redesign those assignments across shared workflows.
         if (version.productRole !== current.agent.productRole) throw new DomainError('AGENT_ROLE_RESTORE_UNSUPPORTED','Restore role-changing history through an explicitly validated graph change.',409)
-        authorizeAgentConfiguration(principal,input.workspaceId,version.harness,version.assignedSkills)
-        if (!version.harnessProfileSelection) await this.harnesses.qualifyConfiguration(version.harness)
+        const configuration = this.accountConfigurations
+          ? await this.accountConfigurations.resolve(version.harness, version.harnessProfileSelection) : version.harness
+        const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal, source: 'mcp',
+          configuration, selection: version.harnessProfileSelection, commandId: input.commandId, client, check: true,
+        }) : version.harnessProfileSelection
+        authorizeAgentConfiguration(principal,input.workspaceId,configuration,version.assignedSkills)
+        if (!selection) await this.harnesses.qualifyConfiguration(configuration)
         return this.persist(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({...current.agent,
-          prompt:version.prompt,assignedSkills:version.assignedSkills,graphqlTools:version.graphqlTools,harnessProfileSelection:version.harnessProfileSelection}),version.harness),principal)
+          prompt:version.prompt,assignedSkills:version.assignedSkills,graphqlTools:version.graphqlTools,harnessProfileSelection:selection}),configuration),principal)
       },
     })
   }

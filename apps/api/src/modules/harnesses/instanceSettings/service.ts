@@ -12,6 +12,7 @@ import { commandInputHash, type PostgresCommandCoordinator } from '../../command
 import type { HostHarnessInstanceProfileChecks } from './profileChecks.js'
 import { harnessHostKey, type HarnessInstanceSettingsRepository } from './repository.js'
 import { nativeProfileCheckId } from './profileChecks.js'
+import type { ProviderAccountConfigurationService } from '../providerAccountConfiguration.js'
 
 export interface HostHarnessOverrideAuthority {
   authorize(principal: ManagementPrincipal, action: 'harnesses:read' | 'harnesses:update', hostRef: CanonicalMachineReference, applicationInstallationId: string, client?: pg.PoolClient): Promise<void>
@@ -32,6 +33,7 @@ export class HostHarnessOverrideService {
     private readonly evidence: (value: HostHarnessOverride, client?: pg.PoolClient) => Promise<HostHarnessOverrideEvidence | null>,
     private readonly profileChecks?: HostHarnessInstanceProfileChecks,
     private readonly configurationTarget?: (configuration: HarnessConfiguration) => HostHarnessOverride['target'],
+    private readonly accountConfigurations?: ProviderAccountConfigurationService,
   ) {}
   get qualificationSupported(): boolean { return Boolean(this.profileChecks) }
   async closeChecks(): Promise<void> { await this.profileChecks?.close() }
@@ -140,12 +142,14 @@ export class HostHarnessOverrideService {
     requireAuthorization(principal, 'harnesses:update')
     const input = HostHarnessOverrideSaveSchema.parse(raw)
     // Existing validators retain sandbox/model/advanced controls; no credentials are accepted.
-    const configuration = withAdvancedDefaults(input.configuration)
-    const configurationFingerprint = commandInputHash(configuration)
     const result = await this.commands.execute({ principal, source, operation: 'harness.instance.save', commandId: input.commandId,
       targetKey: `harness-instance:${input.instanceId}`, payload: input,
       authorize: client => this.authority.authorize(principal, 'harnesses:update', input.target.hostRef, input.target.applicationInstallationId, client),
       perform: async client => {
+        const requested = this.accountConfigurations ? await this.accountConfigurations.resolve(input.configuration,
+          { instanceId: input.instanceId, instanceRevision: String(input.expectedRevision), target: input.target }) : input.configuration
+        const configuration = withAdvancedDefaults(requested)
+        const configurationFingerprint = commandInputHash(configuration)
         const revision = input.expectedRevision + 1
         const value: HostHarnessOverride = { instanceId: input.instanceId, revision, instanceRevision: String(revision),
           target: input.target, presetId: input.presetId, enabled: input.enabled, driverId: configuration.harness,

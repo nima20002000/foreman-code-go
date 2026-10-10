@@ -25,6 +25,7 @@ import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 import {
   IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, readImmutableAgentConfiguration,
   type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow,
@@ -78,7 +79,8 @@ export class CurrentWorkflowAuthoring {
   private editStop: RunManagementService['stop'] | undefined
   private runtime: Pick<RunManagementService, 'availability' | 'assertCurrentStopReady'> | undefined
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
-    private readonly agentActiveTimeoutMs = DEFAULT_AGENT_ACTIVE_TIMEOUT_MS) {
+    private readonly agentActiveTimeoutMs = DEFAULT_AGENT_ACTIVE_TIMEOUT_MS,
+    private readonly accountConfigurations?: ProviderAccountConfigurationService) {
     this.editIntents = createCurrentEditIntentService(pool, commands, {
       validate: async (client, principal, input, options) => {
         authorize(principal, input, true)
@@ -288,7 +290,7 @@ export class CurrentWorkflowAuthoring {
       return fail('WORKFLOW_BASE_CONFLICT', 'The current definition disagrees with its immutable executable version.')
     }
     const stagedInput = 'stagedAgents' in input && input.stagedAgents?.length ? input as CurrentEditSaveInput : undefined
-    const staged = stagedInput ? await prepareCurrentStagedAgents(client, principal, stagedInput) : undefined
+    const staged = stagedInput ? await prepareCurrentStagedAgents(client, principal, stagedInput, this.accountConfigurations) : undefined
     const configurationPins = staged?.resultant ?? input.expectedAgentConfigurationVersionIds
     const presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
       && sameWorkflowValue(base.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)

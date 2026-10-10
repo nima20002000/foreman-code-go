@@ -15,6 +15,7 @@ export * from "./claudePlugins.js";
 export * from "./settingsExperience.js";
 export * from './generalSettings.js';
 export * from './promptSettings.js';
+export * from '../providerAccounts.js'
 
 import {
   AgentSchema,
@@ -621,6 +622,8 @@ export const OperatorToolNameSchema = z.enum([
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
   'general_settings_get', 'general_settings_update',
+  'provider_accounts_list', 'provider_account_create', 'provider_account_rename',
+  'provider_account_default_set', 'provider_account_login', 'provider_account_logout', 'provider_account_refresh',
   'system_prompt_get', 'system_prompt_update', 'operator_initial_prompt_get', 'operator_initial_prompt_update',
   'worker_execution_settings_get',
   "workspace_defaults_update",

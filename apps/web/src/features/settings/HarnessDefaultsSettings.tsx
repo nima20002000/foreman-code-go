@@ -9,6 +9,7 @@ import { ClaudePluginSummary } from './ClaudePluginSummary'
 import { CodexPluginManager } from './CodexPluginManager'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { OperatorMcpStatus } from './OperatorMcpStatus'
+import { ProviderAccountsSettings } from '../provider-accounts/ProviderAccountsSettings'
 
 /** Harnesses this app runs: Codex and Claude. */
 const HARNESSES = ['codex', 'claude'] as const
@@ -68,6 +69,7 @@ export function HarnessDefaultsSettings({ selectedHarness, section, onOpen }: {
       {HARNESSES.map((harness) => <ProviderCard key={harness} harness={harness} value={incoming.value} revision={incoming.revision}
         readiness={readiness(harness)} onOpen={(next) => onOpen?.({ harness, section: next })} />)}
     </SettingsOverview>
+    <ProviderAccountsSettings />
     <Dialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) onOpen?.(undefined) }} size="lg"
       title={dialog === 'plugins' ? `${dialogName} plugins` : 'Codex connections'}
       description={dialog === 'plugins' ? `Plugins add skills, hooks and tools to ${dialogName}. Ask the Operator to manage them.`

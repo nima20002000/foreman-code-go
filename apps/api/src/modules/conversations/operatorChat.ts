@@ -28,11 +28,14 @@ import {
   CodexSessionCompatibilitySchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type ContextSnapshot, type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
   type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup, type OperatorChatSetupQuery,
+  type HarnessConfiguration,
 } from '@foreman-code/contracts'
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { OperatorConversationHistoryQuery } from '@foreman-code/contracts/operator-chat'
 
 import { DomainError } from '../errors.js'
+import { harnessSessionChanged } from '../harnesses/providerAccountConfiguration.js'
 import { requireAuthorization, isAuthorized } from '../access/policy.js'
 import type {
   ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeMessageSubmission, NativeSessionStart,
@@ -184,6 +187,8 @@ export class OperatorChatService {
     private readonly managers: NativeManagerResolver,
     private readonly workingDirectory: string,
     private readonly authority: OperatorChatAuthority,
+    private readonly prepareAccountProfile?: (principal: ManagementPrincipal, configuration: HarnessConfiguration,
+      commandId: string) => Promise<HarnessProfileSelection | undefined>,
   ) {}
 
   private receipts() { return this.commandReceipts ??= this.repository.createControlCommands() }
@@ -497,7 +502,16 @@ export class OperatorChatService {
     const configuration = receiptId ? undefined : await this.repository.configuration(row.operator_configuration_version_id)
     if (!receiptId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
     const harness = configuration ? await this.repository.harnessForMessage(configuration, input) : undefined
-    const fork = Boolean(harness && harness.harness !== row.harness && await this.repository.hasMessages(id))
+    let preparedProfile: HarnessProfileSelection | undefined
+    if (harness?.harness === 'claude' && configuration && harnessSessionChanged(configuration.harness, harness)) {
+      if (!this.prepareAccountProfile) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE',
+        'Claude account selection requires a checked local harness profile.', 503)
+      preparedProfile = await this.prepareAccountProfile(principal, harness, input.requestId)
+      if (!preparedProfile) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
+        'Check the selected Claude account profile before sending this message.', 409)
+    }
+    const fork = Boolean(harness && configuration && harnessSessionChanged(configuration.harness, harness)
+      && await this.repository.hasMessages(id))
     const admit = () => this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
       const current = await this.authority.current(row.owner_principal_id!)
@@ -509,9 +523,9 @@ export class OperatorChatService {
             (accepted) => this.validate(accepted))
         : fork
           ? await this.repository.beginForkTurn(id, input, row.owner_principal_id!, harness!, configuration!.id,
-              (accepted) => this.validate(accepted))
+              (accepted) => this.validate(accepted), preparedProfile)
           : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined,
-              configuration!.id, false, (accepted) => this.validate(accepted))
+              configuration!.id, false, (accepted) => this.validate(accepted), preparedProfile)
       if (begun.replayed) {
         requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
         return begun

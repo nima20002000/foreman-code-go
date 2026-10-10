@@ -20,6 +20,7 @@ export function productionSelectedProfileManager(input: {
   workingDirectory: string
   ownerAgentId: string
   recovery: NativeProcessRecovery
+  accountSourceRecovery?: NativeProcessRecovery
   appMcpAccess: 'scoped' | 'none'
   files?: Extract<NativeHarnessAllocation, { harness: 'codex' }>['chatFiles']
   nativeOutputs?: Extract<NativeHarnessAllocation, { harness: 'codex' }>['nativeOutputs']
@@ -36,6 +37,7 @@ export function productionSelectedProfileManager(input: {
     const selection = input.registry.pinOverride(accepted.override)
     const common = { selection, configured: selection.instance, role: input.role, workingDirectory: input.workingDirectory,
       ownerAgentId: input.ownerAgentId, processRecovery: input.recovery, appMcpAccess: input.appMcpAccess,
+      ...(input.accountSourceRecovery ? { accountSourceRecovery: input.accountSourceRecovery } : {}),
       revalidateSelection: (effectSignal?: AbortSignal) => {
         const currentOwner = { ...owner, admissionSignal: effectSignal ?? signal }
         return input.profiles.revalidate(currentOwner, accepted)

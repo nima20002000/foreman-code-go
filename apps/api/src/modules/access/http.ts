@@ -30,6 +30,9 @@ export function requireLocalRequest(request: FastifyRequest): void {
 
 function actionFor(request: FastifyRequest) {
   const url = request.url.split('?')[0] ?? request.url
+  if (url === '/api/provider-accounts' || url.startsWith('/api/provider-accounts/')) {
+    return request.method === 'GET' ? 'settings:read' as const : 'settings:update' as const
+  }
   if (url === '/api/devices' || url === '/api/devices/main' || url === '/api/devices/setup-options') return 'settings:read' as const
   if (['/api/devices/connection-host', '/api/devices/connection-read', '/api/devices/connection-inspect', '/api/devices/connection-check'].includes(url)) return 'settings:read' as const
   if (url === '/api/devices/connection-configure') return 'settings:update' as const

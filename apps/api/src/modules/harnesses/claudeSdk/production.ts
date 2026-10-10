@@ -25,6 +25,8 @@ import type { ClaudeInteractionBridge } from './interactions.js'
 import { claudeProductionMcpInspector } from './productionMcpInspector.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'
 import type { OperatorProfileObservation } from '../operatorProfileObservation.js'
+import type { ProviderAccountResolver } from '../../provider-accounts/service.js'
+import { resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
 
 /** Private lifetime signal is never serialized into accepted configuration or provenance. */
 export type ClaudeProfileOwner = (ClaudeDomainBinding | OperatorProfileObservation | {
@@ -45,9 +47,11 @@ export function productionClaudeManager(input: {
   configuration: ClaudeHarnessConfiguration
   /** Privately provisioned for this accepted profile; never inherited from host authentication. */
   apiKey?: string
+  accounts?: ProviderAccountResolver
   workingDirectory: string
   ownerAgentId: string
   recovery: NativeProcessRecovery
+  accountSourceRecovery?: NativeProcessRecovery
   appMcpAccess: 'scoped' | 'none'
   inspectionStart(): Promise<NativeSessionStart>
   mode: 'native' | 'replay'
@@ -75,9 +79,19 @@ export function productionClaudeManager(input: {
     if (input.mode === 'replay' && !input.loadClient) throw new DomainError('HARNESS_REPLAY_INCOMPLETE',
       'Claude replay requires the SDK client port and cannot load a native SDK.', 500)
     const profileOwner: ClaudeProfileOwner = { ...input.binding, admissionSignal: signal }
+    const account = await resolveRuntimeProviderAccount(input.accounts, 'claude', input.configuration.accountId,
+      input.recovery, input.accountSourceRecovery)
+    if (input.configuration.accountId && !account) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
+      'The selected managed provider account is unavailable.', 409)
+    if (account && (account.accountId !== input.configuration.accountId
+      || account.homePath !== input.configuration.configDirectory || account.authMode !== input.configuration.authMode)) {
+      throw new DomainError('PROVIDER_ACCOUNT_CONFIGURATION_CONFLICT',
+        'Save the selected account settings before starting this Claude session.', 409)
+    }
     const accepted = await input.profiles.admit(profileOwner, input.selector)
     signal.throwIfAborted()
-    const compiled = compileClaudeConfiguration(input.configuration, input.workingDirectory, accepted, process.env, input.apiKey)
+    const compiled = compileClaudeConfiguration(input.configuration, input.workingDirectory, accepted,
+      process.env, account?.apiKey ?? input.apiKey)
     const installation = input.registry.pinOverride(accepted.override)
     const binary = installation.installation.launcher.resolvedLauncher
     if (!binary) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The accepted Claude launcher is unavailable.', 409)

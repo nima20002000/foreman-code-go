@@ -1,4 +1,5 @@
 import { unavailableResourceTelemetryToolCall } from '../operator/resourceTelemetryUnavailable.js'
+import { unavailableProviderAccountToolCall } from '../operator/tools/providerAccounts.js'
 import { unavailableJobToolCall } from '../operator/tools/jobs.js'
 import { unavailableJobRuntimeToolCall } from '../operator/tools/jobRuntimeProfiles.js'
 import { unavailableHostHarnessToolCall } from '../../modules/harnesses/instanceSettings/management.js'
@@ -95,6 +96,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       // Retired execution tools and unlisted current writes still need authenticated denial audit,
       // rather than disappearing into the SDK's generic unknown-tool response.
       const unavailable = await unavailableResourceTelemetryToolCall(context, request.body)
+        ?? await unavailableProviderAccountToolCall(context, request.body)
         ?? await unavailableFileRetentionToolCall(context, request.body)
         ?? await retiredExecutionToolCall(context, request.body)
         ?? await unavailableRunToolCall(context, request.body)

@@ -189,7 +189,8 @@ function EditableAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, cre
         }} />
       </div>
       <div className={`agent-settings-row agent-settings-row-runtime agent-settings-row-${configuration.harness}`}>
-        <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration} />
+        <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration}
+          accountRemote={placement?.hostRef.kind === 'device'} />
       </div>
       {!placementHidden && (nodePlacement || placementOptions) ? <NodePlacementField value={placement} options={placementOptions ?? []} optionsState={placementOptionsState} stage={!sameWorkflowValue(placement, nodePlacement) ? 'editing' : placementStage} onChange={(next) => { if (onFormChange) changeForm({ placement: next }); else setLocalPlacement(next); clearErrors() }} /> : null}
       {workspaceId ? <AgentSkillsField workspaceId={workspaceId} value={skills} onChange={(next) => { setSkills(next); clearErrors() }} /> : null}

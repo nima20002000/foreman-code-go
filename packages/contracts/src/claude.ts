@@ -18,6 +18,7 @@ export const ClaudeEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max
 /** Explicit accepted policy. Ambient Claude settings and launch flags are never inputs. */
 export const ClaudeHarnessConfigurationSchema = z.object({
   harness: z.literal('claude'), model: z.string().trim().min(1),
+  accountId: z.uuid().optional(),
   /** Absent on historical pins; new detected defaults select medium when advertised. */
   effort: ClaudeEffortSchema.optional(),
   authMode: z.enum(['subscription', 'api-key']), configDirectory: AbsolutePath,

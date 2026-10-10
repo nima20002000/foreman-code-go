@@ -1,4 +1,5 @@
 import { inTransaction } from './infrastructure/transaction.js'
+import type pg from 'pg'
 import { ComputerActivityService } from './modules/computers/activity.js'
 import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { ComputerAccountsService } from './modules/computers/accounts.js'
@@ -100,6 +101,11 @@ import { inventoryDriverPayloads } from './modules/harnesses/payloadDiscovery.js
 import { runCommand } from './modules/harnesses/process.js'
 import { productionClaudeManager, type ClaudeProfileOwner } from './modules/harnesses/claudeSdk/production.js'
 import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/claudeSdk/productionCredentials.js'
+import { ProviderAccountsService } from './modules/provider-accounts/service.js'
+import { ProviderAccountsRepository } from './modules/provider-accounts/repository.js'
+import { LocalProviderCredentials } from './modules/provider-accounts/localCredentials.js'
+import { NativeProviderAccountCommands } from './modules/provider-accounts/nativeCommands.js'
+import { ProviderAccountConfigurationService } from './modules/harnesses/providerAccountConfiguration.js'
 import { assertClaudeCredentialEndpoint } from './modules/harnesses/claudeSdk/mcpInspection.js'
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
@@ -471,6 +477,11 @@ export function buildProductionApp(
     },
   })
   const commands = new PostgresCommandCoordinator(database.pool)
+  const accountCredentials = new LocalProviderCredentials(resolve(config.harnesses.workspaceRoot, 'provider-accounts'))
+  const providerAccounts = new ProviderAccountsService(database.pool,
+    new ProviderAccountsRepository(database.pool, () => accountCredentials.hostId()), accountCredentials,
+    new NativeProviderAccountCommands({ codex: () => mainCodex.binary, claude: 'claude' }), commands)
+  const accountConfigurations = new ProviderAccountConfigurationService(providerAccounts)
   // Producer/consumer halves are installed during construction. Neither HTTP,
   // MCP nor a caller-supplied JSON observation can manufacture these captures.
   const workflowCapture = createWorkflowNativeCaptureChannel()
@@ -584,7 +595,7 @@ export function buildProductionApp(
       claude: claudeDiscovery.discover }, (deviceId) => deviceRuntime.currentBinding(deviceId),
     (deviceId) => deviceRuntime.presenceFor(deviceId))
   const foundationSettings = new PostgresFoundationSettingsRepository(database.pool, projectRoot)
-  const operators = new PostgresOperatorRepository(database.pool)
+  const operators = new PostgresOperatorRepository(database.pool, accountConfigurations)
   const rollout = new NativeRollout(process.env)
   const compatibilityProbe = (timeoutMs = 2000, expected?: { harness: CompatibilityHarness; binary: string }) => scopedCompatibilityProbe({
     registry: processRegistry, pin: (harness) => {
@@ -629,6 +640,7 @@ export function buildProductionApp(
   // One endpoint for every role; the bearer credential decides Operator, Orchestrator or Coder.
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ get codexBinary() { return mainCodex.binary }, responseJournal,
+    accounts: providerAccounts,
     refreshInstallations: signal => harnessRegistry.refreshMain(signal),
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
@@ -687,7 +699,7 @@ export function buildProductionApp(
     },
     async current(binding, value, client) {
       if (value.driverId === 'claude') {
-        requireClaudeProductionCredentialDelivery(value.configuration)
+        await requireClaudeProductionCredentialDelivery(value.configuration, providerAccounts, value.target.hostRef)
         if (value.target.hostRef.kind === 'device') {
           const registry = harnessRegistry.pinOverride(value)
           const proof = await hostProfileEvidence.latest(value.instanceId, value.revision, client)
@@ -714,6 +726,7 @@ export function buildProductionApp(
   const hostProfileChecks = new HostHarnessInstanceProfileChecks(hostSettings, hostProfileEvidence, commands, hostAuthority,
     new ProductionHostHarnessProfileQualifier(harnessRegistry, nativeFactories, () => deviceRuntime.endpointForDomains(), config.harnesses.workspaceRoot,
       infrastructure?.mode === 'replay' ? undefined : { async qualify(value, input) {
+        const apiKey = await requireClaudeProductionCredentialDelivery(value.configuration, providerAccounts, value.target.hostRef)
         const current = await claudeDiscovery.currentForConfiguration(value, input.signal)
         const binding = harnessRegistry.pinOverride(value)
         const recovery = processRegistry.reserveLaunch(`claude-profile-check:${input.checkId}`)
@@ -722,10 +735,11 @@ export function buildProductionApp(
           if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude native profile qualification closure is unconfirmed.')
         }
         try { return await qualifyClaudeNativeProfile({ value, checkId: input.checkId, binding, pin: current.pin,
+          ...(apiKey ? { apiKey } : {}),
           directory: resolve(config.harnesses.workspaceRoot, 'claude-native-qualification'), recovery, signal: input.signal,
           assertCurrent: async () => { await nativeFactories.assertInstallationUnchanged(binding, input.signal); harnessRegistry.installations.assertCurrent(binding) } }) }
         finally { await close() }
-      } }, workerExecution), selectedSuites ? createInstalledNativeQualificationRetention({
+      } }, workerExecution, providerAccounts), selectedSuites ? createInstalledNativeQualificationRetention({
       repository: qualificationRepository, suiteRevision: selectedSuites.codex.revision,
       currentBinding: deviceId => deviceRuntime.endpointForDomains().captureRequest(deviceId, 'host-harness-check-v1')?.binding ?? null,
       currentInstallation: value => harnessRegistry.pinOverride(value).installation,
@@ -741,7 +755,7 @@ export function buildProductionApp(
       },
     }) : undefined)
   const harnessInstances = new HostHarnessOverrideService(hostSettings, commands, hostAuthority, async (value, client) => {
-    requireClaudeProductionCredentialDelivery(value.configuration)
+    await requireClaudeProductionCredentialDelivery(value.configuration, providerAccounts, value.target.hostRef)
     const proof = await harnessRegistry.profileEvidence(value, client, { includeFailed: true })
     return proof ? { target: proof.target, configurationFingerprint: proof.configurationFingerprint,
       qualified: proof.qualified, ...(proof.failure ? { failure: proof.failure } : {}) } : null
@@ -751,7 +765,8 @@ export function buildProductionApp(
     if (hostRef.kind !== 'main' || !binding.installation.installationFingerprint) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The actual local Claude installation is unavailable.', 409)
     return { hostRef, applicationInstallationId: hostRef.mainId, harnessInstallationId: binding.selection.harnessInstallationId,
       installationFingerprint: binding.installation.installationFingerprint }
-  })
+  }, accountConfigurations)
+  accountConfigurations.bindProfiles(harnessInstances)
   const installationMonitor = new HarnessInstallationMonitor(harnessRegistry, hostProfileChecks,
     () => deviceRuntime.endpointForDomains(), async (binding, inventory) => {
       if (selectedSuites) await retainInstalledHarnessInventory({ registry: harnessRegistry,
@@ -764,11 +779,12 @@ export function buildProductionApp(
         result.failureReason ?? 'The updated Codex installation failed its native checks.', 409)
     }, error => app.log.error({ err: error }, 'Automatic harness installation checks failed'))
   const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
+    accounts: providerAccounts,
     processes: processRegistry, factories: nativeFactories, settings: hostSettings, defaults: () => settings.getHarnessDefaults(), current: claudeDiscovery.currentForConfiguration })
-  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, nativeFactories, claudeMetadata)
+  const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, nativeFactories, claudeMetadata, providerAccounts)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot, appMcpEndpoint)
   const nativeConfigurations = new NativeConfigurationService(
-    config.harnesses.codexBinary, config.harnesses.workspaceRoot, nativeFactories, claudeMetadata,
+    config.harnesses.codexBinary, config.harnesses.workspaceRoot, nativeFactories, claudeMetadata, providerAccounts,
   )
   const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
   const maintenancePorts = systemMaintenancePorts(process.env, { get codex() { return mainCodex.binary } })
@@ -800,6 +816,11 @@ export function buildProductionApp(
     if (configuration.harness !== context.harness) {
       throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'The pinned configuration does not match the execution harness.', 409)
     }
+    const remoteAccount = context.acceptedPlacement?.hostRef.kind === 'device'
+      || context.configuration.harnessProfileSelection?.target.hostRef.kind === 'device'
+    if (configuration.accountId && remoteAccount) {
+      throw new DomainError('PROVIDER_ACCOUNT_LOCAL_ONLY', 'Managed provider accounts cannot run on another computer.', 409)
+    }
     // Object allocation remains native/registry IO-free. The coordinator reserves
     // this SAME scope immediately before its lifetime/entered commits.
     const recovery = processRegistry.scope(`execution:${context.executionId}`)
@@ -820,10 +841,10 @@ export function buildProductionApp(
     const selector = workflowProfileSelection(context,
       remoteWorkflow!.binding(context.executionId)?.executionPlacement?.workingTree.canonicalCwd)
     if (configuration.harness === 'claude') {
-      requireClaudeProductionCredentialDelivery(configuration)
       if (!context.runId || !context.attempt) throw new DomainError('CLAUDE_OWNER_UNAVAILABLE',
         'Claude requires the persisted Run and execution attempt.', 409)
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
+        accounts: providerAccounts,
         profiles: claudeProfiles, ...(selector ? { selector } : {}),
         binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner },
         role: 'workflow', configuration, workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
@@ -1076,7 +1097,7 @@ export function buildProductionApp(
   registerApprovalCheckpointResume(interactions, engine)
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
-  const operatorConversations = new PostgresOperatorConversationRepository(database.pool)
+  const operatorConversations = new PostgresOperatorConversationRepository(database.pool, accountConfigurations)
   const agentConversations = new PostgresAgentChatRepository(database.pool)
   const workerChats = createProductionWorkerConversations({ pool: database.pool,
     endpoint: () => deviceRuntime.endpointForDomains(), profiles: selectedProfiles, claudeProfiles,
@@ -1123,6 +1144,8 @@ export function buildProductionApp(
           agentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
           harness: configuration.harness })
       const common = { selection, configured: selection.instance, role: 'diagnostics' as const,
+        accountRecovery: processRegistry.scope('operatorId' in configuration
+          ? `conversation:${conversationId}` : `conversation:agent-chat:${conversationId}`),
         workingDirectory: sessionStartDirectory(start),
         ownerAgentId: 'operatorId' in configuration ? configuration.operatorId : configuration.agentId,
         appMcpAccess: 'none' as const,
@@ -1154,10 +1177,10 @@ export function buildProductionApp(
     },
     createClaude: (configuration, conversationId, fileInputs, recovery) => {
       if (configuration.harness.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude requires the pinned Claude configuration.', 409)
-      requireClaudeProductionCredentialDelivery(configuration.harness)
       const controlBinding: Extract<import('./modules/harnesses/claudeSdk/domainAuthority.js').ClaudeDomainBinding, { kind: 'operator' }>
         = { kind: 'operator', conversationId, repository: operatorConversations }
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
+        accounts: providerAccounts,
         profiles: claudeProfiles,
         ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
         binding: controlBinding, role: 'operator',
@@ -1208,6 +1231,7 @@ export function buildProductionApp(
       const owner: ClaudeProfileOwner = { kind: 'operator-inspection', principalId: principal.id,
         configurationVersionId: configuration.id, configurationHash: configuration.contentHash, admissionSignal: signal }
       const accepted = await claudeProfiles.admit(owner, configuration.harnessProfileSelection)
+      const apiKey = await requireClaudeProductionCredentialDelivery(configuration.harness, providerAccounts)
       const binding = harnessRegistry.pinOverride(accepted.override), binary = binding.installation.launcher.resolvedLauncher
       if (!binary || accepted.override.target.hostRef.kind !== 'main') throw new DomainError('HARNESS_HOST_MISMATCH', 'Claude setup must inspect its actual local installed profile.', 409)
       const recovery = processRegistry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
@@ -1216,6 +1240,7 @@ export function buildProductionApp(
         if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude read-only configuration inspection closure is unconfirmed.')
       }
       try { return await inspectClaudeOperatorConfiguration({ accepted, binary, workingDirectory: operatorWorkingDirectory,
+        ...(apiKey ? { apiKey } : {}),
         endpoint: appMcpEndpoint, recovery, signal, ...(infrastructure?.claudeClient ? {
           loadClient: (profilePath, processRecovery, selectedBinary) => infrastructure.claudeClient!({ profilePath, recovery: processRecovery, binary: selectedBinary }),
         } : {}),
@@ -1227,9 +1252,14 @@ export function buildProductionApp(
   const chat = new OperatorChatService(
     operatorConversations, operators,
     resolveOperatorManager, operatorWorkingDirectory, chatAuthority,
+    async (principal, configuration, commandId) => {
+      const selection = await inTransaction(database.pool, undefined,
+        client => harnessInstances.selectionForConfiguration(principal, configuration, client as pg.PoolClient))
+      return selection ?? harnessInstances.prepareOperatorConfiguration(principal, 'http', configuration, commandId)
+    },
   )
   const agentChatManagers = new Map<string, NativeHarnessSessionManager>()
-  const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory) => {
+  const resolveAgentChatManager: AgentChatManagerFactory = (conversationId, configuration, workingDirectory, accountSource) => {
     if (configuration.harness.harness === 'opencode') {
       throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     }
@@ -1242,10 +1272,13 @@ export function buildProductionApp(
     }
     // Chat processes have their own owner scope; they never share a workflow execution's manager.
     const recovery = processRegistry.scope(`conversation:agent-chat:${conversationId}`)
+    const sourceRecovery = accountSource
+      ? { accountSourceRecovery: processRegistry.scope(`execution:${accountSource.executionId}`) } : {}
     const harness = configuration.harness
     if (harness.harness === 'claude') {
-      requireClaudeProductionCredentialDelivery(harness)
       const { manager } = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
+        ...sourceRecovery,
+        accounts: providerAccounts,
         profiles: claudeProfiles,
         ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
         binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
@@ -1260,6 +1293,7 @@ export function buildProductionApp(
     }
     if (configuration.harnessProfileSelection) {
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
+        ...sourceRecovery,
         selector: configuration.harnessProfileSelection,
         binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
         configuration: harness, role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId, recovery, appMcpAccess: 'none',
@@ -1269,6 +1303,7 @@ export function buildProductionApp(
     }
     const selection = harnessRegistry.initialized ? harnessRegistry.pinAccepted(configuration) : undefined
     const { manager } = nativeFactories.allocate({
+      ...sourceRecovery,
       ...(selection ? { selection } : {}),
       role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId,
       configured: { instanceId: selection?.instance.instanceId ?? configuration.agentId, instanceRevision: configuration.id, driverId: harness.harness,
@@ -1283,7 +1318,7 @@ export function buildProductionApp(
   resolveAgentChatManager.recoverCompaction = recoverChatCompaction
   resolveAgentChatManager.release = (conversationId) => { agentChatManagers.delete(conversationId) }
   const agentChat = new AgentChatService(database.pool, agentConversations,
-    new PostgresOperatorConversationRepository(database.pool), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)
+    new PostgresOperatorConversationRepository(database.pool, accountConfigurations), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)
   const reviews = new AutomaticReviewService(database.pool, runs, approvals, locations, rollout,
     async (runId) => {
       // AutomaticReviewService committed the exact review cause and durable Stop
@@ -1326,6 +1361,7 @@ export function buildProductionApp(
   })
 
   const operatorServices = {
+    providerAccounts,
     devices: deviceRuntime.management,
     harnessInstances, harnessRegistry,
     fileRetention: new FileRetentionService(database.pool, commands),
@@ -1355,12 +1391,12 @@ export function buildProductionApp(
     agentChat,
     workspaces: new WorkspaceManagementService(database.pool, commands, locations, foundationSettings, projectRoot),
     locations,
-    workflows: new WorkflowManagementService(database.pool, commands, config.harnesses.timeoutMs),
+    workflows: new WorkflowManagementService(database.pool, commands, config.harnesses.timeoutMs, accountConfigurations),
     agents: new AgentManagementService(database.pool),
     harnesses: harnessCatalog,
     harnessCompatibility,
     ...(harnessQualifications ? { harnessQualifications } : {}),
-    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances),
+    settings: new FoundationSettingsManagementService(foundationSettings, commands, harnessCatalog, operators, harnessInstances, accountConfigurations),
     workerExecution,
     runs: new RunManagementService(database.pool, commands, runs, engine, locations, currentProduction, async (executionId, session, cursor, signal) => {
       const owned = managers.residentForRead(executionId)
@@ -1400,6 +1436,7 @@ export function buildProductionApp(
     pool: database.pool, commands, catalog: harnessCatalog, native: nativeConfigurations,
     detection, locations,
     provisioningRoot: projectRoot, harnessProfiles: harnessInstances,
+    accountConfigurations,
   })
   const runtimeServices: OperatorServices & { jobs?: import('./modules/jobs/service.js').JobService;
     buildComputers?: import('./modules/settings/buildComputers.js').BuildComputerSettings
@@ -1425,6 +1462,7 @@ export function buildProductionApp(
     mcpDetection: { pool: database.pool, service: detection },
     logger,
   })
+  app.addHook('onClose', () => providerAccounts.close())
   registerFileRetentionRoutes(app, operatorServices.fileRetention)
   const mountArtifacts = () => {
     if (workflowArtifacts || !fileStorage || !artifactComposition) return

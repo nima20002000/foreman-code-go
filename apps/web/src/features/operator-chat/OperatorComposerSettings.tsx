@@ -6,6 +6,7 @@ import { useHarnessDefaultsQuery } from '../../shared/api/query'
 import { Button, Icon, SearchField, SegmentedControl, Slider, Switch } from '../../shared/ui/nocturne'
 import { harnessNames } from '../settings/settingsPresentation'
 import { supportedEfforts } from '../settings/harnessModelSelection'
+import { ProviderAccountSelect } from '../provider-accounts/ProviderAccountSelect'
 
 export function OperatorComposerSettings({ value, onChange, disabled, access }: {
   value: OperatorChatSettings; onChange(value: OperatorChatSettings): void; disabled: boolean;
@@ -52,7 +53,9 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
     } else if (value.harness === 'claude') {
       const effort = ClaudeEffortSchema.safeParse(next.reasoningEfforts.includes(value.effort ?? '') ? value.effort
         : next.reasoningEfforts.includes('medium') ? 'medium' : next.reasoningEfforts.find((effort) => ClaudeEffortSchema.safeParse(effort).success))
-      update({ harness: 'claude', model: next.id, showThinking: value.showThinking, ...(effort.success ? { effort: effort.data } : {}) })
+      const settings = { ...value }
+      delete settings.effort
+      update({ ...settings, model: next.id, ...(effort.success ? { effort: effort.data } : {}) })
     }
     setChoosingModel(false)
   }
@@ -86,6 +89,16 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
             const preset = selected.success ? defaults.data?.defaults[selected.data] : undefined
             if (preset) update(operatorChatSettings(preset, value.showThinking))
           }} />
+        {value.harness === 'codex' || value.harness === 'claude' ? <ProviderAccountSelect
+          provider={value.harness} value={value.accountId} disabled={disabled}
+          onChange={accountId => {
+            if (accountId) update({ ...value, accountId })
+            else {
+              const settings = { ...value }
+              delete settings.accountId
+              update(settings)
+            }
+          }} /> : null}
         <button className="operator-model-choice" type="button" disabled={disabled || !catalog.isSuccess} onClick={() => { setChoosingModel(true); setSearch('') }}>
           <span>{modelName}<small>Choose model</small></span><Icon name="chevron" size={14} />
         </button>
