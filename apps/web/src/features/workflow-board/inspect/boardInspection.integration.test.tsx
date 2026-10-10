@@ -153,7 +153,7 @@ describe('Run inspection inside the one mounted Board', () => {
     await waitFor(() => expect(within(panel).queryByRole('button', { name: 'Load more tool calls' })).not.toBeInTheDocument())
     expect(cursors).toContain('messages:messages-next')
     expect(cursors).toContain('tools:tools-next')
-    fireEvent(panel, new Event('cancel', { cancelable: true }))
+    await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Native child' })).not.toBeInTheDocument())
     expect(root).toHaveFocus()
     expect(history.location.hash).toBe('#keep=anchor')
