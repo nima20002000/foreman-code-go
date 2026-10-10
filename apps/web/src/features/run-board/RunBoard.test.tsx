@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { URL } from 'node:url'
 import { webcrypto } from 'node:crypto'
-import { RunExecutionDetailSchema } from '@foreman-code/contracts/wave25'
+import { makeCurrentWorkflowFixture, RunExecutionDetailSchema, RunVersionDetailSchema } from '@foreman-code/contracts/wave25'
 import * as inspectionClient from '../workflow-board/runDetailsClient'
 import { digestCurrentValue } from '../workflow-board/runDetailsClient'
 import { definition, execution as jobExecution, verificationExecution, logPage } from '../jobs/fixtures'
@@ -99,9 +99,21 @@ beforeEach(() => {
     http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), {
       workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
     }))),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/version', ({ params }) => {
+      const workspaceId = String(params.workspaceId)
+      const workflowId = workspaceId === scope.workspaceId ? scope.workflowId : 'other-workflow'
+      const runId = String(params.runId)
+      const workflowVersionId = runId === 'run-b' ? runB.workflowVersionId : runA.workflowVersionId
+      const { version } = makeCurrentWorkflowFixture('saved-run-board', 'single')
+      return HttpResponse.json(RunVersionDetailSchema.parse({
+        scope: { workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion: 3 },
+        version: { ...version, id: workflowVersionId, workspaceId, workflowId,
+          definition: { ...version.definition, id: workflowId, workspaceId } },
+      }))
+    }),
     http.all('*/api/*', ({ request }) => {
       unexpected.push(`${request.method} ${new URL(request.url).pathname}`)
-      return HttpResponse.json({ error: { code: 'UNEXPECTED', message: 'Only snapshot reads are allowed in this test.' } }, { status: 500 })
+      return HttpResponse.json({ error: { code: 'UNEXPECTED', message: 'Only saved Run reads are allowed in this test.' } }, { status: 500 })
     }),
   )
 })
