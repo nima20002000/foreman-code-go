@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, chmod, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { mkdtemp, mkdir, writeFile, symlink, chmod, rm, realpath } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { workerPath } from '../src/harnessPath.mjs';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 
-async function fixture(t) {
-  const home = await mkdtemp(join(tmpdir(), 'worker-harness-path-'));
+async function fixture(t, scratch = persistentFixtureRoot) {
+  const home = await mkdtemp(join(await realpath(scratch), 'worker-harness-path-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   return home;
 }
@@ -68,4 +68,23 @@ test('discovers host-local Claude without admitting symlinked installation direc
   await mkdir(join(linkedHome, '.local'));
   await symlink(bin, join(linkedHome, '.local/bin'));
   assert.ok(!workerPath(linkedHome, process.execPath).split(':').includes(join(linkedHome, '.local/bin')));
+});
+
+test('discovers canonical installations beneath a symlinked scratch ancestor while rejecting symlinked homes', async (t) => {
+  const base = await fixture(t);
+  const scratch = join(base, 'scratch');
+  const alias = join(base, 'cache-link');
+  await mkdir(scratch);
+  await symlink(scratch, alias);
+  const home = await fixture(t, alias);
+  const install = await nvm(home);
+  const aliasedHome = join(alias, basename(home));
+  assert.equal(await realpath(aliasedHome), home);
+  const path = workerPath(aliasedHome, process.execPath).split(':');
+  assert.equal(path[0], dirname(process.execPath));
+  assert.ok(path.includes(install.bin));
+  assert.ok(!path.includes(join(aliasedHome, '.nvm/versions/node/v22.17.1/bin')));
+  const linkedHome = join(base, 'home-link');
+  await symlink(home, linkedHome);
+  assert.ok(!workerPath(linkedHome, process.execPath).split(':').includes(install.bin));
 });
