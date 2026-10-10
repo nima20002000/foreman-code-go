@@ -100,6 +100,33 @@ describe('Activities shared Agent and Job actors', () => {
     expect(screen.queryByText('Native activity recorded; details unavailable')).not.toBeInTheDocument()
   })
 
+  it('keeps approvals in their Agent filter and renders uncertainty and cancellation', async () => {
+    const other = { agentId: 'agent-reviewer', agentName: 'Reviewer', nodeId: 'reviewer-node', nodeName: 'Reviewer' }
+    const approval = RunActivityPublicSchema.parse({
+      ...event('6', 'Approval delivery uncertain', { actor: agent }, 'approval'),
+      status: 'unknown', severity: 'warning', refs: { executionId: 'builder-execution', interactionId: 'builder-approval' },
+    })
+    const canceled = RunActivityPublicSchema.parse({
+      ...event('7', 'Approval canceled', { actor: other }, 'approval'),
+      status: 'canceled', refs: { executionId: 'reviewer-execution', interactionId: 'reviewer-approval' },
+    })
+    server.use(http.get(activitiesPath, () => HttpResponse.json(page({
+      items: [items[4]!, approval, canceled], highWater: '7', nextCursor: 'cursor-7',
+    }))))
+    await mount({ expectedText: 'Approval delivery uncertain' })
+    const uncertainRow = screen.getByText('Approval delivery uncertain').closest('li')!
+    expect(within(uncertainRow).getByText('Builder')).toBeVisible()
+    expect(within(uncertainRow).getByText('unknown')).toHaveClass('is-warning')
+    expect(within(screen.getByText('Approval canceled').closest('li')!).getByText('canceled')).toBeVisible()
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), agent.agentId)
+    await waitFor(() => expect(screen.queryByText('Approval canceled')).not.toBeInTheDocument())
+    expect(screen.getByText('Approval delivery uncertain')).toBeVisible()
+    expect(screen.queryByText('Run recorded')).not.toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), other.agentId)
+    await waitFor(() => expect(screen.queryByText('Approval delivery uncertain')).not.toBeInTheDocument())
+    expect(screen.getByText('Approval canceled')).toBeVisible()
+  })
+
   it('labels Job actors and subjects while listing only true Agents in the Agent filter', async () => {
     await mount()
     for (const summary of ['Job ran', 'Job notified Agent', 'Job was queued']) {

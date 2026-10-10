@@ -196,6 +196,37 @@ describe('persisted native Run activity', () => {
     })
   }, 120000)
 
+  it('keeps active tools beyond completed history and only reports unfinished overflow', async () => {
+    await activityFixture(async (pool, fixture, app) => {
+      const insertItems = (start: number, end: number, status: string) => pool.query(`
+        insert into harness_native_events(execution_id,sequence,record)
+        select $1,n,jsonb_build_object('sequence',n,'occurredAt',$4::text,'type','item.snapshot',
+          'payload',jsonb_build_object('threadId','native-session','item',jsonb_build_object(
+            'id','command-'||n,'type','commandExecution','status',$5::text)))
+        from generate_series($2::integer,$3::integer) n`, [executionId, start, end, occurredAt, status])
+      await insertItems(1, 1001, 'completed')
+      const completed = await readSnapshot(app, fixture)
+      expect(completed.active.filter(item => item.ref.kind === 'tool')).toEqual([])
+      expect(completed.hasMoreActiveWork).not.toBe(true)
+      expect(completed.activities.filter(item => item.kind === 'tool')).toHaveLength(1000)
+      await insertItems(1002, 1002, 'running')
+      const running = await readSnapshot(app, fixture)
+      expect(running.active.filter(item => item.ref.kind === 'tool'))
+        .toMatchObject([{ native: { itemId: 'command-1002' }, evidence: 'confirmed' }])
+      expect(running.hasMoreActiveWork).not.toBe(true)
+      await insertItems(1003, 2002, 'running')
+      const facts = await readNativeActivityFacts(pool, fixture.run.id)
+      expect(facts).toHaveLength(2001)
+      const bounded = projectNativeActivityFacts(facts, () => ({
+        owner: { kind: 'run', ...fixture.scope }, harness: 'codex', sessionId: 'native-session', terminal: false,
+      }))
+      expect(bounded.active).toHaveLength(1000)
+      expect(bounded.hasMore).toBe(true)
+      expect((await pool.query('select count(*)::integer as count from harness_native_events where execution_id=$1',
+        [executionId])).rows[0]?.count).toBe(2002)
+    })
+  }, 120000)
+
   it('bounds default MCP detail and names tools and command programs without arguments or credentials', async () => {
     await activityFixture(async (pool, fixture, app) => {
       for (let index = 0; index < 31; index++) {

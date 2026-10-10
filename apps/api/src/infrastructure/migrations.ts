@@ -37,6 +37,7 @@ import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
 import { jobSourceCapacityWaitMigration } from './jobSourceCapacityWaitMigration.js'
 import { jobQueueCompletionMigration } from './jobQueueCompletionMigration.js'
 import { agentCiActivityMigration } from './agentCiActivityMigration.js'
+import { runActivityCommitOrderMigration } from './runActivityCommitOrderMigration.js'
 import { jobSelectionTimeMigration } from './jobSelectionTimeMigration.js'
 import { jobsMigration } from './jobsMigration.js'
 import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
@@ -894,6 +895,7 @@ export const migrations = [
   workflowExecutionFailureMigration,
   workspaceRepositoryImportsMigration,
   bugReportsMigration,
+  runActivityCommitOrderMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
