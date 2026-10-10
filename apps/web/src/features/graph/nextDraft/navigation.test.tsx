@@ -55,8 +55,18 @@ it.each(['workflow', 'agent'])('explains the required Save before chatting with 
   expect(screen.getByText(/Save the Agent settings and workflow changes/)).toBeVisible()
   expect(document.querySelector('.agent-chat-panel')).not.toBeInTheDocument()
 })
-it.each(['attachment', 'second node'])('requires Save for an unsaved %s of an existing Agent', async (kind) => {
+it.each([
+  ['attachment', 'allowed'],
+  ['second node', 'allowed'],
+  ['attachment', 'denied'],
+  ['second node', 'denied'],
+])('requires Save for an unsaved %s of an existing Agent (%s chat access)', async (kind, access) => {
   const reads: string[] = []
+  server.use(http.get('/api/local-human', () => HttpResponse.json({ principal: {
+    id: 'chat-test-principal', name: 'Chat tester', expiresAt: '2099-01-01T00:00:00.000Z',
+    grants: access === 'allowed' ? [{ actions: ['agent_chat:read'],
+      scope: { workspaceIds: ['workspace'], workflowIds: ['workflow'] } }] : [],
+  } })))
   server.use(http.get('/api/workspaces/:workspaceId/agent-chat', ({ request }) => {
     reads.push(new URL(request.url).searchParams.get('workflowNodeId')!)
     return HttpResponse.json(agentChatFixtureFor(agentChatFixtures.empty, {
@@ -84,8 +94,14 @@ it.each(['attachment', 'second node'])('requires Save for an unsaved %s of an ex
     const saved = { ...state.context.draft, graph: state.graph, baseWorkflowVersionId: 'workflow-version-2' }
     return { ...state, context: { ...state.context, draft: saved, savedDraft: saved } }
   }))
-  expect(await screen.findByTestId('agent-conversation')).toBeVisible()
-  expect(reads).toEqual(['node-0'])
+  if (access === 'allowed') {
+    expect(await screen.findByTestId('agent-conversation')).toBeVisible()
+    expect(reads).toEqual(['node-0'])
+  } else {
+    expect(await screen.findByText('Agent chat access unavailable')).toBeVisible()
+    expect(screen.queryByTestId('agent-conversation')).not.toBeInTheDocument()
+    expect(reads).toEqual([])
+  }
   view.unmount()
   client.clear()
 })
