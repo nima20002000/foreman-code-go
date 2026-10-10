@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { copyVerificationRuntime, desktopLaunchEnvironment, hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, renderEnvironment,
-  shouldOpenDashboardAfterInstall, waitForIdleRuns, waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
+  pruneReleases, shouldOpenDashboardAfterInstall, waitForIdleRuns, waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
 test('an interactive first install opens the dashboard', () => {
@@ -399,4 +399,14 @@ test('install waits for active Runs before restarting the API, and fails closed 
   let asked = false
   await waitForIdleRuns({ query: async () => { asked = true; return { rows: [{ id: 'run-d' }] } }, timeoutMs: 0, interrupt: true })
   assert.equal(asked, false)
+})
+
+test('install keeps only the current and previous release', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'releases-'))
+  try {
+    for (const name of ['release-old1', 'release-old2', 'release-prev', 'release-now', 'notes']) await mkdir(join(root, name))
+    const removed = await pruneReleases(root, [join(root, 'release-now'), join(root, 'release-prev')])
+    assert.deepEqual(removed.map((path) => path.slice(root.length + 1)).sort(), ['release-old1', 'release-old2'])
+    assert.deepEqual((await readdir(root)).sort(), ['notes', 'release-now', 'release-prev'])
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

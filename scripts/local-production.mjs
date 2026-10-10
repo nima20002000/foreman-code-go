@@ -12,7 +12,7 @@ import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
-  removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
+  pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
   shouldOpenDashboardAfterInstall,
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, launchProduction, launchBrowser,
 } from './local-production-runtime.mjs'
@@ -243,6 +243,8 @@ async function install() {
     await enableProductionServices(run, [units.database, units.api], { firstInstall })
     await run('/usr/bin/systemctl', ['--user', 'start', units.api])
     await waitForReady()
+    const pruned = await pruneReleases(join(app, 'releases'), [release, previousRelease])
+    if (pruned.length) console.log(`Removed ${pruned.length} old release(s); kept the current and previous release.`)
     console.log(`Foreman Code backend installed: ${origin}/workspaces`)
     if (shouldOpenDashboardAfterInstall({ previousRelease, stdin: process.stdin, stdout: process.stdout })) {
       await handoffDashboard()

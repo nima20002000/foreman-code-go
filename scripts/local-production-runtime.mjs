@@ -350,6 +350,19 @@ export async function readActiveRuns(release, databaseUrl, wait) {
   }
 }
 
+/** Each install stages a full release (~1 GB). Keep the running one and the previous one for rollback; remove the rest. */
+export async function pruneReleases(releasesDirectory, keep) {
+  const kept = new Set(keep.filter(Boolean))
+  const removed = []
+  for (const name of await readdir(releasesDirectory)) {
+    const path = join(releasesDirectory, name)
+    if (!name.startsWith('release-') || kept.has(path)) continue
+    await rm(path, { recursive: true, force: true })
+    removed.push(path)
+  }
+  return removed
+}
+
 export async function readProductionIdentity(release, databaseUrl) {
   const require = createRequire(join(release, 'apps/api/package.json'))
   const { Pool } = require('pg')
