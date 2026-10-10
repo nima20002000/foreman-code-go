@@ -46,13 +46,13 @@ async function authoring() {
   return editor
 }
 async function choose(runId: string | null) {
-  if (runId === null) {
-    await userEvent.click(screen.getByRole('button', { name: 'Return to draft' }))
-    return
-  }
   const controls = screen.getByRole('group', { name: 'Board controls' })
   await userEvent.click(within(controls).getByRole('button', { name: /^Runs$/ }))
   const menu = await screen.findByRole('menu', { name: 'Runs' })
+  if (runId === null) {
+    await userEvent.click(within(menu).getByRole('menuitemradio', { name: 'New run' }))
+    return
+  }
   const item = await waitFor(() => {
     const row = menu.querySelector<HTMLButtonElement>(`[data-run-id="${runId}"]`)
     expect(row).not.toBeNull()
@@ -344,7 +344,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     }
   }, 15_000)
 
-  it('automatically pins an active Run and keeps Return to draft dismissed', async () => {
+  it('automatically pins an active Run and returns to authoring through New run', async () => {
     const fixture = getMockFixture(scope.workspaceId)!
     server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
       workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
@@ -355,7 +355,8 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     await savedY()
     expect(router.state.location.search).toMatchObject({ runId: 'run-a', workflowVersionId: 'version-a',
       executionSemanticsVersion: 3 })
-    expect(screen.getByRole('button', { name: 'Return to draft' }).closest('[role="status"]')).toHaveTextContent('Run a')
+    expect(screen.getByText('a', { selector: '.board-run-tag code' }).closest('[role="status"]')).toHaveTextContent('Run a')
+    expect(screen.queryByRole('button', { name: 'Return to draft' })).not.toBeInTheDocument()
     await choose(null)
     await waitFor(() => expect(screen.getByLabelText('Editable workflow graph')).toBeVisible())
     expect(router.state.location.search.runId).toBeUndefined()
@@ -442,7 +443,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     await userEvent.click(selector)
     const menu = await screen.findByRole('menu', { name: 'Runs' })
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'Runs' })).toHaveStyle({ width: '296px' }))
-    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: 'Return to draft' })).toBeEnabled()
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(3)
+    expect(within(menu).getByRole('menuitemradio', { name: 'New run' })).toBeEnabled()
   })
 })

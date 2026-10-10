@@ -131,7 +131,6 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
           {legacyRun ? <CurrentRunObserver scope={legacyRun} /> : null}
           {legacyRun ? <div className="board-run-tag" role="status">
             <RunContextLabel scope={legacyRun} />
-            <IconButton size="sm" variant="ghost" label="Return to draft" onClick={() => selectRun()}><Icon name="close" size={12} /></IconButton>
           </div> : null}
           <Drawer open={current && runsOpen} onOpenChange={setRunsOpen} title="Activities" className="workflow-board-runs-dialog"
             closeLabel="Close runs" size="lg" closeOnOutsideClick>
