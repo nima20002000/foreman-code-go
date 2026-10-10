@@ -31,6 +31,11 @@ export const ComputerAccountsListSchema = z.object({
 export const ComputerAccountsListInputSchema = z.object({
   refresh: z.boolean().optional(),
   cursor: z.uuid().optional(),
+  target: DeviceProvisioningTargetSchema.optional(),
+}).strict().refine(input => !input.target || !input.cursor, 'Choose a target or a page cursor, not both.')
+export const ComputerAccountsReadInputSchema = z.object({
+  target: DeviceProvisioningTargetSchema,
+  refresh: z.boolean().optional(),
 }).strict()
 export type ComputerAccountTool = z.infer<typeof ComputerAccountToolSchema>
 export type ComputerAccount = z.infer<typeof ComputerAccountSchema>

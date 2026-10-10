@@ -49,7 +49,7 @@ async function fixture(pool = database.pool) {
     name, audience: 'operator', expiresAt: new Date(Date.now() + 300_000), grants,
   })
   const owner = await issue([{ actions: ['bug_reports:report', 'bug_reports:read', 'bug_reports:update'], scope: {} }])
-  const request = (method: 'GET' | 'POST', url: string, payload?: unknown, token = owner.token) => app.inject({
+  const request = (method: 'GET' | 'POST', url: string, payload?: Record<string, unknown>, token = owner.token) => app.inject({
     method, url, headers: { authorization: `Bearer ${token}` }, ...(payload === undefined ? {} : { payload }),
   })
   const input = (overrides: Partial<BugReportCreateInput> = {}): BugReportCreateInput => ({
@@ -290,7 +290,8 @@ describe('bug report HTTP persistence', () => {
     expect(response.statusCode).toBe(201)
     expect(BugReportCreateResultSchema.parse(response.json()).report.reporter.audience).toBe('user')
     const reporter = await f.issue([{ actions: ['bug_reports:report'], scope: { workspaceIds: [f.workspaceId] } }])
-    const { workspaceId: _workspaceId, ...unscoped } = f.input()
+    const unscoped = f.input()
+    delete unscoped.workspaceId
     expect(BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports', unscoped,
       reporter.token)).json()).report.workspaceId).toBe(f.workspaceId)
     expect((await f.request('POST', '/api/management/bug-reports', unscoped)).statusCode).toBe(400)

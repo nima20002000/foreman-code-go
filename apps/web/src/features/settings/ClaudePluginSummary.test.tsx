@@ -14,9 +14,9 @@ afterEach(() => {
   clients.splice(0).forEach(client => client.clear())
   useOperatorChatStore.getState().reset()
 })
-function mount() {
+function mount(path = '/settings/harnesses?harness=claude&section=plugins') {
   const router = createRouter({ routeTree, history: createMemoryHistory({
-    initialEntries: ['/settings/harnesses?harness=claude&section=plugins'],
+    initialEntries: [path],
   }) })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
@@ -50,4 +50,25 @@ it('shows access failures without plugin data or edit controls for a plugin', as
   mount()
   expect(await screen.findByText('Plugin access denied.')).toBeVisible()
   expect(screen.queryByRole('button', { name: /Ask Operator to manage/ })).not.toBeInTheDocument()
+})
+
+it.each(['out-of-range URL', 'catalog shrink'])('corrects the offset after %s', async (scenario) => {
+  let total = scenario === 'catalog shrink' ? 30 : 10
+  const plugin = { pluginId: 'notes@official', name: 'notes', marketplaceName: 'official', description: null,
+    version: '1', installed: true, enabled: true, installCount: null }
+  server.use(http.get('/api/management/harnesses/claude/plugins', ({ request }) => {
+    const offset = Number(new URL(request.url).searchParams.get('offset') ?? 0)
+    return HttpResponse.json({ items: offset < total ? [plugin] : [], total, nextOffset: null,
+      marketplaces: [], revision: 'a'.repeat(64), checkedAt: new Date().toISOString() })
+  }))
+  const router = mount('/settings/harnesses?harness=claude&section=plugins&pluginOffset=24')
+  if (scenario === 'catalog shrink') {
+    await screen.findByRole('button', { name: 'Ask Operator to manage notes' })
+    expect(router.state.location.search.pluginOffset).toBe(24)
+    total = 10
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Refresh' }))
+  }
+  await waitFor(() => expect(router.state.location.search.pluginOffset).toBe(0))
+  expect(await screen.findByRole('button', { name: 'Ask Operator to manage notes' })).toBeVisible()
+  expect(screen.queryByText('No plugins found.')).not.toBeInTheDocument()
 })

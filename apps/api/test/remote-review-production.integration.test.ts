@@ -485,6 +485,7 @@ describe('production remote review and native recovery through authenticated MCP
       const detail = await waitForRemoteReview(async () => {
         await fixture.reconcile()
         return SavedRunDetailsSchema.parse(await fixture.value('run_get', {
+          detail: 'full',
           workspaceId: started.run.workspaceId, runId: started.run.id,
         }))
       }, value => value.run.executionState === 'completed', 'authenticated readback of the stopped Run')

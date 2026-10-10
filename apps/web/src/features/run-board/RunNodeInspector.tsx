@@ -1,8 +1,9 @@
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import type { RunBoardNodeSnapshot } from '@foreman-code/contracts/run-snapshots'
 import type { RepeatGraphScopeV3, RunExecutionSummary } from '@foreman-code/contracts/wave25'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
+import { ApiError } from '../../shared/api/client'
 import { Button } from '../../shared/ui/nocturne'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { isRunAccessError, runReadErrorLabel } from '../runs-selector/query'
@@ -10,6 +11,7 @@ import { SelectedNodePlacement } from '../node-placement/SelectedNodePlacement'
 import { readRunExecution, readRunExecutions } from '../workflow-board/runDetailsClient'
 import { ExecutionBranch } from '../workflow-board/inspect/ExecutionBranch'
 import { JsonValue } from '../workflow-board/inspect/JsonValue'
+import { refreshFirstInspectionPage } from '../workflow-board/inspect/queries'
 import { JobRunResult } from '../jobs/JobRunResult'
 import type { AvailableRunBoardSnapshot } from './model'
 import { readForRunVisit, runNodeInspectionKey, useRunNodeRead } from './inspectionQuery'
@@ -30,11 +32,13 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
   executionId?: string; onInspect(nodeId?: string, executionId?: string): void
 }) {
   useHarnessSessionEpoch()
+  const client = useQueryClient()
   const node = snapshot.nodes.find(item => item.id === nodeId)
   const scope: RepeatGraphScopeV3 = { workspaceId: snapshot.workspaceId, workflowId: snapshot.workflowId,
     runId: snapshot.runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3 }
+  const queryKey = [...runNodeInspectionKey(selection), nodeId, 'executions']
   const pages = useInfiniteQuery({
-    queryKey: [...runNodeInspectionKey(selection), nodeId, 'executions'],
+    queryKey,
     queryFn: ({ signal, pageParam }) => readForRunVisit(selection, signal,
       () => readRunExecutions(scope, { workflowNodeId: nodeId }, pageParam, { signal })),
     initialPageParam: null as string | null,
@@ -47,6 +51,7 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
   const items = pages.data?.pages.flatMap(page => page.items) ?? []
   const invalid = node && items.some(item => !matchesNode(node, item))
   const unavailable = pages.isError || invalid
+  const runFailure = pages.data?.pages[0]?.run.failure
   return <section className="run-execution-inspector" aria-label={`Run node inspector: ${node?.name ?? nodeId}`}>
     <header><h2>{node?.name ?? nodeId}</h2><span>Read only</span>
       <Button size="sm" onClick={() => onInspect()}>Close inspector</Button></header>
@@ -54,20 +59,26 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
       <SelectedNodePlacement selection={selection} nodeId={node.id} />
       {unavailable ? <p role="status">{invalid ? 'Execution does not match this saved node.' : runReadErrorLabel(pages.error)}</p> : <>
         {pages.isPending ? <p role="status">Reading node executions…</p> : null}
+        {runFailure ? <p role="status">Run failed: {runFailure.message} <code>{runFailure.code}</code></p> : null}
         {!pages.isPending && !items.length ? <p>No execution recorded for this node yet.</p> : null}
+        {pages.data?.pageParams[0] ? <p>Earlier executions are hidden. Refresh to return to the first page.</p> : null}
         <ol>{items.map(execution => <li key={execution.executionId}>
           <Button size="sm" aria-pressed={executionId === execution.executionId}
             onClick={() => onInspect(node.id, execution.executionId)}>
             Attempt {execution.attempt} · {execution.executionId}
           </Button>
-          <p>Recorded state: {execution.state}</p><ExecutionBranch execution={execution} />
+          <p>Recorded state: {execution.state}</p>
+          {execution.failure ? <p role="status">Agent failed: {execution.failure.message}
+            {' '}<code>{execution.failure.code}</code></p> : null}
+          <ExecutionBranch execution={execution} />
         </li>)}</ol>
         {pages.hasNextPage ? <Button size="sm" disabled={pages.isFetching}
           onClick={() => void pages.fetchNextPage()}>Load more executions</Button> : null}
         {executionId ? <NodeExecutionResult key={executionId} selection={selection} scope={scope}
           node={node} executionId={executionId} /> : null}
       </>}
-      <Button size="sm" disabled={pages.isFetching} onClick={() => void pages.refetch()}>Refresh node executions</Button>
+      <Button size="sm" disabled={pages.isFetching}
+        onClick={() => void refreshFirstInspectionPage(client, queryKey)}>Refresh node executions</Button>
     </>}
   </section>
 }
@@ -77,8 +88,13 @@ function NodeExecutionResult({ selection, scope, node, executionId }: {
 }) {
   const query = useRunNodeRead(selection, [node.id, executionId], signal => readRunExecution(scope, executionId, { signal }))
   if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
-  if (query.isError || query.data && !matchesNode(node, query.data.execution)) return <p role="status">
-    Execution result unavailable. {runReadErrorLabel(query.error)}
+  if (query.isError) return <p role="status">
+    Execution result unavailable. {ApiError.is(query.error)
+      ? <>{query.error.message} <code>{query.error.code}</code></>
+      : runReadErrorLabel(query.error)}
+  </p>
+  if (query.data && !matchesNode(node, query.data.execution)) return <p role="status">
+    Execution result unavailable. Execution does not match this saved node.
   </p>
   if (!query.data) return <p role="status">Reading execution result…</p>
   const detail = query.data

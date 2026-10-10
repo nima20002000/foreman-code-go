@@ -87,6 +87,17 @@ async function productionShutdownFixture() {
 }
 
 describe('actual worker native-port adapter', () => {
+  it('forwards the saved workflow system prompt into worker native session startup', async () => {
+    const f = await setup()
+    const systemPrompt = { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' }
+    const create = vi.spyOn(f.manager, 'createSession')
+    const preflight = vi.spyOn(f.ports, 'preflight')
+    await f.host.prepare({ ...f, request: { ...f.request, systemPrompt } })
+    expect(preflight.mock.calls[0]![0].systemPrompt).toEqual(systemPrompt)
+    expect(create.mock.calls[0]![0]).toMatchObject({ request: { systemPrompt } })
+    expect(f.state.starts).toBe(1)
+  })
+
   it.each(['prepare', 'inspect'] as const)('rejects retired OpenCode before %s can allocate a native manager', async operation => {
     const f = await setup()
     const configuration: AgentConfigurationVersion = {

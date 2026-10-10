@@ -1,5 +1,6 @@
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
+import { OperatorRunCompactSchema } from '@foreman-code/contracts/operator-mcp'
 import { HarnessExecutionSchema, type AgentConfigurationVersion, type NativeHarnessEvent } from '@foreman-code/contracts'
 import { RunActivitiesPageSchema, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
@@ -107,17 +108,62 @@ async function readSnapshot(app: ReturnType<typeof buildApp>, fixture: Awaited<R
   const http = await app.inject({ method: 'GET', url, headers: graphHeaders(fixture.writer.token) })
   expect(http.statusCode, http.body).toBe(200)
   const details = SavedRunDetailsSchema.parse(http.json())
-  const mcp = await graphRpc(app, fixture.writer.token, 'tools/call', { name: 'run_get', arguments: args })
+  const mcp = await graphRpc(app, fixture.writer.token, 'tools/call', { name: 'run_get', arguments: { ...args, detail: 'full' } })
   expect(mcp.result?.isError).not.toBe(true)
   expect(SavedRunDetailsSchema.parse(graphRpcValue(mcp.result))).toEqual(details)
   const denied = await fixture.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
-  const blocked = await graphRpc(app, denied.token, 'tools/call', { name: 'run_get', arguments: args })
+  const blocked = await graphRpc(app, denied.token, 'tools/call', { name: 'run_get', arguments: { ...args, detail: 'full' } })
   expect(blocked.error || blocked.result?.isError).toBeTruthy()
   expect(details.activitySnapshot).toBeDefined()
   return details.activitySnapshot!
 }
 
 describe('persisted native Run activity', () => {
+  it('bounds default MCP detail and names tools and command programs without arguments or credentials', async () => {
+    await activityFixture(async (pool, fixture, app) => {
+      for (let index = 0; index < 31; index++) {
+        await persistEvent(pool, fixture.run.id, { sequence: index + 1, occurredAt,
+          type: 'item.completed', payload: { threadId: 'native-session', item: {
+            id: `command-${index}`, type: 'commandExecution', status: 'completed',
+            command: '/usr/bin/git --token private-command-secret status',
+          } },
+        })
+      }
+      await persistEvent(pool, fixture.run.id, { sequence: 32, occurredAt,
+        type: 'item.completed', payload: { threadId: 'native-session', item: {
+          id: 'mcp-call', type: 'mcpToolCall', tool: 'workspace_list', status: 'completed',
+          arguments: { token: 'private-tool-secret' },
+        } },
+      })
+      await persistEvent(pool, fixture.run.id, { sequence: 33, occurredAt,
+        type: 'item.completed', payload: { threadId: 'native-session', item: {
+          id: 'opaque-command', type: 'commandExecution', command: 'privateExecutableSecret --password private-secret',
+          status: 'completed',
+        } },
+      })
+      const forbidden = await fixture.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
+      const denied = await graphRpc(app, forbidden.token, 'tools/call', { name: 'run_get',
+        arguments: { workspaceId: fixture.scope.workspaceId, runId: fixture.run.id } })
+      expect(denied.error || denied.result?.isError).toBeTruthy()
+      const result = await graphRpc(app, fixture.writer.token, 'tools/call', { name: 'run_get',
+        arguments: { workspaceId: fixture.scope.workspaceId, runId: fixture.run.id } })
+      expect(result.result?.isError).not.toBe(true)
+      const compact = OperatorRunCompactSchema.parse(graphRpcValue(result.result))
+      expect(compact.run.id).toBe(fixture.run.id)
+      expect(compact.activities).toHaveLength(25)
+      expect(compact.activitiesOmitted).toBeGreaterThan(0)
+      expect(compact.activities.some(item => item.title === 'Command: git')).toBe(true)
+      expect(compact.activities.some(item => item.title === 'Tool: workspace_list')).toBe(true)
+      expect(compact.run).not.toHaveProperty('input')
+      expect(JSON.stringify(compact)).not.toMatch(/private-command-secret|private-tool-secret|privateExecutableSecret|private-secret|--token|--password/)
+      expect(Buffer.byteLength(JSON.stringify(compact))).toBeLessThan(16 * 1024)
+      const full = await readSnapshot(app, fixture)
+      expect(full.activities.filter(item => item.kind === 'tool')).toHaveLength(33)
+      const page = await readBoth(app, fixture)
+      expect(page.items.some(item => item.summary === 'Tool: workspace_list completed')).toBe(true)
+    })
+  }, 120000)
+
   it('distinguishes absent and JSON-null errors from real error objects in PostgreSQL', async () => {
     await activityFixture(async (pool, fixture, app) => {
       const errors = [{}, { error: null }, { error: { message: 'private failure body' } }]

@@ -28,6 +28,7 @@ import { registerMcpDetectionRoute } from './routes/mcpDetection.js'
 import { registerProductRoutes, type ProductServices } from './routes/product.js'
 import { registerAgentChatRoutes } from './routes/agentChat.js'
 import { registerWorkflowScheduleRoutes } from './routes/workflowSchedules.js'
+import { registerProviderAccountRoutes } from './routes/providerAccounts.js'
 
 export interface ReadinessDependencies {
   database: { ping(signal?: AbortSignal): Promise<void> }
@@ -165,6 +166,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   if (options.operator) registerOperatorHttpSecurity(app, options.operator.access, options.localHuman, options.browserOrigin)
   if (options.operator) registerManagementRoutes(app, options.operator.services)
+  if (options.operator?.services.providerAccounts) registerProviderAccountRoutes(app, options.operator.services.providerAccounts)
   if (options.operator?.services.runPlacements) registerRunPlacementRoutes(app, options.operator.services.runPlacements)
   if (options.operator?.services.placementChoices) registerNodePlacementChoicesRoutes(app, options.operator.services.placementChoices)
   if (options.operator?.services.workflows?.schedules) registerWorkflowScheduleRoutes(app, options.operator.services.workflows.schedules)

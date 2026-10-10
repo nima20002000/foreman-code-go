@@ -137,6 +137,7 @@ export function useRevisionedForm<T>(incoming: Snapshot<T> | undefined, persiste
     conflicted,
     isSaving: form?.pending?.state === 'sending',
     uncertain: form?.pending?.state === 'uncertain',
+    pendingCommandId: form?.pending?.request.commandId,
     error: form?.error,
     issues: form?.issues,
     savedRevision: form?.savedRevision,

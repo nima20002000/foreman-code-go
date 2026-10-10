@@ -1,7 +1,8 @@
 import { join } from 'node:path'
 import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import * as fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -10,6 +11,8 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import { loadOrCreateWorkerIdentity, persistWorkerPairing } from '@foreman-code/contracts/device-identity-node'
 import { createInstalledCodexQualificationReader } from '../src/modules/harnesses/installedCodexQualification.js'
 import type { InstalledCodexInspection } from '../src/modules/harnesses/installedCodexInspection.js'
+import { inspectInstalledCodex } from '../src/modules/harnesses/installedCodexInspection.js'
+import { PayloadFingerprintCache } from '../src/modules/harnesses/payloadFingerprintCache.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import { HarnessQualificationRegistry } from '../src/modules/harnesses/qualification/registry.js'
 import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
@@ -23,6 +26,10 @@ vi.mock('node:fs/promises', async importOriginal => {
   return { ...actual, readFile: async (...args: Parameters<typeof actual.readFile>) =>
     args[0] instanceof URL && args[0].pathname.endsWith('/apps/worker/manifest.json')
       ? JSON.stringify(mount.manifest) : actual.readFile(...args) }
+})
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, createReadStream: vi.fn(actual.createReadStream) }
 })
 vi.mock('../src/modules/devices/installedWorkerDomains.ts', () => ({
   createInstalledWorkerDomains: async (input: { codexSuiteRevision: string }) => {
@@ -48,6 +55,7 @@ const { startConfiguredWorker } = await import(factoryPath)
 function fixture(options: {
   suiteRevision?: string
   binding?: DeviceSessionBinding
+  inspection?: InstalledCodexInspection
   assertResident?: Parameters<typeof createInstalledCodexQualificationReader>[0]['assertResident']
 } = {}) {
   const harness = 'codex'
@@ -58,14 +66,19 @@ function fixture(options: {
     keyRevision: 2, authorizationRevision: 3, connectionGeneration: 4, connectionEpoch: randomUUID(),
   }
   const hostRef = { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId }
-  const target = { hostRef, applicationInstallationId: binding.workerInstallationId, harnessInstallationId: `actual-${harness}-installation`, installationFingerprint: 'actual-whole-launcher-fingerprint' }
-  const sha = 'a'.repeat(64), hash = 'b'.repeat(64), timestamp = '2026-10-01T00:00:00.000Z'
-  const environment = { generation: 'actual-worker-environment', provenance: 'worker' as const, cwd: '/state', path: '/usr/bin' }
-  const installation = { hostRef, harnessInstallationId: target.harnessInstallationId, installationFingerprint: target.installationFingerprint,
+  const measured = options.inspection?.currentTarget
+  const target = measured?.target ?? { hostRef, applicationInstallationId: binding.workerInstallationId,
+    harnessInstallationId: `actual-${harness}-installation`, installationFingerprint: 'actual-whole-launcher-fingerprint' }
+  const sha = measured?.binarySha256 ?? 'a'.repeat(64)
+  const hash = 'b'.repeat(64)
+  const timestamp = '2026-10-01T00:00:00.000Z'
+  const environment = measured?.installation.launcher.environment ?? { generation: 'actual-worker-environment',
+    provenance: 'worker' as const, cwd: '/state', path: '/usr/bin' }
+  const installation = { ...(measured?.installation ?? { hostRef, harnessInstallationId: target.harnessInstallationId, installationFingerprint: target.installationFingerprint,
     driverId: harness, driverRevision: '1', protocolRevision: `${harness}-native-adapter-v1`, environmentGeneration: environment.generation,
     connectionGeneration: harnessConnectionGeneration(binding), launcher: { requested: `/installed/${harness}`, resolvedLauncher: `/installed/${harness}`,
       fingerprint: target.installationFingerprint, payloadFingerprints: [{ path: `/installed/${harness}`, fingerprint: sha }],
-      status: 'installed' as const, interpreter: null, diagnostics: [], environment, checkedAt: timestamp },
+      status: 'installed' as const, interpreter: null, diagnostics: [], environment, checkedAt: timestamp } }),
     observedVersion: version, installed: true, authenticated: null, compatible: null, qualified: true }
   const configuration = { id: 'configuration', agentId: 'agent', workspaceId: 'workspace', version: 1,
     prompt: { system: 'test' }, assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS[harness], contentHash: 'configuration-hash', createdAt: timestamp }
@@ -106,7 +119,7 @@ function fixture(options: {
   const inspection: {
     inventory: InstalledCodexInspection['inventory']
     currentTarget: InstalledCodexInspection['currentTarget']
-  } = { inventory: { instances: [], installations: [{ ...facts.harness.installation, observedVersion: null, qualified: false }] },
+  } = options.inspection ?? { inventory: { instances: [], installations: [{ ...facts.harness.installation, observedVersion: null, qualified: false }] },
     currentTarget: { binding, target, installation: { ...facts.harness.installation, observedVersion: null, qualified: false }, binarySha256: sha, expectedVersion: version } }
   let live: typeof binding | null = binding
   const inspect = vi.fn(async () => structuredClone(inspection)), readFacts = vi.fn(async () => structuredClone(facts))
@@ -119,6 +132,49 @@ function fixture(options: {
 }
 
 describe('actual Main and installed Codex qualification read capability', () => {
+  it('reuses unchanged payload bytes across concurrent captures while rereading Main proof and rejecting changed files', async () => {
+    const root = await mkdtemp(join(persistentFixtureRoot, 'installed-codex-read-'))
+    try {
+      const binary = join(root, 'codex')
+      const payload = join(root, 'native-payload')
+      const path = join(root, 'workflow.json')
+      await writeFile(binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('fixture')]), { mode: 0o700 })
+      await writeFile(payload, 'payload-one')
+      await writeFile(path, JSON.stringify({ schemaVersion: 1, codexBinary: binary,
+        appMcpLauncher: '/installed/launcher', expectedVersion: '0.132.0', payloadPaths: [payload] }), { mode: 0o600 })
+      const binding = fixture().binding
+      const input = { binding, configuration: { path, ownerUid: process.getuid!() },
+        environment: { PATH: '/usr/bin' }, cwd: root, signal: new AbortController().signal,
+        fingerprintCache: new PayloadFingerprintCache() }
+      vi.mocked(fs.createReadStream).mockClear()
+      const inspection = await inspectInstalledCodex(input)
+      const f = fixture({ binding, inspection })
+      f.inspect.mockImplementation(() => inspectInstalledCodex(input))
+      const [first, second] = await Promise.all([f.reader.capture(), f.reader.capture()])
+      expect(first.qualification).toEqual(second.qualification)
+      expect(first.inspection.currentTarget?.target).toEqual(inspection.currentTarget?.target)
+      expect(fs.createReadStream).toHaveBeenCalledTimes(2)
+      expect(f.readFacts).toHaveBeenCalledTimes(2)
+
+      f.facts.harness.qualification.status = 'unqualified'
+      await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+      expect(f.readFacts).toHaveBeenCalledTimes(3)
+      expect(fs.createReadStream).toHaveBeenCalledTimes(2)
+
+      f.facts.harness.qualification.status = 'qualified'
+      const before = await stat(payload)
+      f.readFacts.mockImplementationOnce(async () => {
+        await writeFile(payload, 'payload-two')
+        await utimes(payload, before.atime, before.mtime)
+        return structuredClone(f.facts)
+      })
+      await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+      expect(f.readFacts).toHaveBeenCalledTimes(4)
+      expect(fs.createReadStream).toHaveBeenCalledTimes(3)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
   it('uses Main’s saved Codex settings, prompts and skills without an offline copy', async () => {
     const f = fixture()
     f.facts.configuration.prompt = { system: 'Instructions saved on Main.' }

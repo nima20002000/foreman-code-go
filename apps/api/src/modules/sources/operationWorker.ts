@@ -6,6 +6,7 @@ import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { isDeepStrictEqual } from 'node:util'
+import { assertWorktreeReceipt } from './worktreeRequest.js'
 import { z } from 'zod'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, SourceOperationResponseSchema,
@@ -67,6 +68,12 @@ function checkOwner(request: SourceFilesystemOperation, raw: SourceOperationOwne
   if (request.operation === 'sources.prepare') {
     if (!isDeepStrictEqual(request.root, root) || !isDeepStrictEqual(request.attempt, owner.attempt) || !isDeepStrictEqual(request.identity, owner.identity))
       throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Preparation cannot change the accepted original source/root/owner identity.')
+    if (!isDeepStrictEqual(request.worktree, owner.worktree)) {
+      throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Preparation cannot change the accepted Agent branch request.')
+    }
+    if (request.worktree && (owner.preparationKind !== 'workflow' || root.binding.accessMode !== 'exclusive-write')) {
+      throw new SourceError('SOURCE_READ_ONLY', 'Agent branches require a writable workflow source.')
+    }
   } else if (request.operation === 'sources.reconcile-preparation') {
     if (owner.preparationClosed !== true) throw new SourceError('source-reconciliation-unconfirmed', 'Original Main preparation admission is not closed.')
   } else if (!owner.record || !isDeepStrictEqual(request.record, owner.record) || request.record.operationId !== owner.identity.operationId
@@ -217,7 +224,11 @@ export class SourceOperationWorkerService {
       if (request.operation === 'sources.prepare') {
         const materializer = new PrivateSourceMaterializer(reader, reauthorize, quotaPool)
         const recovered = await materializer.recover(owner.root.binding, owner.attempt, context.signal)
-        if (recovered) { await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: recovered }) }
+        if (recovered) {
+          assertWorktreeReceipt(recovered, owner.worktree)
+          await reauthorize()
+          return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: recovered })
+        }
         const transferContext = await this.options.transferContext(context)
         for (const key of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision', 'bootId'] as const)
           if (transferContext[key] !== context.binding[key]) throw new SourceError('SOURCE_TRANSFER_CONFLICT', 'Transfer reader is not bound to the actual current authenticated device.')
@@ -239,6 +250,7 @@ export class SourceOperationWorkerService {
           ...(owner.preparationKind === 'workflow' && owner.root.binding.accessMode === 'exclusive-write'
             ? { sharedWritableTree: true, ...(request.worktree ? { worktree: request.worktree } : {}) } : {}) })
         await packageReader.complete(); await reauthorize()
+        assertWorktreeReceipt(receiptValue, owner.worktree, manifest.git?.commit)
         return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, receipt: receiptValue })
       }
       const record = request.record

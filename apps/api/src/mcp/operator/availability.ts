@@ -1,4 +1,5 @@
 import { type ManagementAction, type ManagementScope, type OperatorToolName } from '@foreman-code/contracts/management'
+import { REPOSITORY_ADD_ACTIONS, REPOSITORY_READ_ACTIONS } from '../../modules/workspaces/repositoryService.js'
 import { placementChoiceRequirements } from '../../modules/placement/choicesService.js'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { OPERATOR_TOOL_ACTIONS } from './catalog.js'
@@ -122,12 +123,17 @@ export const TELEMETRY_READ_ACTIONS: readonly ManagementAction[] = ['devices:met
 
 export function operatorToolRequirements(name: OperatorToolName, resource?: AuthorizedResource): Requirement[] {
   void resource
+  if (name === 'workspace_repository_add' || name === 'workspace_repository_get') {
+    const actions = name === 'workspace_repository_add' ? REPOSITORY_ADD_ACTIONS : REPOSITORY_READ_ACTIONS
+    return actions.map(action => ({ action, scope: 'workspace' as const }))
+  }
   if (name === 'workflow_node_placement_choices') return [...placementChoiceRequirements]
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') return TELEMETRY_READ_ACTIONS.map(action => ({ action, scope: action === 'devices:metrics:read' ? 'global' : 'resource' }))
   const entry = OPERATOR_TOOL_ACTIONS.find((item) => item.name === name)!
   const extended = extensions[name]
   let scope: ScopeKind = extended?.scope ?? 'resource'
-  if (name.startsWith('general_settings_')) scope = 'global'
+  if (name.startsWith('general_settings_') || name.startsWith('system_prompt_')
+    || name.startsWith('operator_initial_prompt_')) scope = 'global'
   if (['harness_list','harness_get','harness_defaults_update','harness_qualifications_list','harness_qualification_run','harness_compatibility_list','harness_compatibility_retry','agent_defaults_get','agent_defaults_update','workflow_defaults_get','workflow_defaults_update','workspace_defaults_get','workspace_defaults_update','workspace_create','operator_chat_create','operator_chat_get','operator_chat_send','operator_chat_cancel','operator_chat_respond','operator_handoff_history_get'].includes(name)) scope = 'global'
   if (['operator_chat_list', 'operator_chat_history_get', 'operator_chat_activity_get',
     'operator_chat_delete', 'operator_chat_restore'].includes(name)) scope = 'global'
@@ -146,6 +152,10 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (['claude_setup_options_get', 'operator_mcp_setup_get', 'harness_mcp_servers_list', 'harness_mcp_change_request', 'harness_mcp_managed_request', 'harness_mcp_change_get', 'harness_mcp_change_reconcile', 'codex_plugins_list', 'codex_plugin_get', 'codex_plugin_change', 'codex_plugin_reconcile', 'claude_plugins_list', 'claude_plugin_change', 'claude_plugin_marketplace_add'].includes(name)) scope = 'global'
   if (['workspace_folders_list', 'workspace_folder_create', 'workspace_folder_rename', 'workspace_folder_undo', 'workspace_folders_delete'].includes(name)) scope = 'global'
   const result: Requirement[] = [{action:entry.action,scope}]
+  if (name.startsWith('provider_account')) {
+    result[0]!.scope = 'global'
+    if (name !== 'provider_accounts_list') result.push({ action: 'settings:read', scope: 'global' })
+  }
   if (name === 'interaction_respond') result.push({ action: 'interactions:read', scope: 'resource' })
   if (name === 'workspace_storage_folders_list' || name === 'workspace_storage_folder_delete') {
     result[0]!.scope = 'global'
@@ -160,7 +170,10 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   if (name === 'source_approve') result.push({action:'sources:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
   if (name.startsWith('source_preparation_')) result.push({action:'source_roots:read',scope:'workspace'})
   if (name === 'source_preparation_reconcile') result.push({action:'sources:read',scope:'workspace'})
-  if (name.startsWith('source_root_')) result.push({action:'sources:read',scope:'workspace'})
+  if (name.startsWith('source_root_')) {
+    result.push({action:'sources:read',scope:'workspace'})
+    if (name !== 'source_root_bind') result.push({action:'workspace_locations:read',scope:'workspace'})
+  }
   if (name === 'source_root_bind') result.push({action:'source_roots:read',scope:'workspace'},{action:'workspace_locations:read',scope:'workspace'})
   // Every chat command returns protected state. Discovery requires overlapping
   // read and command grants, including grants restricted to a selected Run.
@@ -215,7 +228,9 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
   if (name.startsWith('bug_report') && !service.bugReports) return false
-  if (name.startsWith('general_settings_') && !service.settings) return false
+  if (name.startsWith('provider_account') && !service.providerAccounts) return false
+  if ((name.startsWith('general_settings_') || name.startsWith('system_prompt_')
+    || name.startsWith('operator_initial_prompt_')) && !service.settings) return false
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') {
     if (!service.resourceTelemetry) return false
     return TELEMETRY_READ_ACTIONS.some(action => action === 'devices:metrics:read'
@@ -223,6 +238,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
       : resource && Object.keys(resource).length ? isAuthorized(context.principal, action, resource) : hasAction(context.principal, action))
   }
   if (name === 'harness_registry_get' && !service.harnessRegistry) return false
+  if (name.startsWith('workspace_repository_') && !service.workspaceRepositories) return false
   if (name.startsWith('workspace_root_') && !service.workspaceRoots) return false
   if (name.startsWith('source_') && !service.sources) return false
   if (name.startsWith('device_connection_') && !service.trustedConnections) return false

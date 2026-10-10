@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION,
-  MaintenanceRequestSchema, MaintenanceTaskStartSchema, SyncedMcpServerSchema } from './computerMaintenance.js'
+  ComputerMaintenanceStartInputSchema, MaintenanceRequestSchema, MaintenanceTaskStartSchema, MaintenanceStatusSchema,
+  MaintenanceTaskSchema, SyncedMarketplaceSchema,
+  SyncedMcpServerSchema, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_JSON_BYTES,
+  WORKER_UPDATE_MAX_BINARY_BYTES, WorkerArtifactRequestSchema, WorkerArtifactReplySchema,
+  WorkerUpdateStatusSchema } from './computerMaintenance.js'
+import { ClaudePluginMarketplaceAddInputSchema } from './management/claudePlugins.js'
 import { negotiateDeviceExtensions } from './deviceApplication.js'
 import { HarnessMcpConnectionSchema } from './management/harnessSettings.js'
 
@@ -40,6 +45,30 @@ describe('fleet MCP credential restrictions', () => {
 })
 
 describe('fleet source availability', () => {
+  it.each([
+    'https://owner:fixture-password@plugins.example/repo.git',
+    'https://fixture-token@plugins.example/repo.git',
+    'https://plugins.example/repo.git?access_token=fixture-token',
+    'https://plugins.example/repo.git#fixture-token',
+    'ssh://git:fixture-password@plugins.example/repo.git',
+  ])('rejects credential-bearing marketplace sources at both native and fleet inputs: %s', source => {
+    expect(SyncedMarketplaceSchema.safeParse({ name: 'plugins', source }).success).toBe(false)
+    expect(ClaudePluginMarketplaceAddInputSchema.safeParse({ source,
+      commandId: '44444444-4444-4444-8444-444444444444', expectedRevision: 'a'.repeat(64) }).success).toBe(false)
+  })
+
+  it.each(['owner/repo', 'https://plugins.example/repo.git', 'git@plugins.example:owner/repo.git',
+    'ssh://git@plugins.example/owner/repo.git'])('accepts credential-free marketplace sources: %s', source => {
+    expect(SyncedMarketplaceSchema.parse({ name: 'plugins', source })).toEqual({ name: 'plugins', source })
+  })
+
+  it('rejects duplicate harnesses at both management and receiver inputs', () => {
+    const task = { kind: 'update-harnesses', harnesses: ['codex', 'codex'] }
+    expect(MaintenanceTaskStartSchema.safeParse(task).success).toBe(false)
+    expect(ComputerMaintenanceStartInputSchema.safeParse({ task,
+      commandId: '44444444-4444-4444-8444-444444444444' }).success).toBe(false)
+  })
+
   it('accepts an available empty catalog while omitting an unavailable harness', () => {
     expect(MaintenanceTaskStartSchema.parse({ kind: 'sync-mcp', servers: { codex: [] } }))
       .toEqual({ kind: 'sync-mcp', servers: { codex: [] } })
@@ -82,5 +111,51 @@ describe('maintenance protocol negotiation', () => {
     expect(MaintenanceRequestSchema.safeParse(request).success).toBe(false)
     expect(MaintenanceRequestSchema.parse({ ...request, commandId: '44444444-4444-4444-8444-444444444444' }))
       .toEqual({ ...request, commandId: '44444444-4444-4444-8444-444444444444' })
+  })
+})
+
+describe('Worker updates', () => {
+  it('accepts the same update task through the public and device APIs', () => {
+    const task = { kind: 'update-worker' }
+    const commandId = '44444444-4444-4444-8444-444444444444'
+    expect(MaintenanceTaskStartSchema.parse(task)).toEqual(task)
+    expect(ComputerMaintenanceStartInputSchema.parse({ commandId, task })).toEqual({ commandId, task })
+    expect(MaintenanceRequestSchema.parse({ operation: 'start', commandId, task }))
+      .toEqual({ operation: 'start', commandId, task })
+  })
+
+  it('keeps Worker status optional and reports failed updates without changing task history', () => {
+    const status = { harnesses: [], system: { packageUpdates: null, rebootRequired: false, sudo: false, disk: null },
+      tasks: [], observedAt: '2026-10-10T00:00:00.000Z' }
+    expect(MaintenanceStatusSchema.parse(status)).toEqual(status)
+    const worker = { currentVersion: '0.0.56', targetVersion: '0.0.57', state: 'rolled-back', lastError: 'Start failed' }
+    expect(MaintenanceStatusSchema.parse({ ...status, worker })).toEqual({ ...status, worker })
+    expect(WorkerUpdateStatusSchema.safeParse({ ...worker, state: 'complete' }).success).toBe(false)
+  })
+
+  it('retains the restart target on an in-progress Worker update task', () => {
+    const task = { id: '44444444-4444-4444-8444-444444444444', kind: 'update-worker', state: 'running',
+      startedAt: '2026-10-10T00:00:00.000Z', finishedAt: null, summary: 'Restarting Worker', outputTail: '' }
+    expect(MaintenanceTaskSchema.parse(task)).toEqual(task)
+    expect(MaintenanceTaskSchema.parse({ ...task, workerTargetVersion: '0.0.57' }))
+      .toEqual({ ...task, workerTargetVersion: '0.0.57' })
+  })
+
+  it('negotiates artifact requests from Worker to Main only', () => {
+    const descriptor = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
+      maxJsonBytes: WORKER_UPDATE_MAX_JSON_BYTES, maxBinaryBytes: WORKER_UPDATE_MAX_BINARY_BYTES }
+    expect(negotiateDeviceExtensions([{ ...descriptor, role: 'server' }], [{ ...descriptor, role: 'client' }]))
+      .toMatchObject([{ workerCanRequest: true, mainCanRequest: false, maxBinaryBytes: 262_144 }])
+  })
+
+  it('rejects unbounded chunks and unsafe artifact paths', () => {
+    const request = { operation: 'chunk', manifestSha256: 'a'.repeat(64), path: 'src/cli.mjs', offset: 0 }
+    expect(WorkerArtifactRequestSchema.parse(request)).toEqual(request)
+    expect(WorkerArtifactRequestSchema.parse({ ...request, path: 'manifest.json' })).toMatchObject({ path: 'manifest.json' })
+    for (const path of ['/etc/passwd', '../identity.json', 'src//cli.mjs', 'src/./cli.mjs']) {
+      expect(WorkerArtifactRequestSchema.safeParse({ ...request, path }).success).toBe(false)
+    }
+    expect(WorkerArtifactRequestSchema.safeParse({ ...request, offset: Number.MAX_SAFE_INTEGER }).success).toBe(false)
+    expect(WorkerArtifactReplySchema.safeParse({ ...request, byteSize: 262_145 }).success).toBe(false)
   })
 })

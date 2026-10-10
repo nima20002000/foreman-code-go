@@ -1,3 +1,4 @@
+import { WorkflowWorktreeSettingsSchema } from '../worktreeSettings.js'
 import { z } from 'zod'
 import { ApprovalHandlerSchema, CurrentAgentWorkflowNodeSchema,
   DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS } from './workflowShape.js'
@@ -10,6 +11,7 @@ import { sameExecutableWorkflow } from './meaningfulEdit.js'
  * complexity. An explicit retired/unknown tag fails before any command work. */
 export const CurrentWorkflowCreateInputSchema = WorkflowCreateInputSchema.extend({
   executionSemanticsVersion: z.literal(3).optional(),
+  defaultWorktree: WorkflowWorktreeSettingsSchema.nullable().optional(),
 }).strict()
 export type CurrentWorkflowCreateInput = z.infer<typeof CurrentWorkflowCreateInputSchema>
 
@@ -104,6 +106,11 @@ export const CurrentWorkflowCapabilitiesSchema = z.object({
   approvalHandlers: z.array(ApprovalHandlerSchema),
   forms: z.tuple([z.literal('sequential'), z.literal('parallel_all_required'), z.literal('conditional'),
     z.literal('approval'), z.literal('bounded_repeat')]),
+  worktrees: z.object({ workflowDefault: z.literal(true), agentBranchOverride: z.literal(true),
+    rootOverride: z.literal('node.placement'), creationOptOut: z.literal(true),
+    immutableSource: z.literal(true), uniqueExecutionBranch: z.literal(true),
+    requiredSelectionReads: z.tuple([z.literal('sources:read'), z.literal('source_roots:read'),
+      z.literal('workspace_locations:read')]) }).strict(),
   savedAuthoring: z.literal(true), persistedReadback: z.literal(true),
   runtimeAdmission: z.boolean(), stopAvailable: z.boolean(), meaningfulEdit: z.boolean(),
   editIntents: z.object({ stage: z.literal(true), read: z.literal(true), discard: z.literal(true),
@@ -131,6 +138,9 @@ export const CURRENT_WORKFLOW_CAPABILITIES = CurrentWorkflowCapabilitiesSchema.p
     perExecution: true, approvalWaitExcluded: true },
   approvalHandlers: ApprovalHandlerSchema.options,
   forms: ['sequential', 'parallel_all_required', 'conditional', 'approval', 'bounded_repeat'],
+  worktrees: { workflowDefault: true, agentBranchOverride: true, rootOverride: 'node.placement',
+    creationOptOut: true, immutableSource: true, uniqueExecutionBranch: true,
+    requiredSelectionReads: ['sources:read', 'source_roots:read', 'workspace_locations:read'] },
   savedAuthoring: true, persistedReadback: true, runtimeAdmission: false, stopAvailable: false, meaningfulEdit: false,
   editIntents: { stage: true, read: true, discard: true, publishWhenSettled: true, stopUnsettled: false,
     stagedAgents: true, presentationOnly: true },

@@ -1,4 +1,4 @@
-export const bugReportsMigration = { version: 2026101001, sql: `
+export const bugReportsMigration = { version: 2026101003, sql: `
   create table bug_reports (
     id text primary key,
     workspace_id text not null references workspaces(id),

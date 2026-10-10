@@ -1,7 +1,7 @@
 import { GraphIdSchema, RunActivityPublicSchema,
   type RunActivityPublic, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { repeatId } from './repeatResolution.js'
-import { safeNodeName } from './nativeAction.js'
+import { safeNodeName, nativeToolTitle } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
 import { codexUnsupportedInteractionMessage } from '@foreman-code/contracts'
@@ -28,6 +28,12 @@ const count = (value: unknown): number | undefined => typeof value === 'number'
 
 function toolLabel(native: Record<string, unknown>): string | undefined {
   const item = string(native.itemType), part = string(native.partTool)
+  if (item === 'commandExecution' && native.commandName) {
+    return nativeToolTitle(item, undefined, string(native.commandName))
+  }
+  if ((item === 'mcpToolCall' || item === 'dynamicToolCall') && native.toolName) {
+    return nativeToolTitle(item, string(native.toolName))
+  }
   if (item === 'commandExecution' || part === 'bash') return 'Command action'
   if (item === 'fileChange' || ['write','edit','apply_patch','multiedit'].includes(part ?? '')) return 'File change'
   if (item === 'webSearch' || ['websearch','webfetch','codesearch'].includes(part ?? '')) return 'Web search'

@@ -14,6 +14,7 @@ import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } fr
 import { PairedMcpEndpointSchema } from './mcpDetection.js'
 import { AgentChatDirectoryBindingSchema } from './agentChat.js'
 import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from './files.js'
+import { PromptSettingSnapshotSchema } from './prompts.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -27,6 +28,7 @@ export const WorkerConversationOwnerSchema = z.discriminatedUnion('kind', [
 export const WorkerConversationBindingSchema = z.object({
   owner: WorkerConversationOwnerSchema,
   directoryBinding: AgentChatDirectoryBindingSchema.optional(),
+  systemPrompt: PromptSettingSnapshotSchema.optional(),
   harness: z.lazy(() => AgentHarnessSchema),
   profile: HarnessProfileSelectionSchema,
   workingDirectory: directory,
@@ -40,6 +42,9 @@ export const WorkerConversationBindingSchema = z.object({
   }
   if (value.owner.kind === 'operator' && value.directoryBinding) {
     context.addIssue({ code: 'custom', message: 'Saved node directories belong only to Agent chat.' })
+  }
+  if (value.owner.kind === 'operator' && value.systemPrompt) {
+    context.addIssue({ code: 'custom', message: 'The Operator does not receive the app-wide System prompt.' })
   }
 })
 export type WorkerConversationBinding = z.infer<typeof WorkerConversationBindingSchema>

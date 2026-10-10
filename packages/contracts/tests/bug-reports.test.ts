@@ -4,6 +4,7 @@ import {
   BugReportListInputSchema,
   BugReportSchema,
   BugReportUpdateInputSchema,
+  type BugReportCreateInput,
 } from '../src/management/bugReports.js'
 
 const input = {
@@ -37,7 +38,8 @@ describe('bug report contracts', () => {
   })
 
   it('returns persisted server metadata for local human reporters', () => {
-    const { commandId: _commandId, ...content } = input
+    const content: Partial<BugReportCreateInput> = { ...input }
+    delete content.commandId
     expect(BugReportSchema.parse({
       ...content,
       id: 'bug-report-one',

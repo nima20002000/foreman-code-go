@@ -26,12 +26,12 @@ export async function assertWorkflowFailureReadback(f: Awaited<ReturnType<typeof
     expect(http.statusCode, http.body).toBe(200)
     expect(http.json()).toMatchObject({ run: { executionState: 'completed', outcome: 'failed',
       result: { error: { code, retryable: false } } }, cleanupPending: false })
-    const mcp = await graphRpc(app, f.writer.token, 'tools/call', { name: 'run_get', arguments: args })
+    const mcp = await graphRpc(app, f.writer.token, 'tools/call', { name: 'run_get', arguments: { ...args, detail: 'full' } })
     expect(mcp.result?.isError).not.toBe(true)
     expect(graphRpcValue(mcp.result)).toEqual(http.json())
     const denied = await f.credential([{ actions: ['runs:read'],
       scope: { workspaceIds: [f.run.workspaceId], workflowIds: ['another-workflow'] } }])
-    const blocked = await graphRpc(app, denied.token, 'tools/call', { name: 'run_get', arguments: args })
+    const blocked = await graphRpc(app, denied.token, 'tools/call', { name: 'run_get', arguments: { ...args, detail: 'full' } })
     expect(blocked.result?.isError).toBe(true)
     expect(JSON.stringify(blocked.result)).toContain('ACCESS_DENIED')
     expect((await app.inject({ method: 'GET', url, headers: graphHeaders(denied.token) })).statusCode).toBe(403)

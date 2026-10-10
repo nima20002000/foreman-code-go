@@ -9,6 +9,9 @@ import { fixture } from '../graph/nextDraft/core.cases'
 import { useGraphDraftStore } from '../graph/store'
 import * as client from './client'
 import { savedPlacementFixture as placement } from './fixtures'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../mocks/server'
+import { worktreeFixture } from '../workflow-board/worktree.fixtures'
 
 it('Board Apply changes the exact node draft while keeping saved placement and other nodes separate', async () => {
   const context = fixture(), key = 'placement-apply-test'
@@ -89,6 +92,84 @@ it('applies inherited Main by removing only the selected node placement from the
   query.clear()
   read.mockRestore()
   useGraphDraftStore.getState().dropNextDraft(key)
+})
+
+it('inherits a workflow worktree and applies a branch-only override to the selected node', async () => {
+  const context = fixture()
+  const project = worktreeFixture('workspace')
+  context.draft.graph.defaultWorktree = { rootBinding: project.rootBinding, branchPrefix: 'foreman/workflow' }
+  const key = 'branch-prefix-node-test'
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  server.use(
+    http.get('/api/management/workspaces/workspace/source-roots', () => HttpResponse.json({ items: [project.root], readiness: 'metadata-only' })),
+    http.get('/api/management/workspaces/workspace/root-policies', () => HttpResponse.json({ workspaceId: 'workspace',
+      policies: [project.location.binding], allowlists: [], readiness: 'metadata-only' })),
+    http.post('/api/management/workspaces/workspace/sources/get', () => HttpResponse.json(project.source)),
+    http.get('/api/management/workspaces/workspace', () => HttpResponse.json({ workspace: { id: 'workspace', name: 'Website',
+      repository: project.repository }, revision: 2, archivedAt: null, executionLocation: project.location.executionLocation,
+      locationRevision: 1, locationValidation: { status: 'ready', checkedAt: project.source.approvedAt } })),
+  )
+  const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
+    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+  function Board() {
+    const edit = useGraphDraftStore(state => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  const user = userEvent.setup()
+  try {
+    await screen.findByText(/Inherited from workflow: Main · octo-owner\/website/)
+    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toHaveValue('')
+    await user.type(screen.getByRole('textbox', { name: 'Agent branch prefix' }), 'foreman/reviewer')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).worktree).toBeUndefined()
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    const applied = useGraphDraftStore.getState().nextDrafts[key]!
+    expect(nativeNode(applied.graph.nodes[0]).worktree).toEqual({ branchPrefix: 'foreman/reviewer' })
+    expect(applied.graph.nodes[0]).not.toHaveProperty('placement')
+    expect(applied.graph.nodes[1]).not.toHaveProperty('worktree')
+    expect(applied.context.draft.graph.nodes[0]).not.toHaveProperty('worktree')
+    expect(screen.getByText('Override: Agent branch prefix foreman/reviewer.')).toBeInTheDocument()
+  } finally {
+    view.unmount()
+    query.clear()
+    read.mockRestore()
+    useGraphDraftStore.getState().dropNextDraft(key)
+  }
+})
+
+it('Use workflow default clears both placement and prefix while retaining other node fields', async () => {
+  const context = fixture()
+  const key = 'clear-node-worktree-test'
+  context.draft.graph.nodes = context.draft.graph.nodes.map(node => ({ ...node, placement,
+    initialPrompt: 'Keep this task', worktree: { branchPrefix: 'foreman/override' } }))
+  useGraphDraftStore.getState().installNextDraft(key, context)
+  const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
+    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+  function Board() {
+    const edit = useGraphDraftStore(state => state.nextDrafts[key])!
+    return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
+  }
+  const query = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={query}><Board /></QueryClientProvider>)
+  try {
+    await userEvent.click(screen.getByRole('button', { name: 'Use workflow default' }))
+    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toHaveValue('')
+    expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]!.graph.nodes[0]).placement).toEqual(placement)
+    await userEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    const applied = useGraphDraftStore.getState().nextDrafts[key]!
+    expect(applied.graph.nodes[0]).not.toHaveProperty('placement')
+    expect(applied.graph.nodes[0]).not.toHaveProperty('worktree')
+    expect(nativeNode(applied.graph.nodes[0]).initialPrompt).toBe('Keep this task')
+    expect(nativeNode(applied.graph.nodes[1]).worktree).toEqual({ branchPrefix: 'foreman/override' })
+    expect(nativeNode(applied.context.draft.graph.nodes[0]).placement).toEqual(placement)
+    expect(nativeNode(applied.context.draft.graph.nodes[0]).worktree).toEqual({ branchPrefix: 'foreman/override' })
+  } finally {
+    view.unmount()
+    query.clear()
+    read.mockRestore()
+    useGraphDraftStore.getState().dropNextDraft(key)
+  }
 })
 
 it('keeps unrelated Agent edits when placement choices are denied for a saved placed node', async () => {

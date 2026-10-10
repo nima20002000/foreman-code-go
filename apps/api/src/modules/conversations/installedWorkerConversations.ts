@@ -168,6 +168,7 @@ export async function createInstalledWorkerConversations(input: {
       if (owner.kind !== 'agent' || !('agentId' in configuration) || environment) unavailable('The native chat role changed.')
       return { kind: 'agent-chat', configuration, conversationId: owner.conversationId, workflowId: owner.workflowId,
         workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
+        ...(binding.systemPrompt ? { systemPrompt: binding.systemPrompt } : {}),
         workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
     }
     return { manager, inspector, nativeOwner, start,
@@ -217,6 +218,7 @@ export async function createInstalledWorkerConversations(input: {
       }
       return operations.run(request, () => host.handle(request, connection, signal))
     },
+    drainForUpdate: () => host.drainForUpdate(),
     close: async () => { await host.shutdown(); await files.close() },
   }
 }

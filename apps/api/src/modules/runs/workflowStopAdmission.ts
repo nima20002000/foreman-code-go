@@ -66,8 +66,9 @@ export async function admitWorkflowStopIntent(pool: pg.Pool, supplied: CurrentSt
   const requestHash = commandInputHash(context.input)
   return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
     const opened = await lockStopRun(sql, context)
+    // Intents are immutable; the command and Run locks already serialize admission.
     const row = (await sql.query<{ record: StopIntent; source_id: string; source_digest: string }>(
-      'select record,source_id,source_digest from workflow_stop_intents where principal_id=$1 and command_id=$2 for update',
+      'select record,source_id,source_digest from workflow_stop_intents where principal_id=$1 and command_id=$2',
       [context.principal.id, context.input.commandId])).rows[0]
     if (row) {
       const stored = row.record

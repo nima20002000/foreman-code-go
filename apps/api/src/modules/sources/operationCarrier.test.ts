@@ -92,6 +92,36 @@ it('waits out the Worker preparation budget instead of cancelling an activation 
   expect(request.mock.calls[0]![2]!.timeoutMs).toBeGreaterThan(300_000)
 })
 
+it('carries a selected remote root and accepted prefix and rejects a substituted branch receipt', async () => {
+  const f = fixture()
+  const worktree = { repository: 'octo/site', branch: 'foreman/site/reviewer' }
+  const commit = 'e'.repeat(40)
+  const receipt = { ...f.record.receipt, claimScope: 'execution' as const,
+    sharedTree: { id: randomUUID(), referenceIdentity: f.record.receipt.binding.filesystem },
+    worktree: { ...worktree, branch: `${worktree.branch}-${randomUUID()}`, commit } }
+  const identity: DeviceConnectionIdentity & { connectionEpoch?: string } = { ...f.binding }
+  delete identity.connectionEpoch
+  const request = vi.fn<(namespace: string, payload: unknown,
+    options?: { timeoutMs?: number }) => Promise<{ payload: unknown }>>(
+    async () => ({ payload: { version: 1, operation: 'sources.prepare', receipt } }))
+  const capture = vi.fn(() => ({ identity, request }))
+  const host = new CarrierRemoteSourceMaterializationHost({ capture },
+    { prepareIdentity: async () => ({ operationId: f.intent.operationId }) as never,
+      resolve: async () => ({ root: f.root }) as never },
+    { send: async () => ({ transferId: f.intent.transferId, receiptId: randomUUID(),
+      sha256: 'b'.repeat(64), byteSize: 4 }) })
+  const manifest = { manifestDigest: f.intent.manifestDigest, totalEntries: 1, totalBytes: 4,
+    git: { commit, repository: worktree.repository } } as never
+  const attempt = { placementHash: f.intent.placementHash, executionId: f.intent.executionId,
+    attemptId: f.intent.attemptId, keyRevision: 1, authorizationRevision: 1 }
+  expect(await host.prepare(manifest, f.root, attempt, { worktree })).toEqual(receipt)
+  expect(capture).toHaveBeenCalledWith(f.binding.deviceId)
+  expect(request.mock.calls[0]?.[1]).toMatchObject({ operation: 'sources.prepare', root: f.root, worktree })
+  receipt.worktree.branch = `foreman/substituted-${randomUUID()}`
+  await expect(host.prepare(manifest, f.root, attempt, { worktree }))
+    .rejects.toMatchObject({ code: 'SOURCE_WORKTREE_CONFLICT' })
+})
+
 
 it('keeps a Worker retained-tree measurement bound to the original materialization', async () => {
   const f = fixture()

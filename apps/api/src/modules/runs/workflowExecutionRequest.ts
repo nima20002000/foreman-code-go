@@ -36,6 +36,7 @@ export function workflowExecutionRequest(input: {
     workflowNodeId: execution.workflowNodeId,
     workingDirectory: execution.workingDirectory,
     runtimeDirectory: execution.runtimeDirectory,
+    ...(execution.systemPrompt ? { systemPrompt: execution.systemPrompt } : {}),
     ...(prompts.length ? { initialPrompt: prompts.join('\n\n') } : {}),
     configuration,
     input: execution.input,

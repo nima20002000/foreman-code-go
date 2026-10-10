@@ -11,6 +11,7 @@ import { HarnessExecutionError } from './errors.js'
 import { DomainError } from '../errors.js'
 import { claudeSettingSupport, type ClaudeNativeConfigurationPort } from './claudeSdk/nativeConfiguration.js'
 import { requireClaudeProductionCredentialDelivery } from './claudeSdk/productionCredentials.js'
+import type { ProviderAccountResolver } from '../provider-accounts/service.js'
 
 export class NativeConfigurationService {
   private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>(300_000, 128, Date.now, true)
@@ -28,7 +29,8 @@ export class NativeConfigurationService {
   }
   async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }
   private readonly factories: NativeHarnessFactories
-  constructor(codexBinary: string, private readonly directory: string, factories?: NativeHarnessFactories, private readonly claude?: ClaudeNativeConfigurationPort) {
+  constructor(codexBinary: string, private readonly directory: string, factories?: NativeHarnessFactories,
+    private readonly claude?: ClaudeNativeConfigurationPort, private readonly accounts?: ProviderAccountResolver) {
     this.factories = factories ?? new NativeHarnessFactories({ codexBinary })
   }
 
@@ -48,7 +50,7 @@ export class NativeConfigurationService {
   private async inspectConfiguration(value: HarnessConfiguration) {
     const signal = AbortSignal.timeout(60_000)
     if (value.harness === 'claude') {
-      requireClaudeProductionCredentialDelivery(value)
+      await requireClaudeProductionCredentialDelivery(value, this.accounts)
       const qualification = HarnessQualificationSchema.parse(await this.claudePort().qualify(value, this.directory, signal))
       if (qualification.harness !== 'claude') throw new DomainError('CLAUDE_QUALIFICATION_MISMATCH', 'The selected Claude profile returned another harness.', 503)
       return qualification

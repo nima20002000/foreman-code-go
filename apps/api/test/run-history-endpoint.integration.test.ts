@@ -51,7 +51,7 @@ describe.skipIf(!postgresEnabled)('saved current Run HTTP/MCP parity', () => {
       const client = await connect(token)
       const names = (await client.listTools()).tools.map((tool) => tool.name)
       expect(names).toContain('run_get'); expect(names).not.toContain('run_history_get_v1')
-      const remote = await client.callTool({ name: 'run_get', arguments: input() })
+      const remote = await client.callTool({ name: 'run_get', arguments: { ...input(), detail: 'full' } })
       expect(remote.isError).not.toBe(true)
       expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(remote))).toEqual(detail)
       expect(detail.run.workflowVersionId).toBe(fixture.saved.value.currentVersionId)
@@ -65,7 +65,7 @@ describe.skipIf(!postgresEnabled)('saved current Run HTTP/MCP parity', () => {
   it('denies another Run scope through both authenticated transports', async () => {
     const response = await app.inject({ method: 'GET', url: path(), headers: { host: 'localhost', authorization: `Bearer ${deniedToken}` } })
     expect(response.statusCode).toBe(403)
-    const result = await (await connect(deniedToken)).callTool({ name: 'run_get', arguments: input() })
+    const result = await (await connect(deniedToken)).callTool({ name: 'run_get', arguments: { ...input(), detail: 'full' } })
     expect(result.isError).toBe(true)
   }, 30_000)
 })

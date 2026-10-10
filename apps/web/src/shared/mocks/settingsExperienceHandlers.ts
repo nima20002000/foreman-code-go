@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw'
 import { LocalHumanAccessSchema, DEFAULT_WORKSPACE_DEFAULTS, ManagedWorkspaceDefaultsSchema,
   WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema } from '@foreman-code/contracts/management'
 import { getMockScenarioState } from './scenarios'
+import { ProviderAccountsSnapshotSchema } from '@foreman-code/contracts/provider-accounts'
 
 // Development/test fixtures only. These handlers do not create or authenticate real credentials.
 let defaults = ManagedWorkspaceDefaultsSchema.parse({ value: { ...DEFAULT_WORKSPACE_DEFAULTS, parentPath: '/home/test/.local/share/graphql/workspaces' }, revision: 0, versionId: null })
@@ -16,6 +17,9 @@ function failure() {
     ? HttpResponse.json({ error: { code: 'MOCK_READ_FAILED', message: 'The selected mock scenario fails read requests.' } }, { status: 503 }) : undefined
 }
 export const settingsExperienceHandlers = [
+  http.get('/api/provider-accounts', () => failure() ?? HttpResponse.json(
+    ProviderAccountsSnapshotSchema.parse({ revision: 0, accounts: [] }),
+  )),
   http.get('/api/management/settings/workspaces', () => failure() ?? HttpResponse.json(defaults)),
   http.get('/api/management/settings/workspaces/creation', () => failure() ?? HttpResponse.json(defaults.value)),
   http.put('/api/management/settings/workspaces', async ({ request }) => {

@@ -14,9 +14,11 @@ export async function inspectClaudeOperatorConfiguration(input: {
   accepted: AcceptedClaudeProfile; binary: string; workingDirectory: string; endpoint: string
   recovery: NativeProcessRecovery; signal: AbortSignal; revalidate(): Promise<void>
   loadClient?: typeof loadOfficialClaudeSdk
+  apiKey?: string
 }): Promise<OperatorChatSetup> {
   if (input.accepted.override.configuration.harness !== 'claude') throw new DomainError('HARNESS_CONFIGURATION_MISMATCH', 'Claude inspection requires the exact Claude profile.', 409)
-  const compiled = compileClaudeConfiguration(input.accepted.override.configuration, input.workingDirectory, input.accepted)
+  const compiled = compileClaudeConfiguration(input.accepted.override.configuration, input.workingDirectory,
+    input.accepted, process.env, input.apiKey)
   const serverName = appMcpServerName(compiled.mcpServers)
   const server = compiled.mcpServers[serverName]
   const result = { harness: 'claude' as const, endpoint: input.endpoint, checkedAt: new Date().toISOString(), routing: 'fixed' as const }

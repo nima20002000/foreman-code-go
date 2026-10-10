@@ -7,6 +7,7 @@ import { registerBuildComputerRoutes } from './buildComputers.js'
 import { registerRunSubagentRoutes } from './runSubagents.js'
 import { registerHarnessRegistryRoutes } from '../modules/harnesses/registryManagement.js'
 import { registerDeviceManagementRoutes } from '../modules/devices/management.js'
+import { registerWorkspaceRepositoryRoutes } from '../modules/workspaces/repositoryRoutes.js'
 import { registerWorkspaceRootRoutes } from '../modules/workspace-roots/transports.js'
 import { registerSourceRoutes } from '../modules/sources/routes.js'
 import { registerJobRoutes } from './jobs.js'
@@ -18,7 +19,9 @@ import { registerRunInspectionRoutes } from './runInspection.js'
 import { registerCurrentVersionReadRoutes } from './currentVersionReads.js'
 import type { FastifyInstance } from 'fastify'
 import { registerWorkspaceDefaultsRoutes } from './workspaceDefaults.js'
+import { registerPromptSettingsRoutes } from './promptSettings.js'
 import { registerHarnessSettingsRoutes } from './harnessSettings.js'
+import { pluginHttpRead } from './pluginReadCancellation.js'
 import { registerSkillRoutes } from './skills.js'
 
 import {
@@ -88,6 +91,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
   if (services.computerSync) registerComputerSyncRoutes(app, services.computerSync)
   if (services.buildComputers) registerBuildComputerRoutes(app, services.buildComputers)
   if (services.devices) registerDeviceManagementRoutes(app, services.devices, async request => requirePrincipal(request))
+  if (services.workspaceRepositories) registerWorkspaceRepositoryRoutes(app, services.workspaceRepositories)
   if (services.workspaceRoots) registerWorkspaceRootRoutes(app, services.workspaceRoots)
   if (services.sources) registerSourceRoutes(app, services.sources)
   if (services.jobs) registerJobRoutes(app, services.jobs)
@@ -163,9 +167,10 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     return services.agents.get(requirePrincipal(request), input.workspaceId, input.agentId)
   })
 
-  app.post<{ Body: unknown }>('/api/management/harnesses/validate', async (request) => {
+  app.post<{ Body: unknown }>('/api/management/harnesses/validate', async (request, reply) => {
     const input = HarnessConfigurationCheckInputSchema.parse(request.body)
-    return HarnessConfigurationCheckResultSchema.parse(await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration))
+    return pluginHttpRead(request, reply, async (signal) => HarnessConfigurationCheckResultSchema.parse(
+      await services.harnesses.checkConfiguration(requirePrincipal(request), input.configuration, signal)))
   })
 
   app.get('/api/management/harnesses', async (request) => services.harnesses.list(requirePrincipal(request)))
@@ -177,6 +182,7 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     services.harnesses.updateDefaults(requirePrincipal(request), 'http', HarnessDefaultsUpdateInputSchema.parse(request.body)))
 
   if (services.settings) {
+    registerPromptSettingsRoutes(app, services.settings)
     app.get('/api/management/settings/general', async request =>
       services.settings!.getGeneralSettings(requirePrincipal(request)))
     app.put<{ Body: unknown }>('/api/management/settings/general', async request =>

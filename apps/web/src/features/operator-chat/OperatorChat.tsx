@@ -42,6 +42,7 @@ import { ChatDecisionReceipts } from '../conversations/ChatDecisionReceipts'
 import { OperatorTranscript } from './OperatorTranscript'
 import { OperatorApprovalCard } from './OperatorApprovalCard'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
+import { useProviderAccounts } from '../provider-accounts/providerAccountsQueries'
 import { OperatorAccessPicker } from './OperatorAccessPicker'
 import { OperatorComposer } from './OperatorComposer'
 import { operatorResizeEdges, useOperatorChatResize } from './useOperatorChatResize'
@@ -79,6 +80,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const open = useOperatorChatStore((state) => state.open)
   const historyOpen = useOperatorChatStore((state) => state.historyOpen)
   const selectedId = useOperatorChatStore((state) => state.selectedConversationId)
+  const accounts = useProviderAccounts(enabled && open)
   const sessionControls = useSessionControls(selectedId ?? undefined)
   const preferences = useOperatorSettings(enabled && open)
   const preferencesDenied = useAccessFailureLatch(preferences.query)
@@ -398,7 +400,12 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const settings = preferencesDenied ? undefined : preferences.settings
   // Historical OpenCode chats stay readable, with no composer or response controls.
   const retired = conversation?.settings?.harness === 'opencode'
-  const pendingHandoff = Boolean(settings && conversation?.settings && settings.harness !== conversation.settings.harness
+  const requestedAccountId = settings?.accountId ?? accounts.data?.accounts.find(account =>
+    account.provider === settings?.harness && account.isDefault)?.id
+  const conversationAccountId = conversation?.settings?.harness === 'opencode'
+    ? undefined : conversation?.settings?.accountId
+  const pendingHandoff = Boolean(settings && conversation?.settings
+    && (settings.harness !== conversation.settings.harness || requestedAccountId !== conversationAccountId)
     && (conversation.messages.length > 0 || conversation.hasEarlierMessages))
   const setupReady = setup.isSuccess && setup.data.status === 'configured' && setup.data.harness === settings?.harness
     && Boolean(setup.data.configurationVersionId)
@@ -469,7 +476,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     reservations.current.add(id); setPreparingId(id)
     try {
       const command = await reserveOperatorMessage(id, content, window.location.pathname + window.location.search, settings,
-        pendingHandoff ? conversation?.revision : undefined,
+        conversation?.revision,
         { configurationVersionId: conversation?.conversation.operatorConfigurationVersionId,
           defaultsRevision: preferences.query.data?.revision, ...(sessionMode ? { sessionMode } : {}) }, attachmentAttempt.attachments)
       if (!currentSession(generation) || epoch !== identityEpoch()) return

@@ -612,7 +612,7 @@ describe.skipIf(!postgresEnabled)('W05 actual production activity replay', { tim
     expect(detail.activitySnapshot!.scope).toEqual({ kind: 'workflow_run', workspaceId: detail.run.workspaceId,
       workflowId: detail.run.workflowId, runId: detail.run.id, workflowVersionId: detail.run.workflowVersionId })
     expect(detail.activitySnapshot!.active).toEqual([])
-    const readback = await f.call('run_get', { workspaceId: detail.run.workspaceId, runId: detail.run.id })
+    const readback = await f.call('run_get', { workspaceId: detail.run.workspaceId, runId: detail.run.id, detail: 'full' })
     expect(readback.isError).not.toBe(true)
     expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(readback)).activitySnapshot).toEqual(detail.activitySnapshot)
     const activity = await f.call('run_activities_get_v1', { workspaceId: detail.run.workspaceId, runId: detail.run.id, limit: 10 })

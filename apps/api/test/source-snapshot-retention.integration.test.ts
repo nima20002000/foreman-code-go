@@ -166,7 +166,7 @@ it('reclaims older terminal snapshots before capture capacity fails and exposes 
     }
     expect(approvals.length).toBeGreaterThan(1)
     const first = approvals[0]!
-    const listed = await f.client.callTool({ name: 'source_list', arguments: { workspaceId: f.workspaceId } })
+    const listed = await f.client.callTool({ name: 'source_list', arguments: { workspaceId: f.workspaceId, detail: 'full' } })
     expect(listed.isError).not.toBe(true)
     const items = SourceListResultSchema.parse(decodeMcpToolResult(listed)).items
     expect(items.find(item => item.manifest.snapshotId === first.source.manifest.snapshotId)?.availability)
@@ -296,7 +296,7 @@ it.each(['deletion', 'accounting'] as const)('retries interrupted %s without res
     }
     await expect(f.sources.releaseUnusedSnapshots()).rejects.toThrow('Injected')
     const listed = SourceListResultSchema.parse(decodeMcpToolResult((await f.client.callTool({ name: 'source_list',
-      arguments: { workspaceId: f.workspaceId } }))))
+      arguments: { workspaceId: f.workspaceId, detail: 'full' } }))))
     expect(listed.items[0]!.availability).toBe('unavailable')
     expect((await f.reservation(approved.source)).state).toBe('retained')
     const retry = await f.client.callTool({ name: 'source_approve', arguments: approved.input })
@@ -360,7 +360,7 @@ it('retains a completed capture and frees its preparing slot after adoption lose
   const client = await f.connect(reader.token)
   expect((await client.callTool({ name: 'source_approve', arguments: { ...input, commandId: randomUUID() } })).isError)
     .toBe(true)
-  const read = await client.callTool({ name: 'source_list', arguments: { workspaceId: f.workspaceId } })
+  const read = await client.callTool({ name: 'source_list', arguments: { workspaceId: f.workspaceId, detail: 'full' } })
   expect(read.isError).not.toBe(true)
   expect(SourceListResultSchema.parse(decodeMcpToolResult(read)).items).toEqual([])
 }, 60_000)

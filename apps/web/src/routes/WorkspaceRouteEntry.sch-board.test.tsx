@@ -9,6 +9,8 @@ import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../app/router'
 import { useGraphDraftStore } from '../features/graph/store'
 import { nextDraftKey } from '../features/graph/nextDraft/state'
+import { nextDraftApi } from '../features/graph/nextDraft/transport'
+import { boardDraftContextKey } from '../features/workflow-board/keys'
 import { reply, runsUrl } from '../features/run-board/testFixtures'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { page, runA, runB } from '../features/runs-selector/testFixtures'
@@ -276,6 +278,45 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     expect(refreshed.router.state.location.search.selectedRunId).toBe('run-a')
     expect(screen.queryByRole('region', { name: 'Workflow authoring' })).not.toBeInTheDocument()
   })
+
+  it('polls only the selected draft while authoring is visible and preserves it without hidden reads in history', async () => {
+    let workspaceReads = 0
+    const recordWorkspaceRead = ({ request }: { request: Request }) => {
+      if (new URL(request.url).pathname === `/api/workspaces/${scope.workspaceId}`) workspaceReads++
+    }
+    server.events.on('request:start', recordWorkspaceRead)
+    const context = vi.spyOn(nextDraftApi, 'context')
+    try {
+      const { client } = await mount()
+      const editor = await authoring()
+      act(() => useGraphDraftStore.getState().changeNextDraft(key, graph => ({ ...graph, name: 'Retained local name' })))
+      await within(editor).findByRole('heading', { name: 'Retained local name' })
+      const graph = useGraphDraftStore.getState().nextDrafts[key]!.graph
+      await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
+      const initialWorkspaceReads = workspaceReads
+      const currentReads = context.mock.calls.length
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 3_200)) })
+      expect(context.mock.calls.length).toBeGreaterThan(currentReads)
+      expect(workspaceReads).toBe(initialWorkspaceReads)
+
+      await choose('run-a')
+      await savedY()
+      await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
+      const historyReads = context.mock.calls.length
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 3_200)) })
+      expect(context.mock.calls).toHaveLength(historyReads)
+      expect(workspaceReads).toBe(initialWorkspaceReads)
+      expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
+
+      await choose(null)
+      await waitFor(() => expect(editor).toBeVisible())
+      await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
+      expect(within(editor).getByRole('heading', { name: 'Retained local name' })).toBeVisible()
+      expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
+    } finally {
+      server.events.removeListener('request:start', recordWorkspaceRead)
+    }
+  }, 15_000)
 
   it('opens the saved-workflow clock from history, without scheduling the historical version', async () => {
     await mount(); await authoring()

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { URL } from 'node:url'
 import { webcrypto } from 'node:crypto'
-import { RunExecutionDetailSchema } from '@foreman-code/contracts/wave25'
+import { makeCurrentWorkflowFixture, RunExecutionDetailSchema, RunVersionDetailSchema } from '@foreman-code/contracts/wave25'
 import * as inspectionClient from '../workflow-board/runDetailsClient'
 import { digestCurrentValue } from '../workflow-board/runDetailsClient'
 import { definition, execution as jobExecution, verificationExecution, logPage } from '../jobs/fixtures'
@@ -99,9 +99,21 @@ beforeEach(() => {
     http.get(snapshotRoute, ({ params }) => HttpResponse.json(reply(String(params.runId), {
       workspaceId: String(params.workspaceId), workflowId: String(params.workflowId),
     }))),
+    http.get('*/api/management/workspaces/:workspaceId/runs/:runId/version', ({ params }) => {
+      const workspaceId = String(params.workspaceId)
+      const workflowId = workspaceId === scope.workspaceId ? scope.workflowId : 'other-workflow'
+      const runId = String(params.runId)
+      const workflowVersionId = runId === 'run-b' ? runB.workflowVersionId : runA.workflowVersionId
+      const { version } = makeCurrentWorkflowFixture('saved-run-board', 'single')
+      return HttpResponse.json(RunVersionDetailSchema.parse({
+        scope: { workspaceId, workflowId, runId, workflowVersionId, executionSemanticsVersion: 3 },
+        version: { ...version, id: workflowVersionId, workspaceId, workflowId,
+          definition: { ...version.definition, id: workflowId, workspaceId } },
+      }))
+    }),
     http.all('*/api/*', ({ request }) => {
       unexpected.push(`${request.method} ${new URL(request.url).pathname}`)
-      return HttpResponse.json({ error: { code: 'UNEXPECTED', message: 'Only snapshot reads are allowed in this test.' } }, { status: 500 })
+      return HttpResponse.json({ error: { code: 'UNEXPECTED', message: 'Only saved Run reads are allowed in this test.' } }, { status: 500 })
     }),
   )
 })
@@ -331,6 +343,35 @@ it('opens accepted branch and execution facts from an Agent on the standard sele
   expect(screen.queryByRole('button', { name: /Save|Start|Request cancellation/ })).toBeNull()
 })
 
+it('shows the server message and code when a saved execution result cannot be read', async () => {
+  await inspectorApi()
+  const error = { code: 'REPEAT_INPUT_NOT_ACCEPTED',
+    message: 'The repeat operation conflicts with its pinned durable evidence.' }
+  server.use(http.get(`${inspectionRoute}/:executionId`, () => HttpResponse.json({ error }, { status: 409 })))
+  await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' }))
+  const inspector = await screen.findByRole('region', { name: 'Run node inspector: X before rename' })
+  expect(await within(inspector).findByText(`Execution result unavailable. ${error.message}`)).toBeInTheDocument()
+  expect(within(inspector).getByText(error.code)).toBeInTheDocument()
+})
+
+it('shows an Agent active-time timeout in the Run inspector without expanding raw results', async () => {
+  const detail = await inspectorApi()
+  const failure = { code: 'EXECUTION_ACTIVE_TIMEOUT',
+    message: 'The execution exhausted its active-time budget.', retryable: false }
+  server.use(http.get(inspectionRoute, () => HttpResponse.json({
+    run: { ...detail.run, executionState: 'completed', outcome: 'failed', failure },
+    items: [{ ...detail.execution, state: 'completed', failure }], pageInfo: { nextCursor: null },
+  })))
+  await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  const inspector = await screen.findByRole('region', { name: 'Run node inspector: X before rename' })
+  expect(await within(inspector).findByText(/Agent failed: The execution exhausted its active-time budget/))
+    .toBeInTheDocument()
+  expect(within(inspector).getAllByText('EXECUTION_ACTIVE_TIMEOUT')).toHaveLength(2)
+})
+
 it('opens job-node logs, artifacts and verification through the persisted relationship without historical editing controls', async () => {
   const detail = await inspectorApi('job')
   const snapshot = { ...runA, nodes: [{ kind: 'job', id: 'build', name: 'Build',
@@ -392,6 +433,52 @@ it('fences delayed inspector reads across Run A, Run B and a new Run A visit', a
   expect(screen.getByText('Reading node executions…')).toBeInTheDocument()
   await act(async () => gates[2]!.resolve())
   expect(await screen.findByText('foreman/coder')).toBeInTheDocument()
+})
+
+it('returns to the first node execution page after six pages while retaining the selected result', async () => {
+  const detail = await inspectorApi()
+  const occurrence = (index: number) => ({
+    scope: { ...scope, runId: 'run-a', workflowVersionId: 'version-a', executionSemanticsVersion: 3 as const },
+    blockId: 'finite-repeat', occurrenceId: `occurrence-${index}`, occurrenceIndex: index,
+  })
+  const input = { ...detail.acceptedInput.value, occurrence: { contractVersion: 1 as const,
+    identity: occurrence(1), input: { bindingId: 'input-1', inputDigest: `sha256:${'1'.repeat(64)}`, previous: null } } }
+  const result = { outcome: 'succeeded' as const, output: { text: 'Saved first occurrence result' } }
+  const completed = RunExecutionDetailSchema.parse({ ...detail,
+    execution: { ...detail.execution, state: 'completed', occurrence: occurrence(1),
+      acceptedResultAvailable: true, finishedAt: runA.capturedAt },
+    acceptedInput: { value: input, digest: await digestCurrentValue(input) },
+    acceptedResult: { status: 'accepted', value: result, digest: await digestCurrentValue(result) },
+  })
+  const cursors: (string | null)[] = []
+  server.use(http.get(`${inspectionRoute}/:executionId`, () => HttpResponse.json(completed)),
+    http.get(inspectionRoute, ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('cursor')
+    cursors.push(cursor)
+    const pageIndex = cursor === null ? 0 : Number(cursor)
+    const items = Array.from({ length: 25 }, (_, index) => ({ ...completed.execution,
+      executionId: pageIndex === 0 && index === 0 ? 'node-execution' : `execution-${pageIndex * 25 + index + 1}`,
+      occurrence: occurrence(pageIndex * 25 + index + 1),
+    }))
+    return HttpResponse.json({ run: detail.run, items,
+      pageInfo: { nextCursor: pageIndex < 5 ? String(pageIndex + 1) : null } })
+  }))
+  await mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' }))
+  expect(await screen.findByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
+  for (let pageIndex = 1; pageIndex <= 5; pageIndex++) {
+    await userEvent.click(screen.getByRole('button', { name: 'Load more executions' }))
+    await screen.findByRole('button', { name: `Attempt 1 · execution-${pageIndex * 25 + 25}` })
+  }
+  expect(screen.queryByRole('button', { name: 'Attempt 1 · node-execution' })).not.toBeInTheDocument()
+  expect(screen.getByText('Earlier executions are hidden. Refresh to return to the first page.')).toBeVisible()
+  expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
+  const readsBeforeRefresh = cursors.length
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh node executions' }))
+  expect(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' })).toHaveAttribute('aria-pressed', 'true')
+  expect(cursors.slice(readsBeforeRefresh)).toEqual([null])
+  expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
 })
 
 it('withdraws inspector branch facts after delayed permission loss', async () => {

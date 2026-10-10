@@ -2,6 +2,7 @@ import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { NativeSessionReferenceSchema, withAdvancedDefaults, RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
+import type { PromptSettingSnapshot } from '@foreman-code/contracts'
 import type { HarnessQualification } from '@foreman-code/contracts/harness-qualification'
 import { WorkerConversationBindingSchema, type WorkerConversationConfiguration,
   WorkerConversationProfileFactsSchema, type WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
@@ -48,7 +49,7 @@ interface OwnerRow {
   workflow_node_id: string | null; agent_id: string | null; owner_principal_id: string | null
   operator_configuration_version_id: string | null; agent_configuration_version_id: string | null
   active_request_id: string | null; native_session_id: string | null; deleted_at: unknown
-  record: { status?: string; directoryBinding?: unknown;
+  record: { status?: string; directoryBinding?: unknown; systemPrompt?: PromptSettingSnapshot;
     origin?: { kind: string; runId?: string; executionId?: string; sourceNativeSessionId?: string } }
   payload: { ownerPrincipalId?: string } | null
   worker_conversation_binding: unknown
@@ -128,6 +129,7 @@ export function createProductionWorkerConversations(input: {
         conversationId: options.conversationId, configurationVersionId: configuration.id,
         configurationHash: commandInputHash(configuration) }, harness: configuration.harness.harness,
         profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess,
+        ...(original.kind === 'agent' && original.record.systemPrompt ? { systemPrompt: original.record.systemPrompt } : {}),
         ...(directoryBinding ? { directoryBinding } : {}) })
       if (requestedBinding.owner.kind === 'operator') {
         const rootChannel = input.endpoint().captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
@@ -167,6 +169,9 @@ export function createProductionWorkerConversations(input: {
           if (!isDeepStrictEqual(savedBinding, originalBinding) && !isDeepStrictEqual(savedBinding, binding)) {
             unavailable('The persisted worker conversation owner changed.')
           }
+        }
+        if (live.kind === 'agent' && !isDeepStrictEqual(live.record.systemPrompt, binding.systemPrompt)) {
+          unavailable('The saved chat system prompt changed.')
         }
         if ('agentId' in configuration && directoryBinding) {
           if (!isDeepStrictEqual(live.record.directoryBinding, directoryBinding)) unavailable('The saved node directory changed.')

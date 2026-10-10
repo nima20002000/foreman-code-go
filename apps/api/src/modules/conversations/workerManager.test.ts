@@ -14,6 +14,39 @@ import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { WorkerConversationRpcRequestSchema, type WorkerConversationRpcRequest,
   type WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 
+it.each(['codex', 'claude'] as const)('carries the pinned %s Agent prompt across the worker channel and rejects replacements', async harness => {
+  const f = workerConversationFixture('agent', harness)
+  if (!('agentId' in f.configuration) || f.binding.owner.kind !== 'agent') throw new Error('Agent fixture required')
+  const systemPrompt = { value: { text: 'Original app instructions' }, revision: 3, versionId: 'prompt-version-3' }
+  const binding = { ...f.binding, systemPrompt }
+  const requests: WorkerConversationRpcRequest[] = []
+  const bridge = new MainWorkerConversationBridge()
+  const manager = new WorkerConversationManager({ binding, configuration: f.configuration, bridge,
+    current: async () => {}, channel: { binding: f.connection, request: async payload => {
+      requests.push(WorkerConversationRpcRequestSchema.parse(payload))
+      return { payload: { receipt: { binding, connection: f.connection, session: f.session,
+        nativeOwner: f.nativeOwner, revision: requests.length, closed: false, closing: false,
+        turns: [], compactions: [], desiredPreferences: null, appliedPreferences: null } } }
+    } } })
+  const start: NativeSessionStart = { kind: 'agent-chat', configuration: f.configuration,
+    conversationId: f.binding.owner.conversationId, workflowId: f.binding.owner.workflowId,
+    workflowNodeId: f.binding.owner.workflowNodeId, workingDirectory: f.binding.workingDirectory,
+    systemPrompt, correlationId: 'first-message' }
+  try {
+    expect(await manager.attachSession(f.session, start)).toEqual(f.session)
+    expect(requests).toMatchObject([{ method: 'conversation.open', mode: 'attach', binding: { systemPrompt } }])
+    await expect(manager.attachSession(f.session, { ...start,
+      systemPrompt: { ...systemPrompt, revision: 4 } })).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_CONFLICT' })
+    const missing = { ...start }
+    delete missing.systemPrompt
+    await expect(manager.attachSession(f.session, missing)).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_CONFLICT' })
+    expect(requests).toHaveLength(1)
+  } finally {
+    await manager.dispose()
+    await bridge.close()
+  }
+})
+
 it.each(['same-owner', 'foreign-session', 'foreign-owner'] as const)(
   'handles an overtaken controls receipt without accepting %s identity changes', async variant => {
     const f = workerConversationFixture()

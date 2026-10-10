@@ -125,7 +125,7 @@ it('real Codex runs current files on Dexter, reads logs and artifacts and report
     let result: z.infer<typeof SavedRunDetailsSchema> | undefined
     const deadline = Date.now() + 20 * 60_000
     while (Date.now() < deadline) {
-      result = SavedRunDetailsSchema.parse(await call(writer, 'run_get', { workspaceId: input.workspaceId, runId }))
+      result = SavedRunDetailsSchema.parse(await call(writer, 'run_get', { workspaceId: input.workspaceId, runId, detail: 'full' }))
       if (result.executions.some(value => value.result)) break
       await delay(1000)
     }

@@ -24,6 +24,7 @@ import type { OperatorInteractionService } from '../../modules/interactions/oper
 
 export interface OperatorServices {
   bugReports?: import('../../modules/bug-reports/service.js').BugReportService
+  providerAccounts?: import('../../modules/provider-accounts/service.js').ProviderAccountsService
   ci?: import('../../modules/jobs/ci.js').CiService
   workerExecution?: import('../../modules/settings/workerExecution.js').WorkerExecutionPolicy
   jobs?: import('../../modules/jobs/service.js').JobService
@@ -34,6 +35,7 @@ export interface OperatorServices {
     reads: import('@foreman-code/contracts/resource-telemetry').TelemetryReadService<ManagementPrincipal>
     selectors: import('@foreman-code/contracts/resource-telemetry').TelemetrySelectorService<ManagementPrincipal>
   }
+  workspaceRepositories?: import('../../modules/workspaces/repositoryService.js').WorkspaceRepositoryService
   workspaceRoots?: import('../../modules/workspace-roots/service.js').WorkspaceBoundLocationService
   harnessInstances?: import('../../modules/harnesses/instanceSettings/service.js').HostHarnessOverrideService
   harnessRegistry?: import('../../modules/harnesses/productionRegistry.js').ProductionHarnessRegistry

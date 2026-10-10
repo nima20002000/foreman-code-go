@@ -8,6 +8,11 @@ export function sessionStartConfiguration(start: NativeSessionStart) {
   return isWorkflowStart(start) ? start.request.configuration : start.configuration
 }
 
+export function sessionStartSystemPrompt(start: NativeSessionStart) {
+  if (start.kind === 'operator') return undefined
+  return isWorkflowStart(start) ? start.request.systemPrompt : start.systemPrompt
+}
+
 export function sessionStartDirectory(start: NativeSessionStart) {
   return isWorkflowStart(start) ? start.request.workingDirectory : start.workingDirectory
 }

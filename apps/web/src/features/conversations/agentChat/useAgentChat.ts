@@ -59,7 +59,11 @@ export function commandMayHaveBeenAccepted(error: unknown): boolean {
   return !ApiError.is(error) || error.status === 0 || error.status >= 500 || error.code === 'INVALID_RESPONSE'
 }
 
-export function useAgentChat(context: AgentChatContext, selected?: SelectedChatBinding) {
+export function useAgentChat(inputContext: AgentChatContext, selected?: SelectedChatBinding) {
+  const { workspaceId, workflowId, workflowNodeId, agentId, runId } = inputContext
+  const context = useMemo<AgentChatContext>(() => ({
+    workspaceId, workflowId, workflowNodeId, agentId, ...(runId === undefined ? {} : { runId }),
+  }), [workspaceId, workflowId, workflowNodeId, agentId, runId])
   const client = useQueryClient(), generation = sessionGeneration()
   const readGeneration = useRef(0)
   const draftKey = selected ? selectedChatDraftKey(selected.selection, context.agentId, selected.key?.conversationId ?? null) : agentChatContextKey(context)
@@ -205,11 +209,9 @@ export function useAgentChat(context: AgentChatContext, selected?: SelectedChatB
         }
         else if (!selected) refetch()
       },
-      event: (event) => {
-        if (event.type !== 'delta') { readGeneration.current++; void client.cancelQueries({ queryKey: key, exact: true }).catch(() => undefined) }
-        refetch()
-      },
-      refetch: () => { readGeneration.current++; void client.cancelQueries({ queryKey: key, exact: true }).catch(() => undefined); refetch() }, connection: (next) => { if (!disposed && (!selected || current())) setConnection(next) },
+      event: refetch,
+      refetch,
+      connection: (next) => { if (!disposed && (!selected || current())) setConnection(next) },
     })
     return () => { disposed = true; readback.dispose(); close() }
   }, [client, key, context.workspaceId, draftKey, conversationId, canRead, denial, accept, matches, selected, visit, isCurrent])

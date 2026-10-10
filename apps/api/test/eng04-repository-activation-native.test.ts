@@ -83,6 +83,7 @@ function fixture() {
         reservation_digest: repeatDigest(reservation), transition: null, source_id: null, source_digest: null }])
     }
     if (q.startsWith('select effect_digest from run_graph_effects')) return rows(launchDigest ? [{ effect_digest: launchDigest }] : [])
+    if (q.includes('from application_settings')) return rows([])
     if (q.startsWith('select ( exists(select 1 from run_graph_effects')) return rows([{ possible_submission: state.possible }])
     if (q.startsWith('update harness_executions set record=$3::jsonb')) {
       expect(values[0]).toBe(execution.id)

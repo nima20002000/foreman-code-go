@@ -8,7 +8,8 @@ import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 
 const state = vi.hoisted(() => ({ current: true, fetching: false, success: false, error: false }))
 const profileError = 'Check the saved Claude host profile before using this configuration.'
-vi.mock('../../shared/api/harnessSettings', () => ({
+vi.mock('../../shared/api/harnessSettings', async importOriginal => ({
+  ...await importOriginal<typeof import('../../shared/api/harnessSettings')>(),
   useNativeHarnessOptions: () => ({ data: { models: [{ id: 'claude-saved-model', name: 'Saved Claude model', reasoningEfforts: ['medium'] }] }, isPending: false }),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useAutomaticHarnessCheck: () => ({ current: state.current, result: {

@@ -18,8 +18,8 @@ select coalesce((select max(sequence) from recent),0)::text as high_water,
   coalesce((select min(sequence) from retained),0)::text as retained_from,
   (select count(*) from recent)::integer as observed`
 
-/** SQL extracts only named identifiers and status fields. It never transfers
- * raw provider payloads, prompts, tool arguments, paths, text or error bodies. */
+/** SQL extracts protocol metadata and the first executable token. No raw
+ * provider payloads, prompts, arguments, command bodies or error bodies. */
 export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,a.occurred_at,a.harness_execution_id,
   coalesce(e.workflow_node_id,j.record#>>'{workflow,nodeId}') as execution_node_id,e.agent_id as execution_agent_id,
   coalesce(e.attempt,x.technical_attempt) as execution_attempt,e.work_activation_id,
@@ -80,6 +80,8 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'unsupportedInteractionCode',case when n.record->>'type'='interaction.unsupported'
       then left(n.record#>>'{payload,code}',100) end,
     'itemType',left(n.record#>>'{payload,item,type}',48),
+    'toolName',left(n.record#>>'{payload,item,tool}',64),
+    'commandName',substring(n.record#>>'{payload,item,command}' from '^[[:space:]]*([A-Za-z0-9_./-]+)'),
     'itemStatus',left(n.record#>>'{payload,item,status}',48),
     'itemError',coalesce(n.record#>'{payload,item,error}' <> 'null'::jsonb,false),
     'partTool',left(n.record#>>'{payload,part,tool}',48),

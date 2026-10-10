@@ -16,7 +16,7 @@ import { DomainError } from '../errors.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import { WorkspaceSchema, type RunExecutionLocation } from '@foreman-code/contracts'
 import { approvedGitTreePaths, captureGitSource, qualifiedGit } from './capture.js'
-import { ensureClone, ensureCommit, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
+import { ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 import { importAgentSnapshot } from './agentSnapshot.js'
 import { SOURCE_LIMITS, sourceSha256, verifySourceManifest } from './manifest.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
@@ -35,6 +35,8 @@ import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { QueuedSourcePreparationCleanup } from './queuedPreparationCleanup.js'
 import { sourcePackageStream } from './operationPackage.js'
 import { releaseUnusedSourceSnapshots } from './snapshotRetention.js'
+import { readPlacement } from '../placement/binding.js'
+import { assertWorktreeReceipt, bindGeneratedWorktreeRun, generatedWorktreePrefix } from './worktreeRequest.js'
 
 export interface SourceExecutionHostPort {
   /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
@@ -135,7 +137,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
     })
   }
   /** `repository` captures from Main's own clone of the workspace's GitHub repository instead of its project folder. */
-  async approve(principal: ManagementPrincipal, source: Transport, raw: unknown, repository?: { repository: string; clone: string }) {
+  async approve(principal: ManagementPrincipal, source: Transport, raw: unknown, repository?: { repository: string; clone: string; prepared?: true }) {
     const input = SourceApproveInputSchema.parse(raw)
     requireAuthorization(principal, 'sources:approve', input); requireAuthorization(principal, 'sources:read', input)
     requireAuthorization(principal, 'workspace_locations:read', input)
@@ -196,7 +198,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
           if (manifest.approvedSourceId !== origin.approved_source_id || manifest.git?.commit !== input.commit
             || manifest.git.repository !== origin.origin.repository || manifest.executablePolicy !== input.executablePolicy
             || !isDeepStrictEqual(manifest.entries.map(e => e.path).sort(), [...approvedPaths].sort())) throw new DomainError('SOURCE_FACT_CONFLICT', 'Recovered source bytes do not match the original approval.', 409)
-          if (!repository) await this.locations.revalidateSnapshot(input.workspaceId, origin.origin.location, 'read-only')
+          if (!repository || repository.prepared) {
+            await this.locations.revalidateSnapshot(input.workspaceId, origin.origin.location, 'read-only')
+          }
           const retainedBytes = await this.store.retainedCaptureBytes(origin.snapshot_id)
           return await this.transaction(async sql => {
             const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
@@ -227,7 +231,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         }
       } })
   }
-  private async repositoryOrigin(sql: Sql, workspaceId: string, expectedLocationRevision: number, repository: { repository: string; clone: string }) {
+  private async repositoryOrigin(sql: Sql, workspaceId: string, expectedLocationRevision: number, repository: { repository: string; clone: string; prepared?: true }) {
     const row = (await sql.query<{ location_revision: string; record: unknown }>(
       'select location_revision,record from workspaces where id=$1 for share', [workspaceId])).rows[0]
     const configured = row && WorkspaceSchema.parse(row.record).repository
@@ -236,6 +240,13 @@ export class PostgresSourceService implements SourceAdmissionPort {
     }
     if (Number(row.location_revision) !== expectedLocationRevision) {
       throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'Workspace location changed during source capture.', 409)
+    }
+    if (repository.prepared) {
+      const location = await this.locations.snapshot(sql, workspaceId, expectedLocationRevision, 'read-only')
+      if (location.rootPath !== repository.clone) {
+        throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'The prepared project location changed.', 409)
+      }
+      return location
     }
     return { runnerId: 'runner-local', rootPath: repository.clone, locationRevision: expectedLocationRevision,
       identityHash: `sha256:${createHash('sha256').update(`github:${repository.repository}`).digest('hex')}` } satisfies RunExecutionLocation
@@ -247,17 +258,30 @@ export class PostgresSourceService implements SourceAdmissionPort {
   async approveProject(principal: ManagementPrincipal, input: {
     workspaceId: string; commandId: string; commit?: string
     snapshot?: { commit: string; baseCommit: string; bundle: Buffer }
-  }): Promise<ApprovedSource> {
+  }, options: {
+    source?: Transport
+    preparedRepository?: { repository: string; clone: string; commit: string; locationRevision: number }
+  } = {}): Promise<ApprovedSource> {
+    const source = options.source ?? 'mcp'
+    const prepared = options.preparedRepository
     await this.transaction(async sql => authorizeSource(sql, principal, 'sources:approve', input.workspaceId))
     const configured = await this.transaction(async sql => WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
       'select record from workspaces where id=$1', [input.workspaceId])).rows[0]?.record ?? { id: input.workspaceId, name: '-' }).repository)
-    let repository = configured ? { repository: `${configured.owner}/${configured.name}`,
+    let repository: { repository: string; clone: string; prepared?: true } | undefined = configured ? { repository: `${configured.owner}/${configured.name}`,
       clone: this.git.cloneDirectory(`${configured.owner}/${configured.name}`) } : undefined
+    if (prepared) {
+      if (!configured || prepared.repository !== `${configured.owner}/${configured.name}`
+        || prepared.commit !== input.commit || input.snapshot) {
+        throw new DomainError('SOURCE_REPOSITORY_CHANGED', 'The prepared repository does not match this approval.', 409)
+      }
+      repository = { repository: prepared.repository, clone: prepared.clone, prepared: true }
+    }
     const payload = { workspaceId: input.workspaceId, commandId: input.commandId,
       ...(input.commit ? { commit: input.commit } : {}),
+      ...(prepared ? { prepared } : {}),
       ...(input.snapshot ? { snapshot: { commit: input.snapshot.commit, baseCommit: input.snapshot.baseCommit,
         bundleDigest: sourceSha256(input.snapshot.bundle) } } : {}) }
-    const captured = await this.commands.execute({ principal, source: 'mcp',
+    const captured = await this.commands.execute({ principal, source,
       operation: 'source.project.capture', commandId: input.commandId, targetKey: input.workspaceId,
       payload, dedicatedConnection: true,
       authorize: async sql => {
@@ -269,7 +293,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
       perform: async () => {
         const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
         let commit = input.snapshot?.commit ?? input.commit
-        if (configured) {
+        if (prepared) {
+          await qualifiedGit(prepared.clone, ['cat-file', '-e', `${prepared.commit}^{commit}`])
+        } else if (configured) {
           const name = `${configured.owner}/${configured.name}`
           if (input.snapshot) {
             const clone = await ensureCommit(this.git, name, input.snapshot.baseCommit, signal)
@@ -279,7 +305,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
           else {
             const clone = this.git.cloneDirectory(name)
             await ensureClone(this.git, name, signal)
-            commit = await this.fetchDefaultBranch(clone, name, configured.defaultBranch, signal)
+            commit = await fetchRepositoryBranch(this.git, clone, name, configured.defaultBranch, signal)
             await ensureCommit(this.git, name, commit, signal)
             repository = { repository: name, clone }
           }
@@ -292,6 +318,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
           const row = (await sql.query<{ location_revision: string }>(
             'select location_revision from workspaces where id=$1 for update', [input.workspaceId])).rows[0]
           await this.workspace(sql, input.workspaceId)
+          if (prepared && Number(row!.location_revision) !== prepared.locationRevision) {
+            throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'The prepared project location changed.', 409)
+          }
           return repository ? this.repositoryOrigin(sql, input.workspaceId, Number(row!.location_revision), repository)
             : this.locations.snapshot(sql, input.workspaceId, Number(row!.location_revision), 'read-only')
         })
@@ -304,30 +333,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
           executablePolicy: 'preserve-approved' })
       },
     })
-    return (await this.approve(principal, 'mcp', captured.value, repository)).value
-  }
-  private async fetchDefaultBranch(clone: string, repository: string, branch: string, signal: AbortSignal) {
-    const ref = `refs/foreman/ci/fetch/${randomUUID()}`
-    let commit: string
-    let cleanupFailed: boolean
-    try {
-      const fetched = await this.git.git(['fetch', '--no-tags', 'origin', `refs/heads/${branch}:${ref}`],
-        { cwd: clone, signal })
-      const head = fetched.code === 0
-        ? await this.git.git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd: clone, signal }) : fetched
-      if (head.code !== 0) {
-        throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE',
-          `Main could not fetch ${repository}@${branch}. Sign GitHub in on Main.`, 409)
-      }
-      commit = head.stdout.trim()
-    } finally {
-      const removed = await this.git.git(['update-ref', '-d', ref], { cwd: clone, signal })
-      cleanupFailed = removed.code !== 0
-    }
-    if (cleanupFailed) {
-      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'Main could not remove its temporary fetch ref.', 409)
-    }
-    return commit
+    return (await this.approve(principal, source, captured.value, repository)).value
   }
   async resolveRootBinding(sql: Sql, principal: ManagementPrincipal,
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {
@@ -344,8 +350,11 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
   async rootGet(principal: ManagementPrincipal, _source: Transport, raw: unknown): Promise<SourceRootRecord> {
     const input = SourceRootGetInputSchema.parse(raw)
+    requireAuthorization(principal, 'workspace_locations:read', input)
     return this.transaction(async sql => {
-      await authorizeSource(sql, principal, 'source_roots:read', input.workspaceId); await this.host(sql)
+      const { principal: live } = await authorizeSource(sql, principal, 'source_roots:read', input.workspaceId)
+      requireAuthorization(live, 'workspace_locations:read', input)
+      await this.host(sql)
       const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where workspace_id=$1 and root_id=$2 and binding_revision=$3',
         [input.workspaceId, input.rootId, input.bindingRevision])).rows[0]
       if (!row) throw new DomainError('SOURCE_ROOT_NOT_FOUND', 'The exact root binding was not found.', 404)
@@ -355,8 +364,10 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
   async rootList(principal: ManagementPrincipal, _source: Transport, raw: unknown) {
     const input = SourceRootListInputSchema.parse(raw)
+    requireAuthorization(principal, 'workspace_locations:read', input)
     return this.transaction(async sql => {
-      await authorizeSource(sql, principal, 'source_roots:read', input.workspaceId)
+      const { principal: live } = await authorizeSource(sql, principal, 'source_roots:read', input.workspaceId)
+      requireAuthorization(live, 'workspace_locations:read', input)
       await authorizeSource(sql, principal, 'sources:read', input.workspaceId); await this.host(sql)
       const rows = await sql.query<{ record: unknown }>(`select b.record from source_root_catalog c join source_root_bindings b
         on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision where c.workspace_id=$1 order by c.root_id limit $2`, [input.workspaceId, input.limit])
@@ -431,16 +442,20 @@ export class PostgresSourceService implements SourceAdmissionPort {
           : input.attempt.keyRevision !== root.registration.keyRevision || input.attempt.authorizationRevision !== root.registration.authorizationRevision))
         throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Preparation must use the exact approved source/root and actual host authorization pins.', 409)
       await this.executions.authorize(sql, input.principal, { ...input, root })
+      const workflow = await sql.query('select 1 from execution_dispatch_intents where execution_id=$1 and attempt_id=$2 and operation_id=$3',
+        [input.attempt.executionId, input.attempt.attemptId, input.operationId])
+      const sharedWritableTree = root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1
+      const worktree = sharedWritableTree
+        ? await agentWorktree(sql, input.attempt.executionId, source.manifest) : undefined
       const existing = (await sql.query<{ record: unknown; state: string }>('select record,state from source_execution_materializations where execution_id=$1 and attempt_id=$2 for update', [input.attempt.executionId, input.attempt.attemptId])).rows[0]
       if (existing) {
         const record = SourceMaterializationRecordSchema.parse({ ...(existing.record as object), state: existing.state })
         if (record.operationId !== input.operationId || !isDeepStrictEqual(record.receipt.binding, root.binding)
           || record.receipt.placementHash !== input.attempt.placementHash) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Source preparation belongs to another exact execution/attempt.', 409)
-        return { root, source, record, reservation: null, sharedWritableTree: false }
+        assertWorktreeReceipt(record.receipt, worktree, source.manifest.git?.commit)
+        return { root, source, record, reservation: null, sharedWritableTree, worktree }
       }
       const reservedBytes = sourceMaterializationBytes(source.manifest)
-      const workflow = await sql.query('select 1 from execution_dispatch_intents where execution_id=$1 and attempt_id=$2 and operation_id=$3',
-        [input.attempt.executionId, input.attempt.attemptId, input.operationId])
       // Worker I/O can outlive admission; keep its cleanup identity with the capacity it owns.
       const reservation = await this.reservations.reserve(sql, {
         scopeId: this.scope(root.binding.deviceId, root.binding.workerInstallationId, root.binding.filesystem),
@@ -448,13 +463,16 @@ export class PostgresSourceService implements SourceAdmissionPort {
         reservedBytes,
         preparation: { identity: { operationId: input.operationId, ownerPrincipalId: input.principal.id,
           expiresAt: input.principal.expiresAt }, root, attempt: input.attempt, source: root.source, record: null,
-        physicalClosureConfirmed: false, ...(workflow.rowCount === 1 ? { preparationKind: 'workflow' as const } : {}) },
+        physicalClosureConfirmed: false, ...(worktree ? { worktree } : {}),
+        ...(workflow.rowCount === 1 ? { preparationKind: 'workflow' as const } : {}) },
       })
-      const sharedWritableTree = root.binding.accessMode === 'exclusive-write' && workflow.rowCount === 1
-      return { root, source, record: null, reservation, sharedWritableTree,
-        worktree: sharedWritableTree ? await agentWorktree(sql, input.attempt.executionId, source.manifest) : undefined }
+      return { root, source, record: null, reservation, sharedWritableTree, worktree }
     })
-    if (state.record) { await this.lifecycle.adopted?.(state.record); return state.record }
+    if (state.record) {
+      await this.executions.verify(state.record)
+      await this.lifecycle.adopted?.(state.record)
+      return state.record
+    }
     // No main SQL transaction spans carrier/native filesystem I/O.
     const receipt = await this.executions.prepare(state.source.manifest, state.root, input.attempt,
       state.sharedWritableTree ? { sharedWritableTree: true, ...(state.worktree ? { worktree: state.worktree } : {}) } : undefined)
@@ -464,6 +482,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       || receipt.verifiedManifestDigest !== state.source.manifest.manifestDigest || receipt.verifiedEntries !== state.source.manifest.totalEntries
       || receipt.verifiedBytes !== state.source.manifest.totalBytes)
       throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Materialization did not attest the accepted original execution/attempt.', 409)
+    assertWorktreeReceipt(receipt, state.worktree, state.source.manifest.git?.commit)
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: state.root.selection.rootPolicyId,
       rootPolicyRevision: state.root.selection.rootPolicyRevision, operationId: input.operationId, reservationId: state.reservation!.reservationId, sourceBindingHash: input.attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
     const committed = await this.transaction(async sql => {
@@ -569,18 +588,38 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
 }
 
-const slug = (value: string) => value.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 40) || 'agent'
-/** A workflow agent in a GitHub workspace works on its own branch: foreman/<workflow>/<agent>-<run>. */
 export async function agentWorktree(sql: Sql, executionId: string, manifest: SourceManifest): Promise<SourceWorktreeRequest | undefined> {
   const repository = manifest.git?.repository
   if (!repository) return undefined
-  const row = (await sql.query<{ workflow_name: string | null; agent_name: string | null; run_id: string }>(
-    `select v.record#>>'{definition,name}' as workflow_name, a.record->>'name' as agent_name, e.run_id
+  const row = (await sql.query<{ workflow_name: string | null; agent_name: string | null; run_id: string;
+    placement: unknown; retained_materialization: unknown }>(
+    `select v.record#>>'{definition,name}' as workflow_name, a.record->>'name' as agent_name, e.run_id,
+       p.record as placement, m.record as retained_materialization
      from harness_executions e join runs r on r.id=e.run_id
      left join workflow_versions v on v.id=r.workflow_version_id left join agents a on a.id=e.record->>'agentId'
+     left join run_node_placements p on p.run_id=e.run_id and p.node_id=e.workflow_node_id
+     left join execution_dispatch_intents i on i.execution_id=e.id
+     left join source_execution_materializations m on m.execution_id=e.id and m.attempt_id=i.attempt_id
      where e.id=$1`, [executionId])).rows[0]
   if (!row) return undefined
-  const run = row.run_id.replace(/^run-/u, '').replace(/[^A-Za-z0-9]/gu, '').slice(0, 8)
+  if (row.placement) {
+    const placement = readPlacement(row.placement)
+    if (placement.payload.kind === 'agent' && placement.payload.worktree) {
+      if (placement.payload.worktree.repository !== repository) {
+        throw new DomainError('SOURCE_WORKTREE_CONFLICT', 'The accepted Agent repository differs from its approved source.', 409)
+      }
+      return placement.payload.worktree
+    }
+  }
+  if (row.retained_materialization) {
+    const receipt = SourceMaterializationRecordSchema.parse(row.retained_materialization).receipt
+    if (receipt.worktree) {
+      const request = { repository, branch: receipt.worktree.branch.slice(0, -37) }
+      assertWorktreeReceipt(receipt, request, manifest.git?.commit)
+      return request
+    }
+  }
   return { repository,
-    branch: `foreman/${slug(row.workflow_name ?? 'workflow')}/${slug(row.agent_name ?? 'agent')}-${run}` }
+    branch: bindGeneratedWorktreeRun(generatedWorktreePrefix(row.workflow_name ?? 'workflow', row.agent_name ?? 'agent'),
+      row.run_id) }
 }

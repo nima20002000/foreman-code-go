@@ -1,3 +1,4 @@
+import { workspaceRepositoryImportsMigration } from './workspaceRepositoryImportsMigration.js'
 import { retiredHarnessCredentialsMigration } from './retiredHarnessCredentialsMigration.js'
 import { bugReportsMigration } from './bugReportsMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
@@ -30,6 +31,7 @@ import { ciRuntimeMainComputerMigration } from './ciRuntimeMainComputerMigration
 import { ciEnrollmentMigration } from './ciEnrollmentMigration.js'
 import { workflowFailureCauseMigration } from './workflowFailureCauseMigration.js'
 import { workflowJobAttemptIdentityMigration } from './workflowJobAttemptIdentityMigration.js'
+import { workflowExecutionFailureMigration } from './workflowExecutionFailureMigration.js'
 import { jobAdmissionQueueMigration } from './jobAdmissionQueueMigration.js'
 import { jobQueueCleanupMigration } from './jobQueueCleanupMigration.js'
 import { jobSourceCapacityWaitMigration } from './jobSourceCapacityWaitMigration.js'
@@ -889,6 +891,8 @@ export const migrations = [
   ciEnrollmentMigration,
   workflowFailureCauseMigration,
   workflowJobAttemptIdentityMigration,
+  workflowExecutionFailureMigration,
+  workspaceRepositoryImportsMigration,
   bugReportsMigration,
 ] as const
 

@@ -211,6 +211,13 @@ export function GlobalSettingsRouteEntry() {
                   </Link>
                 </Card>
               </li>
+              <li>
+                <Card className="settings-card">
+                  <Link to="/settings/system-prompt" className="settings-card-open">
+                    <SettingsCardBody icon="bot" title="System prompt" description="App-wide instructions for workflow and chat Agents" />
+                  </Link>
+                </Card>
+              </li>
             </ul>
             <h2 className="settings-group-heading" id="settings-defaults-heading">Defaults</h2>
             <ul className="settings-card-list" aria-labelledby="settings-defaults-heading">

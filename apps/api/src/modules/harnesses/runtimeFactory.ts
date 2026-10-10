@@ -1,4 +1,4 @@
-import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
+import { HarnessConfigurationSchema, RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
 import { createAdmittedNativeManager } from './admittedManager.js'
 import type { ClaudeOwnedVersionObservation } from './claudeSdk/currentPin.js'
@@ -10,7 +10,7 @@ import { HarnessInstanceRegistry, localHarnessDrivers, type ConfiguredHarnessIns
 import type { HarnessInstallationRegistry, RegistryHarnessSelection } from './installationRegistry.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { discoverLauncher } from './hostDiscovery.js'
-import { CodexAppServerSessionManager, type CodexSessionDependencies } from './codexAppServer.js'
+import { CodexAppServerSessionManager, safeEnvironment, type CodexSessionDependencies } from './codexAppServer.js'
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
 import { CodexDiagnostics } from './codexDiagnostics.js'
 import { runCommand } from './process.js'
@@ -22,6 +22,8 @@ import type { NativeMcpInspector } from './mcpDetection.js'
 import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
+import type { ProviderAccountResolver } from '../provider-accounts/service.js'
+import { pinnedCodexAccountEnvironment } from './providerAccountConfiguration.js'
 
 export type HarnessRuntimeRole = 'workflow' | 'operator' | 'agent-chat' | 'diagnostics' | 'qualification'
 interface AllocationContext {
@@ -31,6 +33,8 @@ interface AllocationContext {
   workingDirectory: string
   ownerAgentId: string
   processRecovery?: NativeProcessRecovery
+  accountRecovery?: NativeProcessRecovery
+  accountSourceRecovery?: NativeProcessRecovery
   appMcpAccess: 'scoped' | 'none'
   revalidateSelection?: (signal?: AbortSignal) => Promise<void>
 }
@@ -73,6 +77,7 @@ export class NativeHarnessFactories {
   private readonly inspectors = new WeakMap<NativeHarnessSessionManager, NativeMcpInspector>()
   constructor(private readonly config: {
     codexBinary: string
+    accounts?: ProviderAccountResolver
     refreshInstallations?: (signal?: AbortSignal) => Promise<void>
     responseJournal?: NativeResponseJournal
     instances?: HarnessInstanceRegistry
@@ -204,6 +209,16 @@ export class NativeHarnessFactories {
     const recovery = input.processRecovery ?? (auxiliary ? this.config.auxiliaryRecovery?.(input.role as 'diagnostics' | 'qualification') : undefined)
     let result: NativeHarnessAllocationResult
     if (input.harness === 'codex') {
+      const rawConfiguration = input.configured?.configuration ?? input.selection?.instance.configuration
+      const configuration = rawConfiguration ? HarnessConfigurationSchema.parse(rawConfiguration) : undefined
+      const account = pinnedCodexAccountEnvironment(this.config.accounts,
+        configuration?.harness === 'codex' ? configuration.accountId : undefined,
+        input.accountRecovery ?? (auxiliary ? undefined : recovery), input.accountSourceRecovery)
+      const environment = (variables?: NativeSessionStart['environment'], scopedNames: readonly string[] = []) => {
+        const source = this.infrastructure.codex?.environment?.(variables, scopedNames)
+          ?? safeEnvironment(variables, scopedNames)
+        return account.environment(source)
+      }
       let dependencies: CodexSessionDependencies | undefined = this.infrastructure.mode === 'native'
         ? { ...this.infrastructure.codex, mode: 'native',
           qualify: async (binary, cwd, environment, authenticated, signal) => {
@@ -250,6 +265,12 @@ export class NativeHarnessFactories {
       if (input.nativeOutputs && (input.role !== 'workflow' || input.appMcpAccess !== 'scoped')) {
         throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native output requires the original scoped workflow allocation.', 403)
       }
+      const diagnostic = dependencies!.withDiagnostics!
+      dependencies = { ...dependencies!, prepareEnvironment: () => account.prepare(), environment,
+        withDiagnostics: (pin, run) => diagnostic(pin, async io => {
+          return run({ ...io, environment: (variables, scopedNames) =>
+            account.environment(io.environment(variables, scopedNames)) })
+        }) }
       const manager = new CodexAppServerSessionManager(input.selection?.installation.launcher.resolvedLauncher ?? this.config.codexBinary, undefined, undefined,
         recovery, input.appMcpAccess, input.chatFiles, dependencies, undefined, input.nativeOutputs,
         this.config.responseJournal)
@@ -280,6 +301,8 @@ export class NativeHarnessFactories {
           ownerAgentId: input.ownerAgentId,
           appMcpAccess: 'none',
           ...(diagnosticRecovery ? { processRecovery: diagnosticRecovery } : {}),
+          ...(recovery ? { accountRecovery: input.accountRecovery ?? recovery } : {}),
+          ...(input.accountSourceRecovery ? { accountSourceRecovery: input.accountSourceRecovery } : {}),
           ...(input.selection ? { selection: input.selection } : {}),
           ...(input.configured ? { configured: input.configured } : {}),
           ...(input.revalidateSelection ? { revalidateSelection: input.revalidateSelection } : {}),
@@ -332,7 +355,10 @@ export class NativeHarnessFactories {
       'The Claude preset is saved, but native profile qualification is not available in this runtime. Execution still requires verified authentication, sandbox isolation and lifecycle evidence for the exact host profile.', 409)
     const selection = this.config.selectConfiguration?.(configuration)
     const allocation = this.allocate({ harness: configuration.harness, role: 'qualification',
-      ...(selection ? { selection, configured: selection.instance } : {}), workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
+      ...(selection ? { selection, configured: selection.instance } : { configured: {
+        instanceId: 'configuration-qualification', instanceRevision: commandInputHash(configuration),
+        driverId: configuration.harness, enabled: true, configuration,
+      } }), workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
     })
     try {
       this.admitAuxiliary(allocation.manager)

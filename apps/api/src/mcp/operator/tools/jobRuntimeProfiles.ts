@@ -39,7 +39,8 @@ export function jobRuntimeCapabilities(context:Context,resource:AuthorizedResour
 function jobRuntimeCapabilityDetail(name: JobRuntimeToolName): string {
   if (name === 'ci_enrollment_get') {
     return 'Read per-computer workspace CI enrollment, persisted disable choices and per-template results, '
-      + 'including storage availability, preparation failures and ordinary templates not enrolled automatically.'
+      + 'including missing workspace profiles (templates-required), storage availability, preparation failures '
+      + 'and ordinary templates not enrolled automatically.'
   }
   if (name === 'ci_enrollment_update') {
     return 'Enable, retry or disable workspace CI enrollment with revision checks and idempotent commands. '
@@ -71,7 +72,7 @@ export function registerJobRuntimeTools(server:McpServer,context:Context) {
   const enrollment = context.services.ciEnrollment
   if (enrollment && jobRuntimeToolAvailable(context, 'ci_enrollment_get')) {
     server.registerTool('ci_enrollment_get', {
-      description: 'Read automatic workspace CI enrollment per computer, including persisted disable choices and per-template profile IDs, readiness, insufficient storage and setup failures. Ordinary Job templates are reported as not-enrolled-automatically. A partial computer result lists each available and unavailable template. Reads do not install, prepare or qualify runtimes. Requires job_definitions:read.',
+      description: 'Read automatic workspace CI enrollment per computer, including persisted disable choices and per-template profile IDs, readiness, insufficient storage and setup failures. A workspace without active runtime profiles reports templates-required; save a verification profile with job_runtime_profile_save before enrollment can prepare computers. Ordinary Job templates are reported as not-enrolled-automatically. A partial computer result lists each available and unavailable template. Reads do not install, prepare or qualify runtimes. Requires job_definitions:read.',
       inputSchema: CiEnrollmentReadSchema, outputSchema: CiEnrollmentStateSchema, annotations: read,
     }, input => invoke(context, 'ci_enrollment_get', () => enrollment.read(context.principal, input)))
   }

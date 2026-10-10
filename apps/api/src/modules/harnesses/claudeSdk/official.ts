@@ -1,28 +1,18 @@
 import { createRequire } from 'node:module'
 import { readFile, realpath } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { homedir } from 'node:os'
 import type { ChildProcess } from 'node:child_process'
 import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from '../recovery/processRegistry.js'
 import { HarnessExecutionError } from '../errors.js'
 import { createClaudeSdkRunner } from './runner.js'
 import type { Options, SDKUserMessage, McpServerConfig } from '@anthropic-ai/claude-agent-sdk'
 import type { ClaudeSdkClient } from './port.js'
-import { DomainError } from '../../errors.js'
+import { claudeProfileHelper } from './profileHelpers.js'
 
 
 export const CLAUDE_CLI_CANDIDATE_VERSION = '2.1.284'
 export const CLAUDE_SDK_CANDIDATE_VERSION = '0.3.284'
-
-/** Native history helpers read the SDK process profile, not query's child env. */
-export function assertClaudeHelperProfile(profilePath: string): void {
-  const processProfile = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  if (resolve(profilePath) !== resolve(processProfile)) {
-    throw new DomainError('CLAUDE_PROFILE_DIRECTORY_MISMATCH',
-      'Claude native history, resume and fork cannot use a different process-local profile. Select this host process’s CLAUDE_CONFIG_DIR (or its default ~/.claude profile) before running diagnostics.', 409)
-  }
-}
 
 export function assertClaudeSdkContract(sdk: unknown, version: string): void {
   const exports = sdk && typeof sdk === 'object' ? sdk as Record<string, unknown> : {}
@@ -54,11 +44,12 @@ export async function loadOfficialClaudeSdk(profilePath: string, recovery: Nativ
   return {
     sdkVersion: manifest.version,
     ...ownedClaudeSdkQueries({ sdk, recovery, binary }),
-    getSessionInfo: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.getSessionInfo(id, options) },
-    getSessionMessages: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.getSessionMessages(id, options) },
-    listSubagents: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.listSubagents(id, options) },
-    getSubagentMessages: async (id, agentId, options) => { assertClaudeHelperProfile(profilePath); return sdk.getSubagentMessages(id, agentId, options) },
-    forkSession: async (id, options) => { assertClaudeHelperProfile(profilePath); return sdk.forkSession(id, options) },
+    getSessionInfo: (id, options) => claudeProfileHelper(entrypoint, profilePath, 'getSessionInfo', [id, options]),
+    getSessionMessages: (id, options) => claudeProfileHelper(entrypoint, profilePath, 'getSessionMessages', [id, options]),
+    listSubagents: (id, options) => claudeProfileHelper(entrypoint, profilePath, 'listSubagents', [id, options]),
+    getSubagentMessages: (id, agentId, options) =>
+      claudeProfileHelper(entrypoint, profilePath, 'getSubagentMessages', [id, agentId, options]),
+    forkSession: (id, options) => claudeProfileHelper(entrypoint, profilePath, 'forkSession', [id, options]),
   }
 }
 

@@ -139,9 +139,7 @@ async function bindInstallationState(root, stateDirectory) {
   await syncDirectory(root);
 }
 
-export async function installVersion(options) {
-  const { root, stateDirectory, publishInstallation } = options;
-  return withInstallLock(root, async () => {
+async function prepareInstallation(root, stateDirectory) {
     const state = await installationState(root, stateDirectory);
     let bound = true;
     try {
@@ -156,6 +154,13 @@ export async function installVersion(options) {
       }
       if (bound) throw error;
     }
+    return { state, bound };
+}
+
+export async function installVersion(options) {
+  const { root, stateDirectory, publishInstallation } = options;
+  return withInstallLock(root, async () => {
+    const { state, bound } = await prepareInstallation(root, stateDirectory);
     const unlock = await acquireWorkerLock(state);
     try {
       const result = await installRelease(options, state, bound);
@@ -167,7 +172,17 @@ export async function installVersion(options) {
   });
 }
 
-async function installRelease({ root, artifact, approvedManifestSha256, facts, expected, updatePolicy }, state, bound) {
+export async function stageRunningVersion(options) {
+  return withInstallLock(options.root, async () => {
+    options.assertStateOwnership();
+    const { state, bound } = await prepareInstallation(options.root, options.stateDirectory);
+    const result = await installRelease({ ...options, stageOnly: true }, state, bound);
+    options.assertStateOwnership();
+    return result;
+  });
+}
+
+async function installRelease({ root, artifact, approvedManifestSha256, facts, expected, updatePolicy, stageOnly }, state, bound) {
   const bytes = await readFile(join(artifact, 'manifest.json'));
   if (!digest.test(approvedManifestSha256) || hash(bytes) !== approvedManifestSha256) throw new WorkerError('manifest_checksum_mismatch');
   const manifest = JSON.parse(bytes);
@@ -178,15 +193,16 @@ async function installRelease({ root, artifact, approvedManifestSha256, facts, e
     if (!/^versions\/\d+\.\d+\.\d+-[a-f0-9]{64}$/.test(current)) throw new WorkerError('installation_invalid');
     if (hash(await readFile(join(root, current, 'manifest.json'))) === approvedManifestSha256) {
       await verifyRelease(join(root, current), approvedManifestSha256);
-      return { version: manifest.version, manifestSha256: approvedManifestSha256 };
+      return { version: manifest.version, manifestSha256: approvedManifestSha256,
+        directory: join(root, current) };
     }
     const previous = JSON.parse(await readFile(join(root, current, 'manifest.json'), 'utf8'));
-    if (manifest.version === previous.version && manifest.commit !== previous.commit) {
+    if (!stageOnly && manifest.version === previous.version && manifest.commit !== previous.commit) {
       throw new WorkerError('release_order_unknown');
     }
     const incoming = manifest.version.split('.').map(Number), installed = previous.version.split('.').map(Number);
     const differing = incoming.findIndex((n, i) => n !== installed[i]);
-    if (differing >= 0 && incoming[differing] < installed[differing]) throw new WorkerError('downgrade_refused');
+    if (!stageOnly && differing >= 0 && incoming[differing] < installed[differing]) throw new WorkerError('downgrade_refused');
     if (!updatePolicy || await updatePolicy({ from: previous.version, to: manifest.version }) !== true) throw new WorkerError('update_not_approved');
   }
   const releases = join(root, 'versions');
@@ -222,9 +238,12 @@ async function installRelease({ root, artifact, approvedManifestSha256, facts, e
     }
     await syncDirectory(releases);
     if (!bound) await bindInstallationState(root, state);
-    if (current) await switchLink(root, 'previous', current);
-    await switchLink(root, 'current', `versions/${release}`);
-    return { version: manifest.version, manifestSha256: approvedManifestSha256 };
+    if (!stageOnly) {
+      if (current) await switchLink(root, 'previous', current);
+      await switchLink(root, 'current', `versions/${release}`);
+    }
+    return { version: manifest.version, manifestSha256: approvedManifestSha256,
+      directory: join(releases, release) };
   } finally { await rm(stage, { recursive: true, force: true }); }
 }
 

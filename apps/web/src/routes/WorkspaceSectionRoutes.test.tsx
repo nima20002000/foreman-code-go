@@ -154,6 +154,8 @@ describe('workspace section routes', () => {
     const { router } = renderRoute('/settings')
 
     expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+    expect(screen.getByRole('link', { name: /Review Agent reports/ })).toHaveAttribute('href', '/settings/bugs')
+    expect(screen.getByRole('link', { name: /App-wide instructions/ })).toHaveAttribute('href', '/settings/system-prompt')
     expect(screen.getByRole('link', { name: /Provider presets/ })).toHaveAttribute('href', '/settings/harnesses')
     expect(screen.getByRole('link', { name: /Orchestrator, Coder and Operator templates/ })).toHaveAttribute('href', '/settings/agents')
     expect(screen.getByRole('link', { name: /Defaults for new workflows/ })).toHaveAttribute('href', '/settings/workflows')

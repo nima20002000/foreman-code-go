@@ -14,6 +14,7 @@ import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission
 import { buildApp } from '../src/app.js'
 import { DomainError } from '../src/modules/errors.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
+import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { createCurrentNativeProductionFactory } from '../src/modules/runs/workflowProduction.js'
 import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
@@ -31,7 +32,7 @@ function toolError(result: Awaited<ReturnType<Client['callTool']>>) {
   return JSON.parse(text.text)
 }
 
-async function fixture() {
+async function fixture(options: { gitSource?: boolean } = {}) {
   let placementProducer: Awaited<ReturnType<typeof mixedComputerPlacement>>['producer'] | undefined
   const base = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'sequential'),
     admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, inputDigest) => {
@@ -43,7 +44,19 @@ async function fixture() {
   let directory: string | undefined
   try {
     directory = await privateFixtureDirectory('mixed-placement-')
-    const placement = await mixedComputerPlacement(base, directory)
+    const placement = await mixedComputerPlacement(base, directory, {
+      sourceAccessMode: options.gitSource ? 'exclusive-write' : 'read-only',
+      git: { commit: 'b'.repeat(40), tree: 'c'.repeat(40), objectFormat: 'sha1', repository: 'octo/site' },
+    })
+    const workspace = (await base.db.pool.query<{ revision: number }>(
+      'select revision from workspaces where id=$1', [base.f.scope.workspaceId])).rows[0]!
+    await base.services.workspaces.update(base.writer.principal, 'mcp', {
+      workspaceId: base.f.scope.workspaceId, commandId: randomUUID(), expectedRevision: Number(workspace.revision),
+      repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' },
+    })
+    base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, {
+      worktrees: { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies },
+    })
     placementProducer = placement.producer
     await base.app.close()
     // Start admission and readback are real; this external provider boundary
@@ -137,6 +150,47 @@ async function advanceMainSourceBinding(f: Fixture) {
 }
 
 describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
+  it('freezes a remote workflow default and a local Agent override through authenticated MCP', async () => {
+    const f = await fixture({ gitSource: true })
+    try {
+      f.saveInput.graph.defaultWorktree = { rootBinding: f.placement.remote.rootBinding!,
+        branchPrefix: 'foreman/site/default' }
+      const inherited = agentWorkflowNode(f.saveInput.graph.nodes[0])
+      const explicit = agentWorkflowNode(f.saveInput.graph.nodes[1])
+      explicit.placement = f.placement.local
+      explicit.worktree = { branchPrefix: 'foreman/site/reviewer' }
+      const saved = await f.save('mcp')
+      const accepted = await f.start('mcp', startInput(f, saved))
+      const read = async (nodeId: string) => {
+        const response = await f.client.callTool({ name: 'run_node_placement_get', arguments: {
+          workspaceId: f.saveInput.workspaceId, workflowId: f.saveInput.workflowId,
+          runId: accepted.run.id, nodeId,
+        } })
+        expect(response.isError).not.toBe(true)
+        return RunPlacementGetResultSchema.parse(decodeMcpToolResult(response)).readback
+      }
+      const inheritedRead = await read(inherited.id)
+      const explicitRead = await read(explicit.id)
+      expect(inheritedRead).toMatchObject({ evidence: 'accepted', placement: {
+        labelAtAcceptance: 'Workflow default', hostRef: f.placement.remote.hostRef,
+        payload: { instanceId: f.placement.remote.instanceId,
+          worktree: { repository: 'octo/site', branch: 'foreman/site/default' } },
+      } })
+      expect(explicitRead).toMatchObject({ evidence: 'accepted', placement: {
+        hostRef: f.placement.local.hostRef, payload: { instanceId: f.placement.local.instanceId,
+          worktree: { repository: 'octo/site', branch: 'foreman/site/reviewer' } },
+      } })
+      const workspace = (await f.base.db.pool.query<{ revision: number }>(
+        'select revision from workspaces where id=$1', [f.saveInput.workspaceId])).rows[0]!
+      await f.base.services.workspaces.update(f.base.writer.principal, 'mcp', {
+        workspaceId: f.saveInput.workspaceId, commandId: randomUUID(), expectedRevision: Number(workspace.revision),
+        repository: { provider: 'github', owner: 'changed', name: 'site', defaultBranch: 'main' },
+      })
+      expect(await read(inherited.id)).toEqual(inheritedRead)
+      expect(await read(explicit.id)).toEqual(explicitRead)
+    } finally { await f.close() }
+  }, 120_000)
+
   it('clears explicit placement through MCP Save and readback, then resolves inherited Main at Start', async () => {
     const f = await fixture()
     try {
@@ -302,18 +356,18 @@ describe.skipIf(!postgresEnabled)('mixed computer placement admission', () => {
     } finally { await f.close() }
   }, 120_000)
 
-  it.each(['source', 'rootBinding'] as const)('rejects an explicit remote placement missing %s without a Main fallback', async field => {
+  it.each(['source', 'rootBinding'] as const)('rejects saving remote placement missing %s without a Main fallback', async field => {
     const f = await fixture()
     try {
       delete agentWorkflowNode(f.saveInput.graph.nodes[1]).placement![field]
-      const saved = await f.save('http')
-      const input = startInput(f, saved)
-      const http = await f.app.inject({ method: 'POST', url: `${f.path}/runs`, headers: f.headers, payload: input })
+      const http = await f.app.inject({ method: 'PUT', url: `${f.path}/definition`, headers: f.headers, payload: f.saveInput })
       expect(http.statusCode).toBe(409)
-      expect(http.json()).toMatchObject({ error: { code: 'PLACEMENT_ADMISSION_CONFLICT' } })
-      expect(toolError(await f.client.callTool({ name: 'run_start', arguments: { ...input, commandId: randomUUID() } })))
-        .toMatchObject({ error: { code: 'PLACEMENT_ADMISSION_CONFLICT' } })
-      expect((await f.base.db.pool.query('select id from runs where workflow_id=$1', [input.workflowId])).rows).toEqual([])
+      expect(http.json()).toMatchObject({ error: { code: 'WORKTREE_BINDING_REQUIRED' } })
+      expect(toolError(await f.client.callTool({ name: 'workflow_save_v3', arguments: f.saveInput })))
+        .toMatchObject({ error: { code: 'WORKTREE_BINDING_REQUIRED' } })
+      expect((await f.base.db.pool.query('select id from runs where workflow_id=$1', [f.saveInput.workflowId])).rows).toEqual([])
+      expect((await f.base.db.pool.query('select id from workflow_versions where workflow_id=$1', [f.saveInput.workflowId])).rows).toEqual([])
+      expect(f.base.provider.counts.sessions).toBe(0)
     } finally { await f.close() }
   }, 120_000)
 

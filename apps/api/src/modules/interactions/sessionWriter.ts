@@ -162,7 +162,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   private controlTail: Promise<unknown> = Promise.resolve()
   private disposal: Promise<void> | undefined
   readonly startInitialTurn?: NonNullable<NativeHarnessSessionManager['startInitialTurn']>
-  readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput,
+  readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput & { onTurnOffered?(): void },
     signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent[]>
   readonly inspectResponseAvailability?: NonNullable<ResponseAvailabilityInspector['inspectResponseAvailability']>
 
@@ -382,7 +382,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     for await (const batch of this.initialTurnBatches(start, input, signal, individualEvents)) yield* batch
   }
 
-  private async *initialTurnBatches(start: NativeSessionStart, input: NativeInitialTurnInput, signal?: AbortSignal,
+  private async *initialTurnBatches(start: NativeSessionStart,
+    input: NativeInitialTurnInput & { onTurnOffered?(): void }, signal?: AbortSignal,
     batches = nativeEventBatches): AsyncIterable<NativeHarnessEvent[]> {
     signal?.throwIfAborted()
     if (this.disposal || !this.manager.startInitialTurn) throw new DomainError('NATIVE_INITIAL_TURN_UNAVAILABLE', 'The admitted initial lifecycle is unavailable.', 409)
@@ -395,6 +396,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     // The existing execution/conversation admission owns the pre-SID offer.
     // There is no native lane identity until the provider actually reports it.
     try {
+      input.onTurnOffered?.()
       const events = this.manager.startInitialTurn(start, {
         prompt: input.prompt, clientCorrelationId: input.clientCorrelationId,
         onSessionObserved: async (observed) => {
@@ -451,12 +453,13 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     for await (const batch of this.turnBatches(session, input, signal, individualEvents)) yield* batch
   }
 
-  startTurnBatches(session: NativeSessionReference, input: NativeTurnInput,
+  startTurnBatches(session: NativeSessionReference, input: NativeTurnInput & { onTurnOffered?(): void },
     signal?: AbortSignal): AsyncIterable<NativeHarnessEvent[]> {
     return this.turnBatches(session, input, signal)
   }
 
-  private async *turnBatches(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal,
+  private async *turnBatches(session: NativeSessionReference,
+    input: NativeTurnInput & { onTurnOffered?(): void }, signal?: AbortSignal,
     batches = nativeEventBatches): AsyncIterable<NativeHarnessEvent[]> {
     const lease = await this.acquire(session, input.clientCorrelationId, signal)
     const evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
@@ -469,8 +472,10 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       this.active.set(session.nativeSessionId, lease)
       await lease.guard.check()
       submitted = true
+      const { onTurnOffered, ...nativeInput } = input
+      onTurnOffered?.()
       const events = this.manager.startTurn(session, {
-        ...input,
+        ...nativeInput,
         onMessageSubmitted: async (receipt) => {
           await lease.guard.check()
           if (receipt.nativeSessionId !== session.nativeSessionId || receipt.clientCorrelationId !== input.clientCorrelationId) {

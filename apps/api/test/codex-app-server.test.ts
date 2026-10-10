@@ -1650,6 +1650,55 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('thread/start')).length, threads)
   })
 
+  it('launches workflow Agents with the application system prompt before Agent instructions', async () => {
+    source.request.systemPrompt = {
+      value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3',
+    }
+    source.request.configuration = { ...source.request.configuration,
+      instructionDelivery: 'native-v1', prompt: { system: 'Agent instructions.' } }
+    const session = await manager.createSession(source)
+    const started = (await wire('thread/start'))[0]!.params as JsonObject
+    assert.equal(started.developerInstructions, 'App instructions.\n\nAgent instructions.')
+    const changed = structuredClone(source)
+    changed.request.systemPrompt!.revision = 4
+    await assertCode(manager.createSession(changed), 'CODEX_SESSION_CONFIGURATION_MISMATCH')
+    await assertCode(manager.attachSession(session, changed), 'CODEX_SESSION_CONFIGURATION_MISMATCH')
+    await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'app-prompt-turn' }))
+    const turn = (await wire('turn/start'))[0]!.params as JsonObject
+    assert.deepEqual(turn.input, [{ type: 'text', text: 'complete', text_elements: [] }])
+    const restarted = makeManager()
+    await restarted.attachSession(session, source)
+    const resumed = (await wire('thread/resume')).at(-1)!.params as JsonObject
+    assert.equal(resumed.developerInstructions, 'App instructions.\n\nAgent instructions.')
+  })
+
+  it('launches Agent chat with the application system prompt and excludes it from Operator instructions', async () => {
+    const snapshot = { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' }
+    const configuration = { ...source.request.configuration,
+      instructionDelivery: 'native-v1' as const, prompt: { system: 'Agent instructions.' } }
+    const chat = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'none')
+    managers.push(chat)
+    await chat.createSession({ kind: 'agent-chat', conversationId: 'prompt-chat', workflowId: 'workflow',
+      workflowNodeId: 'chat-node', correlationId: 'chat-prompt', configuration,
+      systemPrompt: snapshot, workingDirectory: f.directory })
+    const operator = codexResponseSurfaceFixtures(f.directory).find(item => item.surface === 'operator')!
+    const scoped = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, operator.appMcpAccess)
+    managers.push(scoped)
+    await scoped.createSession({ ...operator.source, systemPrompt: snapshot } as typeof operator.source)
+    const [chatLaunch, operatorLaunch] = (await wire('thread/start')).map(frame => frame.params as JsonObject)
+    assert.equal(chatLaunch!.developerInstructions, 'App instructions.\n\nAgent instructions.')
+    assert.equal(String(operatorLaunch!.developerInstructions).includes('App instructions.'), false)
+  })
+
+  it('adds no native text for an empty application system prompt', async () => {
+    source.request.systemPrompt = { value: { text: '' }, revision: 3, versionId: 'prompt-version-3' }
+    source.request.configuration = { ...source.request.configuration,
+      instructionDelivery: 'native-v1', prompt: { system: 'Agent instructions.' } }
+    await manager.createSession(source)
+    const started = (await wire('thread/start'))[0]!.params as JsonObject
+    assert.equal(started.developerInstructions, 'Agent instructions.')
+  })
+
   it('F32: simultaneous first starts and conflicting response choices have one writer', async () => {
     const session = await manager.createSession(source)
     const first = collect(manager.startTurn(session, { prompt: 'approval', clientCorrelationId: 'first' }))

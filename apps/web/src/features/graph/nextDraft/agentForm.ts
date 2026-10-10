@@ -9,6 +9,7 @@ const HarnessFormSchema = z.object({ configuration: HarnessConfigurationSchema,
 export const AgentFormSchema = z.object({ base: z.string().refine((value) => { try { JSON.parse(value); return true } catch { return false } }), name: z.string(), prompt: z.string(),
   /** Persistent Agent instructions and ordered skill references; absent in forms saved before Skills v1. */
   placement: SavedNodePlacementSchema.optional(),
+  branchPrefix: z.string().optional(),
   instructions: z.string().optional(), skills: z.array(AssignedSkillSchema).optional(),
   editor: HarnessFormSchema.extend({ drafts: z.object({ codex: HarnessFormSchema.optional(),
     claude: HarnessFormSchema.optional() }).strict().optional() }),

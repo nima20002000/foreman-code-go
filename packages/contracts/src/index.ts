@@ -1,4 +1,6 @@
 import { TextTruncationSchema } from './activityText.js';
+import { PromptSettingSnapshotSchema } from './prompts.js';
+export * from './prompts.js';
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js';
 import { NativeInteractionSupportSchema } from './nativeInteractionSupport.js';
 import { NativeInteractionInputSchema } from './interactionInput.js';
@@ -67,15 +69,10 @@ const OptionalTimestampFields = {
   updatedAt: TimestampSchema.optional(),
 } as const;
 
+import { WorkspaceRepositorySchema } from './workspaceRepository.js';
+export { WorkspaceRepositorySchema, type WorkspaceRepository } from './workspaceRepository.js';
+
 /** A workspace is the top-level scope for agents, workflows, conversations and resources. */
-/** The GitHub repository a workspace's agents work in; each computer keeps its own clone. */
-export const WorkspaceRepositorySchema = z.object({
-  provider: z.literal("github"),
-  owner: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/),
-  name: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/).refine((value) => value !== "." && value !== ".."),
-  defaultBranch: z.string().trim().min(1).max(255).regex(/^[^\s~^:?*[\\]+$/),
-}).strict();
-export type WorkspaceRepository = z.infer<typeof WorkspaceRepositorySchema>;
 export const WorkspaceSchema = z
   .object({
     id: IdSchema,
@@ -240,6 +237,7 @@ export type RetiredOpenCodeAdvancedConfiguration = z.infer<typeof RetiredOpenCod
 export const CodexHarnessConfigurationSchema = z
   .object({
     harness: z.literal("codex"),
+    accountId: z.uuid().optional(),
     model: z.string().trim().min(1),
     reasoningEffort: AgentEffortSchema,
     sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]),
@@ -811,6 +809,7 @@ export const ConversationSchema = z
     agentId: IdSchema,
     scope: z.enum(["workspace", "application"]).optional(),
     operatorConfigurationVersionId: IdSchema.optional(),
+    initialPrompt: PromptSettingSnapshotSchema.optional(),
     title: z.string().optional(),
     status: ConversationStatusSchema.optional(),
     ...OptionalTimestampFields,
@@ -928,6 +927,7 @@ export const HarnessExecutionSchema = z
     agentId: IdSchema,
     agentConfigurationVersionId: IdSchema,
     attempt: z.number().int().positive(),
+    systemPrompt: PromptSettingSnapshotSchema.optional(),
     parallelGroupId: IdSchema.optional(),
     nativeSessionId: IdSchema.optional(),
     /** User project directory selected on the Run. Optional only for legacy history. */
@@ -1103,6 +1103,7 @@ export const HarnessExecutionRequestSchema = z
     workingDirectory: ExecutionLocationSchema.shape.rootPath,
     runtimeDirectory: ExecutionLocationSchema.shape.rootPath,
     initialPrompt: z.string().trim().min(1).optional(),
+    systemPrompt: PromptSettingSnapshotSchema.optional(),
     configuration: AgentConfigurationVersionSchema,
     input: z.json(),
     executionContext: HarnessExecutionContextSchema.optional(),
@@ -1237,6 +1238,8 @@ export const RunnerSummarySchema = z
   })
   .strict();
 export type RunnerSummary = z.infer<typeof RunnerSummarySchema>;
+
+export const LOCAL_CLIENT_UNAVAILABLE = 'LOCAL_CLIENT_UNAVAILABLE'
 
 export const ApiErrorSchema = z
   .object({
@@ -1408,8 +1411,9 @@ export const OperatorConversationContextSchema = z.object({
 /** Per-message model controls. Execution permissions remain server-owned. */
 export const OperatorChatSettingsSchema = z.discriminatedUnion("harness", [
   z.object({ harness: z.literal("codex"), model: z.string().trim().min(1), reasoningEffort: AgentEffortSchema,
-    serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
-  z.object({ harness: z.literal("claude"), model: z.string().trim().min(1), effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
+    accountId: z.uuid().optional(), serviceTier: z.enum(["standard", "priority"]), showThinking: z.boolean() }).strict(),
+  z.object({ harness: z.literal("claude"), accountId: z.uuid().optional(), model: z.string().trim().min(1),
+    effort: ClaudeEffortSchema.optional(), showThinking: z.boolean() }).strict(),
 ]);
 /** Saved conversation controls remain readable after provider retirement. */
 export const RecordedOperatorChatSettingsSchema = z.union([
@@ -1421,23 +1425,29 @@ export type OperatorChatSettings = z.infer<typeof OperatorChatSettingsSchema>;
 export function operatorChatSettings(harness: HarnessConfiguration, showThinking = false): OperatorChatSettings {
   if (harness.harness === "opencode") throw new Error(RETIRED_OPENCODE_MESSAGE);
   if (harness.harness === "claude") {
-    return { harness: "claude", model: harness.model, ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
+    return { harness: "claude", model: harness.model, ...(harness.accountId ? { accountId: harness.accountId } : {}),
+      ...(harness.effort ? { effort: harness.effort } : {}), showThinking };
   }
   return { harness: "codex", model: harness.model, reasoningEffort: harness.reasoningEffort,
+    ...(harness.accountId ? { accountId: harness.accountId } : {}),
     serviceTier: harness.serviceTier, showThinking };
 }
 /** Apply chat controls without replacing the accepted execution permissions. */
 export function applyOperatorChatSettings(base: HarnessConfiguration, settings: OperatorChatSettings): HarnessConfiguration {
   if (base.harness !== settings.harness) throw new Error("Select the matching harness defaults before applying chat settings.");
   if (settings.harness === "claude") {
-    const configuration = ClaudeHarnessConfigurationSchema.parse({ ...base, model: settings.model });
+    const configuration = ClaudeHarnessConfigurationSchema.parse({ ...base, accountId: settings.accountId, model: settings.model });
+    if (!configuration.accountId) delete configuration.accountId;
     delete configuration.effort;
     if (settings.effort) configuration.effort = settings.effort;
     return configuration;
   }
-  return SupportedHarnessConfigurationSchema.parse({
-    ...base, model: settings.model, reasoningEffort: settings.reasoningEffort, serviceTier: settings.serviceTier,
+  const configuration = SupportedHarnessConfigurationSchema.parse({
+    ...base, accountId: settings.accountId, model: settings.model, reasoningEffort: settings.reasoningEffort,
+    serviceTier: settings.serviceTier,
   });
+  if (!configuration.accountId) delete configuration.accountId;
+  return configuration;
 }
 export const OperatorChatSetupQuerySchema = z.object({
   conversationId: IdSchema.optional(),
@@ -1729,3 +1739,6 @@ export * from './jobVerificationGate.js'
 export * from './sessionControls.js'
 
 export * from './sessionCommands.js'
+
+export * from './worktreeSettings.js';
+export * from './workspaceGit.js';

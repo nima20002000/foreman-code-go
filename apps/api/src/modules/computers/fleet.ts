@@ -2,7 +2,8 @@ import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import {
-  COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema,
+  COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceReadInputSchema,
+  ComputerMaintenanceStartInputSchema, SyncedMarketplaceSchema,
   ComputerMaintenanceStartResultSchema, ComputerMaintenanceDispatchSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
   type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
@@ -17,6 +18,7 @@ import { DomainError } from '../errors.js'
 import type { ClaudePluginCatalog } from './claudePlugins.js'
 import type { ComputerMaintenance } from './maintenance.js'
 import { syncFingerprint } from './syncFingerprint.js'
+import { assertComputerTarget } from './target.js'
 
 export interface MaintenanceEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
@@ -33,6 +35,8 @@ export interface FleetSources {
 
 const CACHE_MS = 20_000
 const RUNNING_CACHE_MS = 3_000
+const SYNC_RETRY_MS = 5 * 60_000
+const MAX_SYNC_RETRY_MS = 60 * 60_000
 const RETIRED_APP_SERVERS = ['graphql-app', 'graphql-operator', 'graphql-worker']
 
 /** Server definitions safe to copy: no inline secret values. Servers needing a login are set up per computer later. */
@@ -57,7 +61,7 @@ export function syncableServers(
     const hasSecrets = ['env', 'headers', 'http_headers', 'env_http_headers'].some(key =>
       entry[key] && typeof entry[key] === 'object' && Object.keys(entry[key] as object).length > 0)
     if (hasSecrets) {
-      skipped?.(name)
+      skipped?.(name, 'contains credentials; configure it separately on each computer')
       continue
     }
     const url = typeof entry.url === 'string' ? entry.url : undefined
@@ -77,7 +81,9 @@ export function syncableServers(
 
 /** Main's view of every computer's maintenance, and the one place that starts maintenance across them. */
 export class FleetMaintenanceService {
-  private readonly cache = new Map<string, { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> }>()
+  private readonly cache = new Map<string, {
+    at: number; pending: boolean; running?: boolean; value: Promise<MaintenanceStatus | null>
+  }>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
@@ -116,7 +122,9 @@ export class FleetMaintenanceService {
           authorize: async sql => { requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update') },
           perform: async () => {
             const selected = input.targets ?? await this.targets(principal, 'settings:update')
-            const targets = ['sync-mcp', 'sync-plugins'].includes(input.task.kind)
+            const workersOnly = ['sync-mcp', 'sync-plugins'].includes(input.task.kind)
+              || (input.task.kind === 'update-worker' && !input.targets)
+            const targets = workersOnly
               ? selected.filter(target => target.hostRef.kind !== 'main') : selected
             return ComputerMaintenanceDispatchSchema.parse({ targets, task: await this.taskFor(input.task) })
           },
@@ -140,6 +148,22 @@ export class FleetMaintenanceService {
     })
     if (!result.replayed) return result.value
     return this.readStartedTasks(principal, ComputerMaintenanceStartResultSchema.parse(result.value))
+  }
+
+  async readTarget(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<ComputerMaintenanceList> {
+    const input = ComputerMaintenanceReadInputSchema.parse(raw)
+    try { requireAuthorization(principal, 'settings:read') } catch (error) {
+      await this.commands.recordDenied(principal.id, source, 'computers_maintenance_status', this.mainId)
+      throw error
+    }
+    const sql = await this.pool.connect()
+    try {
+      requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:read')
+      await assertComputerTarget(sql, this.mainId, input.target)
+    } finally { sql.release() }
+    return ComputerMaintenanceListSchema.parse({
+      computers: [{ target: input.target, status: await this.status(input.target, input.refresh === true) }],
+    })
   }
 
   private async readStartedTasks(principal: ManagementPrincipal,
@@ -172,7 +196,7 @@ export class FleetMaintenanceService {
       if (behind.length) await this.startOn(target, { kind: 'update-harnesses', harnesses: behind }).catch(() => undefined)
       if (target.hostRef.kind === 'main') return
       for (const task of sync) {
-        if (task.status === 'fulfilled') await this.startOn(target, task.value)
+        if (task.status === 'fulfilled') await this.syncSource(target, task.value, status)
       }
     }))
     const failures = sync.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
@@ -180,8 +204,9 @@ export class FleetMaintenanceService {
   }
 
   private readonly deliveries = new Map<string, {
-    fingerprint: string; taskId: string; state: 'pending' | 'delivered'
+    fingerprint: string; taskId: string; state: 'pending' | 'failed' | 'delivered'; retryAt: number
   }>()
+  private readonly syncing = new Map<string, Promise<void>>()
   /**
    * Pushes Main's current MCP servers and plugins to every connected computer that has not received this exact set yet.
    * Runs every minute on Main, so installs and removals on Main reach the other computers within about a minute, and a
@@ -191,9 +216,7 @@ export class FleetMaintenanceService {
     const sources = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     const targets = (await this.allTargets()).filter(target => target.hostRef.kind !== 'main')
     await Promise.all(targets.map(async target => {
-      const pending = sources.some(source => source.status === 'fulfilled'
-        && this.deliveries.get(`${this.key(target)}:${source.value.kind}`)?.state === 'pending')
-      const status = pending ? await this.status(target, true) : null
+      const status = await this.status(target, true)
       await Promise.all(sources.map(async source => {
         if (source.status === 'fulfilled') await this.syncSource(target, source.value, status)
       }))
@@ -202,26 +225,61 @@ export class FleetMaintenanceService {
     if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
   }
 
-  private async syncSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
+  private syncSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
     status: MaintenanceStatus | null): Promise<void> {
+    const key = `${this.key(target)}:${source.kind}`
+    const active = this.syncing.get(key)
+    if (active) return active
+    const delivery = this.deliverSource(target, source, status).finally(() => this.syncing.delete(key))
+    this.syncing.set(key, delivery)
+    return delivery
+  }
+
+  private async deliverSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
+    status: MaintenanceStatus | null): Promise<void> {
+    if (!status) return
     const key = `${this.key(target)}:${source.kind}`
     const fingerprint = syncFingerprint(source)
     const delivery = this.deliveries.get(key)
-    if (delivery?.fingerprint === fingerprint) {
-      if (delivery.state === 'delivered') return
-      const task = status?.tasks.find(task => task.id === delivery.taskId && task.sourceFingerprint === fingerprint)
-      if (task?.state === 'succeeded') {
-        delivery.state = 'delivered'
+    const tasks = status.tasks.filter(task => task.kind === source.kind)
+    const latest = tasks[0]
+    if (latest?.sourceFingerprint === fingerprint) {
+      if (latest.state === 'succeeded') {
+        this.deliveries.set(key, { fingerprint, taskId: latest.id, state: 'delivered', retryAt: 0 })
         return
       }
-      if (task?.state === 'running' || !status) return
+      if (latest.state === 'running') return
+      let failures = 0
+      for (const task of tasks) {
+        if (task.sourceFingerprint !== fingerprint || task.state !== 'failed') break
+        failures++
+      }
+      const delay = Math.min(SYNC_RETRY_MS * 2 ** (failures - 1), MAX_SYNC_RETRY_MS)
+      // Compare timestamps from the same Worker so its clock offset cannot defeat backoff.
+      const elapsed = Math.max(0, Date.parse(status.observedAt) - Date.parse(latest.finishedAt ?? latest.startedAt))
+      let retryAt = this.now() + Math.max(0, delay - elapsed)
+      if (delivery?.taskId === latest.id && delivery.state === 'failed') {
+        retryAt = Math.min(retryAt, delivery.retryAt)
+      }
+      this.deliveries.set(key, { fingerprint, taskId: latest.id, state: 'failed', retryAt })
+      if (this.now() < retryAt) return
+    } else if (delivery?.fingerprint === fingerprint) {
+      if (delivery.state === 'delivered' && !latest) return
+      if (this.now() < delivery.retryAt) return
     }
-    // A failed/missing task remains pending for retry, including after a Worker restart.
-    const result = await Promise.allSettled([this.startOn(target, source)])
+    const retryingUnknown = delivery?.fingerprint === fingerprint && !tasks.some(task => task.id === delivery.taskId)
+    const commandId = retryingUnknown ? delivery.taskId : randomUUID()
+    // An unanswered start keeps its command ID so retrying cannot duplicate accepted work.
+    this.deliveries.set(key, { fingerprint, taskId: commandId, state: 'pending', retryAt: this.now() + SYNC_RETRY_MS })
+    const result = await Promise.allSettled([this.startOn(target, source, commandId)])
     const started = result[0]!
-    if (started.status !== 'fulfilled' || started.value.sourceFingerprint !== fingerprint) return
+    if (started.status !== 'fulfilled') return
+    if (started.value.sourceFingerprint !== fingerprint) {
+      this.deliveries.get(key)!.retryAt = 0
+      return
+    }
     this.deliveries.set(key, { fingerprint, taskId: started.value.id,
-      state: started.value.state === 'succeeded' ? 'delivered' : 'pending' })
+      state: started.value.state === 'succeeded' ? 'delivered' : 'pending', retryAt: this.now() + SYNC_RETRY_MS })
   }
 
   private async taskFor(task: ComputerMaintenanceStartInput['task']): Promise<MaintenanceTaskStart> {
@@ -261,15 +319,24 @@ export class FleetMaintenanceService {
       const request: Extract<MaintenanceTaskStart, { kind: 'sync-plugins' }> = { kind: 'sync-plugins' }
       const warnings: string[] = []
       if (codex.status === 'fulfilled') {
-        request.plugins = codex.value[0]
-        request.marketplaces = codex.value[1]
+        const marketplaces = SyncedMarketplaceSchema.array().safeParse(codex.value[1])
+        if (marketplaces.success) {
+          request.plugins = codex.value[0]
+          request.marketplaces = marketplaces.data
+        } else warnings.push('Codex marketplace sources are unsafe or invalid; plugin sync skipped.')
       } else warnings.push('Codex plugin catalog could not be read; skipped.')
       if (claude.status === 'fulfilled') {
-        request.claudePlugins = claude.value.plugins.filter(plugin => plugin.installed)
-          .map(({ pluginId, enabled }) => ({ pluginId, enabled }))
-        request.claudeMarketplaces = claude.value.marketplaces
-          .flatMap(item => item.source ? [{ name: item.name, source: item.source }] : [])
+        const marketplaces = SyncedMarketplaceSchema.array().safeParse(claude.value.marketplaces
+          .flatMap(item => item.source ? [{ name: item.name, source: item.source }] : []))
+        if (marketplaces.success) {
+          request.claudePlugins = claude.value.plugins.filter(plugin => plugin.installed)
+            .map(({ pluginId, enabled }) => ({ pluginId, enabled }))
+          request.claudeMarketplaces = marketplaces.data
+        } else warnings.push('Claude marketplace sources are unsafe or invalid; plugin sync skipped.')
       } else warnings.push('Claude plugin catalog could not be read; skipped.')
+      if (request.plugins === undefined && request.claudePlugins === undefined) {
+        throw new Error('Main\'s plugin catalogs do not contain safe marketplace sources.')
+      }
       if (warnings.length) request.warnings = warnings
       return request
     }
@@ -278,7 +345,22 @@ export class FleetMaintenanceService {
 
   private async startOn(target: DeviceProvisioningTarget, task: MaintenanceTaskStart,
     commandId: string = randomUUID()): Promise<MaintenanceTask> {
-    if (target.hostRef.kind === 'main') return this.local.start(task, commandId)
+    if (target.hostRef.kind === 'main') {
+      if (task.kind === 'update-worker') {
+        throw new DomainError('COMPUTER_WORKER_UPDATE_UNSUPPORTED',
+          'Main is updated with production:install. Choose a paired Worker for this task.', 400)
+      }
+      return this.local.start(task, commandId)
+    }
+    if (task.kind === 'update-worker') {
+      const capabilities = this.endpoint()?.capabilities(target.hostRef.deviceId) ?? []
+      const maintenanceAvailable = capabilities.some(value =>
+        value.namespace === COMPUTER_MAINTENANCE_NAMESPACE && value.mainCanRequest)
+      if (maintenanceAvailable && !capabilities.some(value => value.namespace === WORKER_UPDATE_NAMESPACE)) {
+        throw new DomainError('COMPUTER_WORKER_UPDATE_UNSUPPORTED',
+          'Install an updater-enabled Worker once on this computer before automatic updates are available.', 409)
+      }
+    }
     const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId,
       { operation: 'start', commandId, task })).payload)
     if (reply.operation !== 'start') throw new DomainError('COMPUTER_MAINTENANCE_INVALID', 'The computer returned an unexpected reply.', 502)
@@ -289,15 +371,22 @@ export class FleetMaintenanceService {
     const key = this.key(target)
     const cached = this.cache.get(key)
     // A running task's progress is read again within seconds; settled status is reused longer.
-    if (!refresh && cached && this.now() - cached.at < (cached.running ? RUNNING_CACHE_MS : CACHE_MS)) return cached.value
+    const ttl = cached?.running ? RUNNING_CACHE_MS : CACHE_MS
+    if (cached && (cached.pending || (!refresh && this.now() - cached.at < ttl))) return cached.value
+    // A bounded shared observation survives one reader canceling so other readers can still use it.
     const value = (async () => {
       if (target.hostRef.kind === 'main') return this.local.status(AbortSignal.timeout(90_000))
       const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId, { operation: 'status' })).payload)
       return reply.operation === 'status' ? reply.status : null
     })().catch((): null => null)
-    const entry: { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> } = { at: this.now(), value }
+    const entry = { at: this.now(), pending: true, running: false, value }
     this.cache.set(key, entry)
-    void value.then(status => { entry.running = status?.tasks.some(task => task.state === 'running') ?? false })
+    void value.then(status => {
+      entry.pending = false
+      entry.at = this.now()
+      const workerUpdating = status?.worker && !['current', 'rolled-back', 'failed'].includes(status.worker.state)
+      entry.running = status?.tasks.some(task => task.state === 'running') || Boolean(workerUpdating)
+    })
     return value
   }
 

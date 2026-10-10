@@ -191,6 +191,46 @@ afterEach(() => {
 })
 
 describe('NIM-2644 mounted frontend recovery through the real edit-intent hook', () => {
+  it('unlocks a rejected Agent branch prefix and restores the saved draft on Discard and reload', async () => {
+    const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValue(new ApiError({
+      code: 'WORKTREE_BINDING_REQUIRED', message: 'Select an approved root for this Agent branch prefix.',
+    }, 409))
+    const advance = vi.spyOn(nextDraftApi, 'editAdvance')
+    const discard = vi.spyOn(nextDraftApi, 'editDiscard')
+    const user = userEvent.setup()
+    let view = mount()
+    const saved = structuredClone(edit().graph)
+    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
+    await user.type(screen.getByRole('textbox', { name: 'Agent branch prefix' }), 'foreman/journey-worker')
+    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
+    await requestSave(user)
+    await screen.findAllByText('Select an approved root for this Agent branch prefix.')
+    await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
+    expect(nativeNode(edit().graph.nodes[0]).worktree?.branchPrefix).toBe('foreman/journey-worker')
+    expect(screen.queryByRole('button', { name: 'Reconcile Save' })).not.toBeInTheDocument()
+
+    view = reopen(view)
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
+    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Use workflow default' })).toBeEnabled()
+    await confirmDiscard(user)
+    await waitFor(() => expect(nextDraftDirty(edit())).toBe(false))
+    expect(edit().graph).toEqual(saved)
+    expect(readEditSnapshot(key)?.graph).toEqual(saved)
+
+    reopen(view)
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
+    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toHaveValue('')
+    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toBeEnabled()
+    expect(edit().graph).toEqual(saved)
+    expect(stage).toHaveBeenCalledOnce()
+    expect(advance).not.toHaveBeenCalled()
+    expect(discard).not.toHaveBeenCalled()
+    expect(boardStartClient.start).not.toHaveBeenCalled()
+  })
+
   it('keeps Start blocked for a saved workflow with a retired Agent while preserving its facts', async () => {
     const context = repairFixture(1)
     const agent = context.agents[0]!.agent
@@ -355,11 +395,12 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
       expect(stage.mock.calls.map(([input]) => input)).toEqual([request, request, request])
       expect(readEditOutbox(key)?.request).toEqual(request); expect(boardStartClient.start).not.toHaveBeenCalled()
     })
-  it('FE-001 a REVISION_CONFLICT from Advance is not a rejected Stage and cannot release its reservation', async () => {
+  it.each(['REVISION_CONFLICT', 'WORKTREE_BINDING_REQUIRED'])(
+    'retains the staged reservation when Advance rejects with %s', async (code) => {
     let persisted = empty
     vi.mocked(nextDraftApi.editRead).mockImplementation(async () => persisted)
     vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => (persisted = stageValue(input)))
-    const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockRejectedValue(new ApiError({ code: 'REVISION_CONFLICT', message: 'After Stage' }, 409))
+    const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockRejectedValue(new ApiError({ code, message: 'After Stage' }, 409))
     const user = userEvent.setup(); mount(); typeMeaning(); await saveWithStop(user)
     await waitFor(() => expect(advance).toHaveBeenCalledOnce())
     await retainedSaveReady()

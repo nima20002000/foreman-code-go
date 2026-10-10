@@ -6,6 +6,8 @@ import { SelectedNodePlacement } from '../node-placement/SelectedNodePlacement'
 import { RunNodeInspector } from './RunNodeInspector'
 import { useRunNodeInspectionNavigation } from './inspectionNavigation'
 import { RunBoardCanvas } from './RunBoardCanvas'
+import { useRunVersionQuery } from '../workflow-board/inspect/queries'
+import { SavedWorkflowWorktree } from '../workflow-board/SavedWorkflowWorktree'
 import './runBoard.css'
 
 export type RunBoardProps = { selection: SelectedRunState }
@@ -36,6 +38,7 @@ export function RunBoard({ selection }: RunBoardProps) {
       : snapshot?.kind === 'unavailable' ? <p role="status">Snapshot unavailable</p>
       : snapshot?.kind === 'available' ? <>
         <span className="run-board-label">Read only</span>
+        <RunDefaultWorktree selection={selection} workflowVersionId={snapshot.workflowVersionId} />
         {snapshot.nodes.length ? <RunBoardCanvas key={selection.generation.id} snapshot={snapshot} onInspectNode={inspection.inspect} /> : <p role="status">No nodes</p>}
         {inspection.nodeId ? <RunNodeInspector key={`inspector:${selection.generation.id}:${inspection.nodeId}`}
           selection={selection} snapshot={snapshot} nodeId={inspection.nodeId}
@@ -43,6 +46,18 @@ export function RunBoard({ selection }: RunBoardProps) {
         <SelectedRunComputers key={`placement:${selection.generation.id}`} selection={selection} nodes={snapshot.nodes} />
       </> : null}
   </section>
+}
+
+function RunDefaultWorktree({ selection, workflowVersionId }: {
+  selection: SelectedRunState; workflowVersionId: string
+}) {
+  const scope = { ...selection.identity, runId: selection.identity.runId!, workflowVersionId,
+    executionSemanticsVersion: 3 as const }
+  const version = useRunVersionQuery(scope)
+  if (!selection.isCurrent(selection.generation)) return null
+  if (version.isError) return <p role="status">Saved default worktree is unavailable for this Run.</p>
+  if (!version.data) return <p role="status">Reading this Run’s saved default worktree…</p>
+  return <SavedWorkflowWorktree workspaceId={scope.workspaceId} value={version.data.version.definition.defaultWorktree} />
 }
 
 function SelectedRunComputers({ selection, nodes }: { selection: SelectedRunState; nodes: readonly RunBoardNodeSnapshot[] }) {

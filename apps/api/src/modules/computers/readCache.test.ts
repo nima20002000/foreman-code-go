@@ -50,6 +50,13 @@ function fixture(kind: 'accounts' | 'maintenance', running = false) {
       probeAccounts.mockImplementation(() => new Promise(() => {}))
       probeStatus.mockImplementation(() => new Promise(() => {}))
     },
+    delayProbes() {
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      probeAccounts.mockImplementation(async () => { await gate; return accounts })
+      probeStatus.mockImplementation(async () => { await gate; return status })
+      return release
+    },
     advance(ms: number) { now += ms },
     revoke() { revoked = true },
     accounts,
@@ -96,11 +103,54 @@ describe.each(['accounts', 'maintenance'] as const)('%s warm reads', kind => {
     await expect(f.read()).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     expect(f.probes()).toBe(1)
   })
+
+  it('shares a pending probe past the cache TTL and starts freshness when it settles', async () => {
+    const f = fixture(kind)
+    const release = f.delayProbes()
+    const first = f.read()
+    await expect.poll(f.probes).toBe(1)
+    f.advance(ttl + 1)
+    const second = f.read()
+    const refreshed = f.read(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(f.probes()).toBe(1)
+    release()
+    expect(await second).toEqual(await first)
+    expect(await refreshed).toEqual(await first)
+    f.advance(ttl - 1)
+    await f.read()
+    expect(f.probes()).toBe(1)
+    f.advance(1)
+    await f.read()
+    expect(f.probes()).toBe(2)
+  })
 })
 
 it('refreshes running maintenance progress after three seconds', async () => {
   const f = fixture('maintenance', true)
   await f.read()
+  f.advance(2_999)
+  await f.read()
+  expect(f.probes()).toBe(1)
+  f.advance(1)
+  await f.read()
+  expect(f.probes()).toBe(2)
+})
+
+it('shares a pending automatic Worker observation and refreshes update progress after settlement', async () => {
+  const f = fixture('maintenance')
+  f.status.worker = {
+    currentVersion: '0.0.56', targetVersion: '0.0.57', state: 'downloading', lastError: null,
+  }
+  const release = f.delayProbes()
+  const first = f.read()
+  await expect.poll(f.probes).toBe(1)
+  f.advance(20_001)
+  const refreshed = f.read(true)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(f.probes()).toBe(1)
+  release()
+  expect(await refreshed).toEqual(await first)
   f.advance(2_999)
   await f.read()
   expect(f.probes()).toBe(1)

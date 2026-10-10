@@ -6,10 +6,11 @@ import { useNativeHarnessOptions, useRefreshNativeHarness } from '../../shared/a
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import { ClaudeConfigurationFields } from './ClaudeConfigurationFields'
 import { nativeOptionsWithSaved, selectNativeModel, supportedEfforts } from './harnessModelSelection'
+import { ProviderAccountSelect } from '../provider-accounts/ProviderAccountSelect'
 import './harnessModelFields.css'
 
 type Props = { value: HarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[] }
-function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string }) {
+function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError, accountRemote = false }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string; accountRemote?: boolean }) {
   const query = useNativeHarnessOptions(value.harness)
   const refresh = useRefreshNativeHarness(value.harness)
   const selected = query.data?.models.find((item) => item.id === value.model)
@@ -20,10 +21,20 @@ function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandb
     Choose a native model before using this preset.
   </Alert> : null
   if (value.harness === 'opencode') return null
-  if (value.harness === 'claude') return <>{missingModel}<ClaudeConfigurationFields value={value} onChange={onChange}
+  const account = <ProviderAccountSelect provider={value.harness} value={value.accountId} remote={accountRemote}
+    onChange={accountId => {
+      if (accountId) onChange({ ...value, accountId })
+      else {
+        const configuration = { ...value }
+        delete configuration.accountId
+        onChange(configuration)
+      }
+    }} />
+  if (value.harness === 'claude') return <>{account}{missingModel}<ClaudeConfigurationFields value={value} onChange={onChange}
     models={query.data?.models ?? []} qualified={qualified} pending={checking || query.isPending}
     error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} /></>
   return <div className="harness-basic-fields">
+    {account}
     {missingModel}
     <div className="harness-model-settings">
       <div className="harness-model-fields">

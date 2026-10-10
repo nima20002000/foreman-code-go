@@ -4,6 +4,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, applyOperatorChatSettings, OperatorConfigurationVersionSchema, withAdvancedDefaults,
   type HarnessConfiguration, type OperatorConfigurationVersion, type SendOperatorMessageRequest } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
 async function version(query: Queryable, id: string): Promise<OperatorConfigurationVersion> {
@@ -44,6 +46,8 @@ export async function operatorMessageBase(query: Queryable, current: OperatorCon
 export async function acceptOperatorConfiguration(query: Queryable, current: OperatorConfigurationVersion,
   input: SendOperatorMessageRequest, prior: { operator_configuration_version_id: string | null } | undefined,
   suppliedHarness?: HarnessConfiguration, validate?: (configuration: OperatorConfigurationVersion) => void,
+  accounts?: ProviderAccountConfigurationService,
+  preparedProfile?: HarnessProfileSelection,
 ): Promise<OperatorConfigurationVersion> {
   if (prior) {
     if (!prior.operator_configuration_version_id) throw new DomainError('OPERATOR_RETRY_CONFIGURATION_UNKNOWN',
@@ -54,22 +58,27 @@ export async function acceptOperatorConfiguration(query: Queryable, current: Ope
     return accepted
   }
   const base = await operatorMessageBase(query, current, input)
-  const requested = suppliedHarness ?? (input.settings ? applyOperatorChatSettings(base.harness, input.settings) : base.harness)
+  const settings = suppliedHarness ?? (input.settings ? applyOperatorChatSettings(base.harness, input.settings) : base.harness)
+  const requested = accounts ? await accounts.resolve(settings, base.harnessProfileSelection) : settings
   const harness = isDeepStrictEqual(withAdvancedDefaults(base.harness), withAdvancedDefaults(requested)) ? base.harness : requested
-  if (base.harnessProfileSelection && !isDeepStrictEqual(base.harness, harness)) {
+  if (base.harnessProfileSelection && !preparedProfile && !isDeepStrictEqual(base.harness, harness)) {
     throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'Per-message settings cannot rewrite the configuration of an explicitly selected host profile. Save and select that configured profile first.', 409)
   }
   const showThinking = input.settings?.showThinking ?? base.showThinking ?? false
-  if (JSON.stringify(base.harness) === JSON.stringify(harness) && showThinking === (base.showThinking ?? false)) {
+  const harnessProfileSelection = preparedProfile ?? base.harnessProfileSelection
+  if (JSON.stringify(base.harness) === JSON.stringify(harness) && showThinking === (base.showThinking ?? false)
+    && isDeepStrictEqual(harnessProfileSelection, base.harnessProfileSelection)) {
     validate?.(base)
     return base
   }
-  const candidate = { ...base, harness, showThinking }
+  const candidate = { ...base, harness, showThinking,
+    ...(harnessProfileSelection ? { harnessProfileSelection } : {}) }
   validate?.(candidate)
   await query.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
   const latest = await query.query<{ version: number }>('select coalesce(max(version),0)+1 as version from operator_configuration_versions where operator_id=$1', [base.operatorId])
   const accepted = OperatorConfigurationVersionSchema.parse({ ...candidate, id: randomUUID(), version: Number(latest.rows[0]!.version),
-    contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking, ...(base.harnessProfileSelection ? { harnessProfileSelection: base.harnessProfileSelection } : {}) })).digest('hex')}`, createdAt: new Date().toISOString() })
+    contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness, showThinking,
+      ...(harnessProfileSelection ? { harnessProfileSelection } : {}) })).digest('hex')}`, createdAt: new Date().toISOString() })
   await query.query('insert into operator_configuration_versions (id,operator_id,version,record) values ($1,$2,$3,$4::jsonb)',
     [accepted.id, accepted.operatorId, accepted.version, JSON.stringify(accepted)])
   return accepted

@@ -3,6 +3,7 @@ import {
   BugReportListInputSchema,
   BugReportSchema,
   BugReportUpdateInputSchema,
+  type BugReport,
   type BugReportCreateInput,
   type BugReportCreateResult,
   type BugReportListInput,
@@ -13,7 +14,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { commandInputHash, type PostgresCommandCoordinator } from '../commands/postgres.js'
-import { requireAuthorization } from '../access/policy.js'
+import { requireAuthorization, type AuthorizedResource } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { liveBugReportPrincipal, readGrantFilter, reportingContext, type ReportContext } from './authorization.js'
 import { listBugReports, readBugReport, recordBugReport, saveBugReport } from './repository.js'
@@ -39,7 +40,8 @@ function safeReportInput(input: BugReportCreateInput): BugReportCreateInput {
 }
 
 function repeatFingerprint(reporterIdentity: string, input: BugReportCreateInput): string {
-  const { commandId: _commandId, ...content } = input
+  const content: Partial<BugReportCreateInput> = { ...input }
+  delete content.commandId
   const normalize = (text: string) => text.trim().replace(/\s+/g, ' ').toLowerCase()
   return commandInputHash({
     reporterIdentity,
@@ -52,6 +54,14 @@ function repeatFingerprint(reporterIdentity: string, input: BugReportCreateInput
     },
     expected: normalize(input.expected),
   })
+}
+
+function reportScope(report: BugReport): AuthorizedResource {
+  return {
+    workspaceId: report.workspaceId,
+    ...(report.workflowId === undefined ? {} : { workflowId: report.workflowId }),
+    ...(report.runId === undefined ? {} : { runId: report.runId }),
+  }
 }
 
 export class BugReportService {
@@ -92,7 +102,8 @@ export class BugReportService {
       },
       perform: async sql => {
         const now = new Date().toISOString()
-        const { commandId: _commandId, ...content } = input
+        const content: Partial<BugReportCreateInput> = { ...input }
+        delete content.commandId
         const { reporterIdentity, ...metadata } = context
         const report = BugReportSchema.parse({
           ...content,
@@ -123,7 +134,7 @@ export class BugReportService {
     const current = await liveBugReportPrincipal(this.pool, principal)
     if (current.audience !== 'operator') throw new DomainError('ACCESS_DENIED', 'Agents can only submit bug reports.', 403)
     const report = await readBugReport(this.pool, reportId)
-    requireAuthorization(current, 'bug_reports:read', report)
+    requireAuthorization(current, 'bug_reports:read', reportScope(report))
     return report
   }
 
@@ -140,7 +151,7 @@ export class BugReportService {
     }
     const report = await readBugReport(this.pool, accepted.reportId)
     try {
-      requireAuthorization(current, 'bug_reports:update', report)
+      requireAuthorization(current, 'bug_reports:update', reportScope(report))
     } catch (error) {
       if (error instanceof DomainError && error.status === 403) {
         await this.commands.recordDenied(principal.id, source, 'bug_reports.update', report.id)
@@ -157,7 +168,8 @@ export class BugReportService {
       payload: input,
       authorize: async sql => {
         const live = await liveBugReportPrincipal(sql, principal)
-        requireAuthorization(live, 'bug_reports:update', await readBugReport(sql, report.id, 'update'))
+        const saved = await readBugReport(sql, report.id, 'update')
+        requireAuthorization(live, 'bug_reports:update', reportScope(saved))
       },
       perform: async sql => {
         const previous = await readBugReport(sql, report.id, 'update')

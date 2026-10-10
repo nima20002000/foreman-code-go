@@ -6,7 +6,7 @@ function statIdentity(value: BigIntStats): string {
   return [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(':')
 }
 
-/** Inventory can reuse unchanged files; launch and qualification callers hash bytes directly. */
+/** Reuse only unchanged file identities; native launch checks still hash bytes directly. */
 export class PayloadFingerprintCache {
   private readonly entries = new Map<string, { identity: string; fingerprint: string }>()
 
@@ -17,7 +17,16 @@ export class PayloadFingerprintCache {
     if (!before.isFile()) throw new Error('Payload is not a file')
     const identity = statIdentity(before)
     const cached = this.entries.get(path)
-    if (cached?.identity === identity) return cached.fingerprint
+    if (cached?.identity === identity) {
+      signal?.throwIfAborted()
+      const after = await stat(path, { bigint: true })
+      if (statIdentity(after) !== identity || await realpath(file) !== path) {
+        this.entries.delete(path)
+        throw new Error('Payload changed during fingerprinting')
+      }
+      signal?.throwIfAborted()
+      return cached.fingerprint
+    }
     this.entries.delete(path)
     const hash = createHash('sha256')
     for await (const chunk of createReadStream(path, { ...(signal ? { signal } : {}) })) hash.update(chunk)
@@ -26,6 +35,7 @@ export class PayloadFingerprintCache {
     if (statIdentity(after) !== identity || await realpath(file) !== path) {
       throw new Error('Payload changed during fingerprinting')
     }
+    signal?.throwIfAborted()
     const fingerprint = hash.digest('hex')
     if (this.entries.size >= 512) this.entries.delete(this.entries.keys().next().value!)
     this.entries.set(path, { identity, fingerprint })

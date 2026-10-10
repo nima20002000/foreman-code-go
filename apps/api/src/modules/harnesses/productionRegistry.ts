@@ -1,5 +1,4 @@
 import type { discoverInstalledClaudeSdk } from './claudeSdk/currentPin.js'
-import { randomUUID } from 'node:crypto'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
 import type pg from 'pg'
 import { HarnessConfigurationSchema, RETIRED_OPENCODE_MESSAGE, withAdvancedDefaults, type HarnessDefaults } from '@foreman-code/contracts'
@@ -26,7 +25,10 @@ export class ProductionHarnessRegistry {
   readonly instances = new HarnessInstanceRegistry(localHarnessDrivers)
   readonly installations = new HarnessInstallationRegistry(this.instances)
   private mainId: string | undefined
-  private readonly mainGeneration = randomUUID()
+  private get mainGeneration(): string {
+    // Local inventory has no transport connection to replace on an API restart.
+    return commandInputHash({ host: this.host(), environmentGeneration: this.targetEnvironment().generation })
+  }
   private readonly snapshots = new Map<string, {
     value: HarnessRegistryReadback
     connectionGeneration: string

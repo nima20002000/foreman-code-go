@@ -48,7 +48,8 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
   options: { databaseUrl?: string; acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
     nativeSourcePersisted?: Parameters<typeof createWorkflowRepositoryServices>[2];
     nativeCommitted?: ConstructorParameters<typeof PostgresRunRepository>[4];
-    approvalNodeIds?: string[]; insertRun?: boolean; outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
+    approvalNodeIds?: string[]; insertRun?: boolean; workerParallelism?: number;
+    outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
     admitPlacementExecutionLocked?: RepeatRepositoryServices['admitPlacementExecutionLocked'];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
     recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
@@ -120,7 +121,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
         new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
         workflowCapture.capture, reviewCapture.capture, options.recoverNativeProcesses)
       const engine = new LangGraphWorkflowEngine(runs, workflows, native, checkpointer, db.directory,
-        locations, launchCredentials, repository, undefined, { workerParallelism: 2 })
+        locations, launchCredentials, repository, undefined, { workerParallelism: options.workerParallelism ?? 2 })
       const service = new InteractionService(repository, budgets, native, (interaction) => engine.resumeInteraction(interaction),
         undefined, (interaction) => native.inspectInteractionActivity(interaction))
       registerApprovalCheckpointResume(service, engine)

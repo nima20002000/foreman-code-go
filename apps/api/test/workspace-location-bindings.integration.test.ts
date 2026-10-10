@@ -264,7 +264,8 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         expect(await f.jobs.choices(f.base.writer.principal, f.workspaceId)).toEqual(jobsBefore)
         const main = await resolveLocalMainPlacement({ sql: f.base.db.pool, principal: f.base.writer.principal,
           mainId: policy.hostRef.mainId, workspaceId: f.workspaceId, configuration: f.base.f.configurations[0]!,
-          roots: f.placement.policies, installations: f.placement.installations })
+          roots: f.placement.policies, installations: f.placement.installations,
+          qualificationSuites: { codex: 'codex-live-4' } })
         expect(main).toEqual(f.placement.local)
       }
       const reader = await f.base.access.issue({ name: 'Read-only location caller', audience: 'operator',
@@ -323,6 +324,7 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         sql: f.base.db.pool, principal: f.base.writer.principal, mainId: policy.hostRef.mainId,
         workspaceId: f.workspaceId, configuration: f.base.f.configurations[0]!,
         roots: f.placement.policies, installations: f.placement.installations,
+        qualificationSuites: { codex: 'codex-live-4' },
       })).rejects.toMatchObject({ code: 'ROOT_POLICY_UNAVAILABLE' })
     } finally { await f.close() }
   }, 120_000)

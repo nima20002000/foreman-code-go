@@ -28,11 +28,14 @@ import {
   CodexSessionCompatibilitySchema, OperatorConversationStreamEventSchema, SendOperatorMessageRequestSchema,
   type ContextSnapshot, type NativeHarnessEvent, type OperatorActivityQuery, type OperatorConfigurationVersion, type OperatorConversationStreamEvent, type NativeSessionReference,
   type ExecutionResult, type SendOperatorMessageRequest, type RespondOperatorInteractionRequest, type OperatorChatSetup, type OperatorChatSetupQuery,
+  type HarnessConfiguration,
 } from '@foreman-code/contracts'
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { OperatorConversationHistoryQuery } from '@foreman-code/contracts/operator-chat'
 
 import { DomainError } from '../errors.js'
+import { harnessSessionChanged } from '../harnesses/providerAccountConfiguration.js'
 import { requireAuthorization, isAuthorized } from '../access/policy.js'
 import type {
   ChildProcessEnvironment, NativeHarnessSessionManager, NativeHistory, NativeMessageSubmission, NativeSessionStart,
@@ -184,6 +187,8 @@ export class OperatorChatService {
     private readonly managers: NativeManagerResolver,
     private readonly workingDirectory: string,
     private readonly authority: OperatorChatAuthority,
+    private readonly prepareAccountProfile?: (principal: ManagementPrincipal, configuration: HarnessConfiguration,
+      commandId: string) => Promise<HarnessProfileSelection | undefined>,
   ) {}
 
   private receipts() { return this.commandReceipts ??= this.repository.createControlCommands() }
@@ -497,7 +502,16 @@ export class OperatorChatService {
     const configuration = receiptId ? undefined : await this.repository.configuration(row.operator_configuration_version_id)
     if (!receiptId && !configuration) throw new DomainError('OPERATOR_CONFIGURATION_NOT_FOUND', 'Pinned Operator configuration was not found.', 409)
     const harness = configuration ? await this.repository.harnessForMessage(configuration, input) : undefined
-    const fork = Boolean(harness && harness.harness !== row.harness && await this.repository.hasMessages(id))
+    let preparedProfile: HarnessProfileSelection | undefined
+    if (harness?.harness === 'claude' && configuration && harnessSessionChanged(configuration.harness, harness)) {
+      if (!this.prepareAccountProfile) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE',
+        'Claude account selection requires a checked local harness profile.', 503)
+      preparedProfile = await this.prepareAccountProfile(principal, harness, input.requestId)
+      if (!preparedProfile) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
+        'Check the selected Claude account profile before sending this message.', 409)
+    }
+    const fork = Boolean(harness && configuration && harnessSessionChanged(configuration.harness, harness)
+      && await this.repository.hasMessages(id))
     const admit = () => this.control(id, async () => {
       this.assertOpen(); controller.signal.throwIfAborted()
       const current = await this.authority.current(row.owner_principal_id!)
@@ -509,9 +523,9 @@ export class OperatorChatService {
             (accepted) => this.validate(accepted))
         : fork
           ? await this.repository.beginForkTurn(id, input, row.owner_principal_id!, harness!, configuration!.id,
-              (accepted) => this.validate(accepted))
+              (accepted) => this.validate(accepted), preparedProfile)
           : await this.repository.beginTurn(id, input, row.owner_principal_id!, input.settings ? harness : undefined,
-              configuration!.id, false, (accepted) => this.validate(accepted))
+              configuration!.id, false, (accepted) => this.validate(accepted), preparedProfile)
       if (begun.replayed) {
         requireAuthorization(await this.authority.current(principal.id), 'operator_chat:read')
         return begun
@@ -635,6 +649,16 @@ export class OperatorChatService {
     try {
       let row = await this.repository.active(id)
       if (!row || row.active_request_id !== input.requestId) return
+      const initialPrompt = publicOperatorConversation(row.record).initialPrompt?.value.text
+      const initialPromptText = initialPrompt && !await this.repository.hasNativeSubmission(id) ? initialPrompt : ''
+      const userPrompt = sessionTaskContent(input.content, input.sessionMode)
+      const hint = input.context && Object.values(input.context).some(Boolean)
+        ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
+      const messagePrompt = (handoffContext: string | null) => {
+        const preamble = [initialPromptText, handoffContext].filter(Boolean).join('\n\n')
+        const prefix = preamble ? `${preamble}\n\nCurrent user message:\n` : ''
+        return `${prefix}${userPrompt}${hint}`
+      }
       const fileInputs = Boolean(input.attachments?.length)
       const admittedFiles = await this.managers.hasFileInputs?.(id, input.requestId) ?? false
       if (fileInputs !== admittedFiles || fileInputs && !this.managers.recordFileSubmission) throw new DomainError(
@@ -672,13 +696,11 @@ export class OperatorChatService {
           }
           if (runtime.fileInputs && !this.managers.recordFileMessageSubmission) throw new DomainError('OPERATOR_FILE_MESSAGE_BINDING_REQUIRED', 'The file bridge requires an observed native message receipt.', 409)
           submitting = true
-          const hint = input.context && Object.values(input.context).some(Boolean)
-            ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
           initialStream = await primeInitialNativeStream(runtime.manager.startInitialTurn(start, {
             ...await this.sessionControls().turnSettings(id, {
               requestId: input.requestId, nativeSessionId: null,
             }, input.sessionMode),
-            prompt: `${initialHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`,
+            prompt: messagePrompt(initialHandoff ? row.handoff_context : null),
             clientCorrelationId: start.correlationId,
             onTerminal,
             onSessionObserved: async (observed) => {
@@ -719,8 +741,6 @@ export class OperatorChatService {
       signal.throwIfAborted(); this.assertOpen()
       submitting = true
       const correlationId = nativeCorrelation(id, input.requestId)
-      const hint = input.context && Object.values(input.context).some(Boolean)
-        ? `\n\n[Non-authoritative route context: ${JSON.stringify(input.context)}]` : ''
       let submittedTurnId = row.active_native_turn_id
       const textOwner = () => ({ scope: { kind: 'operator_chat' as const, conversationId: id },
         requestId: input.requestId, sessionId: runtime.session!.nativeSessionId,
@@ -744,7 +764,7 @@ export class OperatorChatService {
         ...await this.sessionControls().turnSettings(id, {
           requestId: input.requestId, nativeSessionId: runtime.session.nativeSessionId,
         }, input.sessionMode),
-        prompt: `${includeHandoff ? `${row.handoff_context}\n\nCurrent user message:\n` : ''}${sessionTaskContent(input.content, input.sessionMode)}${hint}`, clientCorrelationId: correlationId,
+        prompt: messagePrompt(includeHandoff ? row.handoff_context : null), clientCorrelationId: correlationId,
         onTerminal,
         onMessageSubmitted: async (receipt) => {
           submitted = true

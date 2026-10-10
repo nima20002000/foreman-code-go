@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { queryKeys } from '../../shared/api/query'
+import { providerAccountsKey } from '../provider-accounts/providerAccountsQueries'
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'
@@ -17,6 +18,7 @@ const clients: QueryClient[] = []
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); useOperatorChatStore.getState().reset() })
 function mount(props: Parameters<typeof HarnessDefaultsSettings>[0] = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } }); clients.push(client)
+  client.setQueryData(providerAccountsKey(), { revision: 1, accounts: [] })
   client.setQueryData(queryKeys.managedHarnessCatalog, Object.entries({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
     .map(([harness, defaults]) => ({ harness, defaults, defaultsRevision: 4,
       capability: harness === 'codex' ? { ready: true } : null,
@@ -31,6 +33,7 @@ it('shows Codex and Claude as summary cards with status and no editor', () => {
   expect(within(codex).getByText('Ready')).toBeVisible()
   expect(within(claude).getByText('Check the Claude profile.')).toBeVisible()
   expect(within(codex).getByText('Operator MCP for codex')).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Provider accounts' })).toBeVisible()
   expect(screen.queryByText('OpenCode')).not.toBeInTheDocument()
   expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument()

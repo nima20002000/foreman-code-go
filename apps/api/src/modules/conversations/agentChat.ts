@@ -71,7 +71,8 @@ import {
 
 /** One native manager per conversation; its process is owned by this service, never by a UI connection. */
 export interface AgentChatManagerFactory {
-  (conversationId: string, configuration: AgentConfigurationVersion, workingDirectory: string): NativeHarnessSessionManager
+  (conversationId: string, configuration: AgentConfigurationVersion, workingDirectory: string,
+    accountSource?: { executionId: string }): NativeHarnessSessionManager
   recoverCompaction?(configuration: AgentConfigurationVersion, conversationId: string,
     session: NativeSessionReference, start: NativeSessionStart,
     state: import('@foreman-code/contracts').CompactionState, principalId: string, signal: AbortSignal):
@@ -338,6 +339,7 @@ export class AgentChatService {
         agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness,
         origin: { kind: 'run_execution', runId: run.id, executionId, sourceNativeSessionId: source.nativeSessionId },
         workingDirectory: source.workingDirectory, runtimeDirectory: '',
+        ...(source.systemPrompt ? { systemPrompt: source.systemPrompt } : {}),
       } }
     }
     const version = await this.workflows.getCurrentSavedVersion(context.workspaceId, context.workflowId)
@@ -952,6 +954,7 @@ export class AgentChatService {
       kind: 'agent-chat', conversationId: row.id, workflowId: row.workflow_id,
       workflowNodeId: row.workflow_node_id, configuration,
       workingDirectory: row.record.workingDirectory, correlationId, instructionsDelivered: delivered,
+      ...(row.record.systemPrompt ? { systemPrompt: row.record.systemPrompt } : {}),
       ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}),
     }
   }
@@ -973,7 +976,9 @@ export class AgentChatService {
     await mkdir(this.runtimeDirectory(row.id), { recursive: true })
     this.assertOpen()
     signal.throwIfAborted()
-    const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory), configuration }
+    const accountSource = row.record.origin.kind === 'run_execution' ? { executionId: row.record.origin.executionId } : undefined
+    const runtime: Runtime = existing ?? { manager: this.managers(row.id, configuration, row.record.workingDirectory,
+      accountSource), configuration }
     if (controlPrincipalId) runtime.manager.setSessionControlPrincipal?.(controlPrincipalId)
     if (!existing) {
       const preferences = await this.sessionControls.preferences(row.id)

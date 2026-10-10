@@ -33,6 +33,7 @@ import { HarnessInstanceRegistry, localHarnessDrivers } from '../../harnesses/in
 import { HarnessInstallationRegistry } from '../../harnesses/installationRegistry.js'
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
 import { inspectInstalledCodex } from '../../harnesses/installedCodexInspection.js'
+import { PayloadFingerprintCache } from '../../harnesses/payloadFingerprintCache.js'
 import { createInstalledCodexQualificationReader } from '../../harnesses/installedCodexQualification.js'
 import { createInstalledCodexDependencies } from '../../harnesses/installedCodexDependencies.js'
 import { normalizeHarnessVersion } from '../../harnesses/qualification/profiles.js'
@@ -290,6 +291,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   const state=await openPrivateRoot(input.stateDirectory);await state.close()
   const registry=input.registry??new NativeProcessRegistry(join(input.stateDirectory,'workflow-native-processes'))
   const lifetime=new AbortController(),signal=AbortSignal.any([input.signal,lifetime.signal])
+  const payloadFingerprints = new PayloadFingerprintCache()
   const operations=new Map<string,InstalledOperation>(),hosts=new Map<string,RemoteExecutionHost>()
   const physical=new InstalledWorkflowPhysicalReadouts()
   const responsePages = new InstalledWorkflowResponsePages()
@@ -415,7 +417,8 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         trustedCurrentIntent: () => operations.get(intent.executionId)?.intent ?? intent,
         inspect: (binding, effectSignal) => {
           const inspectionInput = { binding, configuration: input.configuration,
-            environment: process.env, cwd: input.stateDirectory, signal: effectSignal }
+            environment: process.env, cwd: input.stateDirectory, signal: effectSignal,
+            fingerprintCache: payloadFingerprints }
           return inspectInstalledCodex(inspectionInput)
         },
         readFacts: () => {
@@ -1108,5 +1111,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       && !registry.snapshot().launches.some(launch => launch.owner === `execution:${receipt.intent.executionId}`
         && launch.lifecycle !== 'closed'))
   }
-  return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,reservationClosed,close}
+  const drainForUpdate = async () => {
+    await Promise.allSettled([...active])
+    await Promise.all([...hosts.values()].map(host => host.drain()))
+  }
+  return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,reservationClosed,close,drainForUpdate}
 }

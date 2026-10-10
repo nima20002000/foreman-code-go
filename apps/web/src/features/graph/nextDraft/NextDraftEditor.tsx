@@ -37,6 +37,7 @@ import { useWorkflowBoard } from '../../workflow-board/context'
 import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentControls'
 import { AgentPickerPanel } from '../../workflow-board/AgentPickerPanel'
 import { WorkflowName, type WorkflowNameHandle } from '../../workflow-board/WorkflowName'
+import { WorkflowWorktreeField } from '../../workflow-board/WorkflowWorktreeField'
 import { BoardAlerts, type BoardUpdateFailure } from '../../workflow-board/BoardAlerts'
 import { RemoveWorkflowButton } from '../../workflows/RemoveWorkflowButton'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
@@ -135,7 +136,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   const reloadMutation = useMutation({ mutationFn: () => nextDraftApi.context(graph.workspaceId, graph.id, undefined, true), retry: false })
   const reloading = reloadMutation.isPending
   const layout = useDraftLayout(draftKey)
-  const preflight = useBoardStartPreflight(context.draft)
+  const preflight = useBoardStartPreflight(context.draft, { enabled: board?.authoringActive !== false })
   const access = useLocalHumanAccessQuery()
   const principal = !access.isError ? access.data?.principal : undefined
   const canStart = !!principal && Date.parse(principal.expiresAt) > Date.now()
@@ -471,6 +472,15 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
         <div className="board-title">
           <WorkflowName ref={workflowName} name={graph.name} disabled={saveBusy || starting || editIntent.locked}
             onRename={(name) => change((current) => ({ ...current, name }))} />
+          <WorkflowWorktreeField workspaceId={graph.workspaceId} value={graph.defaultWorktree}
+            savedValue={(edit.context.savedDraft ?? edit.context.draft).graph.defaultWorktree}
+            disabled={edit.busy || reloading || editIntent.locked || starting || !!edit.pending || !!pendingStart}
+            onChange={defaultWorktree => change(current => {
+              const updated = { ...current }
+              if (defaultWorktree) updated.defaultWorktree = defaultWorktree
+              else delete updated.defaultWorktree
+              return updated
+            })} />
         </div>
         <div className="board-control-cluster">
           {needsSave || edit.pending || editIntent.locked ? <Toolbar label="Draft actions">

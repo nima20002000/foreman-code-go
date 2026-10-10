@@ -16,6 +16,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { waitForSuccessfulRunCleanup } from './helpers/runSettlement.testSupport.js'
+import * as terminalResolution from '../src/modules/runs/repeatNode.js'
 
 type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 type Client = Fixture['client']
@@ -144,6 +145,37 @@ afterEach(() => vi.restoreAllMocks())
 // transport and runner filesystem qualification in checkpointRuntimeFixture are synthetic.
 // No paid model/native binary is used. The shared integration fixture uses an isolated PostgreSQL schema.
 describe.skipIf(!postgresEnabled)('ENG-05 PostgreSQL authenticated Run inspection parity', () => {
+  it('reads an older accepted execution without recomputing its saved routing resolution', async () => {
+    const f = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [] })
+    try {
+      await f.engine.start(f.f.run.id)
+      await terminal(f)
+      const r = await reader(f)
+      const [execution] = await allExecutions(f, r)
+      const args = { ...requestScope(f), executionId: execution!.executionId }
+      const before = RunExecutionDetailSchema.parse(await parity(f, r.client, r.token, RUN_INSPECTION_TOOLS.execution, args))
+      expect(before.acceptedResult.status).toBe('accepted')
+      // Model a terminal algorithm change after immutable results were published.
+      const calculate = terminalResolution.repeatTerminalResolution
+      vi.spyOn(terminalResolution, 'repeatTerminalResolution').mockImplementation((...input) => {
+        const resolution = calculate(...input)
+        return { ...resolution, value: { ...resolution.value,
+          resolvedAt: new Date(Date.parse(resolution.value.resolvedAt) + 1).toISOString() } }
+      })
+      const persisted = (await f.db.pool.query('select record from harness_executions where id=$1', [args.executionId])).rows[0]
+      await expect(f.runs.getAcceptedResult(args.executionId)).rejects.toMatchObject({ code: 'REPEAT_INPUT_NOT_ACCEPTED' })
+      await resaveChangingRepeat(f)
+      expect(await parity(f, r.client, r.token, RUN_INSPECTION_TOOLS.execution, args)).toEqual(before)
+      expect(await parity(f, r.client, r.token, RUN_INSPECTION_TOOLS.execution, args)).toEqual(before)
+      const forbidden = await reader(f, [{ actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }])
+      await denied(f, forbidden.client, forbidden.token, RUN_INSPECTION_TOOLS.execution, args, 403, 'ACCESS_DENIED')
+      expect((await f.db.pool.query('select record from harness_executions where id=$1', [args.executionId])).rows[0])
+        .toEqual(persisted)
+    } finally {
+      await f.close()
+    }
+  }, 90000)
+
   it('reads committed Run records during a held publication and preserves scoped access and persisted readback', async () => {
     const f = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [] })
     let release!: () => void

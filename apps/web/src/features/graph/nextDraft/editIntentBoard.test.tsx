@@ -151,3 +151,26 @@ it('duplicate clicks share one stage/advance; private Discard reconciles without
   expect(nativeNode(useGraphDraftStore.getState().nextDrafts[key]?.graph.nodes[0])?.position).toEqual({ x: 802, y: -71 })
   expect(readEditOutbox(key)).toBeUndefined()
 })
+
+it('stages default worktree changes through Stop-and-save and locks further worktree edits', async () => {
+  let persisted: GraphEditReadResultV3 = empty
+  vi.mocked(nextDraftApi.editRead).mockImplementation(async () => persisted)
+  const stage = vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async input => (persisted = staged(input)))
+  const advance = vi.spyOn(nextDraftApi, 'editAdvance').mockImplementation(async () => {
+    persisted = { ...persisted, intent: { ...persisted.intent!, state: 'waiting' } }
+    return persisted
+  })
+  const worktree = { rootBinding: { rootId: '99999999-9999-4999-8999-999999999999', bindingRevision: 1 },
+    branchPrefix: 'foreman/saved-default' }
+  const user = userEvent.setup()
+  mount()
+  act(() => useGraphDraftStore.getState().changeNextDraft(key, graph => ({ ...graph, defaultWorktree: worktree })))
+  expect(screen.getByRole('button', { name: 'Default worktree' })).toBeVisible()
+  await user.click(screen.getByRole('button', { name: /^Save changes$/ }))
+  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
+  await waitFor(() => expect(advance).toHaveBeenCalledOnce())
+  expect(stage.mock.calls[0]?.[0].graph.defaultWorktree).toEqual(worktree)
+  expect(advance.mock.calls[0]?.[0]).toMatchObject({ action: 'stop_and_save' })
+  expect(screen.getByRole('button', { name: 'Default worktree' })).toBeDisabled()
+  expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.defaultWorktree).toEqual(worktree)
+})

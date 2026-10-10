@@ -85,7 +85,8 @@ describe('computer maintenance', () => {
     expect((await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex', 'claude'] })).state).toBe('running')
     const status = await settle(maintenance)
     expect(status.tasks[0]).toMatchObject({ kind: 'update-harnesses', state: 'succeeded', summary: 'Codex 0.160.0 → 0.161.0 · Claude 2.1.19 → 2.1.294' })
-    expect(fake.runs).toContainEqual({ binary: '/usr/bin/npm', args: ['install', '--global', '--prefix', '/home/owner/.local', '@openai/codex@latest'] })
+    expect(fake.runs).toContainEqual({ binary: '/usr/bin/npm', args: ['install', '--global', '--include=optional',
+      '--prefix', '/home/owner/.local', '@openai/codex@latest'] })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/claude', args: ['update'] })
   })
 
@@ -136,6 +137,26 @@ describe('computer maintenance', () => {
     await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
       summary: 'Codex is still 0.160.0; latest published version is 0.161.0.' })
+  })
+
+  it.each([
+    { code: 'EDQUOT', errno: -122 },
+    { code: 'Unknown system error -122', errno: -122 },
+    { code: 'ENOSPC', errno: -28 },
+  ])('reports actionable storage errors after npm succeeds: %j', async details => {
+    const fake = ports()
+    fake.value.selectInstalledCodex = async () => {
+      throw Object.assign(new Error('Unknown system error'), details)
+    }
+    const maintenance = new ComputerMaintenance(fake.value)
+    const started = await maintenance.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+    const task = (await settle(maintenance)).tasks.find(task => task.id === started.id)
+    expect(task).toMatchObject({ state: 'failed', summary: expect.stringContaining('then retry maintenance') })
+    expect(task?.summary).toContain(details.errno === -122 ? 'Disk quota reached' : 'out of disk space')
+    expect(task?.summary).not.toContain('Unknown system error')
+    const persisted = await new ComputerMaintenance(fake.value).status(AbortSignal.timeout(1000))
+    expect(persisted.tasks.find(task => task.id === started.id)).toEqual(task)
+    expect(fake.runs.some(run => run.binary.endsWith('npm') && run.args[0] === 'install')).toBe(true)
   })
 
   it('moves the Worker pinned Codex selection to the installed update before verifying it', async () => {
@@ -189,7 +210,7 @@ describe('computer maintenance', () => {
         { transport: 'stdio', name: 'search', command: 'npx', args: ['search-mcp'], envVars: [] }],
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
-      summary: 'Codex: Added search · Claude is not installed; MCP sync remains pending.' })
+      summary: 'Claude is not installed; MCP sync remains pending. · Codex: Added search' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['mcp', 'add', 'search', '--', 'npx', 'search-mcp'] })
     await maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Installed documents@openai · Claude: Nothing to sync' })
@@ -201,7 +222,7 @@ describe('computer maintenance', () => {
     await maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['skill-creator@claude-plugins-official', 'lost@elsewhere', 'pdf@openai'],
       marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
-      summary: 'Claude: Nothing to sync · Codex: Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere' })
+      summary: 'Codex: Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere · Claude: Nothing to sync' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['plugin', 'marketplace', 'add', 'https://github.com/anthropics/claude-plugins-official.git'] })
   })
 })

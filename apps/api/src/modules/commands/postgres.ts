@@ -24,6 +24,8 @@ export class PostgresCommandCoordinator {
     commandId: string
     targetKey: string
     payload: unknown
+    /** Serialize local external effects through transaction rollback and compensation. */
+    resourceLock?: string
     perform(client: pg.PoolClient): Promise<T>
     /** Revalidate live authority under the command lock, including receipt reads.
      * Transactional callers may retain their authority row locks through COMMIT. */
@@ -51,6 +53,7 @@ export class PostgresCommandCoordinator {
     let releaseError: Error | undefined
     let inTransaction = false
     let lifecycleLock = false
+    let resourceLocked = false
     let committing = false
     let performing = false
     const commandLock = `command:${input.principal.id}:${input.operation}:${input.commandId}`
@@ -62,6 +65,10 @@ export class PostgresCommandCoordinator {
         lifecycleLock = true
       } else {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [commandLock])
+      }
+      if (input.resourceLock) {
+        await client.query('select pg_advisory_lock(hashtext($1))', [input.resourceLock])
+        resourceLocked = true
       }
       await input.authorize?.(client)
       const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
@@ -167,6 +174,11 @@ export class PostgresCommandCoordinator {
       }
       throw failure
     } finally {
+      if (resourceLocked && !releaseError) {
+        await client.query('select pg_advisory_unlock(hashtext($1))', [input.resourceLock]).catch((error: unknown) => {
+          releaseError = error instanceof Error ? error : new Error('Command resource unlock failed.')
+        })
+      }
       if (lifecycleLock && !releaseError) {
         await client.query('select pg_advisory_unlock(hashtext($1))', [commandLock]).catch((error: unknown) => {
           releaseError = error instanceof Error ? error : new Error('Command unlock failed.')

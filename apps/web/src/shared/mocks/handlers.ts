@@ -1,5 +1,7 @@
 import { agentChatHandlers, resetAgentChatFixtures } from './agentChatHandlers'
 import { createCurrentBoardMock } from './currentBoard'
+import { ComputerAccountsReadInputSchema } from '@foreman-code/contracts/computer-accounts'
+import { ComputerMaintenanceReadInputSchema } from '@foreman-code/contracts/computer-maintenance'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
@@ -217,6 +219,21 @@ function sessionControlsResponse(conversationId: string) {
 }
 
 export const handlers: RequestHandler[] = [
+  http.get('/api/management/workspaces/:workspaceId/repository', ({ params, request }) => {
+    const workspaceId = String(params.workspaceId)
+    if (new URL(request.url).searchParams.has('commandId')) {
+      return apiError('IMPORT_NOT_FOUND', 'The requested import is not in this fixture.', 404)
+    }
+    const workspace = visibleManagedWorkspace(workspaceId)
+    return HttpResponse.json({ workspaceId, state: workspace?.workspace.repository ? 'metadata-only' : 'unconfigured',
+      repository: workspace?.workspace.repository ?? null, revision: workspace?.revision ?? 0 })
+  }),
+  http.get('/api/management/workspaces/:workspaceId/source-roots', () =>
+    HttpResponse.json({ items: [], readiness: 'metadata-only' })),
+  http.get('/api/management/workspaces/:workspaceId/root-policies', ({ params }) =>
+    HttpResponse.json({ workspaceId: String(params.workspaceId), policies: [], allowlists: [], readiness: 'metadata-only' })),
+  http.get('/api/management/workspaces/:workspaceId/root-location', ({ params }) =>
+    HttpResponse.json({ evidence: 'unconfigured', workspaceId: String(params.workspaceId), locationRevision: 0, executionLocation: null })),
   http.get('/api/workspaces/:workspaceId/agent-chat/session-controls', () =>
     sessionControlsResponse('mock-conversation')),
   http.get('/api/operator/conversations/:conversationId/session-controls', ({ params }) =>
@@ -224,6 +241,14 @@ export const handlers: RequestHandler[] = [
   http.get('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', ({ params }) =>
     sessionControlsResponse(String(params.conversationId))),
   http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [] })),
+  http.post('*/api/management/computers/maintenance/read', async ({ request }) => {
+    const { target } = ComputerMaintenanceReadInputSchema.parse(await request.json())
+    return HttpResponse.json({ computers: [{ target, status: null }] })
+  }),
+  http.post('*/api/management/computers/accounts/read', async ({ request }) => {
+    const { target } = ComputerAccountsReadInputSchema.parse(await request.json())
+    return HttpResponse.json({ computers: [{ target, accounts: null }] })
+  }),
   http.post('*/api/management/computers/maintenance/start', () => HttpResponse.json({ computers: [] })),
   http.get('*/api/management/computers/activity', () => HttpResponse.json({
     mainId: '11111111-1111-4111-8111-111111111111', computers: [], truncated: false, activityComplete: true,

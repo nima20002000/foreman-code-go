@@ -4,11 +4,12 @@ import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'
 
 import {
-  RunEventsListInputSchema, RunGetInputSchema, RunStopInputSchema,
+  RunEventsListInputSchema, RunStopInputSchema,
   RunEventsPageSchema, RunStopResultSchema,
 } from '@foreman-code/contracts/management'
-import { OperatorRunListInputSchema } from '@foreman-code/contracts/operator-mcp'
-import { ManualRunStartInputSchema, ManualRunStartResultSchema, SavedRunPageSchema, SavedRunDetailsSchema,
+import { OperatorRunListInputSchema, OperatorRunGetInputSchema, OperatorRunGetResultSchema } from '@foreman-code/contracts/operator-mcp'
+import { compactRunDetails } from '../runSummary.js'
+import { ManualRunStartInputSchema, ManualRunStartResultSchema, SavedRunPageSchema,
   RunActivitiesInputSchema, RunActivitiesPageSchema, RunHandoffsReadInputSchema,
   RunHandoffsReadSchema } from '@foreman-code/contracts/wave25'
 import { invokeOperatorTool } from '../invoke.js'
@@ -24,14 +25,18 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_get')) server.registerTool('run_get', {
-    description: 'Read an authorized Run, result, execution attempts and activity from one backend snapshot. '
+    description: 'Read an authorized Run from one backend snapshot. Defaults to compact status and the latest 25 executions and activities. '
+      + 'Omission counts cover this snapshot; use run_activities_get_v1 for paged history. Pass detail: "full" for input, result, execution bodies and the full snapshot. '
       + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
-      + 'Includes persisted Stop causes and cleanup status. '
+      + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT), Stop causes and cleanup status. '
       + 'A Run waiting for approval may still have progressing sibling executions.',
-    inputSchema: RunGetInputSchema,
-    outputSchema: SavedRunDetailsSchema,
+    inputSchema: OperatorRunGetInputSchema,
+    outputSchema: OperatorRunGetResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_get', () => context.services.runs.get(context.principal, input.workspaceId, input.runId)))
+  }, async (input) => invokeOperatorTool(context, 'run_get', async () => {
+    const details = await context.services.runs.get(context.principal, input.workspaceId, input.runId)
+    return input.detail === 'full' ? details : compactRunDetails(details)
+  }))
   if (operatorToolAvailable(context, 'run_events_list')) server.registerTool('run_events_list', {
     description: 'Read a bounded page of existing persisted run activity.', inputSchema: RunEventsListInputSchema,
     outputSchema: RunEventsPageSchema,

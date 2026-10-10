@@ -116,11 +116,11 @@ async function cleanupFailedRuns(client: Client, workflows: RunningCiWorkflow[])
     try {
       const scope = { workspaceId: workflow.workspace.workspaceId, runId: workflow.runId }
       await callCiTool(client, 'run_stop', { ...scope, commandId: randomUUID() })
-      let details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', scope))
+      let details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', { ...scope, detail: 'full' }))
       const stopDeadline = Date.now() + 120_000
       while ((details.run.executionState !== 'completed' || details.cleanupPending) && Date.now() < stopDeadline) {
         await delay(1000)
-        details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', scope))
+        details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', { ...scope, detail: 'full' }))
       }
       if (details.run.executionState !== 'completed' || details.cleanupPending) {
         errors.push(`Run ${workflow.runId} has not confirmed cleanup.`)

@@ -1,7 +1,14 @@
 import { render, screen } from '@testing-library/react'
 import { expect, it } from 'vitest'
 import { JobQueueFacts } from './JobSpecFacts'
-import { autoQueueTicket, definition } from './fixtures'
+import { autoQueueTicket, definition, verificationQueueTicket } from './fixtures'
+
+it('shows the saved job name, verification suite and request identity before acceptance', () => {
+  render(<JobQueueFacts ticket={verificationQueueTicket} />)
+  expect(screen.getByText(verificationQueueTicket.definition.name)).toBeVisible()
+  expect(screen.getByText('Verification suite').nextElementSibling).toHaveTextContent('unit')
+  expect(screen.getByText(verificationQueueTicket.id)).toBeVisible()
+})
 
 it.each(['accepted', 'terminal'] as const)('shows the original computer for %s tickets with preferred placement', state => {
   const preferred = { kind: 'prefer' as const, hostRef: definition.spec.target.hostRef }

@@ -58,9 +58,11 @@ export const RunInspectionRunSchema = CurrentRunScopeSchema.extend({
   executionState: RunExecutionStateSchema, outcome: RunOutcomeSchema,
   createdAt: TimestampSchema, startedAt: TimestampSchema.optional(), finishedAt: TimestampSchema.optional(),
   stopCause: RunStopCauseSchema.optional(), cleanupPending: z.boolean(),
+  failure: ExecutionResultSchema.shape.error,
 }).strict()
 export const RunExecutionSummarySchema = extendGraphExecutionIdentitySchema({
   state: HarnessExecutionStateSchema,
+  failure: ExecutionResultSchema.shape.error,
   createdAt: TimestampSchema, startedAt: TimestampSchema.optional(), finishedAt: TimestampSchema.optional(),
   /** Omitted outside a REAL configured repeat occurrence; attempt is not occurrenceIndex. */
   occurrence: RepeatOccurrenceIdentityV1Schema.optional(),

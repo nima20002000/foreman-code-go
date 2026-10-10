@@ -13,7 +13,7 @@ export class MaintenanceTaskStore {
     const tasks = MaintenanceTaskSchema.array().max(20).parse(JSON.parse(text))
     let interrupted = false
     for (const task of tasks) {
-      if (task.state !== 'running') continue
+      if (task.state !== 'running' || task.kind === 'update-worker' && task.workerTargetVersion !== undefined) continue
       task.state = 'failed'
       task.summary = 'Maintenance was interrupted when the application stopped. Check its status before retrying.'
       task.finishedAt = this.ports.now().toISOString()

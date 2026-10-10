@@ -68,6 +68,7 @@ export function configurationInput(
       reasoningEffort: agent.effort ?? currentHarness?.reasoningEffort ?? 'medium',
       sandbox: currentHarness?.sandbox ?? 'read-only',
       serviceTier: (agent.fastMode ?? (currentHarness?.serviceTier === 'priority')) ? 'priority' : 'standard',
+      ...(currentHarness?.accountId ? { accountId: currentHarness.accountId } : {}),
       ...(currentHarness?.advanced ? { advanced: currentHarness.advanced } : {}),
     },
   } as const

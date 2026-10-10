@@ -56,6 +56,49 @@ async function settled(owner: ComputerMaintenance) {
 }
 
 describe('maintenance task lifecycle', () => {
+  it('rejects duplicate harness selectors before admitting native work', async () => {
+    const fake = computer()
+    const owner = new ComputerMaintenance(fake.ports)
+    await expect(owner.start({ kind: 'update-harnesses', harnesses: ['codex', 'codex'] }))
+      .rejects.toThrow('Choose each harness once.')
+    expect(fake.runs).toEqual([])
+    expect((await owner.status(signal())).tasks).toEqual([])
+  })
+
+  it.each(['codex', 'claude'] as const)('accepts a newer stable %s release installed after discovery', async harness => {
+    const fake = computer()
+    const run = fake.ports.run
+    fake.ports.run = async (binary, args, options) => {
+      const result = await run(binary, args, options)
+      if (args[0] === 'install') fake.versions.codex = '0.162.0'
+      if (args[0] === 'update') fake.versions.claude = '2.1.295'
+      return result
+    }
+    const owner = new ComputerMaintenance(fake.ports)
+    await owner.start({ kind: 'update-harnesses', harnesses: [harness] })
+    await owner.drain()
+    const restarted = new ComputerMaintenance(fake.ports)
+    expect((await restarted.status(signal())).tasks[0]).toMatchObject({
+      state: 'succeeded', summary: expect.stringContaining(fake.versions[harness]),
+    })
+  })
+
+  it('still fails when the installed release is older or a prerelease of the stable target', async () => {
+    for (const installed of ['0.160.1', '0.161.0-preview.1']) {
+      const fake = computer()
+      const run = fake.ports.run
+      fake.ports.run = async (binary, args, options) => {
+        const result = await run(binary, args, options)
+        if (args[0] === 'install') fake.versions.codex = installed
+        return result
+      }
+      const owner = new ComputerMaintenance(fake.ports)
+      await owner.start({ kind: 'update-harnesses', harnesses: ['codex'] })
+      await owner.drain()
+      expect((await owner.status(signal())).tasks[0]).toMatchObject({ state: 'failed' })
+    }
+  })
+
   it('queues a broader harness update and shares only equivalent requests', async () => {
     const fake = computer()
     const install = deferred<void>()

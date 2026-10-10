@@ -22,7 +22,8 @@ export function inspectionExecutionsQuery(input: RunExecutionsListInput, after: 
         to_char(e.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as page_created_at,
         jsonb_strip_nulls(jsonb_build_object('executionId',e.record->'id','workflowNodeId',e.record->'workflowNodeId',
           'agentId',e.record->'agentId','agentConfigurationVersionId',e.record->'agentConfigurationVersionId',
-          'attempt',e.record->'attempt','state',e.record->'state','createdAt',e.record->'createdAt',
+          'attempt',e.record->'attempt','state',e.record->'state','failure',e.record#>'{result,error}',
+          'createdAt',e.record->'createdAt',
           'startedAt',e.record->'startedAt','finishedAt',e.record->'finishedAt','acceptedResultAvailable',e.accepted,
           'worktree',(select jsonb_build_object('repository',np.record#>'{materialization,receipt,worktree,repository}',
             'branch',np.record#>'{materialization,receipt,worktree,branch}') from execution_native_placements np

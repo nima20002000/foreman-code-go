@@ -30,8 +30,14 @@ const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['interactions:read', ['interaction_get', 'interaction_list', 'interaction_summary']],
   ['runs:read', ['run_activities_get_v1', 'run_events_list', 'run_get', 'run_list']],
   ['runs:stop', ['run_stop']],
-  ['settings:read', ['agent_defaults_get', 'general_settings_get', 'workflow_defaults_get', 'workspace_defaults_get']],
-  ['settings:update', ['agent_defaults_update', 'general_settings_update', 'workflow_defaults_update', 'workspace_defaults_update']],
+  ['settings:read', [
+    'agent_defaults_get', 'general_settings_get', 'operator_initial_prompt_get',
+    'system_prompt_get', 'workflow_defaults_get', 'workspace_defaults_get',
+  ]],
+  ['settings:update', [
+    'agent_defaults_update', 'general_settings_update', 'operator_initial_prompt_update',
+    'system_prompt_update', 'workflow_defaults_update', 'workspace_defaults_update',
+  ]],
   ['workflows:read', ['workflow_get', 'workflow_list']],
   ['workflows:create', ['workflow_create']],
   ['workflows:update', ['workflow_update']],

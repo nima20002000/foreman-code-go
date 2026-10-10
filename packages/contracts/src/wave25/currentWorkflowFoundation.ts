@@ -139,7 +139,17 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
   for (const configuration of configurations) {
     if (!HarnessWorkflowCompatibilitySchema.safeParse({ configuration: configuration.harness,
       workflowApprovalHandler: version.approval.handler, designatedOrchestrator: version.approval.handler === 'orchestrator'
-        && configuration.agentId === version.approval.designatedOrchestratorAgentId }).success) fail('pinned native configuration conflicts with approval authority')
+        && configuration.agentId === version.approval.designatedOrchestratorAgentId }).success) {
+      const harness = configuration.harness
+      if (version.approval.handler === 'native' && harness.harness === 'codex'
+        && harness.advanced?.approvalPolicy === undefined) {
+        fail(`Agent ${configuration.agentId} is missing saved Codex advanced.approvalPolicy. `
+          + 'Save the Agent with approvalPolicy: "never", or approvalPolicy: "on-request" and approvalsReviewer: "auto_review", '
+          + 'then retry with its new configuration version. You can also choose workflow approval handler "user" or "orchestrator".')
+      } else {
+        fail('pinned native configuration conflicts with approval authority')
+      }
+    }
   }
   const approvals = version.definition.edges.filter((edge) => edge.kind === 'approval')
   if (version.approval.handler !== 'orchestrator') {

@@ -25,7 +25,8 @@ function mount(path: string, editor?: { pending?: boolean; uncertain?: boolean }
   const root = createRootRoute({ component: () => <AppNavigationHistoryProvider><UnsavedChangesProvider>
     <AppNavigationTrail /><Outlet />
   </UnsavedChangesProvider></AppNavigationHistoryProvider> })
-  const paths = ['/workspaces', '/settings/general', '/settings', '/settings/harnesses', '/workspaces/$workspaceId',
+  const paths = ['/workspaces', '/settings/general', '/settings', '/settings/harnesses',
+    '/settings/bugs', '/settings/system-prompt', '/workspaces/$workspaceId',
     '/workspaces/$workspaceId/files', '/workspaces/$workspaceId/settings',
     '/workspaces/$workspaceId/workflows', '/workspaces/$workspaceId/workflows/$workflowId/draft',
     '/workspaces/$workspaceId/workflows/$workflowId/runs/$runId/graph/$workflowVersionId/$executionSemanticsVersion']
@@ -70,6 +71,19 @@ it('shows General in the breadcrumb and returns to Settings from a direct link',
   const user = userEvent.setup()
   const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumbs' })
   expect(breadcrumbs.querySelector('[aria-current="page"]')).toHaveTextContent('General')
+  expect(within(breadcrumbs).getByRole('link', { name: 'Go to Settings' })).toHaveAttribute('href', '/settings')
+  await user.click(screen.getByRole('button', { name: 'Back' }))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+})
+
+it.each([
+  ['/settings/bugs', 'Bugs'],
+  ['/settings/system-prompt', 'System prompt'],
+])('shows the settings breadcrumb for %s and returns to Settings', async (path, label) => {
+  const { router } = mount(path)
+  const user = userEvent.setup()
+  const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumbs' })
+  expect(breadcrumbs.querySelector('[aria-current="page"]')).toHaveTextContent(label)
   expect(within(breadcrumbs).getByRole('link', { name: 'Go to Settings' })).toHaveAttribute('href', '/settings')
   await user.click(screen.getByRole('button', { name: 'Back' }))
   await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))

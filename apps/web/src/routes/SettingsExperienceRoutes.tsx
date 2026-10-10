@@ -8,6 +8,7 @@ import { HarnessDefaultsSettings } from '../features/settings/HarnessDefaultsSet
 import { WorkspaceDefaultsSettings } from '../features/settings/WorkspaceDefaultsSettings'
 import { GeneralSettings } from '../features/settings/GeneralSettings'
 import { BugsSettings } from '../features/bug-reports/BugsSettings'
+import { PromptSettings } from '../features/settings/PromptSettings'
 import { WorkspaceShell } from '../shared/ui/WorkspaceShell'
 import { SkillsLibrary } from '../features/skills/SkillsLibrary'
 import { NewSkillPage, SkillDetailPage } from '../features/skills/SkillPages'
@@ -21,7 +22,13 @@ function SettingsShell({ children }: { children: ReactNode }) {
   }} />
 }
 export function AgentSettingsRouteEntry() {
-  return <SettingsShell><AgentDefaultsSettings /></SettingsShell>
+  const search = useSearch({ from: '/settings/agents' })
+  const navigate = useNavigate({ from: '/settings/agents' })
+  return <SettingsShell><AgentDefaultsSettings selectedRole={search.role}
+    onOpen={role => void navigate({ search: role ? { role } : {} })} /></SettingsShell>
+}
+export function SystemPromptSettingsRouteEntry() {
+  return <SettingsShell><PromptSettings page="system-prompt" /></SettingsShell>
 }
 export function HarnessSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/harnesses' })

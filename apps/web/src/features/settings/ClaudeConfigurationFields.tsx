@@ -3,6 +3,7 @@ import { claudeAccessOptions } from './claudeAccess'
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { Alert, Combobox, Select, TextField } from '../../shared/ui/nocturne'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
+import { useProviderAccounts } from '../provider-accounts/providerAccountsQueries'
 import './harnessModelFields.css'
 
 type Props = {
@@ -16,6 +17,10 @@ type Props = {
 }
 /** Discovery and saved state are provided by the shared settings query/command owner. */
 export function ClaudeConfigurationFields({ value, onChange, models, qualified, pending = false, error, issues = [] }: Props) {
+  const accounts = useProviderAccounts()
+  const selectedAccount = accounts.data?.accounts.find(account => account.provider === 'claude'
+    && (value.accountId ? account.id === value.accountId : account.isDefault))
+  const managedAccount = Boolean(value.accountId || selectedAccount)
   const options = models.map((model) => ({ value: model.id, label: model.name ?? model.id, description: model.id, disabled: false }))
   const selected = models.find(model => model.id === value.model)
   const efforts = selected?.reasoningEfforts?.filter(effort => ClaudeEffortSchema.safeParse(effort).success) ?? []
@@ -32,13 +37,14 @@ export function ClaudeConfigurationFields({ value, onChange, models, qualified, 
         value: effort, label: efforts.includes(effort) ? effort : `${effort} · saved, unavailable`, disabled: !efforts.includes(effort) }))]}
       onChange={event => onChange({ ...value, effort: event.target.value ? ClaudeEffortSchema.parse(event.target.value) : undefined })} />
     </div></div>
-    <TextField label="Local Claude profile directory" value={value.configDirectory} error={fieldMessage(issues, 'configDirectory')}
+    {!managedAccount ? <TextField label="Local Claude profile directory" value={value.configDirectory} error={fieldMessage(issues, 'configDirectory')}
       hint="Sign in on the selected computer using this profile."
       onChange={(event) => onChange({ ...value, configDirectory: event.target.value })} />
+      : <p>The {selectedAccount?.name ?? 'selected'} account controls the Claude profile and authentication.</p>}
     <div className="harness-two-columns">
-      <Select label="Authentication" value={value.authMode} error={fieldMessage(issues, 'authMode')}
+      {!managedAccount ? <Select label="Authentication" value={value.authMode} error={fieldMessage(issues, 'authMode')}
         options={[{ value: 'subscription', label: 'Local Claude subscription login' }, { value: 'api-key', label: 'Explicit API key · separate billing' }]}
-        onChange={(event) => onChange({ ...value, authMode: event.target.value as ClaudeHarnessConfiguration['authMode'] })} />
+        onChange={(event) => onChange({ ...value, authMode: event.target.value as ClaudeHarnessConfiguration['authMode'] })} /> : null}
       <Select label="Sandbox" value={value.sandbox} error={fieldMessage(issues, 'sandbox') ?? (value.sandbox !== 'danger-full-access' ? CLAUDE_FULL_ACCESS_REQUIRED : undefined)}
         options={claudeAccessOptions(value.sandbox)}
         onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />

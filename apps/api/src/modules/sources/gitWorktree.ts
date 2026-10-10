@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { SourceError } from './manifest.js'
+import { DomainError } from '../errors.js'
 
 export interface WorktreeRequest { repository: string; branch: string }
 export interface GitWorktreePorts {
@@ -65,7 +66,7 @@ export async function ensureCommit(ports: GitWorktreePorts, repository: string, 
   return clone
 }
 
-async function fetchMissingSourceObjects(ports: GitWorktreePorts, clone: string, commit: string, signal: AbortSignal) {
+export async function fetchMissingSourceObjects(ports: GitWorktreePorts, clone: string, commit: string, signal: AbortSignal) {
   const objects = await runGit(ports, ['rev-list', '--objects', '--no-object-names', '--missing=print',
     `${commit}^{tree}`], clone, signal)
   const missing = objects.split('\n').filter(line => /^\?(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(line))
@@ -81,6 +82,59 @@ async function fetchMissingSourceObjects(ports: GitWorktreePorts, clone: string,
   }
 }
 
+/** Resolve a fetched branch through a private ref instead of shared FETCH_HEAD. */
+export async function fetchRepositoryBranch(ports: GitWorktreePorts, clone: string, repository: string,
+  branch: string, signal: AbortSignal, options?: { recoveryRef: string }): Promise<string> {
+  const ref = options?.recoveryRef ?? `refs/foreman/ci/fetch/${randomUUID()}`
+  if (options) {
+    if (!/^refs\/foreman\/imports\/[a-f0-9-]{36}$/u.test(ref)) {
+      throw new DomainError('SOURCE_GIT_REF_INVALID', 'The import recovery reference is invalid.', 400)
+    }
+    const recovered = await ports.git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: clone, signal })
+    if (recovered.code === 0 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(recovered.stdout.trim())) {
+      return recovered.stdout.trim()
+    }
+    if (recovered.code !== 1) {
+      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'The import commit reference cannot be recovered.', 409)
+    }
+  }
+  let commit: string
+  let cleanupFailed: boolean
+  try {
+    const fetched = await ports.git(['fetch', '--no-tags', '--no-write-fetch-head', '--recurse-submodules=no', 'origin',
+      `refs/heads/${branch}:${ref}`], { cwd: clone, signal })
+    if (fetched.code !== 0) {
+      const branchRead = await ports.git(['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${branch}`],
+        { cwd: clone, signal })
+      if (branchRead.code === 2) {
+        throw new DomainError('SOURCE_REPOSITORY_BRANCH_NOT_FOUND',
+          `The repository branch '${branch}' does not exist. Choose another branch.`, 409,
+          { retryable: false, newCommandRequired: true })
+      }
+    }
+    const head = fetched.code === 0
+      ? await ports.git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd: clone, signal }) : fetched
+    if (head.code !== 0) {
+      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE',
+        `Main could not fetch ${repository}@${branch}. Sign GitHub in on Main.`, 409)
+    }
+    commit = head.stdout.trim()
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(commit)) {
+      throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'The repository returned an invalid commit.', 409)
+    }
+  } finally {
+    cleanupFailed = false
+    if (!options) {
+      const removed = await ports.git(['update-ref', '-d', ref], { cwd: clone, signal })
+      cleanupFailed = removed.code !== 0
+    }
+  }
+  if (cleanupFailed) {
+    throw new DomainError('SOURCE_REPOSITORY_UNAVAILABLE', 'Main could not remove its temporary fetch ref.', 409)
+  }
+  return commit
+}
+
 export async function ensureClone(ports: GitWorktreePorts, repository: string, signal: AbortSignal): Promise<string> {
   assertWorktreeRequest({ repository, branch: 'foreman/source' })
   const clone = ports.cloneDirectory(repository)
@@ -89,7 +143,8 @@ export async function ensureClone(ports: GitWorktreePorts, repository: string, s
   await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
   const staging = `${clone}-${randomUUID()}`
   try {
-    await runGit(ports, ['clone', '--no-checkout', `https://github.com/${repository}.git`, staging], undefined, signal)
+    await runGit(ports, ['clone', '--no-checkout', '--template=', '--no-recurse-submodules',
+      `https://github.com/${repository}.git`, staging], undefined, signal)
     try {
       await rename(staging, clone)
     } catch (error) {

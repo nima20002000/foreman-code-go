@@ -35,7 +35,7 @@ export function ComputerSettings({ deviceId, onSelectComputer }: { deviceId?: st
     {currentMain && !deviceId ? <div id="computer-add-panel" className="computers-panel" hidden={!adding}><ComputerPairingForm key={currentMain.mainId} mainId={currentMain.mainId} /></div> : null}
     {readFailure ?? loading ?? (deviceId
       ? registration ? <>
-        <ComputerCards mainId={currentMain!.mainId} devices={[registration]} only={registration.deviceId} />
+        <ComputerCards mainId={currentMain!.mainId} devices={devices} only={registration.deviceId} />
         {registration.status !== 'revoked' ? <ConnectionSetupStatus registration={registration} /> : null}
         <section className="computer-action-card" aria-label="Remove this computer">
           <h2>Remove this computer</h2>

@@ -26,7 +26,7 @@ describe.skipIf(!postgresEnabled)('workflow execution refunds', () => {
       expect(await capacity()).toBe(true)
       expect(f.provider.counts.starts).toBe(0)
       const input = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
-      const readback = await f.client.callTool({ name: 'run_get', arguments: input })
+      const readback = await f.client.callTool({ name: 'run_get', arguments: { ...input, detail: 'full' } })
       expect(readback.isError).not.toBe(true)
       expect(decodeMcpToolResult(readback)).toMatchObject({ executions: [expect.objectContaining({
         id: execution.id, state: 'completed', result: { outcome: 'canceled' },
@@ -35,7 +35,7 @@ describe.skipIf(!postgresEnabled)('workflow execution refunds', () => {
         expiresAt: new Date(Date.now() + 600000),
         grants: [{ actions: ['runs:read'], scope: { workspaceIds: ['other-workspace'] } }] })
       const client = await f.connect(denied.token)
-      expect((await client.callTool({ name: 'run_get', arguments: input })).isError).toBe(true)
+      expect((await client.callTool({ name: 'run_get', arguments: { ...input, detail: 'full' } })).isError).toBe(true)
       expect(await capacity()).toBe(true)
     } finally {
       gate.release()

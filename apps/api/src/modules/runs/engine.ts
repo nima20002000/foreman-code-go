@@ -269,6 +269,13 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if ((await this.runs.getRepeatSnapshot(runId, owner)).run.executionState === 'completed') await this.finishOwned(owner)
     } catch (error) {
       owner.assertOwned(); controller.signal.throwIfAborted()
+      if (runtimeEntered && error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') {
+        const current = await this.runs.getRepeatSnapshot(runId, owner)
+        if (current.run.executionState === 'completed') {
+          await this.cleanupOwned(owner)
+          return
+        }
+      }
       // Only an entered runtime may yield settlement to existing recovery. In
       // particular, NEVER turn a pre-consume/claim/COMMIT failure into a void
       // successful resume callback (which would have no graph.resume receipt).

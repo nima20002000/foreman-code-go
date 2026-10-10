@@ -1,24 +1,41 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQueryClient, type QueryFunctionContext } from '@tanstack/react-query'
 import { useRef } from 'react'
 import {
-  ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema, ComputerMaintenanceStartResultSchema,
-  type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
+  ComputerMaintenanceListSchema, ComputerMaintenanceReadInputSchema,
+  ComputerMaintenanceStartInputSchema, ComputerMaintenanceStartResultSchema,
+  type MaintenanceStatus, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
 } from '@foreman-code/contracts/computer-maintenance'
+import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { ApiError, apiClient } from './client'
 import { commandWasRejected } from './commandAttempt'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { assertSession, sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 
 const key = () => ['computer-maintenance', sessionGeneration()] as const
-const running = (value: ComputerMaintenanceList | undefined) =>
-  Boolean(value?.computers.some(computer => computer.status?.tasks.some(task => task.state === 'running')))
+function needsFrequentRefresh(value: MaintenanceStatus | null | undefined, target: DeviceProvisioningTarget) {
+  if (target.hostRef.kind === 'device' && value === null) return true
+  const worker = value?.worker
+  const updatingWorker = worker !== undefined && worker.state !== 'current'
+    && worker.state !== 'failed' && worker.state !== 'rolled-back'
+  return updatingWorker || Boolean(value?.tasks.some(task => task.state === 'running'))
+}
 
-/** Versions, OS updates, restart need, disk and recent maintenance tasks for every computer. Polls faster while a task runs. */
-export function useComputerMaintenance() {
+/** Reads each computer independently and polls faster during maintenance, Worker updates and reconnects. */
+export function useComputerMaintenance(targets: readonly DeviceProvisioningTarget[]) {
   useHarnessSessionEpoch()
-  return useQuery<ComputerMaintenanceList>({ queryKey: key(), enabled: !sessionIsSwitching(), retry: false, staleTime: 15_000,
-    refetchInterval: query => running(query.state.data) ? 5_000 : 60_000,
-    queryFn: ({ signal }) => apiClient.request('/api/management/computers/maintenance', ComputerMaintenanceListSchema, { signal }) })
+  return useQueries({ queries: targets.map(target => ({
+    queryKey: [...key(), target], enabled: !sessionIsSwitching(), retry: false, staleTime: 15_000,
+    refetchInterval: (query: { state: { data: MaintenanceStatus | null | undefined } }) =>
+      needsFrequentRefresh(query.state.data, target) ? 5_000 : 60_000,
+    queryFn: async ({ signal }: QueryFunctionContext) => {
+      const result = await apiClient.request('/api/management/computers/maintenance/read', ComputerMaintenanceListSchema,
+        { method: 'POST', body: ComputerMaintenanceReadInputSchema.parse({ target }), signal })
+      if (result.computers.length !== 1 || !sameDeviceProvisioningTarget(result.computers[0]!.target, target)) {
+        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Maintenance belongs to another computer installation.' })
+      }
+      return result.computers[0]!.status
+    },
+  })) })
 }
 
 type MaintenanceInput = Omit<ComputerMaintenanceStartInput, 'commandId'>
@@ -73,7 +90,7 @@ export function useStartMaintenance() {
       if (failures.length) throw failures[0]
       return attempt.entries.flatMap(entry => entry.outcome?.status === 'fulfilled' ? [entry.outcome.value] : [])
     },
-    onSettled: () => client.invalidateQueries({ queryKey: key() }),
+    onSettled: () => { void client.invalidateQueries({ queryKey: key() }) },
   })
   return {
     ...mutation,

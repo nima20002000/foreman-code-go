@@ -1045,7 +1045,7 @@ export class ApprovalExecutionCoordinator {
       const identity = reviewPreflightIdentity(lane, `execution:${execution.id}`)
       const request = HarnessExecutionRequestSchema.parse({ executionId: execution.id, runId: execution.runId,
         workspaceId: run.workspaceId, workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
-        runtimeDirectory: execution.runtimeDirectory, configuration, input: execution.input })
+        runtimeDirectory: execution.runtimeDirectory, systemPrompt: execution.systemPrompt, configuration, input: execution.input })
       if (retained.detached) {
         owned.closureRegistration = this.workflowClosures.begin(execution)
         owned.closureGeneration = await owned.closureRegistration
@@ -1657,6 +1657,7 @@ export class ApprovalExecutionCoordinator {
         && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
     let execution = ensured.execution
     let repeatLaunch = false
+    let nativeTurnOffered = false
     const assertBoundary = async () => {
       signal.throwIfAborted()
       input.owner.assertOwned()
@@ -1739,7 +1740,7 @@ export class ApprovalExecutionCoordinator {
       const request = HarnessExecutionRequestSchema.parse({
         ...input.request, executionId: execution.id, runId: execution.runId,
         workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
-        runtimeDirectory: execution.runtimeDirectory, input: execution.input,
+        runtimeDirectory: execution.runtimeDirectory, systemPrompt: execution.systemPrompt, input: execution.input,
       })
       context = { ...await this.managerContext(execution, input.request.configuration), workflowRequest: request }
       await this.validateContinuation?.(execution.id, signal)
@@ -1851,6 +1852,7 @@ export class ApprovalExecutionCoordinator {
             void opening.catch(() => undefined) // Joined by the existing owned-session lifecycle.
             nativeEvents = manager.startInitialTurnBatches(start, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              onTurnOffered: () => { nativeTurnOffered = true },
               onSessionObserved: async (native) => {
                 resolveObserved(native)
                 await publishObservedSession(await opening)
@@ -1861,6 +1863,7 @@ export class ApprovalExecutionCoordinator {
               timeRuntimeOperation('harness', 'native.create_session', () => manager!.createSession(start, signal))))
             nativeEvents = manager.startTurnBatches(session!, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              onTurnOffered: () => { nativeTurnOffered = true },
             }, signal)
           }
           for await (const events of nativeEvents) {
@@ -1975,7 +1978,8 @@ export class ApprovalExecutionCoordinator {
       const credential = manager && this.managerCredentials.get(manager)
       if (credential) knownSecrets.push(...Object.values(credential.environment.variables))
       const error = safeError(signal.aborted && signal.reason instanceof DomainError
-        && signal.reason.code === 'WORKER_CREDENTIAL_EXPIRING' ? signal.reason : rawError)
+        && ['WORKER_CREDENTIAL_EXPIRING', 'EXECUTION_ACTIVE_TIMEOUT'].includes(signal.reason.code)
+        ? signal.reason : rawError)
       // Codes only: provider messages may carry model content or secrets.
       componentLogger('engine').warn({ executionId: execution.id, aborted: signal.aborted,
         code: error instanceof DomainError ? error.code : rawError instanceof HarnessExecutionError
@@ -2000,11 +2004,10 @@ export class ApprovalExecutionCoordinator {
         input.owner.assertOwned()
         throw error
       }
-      // A v3 transport/receipt/identity error is not a proved terminal result.
-      // Keep possible submission and the exact manager for observation or Stop.
-      // Explicit harness failure and owner-requested cancellation retain the
-      // existing negative settlement/cleanup path below.
-      if (!signal.aborted && !(rawError instanceof HarnessExecutionError)) {
+      // A created session with no offered turn cannot recover by observing a turn.
+      // Close its original manager before recording failure; possible submissions remain recoverable.
+      const sessionWithoutTurn = repeatLaunch && ownedSession?.session && !nativeTurnOffered
+      if (!signal.aborted && !(rawError instanceof HarnessExecutionError) && !sessionWithoutTurn) {
         input.owner.assertOwned()
         if (repeatPhysicalSettlementPending(error)) await this.budgets.beginWait(execution.id)
         input.owner.assertOwned()
@@ -2012,6 +2015,11 @@ export class ApprovalExecutionCoordinator {
       }
       if ((resolved && !manager) || isLeaseLost(rawError)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
+      if (sessionWithoutTurn) {
+        const stored = (await repeat.readExecution(execution.id)).execution
+        assertSameRepeatExecution(ensured.execution, stored)
+        ownedSession!.execution = stored
+      }
       if (execution.state === 'completed' && (!ownedSession || this.closedExecutions.has(execution.id))) throw error
       // A transport error is not an original terminal result and never makes
       // a technical retry eligible. Fence future work, close the captured
@@ -2026,7 +2034,14 @@ export class ApprovalExecutionCoordinator {
         if (error instanceof DomainError) code = error.code
         componentLogger('harness').warn({ executionId: execution.id, code, err: error },
           'Workflow native execution failed before cleanup')
-        await this.runs.requestCleanup(execution.runId, input.owner)
+        const failure = error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT'
+          ? { outcome: 'failed' as const, error: { code: error.code, message: error.message, retryable: false } }
+          : undefined
+        if (failure) {
+          await this.runs.requestCleanup(execution.runId, input.owner, failure, { executionId: execution.id })
+        } else {
+          await this.runs.requestCleanup(execution.runId, input.owner)
+        }
         if (ownedSession) {
           resolved?.markFailed?.()
           ownedSession.failed = true

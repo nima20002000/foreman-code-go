@@ -1,6 +1,7 @@
 import { AgentDefaultsSchema, withAdvancedDefaults, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@foreman-code/contracts'
 import { WorkspaceDefaultsUpdateInputSchema, type WorkspaceDefaultsUpdateInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { GeneralSettingsUpdateInputSchema, type GeneralSettingsUpdateInput } from '@foreman-code/contracts/management'
+import { PromptSettingUpdateInputSchema, type PromptSettingUpdateInput } from '@foreman-code/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
 
 import { requireAuthorization } from '../access/policy.js'
@@ -12,6 +13,7 @@ import type { HarnessCatalogService } from '../harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresFoundationSettingsRepository } from './foundation.js'
 import { operatorSkillContent, type PostgresOperatorRepository } from '../operators/postgres.js'
+import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 
 export class FoundationSettingsManagementService {
   constructor(
@@ -20,7 +22,44 @@ export class FoundationSettingsManagementService {
     private readonly harnesses?: Pick<HarnessCatalogService, 'qualifyConfiguration'>,
     private readonly operators?: PostgresOperatorRepository,
     private readonly profiles?: Pick<HostHarnessOverrideService, 'validateSelection'> & Partial<Pick<HostHarnessOverrideService, 'selectionForConfiguration' | 'prepareOperatorConfiguration'>>,
+    private readonly accountConfigurations?: ProviderAccountConfigurationService,
   ) {}
+
+  getSystemPrompt(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'settings:read')
+    return this.settings.getSystemPrompt()
+  }
+
+  updateSystemPrompt(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: PromptSettingUpdateInput) {
+    requireAuthorization(principal, 'settings:update')
+    const input = PromptSettingUpdateInputSchema.parse(raw)
+    return this.commands.execute({
+      principal, source, operation: 'system.prompt.update', commandId: input.commandId,
+      targetKey: 'system-prompt', payload: input,
+      authorize: async client => {
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+      },
+      perform: client => this.settings.updateSystemPrompt(input.value, input.expectedRevision, client),
+    })
+  }
+
+  getOperatorInitialPrompt(principal: ManagementPrincipal) {
+    requireAuthorization(principal, 'settings:read')
+    return this.settings.getOperatorInitialPrompt()
+  }
+
+  updateOperatorInitialPrompt(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: PromptSettingUpdateInput) {
+    requireAuthorization(principal, 'settings:update')
+    const input = PromptSettingUpdateInputSchema.parse(raw)
+    return this.commands.execute({
+      principal, source, operation: 'operator.initial.prompt.update', commandId: input.commandId,
+      targetKey: 'operator-initial-prompt', payload: input,
+      authorize: async client => {
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+      },
+      perform: client => this.settings.updateOperatorInitialPrompt(input.value, input.expectedRevision, client),
+    })
+  }
 
   getGeneralSettings(principal: ManagementPrincipal) {
     requireAuthorization(principal, 'settings:read')
@@ -78,6 +117,12 @@ export class FoundationSettingsManagementService {
       targetKey: 'agent-defaults-v1', payload: input,
       perform: async (client) => {
         const value = AgentDefaultsSchema.parse(input.value)
+        if (this.accountConfigurations) {
+          for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+            value[role].harness = await this.accountConfigurations.resolve(value[role].harness,
+              value[role].harnessProfileSelection)
+          }
+        }
         for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)
         const previous = await this.settings.getAgentDefaults(client)
         if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)

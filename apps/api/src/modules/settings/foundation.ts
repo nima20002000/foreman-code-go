@@ -14,10 +14,14 @@ import {
 import type pg from 'pg'
 import { WorkspaceDefaultsSchema, DEFAULT_WORKSPACE_DEFAULTS, type WorkspaceDefaults } from '@foreman-code/contracts/management'
 import { GeneralSettingsSchema, DEFAULT_GENERAL_SETTINGS, type GeneralSettings } from '@foreman-code/contracts/management'
+import {
+  PromptTextSchema, DEFAULT_PROMPT_TEXT, type PromptText, type PromptSettingSnapshot,
+} from '@foreman-code/contracts/management'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
 
 import { DomainError } from '../errors.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 
 const KEYS = { agents: 'agent-defaults-v1', workflows: 'workflow-defaults-v1', workspaces: 'workspace-defaults-v1' } as const
 
@@ -27,9 +31,39 @@ const LEGACY_WORKFLOW_DEFAULTS: WorkflowDefaults = {
 
 export interface VersionedSetting<T> { value: T; versionId: string | null; revision: number }
 
+async function readSetting<T>(sql: GraphSqlClient, key: string, schema: { parse(value: unknown): T },
+  fallback: T): Promise<VersionedSetting<T>> {
+  const result = await sql.query<{ record: unknown; revision: string; current_version_id: string | null }>(
+    'select record, revision, current_version_id from application_settings where key = $1', [key],
+  )
+  const row = result.rows[0]
+  if (!row) return { value: schema.parse(fallback), revision: 0, versionId: null }
+  return { value: schema.parse(row.record), revision: Number(row.revision), versionId: row.current_version_id }
+}
+
+export function readSystemPromptSetting(sql: GraphSqlClient): Promise<PromptSettingSnapshot> {
+  return readSetting(sql, 'system-prompt', PromptTextSchema, DEFAULT_PROMPT_TEXT)
+}
+
 /** Versioned application defaults. Callers copy values; stored versions never mutate consumers. */
 export class PostgresFoundationSettingsRepository {
   constructor(private readonly pool: pg.Pool, private readonly projectRoot?: string) {}
+
+  getSystemPrompt(client?: GraphSqlClient): Promise<VersionedSetting<PromptText>> {
+    return readSystemPromptSetting(client ?? this.pool)
+  }
+
+  updateSystemPrompt(value: PromptText, expectedRevision: number, client: pg.ClientBase) {
+    return this.write('system-prompt', PromptTextSchema.parse(value), expectedRevision, client)
+  }
+
+  getOperatorInitialPrompt(client?: GraphSqlClient): Promise<VersionedSetting<PromptText>> {
+    return this.read('operator-initial-prompt', PromptTextSchema, DEFAULT_PROMPT_TEXT, client)
+  }
+
+  updateOperatorInitialPrompt(value: PromptText, expectedRevision: number, client: pg.ClientBase) {
+    return this.write('operator-initial-prompt', PromptTextSchema.parse(value), expectedRevision, client)
+  }
 
   getGeneralSettings(client?: pg.ClientBase): Promise<VersionedSetting<GeneralSettings>> {
     return this.read('general-settings', GeneralSettingsSchema, DEFAULT_GENERAL_SETTINGS, client)
@@ -99,13 +133,8 @@ export class PostgresFoundationSettingsRepository {
     return this.updateWorkflowDefaults(value, expectedRevision, client)
   }
 
-  private async read<T>(key: string, schema: { parse(value: unknown): T }, fallback: T, client?: pg.ClientBase): Promise<VersionedSetting<T>> {
-    const row = await (client ?? this.pool).query<{ record: unknown; revision: string; current_version_id: string | null }>(
-      'select record, revision, current_version_id from application_settings where key = $1', [key],
-    )
-    return row.rows[0]
-      ? { value: schema.parse(row.rows[0].record), revision: Number(row.rows[0].revision), versionId: row.rows[0].current_version_id }
-      : { value: schema.parse(fallback), revision: 0, versionId: null }
+  private async read<T>(key: string, schema: { parse(value: unknown): T }, fallback: T, client?: GraphSqlClient): Promise<VersionedSetting<T>> {
+    return readSetting(client ?? this.pool, key, schema, fallback)
   }
 
   private async write<T>(key: string, value: T, expectedRevision: number, supplied?: pg.ClientBase): Promise<VersionedSetting<T>> {

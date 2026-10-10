@@ -23,7 +23,7 @@ export const CiEnrollmentComputerSchema = z.object({
   target: DeviceProvisioningTargetSchema,
   revision: z.number().int().nonnegative(),
   enabled: z.boolean(),
-  state: z.enum(['pending', 'disabled', 'offline', 'runtime-required', 'root-required', 'storage-required',
+  state: z.enum(['pending', 'templates-required', 'disabled', 'offline', 'runtime-required', 'root-required', 'storage-required',
     'not-enrolled-automatically', 'preparing', 'ready', 'partial', 'failed']),
   profileIds: z.array(IdSchema),
   templates: z.array(CiEnrollmentTemplateSchema).default([]),

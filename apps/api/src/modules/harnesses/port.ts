@@ -17,6 +17,7 @@ import type {
   OperatorConfigurationVersion,
   ReviewJob,
   AgentConfigurationVersion,
+  PromptSettingSnapshot,
 } from '@foreman-code/contracts'
 
 import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
@@ -70,6 +71,7 @@ export interface AgentChatNativeSessionStart {
   workflowNodeId: string
   correlationId: string
   configuration: AgentConfigurationVersion
+  systemPrompt?: PromptSettingSnapshot
   workingDirectory: string
   nativeTurnId?: string
   environment?: ChildProcessEnvironment
