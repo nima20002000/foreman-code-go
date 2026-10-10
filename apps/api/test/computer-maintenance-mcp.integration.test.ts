@@ -122,11 +122,14 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
         requestInit: { headers: { authorization: `Bearer ${reader.token}` } },
       }))
       const persisted = ComputerMaintenanceListSchema.parse(decodeMcpToolResult(await recoveredReader.callTool({
-        name: 'computers_maintenance_status', arguments: { refresh: true },
+        name: 'computers_maintenance_status', arguments: { detail: 'full', refresh: true },
       })))
       expect(persisted.computers[0]?.status?.tasks).toEqual([
         expect.objectContaining({ id: commandId, state: 'succeeded' }),
       ])
+      expect(persisted.computers[0]?.status?.harnesses).toContainEqual(
+        expect.objectContaining({ harness: 'claude', version: '1.2.4', latest: '1.2.4' }),
+      )
       expect(computer.calls.filter(call => call.args[0] === 'update')).toHaveLength(1)
     } finally {
       releaseUpdate()

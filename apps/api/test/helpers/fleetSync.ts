@@ -26,15 +26,25 @@ export function fakeComputer() {
   const claudePlugins = new Map<string, boolean>()
   const files = new Map<string, string>()
   const calls: { binary: string; args: string[] }[] = []
+  let claudeVersion = '1.2.3'
   let failure: (binary: string, args: string[]) => boolean = () => false
   const result = (value: unknown = {}, code = 0) => ({ code, stdout: JSON.stringify(value), stderr: '' })
   const ports: MaintenancePorts = {
     environment: { HOME: '/fake/home' },
-    find: async name => ['codex', 'claude'].includes(name) ? `/fake/${name}` : null,
+    find: async name => ['codex', 'claude', 'npm'].includes(name) ? `/fake/${name}` : null,
     run: async (binary, args) => {
       calls.push({ binary, args })
       if (failure(binary, args)) return result({}, 1)
-      if (args[0] === '--version') return { code: 0, stdout: '1.2.3', stderr: '' }
+      if (args[0] === '--version') {
+        return { code: 0, stdout: binary.endsWith('claude') ? claudeVersion : '1.2.3', stderr: '' }
+      }
+      if (binary.endsWith('npm') && args[0] === 'view') {
+        return { code: 0, stdout: args[1] === '@anthropic-ai/claude-code' ? '1.2.4' : '1.2.3', stderr: '' }
+      }
+      if (binary.endsWith('claude') && args[0] === 'update') {
+        claudeVersion = '1.2.4'
+        return { code: 0, stdout: 'Updated Claude Code', stderr: '' }
+      }
       if (args[0] === 'mcp') {
         if (args[1] === 'list') return result([...codexMcp].map(name => ({ name })))
         if (args[1] === 'add') codexMcp.add(args[2]!)
