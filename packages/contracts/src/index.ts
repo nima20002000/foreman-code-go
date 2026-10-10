@@ -1244,6 +1244,8 @@ export const RunnerSummarySchema = z
   .strict();
 export type RunnerSummary = z.infer<typeof RunnerSummarySchema>;
 
+export const LOCAL_CLIENT_UNAVAILABLE = 'LOCAL_CLIENT_UNAVAILABLE'
+
 export const ApiErrorSchema = z
   .object({
     code: z.string().trim().min(1),
