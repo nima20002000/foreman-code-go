@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { assertWave25WorkerBinding } from '../src/modules/interactions/wave25/credentialAuthority.js'
-import { beforeGraphCommit } from '../src/modules/run-graph/connection.js'
+import { beforeGraphCommit, ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { WorkflowNativeProofServices } from '../src/modules/runs/workflowNativeProof.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { executionRows, readback, recoveryFixture } from './helpers/eng06DRecovery.js'
@@ -70,7 +70,7 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
       await expect(assertWave25WorkerBinding(f.base.db.pool, current.principal_id)).resolves.toBeUndefined()
       const principal = await access.authenticate(currentIssued!.token, 'worker')
       expect(principal).toMatchObject({ id: current.principal_id, agentId: retry.execution.agentId,
-        audience: 'worker', revokedAt: null, grants: [{ actions: ['interactions:read'], scope: {
+        audience: 'worker', revokedAt: null, grants: [{ actions: ['bug_reports:report', 'interactions:read'], scope: {
           workspaceIds: [f.base.f.scope.workspaceId], workflowIds: [f.base.f.scope.workflowId], runIds: [f.base.f.run.id],
         } }] })
       expect(Date.parse(await credentials.renewForExecution(retry.execution.id, { principalId: current.principal_id }))).toBeGreaterThan(Date.now())
@@ -103,6 +103,18 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
     const original = WorkflowNativeProofServices.prototype.persistOriginalLocked
     const injected = new Error('ENG06 injected session-publication commit failure')
     let bindingObserved = false
+    let publicationRejected = false
+    const transaction = ExclusiveGraphConnection.prototype.transaction
+    vi.spyOn(ExclusiveGraphConnection.prototype, 'transaction').mockImplementation(async function (
+      this: ExclusiveGraphConnection, ...args: Parameters<typeof transaction>
+    ) {
+      try {
+        return await transaction.apply(this, args)
+      } catch (error) {
+        if (error === injected) publicationRejected = true
+        throw error
+      }
+    })
     vi.spyOn(WorkflowNativeProofServices.prototype, 'persistOriginalLocked').mockImplementation(async function (
       this: WorkflowNativeProofServices, ...args: Parameters<typeof original>
     ) {
@@ -121,10 +133,24 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
       return proof
     })
     const f = await recoveryFixture(form, () => 'park')
+    let releaseDisposal!: () => void
+    const disposal = new Promise<void>(resolve => { releaseDisposal = resolve })
+    let disposalStarted = false
+    const connection = f.provider.connection.bind(f.provider)
+    vi.spyOn(f.provider, 'connection').mockImplementation(() => {
+      const manager = connection()
+      const dispose = manager.dispose!.bind(manager)
+      manager.dispose = async () => {
+        disposalStarted = true
+        await disposal
+        await dispose()
+      }
+      return manager
+    })
     try {
       f.launch()
-      await expect.poll(() => f.errors.some((error) => error instanceof Error && error.message === injected.message),
-        { timeout: 20000 }).toBe(true)
+      await expect.poll(() => disposalStarted, { timeout: 20000 }).toBe(true)
+      expect(publicationRejected).toBe(true)
       expect(bindingObserved).toBe(true)
       const rows = await executionRows(f)
       expect(rows).toHaveLength(1)
@@ -143,6 +169,20 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
       expect(bindings).toEqual([{ approval_native_session_id: null, approval_connection_generation: null, revoked: false }])
       // A rolled-back source publication grants no turn submission or retry.
       expect(f.provider.counts).toMatchObject({ sessions: 1, starts: 0, attaches: 0 })
-    } finally { await f.close() }
+      releaseDisposal()
+      await f.settled()
+      expect(f.provider.counts).toMatchObject({ sessions: 1, starts: 0, attaches: 0, closes: 1 })
+      expect((await executionRows(f)).map(row => row.execution)).toMatchObject([{
+        id: execution.id, attempt: 1, state: 'completed',
+        result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: false } },
+      }])
+      expect((await sql.query(`select approval_native_session_id,approval_connection_generation,
+        revoked_at is not null as revoked from worker_credential_bindings
+        where execution_id=$1 and purpose='workflow'`, [execution.id])).rows)
+        .toEqual([{ approval_native_session_id: null, approval_connection_generation: null, revoked: true }])
+    } finally {
+      releaseDisposal()
+      await f.close()
+    }
   }, 90000)
 })

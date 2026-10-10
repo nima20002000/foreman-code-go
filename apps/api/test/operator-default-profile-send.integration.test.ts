@@ -34,6 +34,10 @@ it.skipIf(!postgresEnabled)('carries the full saved Claude default profile throu
     current: id => f.access.currentOperator(id), assertConfiguration: configuration => authority.assertConfiguration(configuration),
     setup: async () => { throw new Error('Native setup is outside this fixture.') },
     prepare: async () => { throw new Error('Native preparation is outside this fixture.') }, release: async () => {},
+  }, async (principal, selected) => {
+    expect(principal.id).toBe(f.writer.principal.id)
+    expect(selected).toEqual(configuration)
+    return selection
   })
   const mainId = randomUUID()
   const selection = { instanceId: randomUUID(), instanceRevision: '1', target: { hostRef: { kind: 'main' as const, mainId },

@@ -74,7 +74,7 @@ it('saves Claude templates through authenticated MCP while unavailable API-key d
     }])
     const readiness = ExecutionReadinessSchema.parse(decodeMcpToolResult((await denied.callTool({ name: 'execution_readiness_get', arguments: { harness: 'claude' } }))))
     expect.soft(readiness).toMatchObject({ status: 'blocked', defaultsRevision: 1,
-      reason: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE', message: expect.stringContaining('authorized host/profile credential delivery') } })
+      reason: { code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE', message: expect.stringContaining('managed Claude account') } })
     const httpReadiness = await production.app.inject({ method: 'GET', url: '/api/management/harnesses/claude/execution-readiness', headers: { authorization: `Bearer ${reader.token}` } })
     expect(httpReadiness.statusCode).toBe(200)
     expect(ExecutionReadinessSchema.parse(httpReadiness.json())).toMatchObject({ status: readiness.status, defaultsRevision: readiness.defaultsRevision, reason: readiness.reason })

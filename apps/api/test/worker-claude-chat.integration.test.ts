@@ -13,6 +13,7 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 import { workerConversationFixture } from '../src/modules/conversations/workerFixtures.test-support.js'
 import { workerClaudeReplacementFixture } from '../src/modules/conversations/workerClaudeReplacement.test-support.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
+import { readSystemPromptSetting } from '../src/modules/settings/foundation.js'
 import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 
@@ -42,7 +43,8 @@ it('preserves remote Claude ownership and definite non-delivery through authenti
       agentConfigurationVersionId: configuration.id, harness: 'claude', origin: { kind: 'fresh' },
       workingDirectory: db.directory, runtimeDirectory: join(db.directory, 'remote-chat') }, async () => {})
     worker = await workerClaudeReplacementFixture({ ...recorded, configuration,
-      binding: { ...recorded.binding, workingDirectory: db.directory, owner: { kind: 'agent',
+      binding: { ...recorded.binding, workingDirectory: db.directory,
+        systemPrompt: await readSystemPromptSetting(db.pool), owner: { kind: 'agent',
         conversationId: conversation.id, workspaceId: configuration.workspaceId,
         workflowId: seeded.scope.workflowId, workflowNodeId: node.id, agentId: configuration.agentId,
         configurationVersionId: configuration.id, configurationHash: commandInputHash(configuration) } } })

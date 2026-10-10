@@ -14,6 +14,7 @@ import { PrivateSourceSnapshotStore } from '../../src/modules/sources/store.js'
 import { qualifiedGit } from '../../src/modules/sources/capture.js'
 import { sourceSha256 } from '../../src/modules/sources/manifest.js'
 import { WorkspaceBoundLocationService } from '../../src/modules/workspace-roots/service.js'
+import { WorkflowManagementService } from '../../src/modules/workflows/management.js'
 import { sch11Actions, type Sch11Fixture } from './sch11Fixture.js'
 import { sch11Once } from './sch11ClockCases.js'
 import { scheduleHarnessFixture } from './scheduleHarnessFixture.js'
@@ -96,6 +97,11 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
   const root = (await authorities.sources.bindRoot(writer.principal, 'http', { workspaceId: f.scope.workspaceId,
     commandId: randomUUID(), source, selection, expectedBindingRevision: 0, accessMode: 'exclusive-write' })).value
   const harness = await scheduleHarnessFixture(f, mainId, writer.principal)
+  f.workflows = new WorkflowManagementService(pool, f.commands, { worktrees: {
+    readyRoot: async () => ({ rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision }),
+    get sources() { return authorities.sources },
+    get roots() { return authorities.policies },
+  } })
   const workflow = await f.workflows.get(writer.principal, f.scope.workspaceId, f.scope.workflowId)
   const graph = structuredClone(f.fixture.version.definition)
   for (const node of graph.nodes) {
