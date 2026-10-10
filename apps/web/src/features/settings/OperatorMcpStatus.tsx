@@ -1,12 +1,14 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, type ReactNode } from 'react'
 import { APP_MCP_SERVER_NAMES, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import type { HarnessDefaults } from '@foreman-code/contracts'
 import { HarnessDefaultsUpdateInputSchema } from '@foreman-code/contracts/management'
-import { useApplyManagedMcpChange, useClaudeSetupOptions, useNativeMcpPlans, useNativeMcpServers } from '../../shared/api/harnessSettings'
+import { useApplyManagedMcpChange, useClaudeSetupOptions, useHarnessSessionEpoch, useNativeMcpPlans, useNativeMcpServers } from '../../shared/api/harnessSettings'
 import { useUpdateManagedHarnessDefaultsMutation } from '../../shared/api/query'
+import { commandWasRejected } from '../../shared/api/commandAttempt'
 import { Badge, Button } from '../../shared/ui/nocturne'
 
 type Tone = 'success' | 'warning' | 'neutral'
+type DefaultsUpdate = ReturnType<typeof HarnessDefaultsUpdateInputSchema.parse>
 function Status({ label, tone, children }: { label: string; tone: Tone; children?: ReactNode }) {
   return <>
     <span className="operator-mcp-status"><span>Operator MCP</span><Badge tone={tone}>{label}</Badge></span>
@@ -32,10 +34,23 @@ function CodexOperatorMcp() {
       {operation.error ? <small className="operator-mcp-error" role="alert">{operation.error}</small> : null}
     </Status>
   }
+  if (managed.isError) return <Status label="Needs attention" tone="warning">
+    <small className="operator-mcp-error" role="alert">{managed.error.message}</small>
+    <Button size="sm" variant="ghost" onClick={() => {
+      managed.reset()
+      void servers.refetch()
+    }}>Refresh setup</Button>
+  </Status>
   const start = (change: { installed: boolean } | { enabled: boolean }) => managed.start({ preset: 'graphql', ...change, expectedRevision: servers.data.revision })
   switch (preset) {
     case 'installed': return <Status label="Installed" tone="success" />
-    case 'inherited': return <Status label="Installed" tone="success"><small>From another Codex config layer</small></Status>
+    case 'inherited': {
+      const disabled = servers.data.servers.some((server) => APP_MCP_SERVER_NAMES.some((name) => name === server.name)
+        && !server.enabled)
+      return <Status label={disabled ? 'Disabled' : 'Installed'} tone={disabled ? 'warning' : 'success'}>
+        <small>From another Codex config layer. Change it at its source.</small>
+      </Status>
+    }
     case 'disabled': return <Status label="Disabled" tone="warning"><Button size="sm" onClick={() => start({ enabled: true })}>Enable</Button></Status>
     case 'legacy': case 'mismatch': return <Status label="Outdated" tone="warning"><Button size="sm" onClick={() => start({ installed: true })}>Update</Button></Status>
     default: return <Status label="Not installed" tone="neutral"><Button size="sm" variant="primary" onClick={() => start({ installed: true })}>Install</Button></Status>
@@ -46,21 +61,34 @@ function CodexOperatorMcp() {
 function ClaudeOperatorMcp({ defaults, revision }: { defaults: HarnessDefaults; revision: number }) {
   const setup = useClaudeSetupOptions()
   const save = useUpdateManagedHarnessDefaultsMutation()
-  const [commandId] = useState(() => crypto.randomUUID())
+  const command = useRef<DefaultsUpdate | undefined>(undefined)
   const claude = defaults.claude
   if (!claude) return <Status label="No preset" tone="neutral"><small>Save a Claude preset first</small></Status>
   if (APP_MCP_SERVER_NAMES.some((name) => Object.hasOwn(claude.mcpServers, name))) return <Status label="Installed" tone="success" />
+  if (setup.isPending) return <Status label="Checking…" tone="neutral" />
+  if (setup.isError || !setup.data?.graphqlMcp) return <Status label="Unavailable" tone="warning">
+    <small className="operator-mcp-error" role="alert">{setup.error?.message ?? 'The app MCP endpoint is unavailable.'}</small>
+    <Button size="sm" variant="ghost" onClick={() => void setup.refetch()}>Retry setup</Button>
+  </Status>
   const endpoint = setup.data?.graphqlMcp
   return <Status label={save.isPending ? 'Installing…' : 'Not installed'} tone="neutral">
     <Button size="sm" variant="primary" disabled={!endpoint || save.isPending} onClick={() => {
       if (!endpoint) return
-      save.mutate({ commandId, expectedRevision: revision, defaults: HarnessDefaultsUpdateInputSchema.shape.defaults.parse({
-        ...defaults, claude: { ...claude, mcpServers: { ...claude.mcpServers, [PRODUCT_SLUG]: endpoint } } }) })
+      const input = command.current ?? HarnessDefaultsUpdateInputSchema.parse({
+        commandId: crypto.randomUUID(), expectedRevision: revision,
+        defaults: { ...defaults, claude: { ...claude, mcpServers: { ...claude.mcpServers, [PRODUCT_SLUG]: endpoint } } },
+      })
+      command.current = input
+      save.mutate(input, {
+        onSuccess: () => { command.current = undefined },
+        onError: (error) => { if (commandWasRejected(error)) command.current = undefined },
+      })
     }}>Install</Button>
     {save.isError ? <small className="operator-mcp-error" role="alert">{save.error.message}</small> : null}
   </Status>
 }
 
 export function OperatorMcpStatus({ harness, defaults, revision }: { harness: 'codex' | 'claude'; defaults: HarnessDefaults; revision: number }) {
-  return harness === 'codex' ? <CodexOperatorMcp /> : <ClaudeOperatorMcp defaults={defaults} revision={revision} />
+  const epoch = useHarnessSessionEpoch()
+  return harness === 'codex' ? <CodexOperatorMcp /> : <ClaudeOperatorMcp key={epoch} defaults={defaults} revision={revision} />
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { HarnessMcpArgumentSchema, HarnessMcpEndpointSchema } from './management/harnessSettings.js'
+import { PluginMarketplaceSourceSchema } from './management/claudePlugins.js'
 
 /** Device channel namespace: Main asks a paired computer for maintenance status and starts maintenance tasks. */
 export const COMPUTER_MAINTENANCE_NAMESPACE = 'computer-maintenance-v2'
@@ -9,6 +10,8 @@ export const COMPUTER_MAINTENANCE_VERSION = 2
 /** Harnesses kept installed and current on every computer: Codex and Claude. */
 export const MaintainedHarnessSchema = z.enum(['codex', 'claude'])
 export type MaintainedHarness = z.infer<typeof MaintainedHarnessSchema>
+const HarnessSelectionSchema = z.array(MaintainedHarnessSchema).min(1).max(2)
+  .refine(harnesses => new Set(harnesses).size === harnesses.length, 'Choose each harness once.')
 
 export const MaintenanceTaskKindSchema = z.enum(['update-harnesses', 'update-system', 'restart', 'sync-mcp', 'sync-plugins'])
 export type MaintenanceTaskKind = z.infer<typeof MaintenanceTaskKindSchema>
@@ -24,11 +27,13 @@ export const SyncedMcpServerSchema = z.discriminatedUnion('transport', [
 ])
 export type SyncedMcpServer = z.infer<typeof SyncedMcpServerSchema>
 
-export const SyncedMarketplaceSchema = z.object({ name: z.string().regex(/^[^\s@]+$/u).max(100), source: z.string().min(1).max(500) }).strict()
+export const SyncedMarketplaceSchema = z.object({
+  name: z.string().regex(/^[^\s@]+$/u).max(100), source: PluginMarketplaceSourceSchema,
+}).strict()
 export type SyncedMarketplace = z.infer<typeof SyncedMarketplaceSchema>
 
 export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('update-harnesses'), harnesses: z.array(MaintainedHarnessSchema).min(1).max(2) }).strict(),
+  z.object({ kind: z.literal('update-harnesses'), harnesses: HarnessSelectionSchema }).strict(),
   z.object({ kind: z.literal('update-system') }).strict(),
   z.object({ kind: z.literal('restart') }).strict(),
   // An omitted harness is unavailable; an empty list is a successfully read empty catalog.
@@ -118,12 +123,18 @@ export const ComputerMaintenanceListSchema = z.object({
   computers: z.array(z.object({ target: DeviceProvisioningTargetSchema, status: MaintenanceStatusSchema.nullable() }).strict()).max(101),
 }).strict()
 export type ComputerMaintenanceList = z.infer<typeof ComputerMaintenanceListSchema>
+export const ComputerMaintenanceListInputSchema = z.object({
+  refresh: z.boolean().optional(), target: DeviceProvisioningTargetSchema.optional(),
+}).strict()
+export const ComputerMaintenanceReadInputSchema = z.object({
+  target: DeviceProvisioningTargetSchema, refresh: z.boolean().optional(),
+}).strict()
 
 /** Start one maintenance task on the selected computers (all paired computers and Main when omitted). */
 export const ComputerMaintenanceStartInputSchema = z.object({
   commandId: z.uuid(),
   task: z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('update-harnesses'), harnesses: z.array(MaintainedHarnessSchema).min(1).max(2) }).strict(),
+    z.object({ kind: z.literal('update-harnesses'), harnesses: HarnessSelectionSchema }).strict(),
     z.object({ kind: z.literal('update-system') }).strict(),
     z.object({ kind: z.literal('restart') }).strict(),
     z.object({ kind: z.literal('sync-mcp') }).strict(),

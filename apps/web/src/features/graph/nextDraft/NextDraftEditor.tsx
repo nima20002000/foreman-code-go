@@ -135,7 +135,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   const reloadMutation = useMutation({ mutationFn: () => nextDraftApi.context(graph.workspaceId, graph.id, undefined, true), retry: false })
   const reloading = reloadMutation.isPending
   const layout = useDraftLayout(draftKey)
-  const preflight = useBoardStartPreflight(context.draft)
+  const preflight = useBoardStartPreflight(context.draft, { enabled: board?.authoringActive !== false })
   const access = useLocalHumanAccessQuery()
   const principal = !access.isError ? access.data?.principal : undefined
   const canStart = !!principal && Date.parse(principal.expiresAt) > Date.now()

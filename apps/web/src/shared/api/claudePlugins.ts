@@ -12,12 +12,12 @@ function readPlugins(input: ClaudePluginListInput, signal: AbortSignal) {
   return apiClient.request(`/api/management/harnesses/claude/plugins?${query}`, ClaudePluginListResultSchema, { signal })
 }
 
-export function useClaudePlugins(input: ClaudePluginListInput) {
+export function useClaudePlugins(input: ClaudePluginListInput, enabled = true) {
   useHarnessSessionEpoch()
   const client = useQueryClient()
   const queryKey = ['harness-settings', sessionGeneration(), 'claude-plugins', input]
   const result = useQuery({
-    queryKey, enabled: !sessionIsSwitching(), retry: false, refetchOnWindowFocus: false,
+    queryKey, enabled: enabled && !sessionIsSwitching(), retry: false, refetchOnWindowFocus: false,
     queryFn: ({ signal }) => readPlugins(input, signal),
   })
   const refresh = () => client.fetchQuery({

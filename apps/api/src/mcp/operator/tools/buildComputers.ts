@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
-import { ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema, ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
+import { ComputerMaintenanceListSchema, ComputerMaintenanceListInputSchema, ComputerMaintenanceStartInputSchema,
+  ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema, ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
   GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
 import type { McpServer } from '@modelcontextprotocol/server'
@@ -27,20 +28,26 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       description: 'Read which harness (Codex, Claude), GitHub CLI accounts each paired computer '
         + 'has installed and is signed in to. Requires global settings:read. Identity strings only (email, username, provider names); '
         + 'no tokens. Results are cached for 30 seconds unless refresh is true; an offline computer reports null accounts. '
-        + 'Each page includes up to 100 paired computers; Main appears only on the first page. Continue with nextCursor as cursor until null.',
+        + 'Supply target to read one current installation independently; target cannot be combined with cursor. '
+        + 'Each fleet page includes up to 100 paired computers; Main appears only on the first page. Continue with nextCursor as cursor until null.',
       inputSchema: ComputerAccountsListInputSchema, outputSchema: ComputerAccountsListSchema,
       annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
     }, input => invokeOperatorTool(context, 'computer_accounts_list',
-      () => context.services.computerAccounts!.list(context.principal, 'mcp', input.refresh === true, input.cursor)))
+      () => input.target
+        ? context.services.computerAccounts!.readTarget(context.principal, 'mcp', input)
+        : context.services.computerAccounts!.list(context.principal, 'mcp', input.refresh === true, input.cursor)))
   }
   const maintenance = context.services.computerMaintenance
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_status')) server.registerTool('computers_maintenance_status', {
     description: 'Read maintenance status for Main and every paired computer: installed and latest Codex/Claude versions, pending OS '
       + 'package updates (including phased or held packages), whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome and sync source fingerprint. '
-      + 'Requires global settings:read. Cached for 20 seconds unless refresh is true; an offline computer reports null status.',
-    inputSchema: z.object({ refresh: z.boolean().optional() }).strict(), outputSchema: ComputerMaintenanceListSchema,
+      + 'Requires global settings:read. Supply target to read one current installation independently. '
+      + 'Settled status is cached for 20 seconds unless refresh is true; pending probes are shared. An offline computer reports null status.',
+    inputSchema: ComputerMaintenanceListInputSchema, outputSchema: ComputerMaintenanceListSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
-  }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => maintenance.list(context.principal, 'mcp', input.refresh === true)))
+  }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => input.target
+    ? maintenance.readTarget(context.principal, 'mcp', input)
+    : maintenance.list(context.principal, 'mcp', input.refresh === true)))
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_start')) server.registerTool('computers_maintenance_start', {
     description: 'Start one maintenance task on the given computers, or on Main and every paired computer when targets is omitted: '
       + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
@@ -52,8 +59,9 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'Disabled servers, native tool allow/deny lists and stdio environment-name references cannot be copied by this sync path. '
       + 'Tasks run in the background; read their outcome with computers_maintenance_status. Equivalent requests share only the latest queued task; different requests of the same kind queue. '
       + 'Task status survives application restarts; unfinished tasks report interruption. Check every returned computer error; '
-      + 'unavailable targets are not updated. Harness updates verify the selected runtime version against the latest published '
-      + 'version; Main and Workers select the installed Codex update and retain qualification checks. Requires global '
+      + 'unavailable targets are not updated. Harness updates verify the selected runtime meets the published version observed at start; '
+      + 'a newer stable release installed during the update also succeeds. '
+      + 'Main and Workers select the installed Codex update and retain qualification checks. Requires global '
       + 'settings:update. Reuse commandId with the original input to recover the saved targets, source catalogs and receiver tasks, including after Main stops before recording its result. '
       + 'Receivers require maintenance protocol 2. Restart stays running until the reboot command returns; success reports command acceptance, not confirmed reconnection. '
       + 'A missing harness leaves nonempty MCP sync pending for a later retry.',

@@ -13,7 +13,8 @@
 .computer-card-facts > div { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); align-items: start; gap: .5rem; }
 .computer-card-facts dt { color: var(--n-muted); }
 .computer-card-facts dd { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.computer-card-chip { display: inline-flex; align-items: center; gap: .2rem; }
+.computer-card-chip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .2rem; min-width: 0; max-width: 100%; }
+.computer-card-facts .n-badge { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .computer-card-chip .n-button { min-height: 1.6rem; padding: 0 .45rem; font-size: .75rem; }
 .computer-card-footer { display: flex; justify-content: flex-end; gap: .4rem; margin-top: auto; padding-top: .6rem; border-top: 1px solid var(--n-border); }
 .computer-card--registration { gap: .6rem; }

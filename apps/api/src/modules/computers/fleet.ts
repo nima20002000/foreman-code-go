@@ -2,7 +2,8 @@ import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import {
-  COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema,
+  COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceReadInputSchema,
+  ComputerMaintenanceStartInputSchema, SyncedMarketplaceSchema,
   ComputerMaintenanceStartResultSchema, ComputerMaintenanceDispatchSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
   type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
@@ -17,6 +18,7 @@ import { DomainError } from '../errors.js'
 import type { ClaudePluginCatalog } from './claudePlugins.js'
 import type { ComputerMaintenance } from './maintenance.js'
 import { syncFingerprint } from './syncFingerprint.js'
+import { assertComputerTarget } from './target.js'
 
 export interface MaintenanceEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
@@ -77,7 +79,9 @@ export function syncableServers(
 
 /** Main's view of every computer's maintenance, and the one place that starts maintenance across them. */
 export class FleetMaintenanceService {
-  private readonly cache = new Map<string, { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> }>()
+  private readonly cache = new Map<string, {
+    at: number; pending: boolean; running?: boolean; value: Promise<MaintenanceStatus | null>
+  }>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
@@ -140,6 +144,22 @@ export class FleetMaintenanceService {
     })
     if (!result.replayed) return result.value
     return this.readStartedTasks(principal, ComputerMaintenanceStartResultSchema.parse(result.value))
+  }
+
+  async readTarget(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<ComputerMaintenanceList> {
+    const input = ComputerMaintenanceReadInputSchema.parse(raw)
+    try { requireAuthorization(principal, 'settings:read') } catch (error) {
+      await this.commands.recordDenied(principal.id, source, 'computers_maintenance_status', this.mainId)
+      throw error
+    }
+    const sql = await this.pool.connect()
+    try {
+      requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:read')
+      await assertComputerTarget(sql, this.mainId, input.target)
+    } finally { sql.release() }
+    return ComputerMaintenanceListSchema.parse({
+      computers: [{ target: input.target, status: await this.status(input.target, input.refresh === true) }],
+    })
   }
 
   private async readStartedTasks(principal: ManagementPrincipal,
@@ -261,15 +281,24 @@ export class FleetMaintenanceService {
       const request: Extract<MaintenanceTaskStart, { kind: 'sync-plugins' }> = { kind: 'sync-plugins' }
       const warnings: string[] = []
       if (codex.status === 'fulfilled') {
-        request.plugins = codex.value[0]
-        request.marketplaces = codex.value[1]
+        const marketplaces = SyncedMarketplaceSchema.array().safeParse(codex.value[1])
+        if (marketplaces.success) {
+          request.plugins = codex.value[0]
+          request.marketplaces = marketplaces.data
+        } else warnings.push('Codex marketplace sources are unsafe or invalid; plugin sync skipped.')
       } else warnings.push('Codex plugin catalog could not be read; skipped.')
       if (claude.status === 'fulfilled') {
-        request.claudePlugins = claude.value.plugins.filter(plugin => plugin.installed)
-          .map(({ pluginId, enabled }) => ({ pluginId, enabled }))
-        request.claudeMarketplaces = claude.value.marketplaces
-          .flatMap(item => item.source ? [{ name: item.name, source: item.source }] : [])
+        const marketplaces = SyncedMarketplaceSchema.array().safeParse(claude.value.marketplaces
+          .flatMap(item => item.source ? [{ name: item.name, source: item.source }] : []))
+        if (marketplaces.success) {
+          request.claudePlugins = claude.value.plugins.filter(plugin => plugin.installed)
+            .map(({ pluginId, enabled }) => ({ pluginId, enabled }))
+          request.claudeMarketplaces = marketplaces.data
+        } else warnings.push('Claude marketplace sources are unsafe or invalid; plugin sync skipped.')
       } else warnings.push('Claude plugin catalog could not be read; skipped.')
+      if (request.plugins === undefined && request.claudePlugins === undefined) {
+        throw new Error('Main\'s plugin catalogs do not contain safe marketplace sources.')
+      }
       if (warnings.length) request.warnings = warnings
       return request
     }
@@ -289,15 +318,21 @@ export class FleetMaintenanceService {
     const key = this.key(target)
     const cached = this.cache.get(key)
     // A running task's progress is read again within seconds; settled status is reused longer.
-    if (!refresh && cached && this.now() - cached.at < (cached.running ? RUNNING_CACHE_MS : CACHE_MS)) return cached.value
+    const ttl = cached?.running ? RUNNING_CACHE_MS : CACHE_MS
+    if (cached && (cached.pending || (!refresh && this.now() - cached.at < ttl))) return cached.value
+    // A bounded shared observation survives one reader canceling so other readers can still use it.
     const value = (async () => {
       if (target.hostRef.kind === 'main') return this.local.status(AbortSignal.timeout(90_000))
       const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId, { operation: 'status' })).payload)
       return reply.operation === 'status' ? reply.status : null
     })().catch((): null => null)
-    const entry: { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> } = { at: this.now(), value }
+    const entry = { at: this.now(), pending: true, running: false, value }
     this.cache.set(key, entry)
-    void value.then(status => { entry.running = status?.tasks.some(task => task.state === 'running') ?? false })
+    void value.then(status => {
+      entry.pending = false
+      entry.at = this.now()
+      entry.running = status?.tasks.some(task => task.state === 'running') ?? false
+    })
     return value
   }
 

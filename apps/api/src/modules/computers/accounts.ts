@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsListSchema, ComputerAccountsSchema,
+import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsListSchema, ComputerAccountsReadInputSchema, ComputerAccountsSchema,
   type ComputerAccounts, type ComputerAccountsList } from '@foreman-code/contracts/computer-accounts'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -8,6 +8,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { probeComputerAccounts } from './accountProbe.js'
+import { assertComputerTarget } from './target.js'
 
 export interface ComputerAccountsEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
@@ -17,7 +18,7 @@ const CACHE_MS = 30_000
 
 /** Which harness and GitHub accounts each paired computer is signed in to. Identity strings only. */
 export class ComputerAccountsService {
-  private readonly cache = new Map<string, { at: number; value: Promise<ComputerAccounts | null> }>()
+  private readonly cache = new Map<string, { at: number; pending: boolean; value: Promise<ComputerAccounts | null> }>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
@@ -60,13 +61,35 @@ export class ComputerAccountsService {
     this.cache.delete(`${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`)
   }
 
+  async readTarget(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<ComputerAccountsList> {
+    const input = ComputerAccountsReadInputSchema.parse(raw)
+    try { requireAuthorization(principal, 'settings:read') } catch (error) {
+      await this.commands.recordDenied(principal.id, source, 'computer_accounts_list', this.mainId)
+      throw error
+    }
+    const sql = await this.pool.connect()
+    try {
+      requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:read')
+      await assertComputerTarget(sql, this.mainId, input.target)
+    } finally { sql.release() }
+    return ComputerAccountsListSchema.parse({
+      computers: [{ target: input.target, accounts: await this.read(input.target, input.refresh === true) }],
+      nextCursor: null,
+    })
+  }
+
   private read(target: DeviceProvisioningTarget, refresh: boolean): Promise<ComputerAccounts | null> {
     const key = `${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`
     const cached = this.cache.get(key)
-    if (!refresh && cached && this.now() - cached.at < CACHE_MS) return cached.value
+    if (cached && (cached.pending || (!refresh && this.now() - cached.at < CACHE_MS))) return cached.value
     const value = (target.hostRef.kind === 'main' ? this.probeMain() : this.readDevice(target.hostRef.deviceId))
       .catch((): null => null)
-    this.cache.set(key, { at: this.now(), value })
+    const entry = { at: this.now(), pending: true, value }
+    this.cache.set(key, entry)
+    void value.then(() => {
+      entry.pending = false
+      entry.at = this.now()
+    })
     return value
   }
 

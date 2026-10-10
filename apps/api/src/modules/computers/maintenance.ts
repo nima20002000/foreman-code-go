@@ -49,6 +49,19 @@ function versionOf(output: string): string | null {
   return output.match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/u)?.[0] ?? null
 }
 
+function meetsPublishedVersion(installed: string, published: string): boolean {
+  if (installed === published) return true
+  const stableVersion = /^(\d+)\.(\d+)\.(\d+)(?:\+[\w.-]+)?$/u
+  const actual = installed.match(stableVersion)
+  const expected = published.match(stableVersion)
+  if (!actual || !expected) return false
+  for (let index = 1; index <= 3; index++) {
+    const difference = Number(actual[index]) - Number(expected[index])
+    if (difference !== 0) return difference > 0
+  }
+  return true
+}
+
 /**
  * Keeps this computer's harnesses, packages, MCP servers and Codex plugins current. Runs on Main for itself and on every
  * paired computer for Main's requests. Long work runs as background tasks that status readback reports.
@@ -126,7 +139,7 @@ export class ComputerMaintenance {
   private async admit(request: MaintenanceTaskStart, commandId: string): Promise<MaintenanceTask> {
     await this.loadTasks()
     const identity = request.kind === 'update-harnesses'
-      ? { ...request, harnesses: [...new Set(request.harnesses)].sort() } : request
+      ? { ...request, harnesses: [...request.harnesses].sort() } : request
     const requestHash = commandInputHash(identity)
     const receipt = await this.commandStore.read(commandId)
     if (receipt) {
@@ -248,7 +261,7 @@ export class ComputerMaintenance {
             }
             const after = await this.installedVersion(harness, signal)
             if (!after || !latest[harness]) throw new Error(`${LABELS[harness]} update could not be verified.`)
-            if (after !== latest[harness]) {
+            if (!meetsPublishedVersion(after, latest[harness])) {
               throw new Error(`${LABELS[harness]} is still ${after}; latest published version is ${latest[harness]}.`)
             }
             changes.push(`${LABELS[harness]} ${before ?? 'not installed'} → ${after}`)

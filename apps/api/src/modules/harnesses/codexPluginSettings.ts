@@ -53,17 +53,18 @@ export class CodexPluginSettingsService {
     requireAuthorization(current, 'harnesses:update')
     requireAuthorization(current, 'harnesses:read')
   }
-  private catalog(signal: AbortSignal) {
+  private catalog(options: { signal: AbortSignal; refresh?: boolean | undefined }) {
     // Reads reuse a recent catalog and refresh it in the background; writes read natively and clear it.
-    return this.catalogs.get('catalog', () => this.queue.run('catalog', (active) => this.adapter.list(active), signal))
+    return this.catalogs.get('catalog', (signal) => this.queue.run('catalog',
+      (active) => this.adapter.list(active), this.signal(signal)), options)
       .catch((error: unknown) => { this.catalogs.forget('catalog'); throw error })
   }
   /** Fill the catalog before Settings opens. */
-  async warmup(): Promise<void> { await this.catalog(this.signal()) }
+  async warmup(): Promise<void> { await this.catalog({ signal: this.signal() }) }
   async list(principal: ManagementPrincipal, raw: CodexPluginListInput, request?: AbortSignal) {
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginListInputSchema.parse(raw)
-    const catalog = await this.catalog(this.signal(request))
+    const catalog = await this.catalog({ signal: this.signal(request), refresh: input.refresh })
     const query = input.query.toLocaleLowerCase()
     const items = catalog[input.view].filter((plugin) => !query || `${plugin.name} ${plugin.marketplaceName}`.toLocaleLowerCase().includes(query))
       .sort((a, b) => a.name.localeCompare(b.name) || a.marketplaceName.localeCompare(b.marketplaceName))
@@ -71,11 +72,12 @@ export class CodexPluginSettingsService {
       nextOffset: input.offset + input.limit < items.length ? input.offset + input.limit : null,
       revision: catalog.revision, checkedAt: new Date().toISOString(), catalogStatus: catalog.catalogStatus, inventoryStatus: catalog.inventoryStatus })
   }
-  async get(principal: ManagementPrincipal, pluginId: string, request?: AbortSignal) {
+  async get(principal: ManagementPrincipal, pluginId: string,
+    options: { signal?: AbortSignal; refresh?: boolean | undefined } = {}) {
     requireAuthorization(principal, 'harnesses:read')
     const { pluginId: id } = CodexPluginGetInputSchema.parse({ pluginId })
-    const signal = this.signal(request)
-    const catalog = await this.catalog(signal)
+    const signal = this.signal(options.signal)
+    const catalog = await this.catalog({ signal, refresh: options.refresh })
     const plugin = [...catalog.installed, ...catalog.available].find((item) => item.pluginId === id)
     if (!plugin) throw new DomainError('CODEX_PLUGIN_NOT_FOUND', 'This plugin has no inspectable Codex record.', 404)
     const contents = await this.queue.run(undefined, (active) => this.adapter.detail(plugin, active), signal)
