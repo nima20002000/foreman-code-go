@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
@@ -27,8 +27,9 @@ it.each([
   clients.push(mounted.client)
   await mounted.ready()
   expect(screen.getByText(label)).toBeVisible()
-  fireEvent.click(screen.getByText('Chat unavailable'))
-  expect(screen.getByText('Native delivery not confirmed')).toBeVisible()
+  const availability = screen.getByText('Chat unavailable').closest('details')!
+  fireEvent.click(within(availability).getByText('Chat unavailable'))
+  expect(within(availability).getByText('Native delivery not confirmed')).toBeVisible()
 })
 
 it('shows online reconnection while saved GET reads remain available', async () => {

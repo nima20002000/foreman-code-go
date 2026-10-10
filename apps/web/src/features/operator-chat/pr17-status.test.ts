@@ -34,7 +34,8 @@ describe('PR17 decision scope and Operator status', () => {
     expect(text).not.toContain('finished')
   })
   it('names requested cancellation without adding a finished notice after confirmation', () => {
-    expect(operatorTurnStatus(operatorState({ turnState: 'canceling' }), 'connected')).toContain('Waiting for confirmation')
+    expect(operatorTurnStatus(operatorState({ turnState: 'canceling' }), 'connected'))
+      .toBe('Stop requested—execution not yet confirmed stopped.')
     expect(operatorTurnStatus(operatorState({ turnState: 'idle', activeRequestId: null, lastResult: { outcome: 'canceled' } }), 'connected')).toBe('')
   })
   it('does not resurrect a decision from an older summary poll', () => {
