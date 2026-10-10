@@ -2,7 +2,8 @@ import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } fr
 import { RemoteNativeIdentitySchema } from './remoteExecution.js'
 import { z } from 'zod'
 import { DeviceExecutionAdmissionFields } from './deviceResources.js'
-import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, ApprovalResponseOptionSchema, NativeSessionReferenceSchema } from './index.js'
+import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, ApprovalResponseOptionSchema,
+  NativeSessionReferenceSchema, WorkflowSessionContinuationSchema } from './index.js'
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema, CurrentAcceptedNodePlacementSchema, CurrentDispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema,
   RemoteReviewerRequestSchema } from './remoteExecution.js'
@@ -23,7 +24,9 @@ export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
     sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), metadata: DeviceJsonContinuationRequestSchema.optional(),
     // Main has committed this execution's matching terminal result, beyond retaining its source.
     retire: z.literal(true).optional() }).strict(),
-  z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), applicationAccess: RemoteApplicationAccessSchema.optional(), sessionPreferences: SessionPreferencesSchema.optional() }).strict(),
+  z.object({ method: z.literal('prepare'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema),
+    sessionContinuation: z.lazy(() => WorkflowSessionContinuationSchema).optional(),
+    applicationAccess: RemoteApplicationAccessSchema.optional(), sessionPreferences: SessionPreferencesSchema.optional() }).strict(),
   z.object({ method: z.literal('reattach'), ...binding, request: z.lazy(() => HarnessExecutionRequestSchema), session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),
   z.object({ method: z.literal('prepare-review'), ...binding, review: RemoteReviewerRequestSchema }).strict(),
   z.object({ method: z.literal('get-application-access'), ...binding, session: z.lazy(() => NativeSessionReferenceSchema) }).strict(),

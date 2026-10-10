@@ -42,6 +42,7 @@ export interface ChildProcessEnvironment {
 }
 
 export interface WorkflowNativeSessionStart {
+  sessionContinuation?: import('@foreman-code/contracts').WorkflowSessionContinuation
   sessionPreferences?: SessionPreferences
   kind?: 'workflow'
   correlationId?: string

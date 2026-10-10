@@ -41,6 +41,7 @@ export const RepeatGraphExecutionV3Schema = z.object({
   /** Present only for the new versioned work-handoff policy. */
   workActivationId: GraphIdSchema.optional(),
   previousExecutionId: GraphIdSchema.nullable(),
+  continuedFromExecutionId: GraphIdSchema.optional(),
   // Observed durable lifecycle only. No native-active/acknowledged inference.
   state: z.enum(['queued', 'starting', 'running', 'waiting', 'completed']),
   resultOutcome: z.enum(['succeeded', 'failed', 'canceled']).nullable(),

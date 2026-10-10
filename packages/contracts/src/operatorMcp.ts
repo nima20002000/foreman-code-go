@@ -37,7 +37,7 @@ export const OperatorRunSummarySchema = z.object(WorkflowRunV3Schema.shape).omit
 export const OperatorExecutionSummarySchema = z.object(HarnessExecutionSchema.shape).pick({
   id: true, runId: true, workflowNodeId: true, agentId: true, agentConfigurationVersionId: true,
   attempt: true, state: true, createdAt: true, startedAt: true, finishedAt: true,
-}).extend({ failure: ExecutionResultSchema.shape.error })
+}).extend({ failure: ExecutionResultSchema.shape.error, continuedFromExecutionId: z.string().min(1).optional() })
 export const OperatorActivitySummarySchema = z.object({
   id: z.string(), kind: z.string(), title: z.string().max(256), status: z.string().optional(),
   order: z.string(),

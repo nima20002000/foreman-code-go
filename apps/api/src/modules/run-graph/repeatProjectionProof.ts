@@ -47,8 +47,9 @@ export function repeatEffectFactsFromState(scope: RepeatGraphScopeV3, state: Rep
       } }]
       const execution = state.executions.find((item) => item.identity.executionId === effect.entityId)
       if (!execution) return fail()
+      const { continuedFromExecutionId: _continuation, ...queued } = execution
       const bindings = state.bindings.filter((item) => item.recipient.executionId === effect.entityId).sort((a, b) => a.ordinal - b.ordinal)
-      return [{ type: 'repeat.execution', execution: { ...execution, state: 'queued', resultOutcome: null } },
+      return [{ type: 'repeat.execution', execution: { ...queued, state: 'queued', resultOutcome: null } },
         ...bindings.map((binding): RepeatGraphFactV3 => ({ type: 'repeat.input.bound', binding }))]
     }
     case 'node.inactive': {

@@ -29,6 +29,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
       + 'Omission counts cover this snapshot; use run_activities_get_v1 for paged history. Pass detail: "full" for input, result, execution bodies and the full snapshot. '
       + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
       + 'Native activity summaries identify messages, reasoning, commands, file edits and tool calls without exposing bodies or arguments. '
+      + 'Execution summaries include continuedFromExecutionId when a node resumes a closed native session in this Run. '
       + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT and WORK_RUN_EXECUTION_BUDGET_EXHAUSTED), '
       + 'failure messages, Stop causes and cleanup status. '
       + 'A Run waiting for approval may still have progressing sibling executions.',
@@ -52,6 +53,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     () => context.services.runs.handoffs.read(context.principal, input)))
   if (operatorToolAvailable(context, 'run_activities_get_v1')) server.registerTool('run_activities_get_v1', {
     description: 'Read a bounded, redacted public Activities page for an exact authorized Run. '
+      + 'Execution references include continuedFromExecutionId for same-node session continuity. '
       + 'Includes the Run’s Agent-requested CI queue and process states with Job execution references and initiating Agents. '
       + 'Native summaries identify messages, reasoning, commands, file edits and tool calls; details include safe counts, message phase and command exit code. '
       + 'Work result and needs-direction activities include redacted latestDeliverable, remainingFindings and outcome. '

@@ -87,6 +87,37 @@ async function productionShutdownFixture() {
 }
 
 describe('actual worker native-port adapter', () => {
+  it.each(['same', 'changed-host', 'unclosed'] as const)(
+    'continues only a closed native session on its accepted placement (%s)', async scenario => {
+      const f = await setup()
+      const create = vi.spyOn(f.manager, 'createSession')
+      f.ports.settle = async () => ({ kind: 'completed', closureEvidenceDigest: 'a'.repeat(64),
+        result: { outcome: 'succeeded' } })
+      await f.host.prepare(f)
+      if (scenario !== 'unclosed') {
+        await f.host.startTurn(f.intent.operationId, 'original turn', `execution:${f.intent.executionId}`)
+        await f.host.drain()
+      }
+      const { bindingHash: _bindingHash, ...pins } = f.placement
+      const placement = scenario === 'changed-host' ? freezePlacement({ ...pins,
+        hostRef: { ...f.placement.hostRef, deviceId: randomUUID() } }) : f.placement
+      const intent = deriveDispatch(placement, { executionId: 'reactivated', occurrenceId: null,
+        occurrenceIndex: 0, technicalAttempt: 1, attemptId: 'reactivated-attempt',
+        operationId: 'reactivated-operation', inputDigest: f.intent.inputDigest, owner: f.intent.owner })
+      const sessionContinuation = { previousExecutionId: f.intent.executionId,
+        previousOperationId: f.intent.operationId, session: f.session }
+      const preparing = f.host.prepare({ intent, placement, request: { ...f.request,
+        executionId: intent.executionId, runtimeDirectory: '/runtime/reactivated' }, sessionContinuation })
+      if (scenario === 'same') {
+        expect(await preparing).toMatchObject({ session: f.session })
+        expect(create.mock.calls[1]![0]).toMatchObject({ sessionContinuation })
+      } else {
+        const reason = scenario === 'changed-host' ? 'Remote launch binding mismatch'
+          : 'closed execution on the same host and placement'
+        await expect(preparing).rejects.toThrow(reason)
+        expect(create).toHaveBeenCalledTimes(1)
+      }
+    })
   it('forwards the saved workflow system prompt into worker native session startup', async () => {
     const f = await setup()
     const systemPrompt = { value: { text: 'App instructions.' }, revision: 3, versionId: 'prompt-version-3' }

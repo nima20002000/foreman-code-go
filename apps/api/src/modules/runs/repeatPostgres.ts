@@ -1,5 +1,6 @@
 import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readSystemPromptSetting } from '../settings/foundation.js'
+import { readWorkflowSessionContinuation } from './sessionContinuation.js'
 import { readWorkflowJobSourceLocked } from '../jobs/workflowSource.js'
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, ExecutionResultSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
@@ -494,9 +495,11 @@ export class RepeatRunRepository {
       await context.hooks.assertAuthorityLocked(context.sql)
       await native.assertLaunchLocked(context.sql, stored.execution, stored.ref, paths)
       const systemPrompt = await readSystemPromptSetting(context.sql)
-      const next = HarnessExecutionSchema.parse({
+      let next = HarnessExecutionSchema.parse({
         ...stored.execution, ...paths, systemPrompt, state: 'starting', startedAt: context.now,
       })
+      const sessionContinuation = await readWorkflowSessionContinuation(context.sql, next)
+      if (sessionContinuation) next = HarnessExecutionSchema.parse({ ...next, sessionContinuation })
       const claim = repeatLaunchClaim(context.scope, stored.ref, next, stored.inputDigest)
       const digest = repeatDigest(claim)
       const change = this.nativeChange(context, stored, next, 'launch', claim,
@@ -890,6 +893,7 @@ export class RepeatRunRepository {
   private assertCandidate(context: Context, ref: RepeatNodeRef, candidate: HarnessExecution, attempt: number): void {
     assertRepeatExecution(context.version, context.scope, ref, candidate)
     if (candidate.attempt !== attempt || candidate.state !== 'queued' || candidate.result !== undefined || candidate.nativeSessionId !== undefined
+      || candidate.sessionContinuation !== undefined
       || candidate.runtimeDirectory !== undefined || candidate.workingDirectory !== undefined || candidate.startedAt !== undefined
       || candidate.finishedAt !== undefined) repeatConflict('EXECUTION_ADMISSION_INVALID')
   }

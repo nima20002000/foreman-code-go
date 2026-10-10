@@ -23,6 +23,7 @@ export function inspectionExecutionsQuery(input: RunExecutionsListInput, after: 
         jsonb_strip_nulls(jsonb_build_object('executionId',e.record->'id','workflowNodeId',e.record->'workflowNodeId',
           'agentId',e.record->'agentId','agentConfigurationVersionId',e.record->'agentConfigurationVersionId',
           'attempt',e.record->'attempt','state',e.record->'state','failure',e.record#>'{result,error}',
+          'continuedFromExecutionId',e.record#>'{sessionContinuation,previousExecutionId}',
           'createdAt',e.record->'createdAt',
           'startedAt',e.record->'startedAt','finishedAt',e.record->'finishedAt','acceptedResultAvailable',e.accepted,
           'worktree',(select jsonb_build_object('repository',np.record#>'{materialization,receipt,worktree,repository}',

@@ -80,6 +80,15 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it('carries the saved continuation into an authenticated preparation for the new execution', async () => {
+    const f = setup(() => terminal([event(0)]))
+    const sessionContinuation = { previousExecutionId: 'previous-execution', previousOperationId: 'previous-operation',
+      session: { harness: 'codex' as const, providerVersion: 'test', nativeSessionId: 'native-session' } }
+    await f.proxy.createSession({ ...f.start, sessionContinuation })
+    const frame = RemoteExecutionRpcRequestSchema.parse(f.request.mock.calls[0]![1])
+    expect(frame).toMatchObject({ method: 'prepare', sessionContinuation,
+      intent: { executionId: f.start.request.executionId }, request: f.start.request })
+  })
   it('refreshes authenticated history before a slow consumer uses expired event observations', async () => {
     let now = Date.now()
     let observedAt = now

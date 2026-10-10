@@ -200,6 +200,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     const value = z.object({ session: NativeSessionReferenceSchema.optional(), status: StatusSchema }).strict()
       .parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement,
         request: input.request, ...(this.preferences ? { sessionPreferences: this.preferences } : {}),
+        ...(input.sessionContinuation ? { sessionContinuation: input.sessionContinuation } : {}),
         ...(applicationAccess ? { applicationAccess } : {}) }, signal))
     const receipt = await this.status(value.status)
     if (!value.session) {

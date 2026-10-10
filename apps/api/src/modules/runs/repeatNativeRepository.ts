@@ -22,6 +22,7 @@ export interface RepeatLaunchClaim {
   workingDirectory: string
   runtimeDirectory: string
   systemPrompt?: HarnessExecution['systemPrompt']
+  sessionContinuation?: HarnessExecution['sessionContinuation']
 }
 export function repeatLaunchClaim(scope: RepeatScope, ref: RepeatNodeRef, execution: HarnessExecution,
   inputDigest: string): RepeatLaunchClaim {
@@ -45,6 +46,7 @@ export function repeatLaunchClaim(scope: RepeatScope, ref: RepeatNodeRef, execut
     startedAt: execution.startedAt, workingDirectory: execution.workingDirectory,
     runtimeDirectory: execution.runtimeDirectory,
     ...(execution.systemPrompt ? { systemPrompt: structuredClone(execution.systemPrompt) } : {}),
+    ...(execution.sessionContinuation ? { sessionContinuation: structuredClone(execution.sessionContinuation) } : {}),
   }
 }
 

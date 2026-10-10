@@ -11,6 +11,7 @@ type Queryable = Pick<pg.PoolClient, 'query'>
 export interface RunActivityScope { workspaceId: string; workflowId: string; runId: string; workflowVersionId: string }
 interface RunFact { revision: string; stopped: boolean; outcome: string; execution_state: string; started_at: string | null }
 interface ExecutionFact { id: string; attempt: number; revision: string; state: string; outcome: string | null;
+  continued_from_execution_id: string | null;
   started_at: string | null; created_at: string; native_session_id: string | null; harness: string | null; native_revision: string }
 interface JobFact { id: string; attempt_id: string; operation_id: string; revision: string; node_id: string;
   definition_id: string; definition_revision: number; definition_version_id: string; pinned: boolean;
@@ -27,6 +28,7 @@ async function facts(sql: Queryable, scope: RunActivityScope) {
   if (!run) throw new DomainError('RUN_PIN_CONFLICT', 'The exact Run activity scope is unavailable.', 409)
   // Only named normalized identity/status fields cross this read boundary.
   const executions = (await sql.query<ExecutionFact>(`select e.id,e.attempt,e.activity_record_revision::text as revision,
+    e.record#>>'{sessionContinuation,previousExecutionId}' as continued_from_execution_id,
     to_char(e.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_at,
     e.record->>'state' as state,e.record#>>'{result,outcome}' as outcome,e.record->>'startedAt' as started_at,
     e.record->>'nativeSessionId' as native_session_id,c.record#>>'{harness,harness}' as harness,
@@ -120,6 +122,7 @@ export async function readRunActivitySnapshot(sql: Queryable, scope: RunActivity
       ? execution.outcome as WorkSummary['outcome'] : execution.state === 'completed' ? 'unknown' : null,
     evidence: execution.state === 'completed' && !execution.outcome ? 'unknown' : 'confirmed', delivery: null,
     startedAt: execution.started_at,
+    ...(execution.continued_from_execution_id ? { continuedFromExecutionId: execution.continued_from_execution_id } : {}),
     ...(execution.native_session_id && execution.harness ? { native: { harness: execution.harness, sessionId: execution.native_session_id } } : {}) }))
   const jobRef = (job: JobFact): WorkRef => ({ kind: 'execution', ...scope, executionId: job.id, attemptKey: job.attempt_id })
   const jobSummaries: WorkSummary[] = before.jobs.map((job) => ({ ref: jobRef(job),

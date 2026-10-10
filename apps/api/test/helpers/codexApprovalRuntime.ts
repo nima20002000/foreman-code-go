@@ -83,6 +83,9 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
         let provider = providers.get(context.executionId)
         if (!provider) {
           provider = new CodexApprovalProvider(context.executionId, context.agentId === entry.agentId, options)
+          for (const previous of providers.values()) {
+            for (const [id, thread] of previous.threads) provider.threads.set(id, thread)
+          }
           providers.set(context.executionId, provider)
         }
         const native = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
@@ -128,7 +131,7 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
       counts() {
         const values = [...providers.values()]
         return {
-          sessions: values.reduce((count, provider) => count + provider.threads.size, 0),
+          sessions: new Set(values.flatMap(provider => [...provider.threads.keys()])).size,
           prompts: values.reduce((count, provider) => count + provider.starts.length, 0),
           responses: values.reduce((count, provider) => count + provider.responses.length, 0),
         }

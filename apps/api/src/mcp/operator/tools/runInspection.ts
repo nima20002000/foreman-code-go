@@ -54,7 +54,7 @@ export function registerRunInspectionTools(server: McpServer, context: OperatorR
     inputSchema: RunExecutionsListInputSchema, outputSchema: RunExecutionsPageSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.executions, () => reads.executions(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.execution)) server.registerTool(RUN_INSPECTION_TOOLS.execution, {
-    description: 'Read one exact V3 execution and accepted input (maximum 4 MiB), verifying durable identity and canonical receipts. Accepted successful result is distinct from an unaccepted terminal report (maximum 64 KiB). Private authorized detail only; never raw native events, credentials or session paths.',
+    description: 'Read one exact V3 execution and accepted input (maximum 4 MiB), verifying durable identity and canonical receipts. Includes continuedFromExecutionId for a resumed same-node activation. Accepted successful result is distinct from an unaccepted terminal report (maximum 64 KiB). Private authorized detail only; never raw native events, credentials or session paths.',
     inputSchema: RunExecutionGetInputSchema, outputSchema: RunExecutionDetailSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.execution, () => reads.executionDetail(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.bindings)) server.registerTool(RUN_INSPECTION_TOOLS.bindings, {

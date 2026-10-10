@@ -28,6 +28,7 @@ export const RunActivityPublicStatusSchema = z.enum([
 ])
 export const RunActivityReferenceSchema = z.object({
   executionId: GraphIdSchema.optional(), activationId: GraphIdSchema.optional(),
+  continuedFromExecutionId: GraphIdSchema.optional(),
   jobExecutionId: GraphIdSchema.optional(), jobAttemptId: GraphIdSchema.optional(),
   jobOperationId: GraphIdSchema.optional(), nodeExecutionId: GraphIdSchema.optional(),
   requestId: GraphIdSchema.optional(), returnId: GraphIdSchema.optional(),

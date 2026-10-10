@@ -71,6 +71,7 @@ function summaryOf(stored: StoredInspectionExecution): RunExecutionSummary {
       ...(ref.occurrence ? { occurrence: ref.occurrence } : {}), acceptedResultAvailable: accepted })
   }
   return RunExecutionSummarySchema.parse({ ...repeatExecutionIdentity(stored.execution), state: stored.execution.state,
+    ...(execution.sessionContinuation ? { continuedFromExecutionId: execution.sessionContinuation.previousExecutionId } : {}),
     ...(stored.execution.result?.error ? { failure: stored.execution.result.error } : {}),
     createdAt: execution.createdAt, ...(execution.startedAt === undefined ? {} : { startedAt: execution.startedAt }),
     ...(execution.finishedAt === undefined ? {} : { finishedAt: execution.finishedAt }),

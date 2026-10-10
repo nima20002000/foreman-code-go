@@ -1,4 +1,4 @@
-import type { ContextSnapshot, SessionMode } from '@foreman-code/contracts'
+import type { ContextSnapshot, SessionMode, SessionPreferences, WorkflowSessionContinuation } from '@foreman-code/contracts'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
@@ -43,6 +43,15 @@ export interface RemoteExecutionHostPorts {
   settle(intent: DispatchIntent, history: NativeHistory, owner: { manager: NativeHarnessSessionManager; session: NativeSessionReference; request: HarnessExecutionRequest }): Promise<RemoteTerminalEvidence | null>
 }
 interface Resident { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; manager: NativeHarnessSessionManager; session: NativeSessionReference; controller: AbortController; turn?: Promise<void>; settlementTask?: Promise<void>; settlementHistory?: NativeHistory; workflowHistory?: NativeHistory; settlementEvidence?: RemoteTerminalEvidence }
+interface WorkflowPreparation {
+  intent: unknown
+  placement: unknown
+  request: unknown
+  sessionContinuation?: WorkflowSessionContinuation | undefined
+  executionPlacement?: NativeExecutionPlacement | undefined
+  applicationAccess?: RemoteApplicationAccess | undefined
+  sessionPreferences?: SessionPreferences | undefined
+}
 /** Worker-only authenticated extension handler. No DB, scheduler, HTTP server or production composition. */
 export class RemoteExecutionHost {
   private closing = false
@@ -251,7 +260,7 @@ export class RemoteExecutionHost {
       return await resolved.manager[method](controller.signal)
     } finally { controllers.delete(controller); if (!controllers.size) this.inspections.delete(intent.operationId) }
   }
-  prepare(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@foreman-code/contracts').SessionPreferences | undefined }) {
+  prepare(raw: WorkflowPreparation) {
     const intent = DispatchIntentSchema.parse(raw.intent)
     const task = this.track(() => this.prepareOwned(raw))
     const entries = this.pendingEntries.get(intent.operationId) ?? new Set<Promise<unknown>>()
@@ -269,7 +278,7 @@ export class RemoteExecutionHost {
     for (const controller of this.inspections.get(operationId) ?? []) controller.abort()
     await Promise.allSettled(this.pendingEntries.get(operationId) ?? [])
   }
-  private async prepareOwned(raw: { intent: unknown; placement: unknown; request: unknown; executionPlacement?: NativeExecutionPlacement | undefined; applicationAccess?: RemoteApplicationAccess | undefined; sessionPreferences?: import('@foreman-code/contracts').SessionPreferences | undefined }) {
+  private async prepareOwned(raw: WorkflowPreparation) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     const harness = executableHarness(request.configuration.harness.harness)
     const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
@@ -311,7 +320,27 @@ export class RemoteExecutionHost {
       this.allocatedManagers.set(intent.operationId, { manager: resolved.manager, context })
       resolved.beginStart?.()
       if (raw.sessionPreferences) await resolved.manager.configureSessionPreferences?.(raw.sessionPreferences)
-      const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`, ...(environment ? { environment } : {}) }, controller.signal)
+      if (raw.sessionContinuation) {
+        const continuation = raw.sessionContinuation
+        const previous = continuation.previousOperationId
+          ? await this.ports.journal.status(continuation.previousOperationId) : undefined
+        if (previous?.status !== 'known' || previous.receipt.phase !== 'confirmed_terminal'
+          || !previous.receipt.terminal || !previous.receipt.native
+          || previous.receipt.intent.executionId !== continuation.previousExecutionId
+          || previous.receipt.intent.executionId === intent.executionId
+          || previous.receipt.intent.runId !== intent.runId || previous.receipt.intent.nodeId !== intent.nodeId
+          || previous.receipt.intent.bindingHash !== intent.bindingHash
+          || previous.receipt.native?.sessionId !== continuation.session.nativeSessionId
+          || continuation.session.harness !== harness) {
+          throw new Error('Session continuation requires the closed execution on the same host and placement.')
+        }
+      }
+      const session = await resolved.manager.createSession({ request, correlationId: `execution:${intent.executionId}`,
+        ...(raw.sessionContinuation ? { sessionContinuation: raw.sessionContinuation } : {}),
+        ...(environment ? { environment } : {}) }, controller.signal)
+      if (raw.sessionContinuation && !isDeepStrictEqual(session, raw.sessionContinuation.session)) {
+        throw new Error('Session continuation returned another native session.')
+      }
       resolved.markResident?.()
       const native = await this.ports.nativeEvidence(intent, session, { manager: resolved.manager, request, signal: controller.signal })
       if (native.sessionId !== session.nativeSessionId) throw new Error('Native session attestation mismatch')

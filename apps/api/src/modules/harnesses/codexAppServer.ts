@@ -534,6 +534,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   async createSession(source: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
+    if (isWorkflowStart(source) && source.sessionContinuation) {
+      return this.attachSession(source.sessionContinuation.session, { ...source, instructionsDelivered: true }, signal)
+    }
     return this.beginCreation(source, { signal })
   }
 
