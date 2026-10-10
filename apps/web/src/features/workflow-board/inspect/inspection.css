@@ -10,6 +10,7 @@
   min-height: 360px;
 }
 .pinned-run-flow { position: relative; flex: 1; min-height: 120px; }
+.pinned-run-flow .react-flow { background: var(--canvas-glow, none), var(--color-surface); }
 .pinned-work-limit-object { overflow: visible; pointer-events: none; }
 .pinned-work-limit-control { display: grid; justify-items: center; gap: 3px; pointer-events: auto; }
 .pinned-work-limit-pill { min-width: 44px; min-height: 32px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-strong); font: var(--type-control); cursor: pointer; }

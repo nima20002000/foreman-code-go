@@ -380,7 +380,7 @@
   width: 100%;
   height: auto !important;
   min-height: 0;
-  background: var(--graph-canvas);
+  background: var(--canvas-glow, none), var(--graph-canvas);
 }
 
 .workflow-graph-canvas .react-flow__controls {
