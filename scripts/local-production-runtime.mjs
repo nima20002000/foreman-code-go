@@ -6,6 +6,10 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { readProductEnvironment, resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 
+export function shouldOpenDashboardAfterInstall({ previousRelease, stdin, stdout }) {
+  return !previousRelease && stdin.isTTY === true && stdout.isTTY === true
+}
+
 export function desktopLaunchEnvironment(source) {
   const environment = { ...source }
   if (!readProductEnvironment(source, 'HEAVY_JOB_TOKEN')) return environment

@@ -8,8 +8,32 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { copyVerificationRuntime, desktopLaunchEnvironment, hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, renderEnvironment,
-  waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
+  shouldOpenDashboardAfterInstall, waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+
+test('an interactive first install opens the dashboard', () => {
+  assert.equal(shouldOpenDashboardAfterInstall({
+    previousRelease: undefined, stdin: { isTTY: true }, stdout: { isTTY: true },
+  }), true)
+})
+
+test('upgrades do not open the dashboard even from an interactive terminal', () => {
+  assert.equal(shouldOpenDashboardAfterInstall({
+    previousRelease: '/installed/release', stdin: { isTTY: true }, stdout: { isTTY: true },
+  }), false)
+})
+
+test('first installs do not open the dashboard when input or output is non-interactive', () => {
+  for (const isTTY of [false, undefined]) {
+    for (const [stdin, stdout] of [
+      [{ isTTY }, { isTTY: true }],
+      [{ isTTY: true }, { isTTY }],
+      [{ isTTY }, { isTTY }],
+    ]) {
+      assert.equal(shouldOpenDashboardAfterInstall({ previousRelease: undefined, stdin, stdout }), false)
+    }
+  }
+})
 
 test('desktop launch preserves the normal user environment without job ownership', () => {
   const source = { PATH: '/user/bin', HOME: '/user', TMPDIR: '/user/tmp' }

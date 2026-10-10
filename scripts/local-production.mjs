@@ -13,6 +13,7 @@ import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
+  shouldOpenDashboardAfterInstall,
 } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -201,6 +202,12 @@ async function install() {
   await access('/usr/bin/docker', constants.X_OK)
   await access('/usr/bin/google-chrome', constants.X_OK)
   await access('/usr/bin/ss', constants.X_OK)
+  let previousRelease
+  try {
+    previousRelease = await realpath(current)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
   await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
   await run('corepack', ['pnpm', 'build'])
   const environment = await configureEnvironment()
@@ -228,7 +235,11 @@ async function install() {
     }
     await run('/usr/bin/systemctl', ['--user', 'enable', units.database, units.api])
     await run('/usr/bin/systemctl', ['--user', 'start', units.api])
-    await openDashboard()
+    if (shouldOpenDashboardAfterInstall({ previousRelease, stdin: process.stdin, stdout: process.stdout })) {
+      await openDashboard()
+    } else {
+      await waitForReady()
+    }
     console.log(`Foreman Code installed: ${origin}/workspaces`)
     console.log(`API logs: ${state}/logs (and journalctl --user -u ${units.api})`)
   } finally {
