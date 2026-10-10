@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
-import { codexBinary, extractQualificationSource, prepareCiRuntime, reclaimInterruptedPreparation }
+import { CODEX_CAPTURE_MEMORY_BYTES, codexBinary, extractQualificationSource, prepareCiRuntime, reclaimInterruptedPreparation }
   from './ciRuntimePrepare.js'
 import { pruneCiImages } from './ciRuntimeImages.js'
 import { writeCiRuntimeCache } from './ciRuntimeCache.js'
@@ -332,7 +332,7 @@ describe('CI runtime preparation boundaries', () => {
       expect(args).toEqual(expect.arrayContaining(['run', '--network=none', '--read-only', '--cap-drop=all',
         '--security-opt=no-new-privileges', '--pids-limit=256',
         ...ciPreparationResourceArgs({ cpuCount: Math.min(2, ciPreparationLimits().cpuCount),
-          memoryBytes: Math.min(2 * 2 ** 30, ciPreparationLimits().memoryBytes) })]))
+          memoryBytes: Math.min(CODEX_CAPTURE_MEMORY_BYTES, ciPreparationLimits().memoryBytes) })]))
       expect(args.some(arg => arg.startsWith('--volume') || arg.startsWith('--mount'))).toBe(false)
       return { stdout: bytes, stderr: JSON.stringify({ version: 'codex-cli-fixture' }) }
     })

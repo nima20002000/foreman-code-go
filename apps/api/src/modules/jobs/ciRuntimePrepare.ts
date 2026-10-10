@@ -223,6 +223,8 @@ async function writeRuntimeReceipt(installer: string, kind: 'seed' | 'context', 
   return path
 }
 
+export const CODEX_CAPTURE_MEMORY_BYTES = 3 * 2 ** 30
+
 export async function codexBinary(image: string, output: string, env: NodeJS.ProcessEnv, signal?: AbortSignal) {
   signal?.throwIfAborted()
   // No host paths or credentials are mounted into the package/tool execution boundary.
@@ -251,13 +253,14 @@ export async function codexBinary(image: string, output: string, env: NodeJS.Pro
   const path = join(output, 'unit-codex')
   await rm(path, { force: true })
   const container = `foreman-ci-codex-${randomUUID()}`
-  // The copied store and its install live in the tmpfs, which counts against the container's memory: a fixed
-  // 2 GiB cap was killed by the kernel once the store grew. Use the preparation budget for both.
+  // The copied store and its install live in the tmpfs, which counts against the container's memory. With the
+  // 1 GiB Foreman Code store the capture peaks at 2.6 GiB (measured on Mana), so it gets 3 GiB, not 2.
   const limits = ciPreparationLimits()
-  const captureLimits = ciPreparationResourceArgs({ cpuCount: Math.min(2, limits.cpuCount), memoryBytes: limits.memoryBytes })
+  const captureMemoryBytes = Math.min(CODEX_CAPTURE_MEMORY_BYTES, limits.memoryBytes)
+  const captureLimits = ciPreparationResourceArgs({ cpuCount: Math.min(2, limits.cpuCount), memoryBytes: captureMemoryBytes })
   const child = spawn('podman', ['--remote=false', 'run', '--name', container, '--rm', '--pull=never', '--network=none', '--read-only',
     '--cap-drop=all', '--security-opt=no-new-privileges', ...captureLimits, '--pids-limit=256',
-    `--tmpfs=/tmp:rw,exec,nosuid,nodev,size=${limits.memoryBytes}`, '--entrypoint=node', image, '-e', script], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    `--tmpfs=/tmp:rw,exec,nosuid,nodev,size=${captureMemoryBytes}`, '--entrypoint=node', image, '-e', script], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   let diagnostics = ''
   child.stderr!.on('data', (chunk: Buffer) => { diagnostics = `${diagnostics}${chunk.toString('utf8')}`.slice(-65_536) })
   const tasks = [pipeline(child.stdout!, createWriteStream(path, { mode: 0o700, flags: 'wx' })),
