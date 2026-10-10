@@ -114,7 +114,7 @@ function ScopedWorkflowFilesButton({ workspaceId, workflowId, readOnly = false, 
         <FileGroup query={files.workflow} scope={files.workflowScope} files={files} label="workflow"
           emptyLabel={readOnly ? 'No files' : drop.isDragging ? 'Drop to add file' : 'Drop a file here'} onRemove={readOnly ? undefined : askRemove} />
       </section>
-      {(files.workspace.isPending || files.workspace.isError || visibleReferenceRows(files.workspace.data?.pages).length > 0) &&
+      {(files.workspace.isPending || files.workspace.isError || files.workspace.hasNextPage || visibleReferenceRows(files.workspace.data?.pages).length > 0) &&
         <section role="group" aria-label="Inherited workspace files" className="workflow-files-group workflow-files-inherited">
           <div className="workflow-files-heading"><h3>Workspace</h3>
             <span role="img" title="Inherited · read-only" aria-label="Inherited, read-only"><Icon name="lock" size={14} /></span>

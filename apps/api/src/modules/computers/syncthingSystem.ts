@@ -9,10 +9,10 @@ import { DomainError } from '../errors.js'
 
 export interface SyncthingPorts {
   prepare(): Promise<SyncIdentity>
-  available(): Promise<{ installed: boolean; running: boolean }>
-  rest(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<unknown>
+  available(signal?: AbortSignal): Promise<{ installed: boolean; running: boolean }>
+  rest(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown, signal?: AbortSignal): Promise<unknown>
   mkdir(path: string): Promise<void>
-  conflicts(path: string): Promise<string[]>
+  conflicts(path: string, signal?: AbortSignal): Promise<string[]>
 }
 const UNIT = 'foreman-syncthing.service'
 const API = 'http://127.0.0.1:8385'
@@ -34,21 +34,27 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
     if (!response.ok) throw failure(`Syncthing download failed (${response.status}).`)
     return Buffer.from(await response.arrayBuffer())
   }
-  const rest: SyncthingPorts['rest'] = async (method, path, body) => {
-    const config = await readFile(join(state, 'config.xml'), 'utf8')
+  const rest: SyncthingPorts['rest'] = async (method, path, body, signal) => {
+    signal?.throwIfAborted()
+    const config = await readFile(join(state, 'config.xml'), { encoding: 'utf8', ...(signal ? { signal } : {}) })
+    signal?.throwIfAborted()
     const key = /<apikey>([A-Za-z0-9]+)<\/apikey>/u.exec(config)?.[1]
     if (!key) throw failure('Syncthing API key is missing from its local configuration.')
-    const response = await fetch(`${API}${path}`, { method, signal: AbortSignal.timeout(15_000),
+    const timeout = AbortSignal.timeout(15_000)
+    const response = await fetch(`${API}${path}`, { method, signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       headers: { 'X-API-Key': key, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     if (!response.ok) throw failure(`Syncthing ${method} request failed (${response.status}).`)
     const text = await response.text()
     return text ? JSON.parse(text) as unknown : null
   }
-  const available: SyncthingPorts['available'] = async () => {
+  const available: SyncthingPorts['available'] = async signal => {
+    signal?.throwIfAborted()
     const installed = Boolean(await processPorts.find('syncthing'))
+    signal?.throwIfAborted()
+    const timeout = AbortSignal.timeout(10_000)
     const running = installed && (await processPorts.run('systemctl', ['--user', 'is-active', UNIT],
-      AbortSignal.timeout(10_000))).code === 0
+      signal ? AbortSignal.any([signal, timeout]) : timeout)).code === 0
     return { installed, running }
   }
   const install = async () => {
@@ -88,10 +94,12 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
   return {
     rest, available,
     mkdir: async path => { await mkdir(path, { recursive: true, mode: 0o700 }) },
-    conflicts: async path => {
+    conflicts: async (path, signal) => {
       const names: string[] = []
       const walk = async (directory: string, relative: string) => {
+        signal?.throwIfAborted()
         for (const entry of await readdir(directory, { withFileTypes: true })) {
+          signal?.throwIfAborted()
           if (names.length >= 100) return
           if (entry.name === '.stversions' || entry.name === '.stfolder') continue
           const name = relative ? `${relative}/${entry.name}` : entry.name

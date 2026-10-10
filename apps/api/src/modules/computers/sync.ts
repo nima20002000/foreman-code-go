@@ -125,8 +125,9 @@ export class ComputerSyncService {
       const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' }, bound))
       return state.folders.find(folder => folder.workspaceId === workspaceId)?.path ?? null
     } catch (error) {
+      if (bound.aborted) return null
       if (error instanceof DomainError && ['COMPUTER_OFFLINE', 'SYNC_UNAVAILABLE'].includes(error.code)) return null
-      if (error instanceof DeviceApplicationError && (error.retryable || bound.aborted)) return null
+      if (error instanceof DeviceApplicationError && error.retryable) return null
       throw error
     }
   }
@@ -146,8 +147,15 @@ export class ComputerSyncService {
       }
     }
     const hub = peers.find(peer => peer.target.hostRef.kind === 'main')
+    const missingIdentity = members.some(member => member.enabled
+      && !peers.some(peer => sameDeviceProvisioningTarget(peer.target, member.target)))
     for (const member of members) {
       const selected = peers.find(peer => sameDeviceProvisioningTarget(peer.target, member.target))
+      // Replacing an incomplete membership list would disconnect an enabled offline peer after restart.
+      if (member.enabled && (!selected || !hub
+        || (member.target.hostRef.kind === 'main' && missingIdentity))) {
+        continue
+      }
       // Keep known offline peers in Main's folder so reconnects can resume without a manual accept step.
       const known = [...this.identities.values()].filter(peer => members.some(value => value.enabled
         && sameDeviceProvisioningTarget(value.target, peer.target)))
@@ -174,7 +182,8 @@ export class ComputerSyncService {
   private async computer(target: DeviceProvisioningTarget, request: SyncComputerRequest,
     signal = AbortSignal.timeout(150_000)): Promise<unknown> {
     await this.assertTarget(this.pool, target)
-    if (target.hostRef.kind === 'main') return this.local.handle(request)
+    signal.throwIfAborted()
+    if (target.hostRef.kind === 'main') return this.local.handle(request, { signal })
     const endpoint = this.endpoint()
     if (!endpoint?.capabilities(target.hostRef.deviceId).some(value => value.namespace === COMPUTER_SYNC_NAMESPACE
       && value.mainCanRequest)) throw new DomainError('COMPUTER_OFFLINE', 'This computer is offline or needs an app update.', 409)

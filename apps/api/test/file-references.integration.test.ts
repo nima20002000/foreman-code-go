@@ -344,6 +344,54 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
     await rejected
     assert.equal((await repository.read(allocated.value.file.fileId, allocated.value.revision.revisionId))?.value.file.state, 'pending')
   })
+  it('keeps removed reference pages navigable through authenticated MCP to a persisted ready revision', async () => {
+    const workspaceId = `references-${randomUUID()}`
+    await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+      [workspaceId, JSON.stringify({ id: workspaceId, name: 'Paged references' })])
+    const scope: PermanentFileScope = { kind: 'workspace_reference', workspaceId }
+    const editor = await access.issue({ name: 'Paged reference editor', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600_000), grants: [
+        { actions: ['workspaces:read', 'workspaces:update'], scope: { workspaceIds: [workspaceId] } },
+      ] })
+    const viewer = await access.issue({ name: 'Paged reference reader', audience: 'operator',
+      expiresAt: new Date(Date.now() + 600_000), grants: [
+        { actions: ['workspaces:read'], scope: { workspaceIds: [workspaceId] } },
+      ] })
+    const addReference = async () => {
+      const added = await tool(editor.token, 'reference_file_add', { scope,
+        upload: { requestId: randomUUID(), ...metadata() }, contentBase64: text.toString('base64') })
+      assert.notEqual(added.result.isError, true)
+      return FileWithRevisionSchema.parse((decodeMcpToolResult(added.result) as { value: unknown }).value)
+    }
+    for (let index = 0; index < 25; index++) {
+      const row = await addReference()
+      const removed = await tool(editor.token, 'reference_file_remove', { scope,
+        fileId: row.file.fileId, revisionId: row.revision.revisionId, commandId: randomUUID() })
+      assert.notEqual(removed.result.isError, true)
+    }
+    const ready = await addReference()
+    const denied = await tool(foreign.token, 'reference_files_list', { scope, limit: 25 })
+    assert.equal(denied.result.isError, true)
+    assert.equal(errorCode(denied.result), 'ACCESS_DENIED')
+    const first = FilePageSchema.parse(decodeMcpToolResult(
+      (await tool(viewer.token, 'reference_files_list', { scope, limit: 25 })).result))
+    assert.equal(first.items.length, 25)
+    assert.ok(first.items.every(row => row.file.state === 'removed'))
+    assert.ok(first.pageInfo.nextCursor)
+    const second = FilePageSchema.parse(decodeMcpToolResult((await tool(viewer.token, 'reference_files_list',
+      { scope, limit: 25, cursor: first.pageInfo.nextCursor })).result))
+    assert.deepEqual(second.items, [ready])
+    const downloaded = await tool(viewer.token, 'reference_file_read', { scope,
+      fileId: ready.file.fileId, revisionId: ready.revision.revisionId })
+    const value = FileReferenceReadResultSchema.parse(decodeMcpToolResult(downloaded.result)).value
+    assert.equal(value.status, 'ready')
+    if (value.status !== 'ready') throw new Error('Ready reference required')
+    assert.deepEqual(Buffer.from(value.contentBase64, 'base64'), text)
+    const refreshed = new FileReferenceService(new PostgresFileRepository(database.pool),
+      new FileByteStorage(root, MAX_FILE_BYTES), new PostgresFileReferenceAuthorization(database.pool), commands)
+    assert.deepEqual(await refreshed.list(viewer.principal, scope, { limit: 25, cursor: first.pageInfo.nextCursor }), second)
+  })
+
   for (const kind of ['workspace_reference', 'workflow_reference'] as const) it(`MCP ${kind}: add/list/range read/remove/readback share HTTP persistence, retries and audit`, async () => {
     const scope = kind === 'workspace_reference' ? workspace : workflow
     const capabilities = await tool(owner.token, 'operator_get_capabilities', { detail: 'full' })
