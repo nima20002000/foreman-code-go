@@ -189,6 +189,7 @@ export async function qualifyVerificationRuntime(input: {
     } finally { await rm(ownerSentinel, { force: true }) }
     validateVerificationIsolationObservation({ observation, resources: fingerprint.resources,
       hostPidNamespace: await readlink('/proc/self/ns/pid'), hostNetworkNamespace: await readlink('/proc/self/ns/net'),
+      hostCgroupNamespace: await readlink('/proc/self/ns/cgroup'),
       ownerSentinelPaths: [ownerSentinel] })
     const environment = ['CI', 'FOREMAN_CODE_JOB_INPUT_MANIFEST', 'GRAPHQL_JOB_INPUT_MANIFEST',
       'FOREMAN_CODE_VERIFICATION_ENVIRONMENT', 'HOME', 'LANG',

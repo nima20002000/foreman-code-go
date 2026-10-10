@@ -1,4 +1,4 @@
-export type VerificationCapability = 'nativeCgroupDelegation' | 'dockerCompose' | 'installedWorkerHost'
+export type VerificationCapability = 'nativeCgroupDelegation' | 'testDatabaseStartup' | 'dockerCompose' | 'installedWorkerHost'
 
 export interface VerificationEnvironment {
   readonly schemaVersion: 1

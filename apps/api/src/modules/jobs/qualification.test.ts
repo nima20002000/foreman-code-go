@@ -17,7 +17,7 @@ import { CI_QUALIFICATION_SUITE, JobQualificationCandidateSchema, fingerprintQua
 import { backingFileConfigurationIdentity } from './qualification.js'
 import { runQualificationCommand, type QualificationNativeOwner } from './qualification.js'
 import { validateVerificationIsolationObservation } from './qualification.js'
-import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
+import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv, type PodmanIsolationInput } from './executorPodman.js'
 import { requireVerificationRuntime } from './executor.js'
 import { VerificationJobExecutionSchema } from '@foreman-code/contracts/job-verification'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
@@ -59,7 +59,7 @@ it('reports measured isolation values without copying arbitrary observation fiel
   const f = verificationRuntimeFixture()
   const input = { observation: { interfaces: [], privateToken: 'fixture-private-value' },
     resources: f.measurement.fingerprint.resources, hostPidNamespace: 'pid:[1]',
-    hostNetworkNamespace: 'net:[1]', ownerSentinelPaths: ['/owner-sentinel'] }
+    hostNetworkNamespace: 'net:[1]', hostCgroupNamespace: 'cgroup:[1]', ownerSentinelPaths: ['/owner-sentinel'] }
   try {
     validateVerificationIsolationObservation(input)
     expect.fail('Invalid observation was accepted')
@@ -160,7 +160,8 @@ describe('offline verification launch validation with structured physical observ
     const { resources } = verificationFixture()
     const ownerSentinelPaths = ['/owner/home/qualification-sentinel']
     const observation = { schemaVersion: 1, node: 'v22.23.3', pidNamespace: 'pid:[2]', networkNamespace: 'net:[2]',
-      verificationEnvironment: 'isolated-job-v1',
+      verificationEnvironment: 'isolated-job-v1', cgroupNamespace: 'cgroup:[2]', nativeCgroupDelegation: true,
+      cgroupLimitWriteErrors: ['EACCES', 'EACCES', 'EACCES', 'EACCES'],
       interfaces: ['lo'], memoryMax: String(resources.limits.memoryBytes), swapMax: '0',
       pidsMax: String(resources.limits.pidsLimit), cpuRatio: resources.limits.cpuLimit,
       capabilities: '0000000000000000', noNewPrivileges: '1', controlExecution: 'EACCES', scratchExecution: 0,
@@ -172,10 +173,16 @@ describe('offline verification launch validation with structured physical observ
         '1 0 0:1 / /tmp rw,nosuid,nodev,noexec - tmpfs tmpfs rw',
         '2 0 0:2 / /dev/shm rw,nosuid,nodev,noexec - tmpfs tmpfs rw',
         '3 0 0:3 / /job-scratch rw,nosuid,nodev - ext4 /dev/loop0 rw',
+        '4 0 0:4 / /sys/fs/cgroup rw,nosuid,nodev,noexec - cgroup2 cgroup rw',
       ].join('\n') }
-    const input = { observation, resources, ownerSentinelPaths, hostPidNamespace: 'pid:[1]', hostNetworkNamespace: 'net:[1]' }
+    const input = { observation, resources, ownerSentinelPaths, hostPidNamespace: 'pid:[1]', hostNetworkNamespace: 'net:[1]',
+      hostCgroupNamespace: 'cgroup:[1]' }
     expect(() => validateVerificationIsolationObservation(input)).not.toThrow()
     for (const change of [{ verificationEnvironment: undefined }, { verificationEnvironment: 'unknown' },
+      { cgroupNamespace: 'cgroup:[1]' }, { nativeCgroupDelegation: false },
+      { cgroupLimitWriteErrors: [null, 'EACCES', 'EACCES', 'EACCES'] },
+      { mountInfo: observation.mountInfo.replace('/sys/fs/cgroup rw,', '/sys/fs/cgroup ro,') },
+      { mountInfo: observation.mountInfo + '\n5 0 0:5 / /host-cgroup rw - cgroup2 cgroup rw' },
       { pidNamespace: 'pid:[1]' }, { interfaces: ['lo', 'eth0'] }, { controlExecution: 0 },
       { shmCapacityBytes: resources.shmBytes + 1 }, { ownerSentinels: [{ path: ownerSentinelPaths[0], result: 'accessible' }] },
       { mountInfo: observation.mountInfo.replace('rw,nosuid,nodev - ext4', 'rw,nodev - ext4') }]) {
@@ -219,6 +226,13 @@ describe('offline verification launch validation with structured physical observ
     const argv = podmanIsolationCreateArgv(input)
     expect(argv).toContain('--network=none')
     expect(argv).toContain('--ipc=private')
+    expect(argv).toContain('--cgroupns=private')
+    expect(argv).toContain('--systemd=always')
+    expect(argv).toContain('--cap-drop=ALL')
+    expect(argv).toContain('--security-opt=no-new-privileges')
+    const ordinary: PodmanIsolationInput = { ...input }
+    delete ordinary.verification
+    expect(podmanIsolationCreateArgv(ordinary)).not.toContain('--systemd=always')
     expect(argv).toContain(`/tmp:rw,nosuid,nodev,noexec,size=${resources.controlTempBytes}`)
     expect(argv.slice(argv.indexOf('--shm-size'), argv.indexOf('--shm-size') + 2)).toEqual(['--shm-size', String(resources.shmBytes)])
     expect(argv).toContain(`/dev/shm:rw,nosuid,nodev,noexec,size=${resources.shmBytes}`)

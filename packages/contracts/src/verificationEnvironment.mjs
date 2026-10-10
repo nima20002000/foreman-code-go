@@ -1,8 +1,9 @@
-/** The isolated Job runtime supplies PostgreSQL, but no nested native or container manager. */
+/** The isolated Job runtime supplies delegated child cgroups and private PostgreSQL. */
 export const ISOLATED_VERIFICATION_ENVIRONMENT = Object.freeze({
   schemaVersion: 1,
   runtime: 'isolated-job',
-  capabilities: Object.freeze({ nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false }),
+  capabilities: Object.freeze({ nativeCgroupDelegation: true, testDatabaseStartup: true,
+    dockerCompose: false, installedWorkerHost: false }),
   postgres: 'job-private',
   git: 'mounted-readonly',
 })

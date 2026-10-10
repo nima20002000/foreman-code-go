@@ -15,29 +15,33 @@ byte/inode quota denial.
 
 The container launcher reports `FOREMAN_CODE_VERIFICATION_ENVIRONMENT=isolated-job-v1`.
 The shared `verificationEnvironment` contract describes this runtime as providing
-Job-private PostgreSQL and separately mounted read-only Git metadata. It does
-**not** provide delegated child cgroups, Docker Compose, or an installed Worker
-host (`installedWorkerHost=false`). The Debian Job image is not an approved
-Worker packaging target, and its ephemeral root does not satisfy Worker storage
-persistence policy. Outer Job containment
-does not imply that a nested native harness can create its own `cgroup.kill`
-boundary. No host Docker socket, privileges, or writable host cgroup mount is
-provided. The smoke controller reads the fixed Git mount for checkout identity
-and builds; application processes retain their isolated environment.
+Job-private PostgreSQL, delegated child cgroups and separately mounted read-only
+Git metadata. Verification containers use Podman's systemd mode with a private
+cgroup namespace. Qualification enters a child cgroup, kills a detached descendant
+through `cgroup.kill`, checks its empty population, and verifies that the workload
+cannot write the outer Job's memory, swap, PID or CPU limits. It rejects a shared
+cgroup namespace, read-only delegation or extra cgroup mounts. Container capabilities
+remain dropped and no-new-privileges remains enabled.
 
-The unit verification runner also reads this contract. Recovery-owned native
-outcome, launch abandonment, process runtime, recovery, idle recovery,
-qualification lifecycle and Codex protocol test files require
-`nativeCgroupDelegation`. Their required inventory is retained; unavailable files
-are recorded with the environment and missing capability in the portion report
-and logs archive, without fabricated test cases or skipped results. Unit execution
-returns nonzero and qualification remains incomplete. Other subprocess and mocked
-guardian tests continue to run. Full unit coverage requires a delegated host.
+The image has no Docker Compose or installed Worker host
+(`installedWorkerHost=false`). The Debian Job image is not an approved Worker
+packaging target, and its ephemeral root does not satisfy Worker storage persistence
+policy. The smoke controller reads the fixed Git mount for checkout identity and
+builds; application processes retain their isolated environment.
+
+The unit verification runner reads the same contract. Recovery-owned native outcome,
+launch abandonment, process runtime, recovery, idle recovery, qualification lifecycle
+and Codex protocol files run through the delegated Job subtree. Their required
+inventory and completeness checks remain enforced.
 
 The integration runner reads this contract before scheduling tests. Native
 local-human isolation and Operator file-delivery/management suites require
-`nativeCgroupDelegation`; the shared Compose database-startup test requires
-`dockerCompose`. The computer workflow-save regression, remote production review,
+`nativeCgroupDelegation`; the database-startup test requires `testDatabaseStartup`.
+Inside a Job, `scripts/test-db.mjs up` verifies the private server's data directory
+and both disposable ownership markers, then reuses it without restarting it.
+Repeated startup from a copied checkout preserves active sessions and rows.
+The runtime owns shutdown; checkout-level `stop` and `down` are refused. On the host,
+startup continues to use the ownership-checked Compose server. The computer workflow-save regression, remote production review,
 Worker chat-profile qualification and Worker profile requalification suites require
 `installedWorkerHost`: a host matching an approved Worker packaging target's OS,
 release, architecture, libc and Node version, with persistent root, home and

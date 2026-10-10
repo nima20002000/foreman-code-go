@@ -289,7 +289,9 @@ export async function reportedCommand(command, { cwd, env, key, directory, logBy
   return receipt.code
 }
 
-export async function runVerificationCommand(command, { root, cwd, env, script }) {
+export async function runVerificationCommand(command, {
+  root, cwd, env, script, environmentCapabilities = integrationEnvironmentCapabilities,
+}) {
   const reportDirectory = privateDirectory(env.FOREMAN_CODE_VERIFICATION_REPORT_DIR)
   const directory = env.FOREMAN_CODE_VERIFICATION_COMMAND_KEY
     ? privateDirectory(join(reportDirectory, `nested-${randomUUID()}`)) : reportDirectory
@@ -311,7 +313,7 @@ export async function runVerificationCommand(command, { root, cwd, env, script }
     const files = JSON.parse(readReport(inventory, Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES)))
       .map((entry) => repositoryFile(root, entry.file))
     writeReport(inventory, files, Number(env.FOREMAN_CODE_VERIFICATION_REPORT_BYTES))
-    const environment = await integrationEnvironmentCapabilities(env)
+    const environment = await environmentCapabilities(env)
     const partition = partitionUnitCapabilities(files, environment)
     unavailable = partition.unavailable
     writeReport(portionPath(directory, key, 'capabilities.json'), { environment, unavailable },

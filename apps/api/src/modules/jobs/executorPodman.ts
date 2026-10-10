@@ -89,6 +89,8 @@ export function podmanIsolationCreateArgv(input: PodmanIsolationInput): string[]
     '--image-volume=ignore', '--http-proxy=false', '--network=none', '--stop-signal=SIGTERM',
     ...Object.entries(input.labels).flatMap(([key, value]) => ['--label', `${key}=${value}`]),
     '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pid=private', '--ipc=private', '--cgroupns=private', '--userns=keep-id',
+    // Podman's confined systemd mode delegates only the private container cgroup.
+    ...(input.verification ? ['--systemd=always'] : []),
     '--pids-limit', String(input.profile.pidsLimit), '--memory', String(input.profile.memoryBytes),
     '--cpus', String(input.profile.cpuLimit), '--memory-swap', String(input.profile.memoryBytes),
     '--log-driver=k8s-file', '--log-opt', `max-size=${Math.floor(input.spoolBytes / 2)}`,

@@ -21,7 +21,7 @@ test('the installed Job environment reports its unsupported host capabilities wi
   const environment = { FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1', PATH: '/no-tools' }
   assert.deepEqual(await integrationEnvironmentCapabilities(environment), {
     schemaVersion: 1, runtime: 'isolated-job',
-    capabilities: { nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false },
+    capabilities: { nativeCgroupDelegation: true, testDatabaseStartup: true, dockerCompose: false, installedWorkerHost: false },
     postgres: 'job-private', git: 'mounted-readonly',
   })
   assert.equal(readVerificationEnvironment({}), null)
@@ -30,6 +30,18 @@ test('the installed Job environment reports its unsupported host capabilities wi
   await assert.rejects(integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'unknown' }), /Unknown/)
   await assert.rejects(integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ROOT: '/workspace' }), /missing/)
 })
+
+test('native and database startup suites run in the private Job without Docker', async () => {
+  const files = ['apps/api/test/local-human-native.integration.test.ts',
+    'apps/api/test/operator-file-delivery.integration.test.ts',
+    'apps/api/test/operator-management-file-authority.integration.test.ts',
+    'apps/api/test/test-database-startup.integration.test.ts'];
+  const environment = await integrationEnvironmentCapabilities({
+    FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1', PATH: '/no-tools',
+  });
+  assert.equal(environment.capabilities.dockerCompose, false);
+  assert.deepEqual(partitionIntegrationCapabilities(files, environment), { runnable: files, unavailable: [] });
+});
 
 test('installed Worker capability requires an approved matching target and persistent root, home and state', () => {
   const target = { os: 'ubuntu', osRelease: '26.04', arch: 'x64', libc: 'glibc-2.43', node: 'v22.23.2' }
@@ -52,7 +64,7 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/local-human-native.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/operator-file-delivery.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/operator-management-file-authority.integration.test.ts', 'nativeCgroupDelegation'],
-    ['apps/api/test/test-database-startup.integration.test.ts', 'dockerCompose'],
+    ['apps/api/test/test-database-startup.integration.test.ts', 'testDatabaseStartup'],
     ['apps/api/test/computer-workflow-save.regression.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/remote-review-production.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', 'installedWorkerHost'],
@@ -60,7 +72,7 @@ test('each affected integration file runs only when its required capability is p
   ]
   for (const [file, capability] of requirements) {
     const environment = { schemaVersion: 1, runtime: 'host',
-      capabilities: { nativeCgroupDelegation: true, dockerCompose: true, installedWorkerHost: true } }
+      capabilities: { nativeCgroupDelegation: true, testDatabaseStartup: true, dockerCompose: true, installedWorkerHost: true } }
     assert.deepEqual(partitionIntegrationCapabilities([file], environment), { runnable: [file], unavailable: [] })
     environment.capabilities[capability] = false
     const { runnable, unavailable } = partitionIntegrationCapabilities([file], environment)
@@ -77,10 +89,12 @@ test('unsupported integration files remain required and prevent a complete or pa
   const database = 'apps/api/test/test-database-startup.integration.test.ts'
   const ordinary = 'apps/api/test/operator-mcp.integration.test.ts'
   const selected = [native, database, ordinary]
-  const environment = await integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1' })
+  const installed = await integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1' })
+  const environment = { ...installed, capabilities: { ...installed.capabilities,
+    nativeCgroupDelegation: false, testDatabaseStartup: false } }
   const { runnable, unavailable } = partitionIntegrationCapabilities(selected, environment)
   assert.deepEqual(runnable, [ordinary])
-  assert.deepEqual(unavailable.map(file => file.requiredCapabilities), [['nativeCgroupDelegation'], ['dockerCompose']])
+  assert.deepEqual(unavailable.map(file => file.requiredCapabilities), [['nativeCgroupDelegation'], ['testDatabaseStartup']])
   const counts = { total: 1, passed: 1, failed: 0, skipped: 0 }
   const passed = { file: ordinary, code: 0, complete: true, report: { totals: counts } }
   const report = integrationReport(selected, [...unavailable, passed], [], {
@@ -97,7 +111,7 @@ test('unsupported integration files remain required and prevent a complete or pa
   })))
   assert.deepEqual(report.environment, environment)
   assert.deepEqual(partitionIntegrationCapabilities(selected, {
-    capabilities: { nativeCgroupDelegation: true, dockerCompose: true, installedWorkerHost: true },
+    capabilities: { nativeCgroupDelegation: true, testDatabaseStartup: true, dockerCompose: true, installedWorkerHost: true },
   }), { runnable: selected, unavailable: [] })
 })
 

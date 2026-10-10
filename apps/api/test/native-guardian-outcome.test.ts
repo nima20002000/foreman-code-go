@@ -29,6 +29,21 @@ describe('exact native outcome through guardian cleanup', () => {
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 
+  it('keeps the guarded native child in a subtree of the caller cgroup', async () => {
+    const f = fixture()
+    try {
+      const parent = /^0::(\/[^\n]*)$/m.exec(readFileSync('/proc/self/cgroup', 'utf8'))?.[1]
+      assert.ok(parent)
+      const result = await runCommand(process.execPath, ['-e',
+        "console.log(require('node:fs').readFileSync('/proc/self/cgroup', 'utf8').trim())"],
+        f.root, undefined, undefined, { recovery: f.recovery })
+      assert.equal(result.exitCode, 0)
+      const child = /^0::(\/[^\n]*)$/m.exec(result.stdout.trim())?.[1]
+      assert.ok(child?.startsWith(`${parent.replace(/\/$/, '')}/`))
+      assert.equal(await f.registry.closeOwner(f.owner), true)
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+
   it('exposes the native outcome to owned stdio providers while preserving wrapper cleanup facts', async () => {
     const f = fixture()
     const owned = spawnOwnedStdioProcess({ binary: process.execPath, args: ['-e', 'process.exit(0)'],

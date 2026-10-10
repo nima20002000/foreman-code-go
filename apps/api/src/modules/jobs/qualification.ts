@@ -639,6 +639,7 @@ export function validateVerificationIsolationObservation(input: {
   resources: JobResourceRequest
   hostPidNamespace: string
   hostNetworkNamespace: string
+  hostCgroupNamespace: string
   ownerSentinelPaths: readonly string[]
 }): void {
   const resources = JobResourceRequestSchema.parse(input.resources)
@@ -655,6 +656,11 @@ export function validateVerificationIsolationObservation(input: {
     || observed.pidNamespace === input.hostPidNamespace || observed.networkNamespace === input.hostNetworkNamespace
     || typeof observed.pidNamespace !== 'string' || !/^pid:\[\d+\]$/.test(observed.pidNamespace)
     || typeof observed.networkNamespace !== 'string' || !/^net:\[\d+\]$/.test(observed.networkNamespace)
+    || observed.cgroupNamespace === input.hostCgroupNamespace
+    || typeof observed.cgroupNamespace !== 'string' || !/^cgroup:\[\d+\]$/.test(observed.cgroupNamespace)
+    || observed.nativeCgroupDelegation !== true || !Array.isArray(observed.cgroupLimitWriteErrors)
+    || observed.cgroupLimitWriteErrors.length !== 4
+    || observed.cgroupLimitWriteErrors.some(error => !['EACCES', 'EPERM', 'EROFS'].includes(error))
     || JSON.stringify(observed.interfaces) !== '["lo"]' || observed.memoryMax !== String(resources.limits.memoryBytes)
     || observed.swapMax !== '0' || observed.pidsMax !== String(resources.limits.pidsLimit)
     || observed.cpuRatio !== resources.limits.cpuLimit || observed.capabilities !== '0000000000000000'
@@ -673,6 +679,12 @@ export function validateVerificationIsolationObservation(input: {
   }
   if (typeof observed.mountInfo !== 'string') denied('mount information missing')
   const mounts = (observed.mountInfo as string).split('\n').map(line => line.split(' '))
+  const cgroups = mounts.filter(columns => columns[columns.indexOf('-') + 1] === 'cgroup2')
+  if (cgroups.length !== 1 || cgroups[0]![4] !== '/sys/fs/cgroup') denied('private cgroup mount missing')
+  const cgroupOptions = new Set(cgroups[0]![5]?.split(','))
+  if (!['rw', 'nosuid', 'nodev', 'noexec'].every(option => cgroupOptions.has(option))) {
+    denied('private cgroup delegation unavailable')
+  }
   for (const path of ['/tmp', '/dev/shm', '/job-scratch']) {
     const matching = mounts.filter(columns => columns[4] === path)
     if (matching.length !== 1) denied(`mount count ${path}: ${matching.length}`)

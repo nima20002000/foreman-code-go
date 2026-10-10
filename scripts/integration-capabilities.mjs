@@ -11,7 +11,7 @@ const requirements = new Map([
   ['apps/api/test/local-human-native.integration.test.ts', ['nativeCgroupDelegation']],
   ['apps/api/test/operator-file-delivery.integration.test.ts', ['nativeCgroupDelegation']],
   ['apps/api/test/operator-management-file-authority.integration.test.ts', ['nativeCgroupDelegation']],
-  ['apps/api/test/test-database-startup.integration.test.ts', ['dockerCompose']],
+  ['apps/api/test/test-database-startup.integration.test.ts', ['testDatabaseStartup']],
   ['apps/api/test/computer-workflow-save.regression.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/remote-review-production.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', ['installedWorkerHost']],
@@ -94,7 +94,7 @@ export async function integrationEnvironmentCapabilities(environment = process.e
     env: environment, encoding: 'utf8', timeout: 5000, maxBuffer: 65536,
   }).status === 0
   return { schemaVersion: 1, runtime: 'host', capabilities: {
-    nativeCgroupDelegation: nativeCgroupDelegation(), dockerCompose: compose,
+    nativeCgroupDelegation: nativeCgroupDelegation(), dockerCompose: compose, testDatabaseStartup: compose,
     installedWorkerHost: await installedWorkerHost(environment),
   } }
 }

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
-import { access, mkdir, readFile, readlink, statfs, writeFile, unlink } from 'node:fs/promises';
+import { access, mkdir, readFile, readlink, rmdir, statfs, writeFile, unlink } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { prepareVerificationPnpm, assertEffectivePackagePolicy, assertEffectiveVerificationStore } from './verification-policy.mjs';
@@ -30,6 +30,48 @@ export function imageToolVersion(kind, output) {
   return version;
 }
 
+/** Exercise the same child-cgroup entry and forced descendant cleanup used by native guardians. */
+export async function probeNativeCgroupDelegation() {
+  const root = '/sys/fs/cgroup';
+  const entry = (await readFile('/proc/self/cgroup', 'utf8')).trim();
+  if (entry !== '0::/' || (await statfs(root)).type !== 0x63677270) {
+    throw new Error('Verification requires its private cgroup v2 root.');
+  }
+  const path = `${root}/foreman-verification-${randomUUID()}`;
+  await mkdir(path);
+  const waitForEmpty = async () => {
+    for (let attempt = 0; attempt < 500; attempt++) {
+      if (/^populated 0$/m.test(await readFile(`${path}/cgroup.events`, 'utf8'))) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error('Verification child cgroup cleanup did not finish.');
+  };
+  try {
+    const child = spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const { spawn } = require('node:child_process');
+      fs.writeFileSync(process.argv[1] + '/cgroup.procs', String(process.pid));
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],
+        { detached: true, stdio: 'ignore' });
+      console.log(child.pid);
+      child.unref();
+    `, path], { encoding: 'utf8', timeout: 5000, maxBuffer: 65536 });
+    if (child.error || child.status !== 0 || !/^\d+\s*$/.test(child.stdout)) {
+      throw new Error('Verification could not launch a delegated cgroup descendant.', { cause: child.error });
+    }
+    if (!/^populated 1$/m.test(await readFile(`${path}/cgroup.events`, 'utf8'))) {
+      throw new Error('Verification delegated descendant did not remain contained.');
+    }
+    await writeFile(`${path}/cgroup.kill`, '1');
+    await waitForEmpty();
+    return true;
+  } finally {
+    await writeFile(`${path}/cgroup.kill`, '1');
+    await waitForEmpty();
+    await rmdir(path);
+  }
+}
+
 /** Runs inside the admitted verification container. It reports observations, never a qualification flag. */
 export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [] }) {
   if (!Array.isArray(ownerSentinelPaths) || !ownerSentinelPaths.length
@@ -54,6 +96,14 @@ export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [
     ownerSentinels.push({ path, result });
   }
   const cpu = (await readFile('/sys/fs/cgroup/cpu.max', 'utf8')).trim().split(' ').map(Number);
+  const nativeCgroupDelegation = await probeNativeCgroupDelegation();
+  const cgroupLimitWriteErrors = [];
+  for (const name of ['memory.max', 'memory.swap.max', 'pids.max', 'cpu.max']) {
+    const path = `/sys/fs/cgroup/${name}`;
+    const value = await readFile(path, 'utf8');
+    try { await writeFile(path, value); cgroupLimitWriteErrors.push(null); }
+    catch (error) { cgroupLimitWriteErrors.push(error.code); }
+  }
   const version = (binary, args = ['--version']) => execFileSync(binary, args,
     { env, encoding: 'utf8', timeout: 30000, maxBuffer: 65536 }).trim();
   const toolchain = { node: process.version, corepack: version(process.execPath, ['/usr/local/lib/node_modules/corepack/dist/corepack.js', '--version']),
@@ -87,6 +137,7 @@ export async function observeVerificationRuntime({ ownerSentinelPaths, tools = [
     gitWriteErrors: gitWriteErrors.join(','), schedulerWrite, detachedChildPid: descendant.pid,
     environment: Object.keys(process.env).sort(),
     pidNamespace: await readlink('/proc/self/ns/pid'), networkNamespace: await readlink('/proc/self/ns/net'),
+    cgroupNamespace: await readlink('/proc/self/ns/cgroup'), nativeCgroupDelegation, cgroupLimitWriteErrors,
     interfaces: Object.keys(networkInterfaces()).sort(),
     memoryMax: (await readFile('/sys/fs/cgroup/memory.max', 'utf8')).trim(),
     swapMax: (await readFile('/sys/fs/cgroup/memory.swap.max', 'utf8')).trim(),

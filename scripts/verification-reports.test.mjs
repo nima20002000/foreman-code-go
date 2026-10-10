@@ -352,17 +352,61 @@ for (const name of ['native-guardian-outcome', 'native-launch-abandonment', 'pr1
     const environment = await integrationEnvironmentCapabilities({
       FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
     })
-    const partition = partitionUnitCapabilities([file, 'apps/api/test/native-command-guardian-memory.test.ts'], environment)
+    const files = [file, 'apps/api/test/native-command-guardian-memory.test.ts']
+    assert.deepEqual(partitionUnitCapabilities(files, environment), { runnable: files, unavailable: [] })
+    const unavailableEnvironment = { ...environment,
+      capabilities: { ...environment.capabilities, nativeCgroupDelegation: false } }
+    const partition = partitionUnitCapabilities(files, unavailableEnvironment)
     assert.deepEqual(partition.runnable, ['apps/api/test/native-command-guardian-memory.test.ts'])
     assert.deepEqual(partition.unavailable.map(entry => entry.file), [file])
     assert.deepEqual(partition.unavailable[0].requiredCapabilities, ['nativeCgroupDelegation'])
     assert.equal(partition.unavailable[0].complete, false)
     assert.equal(partition.unavailable[0].code, null)
-    assert.deepEqual(partitionUnitCapabilities([file], {
-      ...environment, capabilities: { ...environment.capabilities, nativeCgroupDelegation: true },
-    }), { runnable: [file], unavailable: [] })
   })
 }
+
+test('unit runner executes guarded native coverage in the delegated Job and publishes complete totals', async () => {
+  const f = fixture()
+  try {
+    const key = 'apps/api:test'
+    const cwd = join(f.root, 'apps/api')
+    const bin = join(f.root, 'bin')
+    mkdirSync(cwd, { recursive: true })
+    mkdirSync(bin)
+    const files = ['apps/api/test/native-guardian-outcome.test.ts',
+      'apps/api/test/native-command-guardian-memory.test.ts']
+    writeFileSync(join(bin, 'vitest'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const args = process.argv.slice(2);
+const files = ${JSON.stringify(files.map(file => join(f.root, file)))};
+if (args[0] === 'list') {
+  fs.writeFileSync(args.find(arg => arg.startsWith('--json=')).slice(7), JSON.stringify(files.map(file => ({file}))));
+} else {
+  assert.equal(args.includes('--exclude'), false);
+  fs.writeFileSync(args.find(arg => arg.startsWith('--outputFile.json=')).slice(18), JSON.stringify({
+    success: true, numTotalTests: 2, numPassedTests: 2, numFailedTests: 0,
+    numPendingTests: 0, numTodoTests: 0,
+    numTotalTestSuites: 2, numPassedTestSuites: 2, numFailedTestSuites: 0, numPendingTestSuites: 0,
+    testResults: files.map(name => ({name, status: 'passed', startTime: 1, endTime: 2,
+      assertionResults: [{fullName: 'guarded child finishes', status: 'passed', duration: 1, failureMessages: []}]}))
+  }));
+}
+`, { mode: 0o755 })
+    const code = await runVerificationCommand(['vitest', 'run'], {
+      root: f.root, cwd, script: 'test', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+        FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
+        FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory,
+        FOREMAN_CODE_VERIFICATION_LOG_BYTES: '8192', FOREMAN_CODE_VERIFICATION_REPORT_BYTES: '1048576' },
+    })
+    assert.equal(code, 0)
+    const [portion] = collectPortions(f.directory, f.root,
+      [{ key, kind: 'vitest', files }], context().limits)
+    assert.equal(portion.complete, true)
+    assert.deepEqual(portion.unavailable, [])
+    assert.deepEqual(portion.totals, { total: 2, passed: 2, failed: 0, skipped: 0 })
+  } finally { f.close() }
+})
 
 test('explicit unavailable unit selection returns nonzero and retains incomplete diagnostics without cases', async () => {
   const f = fixture()
@@ -380,6 +424,10 @@ if (args[0] !== 'list') throw new Error('Unavailable native test must not launch
 fs.writeFileSync(args.find(arg => arg.startsWith('--json=')).slice(7), JSON.stringify([{file: ${JSON.stringify(join(f.root, file))}}]));
 `, { mode: 0o755 })
     const code = await runVerificationCommand(['vitest', 'run', 'test/native-guardian-outcome.test.ts'], {
+      environmentCapabilities: async env => {
+        const environment = await integrationEnvironmentCapabilities(env)
+        return { ...environment, capabilities: { ...environment.capabilities, nativeCgroupDelegation: false } }
+      },
       root: f.root, cwd, script: 'test', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
         FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
         FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory,
@@ -430,6 +478,10 @@ if (args[0] === 'list') {
 }
 `, { mode: 0o755 })
     const code = await runVerificationCommand(['vitest', 'run'], {
+      environmentCapabilities: async env => {
+        const environment = await integrationEnvironmentCapabilities(env)
+        return { ...environment, capabilities: { ...environment.capabilities, nativeCgroupDelegation: false } }
+      },
       root: f.root, cwd, script: 'test', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
         FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1',
         FOREMAN_CODE_VERIFICATION_REPORT_DIR: f.directory,
