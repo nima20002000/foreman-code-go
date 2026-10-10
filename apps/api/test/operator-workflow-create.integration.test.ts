@@ -22,7 +22,13 @@ function initialSave(graph: WorkflowDefinitionV3, configurations: Record<string,
   return { graph: definition, expectedAgentConfigurationVersionIds: configurations, expectedLocationRevision: 1 }
 }
 
-it.each(['single', 'repeat'] as const)('atomically creates a saved %s workflow and replays after later edits', async (form) => {
+it.each([
+  { form: 'single', description: 'Initial graph' },
+  { form: 'repeat', description: 'Initial graph' },
+  { form: 'single' },
+  { form: 'repeat' },
+] as const)('creates and replays a saved $form workflow (description: $description)', async (metadata) => {
+  const { form } = metadata
   const f = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), form) })
   const call = async (name: string, args: Record<string, unknown>) => {
     const reply = await f.client.callTool({ name, arguments: args })
@@ -32,7 +38,8 @@ it.each(['single', 'repeat'] as const)('atomically creates a saved %s workflow a
   try {
     const workspaceId = f.f.scope.workspaceId
     const input = CurrentWorkflowCreateInputSchema.parse({
-      workspaceId, commandId: randomUUID(), name: 'Saved at creation', description: 'Initial graph', defaultWorktree: null,
+      workspaceId, commandId: randomUUID(), name: 'Saved at creation', defaultWorktree: null,
+      ...('description' in metadata ? { description: metadata.description } : {}),
       initialSave: initialSave(f.f.version.definition, f.f.version.agentConfigurationVersionIds),
     })
     const catalog = await f.client.listTools()
@@ -58,6 +65,8 @@ it.each(['single', 'repeat'] as const)('atomically creates a saved %s workflow a
     expect(read.version.definition).toEqual(created.value.workflow)
     expect(read.version.definition.name).toBe(input.name)
     expect(read.version.definition.description).toBe(input.description)
+    if (!('description' in metadata)) expect(read.version.definition).not.toHaveProperty('description')
+    expect(read.version.definition).not.toHaveProperty('defaultWorktree')
     expect(read.version.agentConfigurationVersionIds).toEqual(input.initialSave!.expectedAgentConfigurationVersionIds)
     expect(read.version.definition.repeat).toEqual(input.initialSave!.graph.repeat)
     expect(read.version.definition).not.toHaveProperty('handoffs')
@@ -173,8 +182,10 @@ it('requires save grants for initial graphs while preserving metadata-only creat
       url: `/api/management/workspaces/${workspaceId}/workflows`,
       headers: { authorization: `Bearer ${f.writer.token}` }, payload: input,
     })
-    expect(http.statusCode).toBe(201)
+    expect(http.statusCode, http.body).toBe(201)
     const created = SavedManagedWorkflowCommandResultSchema.parse(http.json())
+    expect(created.value.workflow).not.toHaveProperty('description')
+    expect(created.value.workflow).not.toHaveProperty('defaultWorktree')
     const read = await f.client.callTool({ name: 'workflow_saved_get_v3', arguments: {
       workspaceId, workflowId: created.value.workflow.id,
     } })

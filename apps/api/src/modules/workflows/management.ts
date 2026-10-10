@@ -128,8 +128,10 @@ export class WorkflowManagementService {
           graph: {
             ...input.initialSave.graph,
             id: workflow.id, workspaceId: workflow.workspaceId, name: workflow.name,
-            description: workflow.description, defaultWorktree: workflow.defaultWorktree,
-            version: workflow.version, createdAt: workflow.createdAt, updatedAt: workflow.updatedAt,
+            ...(workflow.description === undefined ? {} : { description: workflow.description }),
+            ...(workflow.defaultWorktree === undefined ? {} : { defaultWorktree: workflow.defaultWorktree }),
+            ...(workflow.version === undefined ? {} : { version: workflow.version }),
+            createdAt: workflow.createdAt, updatedAt: workflow.updatedAt,
             approval: input.initialSave.graph.approval ?? workflow.approval,
           },
         })
