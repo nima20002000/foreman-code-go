@@ -56,6 +56,54 @@ async function settled(owner: ComputerMaintenance) {
 }
 
 describe('maintenance task lifecycle', () => {
+  it('closes admission and drains an accepted update with its original persisted task', async () => {
+    const fake = computer()
+    const install = deferred<void>()
+    fake.holdInstall(install.promise)
+    const owner = new ComputerMaintenance(fake.ports)
+    const commandId = randomUUID()
+    const accepted = await owner.start({ kind: 'update-harnesses', harnesses: ['codex'] }, commandId)
+    await expect.poll(() => fake.runs.some(run => run.args[0] === 'install')).toBe(true)
+    owner.stopAdmission()
+    let drained = false
+    const closing = owner.drain().then(() => { drained = true })
+    await expect(owner.start({ kind: 'update-harnesses', harnesses: ['claude'] }))
+      .rejects.toMatchObject({ code: 'COMPUTER_MAINTENANCE_CLOSING' })
+    expect(drained).toBe(false)
+    install.resolve()
+    await closing
+    const restarted = new ComputerMaintenance(fake.ports)
+    const readback = await restarted.status(signal())
+    expect(readback.tasks.find(task => task.id === accepted.id)).toMatchObject({ id: commandId, state: 'succeeded' })
+    expect(fake.runs.filter(run => run.args[0] === 'install')).toHaveLength(1)
+    expect(fake.runs.some(run => run.args[0] === 'update')).toBe(false)
+  })
+
+  it('does not admit host work when an upkeep status read finishes after shutdown starts', async () => {
+    const fake = computer()
+    const observation = deferred<null>()
+    let reading = false
+    fake.ports.disk = () => { reading = true; return observation.promise }
+    const local = new ComputerMaintenance(fake.ports)
+    const pool = { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) }
+    const fleet = new FleetMaintenanceService(pool as never, randomUUID(), () => undefined, {} as never, local, {
+      codexUserMcpServers: async () => ({}), claudeUserMcpServers: async () => ({}),
+      codexPlugins: async () => [], codexMarketplaces: async () => [],
+      claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
+    })
+    const upkeep = fleet.keepCurrent()
+    await expect.poll(() => reading).toBe(true)
+    fleet.stopAdmission()
+    let drained = false
+    const drain = fleet.drain().then(() => { drained = true })
+    expect(drained).toBe(false)
+    observation.resolve(null)
+    await Promise.all([upkeep, drain])
+    await fleet.keepCurrent()
+    await fleet.syncChangedSources()
+    expect(fake.runs.some(run => ['install', 'update'].includes(run.args[0]!))).toBe(false)
+    expect((await local.status(signal())).tasks).toEqual([])
+  })
   it('rejects duplicate harness selectors before admitting native work', async () => {
     const fake = computer()
     const owner = new ComputerMaintenance(fake.ports)

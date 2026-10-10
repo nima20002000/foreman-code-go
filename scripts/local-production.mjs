@@ -14,6 +14,7 @@ import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, readProductionIdentity, renderEnvironment, waitForProductionReady, withInstallationLock,
   shouldOpenDashboardAfterInstall,
+  productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, launchProduction, launchBrowser,
 } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -110,7 +111,7 @@ function service(template) {
 }
 
 async function installServices() {
-  const directory = join(home, '.config/systemd/user')
+  const directory = productionIntegrationPaths(home, process.env).units
   await publish(join(directory, units.database), service(`[Unit]
 Description=Foreman Code production PostgreSQL
 StartLimitIntervalSec=0
@@ -119,12 +120,12 @@ StartLimitIntervalSec=0
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=@HOME@/.config/graphql-production/production.env
-ExecStartPre=/bin/sh -c 'until /usr/bin/docker info >/dev/null 2>&1; do /usr/bin/sleep 2; done'
+ExecStartPre=/usr/bin/timeout 60 /bin/sh -c 'until /usr/bin/docker info >/dev/null 2>&1; do /usr/bin/sleep 2; done'
 ExecStart=/usr/bin/docker compose --project-name graphql-local-production --file @APP@/compose.production.yaml up --detach --wait --wait-timeout 90 postgres
 ExecStop=/usr/bin/docker compose --project-name graphql-local-production --file @APP@/compose.production.yaml stop --timeout 30 postgres
 Restart=on-failure
 RestartSec=5
-TimeoutStartSec=0
+TimeoutStartSec=160
 TimeoutStopSec=45
 UMask=0077
 
@@ -159,41 +160,41 @@ WantedBy=default.target
 `))
 }
 
-async function installDesktop() {
-  const icon = join(home, '.local/share/icons/hicolor/scalable/apps/graphql-production.svg')
-  await publish(icon, await readFile(join(source, 'apps/web/public/graphql.svg')), 0o644)
+async function installDesktop(firstInstall) {
+  const paths = productionIntegrationPaths(home, process.env)
+  const icon = paths.icon
   const launcher = join(app, 'graphql')
   await publish(launcher, `#!/bin/sh
-/usr/bin/systemctl --user start ${units.api} || exit 1
-exec '${current}/node' '${current}/scripts/local-production.mjs' open
+exec '${current}/node' '${current}/scripts/local-production.mjs' launch
 `, 0o700)
-  await publish(join(home, '.local/share/applications/graphql-production.desktop'), `[Desktop Entry]
+  await publishDesktopIntegration(paths, { firstInstall,
+    icon: await readFile(join(source, 'apps/web/public/graphql.svg')),
+    desktop: `[Desktop Entry]
 Type=Application
 Name=Foreman Code
 Comment=Local agent workspace
 Exec=${launcher}
 Icon=${icon}
 StartupWMClass=graphql-production
-Terminal=false
+Terminal=true
 Categories=Development;
-`, 0o644)
-  await publish(join(home, '.config/autostart/graphql-production.desktop'), `[Desktop Entry]
+`, autostart: `[Desktop Entry]
 Type=Application
 Name=Foreman Code
 Comment=Start the local dashboard after desktop login
 Exec=${launcher}
 Icon=${icon}
-Terminal=false
+Terminal=true
 X-GNOME-Autostart-enabled=true
-`, 0o644)
+` })
 }
 
-async function waitForReady() {
+async function waitForReady(timeoutMs = 90_000) {
   const environment = await readEnvironment(envFile)
   if (!environment) throw new Error('Production configuration is missing.')
   const release = await realpath(current)
   const expected = await readProductionIdentity(release, environment.DATABASE_URL)
-  await waitForProductionReady({ origin, expected })
+  await waitForProductionReady({ origin, expected, timeoutMs })
 }
 
 async function install() {
@@ -208,6 +209,7 @@ async function install() {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
   }
+  const firstInstall = !previousRelease && !(await readEnvironment(envFile))
   await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
   await run('corepack', ['pnpm', 'build'])
   const environment = await configureEnvironment()
@@ -216,7 +218,7 @@ async function install() {
     await copyFile(join(source, 'compose.production.yaml'), join(app, 'compose.production.yaml'))
     await run('/usr/bin/docker', ['volume', 'create', '--label', 'io.graphql.environment=production', 'graphql-production-postgres'])
     await installServices()
-    await installDesktop()
+    await installDesktop(firstInstall)
     await run('/usr/bin/systemctl', ['--user', 'daemon-reload'])
     await run('/usr/bin/systemctl', ['--user', 'start', units.database])
     await run('/usr/bin/systemctl', ['--user', 'stop', units.api])
@@ -233,42 +235,57 @@ async function install() {
     } finally {
       await rm(pending, { force: true })
     }
-    await run('/usr/bin/systemctl', ['--user', 'enable', units.database, units.api])
+    await enableProductionServices(run, [units.database, units.api], { firstInstall })
     await run('/usr/bin/systemctl', ['--user', 'start', units.api])
+    await waitForReady()
+    console.log(`Foreman Code backend installed: ${origin}/workspaces`)
     if (shouldOpenDashboardAfterInstall({ previousRelease, stdin: process.stdin, stdout: process.stdout })) {
-      await openDashboard()
+      await handoffDashboard()
     } else {
-      await waitForReady()
+      console.log('Open Foreman Code from the desktop launcher when ready.')
     }
-    console.log(`Foreman Code installed: ${origin}/workspaces`)
     console.log(`API logs: ${state}/logs (and journalctl --user -u ${units.api})`)
   } finally {
     await removeUninstalledRelease(release, current)
   }
 }
 
-async function openDashboard() {
-  await waitForReady()
-  // Chrome joins the owner's browser session; closing the launcher must not close their browser.
-  await new Promise((resolve, reject) => {
-    const child = spawn('/usr/bin/google-chrome', [`--app=${origin}/workspaces`, '--class=graphql-production'], {
-      detached: true, stdio: 'ignore', env: desktopLaunchEnvironment(process.env),
-    })
-    child.once('error', reject)
-    child.once('spawn', () => {
-      child.unref()
-      resolve()
-    })
+async function handoffDashboard() {
+  await launchBrowser('/usr/bin/google-chrome', [`--app=${origin}/workspaces`, '--class=graphql-production'], {
+    environment: desktopLaunchEnvironment(process.env),
+  })
+  console.log('Dashboard handed to Chrome.')
+}
+
+async function launchDesktop() {
+  console.log('Starting Foreman Code; waiting for the local backend…')
+  await launchProduction({
+    lockPath: join(config, 'install.lock'),
+    start: () => capture('/usr/bin/systemctl', ['--user', 'start', '--no-block', units.api], { timeout: 5000 }),
+    ready: waitForReady,
+    openDashboard: handoffDashboard,
   })
 }
 
 const command = process.argv[2]
 try {
-  if (command === 'install') await withInstallationLock(join(config, 'install.lock'), install)
+  if (command === 'install') {
+    productionIntegrationPaths(home, process.env)
+    await withInstallationLock(join(config, 'install.lock'), install)
+  }
   else if (command === 'health') await waitForReady()
-  else if (command === 'open') await openDashboard()
-  else throw new Error('Usage: node scripts/local-production.mjs install|health|open')
+  else if (command === 'open' || command === 'launch') await launchDesktop()
+  else throw new Error('Usage: node scripts/local-production.mjs install|health|open|launch')
 } catch (error) {
   console.error(`Local production setup failed: ${error.message}`)
+  if (command === 'open' || command === 'launch') {
+    try {
+      await capture('/usr/bin/notify-send', ['Foreman Code could not open',
+        'Open a terminal and run the Foreman Code launcher for details. Check journalctl --user -u graphql-operator-api.service.'],
+      { timeout: 5000 })
+    } catch {
+      console.error('Desktop notification unavailable; the launch error is shown in this terminal.')
+    }
+  }
   process.exitCode = 1
 }

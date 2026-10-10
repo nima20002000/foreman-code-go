@@ -42,7 +42,19 @@ must start at boot. Graphical-session autostart waits for
 the services and opens an app window in the owner's existing Chrome session. The
 application menu has a **Foreman Code** launcher, with the same SVG used for its desktop
 icon, browser favicon, web manifest, and the Companion launcher. Chrome remains
-owned by the user; closing its window does not stop the API.
+owned by the user; closing its window does not stop the API. Desktop activation waits
+for any installation to finish before starting the selected release. A terminal shows
+startup progress; launch retries service and database identity checks for up to 90
+seconds after acquiring the installation lock, then reports an actionable failure.
+Docker discovery is bounded to 60 seconds per service activation. Browser handoff
+checks immediate startup failure separately from backend readiness.
+
+User units, application entries, icons and autostart entries follow absolute
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` overrides, with the usual home directories
+as defaults. Relative overrides are rejected before installation writes anything.
+Existing integration files in earlier XDG locations are retained; keep the session's
+XDG configuration consistent when updating. Production data and `production.env`
+retain their existing locations.
 
 The dashboard opens with implicit local human access, without a browser account
 or login secret. The API attributes credential-free requests to their local
@@ -211,7 +223,10 @@ The API unit delegates its cgroup subtree to native guardians and restarts after
 both failure and unexpected clean shutdown. An explicit systemd stop stays stopped.
 
 To disable desktop autostart, remove
-`~/.config/autostart/graphql-production.desktop`. To stop and disable the backend,
+`${XDG_CONFIG_HOME:-$HOME/.config}/autostart/graphql-production.desktop` or set
+`Hidden=true` in that entry. Updates preserve deleted and edited autostart entries
+and service enablement choices; startup defaults are applied only to a fresh
+installation. To stop and disable the backend,
 use:
 
 ```sh

@@ -81,6 +81,8 @@ export function syncableServers(
 
 /** Main's view of every computer's maintenance, and the one place that starts maintenance across them. */
 export class FleetMaintenanceService {
+  private closing = false
+  private readonly backgroundTasks = new Set<Promise<void>>()
   private readonly cache = new Map<string, {
     at: number; pending: boolean; running?: boolean; value: Promise<MaintenanceStatus | null>
   }>()
@@ -186,7 +188,11 @@ export class FleetMaintenanceService {
   }
 
   /** Background upkeep: current harnesses everywhere, then Main's MCP servers and plugins on every paired computer. */
-  async keepCurrent(): Promise<void> {
+  keepCurrent(): Promise<void> {
+    return this.trackBackground(() => this.keepCurrentNow())
+  }
+
+  private async keepCurrentNow(): Promise<void> {
     const targets = await this.allTargets()
     const sync = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     await Promise.all(targets.map(async target => {
@@ -212,7 +218,11 @@ export class FleetMaintenanceService {
    * Runs every minute on Main, so installs and removals on Main reach the other computers within about a minute, and a
    * computer that was offline catches up when it is back.
    */
-  async syncChangedSources(): Promise<void> {
+  syncChangedSources(): Promise<void> {
+    return this.trackBackground(() => this.syncChangedSourcesNow())
+  }
+
+  private async syncChangedSourcesNow(): Promise<void> {
     const sources = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     const targets = (await this.allTargets()).filter(target => target.hostRef.kind !== 'main')
     await Promise.all(targets.map(async target => {
@@ -223,6 +233,23 @@ export class FleetMaintenanceService {
     }))
     const failures = sources.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
     if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
+  }
+
+  stopAdmission(): void {
+    this.closing = true
+    this.local.stopAdmission()
+  }
+
+  async drain(): Promise<void> {
+    await Promise.allSettled([...this.backgroundTasks])
+    await this.local.drain()
+  }
+
+  private trackBackground(action: () => Promise<void>): Promise<void> {
+    if (this.closing) return Promise.resolve()
+    const task = action().finally(() => this.backgroundTasks.delete(task))
+    this.backgroundTasks.add(task)
+    return task
   }
 
   private syncSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
@@ -345,6 +372,9 @@ export class FleetMaintenanceService {
 
   private async startOn(target: DeviceProvisioningTarget, task: MaintenanceTaskStart,
     commandId: string = randomUUID()): Promise<MaintenanceTask> {
+    if (this.closing) {
+      throw new DomainError('COMPUTER_MAINTENANCE_CLOSING', 'Computer maintenance is shutting down.', 503)
+    }
     if (target.hostRef.kind === 'main') {
       if (task.kind === 'update-worker') {
         throw new DomainError('COMPUTER_WORKER_UPDATE_UNSUPPORTED',

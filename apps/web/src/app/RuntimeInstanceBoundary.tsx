@@ -7,7 +7,7 @@ import './runtimeBoundary.css'
 /** Check installation ownership before document-scoped drafts or outbox can render. */
 export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
   const identity = useRuntimeIdentityQuery()
-  const current = identity.data ? `${identity.data.checkoutId}:${identity.data.installationId}` : undefined
+  const current = identity.data ? `installation:${identity.data.installationId}` : undefined
   const [accepted, setAccepted] = useState<string>()
   const [storageFailed, setStorageFailed] = useState(false)
   const reloading = useRef(false)

@@ -76,6 +76,7 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'Disabled servers, native tool allow/deny lists and stdio environment-name references cannot be copied by this sync path. '
       + 'Tasks run in the background; read their outcome with computers_maintenance_status. Equivalent requests share only the latest queued task; different requests of the same kind queue. '
       + 'Task status survives application restarts; unfinished tasks report interruption. Check every returned computer error; '
+      + 'Main shutdown refuses new maintenance tasks and drains accepted Main work before releasing runtime ownership. '
       + 'unavailable targets are not updated. Harness updates verify the selected runtime meets the published version observed at start; '
       + 'a newer stable release installed during the update also succeeds. '
       + 'Main and Workers select the installed Codex update and retain qualification checks. Requires global '
