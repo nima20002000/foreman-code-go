@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { HarnessMcpArgumentSchema, HarnessMcpEndpointSchema } from './management/harnessSettings.js'
+import { PluginMarketplaceSourceSchema } from './management/claudePlugins.js'
 import { WorkerUpdateStatusSchema } from './workerUpdate.js'
 export * from './workerUpdate.js'
 
@@ -11,6 +12,8 @@ export const COMPUTER_MAINTENANCE_VERSION = 2
 /** Harnesses kept installed and current on every computer: Codex and Claude. */
 export const MaintainedHarnessSchema = z.enum(['codex', 'claude'])
 export type MaintainedHarness = z.infer<typeof MaintainedHarnessSchema>
+const HarnessSelectionSchema = z.array(MaintainedHarnessSchema).min(1).max(2)
+  .refine(harnesses => new Set(harnesses).size === harnesses.length, 'Choose each harness once.')
 
 export const MaintenanceTaskKindSchema = z.enum([
   'update-harnesses', 'update-worker', 'update-system', 'restart', 'sync-mcp', 'sync-plugins',
@@ -28,11 +31,13 @@ export const SyncedMcpServerSchema = z.discriminatedUnion('transport', [
 ])
 export type SyncedMcpServer = z.infer<typeof SyncedMcpServerSchema>
 
-export const SyncedMarketplaceSchema = z.object({ name: z.string().regex(/^[^\s@]+$/u).max(100), source: z.string().min(1).max(500) }).strict()
+export const SyncedMarketplaceSchema = z.object({
+  name: z.string().regex(/^[^\s@]+$/u).max(100), source: PluginMarketplaceSourceSchema,
+}).strict()
 export type SyncedMarketplace = z.infer<typeof SyncedMarketplaceSchema>
 
 export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('update-harnesses'), harnesses: z.array(MaintainedHarnessSchema).min(1).max(2) }).strict(),
+  z.object({ kind: z.literal('update-harnesses'), harnesses: HarnessSelectionSchema }).strict(),
   z.object({ kind: z.literal('update-worker') }).strict(),
   z.object({ kind: z.literal('update-system') }).strict(),
   z.object({ kind: z.literal('restart') }).strict(),
@@ -126,12 +131,18 @@ export const ComputerMaintenanceListSchema = z.object({
   computers: z.array(z.object({ target: DeviceProvisioningTargetSchema, status: MaintenanceStatusSchema.nullable() }).strict()).max(101),
 }).strict()
 export type ComputerMaintenanceList = z.infer<typeof ComputerMaintenanceListSchema>
+export const ComputerMaintenanceListInputSchema = z.object({
+  refresh: z.boolean().optional(), target: DeviceProvisioningTargetSchema.optional(),
+}).strict()
+export const ComputerMaintenanceReadInputSchema = z.object({
+  target: DeviceProvisioningTargetSchema, refresh: z.boolean().optional(),
+}).strict()
 
 /** Start one maintenance task on the selected computers (all paired computers and Main when omitted). */
 export const ComputerMaintenanceStartInputSchema = z.object({
   commandId: z.uuid(),
   task: z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('update-harnesses'), harnesses: z.array(MaintainedHarnessSchema).min(1).max(2) }).strict(),
+    z.object({ kind: z.literal('update-harnesses'), harnesses: HarnessSelectionSchema }).strict(),
     z.object({ kind: z.literal('update-worker') }).strict(),
     z.object({ kind: z.literal('update-system') }).strict(),
     z.object({ kind: z.literal('restart') }).strict(),

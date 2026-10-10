@@ -28,7 +28,7 @@ describe('device setup guidance', () => {
 
   it.each([
     ['pending', 'needs-pairing', /Pairing needed\..*Pair this computer/],
-    ['paired', 'unverified', /Connection status unverified\..*cannot read remote-command consent/],
+    ['paired', 'unverified', /Connection status unverified\..*Ask the Operator to read its current remote-command approval/],
     ['revoked', 'blocked', /Blocked\..*registration is revoked/],
   ] as const)('shows a distinct message for a %s computer without inferring approval or readiness', (status, state, message) => {
     render(<ConnectionSetupStatus registration={registration(status)} />)

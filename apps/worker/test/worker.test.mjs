@@ -169,12 +169,23 @@ test('killed updater leaves current intact and blocks retry until explicit owned
     await installVersion({...${JSON.stringify(options)},updatePolicy:()=>{process.stdout.write('locked');return new Promise(()=>setInterval(()=>{},1000))}});`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
-  await once(child.stdout, 'data'); const closed = once(child, 'close'); child.kill('SIGKILL'); await closed;
+  await once(child.stdout, 'data');
+  const rollback = { root: f.root, stateDirectory: f.stateDirectory, facts, expected, approveStop: async () => true };
+  await assert.rejects(installVersion(f), /install_busy/);
+  await assert.rejects(rollbackVersion(rollback), /install_busy/);
+  assert.equal(await readlink(join(f.root, 'current')), first);
+  const closed = once(child, 'close');
+  child.kill('SIGKILL');
+  await closed;
   assert.equal(await readlink(join(f.root, 'current')), first);
   await assert.rejects(installVersion(f), /install_busy/);
+  await assert.rejects(rollbackVersion(rollback), /install_busy/);
   // Explicit recovery applies only to this test-owned, known-dead installer.
   await rm(join(f.root, '.install-lock'), { recursive: true });
   await installVersion({ ...f, updatePolicy: async () => true });
+  assert.notEqual(await readlink(join(f.root, 'current')), first);
+  await rollbackVersion(rollback);
+  assert.equal(await readlink(join(f.root, 'current')), first);
 });
 
 test('read-only app root fails without changing installed version', async (t) => {

@@ -12,15 +12,21 @@ import { formatDuration } from '../resource-telemetry/telemetryView'
 import './workflowJobs.css'
 
 function createJobsPanelStore() {
+  type SelectedJob = Pick<JobExecutionRecord, 'id' | 'initiatingAgent'> & { definitionVersionId: string }
   return createStore<{
     open: boolean
-    selectedId: string | null
+    selected: SelectedJob | null
     setOpen(open: boolean): void
-    select(id: string | null): void
+    select(execution: JobExecutionRecord | null): void
   }>(set => ({
-    open: false, selectedId: null,
-    setOpen: open => set({ open, selectedId: null }),
-    select: selectedId => set({ selectedId }),
+    open: false,
+    selected: null,
+    setOpen: open => set({ open, selected: null }),
+    select: execution => set({ selected: execution ? {
+      id: execution.id,
+      definitionVersionId: execution.acceptedSpec.definitionVersionId,
+      ...(execution.initiatingAgent ? { initiatingAgent: execution.initiatingAgent } : {}),
+    } : null }),
   }))
 }
 
@@ -31,12 +37,11 @@ export function WorkflowJobsButton(props: { workspaceId: string; workflowId: str
 function JobsPanel({ workspaceId, workflowId }: { workspaceId: string; workflowId: string }) {
   const [store] = useState(createJobsPanelStore)
   const open = useStore(store, state => state.open)
-  const selectedId = useStore(store, state => state.selectedId)
+  const selected = useStore(store, state => state.selected)
   const trigger = useRef<HTMLButtonElement>(null)
   const history = useWorkflowJobHistory(workspaceId, workflowId, open)
   const queue = useWorkflowJobQueue(workspaceId, workflowId, open)
   const requests = queue.tickets.filter(ticket => !jobQueueHasExecution(ticket))
-  const selected = history.items.find(item => item.execution.id === selectedId)
   return <>
     <Button ref={trigger} size="sm" variant="ghost" aria-haspopup="dialog" aria-expanded={open}
       onClick={() => store.getState().setOpen(true)}>Jobs</Button>
@@ -48,9 +53,9 @@ function JobsPanel({ workspaceId, workflowId }: { workspaceId: string; workflowI
         </p> : <>
           {selected ? <>
             <Button size="sm" variant="ghost" onClick={() => store.getState().select(null)}>Back to jobs</Button>
-            <JobResult key={selected.execution.id} workspaceId={workspaceId} executionId={selected.execution.id}
-              expectedDefinitionVersionId={selected.execution.acceptedSpec.definitionVersionId}
-              {...(selected.execution.initiatingAgent ? { expectedInitiatingAgent: selected.execution.initiatingAgent } : {})} />
+            <JobResult key={selected.id} workspaceId={workspaceId} executionId={selected.id}
+              expectedDefinitionVersionId={selected.definitionVersionId}
+              {...(selected.initiatingAgent ? { expectedInitiatingAgent: selected.initiatingAgent } : {})} />
           </> : <>
             {queue.isError ? <p role="alert">Job requests unavailable. {jobError(queue.error)}
               <Button size="sm" variant="ghost" onClick={() => void queue.refetch()}>Retry requests</Button>
@@ -65,16 +70,16 @@ function JobsPanel({ workspaceId, workflowId }: { workspaceId: string; workflowI
                 <JobQueueFacts ticket={ticket} />
               </section>)}
             </section>}
-            {queue.hasNextPage ? <Button size="sm" variant="ghost" disabled={queue.isFetchingNextPage}
+            {queue.hasNextPage ? <Button size="sm" variant="ghost" disabled={queue.isFetching}
               onClick={() => void queue.fetchNextPage()}>Older requests</Button> : null}
             {history.items.length > 0 && <h3>Accepted executions</h3>}
             <ul className="board-job-list" aria-label="Workflow jobs">
               {history.items.map(item => <li key={item.execution.id}>
                 <JobRow name={item.name} execution={item.execution}
-                  onClick={() => store.getState().select(item.execution.id)} />
+                  onClick={() => store.getState().select(item.execution)} />
               </li>)}
             </ul>
-            {history.hasNextPage ? <Button size="sm" variant="ghost" disabled={history.isFetchingNextPage}
+            {history.hasNextPage ? <Button size="sm" variant="ghost" disabled={history.isFetching}
               onClick={() => void history.fetchNextPage()}>Older jobs</Button> : null}
           </>}
         </>}

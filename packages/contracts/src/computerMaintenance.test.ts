@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION,
   ComputerMaintenanceStartInputSchema, MaintenanceRequestSchema, MaintenanceTaskStartSchema, MaintenanceStatusSchema,
-  MaintenanceTaskSchema,
+  MaintenanceTaskSchema, SyncedMarketplaceSchema,
   SyncedMcpServerSchema, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_JSON_BYTES,
   WORKER_UPDATE_MAX_BINARY_BYTES, WorkerArtifactRequestSchema, WorkerArtifactReplySchema,
   WorkerUpdateStatusSchema } from './computerMaintenance.js'
+import { ClaudePluginMarketplaceAddInputSchema } from './management/claudePlugins.js'
 import { negotiateDeviceExtensions } from './deviceApplication.js'
 import { HarnessMcpConnectionSchema } from './management/harnessSettings.js'
 
@@ -44,6 +45,30 @@ describe('fleet MCP credential restrictions', () => {
 })
 
 describe('fleet source availability', () => {
+  it.each([
+    'https://owner:fixture-password@plugins.example/repo.git',
+    'https://fixture-token@plugins.example/repo.git',
+    'https://plugins.example/repo.git?access_token=fixture-token',
+    'https://plugins.example/repo.git#fixture-token',
+    'ssh://git:fixture-password@plugins.example/repo.git',
+  ])('rejects credential-bearing marketplace sources at both native and fleet inputs: %s', source => {
+    expect(SyncedMarketplaceSchema.safeParse({ name: 'plugins', source }).success).toBe(false)
+    expect(ClaudePluginMarketplaceAddInputSchema.safeParse({ source,
+      commandId: '44444444-4444-4444-8444-444444444444', expectedRevision: 'a'.repeat(64) }).success).toBe(false)
+  })
+
+  it.each(['owner/repo', 'https://plugins.example/repo.git', 'git@plugins.example:owner/repo.git',
+    'ssh://git@plugins.example/owner/repo.git'])('accepts credential-free marketplace sources: %s', source => {
+    expect(SyncedMarketplaceSchema.parse({ name: 'plugins', source })).toEqual({ name: 'plugins', source })
+  })
+
+  it('rejects duplicate harnesses at both management and receiver inputs', () => {
+    const task = { kind: 'update-harnesses', harnesses: ['codex', 'codex'] }
+    expect(MaintenanceTaskStartSchema.safeParse(task).success).toBe(false)
+    expect(ComputerMaintenanceStartInputSchema.safeParse({ task,
+      commandId: '44444444-4444-4444-8444-444444444444' }).success).toBe(false)
+  })
+
   it('accepts an available empty catalog while omitting an unavailable harness', () => {
     expect(MaintenanceTaskStartSchema.parse({ kind: 'sync-mcp', servers: { codex: [] } }))
       .toEqual({ kind: 'sync-mcp', servers: { codex: [] } })

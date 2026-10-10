@@ -15,15 +15,15 @@ export function registerHarnessMcpTools(server: McpServer, context: OperatorRequ
   const service = context.services.harnessSettings?.mcp
   if (!service) return
   if (context.services.harnessSettings?.plugins && operatorToolAvailable(context, 'codex_plugins_list')) server.registerTool('codex_plugins_list', {
-    description: 'List installed or available Codex plugins with search and pagination. Native Codex is the source of truth. Install or remove one with codex_plugin_change. Plugins can add hooks, skills, and external access.',
+    description: 'List installed or available Codex plugins with search and pagination. Set refresh true to await a current native catalog instead of a cached observation. Native Codex is the source of truth. Install or remove one with codex_plugin_change. Plugins can add hooks, skills, and external access.',
     inputSchema: CodexPluginListInputSchema, outputSchema: CodexPluginListResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input, extra) => invokeOperatorTool(context, 'codex_plugins_list', () => context.services.harnessSettings!.plugins!.list(context.principal, input, extra.mcpReq.signal)))
   if (context.services.harnessSettings?.plugins && operatorToolAvailable(context, 'codex_plugin_get')) server.registerTool('codex_plugin_get', {
-    description: 'Read a Codex plugin and its verified bundled skills, hooks, and MCP server names when package contents are locally available. Unknown means bundle contents could not be verified, including unavailable, unreadable, or unsupported local contents. Install or remove it with codex_plugin_change.',
+    description: 'Read a Codex plugin and its verified bundled skills, hooks, and MCP server names when package contents are locally available. Set refresh true to await the current native catalog. Unknown means bundle contents could not be verified, including unavailable, unreadable, or unsupported local contents. Install or remove it with codex_plugin_change.',
     inputSchema: CodexPluginGetInputSchema, outputSchema: CodexPluginDetailResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, (input, extra) => invokeOperatorTool(context, 'codex_plugin_get', () => context.services.harnessSettings!.plugins!.get(context.principal, input.pluginId, extra.mcpReq.signal)))
+  }, (input, extra) => invokeOperatorTool(context, 'codex_plugin_get', () => context.services.harnessSettings!.plugins!.get(context.principal, input.pluginId, { signal: extra.mcpReq.signal, refresh: input.refresh })))
   if (operatorToolAvailable(context, 'harness_mcp_servers_list')) server.registerTool('harness_mcp_servers_list', {
     description: 'List native user/inherited MCP connections for Codex. Unchanged user configuration is cached for at most five minutes; expired reads wait for inspection and report failures. Returns no tokens or secret arguments. Configuration evidence is not live connection health.',
     inputSchema: HarnessMcpListInputSchema, outputSchema: HarnessMcpListResultSchema,

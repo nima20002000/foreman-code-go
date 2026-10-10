@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import { DeviceSetupApproveInputSchema, decodeWorkerIdentityRequest } from '@foreman-code/contracts/device-setup'
+import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { useApproveComputerSetup, useComputerSetupOptionsQuery, useRegisteredComputersQuery, useSelectedMainQuery } from '../../shared/api/computerSettings'
 import { ApiError } from '../../shared/api/client'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
@@ -37,7 +38,12 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
   const original = useRef<Input | undefined>(undefined)
   const [revealed, setRevealed] = useState(false)
   const [copied, setCopied] = useState<'done' | 'blocked'>()
-  useEffect(() => { clear(); return () => { clear(); reset() } }, [mainId, clear, reset])
+  const [resultTarget, setResultTarget] = useState<Pick<DeviceRegistration, 'deviceId' | 'authorizationRevision'>>()
+  useEffect(() => {
+    clear()
+    setResultTarget(undefined)
+    return () => { clear(); reset() }
+  }, [mainId, clear, reset])
   useEffect(() => {
     if (!approval.data) return
     const timer = setTimeout(() => { reset(); expire(); setRevealed(false); setCopied(undefined) }, Math.max(0, Date.parse(approval.data.expiresAt) - Date.now()))
@@ -46,28 +52,52 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
   const identity = (() => { try { return code.trim() ? decodeWorkerIdentityRequest(code) : undefined } catch { return null } })()
   const endpoint = options.data?.available ? options.data.endpoint : null
   const mainFingerprint = main.data?.mainId === mainId ? main.data.mainPublicKeyFingerprint : undefined
-  const input: Input | undefined = identity && endpoint && mainFingerprint
-    ? { identityRequestCode: code.trim(), endpoint, scopes: ['connect', 'heartbeat'] } : undefined
-  const locked = approval.isPending || attempt.unresolved || Boolean(approval.data)
+  const existing = identity && computers.isSuccess
+    ? computers.data.devices.find(value => value.workerInstallationId === identity.workerInstallationId) : undefined
+  const canEnroll = computers.isSuccess && !computers.isFetching && (!existing || existing.status === 'revoked')
+  const input: Input | undefined = identity && endpoint && mainFingerprint && canEnroll
+    ? { identityRequestCode: code.trim(), endpoint, scopes: ['connect', 'heartbeat'],
+      ...(existing ? { expectedAuthorizationRevision: existing.authorizationRevision } : {}) } : undefined
+  const currentRegistration = resultTarget ? computers.data?.devices.find(value => value.deviceId === resultTarget.deviceId
+    && value.authorizationRevision >= resultTarget.authorizationRevision) : undefined
+  const resultRegistration = currentRegistration ?? approval.data?.registration
+  const hasResult = Boolean(approval.data || resultRegistration)
+  const paired = resultRegistration?.status === 'paired'
+  const revoked = resultRegistration?.status === 'revoked'
+  const superseded = resultRegistration?.status === 'pending' && resultTarget !== undefined
+    && resultRegistration.authorizationRevision > resultTarget.authorizationRevision
+  const codeAvailable = approval.data !== undefined && resultRegistration?.status === 'pending'
+    && resultRegistration.authorizationRevision === approval.data.registration.authorizationRevision
+  const locked = approval.isPending || attempt.unresolved || hasResult
   const submit = async () => {
     const hadUnknownOutcome = attempt.unresolved
     try {
       const request = attempt.input(original.current ?? input!)
       DeviceSetupApproveInputSchema.parse(request)
       original.current ??= input
-      await approval.mutateAsync(request)
-      attempt.succeeded(); original.current = undefined
+      const result = await approval.mutateAsync(request)
+      setResultTarget({ deviceId: result.registration.deviceId, authorizationRevision: result.registration.authorizationRevision })
+      attempt.succeeded()
+      original.current = undefined
     } catch (error) {
       const reconciliationDenied = hadUnknownOutcome && error instanceof ApiError
         && (error.status === 401 || error.status === 403) && error.code !== 'conflict'
       if (!reconciliationDenied) attempt.failed(error)
       if (!attempt.unresolved) original.current = undefined
+      if (error instanceof ApiError && error.code === 'conflict') await computers.refetch()
     }
   }
   const copy = async () => {
-    try { await navigator.clipboard.writeText(approval.data!.enrollmentCode); setCopied('done') } catch { setCopied('blocked') }
+    if (!codeAvailable || !approval.data) return
+    try { await navigator.clipboard.writeText(approval.data.enrollmentCode); setCopied('done') } catch { setCopied('blocked') }
   }
-  const paired = approval.data && computers.data?.devices.some(value => value.deviceId === approval.data!.registration.deviceId && value.status === 'paired')
+  let approvalLabel = 'Approve this computer'
+  if (attempt.unresolved) approvalLabel = 'Reconcile original pairing command'
+  if (approval.isPending) approvalLabel = 'Approving…'
+  let resultMessage = 'Computer pending; waiting for the computer to finish pairing.'
+  if (paired) resultMessage = 'Computer paired.'
+  if (revoked) resultMessage = 'Computer access revoked. Its previous pairing code can no longer be used.'
+  if (superseded) resultMessage = 'Computer pairing is pending from a newer approval. This request’s pairing code can no longer be used.'
   return <section aria-label="Add computer">
     <UnsavedEditorGuard editor={{ label: 'computer pairing command', dirty: attempt.unresolved, busy: approval.isPending, uncertain: attempt.unresolved,
       save: submit, discard: () => { if (!attempt.unresolved) reset() }, error: approval.error?.message }} />
@@ -89,7 +119,7 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
     {main.data && main.data.mainId !== mainId ? <p role="alert">The selected main changed. Reload this page.</p> : null}
     <Textarea label="Computer request code" value={code} disabled={locked} autoComplete="off" spellCheck={false} onChange={event => update(event.target.value)} />
     {identity === null ? <p role="alert">This is not a valid computer request code. Copy it again from the companion.</p> : null}
-    {identity && !approval.data ? <details className="computer-details" open>
+    {identity && !hasResult ? <details className="computer-details" open>
       <summary>Confirm details</summary>
       <dl className="computer-facts">
         <div><dt>Computer ID</dt><dd>{identity.workerInstallationId}</dd></div>
@@ -97,21 +127,26 @@ export function ComputerPairingForm({ mainId }: { mainId: string }) {
         <div><dt>This main · fingerprint</dt><dd>{mainFingerprint ?? 'Reading…'}</dd></div>
         <div><dt>Device endpoint</dt><dd>{endpoint ?? 'Unavailable'}</dd></div>
         <div><dt>Access</dt><dd>Connect and heartbeat only. This does not approve remote commands.</dd></div>
+        {existing?.status === 'revoked' ? <div><dt>Re-enrollment</dt><dd>This installation’s access was revoked. Confirm the fingerprints before approving access again.</dd></div> : null}
       </dl>
     </details> : null}
-    {expired ? <p role="status">The one-use pairing code expired. Read the computer status before requesting a fresh code.</p> : null}
+    {existing && existing.status !== 'revoked' && !hasResult && !attempt.unresolved
+      ? <p role="status">This installation is already {existing.status}. Revoke its existing access before requesting a new pairing code.</p> : null}
+    {computers.error ? <p role="alert">{computers.error.message}</p> : null}
+    {expired && !paired && !revoked && !superseded ? <p role="status">The one-use pairing code expired. Read the computer status before requesting a fresh code.</p> : null}
     {approval.error ? <p role="alert">{approval.error.message}</p> : null}
-    {!approval.data ? <div className="computer-actions"><Button variant="primary" disabled={approval.isPending || !input}
-      onClick={() => void submit()}>{approval.isPending ? 'Approving…' : attempt.unresolved ? 'Reconcile original pairing command' : 'Approve this computer'}</Button></div> : <div className="computer-pairing-result">
-      <p role="status">Computer {paired ? 'paired' : `${approval.data.registration.status}; waiting for the computer to finish pairing`}. Pairing code expires <time dateTime={approval.data.expiresAt}>{approval.data.expiresAt}</time>.</p>
-      {paired ? null : <>
+    {!hasResult ? <div className="computer-actions"><Button variant="primary" disabled={approval.isPending || (!original.current && !input)}
+      onClick={() => void submit()}>{approvalLabel}</Button></div> : <div className="computer-pairing-result">
+      <p role="status">{resultMessage}
+        {codeAvailable && approval.data ? <> Pairing code expires <time dateTime={approval.data.expiresAt}>{approval.data.expiresAt}</time>.</> : null}</p>
+      {codeAvailable && approval.data ? <>
         <TextField label="Private pairing code · secret" type={revealed ? 'text' : 'password'} readOnly autoComplete="off" value={approval.data.enrollmentCode} />
         <div className="computer-actions"><Button onClick={() => setRevealed(value => !value)}>{revealed ? 'Hide pairing code' : 'Show pairing code'}</Button>
         <Button onClick={() => void copy()}>Copy pairing code</Button></div>
         {copied ? <p role="status">{copied === 'done' ? 'Copied. Paste it into the companion.' : 'Copy was blocked. Show the code and copy it manually.'}</p> : null}
         <p>Paste this code into the companion. Keep it out of screenshots and logs.</p>
-      </>}
-      <Button onClick={() => { reset(); clear(); setRevealed(false); setCopied(undefined) }}>{paired ? 'Done' : 'Discard pairing code'}</Button>
+      </> : null}
+      <Button onClick={() => { reset(); clear(); setResultTarget(undefined); setRevealed(false); setCopied(undefined) }}>{paired || revoked || superseded ? 'Done' : 'Discard pairing code'}</Button>
     </div>}
   </section>
 }

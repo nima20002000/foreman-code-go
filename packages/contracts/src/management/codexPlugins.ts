@@ -18,6 +18,7 @@ export type CodexPluginSummary = z.infer<typeof CodexPluginSummarySchema>
 export const CodexPluginListInputSchema = z.object({
   view: z.enum(['installed', 'available']).default('installed'), query: z.string().trim().max(100).default(''),
   offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(48).default(24),
+  refresh: z.preprocess(value => value === 'true' ? true : value, z.boolean().optional()),
 }).strict()
 export type CodexPluginListInput = z.infer<typeof CodexPluginListInputSchema>
 export const CodexPluginListResultSchema = z.object({
@@ -28,7 +29,9 @@ export const CodexPluginListResultSchema = z.object({
 }).strict()
 export type CodexPluginListResult = z.infer<typeof CodexPluginListResultSchema>
 
-export const CodexPluginGetInputSchema = z.object({ pluginId: PluginId }).strict()
+export const CodexPluginGetInputSchema = z.object({ pluginId: PluginId,
+  refresh: z.preprocess(value => value === 'true' ? true : value, z.boolean().optional()),
+}).strict()
 export const CodexPluginDetailResultSchema = z.object({ plugin: CodexPluginSummarySchema,
   revision: Revision, artifactIdentity: Revision,
   contents: z.discriminatedUnion('status', [

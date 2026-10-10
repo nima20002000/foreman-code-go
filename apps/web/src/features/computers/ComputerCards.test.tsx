@@ -3,8 +3,9 @@ import { http, HttpResponse } from 'msw'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it } from 'vitest'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
+import type { MaintenanceStatus } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerCards } from './ComputerCards'
-import { computersFixture, deviceName, deviceTarget, mainTarget, registration } from './computersTestFixture'
+import { computerReadHandler, computersFixture, deviceName, deviceTarget, mainTarget, registration } from './computersTestFixture'
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 
 afterEach(() => useOperatorChatStore.getState().reset())
@@ -41,16 +42,16 @@ it('asks the Operator to fix a signed-out harness and drafts a settings change w
 })
 
 it.each(['null', 'absent'] as const)('shows unknown account observations without sign-in prompts (%s)', async observation => {
-  const accounts = observation === 'absent' ? [] : ['codex', 'claude', 'github'].map(tool => ({
+  const accounts = observation === 'absent' ? [] : (['codex', 'claude', 'github'] as const).map(tool => ({
     tool, installed: true, signedIn: null, account: null, details: [],
   }))
   computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[registration]} />, [
-    http.get('*/api/management/computers/accounts', () => HttpResponse.json({ computers: [{ target: mainTarget,
-      accounts: { observedAt: new Date().toISOString(), accounts } }] })),
-    http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [{ target: mainTarget,
+    computerReadHandler('accounts', { computers: [{ target: mainTarget,
+      accounts: { observedAt: new Date().toISOString(), accounts } }] }),
+    computerReadHandler('maintenance', { computers: [{ target: mainTarget,
       status: { observedAt: new Date().toISOString(), tasks: [],
-        harnesses: ['codex', 'claude'].map(harness => ({ harness, installed: true, version: '1.0', latest: '1.0' })),
-        system: { packageUpdates: null, rebootRequired: false, sudo: false, disk: null } } }] })),
+        harnesses: (['codex', 'claude'] as const).map(harness => ({ harness, installed: true, version: '1.0', latest: '1.0' })),
+        system: { packageUpdates: null, rebootRequired: false, sudo: false, disk: null } } }] }),
   ])
   const card = await screen.findByRole('article', { name: 'Main PC' })
   expect(await within(card).findByText('Codex 1.0 · account unknown')).toBeVisible()
@@ -62,10 +63,10 @@ it.each(['null', 'absent'] as const)('shows unknown account observations without
 
 it('offers GitHub sign-in for an explicit signed-out observation', async () => {
   computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[registration]} />, [
-    http.get('*/api/management/computers/accounts', () => HttpResponse.json({ computers: [{ target: mainTarget,
+    computerReadHandler('accounts', { computers: [{ target: mainTarget,
       accounts: { observedAt: new Date().toISOString(), accounts: [
         { tool: 'github', installed: true, signedIn: false, account: null, details: [] },
-      ] } }] })),
+      ] } }] }),
   ])
   const card = await screen.findByRole('article', { name: 'Main PC' })
   expect(await within(card).findByText('Signed out')).toBeVisible()
@@ -84,12 +85,12 @@ it.each([['pending', 'Pairing pending'], ['revoked', 'Access revoked']] as const
 
 it('shows versions, OS updates, restart need and disk, and starts maintenance on that computer in one click', async () => {
   const started: unknown[] = []
-  const status = { observedAt: new Date().toISOString(), tasks: [{ id: '77777777-7777-4777-8777-777777777777', kind: 'update-system',
+  const status: MaintenanceStatus = { observedAt: new Date().toISOString(), tasks: [{ id: '77777777-7777-4777-8777-777777777777', kind: 'update-system',
       state: 'succeeded', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), summary: '4 packages upgraded', outputTail: '' }],
     harnesses: [{ harness: 'codex', installed: true, version: '0.160.0', latest: '0.161.0' }, { harness: 'claude', installed: false, version: null, latest: '2.1.294' }],
     system: { packageUpdates: 3, rebootRequired: true, sudo: true, disk: { path: '/home/owner', freeBytes: 41e9, totalBytes: 193e9 } } }
   computersFixture(<ComputerCards mainId={mainTarget.hostRef.mainId} devices={[registration]} />, [
-    http.get('*/api/management/computers/maintenance', () => HttpResponse.json({ computers: [{ target: mainTarget, status }, { target: deviceTarget, status: null }] })),
+    computerReadHandler('maintenance', { computers: [{ target: mainTarget, status }, { target: deviceTarget, status: null }] }),
     http.post('*/api/management/computers/maintenance/start', async ({ request }) => { started.push(await request.json()); return HttpResponse.json({ computers: [] }) }),
   ])
   const main = await screen.findByRole('article', { name: 'Main PC' })

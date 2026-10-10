@@ -4,6 +4,21 @@ const PluginId = z.string().min(3).max(240).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*@[
 const CommandId = z.string().uuid()
 const Revision = z.string().regex(/^[a-f0-9]{64}$/)
 
+/** Git sources copied to another computer cannot contain inline credentials. */
+export const PluginMarketplaceSourceSchema = z.string().trim().min(3).max(500).refine(value => {
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/u.test(value)) return true
+  if (/^git@[A-Za-z0-9.-]+:[A-Za-z0-9_./-]+$/u.test(value)) return true
+  try {
+    const url = new URL(value)
+    const supported = url.protocol === 'https:' || url.protocol === 'ssh:'
+    const usernameAllowed = !url.username || (url.protocol === 'ssh:' && url.username === 'git')
+    return supported && Boolean(url.hostname) && usernameAllowed && !url.password && !url.search && !url.hash
+      && !/\s/u.test(value)
+  } catch {
+    return false
+  }
+}, 'Use owner/repo or a Git URL without credentials, query parameters or fragments.')
+
 /** One Claude Code plugin from the user's configured marketplaces. Native Claude Code is the source of truth. */
 export const ClaudePluginSummarySchema = z.object({
   pluginId: PluginId, name: z.string(), marketplaceName: z.string(), description: z.string().nullable(),
@@ -46,9 +61,7 @@ export type ClaudePluginChangeResult = z.infer<typeof ClaudePluginChangeResultSc
 
 export const ClaudePluginMarketplaceAddInputSchema = z.object({
   /** owner/repo, a Git or HTTPS URL. Local paths stay machine-specific and are not accepted here. */
-  source: z.string().trim().min(3).max(500).refine(value =>
-    /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+$/.test(value) || /^(https:\/\/|ssh:\/\/|git@[A-Za-z0-9.-]+:)/.test(value),
-    'Use owner/repo or a Git URL.'),
+  source: PluginMarketplaceSourceSchema,
   commandId: CommandId, expectedRevision: Revision,
 }).strict()
 export type ClaudePluginMarketplaceAddInput = z.infer<typeof ClaudePluginMarketplaceAddInputSchema>

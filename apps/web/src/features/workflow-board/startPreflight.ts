@@ -67,11 +67,13 @@ export function currentBoardStartRequest(displayed: GraphDraftV3, facts: BoardSt
   return RunStartV3InputSchema.parse({ executionSemanticsVersion: 3, workspaceId: displayed.workspaceId,
     workflowId: displayed.workflowId, ...boardStartPins(displayed, facts), commandId, input: {} })
 }
-export function useBoardStartPreflight(draft: GraphDraftV3) {
+export function useBoardStartPreflight(draft: GraphDraftV3, options: { enabled: boolean } = { enabled: true }) {
   return useQuery({ queryKey: ['workbench', 'board-start-preflight', sessionGeneration(), draft.workspaceId, draft.workflowId,
     draft.id, draft.revision, draft.baseWorkflowVersionId],
-    queryFn: ({ signal }) => readBoardStartPreflight(draft, { signal }), retry: false, staleTime: 1000,
+    queryFn: ({ signal }) => readBoardStartPreflight(draft, { signal }), enabled: options.enabled,
+    retry: false, staleTime: 1000,
     refetchOnReconnect: 'always', refetchOnWindowFocus: true,
-    refetchInterval: (state) => ApiError.is(state.state.error) && [401, 403, 404].includes(state.state.error.status ?? 0) ? false : 3000,
+    refetchInterval: (state) => !options.enabled
+      || ApiError.is(state.state.error) && [401, 403, 404].includes(state.state.error.status ?? 0) ? false : 3000,
   })
 }

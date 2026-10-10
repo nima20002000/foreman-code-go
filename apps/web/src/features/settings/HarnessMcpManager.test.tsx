@@ -4,6 +4,8 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
 import { HarnessMcpManager } from './HarnessMcpManager'
+import { harnessSettingsKeys } from '../../shared/api/harnessSettings'
+import type { HarnessMcpPlan } from '@foreman-code/contracts/management'
 
 const revision = 'sha256:' + 'a'.repeat(64)
 const checkedAt = '2026-09-20T00:00:00.000Z'
@@ -180,4 +182,85 @@ it('keeps native enablement behind the existing review flow in the details dialo
   fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
   expect(await screen.findByRole('dialog', { name: 'Review MCP change' })).toBeVisible()
   expect(planned?.change).toMatchObject({ kind: 'enable', enabled: false })
+})
+
+it('adopts a plan settled by another session while its uncertain review remains open', async () => {
+  let plan: HarnessMcpPlan = {
+    id: crypto.randomUUID(), harness: 'codex', revision,
+    change: { kind: 'enable', name: 'mytools', enabled: false }, requestedBy: 'owner', status: 'pending',
+    createdAt: checkedAt, expiresAt: '2099-01-01T00:00:00.000Z', error: null,
+  }
+  let decisions = 0
+  let readbackFails = false
+  server.use(
+    http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({ harness: 'codex', revision, checkedAt,
+      scope: 'native-user', servers: [], presets: { graphql: 'missing', linear: 'missing' } })),
+    http.get('/api/management/harnesses/codex/mcp/plans', () => readbackFails
+      ? HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Plan refresh failed' } }, { status: 503 })
+      : HttpResponse.json({ items: [plan] })),
+    http.post('/api/management/harnesses/mcp/decision', () => {
+      decisions++
+      plan = { ...plan, status: 'uncertain', error: 'The native response was lost.' }
+      readbackFails = true
+      return HttpResponse.json(plan)
+    }),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}><HarnessMcpManager harness="codex" /></QueryClientProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'Review' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Approve and apply' }))
+  expect(await screen.findByText('Change uncertain')).toBeVisible()
+  expect(await screen.findByText('Change requests: Plan refresh failed')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Reconcile without rewriting' })).toBeVisible()
+  plan = { ...plan, status: 'applied', error: null }
+  readbackFails = false
+  await client.invalidateQueries({ queryKey: harnessSettingsKeys.plans('codex') })
+  expect(await screen.findByText('Change applied')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Reconcile without rewriting' })).not.toBeInTheDocument()
+  expect(decisions).toBe(1)
+})
+
+it.each(['parent', 'native'] as const)('locks an uncertain retry during %s access denial and keeps its original request', async (source) => {
+  let nativeDenied = false
+  const inputs: unknown[] = []
+  server.use(
+    http.get('/api/management/harnesses/codex/mcp', () => nativeDenied
+      ? HttpResponse.json({ error: { code: 'ACCESS_DENIED', message: 'Connection access was removed' } }, { status: 403 })
+      : HttpResponse.json({ harness: 'codex', revision, checkedAt, scope: 'native-user', servers: [],
+        presets: { graphql: 'missing', linear: 'missing' } })),
+    http.get('/api/management/harnesses/codex/mcp/plans', () => HttpResponse.json({ items: [] })),
+    http.post('/api/management/harnesses/mcp/managed', async ({ request }) => {
+      inputs.push(await request.json())
+      return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Response lost' } }, { status: 503 })
+    }),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  const panel = (accessUnavailable: boolean) => <QueryClientProvider client={client}>
+    <HarnessMcpManager harness="codex" accessUnavailable={accessUnavailable} />
+  </QueryClientProvider>
+  const mounted = render(panel(false))
+  fireEvent.click(await screen.findByRole('button', { name: 'Add Foreman Code MCP' }))
+  await screen.findByRole('button', { name: 'Retry original change' })
+  expect(inputs).toHaveLength(1)
+  if (source === 'parent') mounted.rerender(panel(true))
+  else {
+    nativeDenied = true
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+  }
+  await screen.findByText('Connection access is unavailable')
+  const retry = screen.getByRole('button', { name: 'Retry original change' })
+  expect(retry).toBeDisabled()
+  fireEvent.click(retry)
+  expect(inputs).toHaveLength(1)
+  if (source === 'parent') mounted.rerender(panel(false))
+  else {
+    nativeDenied = false
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+  }
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Retry original change' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Retry original change' }))
+  await waitFor(() => expect(inputs).toHaveLength(2))
+  expect(inputs[1]).toEqual(inputs[0])
 })

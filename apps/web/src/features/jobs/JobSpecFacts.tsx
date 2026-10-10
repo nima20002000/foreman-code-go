@@ -18,6 +18,11 @@ export function JobQueueFacts({ ticket }: { ticket: JobQueueTicket }) {
     computer = target.labelAtAcceptance ?? (target.hostRef.kind === 'device' ? target.hostRef.deviceId : 'Main computer')
   }
   return <dl className="job-facts">
+    <dt>Job</dt><dd>{ticket.definition.name}</dd>
+    {'verification' in ticket.definition.spec && <>
+      <dt>Verification suite</dt><dd>{ticket.definition.spec.verification.suite}</dd>
+    </>}
+    <dt>Request</dt><dd>{ticket.id}</dd>
     <dt>Queue status</dt><dd>{queueLabel(ticket)}</dd>
     {ticket.placement.kind === 'prefer' && <>
       <dt>Preferred computer</dt><dd>{ticket.placement.hostRef.kind === 'device'

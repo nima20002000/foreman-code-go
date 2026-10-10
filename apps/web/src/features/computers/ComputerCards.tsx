@@ -29,24 +29,27 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
   /** Show just this paired device (its details page). */
   only?: string
 }) {
-  const targets: DeviceProvisioningTarget[] = [...(only ? [] : [{ hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
-    keyRevision: null, authorizationRevision: null }]), ...devices.filter(device => device.status === 'paired').map(device => ({
+  const targets: DeviceProvisioningTarget[] = [{ hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }, ...devices.filter(device => device.status === 'paired').map(device => ({
     hostRef: { kind: 'device' as const, mainId, deviceId: device.deviceId },
     applicationInstallationId: device.workerInstallationId, keyRevision: device.keyRevision,
     authorizationRevision: device.authorizationRevision,
   }))]
   const reads = useBuildComputers(targets)
+  const visibleTargets = targets.filter(target => !only || target.hostRef.kind === 'device' && target.hostRef.deviceId === only)
   const activity = useComputerActivity()
-  const accounts = useComputerAccounts()
-  const maintenance = useComputerMaintenance()
+  const accounts = useComputerAccounts(visibleTargets)
+  const maintenance = useComputerMaintenance(visibleTargets)
   const start = useStartMaintenance()
-  const fresh = useComputerActivityFreshness(activity.dataUpdatedAt, activity.fetchStatus)
+  const observedFresh = useComputerActivityFreshness(activity.dataUpdatedAt, activity.fetchStatus)
+  const fresh = observedFresh && !activity.isError
   const cards: Card[] = targets.map((target, index) => ({ target, build: reads[index]!.data, buildError: reads[index]!.isError }))
     // The order builds use: enabled computers from the highest priority down.
     .sort((a, b) => Number(!a.build?.preference.buildEnabled) - Number(!b.build?.preference.buildEnabled)
       || (b.build?.preference.buildPriority ?? 0) - (a.build?.preference.buildPriority ?? 0)
       || computerKey(a.target).localeCompare(computerKey(b.target)))
   const builders = cards.filter(card => card.build?.preference.buildEnabled)
+  const ranksKnown = reads.every(read => read.isSuccess)
   return <>
     <UnsavedEditorGuard editor={{ label: 'computer maintenance request', dirty: start.unresolved,
       busy: start.isPending, uncertain: start.unresolved, save: start.reconcile,
@@ -69,20 +72,24 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
         {computerDisplayName(computer.target.hostRef)}: {computer.error}
       </small>)}
     <ul className="computer-card-grid" aria-label="Computers">
-      {cards.map(card => {
-        const observed = activity.data?.mainId === mainId && !activity.isError
+      {cards.filter(card => visibleTargets.includes(card.target)).map(card => {
+        const index = visibleTargets.indexOf(card.target)
+        const accountRead = accounts[index]!
+        const maintenanceRead = maintenance[index]!
+        const observed = activity.data?.mainId === mainId
           ? activity.data.computers.find(computer => sameDeviceProvisioningTarget(computer.target, card.target)) : undefined
-        const entry = accounts.isError ? undefined : accounts.data?.computers.find(computer => sameDeviceProvisioningTarget(computer.target, card.target))
-        const upkeep = maintenance.data?.computers.find(computer => sameDeviceProvisioningTarget(computer.target, card.target))?.status
         return <li key={computerKey(card.target)}>
-          <ComputerCard card={card} observed={observed} fresh={fresh} accounts={entry?.accounts} maintenance={upkeep}
+          <ComputerCard card={card} observed={observed} fresh={fresh}
+            activityComplete={activity.data?.activityComplete === true && !activity.data.truncated}
+            accounts={accountRead.isError ? undefined : accountRead.data} maintenance={maintenanceRead.data}
+            maintenanceError={maintenanceRead.isError} onRetryMaintenance={() => { void maintenanceRead.refetch() }}
             onMaintain={task => start.mutate({ task, targets: [card.target] })} maintaining={start.isPending || start.unresolved}
-            buildPosition={builders.indexOf(card) + 1} buildCount={builders.length}
+            buildPosition={ranksKnown ? builders.indexOf(card) + 1 : undefined} buildCount={builders.length}
             onOpen={card.target.hostRef.kind === 'device' && onSelectComputer
               ? () => { if (card.target.hostRef.kind === 'device') onSelectComputer(card.target.hostRef.deviceId) } : undefined} />
         </li>
       })}
-      {devices.filter(device => device.status !== 'paired').map(device => <li key={device.deviceId}>
+      {devices.filter(device => device.status !== 'paired' && (!only || device.deviceId === only)).map(device => <li key={device.deviceId}>
         <article className="computer-card computer-card--registration" aria-label={computerDisplayName({ kind: 'device', deviceId: device.deviceId })}>
           <header className="computer-card-header"><Monitor size={20} aria-hidden="true" />
             <h3>{computerDisplayName({ kind: 'device', deviceId: device.deviceId })}</h3>
@@ -98,48 +105,61 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
 }
 
 type Task = ComputerMaintenanceStartInput['task']
-function ComputerCard({ card, observed, fresh, accounts, maintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
+function ComputerCard({ card, observed, fresh, activityComplete, accounts, maintenance, maintenanceError,
+  onRetryMaintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
   card: Card; observed: ComputerActivity | undefined; fresh: boolean; accounts: ComputerAccounts | null | undefined
+  activityComplete: boolean; maintenanceError: boolean; onRetryMaintenance(): void
   maintenance: MaintenanceStatus | null | undefined; onMaintain(task: Task): void; maintaining: boolean
-  buildPosition: number; buildCount: number; onOpen: (() => void) | undefined
+  buildPosition: number | undefined; buildCount: number; onOpen: (() => void) | undefined
 }) {
   const name = observed?.name ?? computerDisplayName(card.target.hostRef)
-  const task = maintenance?.tasks.find(item => item.state === 'running') ?? maintenance?.tasks[0]
+  const recentTasks = maintenance?.tasks ?? []
+  const importantTasks = recentTasks.filter(item => item.state === 'running' || item.state === 'failed')
+  const tasks = importantTasks.length ? importantTasks : recentTasks.slice(0, 1)
   const online = fresh && observed?.online === true
   const workflows = new Set(observed?.agents.map(agent => agent.workflowId) ?? []).size
   const account = (tool: ComputerAccount['tool']) => accounts?.accounts.find(value => value.tool === tool)
-  const preference = card.build?.preference
   return <article className="computer-card" aria-label={name}>
     <header className="computer-card-header">
       <Monitor size={20} aria-hidden="true" />
       <h3>{name}</h3>
-      <Badge tone={online ? 'success' : 'neutral'} dot>{!observed ? 'Status unknown' : online ? 'Online' : 'Offline'}</Badge>
+      <Badge tone={online ? 'success' : 'neutral'} dot>{presenceLabel(observed, fresh)}</Badge>
       {onOpen ? <IconButton label={`Open ${name}`} variant="ghost" size="sm" onClick={onOpen}><ChevronRight size={16} /></IconButton> : null}
     </header>
     <ComputerUtilization target={card.target} online={online} />
     <dl className="computer-card-facts">
       <div><dt>Harnesses</dt><dd className="computer-card-chips">
         {HARNESSES.map(({ tool, label }) => <HarnessChip key={tool} label={label} account={account(tool)} computer={name} known={Boolean(accounts)}
-          version={maintenance?.harnesses.find(entry => entry.harness === tool)} busy={maintaining}
+          version={maintenance?.harnesses.find(entry => entry.harness === tool)} busy={maintaining || maintenanceError}
           onInstall={() => onMaintain({ kind: 'update-harnesses', harnesses: [tool] })} />)}
       </dd></div>
       {card.target.hostRef.kind === 'device' ? <div><dt>Worker</dt><dd>
-        <WorkerState worker={maintenance?.worker} busy={maintaining}
+        <WorkerState worker={maintenance?.worker} busy={maintaining || maintenanceError}
           onUpdate={() => onMaintain({ kind: 'update-worker' })} />
       </dd></div> : null}
       <div><dt>GitHub</dt><dd><GitHubState account={account('github')} computer={name} known={Boolean(accounts)} /></dd></div>
-      <div><dt>Builds</dt><dd>{card.buildError ? 'Unavailable' : !preference ? 'Loading…'
-        : preference.buildEnabled ? `${ordinal(buildPosition)} of ${buildCount} · up to ${preference.buildAllowancePercent}% CPU and RAM` : 'Off'}
+      <div><dt>Builds</dt><dd>{buildSummary(card, buildPosition, buildCount)}
         {card.build?.state === 'setup-required' ? <Badge tone="warning">Setup needed</Badge> : null}</dd></div>
-      <div><dt>Activity</dt><dd>{!observed ? '—' : `${count(observed.agents.length, 'agent')} running · ${count(workflows, 'workflow')}`
-        + (observed.jobs.length ? ` · ${count(observed.jobs.length, 'job')}` : '')}</dd></div>
+      <div><dt>Activity</dt><dd>{observed ? <>
+        {!fresh ? 'Last observed: ' : null}{!activityComplete ? 'Visible activity: ' : null}
+        {`${count(observed.agents.length, 'agent')} running · ${count(workflows, 'workflow')}`}
+        {observed.jobs.length ? ` · ${count(observed.jobs.length, 'job')}` : ''}
+        {!activityComplete ? <small>Other activity may not be visible.</small> : null}
+      </> : 'Activity unknown'}</dd></div>
       {card.target.hostRef.kind === 'main' && card.build ? <div><dt>Worker execution</dt><dd>
         {card.build.remoteExecutionEnabled ? 'On' : 'Off'} <small className="computer-card-note">set when Main starts</small></dd></div> : null}
-      <div><dt>System</dt><dd><SystemState status={maintenance} busy={maintaining} onMaintain={onMaintain} agents={observed?.agents.length ?? 0} /></dd></div>
+      <div><dt>System</dt><dd><SystemState status={maintenance} busy={maintaining || maintenanceError}
+        onMaintain={onMaintain} agents={observed?.agents.length ?? 0} jobs={observed?.jobs.length ?? 0}
+        activityComplete={Boolean(observed) && fresh && activityComplete} /></dd></div>
       <div><dt>Disk</dt><dd>{maintenance?.system.disk ? `${bytes(maintenance.system.disk.freeBytes)} free of ${bytes(maintenance.system.disk.totalBytes)}` : '—'}</dd></div>
     </dl>
-    {task ? <p className="computer-card-task" data-state={task.state} role="status">
-      {task.state === 'running' ? `${taskLabel(task.kind)}…` : `${taskLabel(task.kind)}: ${task.summary}`}</p> : null}
+    {maintenanceError ? <div role="alert" className="computer-card-note">
+      <p>Maintenance could not be refreshed.{maintenance ? <> Showing last confirmed details from <time dateTime={maintenance.observedAt}>{maintenance.observedAt}</time>. Current task state is unknown.</> : null}</p>
+      <Button size="sm" variant="ghost" onClick={onRetryMaintenance}>Retry maintenance</Button>
+    </div> : null}
+    {tasks.map(task => <p key={task.id} className="computer-card-task" data-state={task.state} role="status">
+      {maintenanceError ? 'Last confirmed: ' : null}
+      {task.state === 'running' ? `${taskLabel(task.kind)}…` : `${taskLabel(task.kind)}: ${task.summary}`}</p>)}
     <footer className="computer-card-footer">
       <Button size="sm" variant="ghost" onClick={() => askOperator(`On ${name}: `, { send: false })}>Ask Operator to change…</Button>
     </footer>
@@ -201,7 +221,10 @@ function WorkerState({ worker, busy, onUpdate }: {
 }
 
 /** OS updates and restart. Restart asks once more because it stops what is running on that computer. */
-function SystemState({ status, busy, onMaintain, agents }: { status: MaintenanceStatus | null | undefined; busy: boolean; onMaintain(task: Task): void; agents: number }) {
+function SystemState({ status, busy, onMaintain, agents, jobs, activityComplete }: {
+  status: MaintenanceStatus | null | undefined; busy: boolean; onMaintain(task: Task): void
+  agents: number; jobs: number; activityComplete: boolean
+}) {
   const [confirming, setConfirming] = useState(false)
   useEffect(() => {
     if (!confirming) return
@@ -217,8 +240,29 @@ function SystemState({ status, busy, onMaintain, agents }: { status: Maintenance
     {status.system.rebootRequired ? <Badge tone="warning">Restart needed</Badge> : null}
     <Button size="sm" variant={confirming ? 'danger' : 'ghost'} disabled={busy || !status.system.sudo}
       onClick={() => { if (confirming) { setConfirming(false); onMaintain({ kind: 'restart' }) } else setConfirming(true) }}>
-      {confirming ? agents ? `Restart and stop ${count(agents, 'agent')}?` : 'Confirm restart' : 'Restart'}</Button>
+      {confirming ? restartConfirmation(agents, jobs, activityComplete) : 'Restart'}</Button>
   </span>
+}
+
+function presenceLabel(observed: ComputerActivity | undefined, fresh: boolean) {
+  if (!observed) return 'Status unknown'
+  if (!fresh) return 'Status stale'
+  return observed.online ? 'Online' : 'Offline'
+}
+
+function buildSummary(card: Card, position: number | undefined, total: number) {
+  if (card.buildError) return 'Unavailable'
+  const preference = card.build?.preference
+  if (!preference) return 'Loading…'
+  if (!preference.buildEnabled) return 'Off'
+  const rank = position === undefined ? 'Fleet priority loading' : `${ordinal(position)} of ${total}`
+  return `${rank} · up to ${preference.buildAllowancePercent}% CPU and RAM`
+}
+
+function restartConfirmation(agents: number, jobs: number, complete: boolean) {
+  const work = [agents ? count(agents, 'agent') : '', jobs ? count(jobs, 'job') : ''].filter(Boolean).join(' and ')
+  if (!complete) return work ? `Restart and stop ${work}? Other work may be running` : 'Restart? Other work may be running'
+  return work ? `Restart and stop ${work}?` : 'Confirm restart'
 }
 
 const TASK_LABELS: Record<string, string> = { 'update-harnesses': 'Harness update', 'update-system': 'System update', restart: 'Restart',

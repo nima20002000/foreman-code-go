@@ -1,8 +1,7 @@
 import type pg from 'pg'
 import { COMPUTER_GITHUB_NAMESPACE, GitHubLoginRequestSchema, GitHubLoginStateSchema,
   type GitHubLoginRequest, type GitHubLoginState } from '@foreman-code/contracts/computer-accounts'
-import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
-import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -10,6 +9,7 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import type { ComputerAccountsEndpoint } from './accounts.js'
 import { GitHubLoginRunner } from './githubLogin.js'
+import { assertComputerTarget } from './target.js'
 
 /** Starts, follows and ends GitHub CLI sign-in on Main or a paired computer. Credentials stay on that computer. */
 export class ComputerGitHubService {
@@ -71,18 +71,6 @@ export async function assertCurrentComputer(pool: pg.Pool, mainId: string, princ
   const sql = await pool.connect()
   try {
     requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update')
-    if (target.hostRef.mainId !== mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'This computer belongs to another Main.', 404)
-    if (target.hostRef.kind === 'main') {
-      if (target.applicationInstallationId !== mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'Main installation changed.', 404)
-      return
-    }
-    const row = (await sql.query<{ record: unknown }>(`select record from device_registrations
-      where main_id=$1 and record->>'deviceId'=$2 and record->>'status'='paired' limit 1`, [mainId, target.hostRef.deviceId])).rows[0]
-    const registration = row && DeviceRegistrationSchema.parse(row.record)
-    if (!registration || !sameDeviceProvisioningTarget(target, { hostRef: target.hostRef,
-      applicationInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision,
-      authorizationRevision: registration.authorizationRevision })) {
-      throw new DomainError('COMPUTER_NOT_FOUND', 'This computer is not currently paired with that installation.', 404)
-    }
+    await assertComputerTarget(sql, mainId, target)
   } finally { sql.release() }
 }
