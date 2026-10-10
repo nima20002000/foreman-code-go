@@ -467,6 +467,15 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
     for (const name of records) intents.push((await this.load(name.slice(0, -5))).intent)
     return intents
   }
+  async isRuntimeQuiescent(): Promise<boolean> {
+    if (this.busy.size || this.readers.size || this.allocationBusy) return false
+    for (const intent of await this.inventory()) {
+      const record = await this.load(intent.transferId)
+      if (!['verified', 'cancelled'].includes(record.progress.state)
+        && this.now() < Date.parse(intent.expiresAt)) return false
+    }
+    return this.busy.size === 0 && this.readers.size === 0 && !this.allocationBusy
+  }
   async close() {
     if (this.busy.size || this.readers.size) throw new Error('Transfer operations still active')
     await this.directory?.close(); this.directory = undefined; this.initializing = undefined

@@ -39,6 +39,10 @@ async function main() {
     || (command === 'pair' && !((args.length===4&&args[3]==='--enrollment-stdin')||(args.length===5&&args[3]==='--enrollment-file'&&isAbsolute(args[4]))))
     || (['capture-job-runtime', 'refresh-job-runtime'].includes(command) && !(args.length === 5 && args[3] === '--input' && isAbsolute(args[4])))
     || (command === 'cleanup-job-before-entry' && !(args.length === 5 && args[3] === '--grant' && isAbsolute(args[4])))) throw new WorkerError('usage: graphql-worker --help');
+  if (command === 'run') {
+    const { recoverPendingWorkerUpdate } = await import('./updateSupervisor.mjs');
+    await recoverPendingWorkerUpdate(stateDirectory);
+  }
   if (command === 'cleanup-job-before-entry') {
     const { cleanupJobBeforeEntry } = await import('./jobCancellationCleanup.mjs');
     console.log(JSON.stringify(await cleanupJobBeforeEntry(stateDirectory, args[4])));

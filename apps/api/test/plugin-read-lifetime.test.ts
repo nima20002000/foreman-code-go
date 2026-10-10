@@ -56,7 +56,7 @@ function codexFixture(wait?: (signal: AbortSignal) => Promise<void>) {
       { file: '/unit/config.toml', userConfig: { plugins: installed ? { [item.pluginId]: { enabled: true } } : {} } },
       'complete')
   })
-  const adapter: CodexPluginAdapter = { list, detail: async () => ({ status: 'unknown' }),
+  const adapter: CodexPluginAdapter = { recoveryIdentity: 'fixture-writer', list, detail: async () => ({ status: 'unknown' }),
     change: async () => ({ acknowledged: true, version: '1' }) }
   const service = new CodexPluginSettingsService({} as pg.Pool, adapter)
   cleanup.push(() => service.shutdown())

@@ -70,7 +70,7 @@ it('reports Claude as installed when its preset already has the app MCP', () => 
 
 it('uses a new Claude command after a completed install is removed in another session', async () => {
   const inputs: DefaultsUpdate[] = []
-  const endpoint = { type: 'http', url: 'http://127.0.0.1:3000/mcp' }
+  const endpoint = { type: 'http' as const, url: 'http://127.0.0.1:3000/mcp' }
   const defaults = { ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: {} } }
   server.use(
     http.get('/api/management/harnesses/claude/setup-options', () => HttpResponse.json({ graphqlMcp: endpoint })),

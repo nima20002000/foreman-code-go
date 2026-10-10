@@ -136,3 +136,25 @@ it('refreshes running maintenance progress after three seconds', async () => {
   await f.read()
   expect(f.probes()).toBe(2)
 })
+
+it('shares a pending automatic Worker observation and refreshes update progress after settlement', async () => {
+  const f = fixture('maintenance')
+  f.status.worker = {
+    currentVersion: '0.0.56', targetVersion: '0.0.57', state: 'downloading', lastError: null,
+  }
+  const release = f.delayProbes()
+  const first = f.read()
+  await expect.poll(f.probes).toBe(1)
+  f.advance(20_001)
+  const refreshed = f.read(true)
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(f.probes()).toBe(1)
+  release()
+  expect(await refreshed).toEqual(await first)
+  f.advance(2_999)
+  await f.read()
+  expect(f.probes()).toBe(1)
+  f.advance(1)
+  await f.read()
+  expect(f.probes()).toBe(2)
+})

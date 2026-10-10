@@ -23,7 +23,7 @@ export function createCompanionService({ home, stateDirectory, node = process.ex
     const release = await readInstalledRelease({ root, facts: await factsProvider(home, [root, state]), expected: { protocolVersion: 1, identityFormat: 1 } });
     if (!release.manifest.files.some((file) => file.path === 'artifacts/graphql-worker.service.in')) throw new WorkerError('installation_invalid');
     const unitText = renderUserService(await readFile(join(release.directory, 'artifacts/graphql-worker.service.in'), 'utf8'), {
-      node, app: root, state, home, path: environment.PATH, entrypoint: join(release.directory, 'src/cli.mjs'),
+      node, app: root, state, home, path: environment.PATH,
     });
     let retained;
     try {

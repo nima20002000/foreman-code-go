@@ -12,16 +12,21 @@ import { useHarnessSessionEpoch } from './harnessSettings'
 import { assertSession, sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 
 const key = () => ['computer-maintenance', sessionGeneration()] as const
-const running = (value: MaintenanceStatus | null | undefined) =>
-  Boolean(value?.tasks.some(task => task.state === 'running'))
+function needsFrequentRefresh(value: MaintenanceStatus | null | undefined, target: DeviceProvisioningTarget) {
+  if (target.hostRef.kind === 'device' && value === null) return true
+  const worker = value?.worker
+  const updatingWorker = worker !== undefined && worker.state !== 'current'
+    && worker.state !== 'failed' && worker.state !== 'rolled-back'
+  return updatingWorker || Boolean(value?.tasks.some(task => task.state === 'running'))
+}
 
-/** Versions, OS updates, restart need, disk and recent maintenance tasks for every computer. Polls faster while a task runs. */
+/** Reads each computer independently and polls faster during maintenance, Worker updates and reconnects. */
 export function useComputerMaintenance(targets: readonly DeviceProvisioningTarget[]) {
   useHarnessSessionEpoch()
   return useQueries({ queries: targets.map(target => ({
     queryKey: [...key(), target], enabled: !sessionIsSwitching(), retry: false, staleTime: 15_000,
     refetchInterval: (query: { state: { data: MaintenanceStatus | null | undefined } }) =>
-      running(query.state.data) ? 5_000 : 60_000,
+      needsFrequentRefresh(query.state.data, target) ? 5_000 : 60_000,
     queryFn: async ({ signal }: QueryFunctionContext) => {
       const result = await apiClient.request('/api/management/computers/maintenance/read', ComputerMaintenanceListSchema,
         { method: 'POST', body: ComputerMaintenanceReadInputSchema.parse({ target }), signal })

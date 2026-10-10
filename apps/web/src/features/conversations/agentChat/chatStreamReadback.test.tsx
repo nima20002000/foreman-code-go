@@ -55,8 +55,7 @@ it('accepts a slow state read during activity traffic and coalesces one trailing
   const trailing = deferred<void>()
   releases.push(() => first.resolve(), () => trailing.resolve())
   const updated: AgentChatState = { ...initial, revision: initial.revision + 1,
-    messages: initial.messages.map(message => ({ ...message, content: 'Readback accepted during activity',
-      revision: String(BigInt(message.revision ?? '0') + 1n) })) }
+    messages: initial.messages.map(message => ({ ...message, content: 'Readback accepted during activity' })) }
   const signals: (AbortSignal | undefined)[] = []
   vi.spyOn(agentChatApi, 'read').mockImplementation(async (_context, options) => {
     signals.push(options?.signal)

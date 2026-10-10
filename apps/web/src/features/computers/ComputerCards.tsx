@@ -133,6 +133,10 @@ function ComputerCard({ card, observed, fresh, activityComplete, accounts, maint
           version={maintenance?.harnesses.find(entry => entry.harness === tool)} busy={maintaining || maintenanceError}
           onInstall={() => onMaintain({ kind: 'update-harnesses', harnesses: [tool] })} />)}
       </dd></div>
+      {card.target.hostRef.kind === 'device' ? <div><dt>Worker</dt><dd>
+        <WorkerState worker={maintenance?.worker} busy={maintaining || maintenanceError}
+          onUpdate={() => onMaintain({ kind: 'update-worker' })} />
+      </dd></div> : null}
       <div><dt>GitHub</dt><dd><GitHubState account={account('github')} computer={name} known={Boolean(accounts)} /></dd></div>
       <div><dt>Builds</dt><dd>{buildSummary(card, buildPosition, buildCount)}
         {card.build?.state === 'setup-required' ? <Badge tone="warning">Setup needed</Badge> : null}</dd></div>
@@ -186,6 +190,36 @@ function HarnessChip({ label, account, computer, known, version, busy, onInstall
   return <Badge tone="success">{named}</Badge>
 }
 
+type WorkerStatus = NonNullable<MaintenanceStatus['worker']>
+const WORKER_STATE_LABELS: Record<WorkerStatus['state'], string> = {
+  current: 'Up to date',
+  pending: 'Update pending',
+  draining: 'Waiting for current work to finish',
+  downloading: 'Downloading update',
+  installing: 'Installing update',
+  restarting: 'Restarting Worker',
+  'rolled-back': 'Rolled back to previous version',
+  failed: 'Update failed',
+}
+
+function WorkerState({ worker, busy, onUpdate }: {
+  worker: MaintenanceStatus['worker']; busy: boolean; onUpdate(): void
+}) {
+  const retry = worker?.state === 'failed' || worker?.state === 'rolled-back'
+  const updating = worker !== undefined && worker.state !== 'current' && !retry
+  return <span className="computer-card-worker">
+    {worker ? <>
+      <span>Current {worker.currentVersion}</span>
+      <span>Target {worker.targetVersion ?? 'not reported'}</span>
+      <span role="status"><Badge tone={retry ? 'warning' : 'neutral'}>{WORKER_STATE_LABELS[worker.state]}</Badge></span>
+      {worker.lastError ? <small className="computer-card-worker-error">Last error: {worker.lastError}</small> : null}
+    </> : <span>Status unavailable</span>}
+    <Button size="sm" variant="ghost" disabled={busy || !worker || updating} onClick={onUpdate}>
+      {retry ? 'Retry Worker update' : 'Update Worker'}
+    </Button>
+  </span>
+}
+
 /** OS updates and restart. Restart asks once more because it stops what is running on that computer. */
 function SystemState({ status, busy, onMaintain, agents, jobs, activityComplete }: {
   status: MaintenanceStatus | null | undefined; busy: boolean; onMaintain(task: Task): void
@@ -232,7 +266,7 @@ function restartConfirmation(agents: number, jobs: number, complete: boolean) {
 }
 
 const TASK_LABELS: Record<string, string> = { 'update-harnesses': 'Harness update', 'update-system': 'System update', restart: 'Restart',
-  'sync-mcp': 'MCP sync', 'sync-plugins': 'Plugin sync' }
+  'sync-mcp': 'MCP sync', 'sync-plugins': 'Plugin sync', 'update-worker': 'Worker update' }
 function taskLabel(kind: string) { return TASK_LABELS[kind] ?? kind }
 function bytes(value: number) { return value >= 1e12 ? `${(value / 1e12).toFixed(1)} TB` : `${Math.round(value / 1e9)} GB` }
 
