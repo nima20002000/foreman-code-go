@@ -210,7 +210,7 @@ describe('computer maintenance', () => {
         { transport: 'stdio', name: 'search', command: 'npx', args: ['search-mcp'], envVars: [] }],
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] } })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
-      summary: 'Codex: Added search · Claude is not installed; MCP sync remains pending.' })
+      summary: 'Claude is not installed; MCP sync remains pending. · Codex: Added search' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['mcp', 'add', 'search', '--', 'npx', 'search-mcp'] })
     await maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['pdf@openai', 'documents@openai'], marketplaces: [] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'succeeded', summary: 'Codex: Installed documents@openai · Claude: Nothing to sync' })
@@ -222,7 +222,7 @@ describe('computer maintenance', () => {
     await maintenance.start({ kind: 'sync-plugins', claudePlugins: [], claudeMarketplaces: [], plugins: ['skill-creator@claude-plugins-official', 'lost@elsewhere', 'pdf@openai'],
       marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }] })
     expect((await settle(maintenance)).tasks[0]).toMatchObject({ state: 'failed',
-      summary: 'Claude: Nothing to sync · Codex: Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere' })
+      summary: 'Codex: Installed skill-creator@claude-plugins-official, pdf@openai · Could not install lost@elsewhere · Claude: Nothing to sync' })
     expect(fake.runs).toContainEqual({ binary: '/usr/bin/codex', args: ['plugin', 'marketplace', 'add', 'https://github.com/anthropics/claude-plugins-official.git'] })
   })
 })
