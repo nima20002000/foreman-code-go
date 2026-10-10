@@ -167,12 +167,14 @@ describe('persisted native Run activity', () => {
       }
       const page = await readBoth(app, fixture)
       expect(page.items.map(item => item.summary)).toEqual([
+        'Run queued', 'Agent work queued',
         'Agent message updated', 'Command output updated', 'Agent reasoning started', 'Agent reasoning completed',
         'Agent message completed', 'Agent message completed', 'User message completed', 'File change completed',
         'Command: git completed', 'Tool: workspace_list completed', 'Tool: lookup failed', 'Web search completed',
         'Token usage updated',
       ])
       expect(page.items.map(item => item.detail)).toEqual([
+        undefined, undefined,
         'Received 15 characters.', 'Received 14 characters.', undefined, undefined,
         'Progress update.', 'Final answer.', undefined, 'Changes cover 1 file.', 'Exit code: 0.',
         undefined, undefined, undefined, undefined,
