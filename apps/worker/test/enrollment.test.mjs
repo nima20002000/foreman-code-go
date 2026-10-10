@@ -21,7 +21,7 @@ async function fixture(t) {
   const input = { mainId: randomUUID(), mainPublicKeyFingerprint: publicKeyFingerprint(publicKey), endpoint: 'wss://main.example/device/connect', grant: 'a'.repeat(43), requestId: randomUUID() };
   const enrollmentFile = join(directory, 'enrollment.json');
   await writeFile(enrollmentFile, JSON.stringify(input), { mode: 0o600 });
-  return { stateDirectory: directory, identity, enrollmentFile, appVersion: '0.1.0', input, key, publicKey };
+  return { stateDirectory: directory, home: directory, identity, enrollmentFile, appVersion: '0.1.0', input, key, publicKey };
 }
 
 test('fresh selected-main proof precedes grant; persisted credential never enters CLI result', async (t) => {

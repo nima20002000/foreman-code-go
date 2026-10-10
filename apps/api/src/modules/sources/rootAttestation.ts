@@ -84,6 +84,26 @@ export async function attestWorkspaceRoot(raw: ApprovedRootAllowlist, input: Wor
     finally { await directory.close() }
   }
 }
+/** The Worker selects the base during pairing; callers can only create their workspace's folder. */
+export async function prepareManagedWorkspaceRoot(raw: ApprovedRootAllowlist, input: WorkspaceRootSelection) {
+  const allowlist = ApprovedRootAllowlistSchema.parse(raw)
+  const selection = WorkspaceRootSelectionSchema.parse(input)
+  const base = selectBase(allowlist, selection)
+  const folder = sourceSha256(Buffer.from(selection.workspaceId))
+  if (base.managedBy !== 'worker-pairing' || selection.relativePath !== folder || selection.accessMode !== 'read-write') {
+    throw new SourceError('ROOT_ACCESS_DENIED', 'Automatic root setup is limited to this workspace’s managed folder.')
+  }
+  const directory = await openPrivateRoot(base.canonicalPath)
+  try {
+    if (!isDeepStrictEqual(await identity(directory), base.filesystem)) {
+      throw new SourceError('ROOT_BASE_CHANGED', 'The managed workspace base changed.')
+    }
+    const child = await openChildDirectory(directory, folder, true)
+    try { await child.sync(); await directory.sync() }
+    finally { await child.close() }
+  } finally { await directory.close() }
+  return attestWorkspaceRoot(allowlist, selection)
+}
 export async function browseApprovedRoot(raw: ApprovedRootAllowlist, input: WorkspaceRootSelection, relativePath: string): Promise<WorkspaceRootBrowseResult> {
   const allowlist = ApprovedRootAllowlistSchema.parse(raw), selection = WorkspaceRootSelectionSchema.parse(input), base = selectBase(allowlist, selection)
   rootRelativePath(relativePath)
@@ -104,7 +124,7 @@ export async function browseApprovedRoot(raw: ApprovedRootAllowlist, input: Work
 }
 /** Human-approved bootstrap only; remote messages never accept these paths. */
 export async function qualifyApprovedRootAllowlist(input: Omit<ApprovedRootAllowlist, 'bases' | 'runtimeFilesystem'> & {
-  bases: { baseId: string; canonicalPath: string; accessModes: ApprovedRootAllowlist['bases'][number]['accessModes'] }[]
+  bases: Omit<ApprovedRootAllowlist['bases'][number], 'filesystem'>[]
 }): Promise<ApprovedRootAllowlist> {
   const bases: ApprovedRootAllowlist['bases'] = []
   for (const base of input.bases) {
@@ -148,6 +168,7 @@ export function createWorkspaceRootWorkerHandler(readApproved: () => Promise<App
     const allowlist = ApprovedRootAllowlistSchema.parse(await readApproved())
     if (request.operation === 'workspace-roots.configuration') return allowlist
     if (request.operation === 'workspace-roots.attest') return attestWorkspaceRoot(allowlist, request.selection)
+    if (request.operation === 'workspace-roots.prepare-managed') return prepareManagedWorkspaceRoot(allowlist, request.selection)
     if (request.operation === 'workspace-roots.browse') return browseApprovedRoot(allowlist, request.selection, request.relativePath)
     return attestSourceNamespace(allowlist, request.policy)
   }

@@ -17,11 +17,14 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { WorkerUpdater, workerUpdateExtension } from './update.mjs';
 import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
+import { ensurePairedManagedSetup } from './managedSetup.mjs';
+
+export { ensurePairedManagedSetup };
+export { inspectManagedInstallation } from './managedInstallation.mjs';
 
 export { createWorkerConnection };
 export { approvedRootExtensions, createWorkerExecutionDomains };
-// Read-only qualification helper for the explicit human installation gate only.
-// Startup consumes and verifies the approved facts; it never calls this helper.
+// Arbitrary paths use explicit local approval; managed storage is qualified during pairing.
 export { qualifyApprovedRootAllowlist } from '../../../apps/api/src/modules/sources/rootAttestation.ts';
 export { captureInstalledRuntimeConfiguration, captureInstalledRuntimeConfigurationRecord } from '../../../apps/api/src/modules/jobs/installedRuntimeHost.ts';
 
@@ -62,7 +65,7 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
 export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync }) {
   const manifest = await prepareWorkerState(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
-  let installed, connection, rsyncEntrypoint, updater;
+  let installed, connection, rsyncEntrypoint, updater, managedSetup;
   const bindingDrains = new Set();
   const bindingFailures = [];
   const bindingLost = binding => {
@@ -86,6 +89,9 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     if (rsyncEntrypoint?.kind === 'configured') await rsyncEntrypoint.close();
   }, createConnection: async ({ bootId, assertStateOwnership }) => {
     const pairing = await loadWorkerPairing(stateDirectory);
+    managedSetup = executionDomains ? undefined
+      : await ensurePairedManagedSetup({ stateDirectory, pairing, assertStateOwnership });
+    if (managedSetup?.state === 'failed') process.stderr.write(`Managed CI setup: ${managedSetup.message}\n`);
     if (!executionDomains) {
       const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
       const releaseDirectory = fileURLToPath(new URL('../', import.meta.url));
@@ -97,7 +103,8 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         reportError: error => process.stderr.write(`Worker update: ${error.code ?? 'worker_update_failed'}\n`),
       }).initialize();
     }
-    const rootExtensions = await approvedRootExtensions(stateDirectory, pairing, bootId);
+    const rootExtensions = managedSetup?.state === 'failed' ? []
+      : await approvedRootExtensions(stateDirectory, pairing, bootId);
     if (!executionDomains) {
       if (!rsync) {
         try { rsyncEntrypoint = await loadWorkerRsyncEntrypoint({ path: join(stateDirectory, 'rsync-selection.json'), pairing,
@@ -120,9 +127,12 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
       installed = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId, assertStateOwnership,
         ...(updater ? { workerUpdate: { status: () => updater.status(), start: () => updater.start({ retry: true }),
           outcome: task => updater.maintenanceOutcome(task) } } : {}),
-        configuration: selection ? { path: configurationPath, ownerUid: process.getuid() } : null,
-        jobConfiguration: jobSelection ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
-        approvedRoots: () => loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
+        configuration: selection && managedSetup?.state !== 'failed'
+          ? { path: configurationPath, ownerUid: process.getuid() } : null,
+        jobConfiguration: jobSelection && managedSetup?.state !== 'failed'
+          ? { path: jobConfigurationPath, ownerUid: process.getuid() } : null,
+        approvedRoots: () => managedSetup?.state === 'failed' ? Promise.resolve(null)
+          : loadApprovedRoots(stateDirectory, pairing), connection: () => connection,
         ...(rsync ? { rsync } : rsyncEntrypoint?.kind === 'configured' ? { rsync: rsyncEntrypoint.providers } : {}),
         codexSuiteRevision: qualificationRevisionWithIdentity(codexQualificationSuite.revision) });
       if (installed.rsync) {
@@ -142,5 +152,5 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         ...(execution?.extensions ?? []), ...(installed?.extensions ?? []), ...rootExtensions] });
     return connection;
   } });
-  return runtime;
+  return { ...runtime, managedSetup };
 }

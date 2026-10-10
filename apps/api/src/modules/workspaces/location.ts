@@ -382,7 +382,8 @@ export class WorkspaceLocationService {
       if (modern.success && 'hostRef' in modern.data) {
         if (!this.rootPolicies) throw new DomainError('ROOT_CONFIGURATION_UNAVAILABLE', 'Computer root inspection is unavailable.', 503)
         const policies = await this.rootPolicies.read(sql, principal, workspaceId)
-        const current = policies.filter(policy => policy.locationRevision === String(locationRevision))
+        const current = policies.filter(policy => policy.bindingPurpose !== 'ci-enrollment'
+          && policy.locationRevision === String(locationRevision))
         const policy = current[0]
         if (current.length !== 1 || !policy || policy.canonicalProjectRoot !== executionLocation.rootPath
           || (policy.hostRef.kind === 'main' ? this.runnerId : policy.applicationInstallationId) !== executionLocation.runnerId

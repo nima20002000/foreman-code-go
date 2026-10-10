@@ -10,6 +10,7 @@ const args = process.argv.slice(2);
 const command = args[0];
 const stateDirectory = [3, 4, 5].includes(args.length) && args[1] === '--state' && isAbsolute(args[2]) ? resolve(args[2]) : null;
 let runtime;
+let managedSetupRetry;
 let pairingErrorMessage;
 const help = `Foreman Code worker
 
@@ -25,11 +26,12 @@ Install: node /approved/artifact/src/install-cli.mjs install --root /private/app
 Update: use the same install command with the new approved artifact and hash, adding --approve-stopped-update yes.
 Rollback: node /approved/artifact/src/install-cli.mjs rollback --root /private/app --state /private/state --approve-stopped-update yes
 Before update or rollback, complete the approved drain/stop policy and stop the worker service. An active worker blocks replacement.
-Initialize-native-runtime is an explicit new-installation action. A lost established journal requires original-owner recovery.
+Pairing automatically prepares private managed roots and native journals and adopts a previous managed CI installation.
+Arbitrary user paths still require explicit local approval. A lost established journal requires original-owner recovery.
 Capture-job-runtime is a human-reviewed installer action while the worker is stopped. It refuses an existing job-runtime.json and never qualifies or launches a Job.
 Refresh-job-runtime requires the previous configuration digest, completed original work and a stopped Worker. It preserves the previous configuration and requires fresh physical approval.
 Cleanup-job-before-entry requires a current Main-signed human-approved grant and a stopped worker. It preserves the original journal and source bytes; it cannot stop a Job that entered native execution.
-Operator MCP can manage CI policies and request/read/run human-approved qualification; it cannot self-select installer filesystem paths or approve itself.
+Operator MCP can read automatic setup through ci_enrollment_get and manage authorized CI enrollment and qualification. Arbitrary installer paths cannot be auto-approved through MCP.
 Keep app and state in separate private persistent directories. Pairing retries reuse the original enrollment file, requestId and state identity.
 `;
 async function main() {
@@ -109,9 +111,17 @@ async function main() {
   }
   runtime = await startConfiguredWorker({ stateDirectory });
   const stop = () => {
+    clearTimeout(managedSetupRetry);
     runtime.stop().then(() => process.exit(0), () => { console.error('shutdown_timeout'); process.exit(1); });
   };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
+  if (runtime.managedSetup && runtime.managedSetup.state !== 'ready') {
+    // The user service restarts failures; keep the authenticated status available between automatic retries.
+    managedSetupRetry = setTimeout(() => {
+      runtime.stop().then(() => process.exit(1), () => { console.error('shutdown_timeout'); process.exit(1); });
+    }, 30_000);
+    managedSetupRetry.unref();
+  }
 }
 main().catch((error) => {
   const fallback = command === 'cleanup-job-before-entry' ? 'job_cleanup_failed' : 'worker_start_failed';

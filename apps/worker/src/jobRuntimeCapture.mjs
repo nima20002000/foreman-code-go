@@ -13,7 +13,7 @@ import { hostFacts, WorkerError } from './diagnostics.mjs';
 import { acquireWorkerLock } from './runtime.mjs';
 import { loadApprovedRoots } from './approvedRoots.mjs';
 
-async function readPrivateBytes(parent, name, maximumBytes = 65536) {
+export async function readPrivateBytes(parent, name, maximumBytes = 65536) {
   const file = await open(anchored(parent, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = await file.stat();
@@ -30,11 +30,11 @@ async function readPrivateBytes(parent, name, maximumBytes = 65536) {
     return bytes;
   } finally { await file.close(); }
 }
-async function readPrivateJson(parent, name, maximumBytes = 65536) {
+export async function readPrivateJson(parent, name, maximumBytes = 65536) {
   return JSON.parse((await readPrivateBytes(parent, name, maximumBytes)).toString('utf8'));
 }
 
-async function assertRuntimeQuiescent(stateDirectory, assertExclusiveOwner) {
+export async function assertRuntimeQuiescent(stateDirectory, assertExclusiveOwner) {
   for (const name of ['workflow-operations.json', 'job-runtime-operations.json']) {
     const journal = await RemoteOperationJournal.open(join(stateDirectory, name), { assertExclusiveOwner });
     try { await journal.assertRuntimeQuiescent(); } finally { await journal.close(); }

@@ -6,6 +6,7 @@ import { lstat, readFile } from 'node:fs/promises';
 import { WorkerEnrollmentInputSchema, DevicePairingResultSchema } from '../../../packages/contracts/src/deviceIdentity.ts';
 import { pairingProof, verifyMainEnrollmentProof, persistWorkerPairing } from '../../../packages/contracts/src/deviceIdentityNode.ts';
 import { WorkerError } from './diagnostics.mjs';
+import { ensurePairedManagedSetup } from './managedSetup.mjs';
 
 const retryHint = 'Keep the original state directory, identity, enrollment file and requestId. Retry the same pair command; do not create a new identity or requestId.';
 const recoveryHints = {
@@ -98,7 +99,7 @@ async function enrollmentPost(post, url, body, pairing) {
   }
 }
 
-export async function enrollWorker({ stateDirectory, identity, enrollmentFile, appVersion, post = boundedPost }) {
+export async function enrollWorker({ stateDirectory, identity, enrollmentFile, appVersion, home, post = boundedPost }) {
   let file, contents;
   try { file = await lstat(enrollmentFile); }
   catch (error) { throw new WorkerError(error.code === 'ENOENT' ? 'pairing_file_missing' : 'pairing_file_unreadable'); }
@@ -110,15 +111,15 @@ export async function enrollWorker({ stateDirectory, identity, enrollmentFile, a
   catch { throw new WorkerError('pairing_file_json_invalid'); }
   const parsed = WorkerEnrollmentInputSchema.safeParse(json);
   if (!parsed.success) throw new WorkerError('pairing_file_schema_invalid');
-  return enrollWorkerInput({stateDirectory,identity,enrollment:parsed.data,appVersion,post});
+  return enrollWorkerInput({stateDirectory,identity,enrollment:parsed.data,appVersion,post,home});
 }
-export async function enrollWorkerCode({stateDirectory,identity,enrollmentCode,appVersion,post}) {
+export async function enrollWorkerCode({stateDirectory,identity,enrollmentCode,appVersion,post,home}) {
   let code;
   try{code=verifiedWorkerEnrollmentCode(enrollmentCode,identity);}
   catch(error){throw new WorkerError(error.message==='DEVICE_SETUP_IDENTITY_MISMATCH'?'setup_code_identity_mismatch':error.message==='DEVICE_SETUP_CODE_EXPIRED'?'setup_code_expired':'setup_code_invalid');}
-  return enrollWorkerInput({stateDirectory,identity,enrollment:code.enrollment,appVersion,post:post??(code.tlsTrust?scopedEnrollmentPost(code.tlsTrust):boundedPost),tlsTrust:code.tlsTrust});
+  return enrollWorkerInput({stateDirectory,identity,enrollment:code.enrollment,appVersion,post:post??(code.tlsTrust?scopedEnrollmentPost(code.tlsTrust):boundedPost),tlsTrust:code.tlsTrust,home});
 }
-async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,post,tlsTrust}) {
+async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,post,tlsTrust,home}) {
   const endpoint = new URL(enrollment.endpoint);
   if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.pathname !== '/device/connect' || endpoint.search || endpoint.hash) throw new WorkerError('enrollment_endpoint_invalid');
   const http = new URL(endpoint); http.protocol = 'https:';
@@ -136,5 +137,9 @@ async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,
   if (result.registration.mainId !== enrollment.mainId || result.registration.workerInstallationId !== identity.workerInstallationId || result.registration.publicKeyFingerprint !== identity.publicKeyFingerprint || result.registration.keyRevision !== identity.keyRevision || result.registration.status !== 'paired') throw new WorkerError('enrollment_identity_mismatch');
   try { await persistWorkerPairing(stateDirectory, { formatVersion: 1, mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, keyRevision: result.registration.keyRevision, authorizationRevision: result.registration.authorizationRevision, endpoint: enrollment.endpoint, mainPublicKeyFingerprint: enrollment.mainPublicKeyFingerprint, credential: result.credential, expiresAt: result.expiresAt,...(tlsTrust?{tlsTrust}:{}) }); }
   catch { throw new WorkerError('pairing_persistence_failed'); }
+  const pairing = { mainId: result.registration.mainId, deviceId: result.registration.deviceId,
+    workerInstallationId: identity.workerInstallationId, keyRevision: result.registration.keyRevision,
+    authorizationRevision: result.registration.authorizationRevision };
+  await ensurePairedManagedSetup({ stateDirectory, pairing, home });
   return { mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, authorizationRevision: result.registration.authorizationRevision };
 }

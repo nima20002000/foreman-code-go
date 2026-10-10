@@ -63,7 +63,7 @@ export const GRAPHQL_OPERATOR_TOOLS = {
     scope: 'workspace', readOnly: false,
   },
   operator_tool_schema_get: { label: 'Read Operator tool schema', description: 'Read one caller-available tool’s input schema and instructions; output schema is opt-in.', roles: ['operator'], action: 'read-operator-tool-schema', actions: ['capabilities:read'], scope: 'caller', readOnly: true },
-  workspace_root_configuration_adopt: { label: "Adopt protected root configuration", description: "Audit adoption of the selected host's existing approved roots; no caller paths or execution authority.", roles: ["operator"], action: "adopt-workspace-root-configuration", actions: ["source_roots:bind", "workspace_locations:update"], scope: "workspace", readOnly: false },
+  workspace_root_configuration_adopt: { label: "Adopt protected root configuration", description: "Audit adoption of the selected host's approved roots, including private product storage approved by human computer pairing. Arbitrary user paths require explicit local approval; caller paths are not accepted.", roles: ["operator"], action: "adopt-workspace-root-configuration", actions: ["source_roots:bind", "workspace_locations:update"], scope: "workspace", readOnly: false },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[]; action: string; actions: readonly string[]; scope: "run" | "workspace" | "caller"; readOnly: boolean }>;
 
 export const GraphqlAgentToolSchema = z.enum(

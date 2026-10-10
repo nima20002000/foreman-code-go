@@ -48,27 +48,34 @@ runtime/persistence checks as the CLI and returns the worker handle with B's
 the real domain handlers and grants. No empty dispatch handler or dynamic plugin
 loader is installed by this package. The CLI accepts no caller-provided extensions.
 
-The worker also loads `approved-roots.json` from its private state directory when
-present. This exact shared W09 allowlist is human-only configuration because it
-expands the worker's filesystem scope. Main HTTP/MCP operations may select an
-approved base and relative folder; they cannot supply an allowlist, arbitrary
-absolute path, or modify this file. No configured allowlist means no root handler.
+Human computer pairing approves private product storage. Pairing and Worker
+startup create owner-only persistent workspace/runtime directories beneath the
+Worker state directory, qualify their filesystem identities, initialize new
+native journals, and publish the pairing-bound `approved-roots.json`. An
+established missing journal remains a recovery error. Additional user folders
+still require explicit local approval through `qualifyApprovedRootAllowlist`;
+HTTP/MCP cannot supply paths or write the allowlist.
 
-After the explicit root/install approval gate, the exported read-only
-`qualifyApprovedRootAllowlist` helper can record approved canonical base/runtime
-paths and their filesystem identities. Persist the reviewed result as an
-OS-user-owned private 0600 file, separate from versioned app code. This workstream
-does not create or approve real roots, change filesystem modes, or write that
-configuration on a laptop. Root paths must already exist and be persistent.
+When a previous managed CI installation exists, the Worker locks it, checks its
+original work is closed, and re-inspects its runtime, seed and quota directories.
+It retains valid images, caches and quota slots, retires the old pairing and
+runtime selectors, and records installation inputs for the current pairing.
+These inputs cannot execute Jobs. Enrollment adopts the authenticated managed
+configuration, creates a per-workspace managed root without changing the primary
+workspace location, and prepares, captures and qualifies a fresh runtime. The
+first capture relocates idle quota slots into the newly bound source namespace.
 
-Startup binds the file to the selected main/device/installation, verifies every
-approved inode/mount identity without refreshing mismatches, and registers the
-actual W09 `workspace-roots-v1` attestation/browse/source-namespace handler through
-W07's authenticated channel. Each request checks its current boot, connection,
-key/authorization revisions and approved base/access scope before reading the
-allowlist or target filesystem. Changed config is re-read and fenced; additions
-require an approved restart to negotiate the startup scope. Updates/rollback keep
-the file in persistent state. Doctor does not disclose these private paths.
+`ci_enrollment_get` exposes persisted managed setup/migration status and errors;
+qualification is reported separately. The user service retries incomplete setup
+automatically. A computer without an installed quota-enabled CI volume reports
+`runtime-unavailable`; pairing does not change privileged host prerequisites or
+weaken quota checks. Arbitrary bases from an old pairing are not transferred.
+
+Root requests check the current boot, connection, pairing revisions and approved
+scope before reading configuration or changing storage. The managed-folder
+operation accepts only the workspace's fixed relative directory beneath a
+pairing-managed base. Updates/rollback retain private state, and Doctor remains
+read-only.
 
 ## Build and approve an artifact
 

@@ -8,6 +8,7 @@ import { prepareCiRuntime } from './ciRuntimePrepare.js'
 import { lastCiRuntimeRefresh, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { readCiInstalledStorage } from './ciInstalledStorage.js'
 import { ciPreparationLimits } from './ciPreparationLimits.js'
+import { readCiManagedSetup } from './ciRuntimeInstallation.js'
 
 export interface CiRuntimeWorkerPorts {
   git: GitWorktreePorts
@@ -35,7 +36,13 @@ export class CiRuntimeWorker {
   async handle(raw: unknown): Promise<CiRuntimeWorkerState> {
     const request = CiRuntimeRequestSchema.parse(raw)
     if (request.operation === 'status') {
-      return { ...await this.status(), installedStorage: await readCiInstalledStorage(this.stateDirectory) }
+      const managedSetup = await readCiManagedSetup(this.stateDirectory)
+      const installedStorage = managedSetup?.state === 'failed' ? null : await readCiInstalledStorage(this.stateDirectory)
+      return { ...await this.status(), installedStorage, ...(managedSetup ? { managedSetup } : {}) }
+    }
+    const managedSetup = await readCiManagedSetup(this.stateDirectory)
+    if (managedSetup && managedSetup.state !== 'ready') {
+      throw new DomainError('CI_RUNTIME_SETUP_REQUIRED', managedSetup.message ?? 'Managed CI storage is unavailable.', 409)
     }
     this.lifetime.throwIfAborted()
     if (request.operation === 'source') {

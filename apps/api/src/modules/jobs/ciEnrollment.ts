@@ -18,11 +18,13 @@ import type { CiEnrollmentInventory, CiEnrollmentTarget } from './ciEnrollmentIn
 import { ciEnrollmentDisabled, lockCiEnrollment } from './ciEnrollmentInventory.js'
 import { ciEnrollmentProfileInput, ciEnrollmentTemplateDigest, requireCiEnrollmentStorage } from './ciEnrollmentProfiles.js'
 import { JobOwnership } from './ownership.js'
-import { jobDigest } from './digest.js'
+import { canonical, jobDigest } from './digest.js'
 import type { JobSql } from './repository.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 
-export const CI_ENROLLMENT_ACTIONS: ManagementAction[] = [...CI_PREPARATION_ACTIONS]
+export const CI_ENROLLMENT_ACTIONS: ManagementAction[] = [
+  ...CI_PREPARATION_ACTIONS, 'workspace_locations:validate', 'workspace_locations:update',
+]
 type Profiles = Pick<JobRuntimeProfiles, 'list' | 'save'>
 type Preparation = Pick<CiRuntimeProvisioner, 'start' | 'get'>
 const templateSetupRequired = {
@@ -94,8 +96,8 @@ export class CiEnrollment {
     const listed = await this.profiles.list(principal, workspaceId)
     const hasTemplates = listed.profiles.some(row => row.profile.status !== 'revoked')
     const computers = (await this.inventory.computers()).map(computer => {
-      const state = saved.find(row => buildComputerKey(row.state.target) === buildComputerKey(computer.target))?.state
-        ?? this.initial(computer)
+      const stored = saved.find(row => buildComputerKey(row.state.target) === buildComputerKey(computer.target))?.state
+      const state = this.targetState(computer, stored)
       const setup = hasTemplates ? {} : templateSetupRequired
       return { ...state, ...setup, target: computer.target, ...this.availability(computer, state.enabled) }
     })
@@ -188,6 +190,12 @@ export class CiEnrollment {
       message: null, updatedAt: null }
   }
 
+  private targetState(computer: CiEnrollmentTarget, state?: CiEnrollmentComputer): CiEnrollmentComputer {
+    if (!state) return this.initial(computer)
+    if (canonical(state.target) === canonical(computer.target)) return state
+    return { ...this.initial(computer), revision: state.revision, enabled: state.enabled }
+  }
+
   private availability(computer: CiEnrollmentTarget, enabled: boolean): Partial<CiEnrollmentComputer> {
     if (!enabled || !computer.buildEnabled) return { state: 'disabled' }
     if (!computer.connected) return { state: 'offline' }
@@ -196,7 +204,7 @@ export class CiEnrollment {
 
   private async enroll(principal: ManagementPrincipal, workspaceId: string, computer: CiEnrollmentTarget,
     templates: JobRuntimeProfileRecord[], record: CiEnrollmentRecord): Promise<void> {
-    record.state = { ...record.state, target: computer.target, message: null, state: 'pending',
+    record.state = { ...this.targetState(computer, record.state), target: computer.target, message: null, state: 'pending',
       ...this.availability(computer, record.state.enabled), updatedAt: new Date().toISOString() }
     if (record.state.state !== 'pending') {
       await this.repository.save(this.pool, workspaceId, record)
@@ -212,13 +220,22 @@ export class CiEnrollment {
     }))
     try {
       const verification = templates.filter(template => template.schemaVersion === 2)
-      const storage = verification.length ? await this.inventory.storage(computer.target) : null
+      const runtime = this.inventory.runtimeStatus
+        ? await this.inventory.runtimeStatus(computer.target) : undefined
+      if (runtime?.managedSetup) record.state.managedSetup = runtime.managedSetup
+      else if (runtime !== undefined) delete record.state.managedSetup
+      let storage: CiInstalledStorage | null = null
+      if (verification.length) {
+        storage = runtime === undefined
+          ? await this.inventory.storage(computer.target) : runtime?.installedStorage ?? null
+      }
       for (const template of verification) {
         if (await ciEnrollmentDisabled(this.pool, workspaceId, computer.target)) return
         const result = record.state.templates.find(value => value.templateId === template.id)!
         if (!storage) {
           result.state = 'runtime-required'
-          result.message = 'An installed verification runtime is required for automatic enrollment.'
+          result.message = runtime?.managedSetup?.message
+            ?? 'An installed verification runtime is required for automatic enrollment.'
           continue
         }
         try {
@@ -294,6 +311,10 @@ export class CiEnrollment {
       throw new DomainError('JOB_RUNTIME_PROFILE_REVOKED', 'The enrolled CI profile was revoked.', 409)
     }
     const sameHost = buildComputerKey({ hostRef: template.root.selection.hostRef }) === buildComputerKey(computer.target)
+      && (computer.target.hostRef.kind === 'main'
+        || template.root.binding.workerInstallationId === computer.target.applicationInstallationId
+          && template.root.registration?.keyRevision === computer.target.keyRevision
+          && template.root.registration?.authorizationRevision === computer.target.authorizationRevision)
     if (sameHost && (!profile || profile.id === template.id)) return { profileId: template.id, digest }
     if (profile && link?.digest === digest && profile.id !== template.id
       && ciEnrollmentTemplateDigest(profile) === templateDigest) return { profileId: profile.id, digest }

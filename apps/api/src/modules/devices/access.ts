@@ -9,6 +9,7 @@ import { commandInputHash, PostgresCommandCoordinator } from '../commands/postgr
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { initializePairedBuildComputer } from '../settings/buildComputers.js'
 
 export class DeviceAccessError extends DomainError {
   constructor(readonly code: 'unauthorized' | 'revoked' | 'expired' | 'conflict' | 'forbidden' | 'wrong_main') { super(code, `Device access rejected: ${code}`, 403) }
@@ -122,7 +123,9 @@ export class PostgresDeviceAccessService {
       if (!row.consumed_request_id) {
         await client.query('update device_registrations set record=$2,credential_hash=$3,credential_expires_at=$4 where id=$1', [registration.deviceId, registration, digest(credential), expiresAt])
         await client.query('update device_pairing_grants set consumed_request_id=$2,consumed_at=now() where token_hash=$1', [digest(input.grant), input.requestId])
-        await client.query("insert into management_audit(principal_id,source,action,target_key,outcome,details) values($1,'device','device_pair',$2,'succeeded','{}')", [row.principal_id, registration.deviceId])
+        const buildPreference = await initializePairedBuildComputer(client, registration, row.principal_id)
+        await client.query("insert into management_audit(principal_id,source,action,target_key,outcome,details) values($1,'device','device_pair',$2,'succeeded',$3::jsonb)",
+          [row.principal_id, registration.deviceId, JSON.stringify({ buildPreference })])
       }
       return { registration, credential, expiresAt }
     })
