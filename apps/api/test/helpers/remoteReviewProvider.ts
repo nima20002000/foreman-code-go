@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -116,6 +116,8 @@ export async function createRemoteReviewTls(directory: string) {
   await execute('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2',
     '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
     '-addext', 'basicConstraints=critical,CA:TRUE', '-keyout', privateKeyFile, '-out', certificateFile])
+  await chmod(certificateFile, 0o600)
+  await chmod(privateKeyFile, 0o600)
   return { certificateFile, privateKeyFile, trustCertificateFile: certificateFile }
 }
 

@@ -585,18 +585,20 @@ export class WorkerConversationHost {
       case 'conversation.history':
       case 'conversation.reconcile': {
         const turn = record.turns.find(turn => turn.correlationId === request.correlationId)
-        if (request.method === 'conversation.reconcile' && turn?.nativeSubmission && !['completed', 'rejected'].includes(turn.status)) {
+        const running = request.correlationId !== undefined
+          && this.running.has(`${request.binding.owner.conversationId}:${request.correlationId}`)
+        if (request.method === 'conversation.reconcile' && turn?.nativeSubmission
+          && !['completed', 'rejected'].includes(turn.status)) {
           await resident.allocation.recoverClaudeAuthority?.(request, turn.nativeSubmission, signal)
           await this.authorize(request, connection, signal)
         }
-        if (request.method === 'conversation.reconcile' && turn?.nativeTurnId && !['completed', 'rejected'].includes(turn.status)) {
+        if (!running && request.method === 'conversation.reconcile' && turn?.nativeTurnId
+          && !['completed', 'rejected'].includes(turn.status)) {
           if ((request.sessionMode ?? 'regular') !== (turn.sessionMode ?? 'regular')) unavailable('The recovered turn mode changed.')
           await resident.allocation.recoverFiles?.(request, turn.nativeTurnId, signal)
           await this.authorize(request, connection, signal)
         }
         let history: NativeHistory
-        const running = request.correlationId !== undefined
-          && this.running.has(`${request.binding.owner.conversationId}:${request.correlationId}`)
         if (turn?.status === 'rejected' && turn.result) {
           history = { events: [], pendingInteractions: [], nonSubmission: {
             nativeSessionId: request.session.nativeSessionId, clientCorrelationId: turn.correlationId, result: turn.result,

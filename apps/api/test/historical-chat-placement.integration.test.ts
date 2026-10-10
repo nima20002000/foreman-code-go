@@ -45,17 +45,40 @@ it('forks and recovers historical chat on its accepted Worker instead of the Age
     expect(binding.profile.target.hostRef).toEqual(fixture.hostRef)
     expect(binding.profile.instanceId).toBe(fixture.profiles[0]!.instanceId)
     expect(binding.sourceExecution?.executionId).toBe(execution.id)
-    await fixture.restartMain({ mode: 'graceful' })
-    const recovered = AgentChatStateSchema.parse(await read())
-    expect(recovered.conversation?.nativeSession).toEqual(completed.conversation?.nativeSession)
-    expect(recovered.messages.some(entry => entry.content === message.content)).toBe(true)
     const followUp = { requestId: randomUUID(), content: 'Continue after recovery.', expectedConversationId: id }
+    await fixture.provider.blockModels()
+    try {
+      await fixture.restartMain({ mode: 'graceful' })
+      const recovered = AgentChatStateSchema.parse(await read())
+      expect(recovered.conversation?.nativeSession).toEqual(completed.conversation?.nativeSession)
+      expect(recovered.messages.some(entry => entry.content === message.content)).toBe(true)
+      expect(recovered.availability.canSend).toBe(false)
+      const pending = await fixture.call('agent_chat_send', { workspaceId, selection, message: followUp })
+      expect(pending.isError).toBe(true)
+      expect((await read()).turns.some(turn => turn.requestId === followUp.requestId)).toBe(false)
+      const stored = await fixture.db.pool.query(`select request_id from operator_conversation_turns
+        where conversation_id=$1 and request_id=$2`,
+        [id, followUp.requestId])
+      expect(stored.rows).toHaveLength(0)
+    } finally { await fixture.provider.releaseModels() }
+    await waitForRemoteReview(read, state => state.availability.canSend, 'requalified Worker chat profile')
     await fixture.value('agent_chat_send', { workspaceId, selection, message: followUp })
-    const resumed = await waitForRemoteReview(read, state => state.turns.some(turn =>
-      turn.requestId === followUp.requestId && turn.delivery === 'completed'), 'recovered Worker chat continuation')
+    const resumed = await waitForRemoteReview(read, state => {
+      const turn = state.turns.find(turn => turn.requestId === followUp.requestId)
+      expect(turn?.delivery, JSON.stringify(turn?.error)).not.toBe('failed')
+      return turn?.delivery === 'completed'
+    }, 'recovered Worker chat continuation')
+    expect(resumed.turns.find(turn => turn.requestId === followUp.requestId)?.error).toBeUndefined()
     expect(resumed.conversation?.nativeSession).toEqual(completed.conversation?.nativeSession)
     expect(await fixture.details(started.run.id)).toEqual(before)
-    const forks = (await fixture.provider.calls()).filter(call => call.forkedSession)
+    const calls = await fixture.provider.calls()
+    for (const requestId of [message.requestId, followUp.requestId]) {
+      const turns = calls.filter(call => call.method === 'turn/start'
+        && call.correlationId === `agent-chat:${id}:${requestId}`)
+      expect(turns).toHaveLength(1)
+      expect(turns[0]?.threadId).toBe(completed.conversation!.nativeSession!.nativeSessionId)
+    }
+    const forks = calls.filter(call => call.forkedSession)
     expect(forks).toHaveLength(1)
     expect(forks[0]?.forkedSession).toMatchObject({ source: execution.nativeSessionId,
       child: completed.conversation!.nativeSession!.nativeSessionId })
@@ -65,10 +88,15 @@ it('forks and recovers historical chat on its accepted Worker instead of the Age
       enabled: false, configuration: profile.configuration })
     const unavailable = await read()
     expect(unavailable.availability.canSend).toBe(false)
+    expect(unavailable.conversation?.nativeSession).toEqual(resumed.conversation?.nativeSession)
+    expect(unavailable.messages.some(entry => entry.content === followUp.content)).toBe(true)
     const blocked = await fixture.call('agent_chat_send', { workspaceId, selection,
       message: { requestId: randomUUID(), content: 'Do not change hosts.', expectedConversationId: id } })
     expect(blocked.isError).toBe(true)
     expect((await fixture.provider.calls()).filter(call => call.forkedSession)).toHaveLength(1)
     expect(await fixture.details(started.run.id)).toEqual(before)
+  } catch (error) {
+    console.error('Historical Worker chat recovery failed', { failures: fixture.failures() })
+    throw error
   } finally { await fixture.close() }
 }, 240_000)

@@ -78,6 +78,8 @@ export interface AgentChatManagerFactory {
     state: import('@foreman-code/contracts').CompactionState, principalId: string, signal: AbortSignal):
     Promise<import('@foreman-code/contracts').CompactionState>
   release?(conversationId: string): void
+  unavailable?(configuration: AgentConfigurationVersion, workingDirectory: string, executionId: string):
+    Promise<{ reason: AgentChatBlockedReason; message: string } | undefined>
 }
 
 export class AgentChatEvents {
@@ -449,9 +451,10 @@ export class AgentChatService {
   }
 
   private async state(resolution: Resolution, principal: ManagementPrincipal): Promise<AgentChatState> {
-    const { context, blocked } = resolution
+    const { context } = resolution
     const livePrincipal = await readLiveManagementPrincipal(this.pool, principal.id)
     this.authorize(livePrincipal, 'agent_chat:read', context)
+    const blocked = resolution.blocked ?? await this.harnessUnavailable(resolution)
     const capabilities = this.capabilities(resolution.configuration, resolution.row)
     if (blocked && ['native_session_missing', 'harness_unavailable', 'agent_missing'].includes(blocked.reason)) {
       capabilities.resume = false; capabilities.queueNextTurn = false; capabilities.interruptAndSend = false
@@ -470,7 +473,7 @@ export class AgentChatService {
     if (!loaded) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
     const resident = this.runtimes.get(loaded.row.id)
     resident?.manager.setSessionControlPrincipal?.(livePrincipal.id)
-    if (!loaded.row.active_request_id && !loaded.row.pending_interaction && resident?.session
+    if (!blocked && !loaded.row.active_request_id && !loaded.row.pending_interaction && resident?.session
       && !resident.retiring && !resident.disposal) {
       let pending: Awaited<ReturnType<NativeHarnessSessionManager['pending']>>
       try {
@@ -501,7 +504,7 @@ export class AgentChatService {
     const responseAvailability = row.pending_interaction ? await nativeInteractionAvailability(row.pending_interaction,
       isAuthorized(livePrincipal, 'agent_chat:respond', { workspaceId: row.workspace_id, workflowId: row.workflow_id,
         ...(row.origin_run_id ? { runId: row.origin_run_id } : {}) }),
-      runtime?.session ? { manager: runtime.manager, session: runtime.session } : undefined,
+      !blocked && runtime?.session ? { manager: runtime.manager, session: runtime.session } : undefined,
       { signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
         isCurrent: () => this.runtimes.get(row.id) === runtime && !!runtime?.session && !runtime.disposal && !this.closing }) : undefined
     const finalPrincipal = await readLiveManagementPrincipal(this.pool, principal.id)
@@ -528,6 +531,13 @@ export class AgentChatService {
       revision: Number(row.revision), activitySnapshot, qualificationKey,
       ...(qualifiedResponse ? { responseAvailability: qualifiedResponse } : {}),
     })
+  }
+
+  private async harnessUnavailable(resolution: Resolution): Promise<Resolution['blocked']> {
+    const executionId = resolution.executionId ?? resolution.row?.origin_execution_id
+    const workingDirectory = resolution.row?.record.workingDirectory ?? resolution.create?.workingDirectory
+    if (!executionId || !workingDirectory || !resolution.configuration) return undefined
+    return this.managers.unavailable?.(resolution.configuration, workingDirectory, executionId)
   }
 
   async read(principal: ManagementPrincipal, workspaceId: string, query: AgentChatQuery): Promise<AgentChatState> {
@@ -743,9 +753,10 @@ export class AgentChatService {
           ...(admitted.replayWarning ? { replayWarning: admitted.replayWarning } : {}) }
       }
     }
-    if (resolution.blocked) {
+    const blocked = resolution.blocked ?? await this.harnessUnavailable(resolution)
+    if (blocked) {
       throw new DomainError('AGENT_CHAT_UNAVAILABLE',
-        resolution.blocked.message, 409, { reason: resolution.blocked.reason })
+        blocked.message, 409, { reason: blocked.reason })
     }
     validateSessionMessage(input.content, input.sessionMode)
     const row = resolution.row

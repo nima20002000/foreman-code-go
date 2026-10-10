@@ -1397,6 +1397,19 @@ export function buildProductionApp(
     return recoverChatCompaction(configuration, conversationId, session, start, state, principalId, signal,
       selected.profileSelection, selected.sourceExecution)
   }
+  resolveAgentChatManager.unavailable = async (configuration, workingDirectory, executionId) => {
+    const { profileSelection } = await agentChatProfileSelection(configuration, workingDirectory, executionId)
+    if (!profileSelection) return undefined
+    if (hostProfileChecks.pending(profileSelection.target.hostRef)) {
+      return { reason: 'harness_unavailable', message: 'This computer is checking its harness profile. Retry shortly.' }
+    }
+    const profile = await hostSettings.readAuthorized(client => hostSettings.latest(client, profileSelection.instanceId))
+    if (!profile || !profile.enabled || profile.instanceRevision !== profileSelection.instanceRevision
+      || !await harnessRegistry.profileEvidence(profile)) {
+      return { reason: 'harness_unavailable', message: 'The harness profile used by this Run is unavailable.' }
+    }
+    return undefined
+  }
   resolveAgentChatManager.release = (conversationId) => { agentChatManagers.delete(conversationId) }
   const agentChat = new AgentChatService(database.pool, agentConversations,
     new PostgresOperatorConversationRepository(database.pool, accountConfigurations), workflows, runs, resolveAgentChatManager, config.harnesses.workspaceRoot)
