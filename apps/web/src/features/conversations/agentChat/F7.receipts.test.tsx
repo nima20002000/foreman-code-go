@@ -41,7 +41,7 @@ describe('F7 B-R07 compact command retention', () => {
       sequence: '2', delivery: 'queued' as const, intent: original!.intent }
     queued.turns.push(turn)
     queued.messages.push({ id: turn.messageId, conversationId: queued.conversation!.id, role: 'user',
-      requestId: original!.requestId, content: original!.content })
+      requestId: original!.requestId, content: original!.content, createdAt: queued.messages[0]!.createdAt })
     const next = receipt === 'completed'
       ? completedFixture(startedFixture(queued, original!.requestId), 'Recovered reply')
       : agentChatFixtures.idleAfterCompletion

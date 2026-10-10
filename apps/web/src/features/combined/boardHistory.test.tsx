@@ -327,7 +327,7 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     let held = false
     server.use(http.get('*/api/workspaces/:workspaceId/agent-chat', async ({ request }) => {
       const id = new URL(request.url).searchParams.get('runId')!
-      if (id === 'run-b' && !held) { held = true; return HttpResponse.json((await old.promise).state) }
+      if (id === 'run-b' && !held) { held = true; const late = await old.promise; return HttpResponse.json(late.kind === 'selected' ? late.state : null) }
       return HttpResponse.json(source.states.get(id)!)
     }))
     await act(async () => { await selected.selectRun('run-b') })

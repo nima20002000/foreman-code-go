@@ -60,7 +60,7 @@ it('opens a past Run without a sidebar and restores Current Agent chat', async (
   await screen.findByRole('region', { name: 'Selected Run board' })
   expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Open Selected Run panel' })).not.toBeInTheDocument()
-  expect(screen.queryByRole('heading', { name: 'Selected Run', exact: true })).not.toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Selected Run' })).not.toBeInTheDocument()
   expect(source.reads).toHaveLength(0)
   expect(source.current.calls.filter((call) => call.method === 'POST')).toHaveLength(0)
 
