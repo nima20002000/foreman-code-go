@@ -29,7 +29,7 @@ async function createDatabase(existingPR17 = false) {
         await client.query('select pg_advisory_xact_lock($1)', [810_001])
         for (const migration of migrations) {
           // Later redefinitions of the append function belong after 1702 as well.
-          if ([nativeEventSequenceMigration.version, nativeActivityNoiseMigration.version].includes(migration.version)) continue
+          if (([nativeEventSequenceMigration.version, nativeActivityNoiseMigration.version] as number[]).includes(migration.version)) continue
           await client.query(migration.sql)
           await client.query('insert into application_migrations(version) values($1)', [migration.version])
         }
