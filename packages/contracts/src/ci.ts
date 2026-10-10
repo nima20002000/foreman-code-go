@@ -7,14 +7,23 @@ import { JobArtifactSchema, JobArtifactReadInputSchema, JobArtifactReadOutputSch
 import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
-export const CiRunInputSchema = z.object({
+const CiRunInputObjectSchema = z.object({
   suite: JobOrdinaryVerificationSuiteSchema,
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
   commandId: IdSchema,
   placementOverride: JobPlacementIntentSchema.optional(),
+  /** Split an integration run into this many duration-balanced Jobs that build computers run in parallel. */
+  partitions: z.number().int().min(2).max(12).optional(),
 }).strict()
-export const OperatorCiRunInputSchema = CiRunInputSchema.extend({ workspaceId: IdSchema }).strict()
-export const CiRunOutputSchema = z.object({ ticketId: IdSchema, executionId: IdSchema.optional() }).strict()
+const partitionedSuite = (value: { suite: string; partitions?: number | undefined }) =>
+  value.partitions === undefined || value.suite === 'integration'
+const partitionIssue = { message: 'Only the integration suite can be partitioned.', path: ['partitions'] }
+export const CiRunInputSchema = CiRunInputObjectSchema.refine(partitionedSuite, partitionIssue)
+export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspaceId: IdSchema }).strict()
+  .refine(partitionedSuite, partitionIssue)
+const CiRunTicketSchema = z.object({ ticketId: IdSchema, executionId: IdSchema.optional() }).strict()
+/** `partitions` lists every partition's ticket in order; the first is also `ticketId`. Poll each with ci_get. */
+export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(12).optional() }).strict()
 export const CiGetInputSchema = z.object({ ticketId: IdSchema }).strict()
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({

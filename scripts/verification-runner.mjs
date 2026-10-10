@@ -151,6 +151,23 @@ export function expectedPortions(root, suite) {
 }
 
 const QUALIFICATION_SUBSET = 'scripts/integration-qualification.json'
+const INTEGRATION_DURATIONS = 'scripts/integration-durations.json'
+
+/** One deterministic, duration-balanced slice of the integration files: the longest files go first, each to the
+ * partition with the least recorded time. Files without a recorded duration count as the median. */
+export function integrationPartition(files, durations, partition) {
+  const known = files.map(file => durations[file]).filter(value => Number.isFinite(value) && value > 0).sort((a, b) => a - b)
+  const fallback = known.length ? known[Math.floor(known.length / 2)] : 1
+  const weight = file => Number.isFinite(durations[file]) && durations[file] > 0 ? durations[file] : fallback
+  const loads = Array(partition.count).fill(0), owner = new Map()
+  for (const file of [...files].sort((left, right) => weight(right) - weight(left) || (left < right ? -1 : 1))) {
+    let lightest = 0
+    for (let index = 1; index < loads.length; index++) if (loads[index] < loads[lightest]) lightest = index
+    loads[lightest] += weight(file)
+    owner.set(file, lightest)
+  }
+  return files.filter(file => owner.get(file) === partition.index)
+}
 const integrationTestFiles = root => existsSync(join(root, 'apps/api/test'))
   ? readdirSync(join(root, 'apps/api/test')).filter(name => name.endsWith('.integration.test.ts'))
     .map(name => `apps/api/test/${name}`).sort()
@@ -158,7 +175,7 @@ const integrationTestFiles = root => existsSync(join(root, 'apps/api/test'))
 
 /** `qualification` selects the commit's committed integration smoke subset when it has one: qualification proves
  * the computer's runtime (PostgreSQL startup and isolation, migrations, MCP, sources, Jobs), not the whole suite. */
-export function captureVerificationInventory(root, suite, { qualification = false } = {}) {
+export function captureVerificationInventory(root, suite, { qualification = false, partition } = {}) {
   const portions = expectedPortions(root, suite)
   if (portions.every(portion => ['command', 'bootstrap'].includes(portion.kind))) return portions
   const files = []
@@ -182,6 +199,10 @@ export function captureVerificationInventory(root, suite, { qualification = fals
           throw new Error(`${QUALIFICATION_SUBSET} must list existing integration test files`)
         }
         selected = subset
+      } else if (partition) {
+        const durations = existsSync(join(root, INTEGRATION_DURATIONS))
+          ? JSON.parse(readFileSync(join(root, INTEGRATION_DURATIONS), 'utf8')) : {}
+        selected = integrationPartition(selected, durations && typeof durations === 'object' ? durations : {}, partition)
       }
     } else if (portion.kind === 'vitest') {
       const prefix = portion.key.split(':')[0] + '/'

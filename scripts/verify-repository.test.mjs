@@ -428,3 +428,32 @@ test('qualification runs the committed integration smoke subset while CI Jobs ru
     assert.throws(() => inventory({ qualification: true }), /must list existing integration test files/)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('a partitioned CI Job runs one duration-balanced slice and the slices cover every file once', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'integration-partition-'))
+  try {
+    mkdirSync(join(root, 'apps/api/test'), { recursive: true })
+    mkdirSync(join(root, 'scripts'))
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'foreman-code' }))
+    const durations = { long: 600, mid: 300, short: 100, tiny: 50, other: 250 }
+    const all = Object.keys(durations).map(name => `apps/api/test/${name}.integration.test.ts`).sort()
+    for (const file of all) writeFileSync(join(root, file), '')
+    writeFileSync(join(root, 'scripts/integration-durations.json'), JSON.stringify(Object.fromEntries(
+      Object.entries(durations).map(([name, ms]) => [`apps/api/test/${name}.integration.test.ts`, ms]))))
+    const slice = index => captureVerificationInventory(root, 'integration', { partition: { index, count: 2 } })
+      .find(portion => portion.kind === 'integration').files
+    const [first, second] = [slice(0), slice(1)]
+    assert.deepEqual([...first, ...second].sort(), all)
+    assert.equal(first.filter(file => second.includes(file)).length, 0)
+    const time = files => files.reduce((total, file) => total + durations[file.split('/').at(-1).split('.')[0]], 0)
+    assert.ok(Math.abs(time(first) - time(second)) <= 100, `${time(first)} vs ${time(second)}`)
+    assert.deepEqual(slice(0), first)
+    const integration = files => ({ ...context('integration'), requiredPortions: [{ key: 'root:install', kind: 'bootstrap' },
+      { key: 'root:test:integration', kind: 'integration', files }] })
+    assert.deepEqual(verificationCommand(integration(first), root), ['corepack', 'pnpm', 'test:integration', '--files', ...first])
+    // Files without a recorded duration still land in exactly one slice.
+    writeFileSync(join(root, 'apps/api/test/new.integration.test.ts'), '')
+    const covered = [...slice(0), ...slice(1)]
+    assert.equal(covered.filter(file => file.endsWith('/new.integration.test.ts')).length, 1)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
