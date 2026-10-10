@@ -31,7 +31,7 @@ import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
 import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './reviewerRuntime.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
-import { HarnessExecutionError } from '../harnesses/errors.js'
+import { HarnessExecutionError, NativeDeliveryError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { attemptCleanup } from './cleanup.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
@@ -71,6 +71,13 @@ export type ApprovalExecutionObservation =
   | { state: 'waiting'; execution: HarnessExecution; interaction: DurableInteraction; interactions: DurableInteraction[] }
   | { state: 'completed'; execution: HarnessExecution; result: ExecutionResult }
 
+function isRestartCancellation(error: unknown, signal?: AbortSignal): boolean {
+  const reason = signal?.reason
+  if (!(reason instanceof DomainError) || reason.code !== 'ENGINE_RESTART') return false
+  return error === reason || error instanceof NativeDeliveryError
+    && error.cleanup === 'confirmed' && error.cause === reason
+}
+
 interface OwnedNativeSession {
   execution: HarnessExecution
   context: NativeManagerResolutionContext
@@ -84,6 +91,8 @@ interface OwnedNativeSession {
   session?: NativeSessionReference
   opening?: Promise<NativeSessionReference>
   openingFailed?: boolean
+  preparing?: Promise<IssuedWorkerCredential['environment'] | undefined>
+  startupSignal?: AbortSignal
   cleanup?: Promise<Error[]>
   reviewFinalizer?: symbol
   reviewFinishing?: boolean
@@ -653,7 +662,21 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  private async prepareEnvironment(
+  private prepareEnvironment(
+    context: NativeManagerResolutionContext,
+    resolved: ResolvedNativeSessionManager,
+    options: { signal?: AbortSignal | undefined; purpose?: 'reviewer' | undefined;
+      enterNative?: () => Promise<void>; restartOwner?: RunOwnership | undefined },
+  ): Promise<IssuedWorkerCredential['environment'] | undefined> {
+    const owned = this.ownedSessions.get(context.executionId)!
+    const preparation = this.prepareOwnedEnvironment(context, resolved, options).finally(() => {
+      if (owned.preparing === preparation) delete owned.preparing
+    })
+    owned.preparing = preparation
+    return preparation
+  }
+
+  private async prepareOwnedEnvironment(
     context: NativeManagerResolutionContext,
     resolved: ResolvedNativeSessionManager,
     options: { signal?: AbortSignal | undefined; purpose?: 'reviewer' | undefined;
@@ -1016,6 +1039,7 @@ export class ApprovalExecutionCoordinator {
     const owned = this.ownSession(execution, { ...context, purpose: 'reviewer' }, resolved.manager)
     owned.runOwner = owner
     const signal = AbortSignal.any([owned.controller.signal, ...(parentSignal ? [parentSignal] : [])])
+    owned.startupSignal = signal
     owned.closureRegistration = Promise.resolve(retained.generation)
     owned.closureGeneration = retained.generation
     try {
@@ -1075,6 +1099,7 @@ export class ApprovalExecutionCoordinator {
       this.maintainRetainedReviewer(owned)
       return true
     } catch (error) {
+      if (isRestartCancellation(error, signal)) throw error
       resolved.markFailed?.()
       owned.failed = true
       throw error
@@ -1099,13 +1124,20 @@ export class ApprovalExecutionCoordinator {
           // A failed drain can leave cleanup or create/attach in flight. Observe
           // its actual completion; an abort/timeout is never a closure receipt.
           await owned.cleanup
-          await owned.opening
+          for (const startup of [owned.preparing, owned.opening]) {
+            try { await startup }
+            catch (error) {
+              if (!isRestartCancellation(error, owned.startupSignal)) throw error
+            }
+          }
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
-          // Opening has settled without a session: this manager never launched
-          // native work, so there is nothing to close. Durable launch-reservation
-          // evidence lets cold recovery settle the execution after restart.
-          if (!owned.session) return
+          // A failed opening can still own a transport without an acknowledged
+          // session. Its captured manager must positively drain that transport.
+          if (!owned.session || owned.openingFailed || owned.generation === 0) {
+            await owned.manager.dispose()
+            return
+          }
           await this.closeWorkflowSession(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)
@@ -1328,6 +1360,7 @@ export class ApprovalExecutionCoordinator {
     }
     owned.session = sessionReference
     signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
+    owned.startupSignal = signal
     try {
       if (continuing) {
         if (!this.credentials?.restore || !resolved.manager.originalApplicationAccess) throw new DomainError(
@@ -1375,6 +1408,7 @@ export class ApprovalExecutionCoordinator {
       return { manager: resolved.manager, session, signal: owned.controller.signal }
     } catch (error) {
       const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
+      if (isRestartCancellation(error, signal)) throw safe.error(error)
       componentLogger('harness').warn({ err: safe.error(error), executionId: execution.id },
         'workflow approval attachment failed')
       if (isLeaseLost(error) || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw safe.error(error)
@@ -1771,6 +1805,7 @@ export class ApprovalExecutionCoordinator {
       ownedSession.runOwner = input.owner
       if (session && !ownedSession.session) ownedSession.session = session
       signal = AbortSignal.any([signal, ownedSession.controller.signal])
+      ownedSession.startupSignal = signal
 
       const observePending = async (history: NativeHistory, sourceEvent?: NativeHarnessEvent,
         sourceLease?: WorkflowNativeLease): Promise<ApprovalExecutionObservation | undefined> => {
@@ -2027,7 +2062,7 @@ export class ApprovalExecutionCoordinator {
       // manager, then let the repository prove a negative disposition.
       let held = true
       try { input.owner.assertOwned() } catch { held = false }
-      const restarting = input.signal.reason instanceof DomainError && input.signal.reason.code === 'ENGINE_RESTART'
+      const restarting = isRestartCancellation(rawError, signal)
       if (restarting) throw error
       if (held) {
         let code = 'NATIVE_EXECUTION_FAILED'

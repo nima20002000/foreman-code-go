@@ -161,6 +161,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   private readonly releasing = new Map<string, Promise<void>>()
   private controlTail: Promise<unknown> = Promise.resolve()
   private disposal: Promise<void> | undefined
+  private closing = false
   readonly startInitialTurn?: NonNullable<NativeHarnessSessionManager['startInitialTurn']>
   readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput & { onTurnOffered?(): void },
     signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent[]>
@@ -259,19 +260,23 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
    * creates that failed before a native ID was returned. Never infer disposal
    * from an empty local session map. New writes stay fenced after any attempt. */
   dispose(): Promise<void> {
+    this.closing = true
     if (this.disposal) return this.disposal
     if (!this.manager.dispose) return Promise.reject(new DomainError('NATIVE_DISPOSAL_UNSUPPORTED',
       'The native manager cannot prove closure of an unbound transport.', 409))
     const active = [...this.active.values()]
     const operation = Promise.resolve().then(() => this.manager.dispose!()).then(async () => {
       await Promise.all(active.map((lease) => lease.finished))
+    }).catch((error: unknown) => {
+      if (this.disposal === operation) this.disposal = undefined
+      throw error
     })
     this.disposal = operation
     return operation
   }
 
   async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
-    if (this.disposal) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
+    if (this.closing) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
     const session = await this.manager.createSession(input, signal)
     await this.ensure(session, 'idle')
     return session
@@ -279,7 +284,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
 
   async acquire(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<SessionWriteLease> {
     signal?.throwIfAborted()
-    if (this.disposal) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
+    if (this.closing) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
     const finishTiming = beginRuntimeTiming('harness', 'lease.acquire', { nativeSessionId: session.nativeSessionId })
     try {
       const previous = await this.ensure(session, 'uncertain')
@@ -386,7 +391,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     input: NativeInitialTurnInput & { onTurnOffered?(): void }, signal?: AbortSignal,
     batches = nativeEventBatches): AsyncIterable<NativeHarnessEvent[]> {
     signal?.throwIfAborted()
-    if (this.disposal || !this.manager.startInitialTurn) throw new DomainError('NATIVE_INITIAL_TURN_UNAVAILABLE', 'The admitted initial lifecycle is unavailable.', 409)
+    if (this.closing || !this.manager.startInitialTurn) throw new DomainError('NATIVE_INITIAL_TURN_UNAVAILABLE', 'The admitted initial lifecycle is unavailable.', 409)
     let session: NativeSessionReference | undefined
     let lease: SessionWriteLease | undefined
     let evidence: ReviewEvidenceTracker | undefined

@@ -64,7 +64,8 @@ export function currentRestartUnit(reviewer = false) {
   let originalSetupClaimed = false
   let before: { rows: RestartClosureRow[]; finalized: boolean; writes: number; closeWrites: number } | undefined
   let closureWritten = false
-  let beforePreflight = () => undefined as void, beforeClose = async () => undefined as void
+  let beforePreflight: () => void | Promise<void> = () => undefined
+  let beforeClose = async () => undefined as void
   const statements: string[] = []
   const inputReceipt = graphSourceDigest({ executionId: execution.id, inputDigest: bound.digest })
   const priorUnclosed = (generation: string) => rows.some((row) => BigInt(row.generation) < BigInt(generation) && !row.closed && !row.detached)
@@ -232,7 +233,8 @@ export function currentRestartUnit(reviewer = false) {
   const budgets = { ensure: async () => undefined, resume: async () => undefined, remaining: async () => 60_000,
     assertActive: async () => undefined, beginWait: async () => undefined, stop: async () => { state.budgetStops++ } }
   const credentials = { prepare: async () => {
-    state.preflightCalls++; beforePreflight()
+    state.preflightCalls++
+    await beforePreflight()
     return { credential: { principalId: 'synthetic-credential', expiresAt: new Date(Date.now() + 300_000).toISOString(),
       environment: { agentId: execution.agentId, variables: {} } } }
   }, revokeForExecution: async () => { state.revocations++ } }
@@ -270,12 +272,12 @@ export function currentRestartUnit(reviewer = false) {
       async exactSession(id) { assert.equal(id, execution.id); return session },
       authorizeNativeSubmission: forbidden, consumeLaunch() { return false }, settleNativeExecution: forbidden,
     }
-    const attachOriginal = async () => {
+    const attachOriginal = async (signal?: AbortSignal) => {
       // First-lifetime setup only. Fresh coordinators in recovery tests must use
       // the public cold path; they cannot claim this original observation again.
       assert.equal(originalSetupClaimed, false, 'only the original fixture lifetime may be observed')
       originalSetupClaimed = true
-      if (reviewer) return coordinator.attachOwnedSession(context(), session)
+      if (reviewer) return coordinator.attachOwnedSession(context(), session, signal)
       await coordination.ensureLane({
         id: `lane-${execution.id}`, harness: session.harness, nativeSessionId: session.nativeSessionId,
         ownerAgentId: execution.agentId, observedStatus: 'busy', connectionGeneration: 0,
@@ -286,7 +288,8 @@ export function currentRestartUnit(reviewer = false) {
         pendingInteractions: [{ session, turn: { nativeTurnId: 'be001-turn', nativeRequestId: pendingApproval.nativeRequestId },
           nativeRequestType: pendingApproval.nativeRequestType, request: pendingApproval.request, responseOptions: pendingApproval.responseOptions }] })
       const result = await coordinator.observeExact({ execution, store: observation, owner,
-        workflowId: f.run.workflowId, graphThreadId: f.run.id, approval: { handler: 'user' }, signal: new AbortController().signal,
+        workflowId: f.run.workflowId, graphThreadId: f.run.id, approval: { handler: 'user' },
+        signal: signal ?? new AbortController().signal,
         request: { executionId: execution.id, runId: f.run.id, workspaceId: f.run.workspaceId, workflowNodeId: execution.workflowNodeId,
           workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory!, configuration, input: execution.input } })
       assert.equal(result.state, 'waiting'); assert.equal(resident, true)

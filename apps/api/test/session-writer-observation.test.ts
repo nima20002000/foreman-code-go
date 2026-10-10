@@ -49,6 +49,43 @@ function silentProvider() {
   return { manager, reading, release, detached, signal: () => nativeSignal }
 }
 
+it('retries failed disposal on the same manager while keeping native writes closed', async () => {
+  const provider = silentProvider()
+  const disposed = deferred()
+  const retryStarted = deferred()
+  let disposals = 0
+  provider.manager.dispose = async () => {
+    disposals++
+    if (disposals === 1) throw new Error('Native transport close is uncertain')
+    retryStarted.resolve()
+    await disposed.promise
+  }
+  const writer = new SingleWriterSessionManager(provider.manager, nativeLanes(), 'stream-agent')
+  const start = { kind: 'operator' } as Parameters<typeof writer.createSession>[0]
+  await expect(writer.dispose()).rejects.toThrow('Native transport close is uncertain')
+  await expect(writer.createSession(start)).rejects.toMatchObject({ code: 'NATIVE_MANAGER_DISPOSED' })
+  await expect(writer.attachSession(session, start)).rejects.toMatchObject({ code: 'NATIVE_MANAGER_DISPOSED' })
+  await expect(writer.startInitialTurn!(start, {
+    prompt: 'stream', clientCorrelationId: 'stream-turn', onSessionObserved: async () => undefined,
+  })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'NATIVE_INITIAL_TURN_UNAVAILABLE' })
+  const retry = writer.dispose()
+  const concurrent = writer.dispose()
+  try {
+    await retryStarted.promise
+    expect(concurrent).toBe(retry)
+    expect(disposals).toBe(2)
+    await expect(writer.createSession(start)).rejects.toMatchObject({ code: 'NATIVE_MANAGER_DISPOSED' })
+    disposed.resolve()
+    await retry
+    await writer.dispose()
+    expect(disposals).toBe(2)
+    await expect(writer.attachSession(session, start)).rejects.toMatchObject({ code: 'NATIVE_MANAGER_DISPOSED' })
+  } finally {
+    disposed.resolve()
+    await Promise.allSettled([retry, concurrent])
+  }
+})
+
 it('batches ready output independently of database lease-check latency', async () => {
   vi.useFakeTimers()
   const frames = Array.from({ length: 35 }, (_, sequence) => ({ ...frame, sequence }))
