@@ -101,6 +101,29 @@ it('rejects missing files instead of returning their cached fingerprint', async 
   await expect(cache.fingerprint(path)).rejects.toThrow()
 })
 
+it('follows a retargeted symlink instead of reusing the previous target bytes', async () => {
+  const { root, path, cache } = await fixture()
+  const alias = join(root, 'alias')
+  const replacement = join(root, 'replacement')
+  await symlink(path, alias)
+  expect(await cache.fingerprint(alias)).toBe(digest('original'))
+  await writeFile(replacement, 'modified')
+  await rm(alias)
+  await symlink(replacement, alias)
+  expect(await cache.fingerprint(alias)).toBe(digest('modified'))
+  expect(fs.createReadStream).toHaveBeenCalledTimes(2)
+})
+
+it('rejects cancellation while checking a cached file identity', async () => {
+  const { path, cache } = await fixture()
+  await cache.fingerprint(path)
+  const controller = new AbortController()
+  const checking = cache.fingerprint(path, controller.signal)
+  controller.abort(new Error('Inspection cancelled'))
+  await expect(checking).rejects.toThrow('Inspection cancelled')
+  expect(fs.createReadStream).toHaveBeenCalledTimes(1)
+})
+
 it('caches inventory discovery while direct launch verification still rereads bytes', async () => {
   const { root, path } = await fixture()
   const environment = { generation: '1', provenance: 'worker' as const, cwd: root, path: '/usr/bin:/bin' }
