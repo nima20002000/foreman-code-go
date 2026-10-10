@@ -135,10 +135,13 @@ it('keeps the same mounted draft and storage owner across release changes and re
 it('hides the previous document state when the database installation changes', async () => {
   const client = mount()
   await screen.findByText('Protected content')
+  await userEvent.setup().type(screen.getByRole('textbox', { name: 'Draft' }), 'Previous installation draft')
   vi.mocked(bindProtectedChatInstance).mockImplementation(() => { throw new Error('Different installation') })
   server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({
     ...identity, installationId: 'a95abeb8-598a-49a4-8c3c-c6e3533053e8',
   })))
   await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
   expect(screen.queryByText('Protected content')).not.toBeInTheDocument()
+  expect(screen.queryByRole('textbox', { name: 'Draft' })).not.toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: 'Could not verify this app' })).toBeVisible()
 })
