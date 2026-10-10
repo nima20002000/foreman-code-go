@@ -1,7 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { onlineManager } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { expect, it } from 'vitest'
+import { afterEach, expect, it } from 'vitest'
 import { server } from '../../mocks/server'
 import { SidebarComputers } from './ComputerActivity'
 import { computersFixture, deviceName } from './computersTestFixture'
@@ -74,4 +75,17 @@ it('reports an activity read error and retries without showing stale computers',
   server.use(http.get('*/api/management/computers/activity', () => HttpResponse.json(f.activity)))
   await userEvent.setup().click(screen.getByRole('button', { name: 'Retry activity' }))
   expect(await screen.findByText('Build')).toBeVisible()
+})
+afterEach(() => onlineManager.setOnline(true))
+it('stops presenting sidebar presence and activity as current while the browser is offline', async () => {
+  const f = computersFixture(<SidebarComputers />)
+  f.activity.computers[0]!.jobs.push({ id: 'job-1', name: 'Build', workspaceId: 'workspace-1', workspaceName: 'Store',
+    phase: 'running', startedAt: null })
+  await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
+  const main = await screen.findByRole('button', { name: 'Activity on Main PC' })
+  await within(main).findByTestId('computer-busy')
+  expect(main).toHaveAttribute('title', 'Main PC: Building')
+  act(() => onlineManager.setOnline(false))
+  expect(main).toHaveAttribute('title', 'Main PC: Status stale')
+  expect(within(main).queryByTestId('computer-busy')).not.toBeInTheDocument()
 })

@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
-import { TelemetrySelectorResultSchema } from '@foreman-code/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, TelemetrySelectorResultSchema } from '@foreman-code/contracts/resource-telemetry'
 import { apiClient, ApiError } from './client'
 import { readResourceTelemetry } from './resourceTelemetry'
 import { useHarnessSessionEpoch } from './harnessSettings'
@@ -20,7 +20,7 @@ export function useComputerActivity() {
 export function useComputerUtilization(target: DeviceProvisioningTarget, online: boolean) {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: ['computer-utilization', sessionGeneration(), target],
-    enabled: online && !sessionIsSwitching(), retry: false, gcTime: 0, refetchInterval: 5_000,
+    enabled: online && !sessionIsSwitching(), retry: false, gcTime: 0, refetchInterval: TELEMETRY_LIMITS.intervalMs,
     queryFn: async ({ signal }) => {
       const resolved = await apiClient.request('/api/management/resource-telemetry/selector',
         TelemetrySelectorResultSchema, { method: 'POST', signal,

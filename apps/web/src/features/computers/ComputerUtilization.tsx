@@ -1,7 +1,7 @@
 import { Cpu, HardDrive, MemoryStick } from 'lucide-react'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { useComputerUtilization } from '../../shared/api/computerActivity'
-import { isCurrent, metricView } from '../resource-telemetry/telemetryView'
+import { metricView, sampleClock } from '../resource-telemetry/telemetryView'
 import { useMonotonicElapsed } from '../resource-telemetry/useMonotonicElapsed'
 
 export function ComputerUtilization({ target, online, compact = false }: {
@@ -18,7 +18,8 @@ export function ComputerUtilization({ target, online, compact = false }: {
   const cpuPercent = cpu?.status === 'fresh' && sample?.cpu.state === 'fresh' ? sample.cpu.value.hostCapacityPercent : null
   const memoryPercent = memory?.status === 'fresh' && sample?.memory.state === 'fresh'
     && sample.memory.value.totalBytes ? sample.memory.value.bytes / sample.memory.value.totalBytes * 100 : null
-  const storage = sample?.storage && isCurrent(sample, age) ? sample.storage : null
+  const storage = sample?.storage && sample.presence === 'online'
+    && sampleClock(sample, age).freshRemainingMs > 0 ? sample.storage : null
   const storagePercent = storage?.totalBytes ? (storage.totalBytes - storage.availableBytes) / storage.totalBytes * 100 : null
   return <div className="computer-utilization" data-compact={compact || undefined} aria-label="Computer utilization"
     aria-busy={online && query.isPending}>

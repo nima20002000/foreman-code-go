@@ -7,27 +7,31 @@ import { formatDuration } from '../resource-telemetry/telemetryView'
 import { ComputerUtilization } from './ComputerUtilization'
 import { computerState } from './computerState'
 import { useComputerUi } from './computerUiStore'
+import { useComputerActivityFreshness } from './useComputerActivityFreshness'
 import './computers.css'
 
 /** Every paired computer with live CPU, memory and disk; selecting one opens its activity. */
 export function SidebarComputers() {
   const query = useComputerActivity()
   const open = useComputerUi(state => state.openActivity)
+  const fresh = useComputerActivityFreshness(query.dataUpdatedAt, query.fetchStatus)
   const computers = query.isError ? [] : query.data?.computers ?? []
   return <>
     {computers.length > 0 && <ul className="sidebar-computers" aria-label="Computers">
       {computers.map(computer => {
-        const busy = computer.jobs.length > 0 || computer.agents.length > 0
-        return <li key={computerKey(computer.target)} data-online={computer.online}>
+        // Without a fresh observation, presence and activity are last-known facts, not current state.
+        const online = fresh && computer.online
+        const busy = fresh && (computer.jobs.length > 0 || computer.agents.length > 0)
+        return <li key={computerKey(computer.target)} data-online={online}>
           <button type="button" className="sidebar-computer" aria-label={`Activity on ${computer.name}`}
-            title={`${computer.name}: ${computerState(computer, query.data?.activityComplete ?? false)}`}
+            title={`${computer.name}: ${fresh ? computerState(computer, query.data?.activityComplete ?? false) : 'Status stale'}`}
             onClick={() => open(computerKey(computer.target))}>
             <span className="sidebar-computer-icon"><Monitor size={16} aria-hidden="true" />
               {busy && <span className="computer-activity-dot" data-testid="computer-busy" aria-hidden="true" />}</span>
             <span className="sidebar-computer-name">{computer.name}</span>
-            <span className="computer-presence-dot" data-online={computer.online} aria-hidden="true" />
+            <span className="computer-presence-dot" data-online={online} aria-hidden="true" />
           </button>
-          <ComputerUtilization target={computer.target} online={computer.online} compact />
+          <ComputerUtilization target={computer.target} online={online} compact />
         </li>
       })}
     </ul>}
