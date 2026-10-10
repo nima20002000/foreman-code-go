@@ -153,5 +153,5 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         ...(execution?.extensions ?? []), ...(installed?.extensions ?? []), ...rootExtensions] });
     return connection;
   } });
-  return { ...runtime, managedSetup };
+  return { ...runtime, managedSetup, updating: () => Boolean(updater?.active) };
 }

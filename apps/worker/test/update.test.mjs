@@ -241,6 +241,35 @@ test('supervisor launch failure keeps the old pointer and resumes admissions wit
   assert.equal((await updater.status()).lastError, 'worker_update_supervisor_unavailable');
 });
 
+test('the next Worker retries an update cut short by a Worker stop, but not an update that failed', async t => {
+  const f = await fixture(t);
+  let stageEntered = false;
+  const stopped = await new WorkerUpdater({ ...f.options,
+    stage: async () => { stageEntered = true; await wait(50); return { directory: f.incoming.directory }; },
+  }).initialize();
+  const update = stopped.start();
+  await until(() => stageEntered);
+  await stopped.close();
+  await assert.rejects(update, { code: 'worker_updater_stopped' });
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.state, 'failed');
+  let launched = 0;
+  const next = await new WorkerUpdater({ ...f.options, launchSupervisor: async () => { launched++; } }).initialize();
+  t.after(() => next.close());
+  assert.equal(await next.start(), 'Worker 1.1.0 restart is scheduled.');
+  assert.equal(launched, 1);
+  assert.equal((await next.status()).state, 'restarting');
+
+  const g = await fixture(t);
+  const failed = await new WorkerUpdater({ ...g.options,
+    launchSupervisor: async () => { throw new WorkerError('worker_update_supervisor_unavailable'); } }).initialize();
+  await assert.rejects(failed.start(), { code: 'worker_update_supervisor_unavailable' });
+  await failed.close();
+  const later = await new WorkerUpdater({ ...g.options, launchSupervisor: async () => { launched++; } }).initialize();
+  t.after(() => later.close());
+  assert.equal(await later.start(), 'Worker update needs a retry.');
+  assert.equal(launched, 1);
+});
+
 test('manual retry clears an earlier failure when Main now serves the already running release', async t => {
   const f = await fixture(t);
   const updater = await new WorkerUpdater({ ...f.options,

@@ -163,8 +163,12 @@ export class WorkerUpdater {
         }
         return `Worker ${version} is current.`;
       }
+      // An update cut short by a Worker stop is retried automatically; other failures wait for a manual retry.
       if (!retry && this.record?.manifestSha256 === release.manifestSha256
-        && ['failed', 'rolled-back'].includes(this.statusValue.state)) return 'Worker update needs a retry.';
+        && ['failed', 'rolled-back'].includes(this.statusValue.state)
+        && !['worker_update_interrupted', 'worker_updater_stopped'].includes(this.statusValue.lastError)) {
+        return 'Worker update needs a retry.';
+      }
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
         { manifestSha256: release.manifestSha256 });
@@ -188,7 +192,8 @@ export class WorkerUpdater {
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);
       return `Worker ${release.version} restart is scheduled.`;
     } catch (error) {
-      const lastError = error instanceof WorkerError ? error.code : 'worker_update_failed';
+      const lastError = this.lifetime.signal.aborted ? 'worker_updater_stopped'
+        : error instanceof WorkerError ? error.code : 'worker_update_failed';
       await this.save({ state: 'failed', lastError });
       if (drained) resume();
       throw new WorkerError(lastError);

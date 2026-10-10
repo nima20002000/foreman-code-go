@@ -117,9 +117,12 @@ async function main() {
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
   if (runtime.managedSetup && runtime.managedSetup.state !== 'ready') {
     // The user service restarts failures; keep the authenticated status available between automatic retries.
-    managedSetupRetry = setTimeout(() => {
+    // A running Worker update must finish first: it may deliver the release that fixes setup.
+    const retry = () => {
+      if (runtime.updating()) { managedSetupRetry = setTimeout(retry, 30_000); managedSetupRetry.unref(); return; }
       runtime.stop().then(() => process.exit(1), () => { console.error('shutdown_timeout'); process.exit(1); });
-    }, 30_000);
+    };
+    managedSetupRetry = setTimeout(retry, 30_000);
     managedSetupRetry.unref();
   }
 }
