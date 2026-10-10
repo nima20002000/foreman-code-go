@@ -5,12 +5,12 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { ensureClone, type GitWorktreePorts } from './gitWorktree.js'
-import { SourceError, verifySourceBytes } from './manifest.js'
+import { SOURCE_LIMITS, SourceError, verifySourceBytes } from './manifest.js'
 
 const ObjectsSchema = z.array(z.object({
   kind: z.enum(['commit', 'tree']), object: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   bytes: z.string().max(3 * 1024 * 1024),
-}).strict()).min(2).max(4096 * 32 + 1)
+}).strict()).min(2).max(SOURCE_LIMITS.entries * 32 + 1)
 
 /** Delivers only the approved commit, trees and blobs; repository history is not source approval. */
 export async function importGitSourceObjects(input: {

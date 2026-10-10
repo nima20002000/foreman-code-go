@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { DomainError } from '../errors.js'
-import { SourceManifestSchema, type SourceManifest, type SourceEntry } from '@foreman-code/contracts/source-materialization'
+import { SOURCE_ENTRY_LIMIT, SourceManifestSchema, type SourceManifest, type SourceEntry } from '@foreman-code/contracts/source-materialization'
 
 export class SourceError extends DomainError {
   constructor(code: string, message: string, options?: ErrorOptions) {
@@ -12,7 +12,7 @@ export class SourceError extends DomainError {
     this.name = 'SourceError'
   }
 }
-export const SOURCE_LIMITS = Object.freeze({ entries: 4096, bytes: 128 * 1024 * 1024,
+export const SOURCE_LIMITS = Object.freeze({ entries: SOURCE_ENTRY_LIMIT, bytes: 128 * 1024 * 1024,
   fileBytes: 16 * 1024 * 1024, depth: 32, preparationMs: 300_000, concurrent: 2 })
 // Credential implementation/test/declaration leaves are code, not credential data or directories.
 // Byte verification still applies; data/backup suffixes never qualify as source filenames.

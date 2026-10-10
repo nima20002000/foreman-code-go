@@ -84,6 +84,12 @@ it('keeps the per-file byte limit for full-tree approvals', async () => {
   await expect(capture(root, await commit(root))).rejects.toMatchObject({ code: 'SOURCE_CAPACITY', status: 413 })
 })
 
+it('approves a tracked tree larger than the former 4096-entry limit', async () => {
+  const root = await repository()
+  for (let index = 0; index < 4200; index++) await writeFile(join(root, `file-${index}.txt`), '')
+  expect(await approvedGitTreePaths(root, await commit(root))).toHaveLength(4200)
+}, 30_000)
+
 it('rejects inventories exceeding the existing entry limit', async () => {
   const root = await repository()
   for (let index = 0; index <= SOURCE_LIMITS.entries; index++) {

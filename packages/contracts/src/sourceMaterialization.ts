@@ -2,6 +2,8 @@ import { AgentBranchPrefixSchema } from './worktreeSettings.js'
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
 
+/** Tracked files one approved source snapshot may hold; the manifest's 2 MiB metadata budget still applies. */
+export const SOURCE_ENTRY_LIMIT = 8192
 export const SourceHashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 export const SourceEntrySchema = z.object({
   path: z.string().min(1).max(1024), kind: z.literal('file'),
@@ -19,10 +21,10 @@ export const SourceManifestSchema = z.object({
     tree: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), objectFormat: z.enum(['sha1', 'sha256']),
     repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/).optional(),
     metadata: SourceGitMetadataSchema.optional() }).strict().optional(),
-  entries: z.array(SourceEntrySchema).max(4096),
-  deletions: z.array(z.string().min(1).max(1024)).max(4096),
+  entries: z.array(SourceEntrySchema).max(SOURCE_ENTRY_LIMIT),
+  deletions: z.array(z.string().min(1).max(1024)).max(SOURCE_ENTRY_LIMIT),
   overlayBaseDigest: SourceHashSchema.optional(),
-  totalEntries: z.number().int().nonnegative().max(4096),
+  totalEntries: z.number().int().nonnegative().max(SOURCE_ENTRY_LIMIT),
   totalBytes: z.number().int().nonnegative().max(128 * 1024 * 1024),
   manifestDigest: SourceHashSchema,
 }).strict()
