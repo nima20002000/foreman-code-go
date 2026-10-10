@@ -176,7 +176,7 @@ async function fixture() {
 }
 
 const readStatus = async (client: Client) => ComputerMaintenanceListSchema.parse(decodeMcpToolResult(
-  await client.callTool({ name: 'computers_maintenance_status', arguments: { refresh: true } }),
+  await client.callTool({ name: 'computers_maintenance_status', arguments: { detail: 'full', refresh: true } }),
 ))
 
 describe('Worker updates through authenticated Operator MCP', () => {

@@ -3,7 +3,8 @@ import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { COMPUTER_ACCOUNTS_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
-import { COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceRequestSchema } from '@foreman-code/contracts/computer-maintenance'
+import { COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceRequestSchema,
+  ComputerMaintenanceOperatorListSchema, ComputerMaintenanceListSchema, type MaintenanceTask } from '@foreman-code/contracts/computer-maintenance'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -138,6 +139,64 @@ async function fixture() {
 }
 
 describe('authenticated computer target reads and maintenance', () => {
+  it('defaults to compact history and allows authorized full and task-specific reads without changing HTTP', async () => {
+    const f = await fixture()
+    try {
+      const now = Date.now()
+      const task = (hoursAgo: number, state: MaintenanceTask['state'] = 'succeeded',
+        kind: MaintenanceTask['kind'] = 'update-system'): MaintenanceTask => ({
+        id: randomUUID(), kind, state,
+        startedAt: new Date(now - hoursAgo * 60 * 60 * 1000).toISOString(),
+        finishedAt: new Date(now - hoursAgo * 60 * 60 * 1000).toISOString(),
+        summary: 'Maintenance outcome '.repeat(40), outputTail: 'Diagnostic output '.repeat(400),
+      })
+      const latest = task(1)
+      const recentFailure = task(2, 'failed')
+      const latestRestart = task(30, 'failed', 'restart')
+      // Completion time determines the failure window, even for a long-running task.
+      const longFailure = { ...task(40, 'failed'), finishedAt: task(3).finishedAt }
+      const tasks = [task(48, 'failed'), latestRestart, longFailure, task(25, 'failed'),
+        task(4), recentFailure, latest]
+      const snapshot = { ...await f.status(), tasks, worker: {
+        currentVersion: '1.2.3', targetVersion: '1.2.4', state: 'pending' as const, lastError: null,
+      } }
+      f.mainStatus.mockResolvedValue(snapshot)
+      const client = await f.connect('reader')
+      const denied = await f.connect('scoped')
+      const read = async (arguments_: Record<string, unknown>) => decodeMcpToolResult(
+        await client.callTool({ name: 'computers_maintenance_status', arguments: arguments_ }),
+      )
+      const compact = ComputerMaintenanceOperatorListSchema.parse(await read({ target: f.main }))
+      const status = compact.computers[0]!.status!
+      expect(status.tasks.map(task => task.id)).toEqual([
+        latest.id, recentFailure.id, latestRestart.id, longFailure.id,
+      ])
+      for (const summary of status.tasks) {
+        expect(summary).not.toHaveProperty('outputTail')
+        expect(summary.summary).toHaveLength(300)
+      }
+      expect(status).toMatchObject({ harnesses: snapshot.harnesses, system: snapshot.system, worker: snapshot.worker })
+      const full = await read({ target: f.main, detail: 'full' })
+      expect(full).toEqual({ computers: [{ target: f.main, status: snapshot }] })
+      expect(await read({ target: f.main, detail: 'full', taskId: longFailure.id }))
+        .toEqual({ computers: [{ target: f.main, status: { ...snapshot, tasks: [longFailure] } }] })
+      expect(await read({ target: f.main, detail: 'full', taskId: randomUUID() }))
+        .toMatchObject({ computers: [{ status: { tasks: [] } }] })
+      expect((await client.callTool({ name: 'computers_maintenance_status',
+        arguments: { target: f.main, taskId: latest.id } })).isError).toBe(true)
+      for (const detail of ['compact', 'full']) {
+        expect((await denied.callTool({ name: 'computers_maintenance_status',
+          arguments: { target: f.main, detail } })).isError).toBe(true)
+      }
+      const fleet = ComputerMaintenanceOperatorListSchema.parse(await read({}))
+      expect(fleet.computers[0]).toEqual(compact.computers[0])
+      const http = await f.app.inject({ method: 'POST', url: '/api/management/computers/maintenance/read',
+        headers: { authorization: 'Bearer reader' }, payload: { target: f.main } })
+      expect(http.statusCode).toBe(200)
+      expect(http.json()).toEqual(full)
+    } finally { await f.close() }
+  })
+
   it('keeps one bounded shared maintenance observation when an HTTP reader cancels', async () => {
     const f = await fixture()
     try {
@@ -215,6 +274,18 @@ describe('authenticated computer target reads and maintenance', () => {
         arguments: { target: f.main, refresh: true } }))
       expect(result).toMatchObject({ computers: [{ target: f.main,
         status: { tasks: [{ id: input.commandId, state: 'succeeded', summary: 'Codex 1.2.3 → 1.2.5' }] } }] })
+      const full = ComputerMaintenanceListSchema.parse(decodeMcpToolResult(await client.callTool({
+        name: 'computers_maintenance_status',
+        arguments: { target: f.main, detail: 'full', taskId: input.commandId },
+      })))
+      expect(full.computers[0]!.status!.tasks[0]).toMatchObject({
+        id: input.commandId, state: 'succeeded', outputTail: expect.any(String),
+      })
+      const persisted = await f.status()
+      expect(full.computers[0]!.status!.tasks).toEqual(persisted.tasks)
+      expect(result).toMatchObject({ computers: [{ status: { tasks: [
+        expect.not.objectContaining({ outputTail: expect.any(String) }),
+      ] } }] })
     } finally { await f.close() }
   })
 

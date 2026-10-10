@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ComputerActivityListSchema } from '@foreman-code/contracts/computer-activity'
-import { ComputerMaintenanceListSchema, ComputerMaintenanceListInputSchema, ComputerMaintenanceStartInputSchema,
+import { ComputerMaintenanceOperatorListSchema, ComputerMaintenanceOperatorListInputSchema, ComputerMaintenanceStartInputSchema,
   ComputerMaintenanceStartResultSchema } from '@foreman-code/contracts/computer-maintenance'
 import { ComputerAccountsListInputSchema, ComputerAccountsListSchema, ComputerSyncReadInputSchema, ComputerSyncUpdateInputSchema, ComputerSyncStatusSchema, ComputerGitHubInputSchema, ComputerGitHubStatusInputSchema,
   GitHubLoginStateSchema } from '@foreman-code/contracts/computer-accounts'
@@ -8,6 +8,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { BuildComputerReadSchema, BuildComputerUpdateSchema, BuildComputerStatusSchema,
   BuildComputerBatchUpdateSchema, BuildComputerBatchResultSchema } from '@foreman-code/contracts/build-computers'
 import type { OperatorRequestContext } from '../types.js'
+import { maintenanceReadResult } from '../../../modules/computers/maintenanceSummary.js'
 import { operatorToolAvailable } from '../availability.js'
 import { invokeOperatorTool } from '../invoke.js'
 
@@ -40,16 +41,24 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   const maintenance = context.services.computerMaintenance
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_status')) server.registerTool('computers_maintenance_status', {
     description: 'Read maintenance status for Main and every paired computer: installed and latest Codex/Claude versions, pending OS '
-      + 'package updates (including phased or held packages), whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome and sync source fingerprint. '
+      + 'package updates (including phased or held packages), whether a restart is needed, passwordless sudo and free disk. '
+      + 'Default detail is compact: the latest task per kind plus retained failures completed in the last 24 hours, '
+      + 'with summaries capped at 300 characters and no outputTail. Use detail: "full" for all retained history '
+      + '(at most 20 tasks per computer) and outputTail; optionally supply taskId with full detail to select one task. '
       + 'Paired Workers also report current and target application versions, update state and the last update error, '
       + 'including rollback. '
       + 'Requires global settings:read. Supply target to read one current installation independently. '
       + 'Settled status is cached for 20 seconds unless refresh is true; pending probes are shared. An offline computer reports null status.',
-    inputSchema: ComputerMaintenanceListInputSchema, outputSchema: ComputerMaintenanceListSchema,
+    inputSchema: ComputerMaintenanceOperatorListInputSchema, outputSchema: ComputerMaintenanceOperatorListSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
-  }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => input.target
-    ? maintenance.readTarget(context.principal, 'mcp', input)
-    : maintenance.list(context.principal, 'mcp', input.refresh === true)))
+  }, input => invokeOperatorTool(context, 'computers_maintenance_status', async () => {
+    const result = input.target
+      ? await maintenance.readTarget(context.principal, 'mcp', {
+        target: input.target, refresh: input.refresh,
+      })
+      : await maintenance.list(context.principal, 'mcp', input.refresh === true)
+    return maintenanceReadResult(result, input)
+  }))
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_start')) server.registerTool('computers_maintenance_start', {
     description: 'Start one maintenance task on the given computers. With targets omitted, update-worker and sync tasks select '
       + 'paired computers; other tasks select Main and every paired computer: '

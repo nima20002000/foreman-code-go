@@ -112,7 +112,7 @@ describe.skipIf(!postgresEnabled)('maintenance command recovery through authenti
       expect([...computer.codexMcp]).toEqual(['original'])
       expect(computer.calls.filter(call => call.args[0] === 'mcp' && call.args[1] === 'add')).toHaveLength(1)
       const readback = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await recovered.callTool({
-        name: 'computers_maintenance_status', arguments: { refresh: true },
+        name: 'computers_maintenance_status', arguments: { detail: 'full', refresh: true },
       }))))
       expect(readback.computers.find(value => value.target.applicationInstallationId === device.workerInstallationId)
         ?.status?.tasks.find(task => task.id === input.commandId)).toMatchObject({ state: 'succeeded' })
