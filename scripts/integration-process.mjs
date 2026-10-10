@@ -1,9 +1,9 @@
 import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs'
 
-// A case can take 180 seconds plus hooks; multi-case files can exceed ten minutes.
-// Log inactivity catches stalled setup/teardown without cutting off a progressing file.
+// A case can take 240 seconds plus hooks; multi-case files can exceed ten minutes.
+// Log inactivity catches a hung file within five minutes without cutting off a progressing one.
 export const integrationProcessLimits = {
-  idleTimeoutMs: 10 * 60_000,
+  idleTimeoutMs: 5 * 60_000,
   fileTimeoutMs: 60 * 60_000,
   pollIntervalMs: 1000,
   graceMs: 5000,
