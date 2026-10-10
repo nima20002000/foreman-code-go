@@ -56,13 +56,16 @@ function fixture() {
     { kind: 'claude', executable: '/usr/bin/claude', version: '1.0', binarySha256: '3'.repeat(64) },
     ...fingerprint.tools,
   ]
-  const current = InstalledVerificationRuntimeConfigurationSchema.parse({ schemaVersion: 2, root: fingerprint.root,
+  const runtimeRoot = '/ci/runtime'
+  const root = { ...fingerprint.root, binding: { ...fingerprint.root.binding,
+    canonicalPath: join(runtimeRoot, 'source-materializations', fingerprint.root.selection.rootPolicyId) } }
+  const current = InstalledVerificationRuntimeConfigurationSchema.parse({ schemaVersion: 2, root,
     machine: { ...machine, tools }, seedReceiptPath: '/ci/seed-receipt.json',
     seedReceiptSha256: fingerprint.seedReceiptSha256, qualificationSource: { directory: '/ci/source', manifest },
     descriptor: { target: { hostRef: fingerprint.hostRef, registration: fingerprint.registration,
       mainInstallationId: fingerprint.mainInstallationId }, runtimeExecutable: fingerprint.runtimeExecutable,
       ociExecutable: fingerprint.ociExecutable, findmntExecutable: '/usr/bin/findmnt', findmntBinarySha256: 'f'.repeat(64),
-      runtimeRoot: '/ci/runtime', backingFile: null, volumeCapacityBytes: fingerprint.quota.volumeCapacityBytes,
+      runtimeRoot, backingFile: null, volumeCapacityBytes: fingerprint.quota.volumeCapacityBytes,
       controllerEnvironment: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/1000', LANG: 'C.UTF-8' },
       quota: fingerprint.quota, quotaPool: fingerprint.quotaPool, resources: fingerprint.resources,
       network: fingerprint.network, approvalConfig: fingerprint.approvalConfig,
@@ -78,6 +81,14 @@ function fixture() {
 }
 
 describe('CI runtime refresh', () => {
+  it('rejects an unchanged source binding outside managed source storage', async () => {
+    const f = fixture()
+    const root = { ...f.current.root,
+      binding: { ...f.current.root.binding, canonicalPath: '/approved/source' } }
+    const current = { ...f.current, root }
+    await expect(relocateCiQuotaSlots(current, root)).rejects.toMatchObject({ code: 'JOB_RUNTIME_CONTEXT_CHANGED' })
+  })
+
   it('moves adopted quota directories to the new source binding and resumes an interrupted move', async () => {
     const f = fixture()
     const directory = await privateFixtureDirectory('ci-quota-adoption-')
