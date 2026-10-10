@@ -192,9 +192,9 @@ export class HostCiRunner {
       if (scripts['db:up']) command = `corepack pnpm db:up && ${command}`
     }
     const run = this.runDirectory(meta.runId)
-    const shards = Math.max(1, Math.min(12, Math.floor((this.ports.memoryBytes / 2 ** 30 - 3)), this.ports.cpus - 2))
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
-      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true GRAPHQL_INTEGRATION_SHARDS=${shards} NODE_OPTIONS=--max-old-space-size=6144`,
+      // The repository's own integration runner sizes its shards to this computer.
+      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=6144`,
       'mkdir -p "$TMPDIR"',
       `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
