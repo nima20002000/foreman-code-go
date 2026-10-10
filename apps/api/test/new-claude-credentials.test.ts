@@ -123,8 +123,14 @@ describe('NEW-CLAUDE F-14 explicitly provisioned production authentication', () 
     vi.stubEnv('ANTHROPIC_API_KEY', 'inherited-key-must-not-be-used')
     const f = fixture('operator', undefined, { authMode: 'api-key' })
     try {
-      await expect(f.manager.capabilities()).rejects.toThrow('explicitly supplied credential')
+      await expect(f.manager.capabilities()).rejects.toMatchObject({
+        code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE', status: 409,
+      })
+      await expect(f.manager.prepareInspection(f.start)).rejects.toMatchObject({
+        code: 'CLAUDE_API_KEY_DELIVERY_UNAVAILABLE', status: 409,
+      })
       expect(f.loadClient).not.toHaveBeenCalled()
+      expect(f.sdkQuery).not.toHaveBeenCalled()
     } finally { await f.manager.dispose?.(); vi.unstubAllEnvs() }
   })
   it('launches subscription mode without delivering inherited authentication secrets', async () => {
