@@ -73,7 +73,9 @@ const currentNative = `(
       select 1 from execution_native_sessions s
       where s.execution_id=e.id and s.reference->>'nativeSessionId'=e.record->>'nativeSessionId'
         and e.record->>'workingDirectory'=coalesce((select placement.record#>>'{workingTree,canonicalCwd}'
-          from execution_native_placements placement where placement.execution_id=e.id),r.working_directory)
+          from execution_native_placements placement where placement.execution_id=e.id),
+          -- A Run with its own worktree runs every execution there, not in the workspace root.
+          (select w.record->>'workingDirectory' from run_worktrees w where w.run_id=r.id),r.working_directory)
         and s.reference->>'harness'=(select cfg.record->'harness'->>'harness' from agent_configuration_versions cfg
           where cfg.id=e.record->>'agentConfigurationVersionId' and cfg.workspace_id=r.workspace_id and cfg.agent_id=e.agent_id)
         and jsonb_typeof(s.reference->'providerVersion')='string' and length(s.reference->>'providerVersion')>0

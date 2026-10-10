@@ -7,6 +7,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { runPresentationMigration } from '../src/infrastructure/runPresentationMigration.js'
+import { runWorktreesMigration } from '../src/infrastructure/runWorktreesMigration.js'
 import { commandInputHash, PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { readCurrentEditLocationPins } from '../src/modules/graph-drafts/currentLocationPins.js'
 import { readAffectedGraphRuns } from '../src/modules/graph-drafts/saveAdmission.js'
@@ -16,6 +17,19 @@ import { graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition
 import { writerFixture, type WriterFixture } from './eng04-writer-fixtures.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
+
+async function databaseBeforePresentationUpgrade() {
+  const db = await currentDatabase({ beforeMigration: runPresentationMigration.version })
+  try {
+    // Current save services require worktree storage even when presentation data is awaiting upgrade.
+    await db.pool.query(runWorktreesMigration.sql)
+    await db.pool.query('insert into application_migrations(version) values($1)', [runWorktreesMigration.version])
+    return db
+  } catch (error) {
+    await db.close()
+    throw error
+  }
+}
 
 async function seedRenameIntent(t: WriterFixture, principal: ManagementPrincipal,
   stage: ReturnType<typeof CurrentEditStageInputSchema.parse>, state: 'staged' | 'uncertain',
@@ -69,7 +83,7 @@ async function seedRenameIntent(t: WriterFixture, principal: ManagementPrincipal
 
 describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () => {
   it.each(['staged', 'uncertain'] as const)('resumes a %s rename over HTTP and MCP without replacing commands', async (state) => {
-    const db = await currentDatabase({ beforeMigration: runPresentationMigration.version })
+    const db = await databaseBeforePresentationUpgrade()
     let initial: WriterFixture | undefined
     let restarted: ReturnType<typeof buildApp> | undefined
     try {
@@ -162,7 +176,7 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
   }, 60000)
 
   it('keeps a staged command when another rename changes its immutable presentation baseline', async () => {
-    const db = await currentDatabase({ beforeMigration: runPresentationMigration.version })
+    const db = await databaseBeforePresentationUpgrade()
     let t: WriterFixture | undefined
     try {
       t = await writerFixture(db)
@@ -197,7 +211,7 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
   }, 60000)
 
   it('retains an uncertain Stop across upgrade and denied retries', async () => {
-    const db = await currentDatabase({ beforeMigration: runPresentationMigration.version })
+    const db = await databaseBeforePresentationUpgrade()
     let t: WriterFixture | undefined
     try {
       t = await writerFixture(db)
