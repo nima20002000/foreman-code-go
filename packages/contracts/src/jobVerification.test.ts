@@ -52,6 +52,8 @@ describe('verification placement and policy', () => {
       profileRevision: 1, suite: 'integration', ready: true, policy: jobPolicyRequirementsRecord(spec.policy),
       resources: large, maxUnitWorkers: 8, maxIntegrationShards: 3 })
     expect(template.parameters.integrationShards).toBe(3)
+    // Jobs use every qualified unit worker, not the pre-qualification single worker.
+    expect(template.parameters.unitWorkers).toBe(8)
   })
   it('keeps all choices readable when a saved unqualified report allowance cannot fit four declarations', () => {
     const { spec, resources, build } = verificationFixture()

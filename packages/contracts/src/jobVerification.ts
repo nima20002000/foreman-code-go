@@ -93,7 +93,8 @@ export type JobVerificationTemplate = z.infer<typeof JobVerificationTemplateSche
 
 export function jobVerificationTemplate(input: Omit<JobVerificationTemplate, 'argv' | 'outputs' | 'parameters' | 'setupIssue'>) {
   const reportBytes = Math.floor(input.policy.maxOutputBytes / 4)
-  const parameters = { unitWorkers: JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers,
+  // Qualification measures how many workers the envelope sustains; Jobs use all of them.
+  const parameters = { unitWorkers: Math.max(JOB_VERIFICATION_INITIAL_CONCURRENCY.unitWorkers, input.maxUnitWorkers),
     integrationShards: input.suite === 'integration'
       ? Math.min(input.maxIntegrationShards ?? 1, qualificationIntegrationShards(input.resources))
       : JOB_VERIFICATION_INITIAL_CONCURRENCY.integrationShards }
