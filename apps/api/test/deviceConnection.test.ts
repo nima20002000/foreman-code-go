@@ -343,12 +343,11 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
   await once(server, 'listening')
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Missing address')
-  const connect = deviceConnector({ endpoint: `wss://127.0.0.1:${address.port}/api/device/connect`,
-    token: 'device', WebSocket: class extends WebSocket {
-      constructor(url: string | URL, options?: WebSocket.ClientOptions) {
-        super(String(url).replace('wss:', 'ws:'), options)
-      }
-    } })
+  const connect = deviceConnector({
+    url: 'wss://main/device/connect',
+    credential: 'device',
+    create: (_url, options) => new WebSocket(`ws://127.0.0.1:${address.port}/device/connect`, options),
+  })
   const state = { loginId: null, state: 'signed-out', code: null, verificationUrl: null,
     expiresAt: null, account: null, message: null }
   const mutate = vi.fn(async () => ({ payload: state }))
