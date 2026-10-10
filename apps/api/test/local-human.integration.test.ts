@@ -6,6 +6,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { localHumanMigration } from '../src/infrastructure/localHumanMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresLocalHumanAccess } from '../src/modules/access/localHuman.js'
+import { requireAuthorization } from '../src/modules/access/policy.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
@@ -36,14 +37,17 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
       expect(await fixture.repository.get(fixture.interaction.id)).toEqual(pending)
     } finally { await fixture.close() }
   })
-  it('provides credential-free access on a fresh database and remains repeatable', async () => {
+  it('provides credential-free access to every owner action on a fresh database and remains repeatable', async () => {
     const db = await currentDatabase()
     try {
       const access = new PostgresAccessService(db.pool)
       const human = new PostgresLocalHumanAccess(db.pool, access)
       const before = await human.current()
       expect(before).toMatchObject({ id: 'principal-local-human', audience: 'operator', revokedAt: null })
-      expect(before.grants).toEqual([{ actions: [...ManagementActionSchema.options], scope: {} }])
+      expect(new Set(before.grants.flatMap(grant => grant.actions))).toEqual(new Set(ManagementActionSchema.options))
+      for (const action of ManagementActionSchema.options) {
+        expect(() => requireAuthorization(before, action), action).not.toThrow()
+      }
       expect(await browserTables(db.pool)).toEqual([])
       expect((await db.pool.query('select token_hash from management_principals where id=$1', [before.id])).rows)
         .toEqual([{ token_hash: null }])
