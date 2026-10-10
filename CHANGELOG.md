@@ -7,6 +7,31 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.58] - 2026-10-10
+
+### Workflows and Runs
+
+- Run the Board's selected Run in place: the Selected Run sidebar is gone, Runs has a New run entry, Run names use one short id, and subagents orbit their agent with details beside the selected orb.
+- Resize agent circles by dragging their border on draft and Run boards.
+- Workflow edits are no longer blocked by finished Runs that used their own worktree, recovered detached native sessions, or a delivered work direction.
+- Board header shows the workflow worktree, confirms renames, and supports Board-wide undo and redo with notices recorded in Run Activity.
+- Separate agent Chat, Settings and Info surfaces, with Activity as an Info tab.
+
+### Paired computers and CI
+
+- Paired Workers prepare and adopt managed CI storage automatically after pairing, reclaim CI runtime storage, and stop repeated enrollment refreshes.
+- The installed Worker service can use the installed CI quota and rootless container helpers; CI workloads still enforce no-new-privileges.
+- Worker self-updates are no longer cut short by managed-setup retries, and an interrupted update is retried automatically.
+- Computer maintenance history is bounded across MCP and Settings.
+
+### Look and feel
+
+- Aurora palette: livelier colors and glow across the app and Board canvases.
+
+### Production
+
+- Installs wait for active Runs before restarting the API and prune old releases, keeping the current and previous release.
+
 ## [0.0.57] - 2026-10-10
 
 ### Production and paired computers
