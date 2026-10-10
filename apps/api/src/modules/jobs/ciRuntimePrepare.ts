@@ -251,12 +251,13 @@ export async function codexBinary(image: string, output: string, env: NodeJS.Pro
   const path = join(output, 'unit-codex')
   await rm(path, { force: true })
   const container = `foreman-ci-codex-${randomUUID()}`
+  // The copied store and its install live in the tmpfs, which counts against the container's memory: a fixed
+  // 2 GiB cap was killed by the kernel once the store grew. Use the preparation budget for both.
   const limits = ciPreparationLimits()
-  const captureLimits = ciPreparationResourceArgs({ cpuCount: Math.min(2, limits.cpuCount),
-    memoryBytes: Math.min(2 * 2 ** 30, limits.memoryBytes) })
+  const captureLimits = ciPreparationResourceArgs({ cpuCount: Math.min(2, limits.cpuCount), memoryBytes: limits.memoryBytes })
   const child = spawn('podman', ['--remote=false', 'run', '--name', container, '--rm', '--pull=never', '--network=none', '--read-only',
     '--cap-drop=all', '--security-opt=no-new-privileges', ...captureLimits, '--pids-limit=256',
-    '--tmpfs=/tmp:rw,exec,nosuid,nodev,size=8g', '--entrypoint=node', image, '-e', script], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    `--tmpfs=/tmp:rw,exec,nosuid,nodev,size=${limits.memoryBytes}`, '--entrypoint=node', image, '-e', script], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   let diagnostics = ''
   child.stderr!.on('data', (chunk: Buffer) => { diagnostics = `${diagnostics}${chunk.toString('utf8')}`.slice(-65_536) })
   const tasks = [pipeline(child.stdout!, createWriteStream(path, { mode: 0o700, flags: 'wx' })),
