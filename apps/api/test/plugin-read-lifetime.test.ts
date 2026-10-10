@@ -113,40 +113,40 @@ describe.each(['codex', 'claude'] as const)('%s plugin catalog reader ownership'
   })
 
   it('shares a forced refresh without giving the first reader cancellation ownership', async () => {
-    let blocked: ReturnType<typeof gate> | undefined = undefined
-    const { service } = fixture((signal) => blocked ? blocked.wait(signal) : Promise.resolve())
+    const held: { blocked?: ReturnType<typeof gate> } = {}
+    const { service } = fixture((signal) => held.blocked ? held.blocked.wait(signal) : Promise.resolve())
     await service.list(principal, input)
-    blocked = gate()
+    held.blocked = gate()
     const first = new AbortController()
     const second = new AbortController()
     const a = service.list(principal, { ...input, refresh: true }, first.signal)
     const b = service.list(principal, { ...input, refresh: true }, second.signal)
     const canceled = expect(a).rejects.toThrow('closed refresh')
-    await vi.waitFor(() => expect(blocked!.signals).toHaveLength(1))
+    await vi.waitFor(() => expect(held.blocked!.signals).toHaveLength(1))
     first.abort(new Error('closed refresh'))
     await canceled
-    expect(blocked.signals[0]!.aborted).toBe(false)
-    blocked.release()
+    expect(held.blocked.signals[0]!.aborted).toBe(false)
+    held.blocked.release()
     expect((await b).items.length).toBeGreaterThan(0)
-    expect(blocked.signals).toHaveLength(1)
+    expect(held.blocked.signals).toHaveLength(1)
   })
 })
 
 it('awaits fresh Codex inventory and revisions instead of returning the cached catalog', async () => {
-  let blocked: ReturnType<typeof gate> | undefined = undefined
-  const { service, install, list } = codexFixture((signal) => blocked ? blocked.wait(signal) : Promise.resolve())
+  const held: { blocked?: ReturnType<typeof gate> } = {}
+  const { service, install, list } = codexFixture((signal) => held.blocked ? held.blocked.wait(signal) : Promise.resolve())
   const before = await service.list(principal, input)
   install()
   expect((await service.list(principal, input)).items).toEqual(before.items)
-  blocked = gate()
+  held.blocked = gate()
   let settled = false
   const fresh = service.list(principal, { ...input, view: 'installed', refresh: true }).then(result => {
     settled = true
     return result
   })
-  await vi.waitFor(() => expect(blocked!.signals).toHaveLength(1))
+  await vi.waitFor(() => expect(held.blocked!.signals).toHaveLength(1))
   expect(settled).toBe(false)
-  blocked.release()
+  held.blocked.release()
   const after = await fresh
   expect(after.items[0]).toMatchObject({ installed: true })
   expect(after.revision).not.toBe(before.revision)

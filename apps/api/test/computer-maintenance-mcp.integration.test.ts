@@ -105,7 +105,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
       codex: [{ transport: 'http', name: 'linear', url: 'https://mcp.linear.app/mcp', bearerTokenEnvVar: null }],
       claude: [{ transport: 'http', name: 'docs', url: 'https://docs.example/mcp', bearerTokenEnvVar: null }] },
       skippedServers: { codex: ['private'] },
-      warnings: ['codex MCP server private is unsafe or invalid; skipped.'] })
+      warnings: ['codex MCP server private contains credentials; configure it separately on each computer; skipped.'] })
     await operator.callTool({ name: 'computers_maintenance_start', arguments: { commandId: randomUUID(), task: { kind: 'sync-plugins' } } })
     expect(deviceStarts.at(-1)).toEqual({ kind: 'sync-plugins', plugins: ['pdf@openai'],
       marketplaces: [{ name: 'claude-plugins-official', source: 'https://github.com/anthropics/claude-plugins-official.git' }], claudePlugins: [], claudeMarketplaces: [] })
@@ -136,6 +136,8 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     await database.pool.query(`insert into device_registrations (id,main_id,worker_installation_id,public_key,record)
       values($1,$2,$3,'fixture',$4::jsonb)`, [device.deviceId, mainId, device.workerInstallationId, JSON.stringify(device)])
     const computer = fakeComputer()
+    let now = Date.now()
+    computer.ports.now = () => new Date(now)
     const localDefinition = { type: 'http', url: 'https://receiver.example/mcp' }
     computer.codexMcp.add('local')
     computer.claudeMcp.set('local', localDefinition)
@@ -154,7 +156,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     }
     const commands = new PostgresCommandCoordinator(database.pool)
     const starts: MaintenanceTaskStart[] = []
-    const service = new FleetMaintenanceService(database.pool, mainId, () => ({
+    const createService = () => new FleetMaintenanceService(database.pool, mainId, () => ({
       capabilities: () => [{ namespace: COMPUTER_MAINTENANCE_NAMESPACE, mainCanRequest: true }],
       request: async (_deviceId, _namespace, payload) => {
         const request = MaintenanceRequestSchema.parse(payload)
@@ -176,7 +178,8 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
         pluginId: `${name}@official`, name, marketplaceName: 'official', description: null, version: null,
         installed: true, enabled: true, installCount: null,
       })) }),
-    })
+    }, () => now)
+    const service = createService()
     const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { computerMaintenance: service, commands } as unknown as OperatorServices } })
     apps.push(app)
@@ -216,6 +219,16 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     }
     expect(await sync('sync-mcp')).toMatchObject({ state: 'failed', summary: expect.stringContaining('query') })
     expect(await sync('sync-plugins')).toMatchObject({ state: 'failed' })
+    const failedStarts = starts.length
+    await service.syncChangedSources()
+    await createService().syncChangedSources()
+    expect(starts).toHaveLength(failedStarts)
+    now += 5 * 60_000
+    await createService().syncChangedSources()
+    await settle(computer)
+    expect(starts).toHaveLength(failedStarts + 2)
+    expect(await sync('sync-mcp')).toMatchObject({ state: 'failed' })
+    expect(starts).toHaveLength(failedStarts + 3)
     expect(JSON.stringify(starts)).not.toContain('fixture-secret')
     expect(JSON.stringify(computer.calls)).not.toContain('fixture-secret')
     expect(computer.claudePlugins.get('local@official')).toBe(false)
@@ -223,6 +236,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     computer.fail(() => false)
     for (const definition of [
       { url: 'https://good.example/mcp', env: { TOKEN: 'fixture-secret' } },
+      { type: 'http', url: 'https://good.example/mcp', headers: { Authorization: 'Bearer fixture-secret' } },
       { url: 'https://good.example/mcp', enabled: false },
       { url: 'https://good.example/mcp', enabled_tools: ['read'] },
       { url: 'https://good.example/mcp', disabled_tools: ['write'] },
@@ -236,8 +250,10 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
         codex: expect.arrayContaining(['good']), claude: expect.arrayContaining(['good']),
       } })
       computer.maintenance = new ComputerMaintenance(computer.ports)
-      const persisted = await computer.maintenance.status(AbortSignal.timeout(1000))
-      expect(persisted.tasks.find(task => task.kind === 'sync-mcp'))
+      const persisted = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await operator.callTool({
+        name: 'computers_maintenance_status', arguments: { refresh: true },
+      })))).computers.find(item => item.target.applicationInstallationId === device.workerInstallationId)
+      expect(persisted?.status?.tasks.find(task => task.kind === 'sync-mcp'))
         .toMatchObject({ state: 'succeeded', summary: expect.stringContaining('good') })
     }
     expect(computer.calls.filter(call => call.args[1] === 'remove' && call.args.includes('good'))).toEqual([])
@@ -265,7 +281,7 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     await settle(computer)
     computer.maintenance = new ComputerMaintenance(computer.ports)
     await service.syncChangedSources()
-    expect(starts).toHaveLength(count + 2)
+    expect(starts).toHaveLength(count)
     const persisted = ComputerMaintenanceListSchema.parse(decodeMcpToolResult((await operator.callTool({
       name: 'computers_maintenance_status', arguments: { refresh: true },
     })))).computers.find(item => item.target.applicationInstallationId === device.workerInstallationId)
@@ -516,6 +532,20 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     expect(installs).toBe(3)
     releaseInstall()
     await expect.poll(async () => (await previousOwner.status(AbortSignal.timeout(1000))).tasks[0]?.state, POLL).toBe('succeeded')
+
+    ports.selectInstalledCodex = async () => {
+      throw Object.assign(new Error('Unknown system error -122, write'), { errno: -122 })
+    }
+    const quotaInput = { ...codex, commandId: randomUUID() }
+    const quotaTask = await start(quotaInput)
+    await expect.poll(async () => (await current()).status?.tasks.find(task => task.id === quotaTask.id)?.state,
+      POLL).toBe('failed')
+    local = new ComputerMaintenance(ports)
+    expect((await current()).status?.tasks.find(task => task.id === quotaTask.id)).toMatchObject({
+      state: 'failed', summary: expect.stringContaining('Disk quota reached on this computer'),
+    })
+    expect(await start(quotaInput)).toMatchObject({ id: quotaTask.id, state: 'failed' })
+    expect(installs).toBe(4)
   })
 
 })
