@@ -227,8 +227,18 @@ export class PostgresRunRepository implements RunRepository {
   }
   async reconciliationCandidates(afterId = '', limit = 100): Promise<RepositoryWorkflowRun[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new DomainError('RUN_READ_LIMIT', 'Use a bounded Run cursor.', 409)
+    // Failed Main-local Runs can outlive their detached runtime. Selection still requires physical closure in cleanup.
     const rows = (await this.pool.query<{ id: string }>(`select id from runs where id>$1 and
-      (execution_state in ('queued','running','waiting') or exists(select 1 from run_cleanup_intents c where c.run_id=runs.id and c.pending))
+      (execution_state in ('queued','running','waiting')
+        or exists(select 1 from run_cleanup_intents c where c.run_id=runs.id and c.pending)
+        or (execution_state='completed' and record->>'outcome'='failed'
+          and exists(select 1 from harness_executions e
+            join lateral (select * from execution_native_closures where execution_id=e.id
+              order by generation desc limit 1) c on true
+            where e.run_id=runs.id and c.detached_at is not null and c.closed_at is null
+              and not exists(select 1 from execution_native_recoveries p where p.generation=c.generation)
+              and not exists(select 1 from run_node_placements p where p.run_id=e.run_id
+                and p.node_id=e.workflow_node_id and p.record#>>'{hostRef,kind}'='device'))))
       order by id limit $2`, [afterId, limit])).rows
     const result = []
     for (const { id } of rows) result.push((await this.getRepeatSnapshot(id)).run)

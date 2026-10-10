@@ -6,6 +6,27 @@ import { recoveryDatabase } from './helpers/eng06Recovery.testSupport.js'
 const freshSignal = () => new AbortController().signal
 
 describe('ENG06-A exact restart closure evidence', () => {
+  it('keeps a terminal detached execution pending until its original process closure is confirmed', async () => {
+    const db = recoveryDatabase({ detached: true })
+    db.state.execution.state = 'completed'
+    db.state.execution.result = { outcome: 'failed', error: {
+      code: 'EXECUTION_INTERRUPTED', message: 'Main restarted.', retryable: false,
+    } }
+    db.state.execution.finishedAt = '2026-09-26T00:01:00.000Z'
+    const original = structuredClone(db.state.lifetime)
+    try {
+      assert.equal(await readWorkflowClosure(db.connection, db.state.execution), undefined)
+      await assert.rejects(recoverWorkflowNativeClosure(db.owner, db.state.execution, async () => false, freshSignal()))
+      assert.equal(await readWorkflowClosure(db.connection, db.state.execution), undefined)
+      await recoverWorkflowNativeClosure(db.owner, db.state.execution, async () => true, freshSignal())
+      assert.equal((await readWorkflowClosure(db.connection, db.state.execution))?.durableGeneration, '71')
+      assert.deepEqual(db.state.lifetime, original)
+      assert.equal(db.state.execution.result.error?.code, 'EXECUTION_INTERRUPTED')
+    } finally {
+      await db.owner.release()
+    }
+  })
+
   for (const detached of [false, true]) it(`recovers ${detached ? 'restart-detached' : 'crash-unclosed'} lifetime without rewriting original evidence`, async () => {
     const db = recoveryDatabase({ detached })
     const original = structuredClone(db.state.lifetime)
