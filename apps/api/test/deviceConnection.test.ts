@@ -1,3 +1,14 @@
+import type pg from 'pg'
+import { DomainError } from '../src/modules/errors.js'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { buildApp } from '../src/app.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { ComputerGitHubService } from '../src/modules/computers/github.js'
+import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
 import { DevicePresenceSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { deviceNegotiationHash, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
@@ -319,3 +330,115 @@ describe('device-only HTTP bootstrap', () => {
     } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
 })
+
+
+it('refuses a GitHub mutation on a replacement authenticated installation after target validation', async () => {
+  const extension: DeviceExtensionRegistration = { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1,
+    role: 'client', maxJsonBytes: 2048, maxBinaryBytes: 0 }
+  const { endpoint, auth } = makeEndpoint([extension], 2000)
+  const server = createServer()
+  const carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
+  server.on('upgrade', deviceUpgradeHandler(endpoint, carrier))
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Missing address')
+  const connect = deviceConnector({ endpoint: `wss://127.0.0.1:${address.port}/api/device/connect`,
+    token: 'device', WebSocket: class extends WebSocket {
+      constructor(url: string | URL, options?: WebSocket.ClientOptions) {
+        super(String(url).replace('wss:', 'ws:'), options)
+      }
+    } })
+  const state = { loginId: null, state: 'signed-out', code: null, verificationUrl: null,
+    expiresAt: null, account: null, message: null }
+  const mutate = vi.fn(async () => ({ payload: state }))
+  const workerOptions = { appVersion: 'build', mainPublicKeyFingerprint: fingerprint, connect,
+    reconcile: async () => {}, heartbeatMs: 20, extensions: [{ ...extension, role: 'server' as const, handle: mutate }] }
+  const original = new DeviceConnectionSupervisor({ ...workerOptions, identity })
+  const replacementIdentity = { ...identity, workerInstallationId: '77777777-7777-4777-8777-777777777777',
+    keyRevision: 2, authorizationRevision: 2 }
+  const replacement = new DeviceConnectionSupervisor({ ...workerOptions, identity: replacementIdentity })
+  let release!: () => void
+  const validation = new Promise<void>(resolve => { release = resolve })
+  let validated!: () => void
+  const reached = new Promise<void>(resolve => { validated = resolve })
+  const caller: ManagementPrincipal = { id: 'github-owner', name: 'Owner', audience: 'operator',
+    expiresAt: '2099-01-01T00:00:00Z', revokedAt: null, grants: [{ actions: ['settings:update'], scope: {} }] }
+  let registrationIdentity = identity
+  const query = async (text: string) => {
+    if (text.includes('from management_principals')) return { rows: [{ ...caller,
+      expires_at: new Date(caller.expiresAt), revoked_at: null, delegated_from: null }] }
+    const record = { mainId: registrationIdentity.mainId, deviceId: registrationIdentity.deviceId,
+      workerInstallationId: registrationIdentity.workerInstallationId, keyRevision: registrationIdentity.keyRevision,
+      authorizationRevision: registrationIdentity.authorizationRevision, status: 'paired',
+      publicKeyFingerprint: 'a'.repeat(64), scopes: ['connect', 'heartbeat'] }
+    validated()
+    await validation
+    return { rows: [{ record }] }
+  }
+  const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
+  const commands = { recordAudit: vi.fn(async () => {}), recordDenied: vi.fn(async () => {}) } as unknown as PostgresCommandCoordinator
+  const service = new ComputerGitHubService(pool, identity.mainId, () => endpoint, commands)
+  const access = new PostgresAccessService(pool)
+  const authenticate = vi.spyOn(access, 'authenticate').mockImplementation(async token => token === 'writer'
+    ? caller : { ...caller, grants: [{ actions: ['settings:read'], scope: {} }] })
+  const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} },
+    checkpoints: { ping: async () => {} } }, operator: { access,
+    services: { computerGitHub: service, commands } as unknown as OperatorServices } })
+  const clients: Client[] = []
+  const target = { hostRef: { kind: 'device' as const, mainId: identity.mainId, deviceId: identity.deviceId },
+    applicationInstallationId: identity.workerInstallationId, keyRevision: 1, authorizationRevision: 1 }
+  try {
+    const url = await app.listen({ host: '127.0.0.1', port: 0 })
+    const connectMcp = async (token: string) => {
+      const client = new Client({ name: 'github-device-test', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', url), {
+        authProvider: { token: async () => token },
+      }))
+      return client
+    }
+    const writer = await connectMcp('writer')
+    const reader = await connectMcp('reader')
+    original.start()
+    await vi.waitFor(() => expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined())
+    const args = { target, expectedAccount: 'owner' }
+    expect((await reader.callTool({ name: 'computer_github_logout', arguments: args })).isError).toBe(true)
+    expect(mutate).not.toHaveBeenCalled()
+    const pending = writer.callTool({ name: 'computer_github_logout', arguments: args })
+    await reached
+    await original.stop()
+    auth.authenticateDevice.mockResolvedValue({ ...principal, ...replacementIdentity })
+    registrationIdentity = replacementIdentity
+    replacement.start()
+    await vi.waitFor(() => expect(endpoint.currentBinding(identity.deviceId))
+      .toMatchObject({ workerInstallationId: replacementIdentity.workerInstallationId }))
+    await vi.waitFor(() => expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined())
+    release()
+    expect((await pending).isError).toBe(true)
+    expect(mutate).not.toHaveBeenCalled()
+    const stale = await writer.callTool({ name: 'computer_github_logout', arguments: args })
+    expect(stale.isError).toBe(true)
+    expect(JSON.stringify(stale)).toContain('COMPUTER_NOT_FOUND')
+    const fresh = await writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
+      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } })
+    expect(decodeMcpToolResult(fresh)).toMatchObject({ state: 'signed-out' })
+    expect(mutate).toHaveBeenCalledOnce()
+    mutate.mockRejectedValueOnce(new DomainError('GITHUB_ACCOUNT_CHANGED', 'Account changed.', 409))
+    const retry = await writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
+      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } })
+    expect(retry.isError).toBe(true)
+    expect(JSON.stringify(retry)).toContain('GITHUB_ACCOUNT_CHANGED')
+  } finally {
+    release()
+    await Promise.allSettled(clients.map(client => client.close()))
+    await app.close()
+    authenticate.mockRestore()
+    await original.stop()
+    await replacement.stop()
+    endpoint.close()
+    await endpoint.join()
+    carrier.close()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+}, 15_000)

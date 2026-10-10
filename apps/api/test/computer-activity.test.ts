@@ -15,7 +15,7 @@ import { ComputerActivityService } from '../src/modules/computers/activity.js'
 import { ComputerAccountsService } from '../src/modules/computers/accounts.js'
 import { GitHubLoginRunner } from '../src/modules/computers/githubLogin.js'
 import { ComputerGitHubService } from '../src/modules/computers/github.js'
-import { COMPUTER_GITHUB_NAMESPACE, GitHubLoginStateSchema,
+import { GitHubLoginStateSchema,
   type GitHubLoginRequest } from '@foreman-code/contracts/computer-accounts'
 import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsListSchema, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -41,7 +41,11 @@ const job = (id: string, workspaceId: string) => ({ target, activity: { id, name
 const agent = (id: string, workspaceId: string) => ({ target, activity: { id, workspaceId, workflowId: 'workflow',
   workflowName: 'Website', runId: 'run', nodeId: 'review', agentName: 'Reviewer', state: 'waiting' } })
 
-async function fixture(options: { githubSetupFails?: boolean; githubLocal?: Pick<GitHubLoginRunner, 'handle'> } = {}) {
+async function fixture(options: {
+  githubSetupFails?: boolean
+  githubLocal?: Pick<GitHubLoginRunner, 'handle'>
+  loseRemoteResponse?: boolean
+} = {}) {
   const pool = new pg.Pool()
   const jobs = [job('visible', 'allowed'), job('secret', 'private')]
   const agents = [agent('visible', 'allowed'), agent('secret', 'private')]
@@ -113,12 +117,15 @@ async function fixture(options: { githubSetupFails?: boolean; githubLocal?: Pick
       expiresAt: '2026-10-07T00:15:00.000Z', account: request.operation === 'login-start' ? null : 'octo-owner', message: null })
   }
   const computerGitHub = new ComputerGitHubService(pool, mainId, () => ({
-    capabilities: () => observed ? [{ namespace: COMPUTER_GITHUB_NAMESPACE, mainCanRequest: true }] : [],
-    request: async (_device, _namespace, payload) => {
-      githubCalls.push({ where: 'device', request: payload as GitHubLoginRequest })
-      deviceAnswers.githubAccount = (payload as GitHubLoginRequest).operation === 'logout' ? null : 'signed-in-owner'
-      return { payload: githubState(payload as GitHubLoginRequest) }
-    },
+    captureRequest: () => observed ? {
+      binding: observed.binding,
+      request: async payload => {
+        githubCalls.push({ where: 'device', request: payload as GitHubLoginRequest })
+        deviceAnswers.githubAccount = (payload as GitHubLoginRequest).operation === 'logout' ? null : 'signed-in-owner'
+        if (options.loseRemoteResponse) throw new Error('Response lost after account change')
+        return { payload: githubState(payload as GitHubLoginRequest) }
+      },
+    } : undefined,
   }), commands, {
     local: { handle: async request => {
       githubCalls.push({ where: 'main', request })
@@ -264,7 +271,7 @@ it('starts, follows and ends GitHub sign-in on Main and a paired computer, denyi
     const done = GitHubLoginStateSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'computer_github_login_status',
       arguments: { target, loginId: started.loginId } }))))
     expect(done).toMatchObject({ state: 'signed-in', account: 'octo-owner' })
-    const logout = await client.callTool({ name: 'computer_github_logout', arguments: { target } })
+    const logout = await client.callTool({ name: 'computer_github_logout', arguments: { target, expectedAccount: 'octo-owner' } })
     expect(GitHubLoginStateSchema.parse(decodeMcpToolResult(logout)).state).toBe('signed-out')
     expect(f.githubCalls.map(call => [call.where, call.request.operation])).toEqual([
       ['main', 'login-start'], ['device', 'login-status'], ['device', 'logout']])
@@ -299,10 +306,10 @@ it('refreshes the server account cache after GitHub account changes through auth
       target: mainTarget, loginId: '66666666-6666-4666-8666-666666666666',
     } })
     expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.account).toBe('signed-in-owner')
-    await client.callTool({ name: 'computer_github_logout', arguments: { target } })
+    await client.callTool({ name: 'computer_github_logout', arguments: { target, expectedAccount: 'octo-owner' } })
     expect((await read()).computers[1]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(false)
     const reader = await f.connect('settings-reader')
-    expect((await reader.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget } })).isError).toBe(true)
+    expect((await reader.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget, expectedAccount: 'octo-owner' } })).isError).toBe(true)
     expect((await read()).computers[0]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(true)
   } finally { await f.close() }
 })
@@ -365,7 +372,7 @@ it('orders an authenticated MCP account switch after pending credential removal'
     keyRevision: null, authorizationRevision: null }
   try {
     const client = await f.connect('owner')
-    const logout = client.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget } })
+    const logout = client.callTool({ name: 'computer_github_logout', arguments: { target: mainTarget, expectedAccount: 'owner' } })
     await vi.waitFor(() => expect(events).toContain('logout'))
     const start = client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
     await vi.waitFor(() => expect(f.githubCalls.map(call => call.request.operation)).toEqual(['logout', 'login-start']))
@@ -381,6 +388,70 @@ it('orders an authenticated MCP account switch after pending credential removal'
     await vi.waitFor(async () => expect(GitHubLoginStateSchema.parse(decodeMcpToolResult((await client.callTool({
       name: 'computer_github_login_status', arguments: { target: mainTarget, loginId: waiting.loginId },
     }))))).toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
+  } finally {
+    release()
+    runner.close()
+    await f.close()
+  }
+})
+
+
+it('audits a lost remote logout response as uncertain and reads back its effect through MCP', async () => {
+  const f = await fixture({ loseRemoteResponse: true })
+  try {
+    const client = await f.connect('owner')
+    expect((await client.callTool({ name: 'computer_github_logout',
+      arguments: { target, expectedAccount: 'octo-owner' } })).isError).toBe(true)
+    expect(f.audited.mock.calls.map(call => call[4])).toEqual(['uncertain'])
+    const read = ComputerAccountsListSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'computer_accounts_list', arguments: { refresh: true },
+    })))
+    expect(read.computers[1]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(false)
+  } finally { await f.close() }
+})
+
+it('does not audit a known successful GitHub mutation as failed when storing its success audit fails', async () => {
+  const f = await fixture()
+  try {
+    const client = await f.connect('owner')
+    f.audited.mockRejectedValueOnce(new Error('Audit storage unavailable'))
+    expect((await client.callTool({ name: 'computer_github_logout',
+      arguments: { target, expectedAccount: 'octo-owner' } })).isError).toBe(true)
+    expect(f.audited.mock.calls.map(call => call[4])).toEqual(['succeeded'])
+    const read = ComputerAccountsListSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'computer_accounts_list', arguments: { refresh: true },
+    })))
+    expect(read.computers[1]!.accounts!.accounts.find(value => value.tool === 'github')?.signedIn).toBe(false)
+  } finally { await f.close() }
+})
+
+
+it('supersedes a pending GitHub login through authenticated MCP when a later logout completes', async () => {
+  let release!: () => void
+  const lookup = new Promise<void>(resolve => { release = resolve })
+  let lookups = 0
+  const spawn = vi.fn()
+  const runner = new GitHubLoginRunner({ now: Date.now, spawn, probe: {
+    environment: {}, readText: async () => null,
+    find: async () => {
+      if (++lookups === 1) await lookup
+      return '/fixture/gh'
+    },
+    run: async () => ({ code: 0, stderr: '', stdout: JSON.stringify({ hosts: { 'github.com': [] } }) }),
+  } })
+  const f = await fixture({ githubLocal: runner })
+  const mainTarget = { hostRef: { kind: 'main' as const, mainId }, applicationInstallationId: mainId,
+    keyRevision: null, authorizationRevision: null }
+  try {
+    const client = await f.connect('owner')
+    const start = client.callTool({ name: 'computer_github_login_start', arguments: { target: mainTarget } })
+    await vi.waitFor(() => expect(lookups).toBe(1))
+    const result = await client.callTool({ name: 'computer_github_logout',
+      arguments: { target: mainTarget, expectedAccount: null } })
+    expect(GitHubLoginStateSchema.parse(decodeMcpToolResult(result)).state).toBe('signed-out')
+    release()
+    expect((await start).isError).toBe(true)
+    expect(spawn).not.toHaveBeenCalled()
   } finally {
     release()
     runner.close()

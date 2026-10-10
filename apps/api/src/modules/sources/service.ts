@@ -276,7 +276,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       }
       repository = { repository: prepared.repository, clone: prepared.clone, prepared: true }
     }
-    const payload = { workspaceId: input.workspaceId, commandId: input.commandId,
+    const payload = { workspaceId: input.workspaceId, commandId: input.commandId, repository: configured ?? null,
       ...(input.commit ? { commit: input.commit } : {}),
       ...(prepared ? { prepared } : {}),
       ...(input.snapshot ? { snapshot: { commit: input.snapshot.commit, baseCommit: input.snapshot.baseCommit,

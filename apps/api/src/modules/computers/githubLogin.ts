@@ -22,26 +22,33 @@ interface Session {
 
 /** One GitHub CLI sign-in at a time on this computer: start returns the device code, status follows the CLI to completion. */
 export class GitHubLoginRunner {
+  private generation = 0
+  private closed = false
   private session: Session | undefined
   private pendingLogout: Promise<GitHubLoginState> | undefined
   constructor(private readonly ports: GitHubLoginPorts = systemGitHubPorts()) {}
 
   async handle(request: GitHubLoginRequest): Promise<GitHubLoginState> {
+    if (this.closed) throw new DomainError('GITHUB_LOGIN_CANCELLED', 'GitHub sign-in is closed.', 409)
     if (request.operation === 'login-start') {
+      const generation = ++this.generation
       // The logout caller receives any failure; a later sign-in still replaces that account.
       if (this.pendingLogout) await Promise.allSettled([this.pendingLogout])
-      return this.start()
+      return this.start(generation)
     }
-    if (request.operation === 'logout') return this.orderedLogout()
+    if (request.operation === 'logout') return this.orderedLogout(request.expectedAccount)
     if (request.operation === 'setup-git') return this.setupGit(request.loginId)
     return this.status(request.loginId)
   }
 
-  private async orderedLogout(): Promise<GitHubLoginState> {
+  private async orderedLogout(expectedAccount: string | null): Promise<GitHubLoginState> {
+    ++this.generation
+    this.session?.child.kill('SIGTERM')
+    this.session = undefined
     const previous = this.pendingLogout
     const pending = (async () => {
       if (previous) await Promise.allSettled([previous])
-      return this.logout()
+      return this.logout(expectedAccount)
     })()
     this.pendingLogout = pending
     try { return await pending } finally {
@@ -49,8 +56,11 @@ export class GitHubLoginRunner {
     }
   }
 
-  private async start(): Promise<GitHubLoginState> {
+  private async start(generation: number): Promise<GitHubLoginState> {
     const gh = await this.ports.probe.find('gh')
+    if (this.closed || generation !== this.generation) {
+      throw new DomainError('GITHUB_LOGIN_CANCELLED', 'A later request cancelled this GitHub sign-in.', 409)
+    }
     if (!gh) throw new DomainError('GITHUB_CLI_MISSING', 'Install the GitHub CLI (gh) on this computer first.', 409)
     this.session?.child.kill('SIGTERM')
     const id = randomUUID()
@@ -138,14 +148,16 @@ export class GitHubLoginRunner {
     return GitHubLoginStateSchema.parse(this.session.state)
   }
 
-  private async logout(): Promise<GitHubLoginState> {
+  private async logout(expectedAccount: string | null): Promise<GitHubLoginState> {
     const gh = await this.ports.probe.find('gh')
     if (!gh) throw new DomainError('GITHUB_CLI_MISSING', 'The GitHub CLI (gh) is not installed on this computer.', 409)
-    this.session?.child.kill('SIGTERM')
-    this.session = undefined
     const account = await probeGitHubAccount(this.ports.probe)
     if (account.signedIn === null && !account.account) {
       throw new DomainError('GITHUB_STATUS_UNKNOWN', 'GitHub account state could not be checked. Try again before signing out.', 502)
+    }
+    if (account.account !== expectedAccount) {
+      throw new DomainError('GITHUB_ACCOUNT_CHANGED',
+        'The active GitHub account changed. Read account status before requesting another sign-out.', 409)
     }
     if (account.account) {
       const result = await this.ports.probe.run(gh, ['auth', 'logout', '--hostname', 'github.com', '--user', account.account],
@@ -167,7 +179,12 @@ export class GitHubLoginRunner {
       expiresAt: null, account: null, message: null })
   }
 
-  close() { this.session?.child.kill('SIGTERM'); this.session = undefined }
+  close() {
+    this.closed = true
+    ++this.generation
+    this.session?.child.kill('SIGTERM')
+    this.session = undefined
+  }
 }
 
 export function systemGitHubPorts(environment: NodeJS.ProcessEnv = process.env): GitHubLoginPorts {
