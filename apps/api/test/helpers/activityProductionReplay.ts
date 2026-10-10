@@ -188,7 +188,7 @@ export class ActivityProductionReplay {
   }
   async drain() { await Promise.allSettled([...this.inFlight]) }
 
-  infrastructure(): ProductionHarnessInfrastructure {
+  infrastructure(processRegistryRoot = '/recorded-no-process-registry'): ProductionHarnessInfrastructure {
     const command: Extract<CodexSessionDependencies, { mode: 'replay' }>['runCommand'] = async (_binary, args) => {
       if (args[0] === 'mcp' && args[1] === 'get') {
         if (args[2] !== 'graphql') return { ...outcome('', 1),
@@ -237,8 +237,12 @@ export class ActivityProductionReplay {
         if (driver !== 'codex' || launcher !== '/recorded-no-native-codex') throw new Error('Unrecorded auxiliary replay operation.')
         return { complete: true, paths: [] }
       } },
-      auxiliary: { command, recovery: { scope: (owner) => ({ root: '/recorded-no-process-registry', owner }),
-        reserveLaunch: (owner) => { const launchId = randomUUID(); this.auxiliary.add(launchId); return { root: '/recorded-no-process-registry', owner, launchId } },
+      auxiliary: { command, recovery: { scope: (owner) => ({ root: processRegistryRoot, owner }),
+        reserveLaunch: (owner) => {
+          const launchId = randomUUID()
+          this.auxiliary.add(launchId)
+          return { root: processRegistryRoot, owner, launchId }
+        },
         abandonReservedLaunch: async (scope) => { if (!scope.launchId) return false; return this.auxiliary.delete(scope.launchId) },
         closeOwner: async () => true }, plugins: { recoveryIdentity: '', list: unavailable, detail: unavailable, change: unavailable },
         mcp: { codex: { read: unavailable, apply: unavailable } },

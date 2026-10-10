@@ -200,8 +200,14 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       expect(claims.filter((result) => result.status === 'rejected')).toHaveLength(1)
     } finally {
       if (busyLaneId) await f.coordination.releaseLane(busyLaneId, 'busy-writer', { observedStatus: 'idle' })
-      // The injected lease leaves no original close context; shutdown must report uncertainty.
-      await expect(f.close()).rejects.toThrow('Workflow restart closure or task drain')
+      try {
+        await expect(f.engine.shutdown()).resolves.toBeUndefined()
+        expect(await f.runs.get(f.run.id)).toMatchObject({ executionState: 'waiting', outcome: 'pending' })
+        expect(await f.repository.get(f.interaction.id)).toMatchObject({ status: 'pending' })
+        expect(f.counts()).toMatchObject({ prompts: 2, responses: 0 })
+      } finally {
+        await f.close()
+      }
     }
   }, 60000)
 })
