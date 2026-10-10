@@ -1,36 +1,60 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { expect, it, vi } from 'vitest'
 import { captureGitSource, qualifiedGit } from '../src/modules/sources/capture.js'
+import { SOURCE_LIMITS } from '../src/modules/sources/manifest.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 
-it('captures this complete committed repository into real private storage within the existing source budget', async () => {
-  const repository = await realpath(fileURLToPath(new URL('../../../', import.meta.url)))
-  const git = promisify(execFile)
-  const gitDirectory = (await git('git', ['rev-parse', '--absolute-git-dir'], { cwd: repository })).stdout.trim()
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
-  const root = await privateFixtureDirectory('repository-capture-')
-  // Capture reads the committed tree directly; history and a checkout are unnecessary fixture work.
-  await git('git', ['clone', '--quiet', '--no-local', '--depth=1', '--single-branch', '--no-checkout',
-    gitDirectory, root], { env: environment })
-  const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
-  const approvedPaths = (await qualifiedGit(root, ['ls-tree', '-r', '--name-only', '-z', commit])).toString().split('\0').filter(Boolean)
+it('captures a complete committed repository at the entry limit into real private storage', async () => {
   const directory = await privateFixtureDirectory('entrypoints-source-capture-')
+  const root = join(directory, 'repo')
+  const storage = join(directory, 'storage')
   try {
-    const store = new PrivateSourceSnapshotStore(directory)
+    await mkdir(root, { mode: 0o700 })
+    await mkdir(storage, { mode: 0o700 })
+    await mkdir(join(root, 'sources'))
+    await qualifiedGit(root, ['init', '-q'])
+    const approvedPaths = ['AGENTS.md', ...Array.from({ length: SOURCE_LIMITS.entries - 1 },
+      (_, index) => `sources/entry-${index}.ts`)]
+    const bytes = Buffer.from('Committed fixture source.\n'.repeat(64))
+    for (let index = 0; index < approvedPaths.length; index += 64) {
+      await Promise.all(approvedPaths.slice(index, index + 64).map(path => writeFile(join(root, path), bytes)))
+    }
+    await qualifiedGit(root, ['add', '.'])
+    await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Fixture'])
+    const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
+    await writeFile(join(root, 'AGENTS.md'), 'Uncommitted working tree changes.\n')
+    const store = new PrivateSourceSnapshotStore(storage)
     const manifest = await captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths, executablePolicy: 'strip', sink: store })
     expect(manifest.git?.commit).toBe(commit)
     expect(manifest.entries.map(entry => entry.path)).toEqual([...approvedPaths].sort())
     expect(manifest.entries.length).toBeGreaterThan(2000)
+    expect(manifest.totalEntries).toBe(SOURCE_LIMITS.entries)
+    expect(manifest.totalBytes).toBe(bytes.length * SOURCE_LIMITS.entries)
     const entry = manifest.entries.find(value => value.path === 'AGENTS.md')!
     expect(Buffer.from(await store.read(manifest, entry, AbortSignal.timeout(1000))))
       .toEqual(await qualifiedGit(root, ['show', `${commit}:AGENTS.md`]))
+    expect(Buffer.from(await store.read(manifest, entry, AbortSignal.timeout(1000)))).toEqual(bytes)
+
+    await writeFile(join(root, 'overflow.ts'), bytes)
+    await qualifiedGit(root, ['add', 'overflow.ts'])
+    await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Overflow'])
+    const overflowCommit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
+    const abort = vi.spyOn(store, 'abort')
+    const publish = vi.spyOn(store, 'commit')
+    try {
+      await expect(captureGitSource({ root, commit: overflowCommit, approvedSourceId: randomUUID(),
+        approvedPaths: [...approvedPaths, 'overflow.ts'], executablePolicy: 'strip', sink: store }))
+        .rejects.toMatchObject({ code: 'SOURCE_CAPACITY', status: 413 })
+      expect(abort).toHaveBeenCalledOnce()
+      expect(publish).not.toHaveBeenCalled()
+    } finally {
+      abort.mockRestore()
+      publish.mockRestore()
+    }
   } finally { await removeFixtureDirectory(directory) }
 }, 60_000)
 

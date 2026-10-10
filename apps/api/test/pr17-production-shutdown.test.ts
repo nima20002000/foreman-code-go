@@ -10,6 +10,7 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/inte
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
+import { RunWorktrees } from '../src/modules/runs/runWorktrees.js'
 import { buildProductionApp } from '../src/production.js'
 import * as rsyncComposition from '../src/modules/byte-transfer/productionComposition.js'
 import { ProductionDeviceRuntime } from '../src/modules/devices/productionRuntime.js'
@@ -32,6 +33,7 @@ beforeEach(() => {
   vi.spyOn(OperatorChatService.prototype, 'shutdown').mockResolvedValue()
   vi.spyOn(AutomaticReviewService.prototype, 'shutdown').mockResolvedValue()
   vi.spyOn(LangGraphWorkflowEngine.prototype, 'shutdown').mockResolvedValue()
+  vi.spyOn(RunWorktrees.prototype, 'cleanup').mockResolvedValue()
   vi.spyOn(ExecutionScopedNativeSessionManagerResolver.prototype, 'dispose').mockResolvedValue()
   database = createDatabase(config.database)
   checkpoints = createCheckpointStore(config.database.connectionString, 'shutdown_fixture', config.database)
@@ -135,9 +137,38 @@ describe('PR17 F7 production shutdown composition', () => {
       pending.resolve()
       await Promise.all([running, closing])
       await production.reconcile(vi.fn())
+      expect(RunWorktrees.prototype.cleanup).not.toHaveBeenCalled()
       expect(recover).not.toHaveBeenCalled()
       expect(OperatorRuntimeOwner.prototype.close).toHaveBeenCalledTimes(1)
     } finally { pending.resolve(); await Promise.allSettled([running, closing]) }
+  })
+
+  it('drains worktree cleanup already in progress before disposing managers', async () => {
+    const pending = gate()
+    const entered = gate()
+    vi.spyOn(production.engine, 'reconcile').mockResolvedValue()
+    vi.mocked(RunWorktrees.prototype.cleanup).mockImplementation(() => {
+      entered.resolve()
+      return pending.promise
+    })
+    const recover = vi.spyOn(InteractionService.prototype, 'recover')
+    const running = production.reconcile(vi.fn())
+    await entered.promise
+    const closing = production.shutdown()
+    try {
+      expect(ExecutionScopedNativeSessionManagerResolver.prototype.dispose).not.toHaveBeenCalled()
+      expect(OperatorRuntimeOwner.prototype.close).not.toHaveBeenCalled()
+      pending.resolve()
+      await Promise.all([running, closing])
+      await production.reconcile(vi.fn())
+      expect(RunWorktrees.prototype.cleanup).toHaveBeenCalledOnce()
+      expect(recover).not.toHaveBeenCalled()
+      expect(ExecutionScopedNativeSessionManagerResolver.prototype.dispose).toHaveBeenCalledOnce()
+      expect(OperatorRuntimeOwner.prototype.close).toHaveBeenCalledOnce()
+    } finally {
+      pending.resolve()
+      await Promise.allSettled([running, closing])
+    }
   })
 
   it('drains acquisition during canceled startup even though initialized never became true', async () => {
