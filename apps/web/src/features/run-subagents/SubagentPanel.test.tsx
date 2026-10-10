@@ -1,3 +1,4 @@
+import { createRef } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
@@ -8,6 +9,7 @@ import { server } from '../../mocks/server'
 import { SubagentPanel } from './SubagentPanel'
 import { base, child, detail, message, receipt, scope, tool } from './testFixtures'
 
+const anchor = createRef<HTMLButtonElement>()
 const clients: QueryClient[] = []
 afterEach(() => { clients.forEach((client) => client.clear()); clients.length = 0 })
 beforeEach(() => {
@@ -21,7 +23,7 @@ function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
   const close = vi.fn()
-  const rendered = render(<QueryClientProvider client={client}><SubagentPanel scope={scope} subagentId="child-1" onClose={close} /></QueryClientProvider>)
+  const rendered = render(<QueryClientProvider client={client}><SubagentPanel scope={scope} subagentId="child-1" anchor={anchor} onClose={close} /></QueryClientProvider>)
   return { client, close, ...rendered }
 }
 function qualified() {
@@ -196,7 +198,7 @@ describe('Subagent panel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await screen.findByRole('button', { name: 'Check again' })
     rerender(<QueryClientProvider client={client}><span>Closed</span></QueryClientProvider>)
-    rerender(<QueryClientProvider client={client}><SubagentPanel scope={scope} subagentId="child-1" onClose={close} /></QueryClientProvider>)
+    rerender(<QueryClientProvider client={client}><SubagentPanel scope={scope} subagentId="child-1" anchor={anchor} onClose={close} /></QueryClientProvider>)
     fireEvent.click(await screen.findByRole('button', { name: 'Check again' }))
     await screen.findByText('Message delivered to the subagent.')
     expect(bodies[1]).toEqual(bodies[0])
@@ -237,6 +239,28 @@ describe('Subagent panel', () => {
     expect(body).toMatchObject({ expectedRevision: '4', subagentId: 'child-1' })
     expect(body).not.toHaveProperty('text')
   })
+  it('locks dismissal while a command is pending and unlocks after delivery', async () => {
+    let finish!: () => void
+    const delivery = new Promise<void>((resolve) => { finish = resolve })
+    server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json(qualified())),
+      http.post(`${base}/:subagentId/interrupt`, async ({ request }) => {
+        const body = RunSubagentInterruptSchema.parse(await request.json())
+        await delivery
+        return HttpResponse.json(receipt({ ...body, operation: 'run_subagent_interrupt_v1' }))
+      }))
+    const { close } = mount()
+    fireEvent.click(await screen.findByRole('button', { name: 'Interrupt' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true'))
+    expect(screen.getByRole('button', { name: 'Close subagent' })).toBeDisabled()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    fireEvent.pointerDown(document.body)
+    fireEvent.click(document.body)
+    expect(close).not.toHaveBeenCalled()
+    finish()
+    await screen.findByText('Interrupt delivered to the subagent.')
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(close).toHaveBeenCalledOnce()
+  })
   it('loads later transcript pages and distinguishes unavailable coverage', async () => {
     server.use(http.get(`${base}/:subagentId/messages`, ({ request }) => HttpResponse.json(new URL(request.url).searchParams.has('cursor')
       ? { items: [message('message-2', 'Later answer')], nextCursor: null, coverage: { ...child().coverage, transcript: 'unavailable' } }
@@ -248,16 +272,16 @@ describe('Subagent panel', () => {
     expect(screen.getByText("Codex doesn't share this subagent's conversation.")).toBeVisible()
     expect(screen.getByText('Child answer')).toBeVisible()
   })
-  it('closes on backdrop clicks but keeps clicks and drags from inside open', async () => {
+  it('closes on outside clicks but keeps clicks and drags from inside open', async () => {
     const { close } = mount()
-    const dialog = screen.getByRole('dialog')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'false')
     await screen.findByText('Controls are unavailable for this subagent right now.')
     const inside = screen.getByRole('tab', { name: /Messages/ })
-    fireEvent.pointerDown(inside); fireEvent.click(dialog)
+    fireEvent.pointerDown(inside); fireEvent.click(document.body)
     expect(close).not.toHaveBeenCalled()
     fireEvent.pointerDown(inside); fireEvent.click(inside)
     expect(close).not.toHaveBeenCalled()
-    fireEvent.pointerDown(dialog); fireEvent.click(dialog)
+    fireEvent.pointerDown(document.body); fireEvent.click(document.body)
     await waitFor(() => expect(close).toHaveBeenCalledOnce())
   })
 })

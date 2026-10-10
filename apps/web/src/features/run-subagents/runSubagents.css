@@ -41,8 +41,11 @@
   border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--text-muted);
 }
 
-.run-subagent-panel.n-drawer { width: min(560px, 100vw); }
-.run-subagent-body { display: flex; flex-direction: column; gap: 16px; }
+.run-subagent-panel.n-agent-popover { inset: auto; border-radius: var(--radius-lg); }
+.run-subagent-panel .n-agent-popover-header { flex-shrink: 0; }
+.run-subagent-panel .n-agent-popover-body { padding: 12px; }
+.run-subagent-footer { flex-shrink: 0; border-top: 1px solid var(--border); padding: 12px; }
+.run-subagent-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .run-subagent-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; color: var(--text-muted); }
 .run-subagent-summary .run-subagent-note { flex-basis: 100%; margin: 0; }
 .run-subagent-note { margin: 0; font-size: 12px; color: var(--text-muted); }
@@ -50,6 +53,6 @@
 .run-subagent-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .run-subagent-feed .n-code pre { max-height: 260px; overflow: auto; }
 .run-subagent-steer { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-.run-subagent-steer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.run-subagent-steer-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .run-subagent-steer-status { margin-inline-end: auto; font-size: 12px; color: var(--text-muted); }
 .run-subagent-steer-status [data-state="rejected"], .run-subagent-steer-status [role="alert"] { color: var(--danger); }

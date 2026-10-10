@@ -15,7 +15,8 @@ export function RunSubagentsOverlay({ scope, nodes }: {
   const { selected, select } = useSelectedSubagent(scope)
   const trigger = useRef<HTMLButtonElement | null>(null)
   const closePanel = () => {
-    void select(null).then(() => trigger.current?.focus())
+    const orb = trigger.current
+    void select(null).then(() => orb?.focus({ preventScroll: true }))
   }
   // A failed read (including revoked access) cannot leave cached chips visible.
   const children = query.isError ? [] : query.data?.pages.flatMap((page) => page.items.map((item) => item.subagent)) ?? []
@@ -56,6 +57,7 @@ export function RunSubagentsOverlay({ scope, nodes }: {
           {query.hasNextPage && <Button size="sm" loading={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>Show more subagents</Button>}
         </>}
       </div>}
-    {!query.isError && selected && <SubagentPanel key={`${scope.runId}:${selected}`} scope={scope} subagentId={selected} onClose={closePanel} />}
+    {!query.isError && selected && <SubagentPanel key={`${scope.runId}:${selected}`} scope={scope}
+      subagentId={selected} anchor={trigger} onClose={closePanel} />}
   </>
 }

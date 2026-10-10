@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type RefObject } from 'react'
 import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { createStore, useStore } from 'zustand'
 import { SUBAGENT_LIMITS,
   type RunSubagentMessage, type RunSubagentTool, type RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
-import { Button, CodeBlock, Drawer, EmptyState, ErrorState, MessageBubble, Spinner, StatusBadge, Tabs, Textarea, ToolCallCard } from '../../shared/ui/nocturne'
+import { Button, CodeBlock, EmptyState, ErrorState, MessageBubble, Spinner, StatusBadge, Tabs, Textarea, ToolCallCard } from '../../shared/ui/nocturne'
+import { SubagentPopover } from './SubagentPopover'
 import { ApiError } from '../../shared/api/client'
 import { subagentsApi } from './client'
 import { formatBytes, formatClock, providerNames, subagentName, subagentStatus, subagentTiming, toolStatus } from './presentation'
@@ -31,7 +32,9 @@ function receiptText(receipt: RunSubagentCommandReceipt) {
   }
 }
 
-export function SubagentPanel({ scope, subagentId, onClose }: { scope: SubagentsScope; subagentId: string; onClose: () => void }) {
+export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
+  scope: SubagentsScope; subagentId: string; anchor: RefObject<HTMLElement | null>; onClose: () => void
+}) {
   const detail = useSubagentDetail(scope, subagentId)
   const record = detail.isError ? undefined : detail.data
   const child = record?.subagent
@@ -107,9 +110,8 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
         onClick={() => send('input')}>Send</Button>}
     </div>
   </div> : undefined
-  return <Drawer open onOpenChange={(open) => { if (!open) onClose() }} title={child ? subagentName(child) : 'Subagent'}
-    description={child ? `${provider} subagent` : undefined} size="lg" busy={pending} closeLabel="Close subagent"
-    className="run-subagent-panel" footer={footer}>
+  return <SubagentPopover anchor={anchor} title={child ? subagentName(child) : 'Subagent'}
+    description={child ? `${provider} subagent` : undefined} busy={pending} onClose={onClose} footer={footer}>
     {detail.isError ? <ErrorState title="Couldn't load this subagent" description="It may have been removed, or you may no longer have access."
       onRetry={() => void detail.refetch()} retrying={detail.isFetching} />
       : !child || !status ? <Spinner label="Loading subagent" /> : <div className="run-subagent-body">
@@ -158,7 +160,7 @@ export function SubagentPanel({ scope, subagentId, onClose }: { scope: Subagents
           </div> },
         ]} />
       </div>}
-  </Drawer>
+  </SubagentPopover>
 }
 
 function Message({ item, name }: { item: RunSubagentMessage; name: string }) {

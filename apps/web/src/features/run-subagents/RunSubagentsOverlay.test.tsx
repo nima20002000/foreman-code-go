@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { subagentCapabilities } from '@foreman-code/contracts/subagents'
 import { http, HttpResponse } from 'msw'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { server } from '../../mocks/server'
 import { runA, runB, runsUrl, reply } from '../run-board/testFixtures'
 import { RunBoardSlot } from '../run-board/RunBoardSlot'
@@ -95,9 +95,45 @@ describe('Run subagent overlays', () => {
     expect(router.history.location.hash).toContain('selectedSubagentId=child-1')
     fireEvent.click(screen.getByRole('button', { name: 'Close subagent' }))
     await waitFor(() => expect(router.history.location.hash).not.toContain('selectedSubagentId'))
+    expect(screen.getByRole('button', { name: 'Research, Codex, Running' })).toHaveFocus()
     fireEvent.click(screen.getByRole('button', { name: 'Research, Codex, Running' }))
     await waitFor(() => expect(router.history.location.hash).toContain('selectedSubagentId=child-1'))
     expect(router.history.location.search).toContain('selectedRunId=run-a')
+  })
+  it('switches directly between orbs with one popover and returns focus to the selected orb', async () => {
+    server.use(http.get(`${base}/:subagentId`, ({ params }) => HttpResponse.json(detail(
+      params.subagentId === 'nested' ? child({ id: 'nested', name: 'Nested', parentSubagentId: 'child-1' }) : child(),
+    ))))
+    const { router } = await mount()
+    const user = userEvent.setup()
+    const first = screen.getByRole('button', { name: 'Research, Codex, Running' })
+    const next = screen.getByRole('button', { name: 'Nested, Codex, Running' })
+    await user.click(first)
+    expect(await screen.findByRole('dialog', { name: 'Research' })).toHaveAttribute('aria-modal', 'false')
+    await user.click(next)
+    await screen.findByRole('dialog', { name: 'Nested' })
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(screen.queryByRole('dialog', { name: 'Research' })).not.toBeInTheDocument()
+    expect(router.history.location.hash).toContain('selectedSubagentId=nested')
+    expect(first).toHaveAttribute('aria-pressed', 'false')
+    expect(next).toHaveAttribute('aria-pressed', 'true')
+    await user.click(document.body)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(router.history.location.hash).not.toContain('selectedSubagentId')
+    expect(next).toHaveFocus()
+  })
+  it('positions beside its orb and follows canvas movement while staying within the viewport', async () => {
+    await mount()
+    const orb = screen.getByRole('button', { name: 'Research, Codex, Running' })
+    let bounds = new DOMRect(100, 140, 96, 64)
+    vi.spyOn(orb, 'getBoundingClientRect').mockImplementation(() => bounds)
+    fireEvent.click(orb)
+    const popover = await screen.findByRole('dialog', { name: 'Research' })
+    await waitFor(() => expect(popover).toHaveStyle({ left: '208px', top: '140px' }))
+    bounds = new DOMRect(500, 240, 96, 64)
+    await waitFor(() => expect(popover).toHaveStyle({ left: '608px', top: '240px' }))
+    bounds = new DOMRect(940, 800, 96, 64)
+    await waitFor(() => expect(popover).toHaveStyle({ left: '536px', top: '276px' }))
   })
   it('pages the roster and explains syncing and unplaced subagents in plain language', async () => {
     server.use(http.get(base, ({ request }) => HttpResponse.json(new URL(request.url).searchParams.has('cursor')
