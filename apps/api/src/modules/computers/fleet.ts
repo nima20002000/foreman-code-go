@@ -35,6 +35,8 @@ export interface FleetSources {
 
 const CACHE_MS = 20_000
 const RUNNING_CACHE_MS = 3_000
+const SYNC_RETRY_MS = 5 * 60_000
+const MAX_SYNC_RETRY_MS = 60 * 60_000
 const RETIRED_APP_SERVERS = ['graphql-app', 'graphql-operator', 'graphql-worker']
 
 /** Server definitions safe to copy: no inline secret values. Servers needing a login are set up per computer later. */
@@ -59,7 +61,7 @@ export function syncableServers(
     const hasSecrets = ['env', 'headers', 'http_headers', 'env_http_headers'].some(key =>
       entry[key] && typeof entry[key] === 'object' && Object.keys(entry[key] as object).length > 0)
     if (hasSecrets) {
-      skipped?.(name)
+      skipped?.(name, 'contains credentials; configure it separately on each computer')
       continue
     }
     const url = typeof entry.url === 'string' ? entry.url : undefined
@@ -194,7 +196,7 @@ export class FleetMaintenanceService {
       if (behind.length) await this.startOn(target, { kind: 'update-harnesses', harnesses: behind }).catch(() => undefined)
       if (target.hostRef.kind === 'main') return
       for (const task of sync) {
-        if (task.status === 'fulfilled') await this.startOn(target, task.value)
+        if (task.status === 'fulfilled') await this.syncSource(target, task.value, status)
       }
     }))
     const failures = sync.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
@@ -202,8 +204,9 @@ export class FleetMaintenanceService {
   }
 
   private readonly deliveries = new Map<string, {
-    fingerprint: string; taskId: string; state: 'pending' | 'delivered'
+    fingerprint: string; taskId: string; state: 'pending' | 'failed' | 'delivered'; retryAt: number
   }>()
+  private readonly syncing = new Map<string, Promise<void>>()
   /**
    * Pushes Main's current MCP servers and plugins to every connected computer that has not received this exact set yet.
    * Runs every minute on Main, so installs and removals on Main reach the other computers within about a minute, and a
@@ -213,9 +216,7 @@ export class FleetMaintenanceService {
     const sources = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     const targets = (await this.allTargets()).filter(target => target.hostRef.kind !== 'main')
     await Promise.all(targets.map(async target => {
-      const pending = sources.some(source => source.status === 'fulfilled'
-        && this.deliveries.get(`${this.key(target)}:${source.value.kind}`)?.state === 'pending')
-      const status = pending ? await this.status(target, true) : null
+      const status = await this.status(target, true)
       await Promise.all(sources.map(async source => {
         if (source.status === 'fulfilled') await this.syncSource(target, source.value, status)
       }))
@@ -224,26 +225,61 @@ export class FleetMaintenanceService {
     if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
   }
 
-  private async syncSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
+  private syncSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
     status: MaintenanceStatus | null): Promise<void> {
+    const key = `${this.key(target)}:${source.kind}`
+    const active = this.syncing.get(key)
+    if (active) return active
+    const delivery = this.deliverSource(target, source, status).finally(() => this.syncing.delete(key))
+    this.syncing.set(key, delivery)
+    return delivery
+  }
+
+  private async deliverSource(target: DeviceProvisioningTarget, source: MaintenanceTaskStart,
+    status: MaintenanceStatus | null): Promise<void> {
+    if (!status) return
     const key = `${this.key(target)}:${source.kind}`
     const fingerprint = syncFingerprint(source)
     const delivery = this.deliveries.get(key)
-    if (delivery?.fingerprint === fingerprint) {
-      if (delivery.state === 'delivered') return
-      const task = status?.tasks.find(task => task.id === delivery.taskId && task.sourceFingerprint === fingerprint)
-      if (task?.state === 'succeeded') {
-        delivery.state = 'delivered'
+    const tasks = status.tasks.filter(task => task.kind === source.kind)
+    const latest = tasks[0]
+    if (latest?.sourceFingerprint === fingerprint) {
+      if (latest.state === 'succeeded') {
+        this.deliveries.set(key, { fingerprint, taskId: latest.id, state: 'delivered', retryAt: 0 })
         return
       }
-      if (task?.state === 'running' || !status) return
+      if (latest.state === 'running') return
+      let failures = 0
+      for (const task of tasks) {
+        if (task.sourceFingerprint !== fingerprint || task.state !== 'failed') break
+        failures++
+      }
+      const delay = Math.min(SYNC_RETRY_MS * 2 ** (failures - 1), MAX_SYNC_RETRY_MS)
+      // Compare timestamps from the same Worker so its clock offset cannot defeat backoff.
+      const elapsed = Math.max(0, Date.parse(status.observedAt) - Date.parse(latest.finishedAt ?? latest.startedAt))
+      let retryAt = this.now() + Math.max(0, delay - elapsed)
+      if (delivery?.taskId === latest.id && delivery.state === 'failed') {
+        retryAt = Math.min(retryAt, delivery.retryAt)
+      }
+      this.deliveries.set(key, { fingerprint, taskId: latest.id, state: 'failed', retryAt })
+      if (this.now() < retryAt) return
+    } else if (delivery?.fingerprint === fingerprint) {
+      if (delivery.state === 'delivered' && !latest) return
+      if (this.now() < delivery.retryAt) return
     }
-    // A failed/missing task remains pending for retry, including after a Worker restart.
-    const result = await Promise.allSettled([this.startOn(target, source)])
+    const retryingUnknown = delivery?.fingerprint === fingerprint && !tasks.some(task => task.id === delivery.taskId)
+    const commandId = retryingUnknown ? delivery.taskId : randomUUID()
+    // An unanswered start keeps its command ID so retrying cannot duplicate accepted work.
+    this.deliveries.set(key, { fingerprint, taskId: commandId, state: 'pending', retryAt: this.now() + SYNC_RETRY_MS })
+    const result = await Promise.allSettled([this.startOn(target, source, commandId)])
     const started = result[0]!
-    if (started.status !== 'fulfilled' || started.value.sourceFingerprint !== fingerprint) return
+    if (started.status !== 'fulfilled') return
+    if (started.value.sourceFingerprint !== fingerprint) {
+      this.deliveries.get(key)!.retryAt = 0
+      return
+    }
     this.deliveries.set(key, { fingerprint, taskId: started.value.id,
-      state: started.value.state === 'succeeded' ? 'delivered' : 'pending' })
+      state: started.value.state === 'succeeded' ? 'delivered' : 'pending', retryAt: this.now() + SYNC_RETRY_MS })
   }
 
   private async taskFor(task: ComputerMaintenanceStartInput['task']): Promise<MaintenanceTaskStart> {

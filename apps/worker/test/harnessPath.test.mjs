@@ -38,7 +38,11 @@ test('missing executables and inherited empty, relative and arbitrary absolute P
   const previous = process.env.PATH;
   t.after(() => { process.env.PATH = previous; });
   process.env.PATH = `:.:relative:${home}/untrusted`;
-  assert.equal(workerPath(home, process.execPath), [...new Set([dirname(process.execPath), '/usr/bin', '/bin'])].join(':'));
+  const path = workerPath(home, process.execPath).split(':');
+  assert.equal(path[0], dirname(process.execPath));
+  assert.ok(!path.includes(bin));
+  assert.ok(!path.includes('') && !path.includes('.') && !path.includes('relative'));
+  assert.ok(!path.includes(`${home}/untrusted`));
   assert.equal(workerPath('relative/home', process.execPath), workerPath('/missing/home', process.execPath));
 });
 

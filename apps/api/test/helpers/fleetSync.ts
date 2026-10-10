@@ -93,7 +93,7 @@ export async function settle(computer: ReturnType<typeof fakeComputer>) {
   throw new Error('Fake maintenance did not settle')
 }
 
-export function fakeFleet(computer: ReturnType<typeof fakeComputer>) {
+export function fakeFleet(computer: ReturnType<typeof fakeComputer>, now: () => number = Date.now) {
   const mainId = randomUUID()
   const registration = {
     mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
@@ -124,7 +124,7 @@ export function fakeFleet(computer: ReturnType<typeof fakeComputer>) {
       return { payload: { operation: 'start', task: await computer.maintenance.start(request.task, request.commandId) } }
     },
   }
-  const fleet = new FleetMaintenanceService(pool, mainId, () => endpoint,
-    {} as PostgresCommandCoordinator, computer.maintenance, sources)
-  return { fleet, sources, requested, endpoint, registrations }
+  const createFleet = () => new FleetMaintenanceService(pool, mainId, () => endpoint,
+    {} as PostgresCommandCoordinator, computer.maintenance, sources, now)
+  return { fleet: createFleet(), createFleet, sources, requested, endpoint, registrations }
 }
