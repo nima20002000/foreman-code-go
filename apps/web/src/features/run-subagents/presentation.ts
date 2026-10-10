@@ -25,7 +25,9 @@ const toolStatuses: Record<RunSubagentTool['status'], { label: string; tone: Ton
 }
 export const toolStatus = (status: RunSubagentTool['status']) => toolStatuses[status]
 
-export const subagentName = (subagent: Pick<RunSubagent, 'name'>) => subagent.name?.trim() || 'Subagent'
+/** Codex multi-agent children carry no name, only their spawn path (for example /root/main_shutdown). */
+export const subagentName = (subagent: Pick<RunSubagent, 'name'> & { native?: Pick<RunSubagent['native'], 'agentPath'> }) =>
+  subagent.name?.trim() || subagent.native?.agentPath?.split('/').filter(Boolean).pop()?.replaceAll('_', ' ') || 'Subagent'
 
 /** Accessible chip label: name, provider and status in plain words. */
 export function subagentLabel(subagent: RunSubagent) {

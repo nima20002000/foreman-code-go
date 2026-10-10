@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, type ReactNode, type SyntheticEvent } from 'react'
 import { useLocation } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@foreman-code/contracts'
 import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@foreman-code/contracts/wave25'
 import { Button, Dialog, Drawer, Icon, IconButton } from '../../shared/ui/nocturne'
 import { WorkspaceExecutionLocationSettings } from '../settings/WorkspaceExecutionLocationSettings'
 import { RunBoardSlot } from '../run-board'
-import { useSelectedRun } from '../runs-selector'
+import { runsSelectorApi, useSelectedRun, useSelectedRunSnapshot } from '../runs-selector'
 import { BoardNavigationControls } from './BoardNavigationControls'
 import { AgentChatPanel } from '../graph/AgentPanels'
 import { CurrentRunObserver } from './CurrentRunObserver'
@@ -29,6 +30,32 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   // runId search. The new selector and Run deep links show immutable history.
   const legacyRun = requestedRun?.workspaceId === workspaceId && requestedRun.workflowId === workflowId
     && !location.search.selectedRunId && !location.pathname.includes('/runs/') ? requestedRun : undefined
+  // A Run picked from Runs opens on this Board (live node cards and their native
+  // subagents), not on the separate saved-topology page; only legacy Runs without a
+  // captured version stay there.
+  const picked = useSelectedRunSnapshot(selectedRun).snapshot
+  const pickedRunId = location.search.selectedRunId
+  useEffect(() => {
+    if (picked?.kind !== 'available' || picked.runId !== pickedRunId || location.pathname.includes('/runs/')) return
+    selectRun({ workspaceId, workflowId, runId: picked.runId, workflowVersionId: picked.workflowVersionId, executionSemanticsVersion: 3 })
+  }, [picked, pickedRunId, location.pathname, selectRun, workspaceId, workflowId])
+  // A live Run takes over the Board so its nodes and native subagents show real
+  // state. "Stop showing this run" returns to editing and is not undone.
+  const dismissed = useRef(new Set<string>())
+  const shownRunId = useRef<string | undefined>(undefined)
+  if (shownRunId.current && shownRunId.current !== legacyRun?.runId) dismissed.current.add(shownRunId.current)
+  shownRunId.current = legacyRun?.runId
+  const live = !requestedRun && !pickedRunId && !location.pathname.includes('/runs/')
+    ? summaries.filter((item) => item.workspaceId === workspaceId && item.workflowId === workflowId && isActiveRun(item)
+      && !dismissed.current.has(item.id)).sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))[0]
+    : undefined
+  const liveSnapshot = useQuery({ queryKey: ['board-live-run-snapshot', workspaceId, workflowId, live?.id],
+    queryFn: ({ signal }) => runsSelectorApi.snapshot({ workspaceId, workflowId, runId: live!.id }, { signal }),
+    enabled: Boolean(live), staleTime: Infinity }).data?.snapshot
+  useEffect(() => {
+    if (!live || liveSnapshot?.kind !== 'available' || liveSnapshot.runId !== live.id) return
+    selectRun({ workspaceId, workflowId, runId: live.id, workflowVersionId: liveSnapshot.workflowVersionId, executionSemanticsVersion: 3 })
+  }, [live, liveSnapshot, selectRun, workspaceId, workflowId])
   const boardSelection = legacyRun ? { ...selectedRun, identity: { ...selectedRun.identity, runId: null } } : selectedRun
   const current = boardSelection.active && !boardSelection.invalid && boardSelection.identity.runId === null
   const currentRef = useRef(current)

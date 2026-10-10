@@ -5,7 +5,7 @@ export const isTerminalSubagent = (status: RunSubagent['status']) => ['completed
 export type SubagentLayoutNode = Pick<RunBoardNodeSnapshot, 'id' | 'kind' | 'position' | 'size'>
 
 /** Chip geometry shared with the stylesheet. */
-export const SUBAGENT_CHIP = { height: 28, gap: 8, indent: 22, below: 18 } as const
+export const SUBAGENT_CHIP = { height: 28, gap: 8, indent: 22, below: 40 } as const
 
 /**
  * Children hang below their parent node as an indented tree, so they never
