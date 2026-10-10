@@ -524,6 +524,8 @@ export const CodexSessionCompatibilitySchema = z.object({
 export const InteractionStatusSchema = z.enum(["pending", "decided", "delivery_pending", "delivered", "delivery_failed", "canceled"]);
 export const NativeDeliveryStateSchema = z.enum(["not_started", "pending", "submitted", "uncertain", "delivered", "failed"]);
 export const DurableInteractionSchema = z.object({
+  kind: z.enum(["native", "work_direction"]).optional(),
+  continuationRunId: IdSchema.optional(),
   id: IdSchema,
   revision: z.number().int().nonnegative(),
   workspaceId: IdSchema,
@@ -554,6 +556,14 @@ export const DurableInteractionSchema = z.object({
   updatedAt: TimestampSchema,
 }).strict().superRefine((value, context) => {
   const decisionFields = ["selectedOptionId", "selectedSemantic", "nativeResponse", "decidedAt"] as const;
+  if (value.kind === 'work_direction'
+    && (value.nativeRequestType !== 'workflow/work_direction' || value.approval.handler !== 'user')) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['kind'], message: 'Workflow direction is an owner-handled Run decision.' });
+  }
+  if (value.continuationRunId && (value.kind !== 'work_direction'
+    || value.selectedOptionId !== 'continue' || value.status !== 'delivered')) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['continuationRunId'], message: 'A continuation Run requires a completed direction choice.' });
+  }
   const hasDecision = decisionFields.every((field) => value[field] !== undefined);
   const hasAnyDecision = decisionFields.some((field) => value[field] !== undefined);
   if (hasAnyDecision && !hasDecision) {
@@ -584,6 +594,7 @@ export const DurableInteractionSchema = z.object({
   }
 });
 export type DurableInteraction = z.infer<typeof DurableInteractionSchema>;
+export { WorkDirectionRequestSchema, WorkDirectionResponseSchema } from './workDirection.js';
 
 /** Scoped restart recovery: send only unsent work; reconcile all ambiguous attempts. */
 export const InteractionRecoveryQuerySchema = z.object({
@@ -1603,6 +1614,8 @@ export const RespondToInteractionResponseSchema = z.object({ interaction: Durabl
 
 /** MCP summaries keep decisions visible; interaction_get retrieves omitted JSON in chunks. */
 export const McpInteractionSummarySchema = z.object(DurableInteractionSchema.shape).pick({
+  kind: true,
+  continuationRunId: true,
   id: true, revision: true, workspaceId: true, workflowId: true, runId: true,
   executionId: true, harness: true, status: true, deliveryState: true, approval: true,
   responseOptions: true, selectedOptionId: true, selectedSemantic: true, decidedAt: true, deliveredAt: true,

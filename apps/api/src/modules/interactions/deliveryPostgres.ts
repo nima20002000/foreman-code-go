@@ -277,7 +277,7 @@ export class PostgresInteractionDeliveryRepository {
        where ($1::text is null or d.id>$1) and (
          (d.status='delivery_pending' and not exists (
            select 1 from interaction_delivery_attempts a where a.interaction_id=d.id and a.lease_expires_at>clock_timestamp()))
-         or (d.record->>'deliveryState'='delivered' and (g.interaction_id is null or
+         or (d.record->>'kind' is distinct from 'work_direction' and d.record->>'deliveryState'='delivered' and (g.interaction_id is null or
            (g.state in ('pending','resuming','blocked') and (g.lease_expires_at is null or g.lease_expires_at<=clock_timestamp())))))
        order by d.id limit $2`, [input.afterId ?? null, input.limit],
     )

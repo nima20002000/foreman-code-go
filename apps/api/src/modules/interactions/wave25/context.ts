@@ -78,7 +78,7 @@ export async function readContext(sql: GraphSqlClient, interaction: DurableInter
   if (r.id !== interaction.runId || r.workspaceId !== interaction.workspaceId || r.workflowId !== interaction.workflowId
     || r.workflowVersionId !== v.id || r.workspaceId !== v.workspaceId || r.workflowId !== v.workflowId
     || canonicalGraphJson(r.approval) !== canonicalGraphJson(v.approval)
-    || canonicalGraphJson(interaction.approval) !== canonicalGraphJson(v.approval)
+    || (interaction.kind !== 'work_direction' && canonicalGraphJson(interaction.approval) !== canonicalGraphJson(v.approval))
     || canonicalGraphJson(r.agentConfigurationVersionIds) !== canonicalGraphJson(v.agentConfigurationVersionIds)) return fail('APPROVAL_IDENTITY_MISMATCH')
   const stopped = row.stopped || !['queued', 'running', 'waiting'].includes(r.executionState)
   if (requireOpen && stopped) return fail('EXECUTION_STOPPED')
@@ -87,9 +87,18 @@ export async function readContext(sql: GraphSqlClient, interaction: DurableInter
      where run_id=$1 and id=$2`, [r.id, interaction.executionId])).rows[0]
   const requester = requesterRow ? HarnessExecutionSchema.parse(requesterRow.record) : undefined
   if (!requester || requester.runId !== r.id || requester.agentId !== interaction.requestingAgentId
-    || requester.nativeSessionId !== interaction.nativeSessionId
+    || (requester.nativeSessionId ?? (interaction.kind === 'work_direction' ? r.id : undefined)) !== interaction.nativeSessionId
     || requester.agentConfigurationVersionId !== v.agentConfigurationVersionIds[requester.agentId]
     || !v.definition.nodes.some((n) => n.id === requester.workflowNodeId && n.kind !== 'job' && n.agentId === requester.agentId)) return fail('APPROVAL_REQUESTER_MISMATCH')
+  if (interaction.kind === 'work_direction') {
+    if (interaction.approval.handler !== 'user' || interaction.nativeRequestType !== 'workflow/work_direction'
+      || interaction.id !== `work-direction-${r.id}` || requester.state !== 'completed'
+      || !(await sql.query('select 1 from run_work_direction_waits where run_id=$1', [r.id])).rowCount) {
+      return fail('WORK_DIRECTION_WAIT_CONFLICT')
+    }
+    return { scope: { workspaceId: r.workspaceId, workflowId: r.workflowId, runId: r.id,
+      workflowVersionId: v.id, executionSemanticsVersion: 3 }, requester, stopped }
+  }
   if (requireOpen && !completedReplay && (requester.state === 'completed' || requesterRow!.closed)) return fail('EXECUTION_STOPPED')
   const route = interaction.approval.handler === 'orchestrator' ? resolveImmutableApprovalRoute(v, requester.workflowNodeId, requester.agentId) : undefined
   if (interaction.approval.handler === 'orchestrator' && !route?.relationshipId) return fail('APPROVAL_DIRECT_CONNECTION_REQUIRED')

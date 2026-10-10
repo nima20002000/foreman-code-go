@@ -28,6 +28,7 @@ function Approval({ scope, item, run, permitted, refresh }: {
   } })
   const value = detail.isError ? undefined : detail.data
   const interaction = value?.interaction
+  const isDirection = item.kind === 'work_direction'
   const hasInput = interaction?.responseOptions.some((option) => option.input)
   const reason = !permitted ? 'Response permission is unavailable for this exact Run.'
     : !value ? 'Read the exact authorized interaction before responding.'
@@ -35,7 +36,7 @@ function Approval({ scope, item, run, permitted, refresh }: {
         : run.executionState === 'completed' ? 'This Run is terminal. No new approval decision is available.'
           : interaction?.status !== 'pending' ? 'A decision is already recorded or this interaction is canceled.' : undefined
   return <li><details onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Human approval {item.id} · {(detail.isError ? undefined : detail.data?.interaction.status) ?? item.status}</summary>
+    <summary>{isDirection ? 'Run direction' : 'Human approval'} {item.id} · {(detail.isError ? undefined : detail.data?.interaction.status) ?? item.status}</summary>
     {open ? <div>
       <p>Run <code>{scope.runId}</code> · saved version <code>{scope.workflowVersionId}</code> · interaction <code>{item.id}</code>.</p>
       {detail.isPending ? <p role="status">Reading exact human request and execution identity…</p> : null}
@@ -44,7 +45,8 @@ function Approval({ scope, item, run, permitted, refresh }: {
       {interaction && value ? <>
         <p>Execution <code>{interaction.executionId}</code> · node <code>{value.execution.workflowNodeId}</code> · technical attempt {value.execution.attempt} · interaction revision {interaction.revision}.</p>
         <pre tabIndex={0} aria-label="Exact human approval request">{JSON.stringify(interaction.request, null, 2)}</pre>
-        <p role="status">{approvalDeliveryMessage(interaction.status, interaction.deliveryState)}</p>
+        <p role="status">{isDirection ? 'Choose how to handle the remaining findings.'
+          : approvalDeliveryMessage(interaction.status, interaction.deliveryState)}</p>
         {interaction.status === 'pending' && hasInput
           ? <NativeInteractionResponse key={interaction.id} options={interaction.responseOptions}
             disabled={!!reason || response.isPending || response.isError || detail.isFetching}
@@ -61,13 +63,16 @@ function Approval({ scope, item, run, permitted, refresh }: {
         </div>)}</div> : null}
       </> : null}
       {reason ? <p>{reason}</p> : null}
-      {response.isPending ? <p role="status">Sending the exact human decision; native acknowledgement is not implied.</p> : null}
+      {response.isPending ? <p role="status">{isDirection ? 'Recording Run direction…'
+        : 'Sending the exact human decision; native acknowledgement is not implied.'}</p> : null}
       {response.isError ? <div role="alert"><p>Approval response is not confirmed: {response.error.message}
         {' '}No different option or revised request is sent automatically.</p>
         <button type="button" disabled={!permitted || value?.canRespond !== true || response.isPending}
           onClick={() => response.variables && response.mutate(response.variables)}>Reconcile same approval response</button>
       </div> : null}
-      <p ref={feedback} tabIndex={-1} role="status">{response.data ? `Human decision ${response.data.replayed ? 'reconciled' : 'recorded'}. Approval response is not native acknowledgement. Receipt observation: ${approvalDeliveryMessage(response.data.interaction.status, response.data.interaction.deliveryState)}` : ''}</p>
+      <p ref={feedback} tabIndex={-1} role="status">{response.data && isDirection ? 'Run direction recorded.' : ''}
+        {response.data && !isDirection ? `Human decision ${response.data.replayed ? 'reconciled' : 'recorded'}. Approval response is not native acknowledgement. Receipt observation: ${approvalDeliveryMessage(response.data.interaction.status, response.data.interaction.deliveryState)}` : ''}</p>
+      {interaction?.continuationRunId ? <p>Continuation Run: <code>{interaction.continuationRunId}</code>.</p> : null}
     </div> : null}
   </details></li>
 }

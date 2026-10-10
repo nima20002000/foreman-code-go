@@ -60,7 +60,12 @@ export async function publishInteraction(publication: RunGraphPublication, conte
     resumeState?: 'not_started' | 'pending' | 'unknown'; effect?: GraphEffect; guard?: GraphEffectGuard; mutate?: (sql: GraphTransactionSql) => Promise<void>
   } = {}): Promise<void> {
   const source = { evidence: { sourceKind: 'interaction' as const, sourceId: next.id, sourceRevision: String(next.revision) },
-    sourceDigest: graphSourceDigest(next), facts: [interactionFact(context, next, next.status === 'canceled' ? 'unknown' : options.resumeState), ...await approvalAttentionFacts(publication.sql, context, { interaction: next })] }
+    sourceDigest: graphSourceDigest(next), facts: [interactionFact(context, next, next.status === 'canceled' ? 'unknown' : options.resumeState),
+      ...await approvalAttentionFacts(publication.sql, context, { interaction: next }),
+      ...(next.kind === 'work_direction' && next.status === 'delivered' ? [{
+        type: 'exchange.retired' as const, exchangeKind: 'interaction' as const,
+        exchangeId: next.id, finalRevision: String(next.revision),
+      }] : [])] }
   const write = async (sql: GraphTransactionSql) => { await writeInteraction(sql, previous, next); await options.mutate?.(sql) }
   if (options.effect) {
     if (!options.guard) return fail('GRAPH_AUTHORITY_INVALID')
@@ -98,6 +103,7 @@ export function canceledRetirementSourceId(id: string): string {
 async function cancellationRetirable(sql: GraphTransactionSql, context: ApprovalContext,
   interaction: DurableInteraction, nativeClosed: boolean): Promise<boolean> {
   if (interaction.status !== 'canceled') return false
+  if (interaction.kind === 'work_direction') return context.stopped
   if (!nativeClosed) {
     if (context.stopped || interaction.deliveryState !== 'not_started') return false
     const outstanding = await sql.query(`select 1 where

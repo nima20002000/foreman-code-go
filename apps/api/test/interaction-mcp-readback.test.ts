@@ -8,6 +8,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresAppInteractionService, decodeInteractionCursor } from '../src/modules/interactions/app.js'
 import {
   interactionMcpGet, INTERACTION_MCP_RESPONSE_BYTES, INTERACTION_MCP_TEXT_BYTES,
+  interactionMcpSummary,
 } from '../src/modules/interactions/mcpReadback.js'
 import { toolResult } from '../src/mcp/shared/results.js'
 
@@ -33,6 +34,16 @@ function modelVisible(value: unknown) {
 }
 
 describe('bounded interaction MCP readback', () => {
+  it('keeps a workflow direction choice and its continuation Run in bounded readback', () => {
+    const interaction: DurableInteraction = { ...source, kind: 'work_direction', approval: { handler: 'user' },
+      nativeRequestType: 'workflow/work_direction', status: 'delivered', deliveryState: 'delivered',
+      responseOptions: [{ ...source.responseOptions[0]!, optionId: 'continue', semantic: 'approve_once' }],
+      selectedOptionId: 'continue', selectedSemantic: 'approve_once', nativeResponse: { optionId: 'continue', semantic: 'approve_once' },
+      decidedAt: source.createdAt, deliveredAt: source.createdAt, continuationRunId: 'continuation-run',
+    }
+    expect(interactionMcpSummary(interaction)).toMatchObject({ kind: 'work_direction',
+      continuationRunId: 'continuation-run', selectedOptionId: 'continue' })
+  })
   it.each(['x', '"\\\n', '😀界'])('retrieves oversized JSON without losing identity, options or characters: %s', (pattern) => {
     const interaction = { ...source, request: { patch: pattern.repeat(400_000) } }
     let page = modelVisible(interactionMcpGet({ interaction }))

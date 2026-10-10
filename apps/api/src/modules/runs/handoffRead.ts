@@ -76,7 +76,10 @@ export class RunHandoffReadService {
           [run.id])).rows
         if (notices.length>1000 || unresolved.length>1000) throw new DomainError('HANDOFF_READ_TOO_LARGE',
           'The Run has too many notices or unresolved work items to read.', 409)
-        const directionWait = (await sql.query('select 1 from run_work_direction_waits where run_id=$1',
+        const directionWait = run.executionState === 'waiting' && !snapshot.stopRequested
+          && (await sql.query(`select 1 from run_work_direction_waits d where d.run_id=$1
+            and not exists(select 1 from durable_interactions i where i.run_id=d.run_id
+              and i.record->>'kind'='work_direction' and i.status='delivered')`,
           [run.id])).rowCount === 1
         const result = RunHandoffsReadSchema.parse({ scope, policy: 'work', runState: run.executionState,
           connections, routes,

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 import { HarnessExecutionSchema, type ExecutionResult } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, CurrentWorkflowSaveResultSchema, type CurrentFixtureForm,
   type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
@@ -36,9 +37,14 @@ export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof cu
         expectedAgentConfigurationVersionIds: pins } })
     assert.equal(response.statusCode, 200, response.body)
     const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value
+    const directory = await stat(db.directory, { bigint: true })
+    const identity = { device: String(directory.dev), inode: String(directory.ino) }
+    const identityHash = `sha256:${createHash('sha256').update(`${identity.device}:${identity.inode}`).digest('hex')}`
+    await db.pool.query('update workspaces set execution_location_identity=$2::jsonb where id=$1',
+      [writer.f.scope.workspaceId, JSON.stringify(identity)])
     const seeded = await insertCurrentRunFixture(db.pool, { ...writer.f, configurations, run: { ...writer.f.run,
       executionLocation: { runnerId: 'runner-local', rootPath: db.directory,
-        locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` } } }, saved, writer.writer.principal.id)
+        locationRevision: 1, identityHash } } }, saved, writer.writer.principal.id)
     const { run, version, scope } = seeded
     owner = await RunOwnership.acquire(db.pool, run.id, () => undefined)
     assert.ok(owner)

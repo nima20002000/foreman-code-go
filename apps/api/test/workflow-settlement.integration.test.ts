@@ -13,6 +13,20 @@ import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { workflowSettlementFixture } from './helpers/workflowSettlementFixture.js'
 import { graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { assertWorkflowFailureReadback } from './helpers/workflowFailureReadback.js'
+import { hasWorkDirectionWait } from '../src/modules/runs/workflowLifecycle.js'
+import { buildApp } from '../src/app.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { InteractionService } from '../src/modules/interactions/service.js'
+import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
+import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
+import { PostgresApprovalBudgetRepository } from '../src/modules/interactions/budget.js'
+import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
+import { graphRpc } from './eng04-graph-composition-fixture.js'
+import { RespondToInteractionResponseSchema, WorkDirectionRequestSchema } from '@foreman-code/contracts'
+import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
+import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
+import { workDirectionInteractionId } from '../src/modules/runs/workDirectionInteraction.js'
 
 // Native terminals and physical closure are explicit test inputs. Authenticated
 // Save/MCP reads, canonical publication, SQL transactions and settlement execute.
@@ -34,7 +48,7 @@ const handoffs = (budget: number) => (graph: WorkflowDefinitionV3): WorkflowDefi
 })
 
 async function withFixture(configure: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3,
-  work: (fixture: Fixture) => Promise<void>, form: 'sequential' | 'parallel' = 'sequential') {
+  work: (fixture: Fixture) => Promise<void>, form: 'single' | 'sequential' | 'parallel' = 'sequential') {
   await nim2691TaskDatabase(async (pool, directory) => {
     await applyApplicationMigrations(pool)
     const db = { pool, directory, schema: 'public', close: async () => undefined } as
@@ -66,7 +80,226 @@ function runtime(f: Fixture, observe: (execution: HarnessExecution) => Promise<v
     driver: { candidate: (ref, attempt) => f.candidate(ref.nodeId, attempt), observe }, lifecycle: f.lifecycle })
 }
 
+async function directionApi(f: Fixture) {
+  const repository = new Wave25InteractionRepository(f.db.pool)
+  const service = new InteractionService(repository, new PostgresApprovalBudgetRepository(f.db.pool),
+    {} as never, async () => { throw new Error('Direction must not resume a native approval') })
+  const locations = new WorkspaceLocationService(f.db.pool, f.commands)
+  const start = vi.fn(async (principal: Parameters<typeof admitRepeatRun>[2], source: 'http' | 'mcp',
+    input: Parameters<typeof admitRepeatRun>[4]) => {
+    const accepted = await admitRepeatRun(f.db.pool, locations, principal, source, input, repeatStartPublication)
+    return { run: accepted.value }
+  })
+  service.useWorkDirectionActions({ start, wake: async () => undefined })
+  const app = buildApp({ operator: { access: f.access, services: {
+    commands: f.commands, interactions: new OperatorInteractionService(service),
+    runGraph: new RunGraphReadService(f.db.pool, { qualifiedReads: true }),
+  } as unknown as OperatorServices } })
+  await app.ready()
+  const call = async (name: string, args: unknown, token = f.writer.token) => {
+    const result = await graphRpc(app, token, 'tools/call', { name, arguments: args })
+    return result.result
+  }
+  return { app, call, service, repository, start }
+}
+
 describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement and execution capacity', () => {
+  it.each(['none', 'accepted', 'checkpoint'] as const)(
+    'finalizes a sole finish result without findings (restart point: %s)', async (restartAt) => {
+      await withFixture((graph) => ({ ...handoffs(1)(graph),
+        executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+      }), async (f) => {
+        const saver = new MemorySaver()
+        const before = await f.readRun()
+        let launches = 0
+        const execute = runtime(f, async (execution) => {
+          if (execution.state === 'completed') return
+          launches++
+          await f.finish(execution.id, finish())
+        }, saver)
+        if (restartAt === 'accepted') {
+          await acceptedActivation(f, await f.store.ensureWorkEntry(), finish())
+          await f.restart()
+        }
+        if (restartAt === 'checkpoint') {
+          const crash = new Error('Run completion unavailable after the graph checkpoint')
+          f.store.completeWorkRun = async () => { throw crash }
+          await expect(execute()).rejects.toBe(crash)
+          expect(await f.readRun()).toMatchObject({ executionState: 'running', outcome: 'pending' })
+          await f.restart()
+        }
+        await execute()
+        const completed = await f.readRun()
+        expect(completed).toMatchObject({ executionState: 'completed', outcome: 'succeeded',
+          workflowVersionId: before.workflowVersionId, startedAt: before.startedAt,
+          result: { outcome: 'succeeded', output: finish().output },
+        })
+        expect(launches).toBe(restartAt === 'accepted' ? 0 : 1)
+        const executions = await f.db.pool.query<{ record: HarnessExecution; accepted: boolean }>(
+          'select record,accepted from harness_executions where run_id=$1', [f.run.id])
+        expect(executions.rows).toHaveLength(1)
+        expect(executions.rows[0]).toMatchObject({ accepted: true,
+          record: { state: 'completed', result: finish() },
+        })
+        const read = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current, { protocolVersion: 1, scope: f.scope })
+        expect(read.result?.isError, JSON.stringify(read)).not.toBe(true)
+        const persisted = CanonicalRunGraphCurrentSchema.parse(graphRpcValue(read.result))
+        expect(persisted.state.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+        expect(persisted.state.executions).toHaveLength(1)
+        const denied = await f.credential([{ actions: ['workflows:read'],
+          scope: { workspaceIds: [f.run.workspaceId] },
+        }])
+        const denial = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current,
+          { protocolVersion: 1, scope: f.scope }, denied.token)
+        expect(denial.result?.isError).toBe(true)
+        await f.restart()
+        expect(await f.store.completeWorkRun()).toBe('completed')
+        expect(await f.readRun()).toEqual(completed)
+        expect(await hasWorkDirectionWait(f.owner)).toBe(false)
+      }, 'single')
+    }, timeout,
+  )
+
+  it('preserves a sole finish result with findings as a direction wait across restart', async () => {
+    await withFixture((graph) => ({ ...handoffs(1)(graph),
+      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+    }), async (f) => {
+      const result: ExecutionResult = { outcome: 'succeeded', output: {
+        routing: { kind: 'finish' }, data: { latestDeliverable: { revision: 1 },
+          remainingFindings: ['Full verification remains pending', 'Worktree retained for the orchestrator'],
+        },
+      } }
+      let launches = 0
+      const execute = runtime(f, async (execution) => {
+        if (execution.state === 'completed') return
+        launches++
+        await f.finish(execution.id, result)
+      })
+      await execute()
+      const waiting = await f.readRun()
+      expect(waiting).toMatchObject({ executionState: 'waiting', outcome: 'pending' })
+      expect(await hasWorkDirectionWait(f.owner)).toBe(true)
+      await f.restart()
+      expect(await hasWorkDirectionWait(f.owner)).toBe(true)
+      await execute()
+      expect(await f.readRun()).toEqual(waiting)
+      expect(await f.store.completeWorkRun()).toBe('needs_direction')
+      expect(launches).toBe(1)
+      const read = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current, { protocolVersion: 1, scope: f.scope })
+      expect(read.result?.isError, JSON.stringify(read)).not.toBe(true)
+      const persisted = CanonicalRunGraphCurrentSchema.parse(graphRpcValue(read.result))
+      expect(persisted.state.run).toMatchObject({ executionState: 'waiting', outcome: 'pending', pendingInteractionCount: 1 })
+      expect(persisted.state.executions).toHaveLength(1)
+    }, 'single')
+  }, timeout)
+
+  it.each(['finish', 'continue', 'stop'] as const)(
+    'answers a direction wait through authenticated MCP using %s and preserves the findings', async (choice) => {
+      await withFixture((graph) => ({ ...handoffs(1)(graph),
+        executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+      }), async (f) => {
+        const result: ExecutionResult = { outcome: 'succeeded', output: {
+          routing: { kind: 'finish' }, data: { latestDeliverable: { revision: 1 }, remainingFindings: ['Review is incomplete'] },
+        } }
+        await runtime(f, async (execution) => {
+          if (execution.state !== 'completed') await f.finish(execution.id, result)
+        })()
+        const api = await directionApi(f)
+        try {
+          const listed = await api.call('interaction_list', { runId: f.run.id, status: 'pending', limit: 10 })
+          expect(listed?.isError, JSON.stringify(listed)).not.toBe(true)
+          const list = graphRpcValue(listed) as { items: Array<{ id: string }>; pendingCount: number }
+          expect(list.pendingCount).toBe(1)
+          expect(list.items.map((item) => item.id)).toEqual([workDirectionInteractionId(f.run.id)])
+          expect(graphRpcValue(await api.call('interaction_summary', { runId: f.run.id }))).toMatchObject({ pendingCount: 1 })
+          const interaction = await api.repository.get(list.items[0]!.id)
+          assert.ok(interaction)
+          expect(graphRpcValue(await api.call('interaction_get', { interactionId: interaction.id }))).toMatchObject({
+            canRespond: true, interaction: { kind: 'work_direction', status: 'pending' },
+            activity: { response: { available: true, path: 'workflow_decision' } },
+          })
+          expect(WorkDirectionRequestSchema.parse(interaction.request).unresolved[0]?.remainingFindings)
+            .toEqual(['Review is incomplete'])
+          expect(interaction.responseOptions.map((option) => option.optionId)).toEqual(['finish', 'continue', 'stop'])
+          const response = { interactionId: interaction.id, optionId: choice, expectedRevision: interaction.revision,
+            ...(choice === 'continue' ? { response: { direction: 'Complete the review and fix its findings' } } : {}) }
+          const reader = await f.credential([{ actions: ['interactions:read'], scope: { runIds: [f.run.id] } }])
+          expect((await api.call('interaction_respond', response, reader.token))?.isError).toBe(true)
+          const wrongScope = await f.credential([{ actions: ['interactions:read', 'interactions:respond'],
+            scope: { runIds: ['other-run'] } }])
+          expect((await api.call('interaction_get', { interactionId: interaction.id }, wrongScope.token))?.isError).toBe(true)
+          expect((await api.call('interaction_respond', response, wrongScope.token))?.isError).toBe(true)
+          const responderOnly = await f.credential([{ actions: ['interactions:read', 'interactions:respond'],
+            scope: { runIds: [f.run.id] } }])
+          if (choice !== 'finish') expect((await api.call('interaction_respond', response, responderOnly.token))?.isError).toBe(true)
+          expect((await api.call('interaction_respond', { ...response, expectedRevision: interaction.revision + 1 }))?.isError).toBe(true)
+          expect((await api.call('interaction_respond', { ...response, response: { direction: ' ' } }))?.isError).toBe(true)
+          expect((await api.repository.get(interaction.id))?.status).toBe('pending')
+          if (choice === 'continue') {
+            const acceptStart = api.start.getMockImplementation()!
+            api.start.mockImplementationOnce(async (principal, source, input) => {
+              await acceptStart(principal, source, input)
+              throw new Error('Start reply unavailable')
+            })
+            expect((await api.call('interaction_respond', response))?.isError).toBe(true)
+            expect((await api.repository.get(interaction.id))?.status).toBe('delivery_pending')
+            const restarted = new InteractionService(new Wave25InteractionRepository(f.db.pool),
+              new PostgresApprovalBudgetRepository(f.db.pool), {} as never, async () => undefined)
+            restarted.useWorkDirectionActions({ start: api.start, wake: async () => undefined })
+            expect((await restarted.recover({ limit: 20 })).errors).toEqual([])
+            expect((await restarted.recover({ limit: 20 })).errors).toEqual([])
+          }
+          const accepted = await api.call('interaction_respond', response)
+          expect(accepted?.isError, JSON.stringify(accepted)).not.toBe(true)
+          const decided = RespondToInteractionResponseSchema.parse(graphRpcValue(accepted))
+          expect(decided).toMatchObject({ replayed: choice === 'continue',
+            interaction: { status: 'delivered', selectedOptionId: choice } })
+          if (choice === 'stop') {
+            expect((await f.db.pool.query('select stop_requested_at from runs where id=$1', [f.run.id]))
+              .rows[0]?.stop_requested_at).toEqual(expect.any(Date))
+            expect((await f.db.pool.query('select pending from run_cleanup_intents where run_id=$1', [f.run.id]))
+              .rows[0]?.pending).toBe(true)
+          }
+          await f.restart()
+          if (choice === 'stop') {
+            await f.lifecycle.settleRun(true, false)
+            expect(await f.readRun()).toMatchObject({ executionState: 'completed', outcome: 'canceled' })
+          } else {
+            expect(await f.store.completeWorkRun()).toBe('completed')
+            expect(await f.readRun()).toMatchObject({ executionState: 'completed', outcome: 'succeeded', result })
+          }
+          const replay = await api.call('interaction_respond', response)
+          expect(replay?.isError, JSON.stringify(replay)).not.toBe(true)
+          expect(graphRpcValue(replay)).toMatchObject({ replayed: true, interaction: decided.interaction })
+          const persisted = await api.repository.get(interaction.id)
+          expect(graphRpcValue(await api.call('interaction_get', { interactionId: interaction.id })))
+            .toMatchObject({ interaction: persisted, canRespond: false })
+          expect(graphRpcValue(await api.call('interaction_summary', { runId: f.run.id }))).toMatchObject({ pendingCount: 0 })
+          const current = CanonicalRunGraphCurrentSchema.parse(graphRpcValue(
+            await api.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current, { protocolVersion: 1, scope: f.scope })))
+          expect(current.state.run).toMatchObject({ executionState: 'completed', pendingInteractionCount: 0 })
+          expect(current.state.executions).toHaveLength(1)
+          expect((await f.db.pool.query<{ record: HarnessExecution }>('select record from harness_executions where run_id=$1',
+            [f.run.id])).rows[0]?.record.result).toEqual(result)
+          if (choice === 'continue') {
+            expect(decided.interaction.continuationRunId).toEqual(expect.any(String))
+            const continuation = (await f.db.pool.query<{ record: unknown }>(`
+              select r.record from run_work_direction_responses d join runs r on r.id=d.continuation_run_id
+              where d.interaction_id=$1`, [interaction.id])).rows[0]
+            expect(continuation?.record).toMatchObject({ workflowVersionId: f.version.id,
+              id: decided.interaction.continuationRunId,
+              input: { workDirection: { previousRunId: f.run.id, direction: 'Complete the review and fix its findings' } } })
+            expect((await f.db.pool.query('select 1 from runs where workflow_id=$1', [f.run.workflowId])).rowCount).toBe(2)
+          } else expect(api.start).not.toHaveBeenCalled()
+          const audit = (await f.db.pool.query<{ source: string }>(`
+            select source from management_audit where principal_id=$1 and action='interaction_respond'`,
+            [f.writer.principal.id])).rows
+          expect(audit.some((row) => row.source === 'mcp')).toBe(true)
+        } finally { await api.app.close() }
+      }, 'single')
+    }, timeout,
+  )
+
   it.each([false, true])('settles a nonretryable handoff failure once (restart before acceptance: %s)', async (restart) => {
     await withFixture(handoffs(2), async (f) => {
       let launches = 0

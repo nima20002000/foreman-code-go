@@ -32,6 +32,8 @@ export function interactionMcpSummary(interaction: DurableInteraction) {
   }
   return McpInteractionSummarySchema.parse({
     id, revision, workspaceId, workflowId, runId, executionId, harness, status, deliveryState, approval,
+    ...(interaction.kind ? { kind: interaction.kind } : {}),
+    ...(interaction.continuationRunId ? { continuationRunId: interaction.continuationRunId } : {}),
     ...(interaction.selectedOptionId ? { selectedOptionId: interaction.selectedOptionId } : {}),
     ...(interaction.selectedSemantic ? { selectedSemantic: interaction.selectedSemantic } : {}),
     ...(interaction.decidedAt ? { decidedAt: interaction.decidedAt } : {}),
