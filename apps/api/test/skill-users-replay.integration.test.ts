@@ -229,7 +229,7 @@ describe.skipIf(!postgresEnabled)('Skill consumer update plans over authenticate
     async (interruption) => {
       const f = await fixture()
       await publish(f.workspaceId, f.skillId, 1, 'Version two')
-      const commandId = 'p'.repeat(200)
+      const commandId = interruption.padEnd(200, 'p')
       const input = { workspaceId: f.workspaceId, skillId: f.skillId, commandId }
       const execute = commands.execute.bind(commands)
       let interrupt = true
@@ -250,8 +250,10 @@ describe.skipIf(!postgresEnabled)('Skill consumer update plans over authenticate
       })
       try {
         const first = await client.callTool({ name: 'skill_users_update', arguments: input })
-        if (interruption === 'response-gap') expect(first.isError).toBe(true)
-        else expect(c.SkillUsersUpdateResultSchema.parse(decodeMcpToolResult(first)).failed)
+        if (interruption === 'response-gap') {
+          expect(first.isError).toBe(true)
+          expect(workflowSpy).toHaveBeenCalledTimes(1)
+        } else expect(c.SkillUsersUpdateResultSchema.parse(decodeMcpToolResult(first)).failed)
           .toEqual([{ kind: 'workflow', id: f.workflow.workflowId, code: 'WORKFLOW_BUSY', message: 'Workflow is busy.' }])
         const accepted = await configurationOf(f.workspaceId, f.consumer.agent.id)
         expect(accepted.assignedSkills).toEqual([{ skillId: f.skillId, version: '2' }])
