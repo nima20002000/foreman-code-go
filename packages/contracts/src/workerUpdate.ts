@@ -1,0 +1,82 @@
+import { z } from 'zod'
+
+export const WORKER_UPDATE_NAMESPACE = 'worker-update-v1'
+export const WORKER_UPDATE_VERSION = 1
+export const WORKER_UPDATE_MAX_JSON_BYTES = 1_048_576
+export const WORKER_UPDATE_MAX_BINARY_BYTES = 262_144
+
+export const WorkerUpdateStatusSchema = z.object({
+  currentVersion: z.string().min(1).max(128),
+  targetVersion: z.string().min(1).max(128).nullable(),
+  state: z.enum(['current', 'pending', 'draining', 'downloading', 'installing', 'restarting', 'rolled-back', 'failed']),
+  lastError: z.string().max(2000).nullable(),
+}).strict()
+export type WorkerUpdateStatus = z.infer<typeof WorkerUpdateStatusSchema>
+
+export const WorkerArtifactTargetSchema = z.object({
+  os: z.string().min(1).max(100),
+  osRelease: z.string().min(1).max(100),
+  arch: z.string().min(1).max(100),
+  libc: z.string().min(1).max(100),
+  node: z.string().min(1).max(100),
+}).strict()
+export type WorkerArtifactTarget = z.infer<typeof WorkerArtifactTargetSchema>
+
+const digest = z.string().regex(/^[a-f0-9]{64}$/u)
+const artifactPath = z.string().min(1).max(1024).regex(/^[a-zA-Z0-9_@./-]+$/u)
+  .refine(path => path.split('/').every(part => part !== '' && part !== '.' && part !== '..'))
+const offset = z.number().int().nonnegative().max(64 * 1024 * 1024)
+
+export const WorkerArtifactManifestSchema = z.object({
+  format: z.literal(1),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+  commit: z.string().regex(/^[a-f0-9]{40}$/u),
+  lockfileSha256: digest,
+  packageManager: z.literal('pnpm@11.27.0'),
+  protocolVersion: z.literal(1),
+  identityFormat: z.literal(1),
+  target: WorkerArtifactTargetSchema,
+  files: z.array(z.object({
+    path: artifactPath,
+    sha256: digest,
+    size: offset,
+  }).strict()).min(1).max(512),
+}).passthrough().refine(manifest => {
+  const paths = new Set(manifest.files.map(file => file.path))
+  return paths.size === manifest.files.length && paths.has('src/cli.mjs') && !paths.has('manifest.json')
+}, 'Invalid artifact file list')
+export type WorkerArtifactManifest = z.infer<typeof WorkerArtifactManifestSchema>
+
+export const WorkerArtifactIndexSchema = z.object({
+  format: z.literal(1),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+  artifacts: z.array(z.object({
+    target: WorkerArtifactTargetSchema,
+    manifestSha256: digest,
+  }).strict()).max(100),
+}).strict()
+
+export const WorkerArtifactRequestSchema = z.discriminatedUnion('operation', [
+  z.object({ operation: z.literal('release'), target: WorkerArtifactTargetSchema }).strict(),
+  z.object({ operation: z.literal('chunk'), manifestSha256: digest, path: artifactPath, offset }).strict(),
+])
+export type WorkerArtifactRequest = z.infer<typeof WorkerArtifactRequestSchema>
+
+export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
+  z.object({
+    operation: z.literal('release'),
+    release: z.object({
+      version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+      manifestSha256: digest,
+      manifest: z.unknown(),
+    }).strict().nullable(),
+  }).strict(),
+  z.object({
+    operation: z.literal('chunk'),
+    manifestSha256: digest,
+    path: artifactPath,
+    offset,
+    byteSize: z.number().int().nonnegative().max(WORKER_UPDATE_MAX_BINARY_BYTES),
+  }).strict(),
+])
+export type WorkerArtifactReply = z.infer<typeof WorkerArtifactReplySchema>

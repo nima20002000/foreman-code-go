@@ -22,3 +22,6 @@
 .computer-card-task { margin: 0; color: var(--n-muted); font-size: .75rem; overflow-wrap: anywhere; }
 .computer-card-task[data-state='failed'] { color: var(--n-danger, var(--n-text)); }
 .computer-card-note { color: var(--n-muted); }
+.computer-card-worker { display: grid; gap: .35rem; }
+.computer-card-worker .n-button { justify-self: start; }
+.computer-card-worker-error { color: var(--n-danger, var(--n-text)); }

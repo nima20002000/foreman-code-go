@@ -31,6 +31,20 @@ async function fixture(bytes = Buffer.from('abcdefgh')) {
     time: (ms: number) => { now += ms }, fail: (point?: string) => { failure = point } }
 }
 describe('bounded authenticated transfer staging', () => {
+  it('keeps live writes and readers busy while finished old-epoch transfers permit Worker updates', async () => {
+    const f = await fixture()
+    expect(await f.service.isRuntimeQuiescent()).toBe(true)
+    await f.service.start(f.intent, f.context)
+    expect(await f.service.isRuntimeQuiescent()).toBe(false)
+    await f.service.append(f.intent.transferId, f.context, f.chunk(0))
+    await f.service.append(f.intent.transferId, f.context, f.chunk(4))
+    const receipt = await f.service.finish(f.intent.transferId, f.context)
+    const reader = await f.service.openVerified(receipt, f.context)
+    expect(await f.service.isRuntimeQuiescent()).toBe(false)
+    for await (const chunk of reader) expect(chunk.length).toBeGreaterThan(0)
+    f.reconnect()
+    expect(await f.service.isRuntimeQuiescent()).toBe(true)
+  })
   it('returns verified bytes with the original workflow execution identifier', async () => {
     const f = await fixture()
     f.intent.executionId = `execution-${randomUUID()}`

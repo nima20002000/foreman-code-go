@@ -37,14 +37,20 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_status')) server.registerTool('computers_maintenance_status', {
     description: 'Read maintenance status for Main and every paired computer: installed and latest Codex/Claude versions, pending OS '
       + 'package updates (including phased or held packages), whether a restart is needed, passwordless sudo, free disk, and recent maintenance tasks with their outcome and sync source fingerprint. '
+      + 'Paired Workers also report current and target application versions, update state and the last update error, '
+      + 'including rollback. '
       + 'Requires global settings:read. Cached for 20 seconds unless refresh is true; an offline computer reports null status.',
     inputSchema: z.object({ refresh: z.boolean().optional() }).strict(), outputSchema: ComputerMaintenanceListSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
   }, input => invokeOperatorTool(context, 'computers_maintenance_status', () => maintenance.list(context.principal, 'mcp', input.refresh === true)))
   if (maintenance && operatorToolAvailable(context, 'computers_maintenance_start')) server.registerTool('computers_maintenance_start', {
-    description: 'Start one maintenance task on the given computers, or on Main and every paired computer when targets is omitted: '
+    description: 'Start one maintenance task on the given computers. With targets omitted, update-worker and sync tasks select '
+      + 'paired computers; other tasks select Main and every paired computer: '
       + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
-      + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), restart (sudo reboot; targets are required), sync-mcp (add Main\'s user-level Codex and Claude MCP '
+      + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), '
+      + 'update-worker (drain active work, verify and install the matching Main version, then restart through the Worker supervisor; '
+      + 'failed releases roll back and report the error; Main uses production:install), restart (sudo reboot; targets are required), '
+      + 'sync-mcp (add Main\'s user-level Codex and Claude MCP '
       + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
       + 'sync-plugins (install Main\'s Codex and Claude plugins that other computers lack, adding Main\'s Git marketplaces first and matching enabled state for fleet-managed Claude plugins). '
       + 'Sync preserves pre-existing computer-owned entries and removes only fleet-managed entries absent from an available Main catalog. '
@@ -55,6 +61,8 @@ export function registerBuildComputerTools(server: McpServer, context: OperatorR
       + 'unavailable targets are not updated. Harness updates verify the selected runtime version against the latest published '
       + 'version; Main and Workers select the installed Codex update and retain qualification checks. Requires global '
       + 'settings:update. Reuse commandId with the original input to recover the saved targets, source catalogs and receiver tasks, including after Main stops before recording its result. '
+      + 'Use a new commandId with update-worker to trigger an update check or retry a failed update. '
+      + 'Older Workers without worker-update-v1 require an initial updater-enabled Worker installation on that computer. '
       + 'Receivers require maintenance protocol 2. Restart stays running until the reboot command returns; success reports command acceptance, not confirmed reconnection. '
       + 'A missing harness leaves nonempty MCP sync pending for a later retry.',
     inputSchema: ComputerMaintenanceStartInputSchema, outputSchema: ComputerMaintenanceStartResultSchema,

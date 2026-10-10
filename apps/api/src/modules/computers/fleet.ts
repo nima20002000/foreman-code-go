@@ -2,7 +2,8 @@ import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import {
-  COMPUTER_MAINTENANCE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema,
+  COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE,
+  ComputerMaintenanceListSchema, ComputerMaintenanceStartInputSchema,
   ComputerMaintenanceStartResultSchema, ComputerMaintenanceDispatchSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
   type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
@@ -116,7 +117,9 @@ export class FleetMaintenanceService {
           authorize: async sql => { requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:update') },
           perform: async () => {
             const selected = input.targets ?? await this.targets(principal, 'settings:update')
-            const targets = ['sync-mcp', 'sync-plugins'].includes(input.task.kind)
+            const workersOnly = ['sync-mcp', 'sync-plugins'].includes(input.task.kind)
+              || (input.task.kind === 'update-worker' && !input.targets)
+            const targets = workersOnly
               ? selected.filter(target => target.hostRef.kind !== 'main') : selected
             return ComputerMaintenanceDispatchSchema.parse({ targets, task: await this.taskFor(input.task) })
           },
@@ -278,7 +281,22 @@ export class FleetMaintenanceService {
 
   private async startOn(target: DeviceProvisioningTarget, task: MaintenanceTaskStart,
     commandId: string = randomUUID()): Promise<MaintenanceTask> {
-    if (target.hostRef.kind === 'main') return this.local.start(task, commandId)
+    if (target.hostRef.kind === 'main') {
+      if (task.kind === 'update-worker') {
+        throw new DomainError('COMPUTER_WORKER_UPDATE_UNSUPPORTED',
+          'Main is updated with production:install. Choose a paired Worker for this task.', 400)
+      }
+      return this.local.start(task, commandId)
+    }
+    if (task.kind === 'update-worker') {
+      const capabilities = this.endpoint()?.capabilities(target.hostRef.deviceId) ?? []
+      const maintenanceAvailable = capabilities.some(value =>
+        value.namespace === COMPUTER_MAINTENANCE_NAMESPACE && value.mainCanRequest)
+      if (maintenanceAvailable && !capabilities.some(value => value.namespace === WORKER_UPDATE_NAMESPACE)) {
+        throw new DomainError('COMPUTER_WORKER_UPDATE_UNSUPPORTED',
+          'Install an updater-enabled Worker once on this computer before automatic updates are available.', 409)
+      }
+    }
     const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId,
       { operation: 'start', commandId, task })).payload)
     if (reply.operation !== 'start') throw new DomainError('COMPUTER_MAINTENANCE_INVALID', 'The computer returned an unexpected reply.', 502)
@@ -297,7 +315,10 @@ export class FleetMaintenanceService {
     })().catch((): null => null)
     const entry: { at: number; running?: boolean; value: Promise<MaintenanceStatus | null> } = { at: this.now(), value }
     this.cache.set(key, entry)
-    void value.then(status => { entry.running = status?.tasks.some(task => task.state === 'running') ?? false })
+    void value.then(status => {
+      const workerUpdating = status?.worker && !['current', 'rolled-back', 'failed'].includes(status.worker.state)
+      entry.running = status?.tasks.some(task => task.state === 'running') || Boolean(workerUpdating)
+    })
     return value
   }
 

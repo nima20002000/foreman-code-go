@@ -12,6 +12,7 @@ export function createWorkerConnection(options: {
   extensions?: DeviceExtensionRegistration[]
   /** Synchronous admission revocation; caller tracks/join its physical drain. */
   onBindingLost?(binding: Readonly<import('@foreman-code/contracts/device-connection').DeviceSessionBinding>): void
+  onReady?(): void
 }) {
   let original: Readonly<import('@foreman-code/contracts/device-connection').DeviceSessionBinding> | undefined
   const connection = new DeviceConnectionSupervisor({
@@ -25,7 +26,10 @@ export function createWorkerConnection(options: {
     // Dispatch/transfer are disabled: there are no commands to replay at W07.
     reconcile: async () => {},
     onState: view => {
-      if (view.phase === 'ready') original = connection.currentBinding()
+      if (view.phase === 'ready') {
+        original = connection.currentBinding()
+        options.onReady?.()
+      }
       else if (original) {
         const lost = original; original = undefined
         options.onBindingLost?.(lost)
