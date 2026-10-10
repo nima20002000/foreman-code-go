@@ -188,8 +188,16 @@ it('keeps a replacement app request when an earlier creation is still pending', 
 })
 
 it('keeps a Settings handoff draft reachable after switching chats and reopening history', async () => {
-  const original = summarizeOperatorConversation(operatorState({ turnState: 'idle', activeRequestId: null }))
-  api.list.mockResolvedValue({ conversations: [original, { ...original, conversationId: 'new-chat', title: 'Settings request' }] })
+  const original = operatorState({ turnState: 'idle', activeRequestId: null })
+  const settingsRequest = operatorState({
+    conversation: { ...original.conversation, id: 'new-chat', title: 'Settings request' },
+    messages: [],
+    turnState: 'idle',
+    activeRequestId: null,
+  })
+  api.create.mockResolvedValue({ conversation: settingsRequest.conversation })
+  api.get.mockImplementation(async id => id === 'new-chat' ? settingsRequest : original)
+  api.list.mockResolvedValue({ conversations: [original, settingsRequest].map(summarizeOperatorConversation) })
   mount()
   await screen.findByRole('textbox', { name: 'Message' })
   act(() => askOperator('Configure the selected harness', { send: false }))
