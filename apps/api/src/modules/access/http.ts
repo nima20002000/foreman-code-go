@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { Socket } from 'node:net'
 
 import { LocalHumanAccessSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
-import { localHumanClient } from '@foreman-code/contracts/local-client-node'
+import { localHumanClient, LocalClientUnavailableError } from '@foreman-code/contracts/local-client-node'
 import { requireAuthorization } from './policy.js'
 import { bearerToken, type PostgresAccessService } from './postgres.js'
 import { DomainError } from '../errors.js'
@@ -98,8 +98,14 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
         || request.headers['sec-fetch-site'] === 'cross-site') {
         throw new DomainError('ORIGIN_NOT_ALLOWED', 'The request Origin is not allowed.', 403)
       }
-      if (request.raw.socket instanceof Socket && !await localHumanClient(request.raw.socket)) {
-        throw new DomainError('LOCAL_HUMAN_REQUIRED', 'Agent processes require an application credential.', 403)
+      try {
+        if (request.raw.socket instanceof Socket && !await localHumanClient(request.raw.socket)) {
+          throw new DomainError('LOCAL_HUMAN_REQUIRED', 'Agent processes require an application credential.', 403)
+        }
+      } catch (error) {
+        if (!(error instanceof LocalClientUnavailableError)) throw error
+        reply.header('retry-after', '1')
+        throw new DomainError(error.code, error.message, 503, { retryable: true })
       }
     }
     const authenticate = () => headerToken ? access.authenticate(headerToken, 'operator')

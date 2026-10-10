@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
-import type { ApiErrorResponse } from './index.js'
+import { LOCAL_CLIENT_UNAVAILABLE, type ApiErrorResponse } from './index.js'
 import { APP_MCP_TOKEN_NAMES } from './product.js'
 
 const inspectSockets = promisify(execFile)
@@ -17,6 +17,15 @@ const browserExecutables = [
   /^\/usr\/lib\/firefox\/firefox$/,
 ]
 const agentExecutable = /^(?:codex(?:-code-mode|-linux-sandbox)?|claude)(?:\.exe)?$/
+
+export class LocalClientUnavailableError extends Error {
+  readonly code = LOCAL_CLIENT_UNAVAILABLE
+
+  constructor(options?: ErrorOptions) {
+    super('Could not verify the local browser connection. Try again in a moment.', options)
+    this.name = 'LocalClientUnavailableError'
+  }
+}
 
 function agentCommand(executable: string, arguments_: readonly string[]): boolean {
   const commands = [executable, ...arguments_.slice(0, 2)]
@@ -67,10 +76,10 @@ async function clientProcess(pid: number): Promise<ClientProcess> {
     inspectSockets('/bin/ps', ['eww', '-p', String(pid), '-o', 'args='],
       { timeout: 2_000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8', env: { LC_ALL: 'C' } })
       // The environment can contain credentials; discard command error output.
-      .catch(() => { throw new Error('Local client process inspection failed.') }),
+      .catch(() => { throw new LocalClientUnavailableError() }),
   ])
   const fields = metadata.stdout.trim().match(/^(\d+)\s+([\s\S]+)$/)
-  if (!fields) throw new Error('The local client process exited during inspection.')
+  if (!fields) throw new LocalClientUnavailableError()
   return {
     parent: Number(fields[1]), executable: fields[2], arguments: command.stdout.trim().split(/\s+/),
     credential: hasAppCredential(command.stdout.split(/\s+/)), hidden: false,
@@ -121,18 +130,18 @@ async function linuxClient(remoteAddress: string, remotePort: number,
       timeout: 2_000, maxBuffer: 64 * 1024, encoding: 'utf8', env: { LC_ALL: 'C' },
     })
   const rows = stdout.trim().split('\n').filter(Boolean)
-  if (rows.length !== 1 || !/\bcgroup:\S+/.test(rows[0]!)
-    || /(?:^|\/)graphql-native-[0-9a-f-]{36}(?:\/|\s|$)/.test(rows[0]!)) return false
+  if (rows.length !== 1 || !/\bcgroup:\S+/.test(rows[0]!)) throw new LocalClientUnavailableError()
+  if (/(?:^|\/)graphql-native-[0-9a-f-]{36}(?:\/|\s|$)/.test(rows[0]!)) return false
   let pids = [...new Set([...rows[0]!.matchAll(/\bpid=(\d+)/g)].map(match => Number(match[1])))]
   if (!pids.length) {
     // Sandboxed browser network processes hide their FDs. Inspect the kernel's
     // entire socket cgroup so an agent in that boundary still prevents human access.
     const cgroup = rows[0]!.match(/\bcgroup:(\/\S*)/)?.[1]
-    if (!cgroup || cgroup.split('/').includes('..')) return false
+    if (!cgroup || cgroup.split('/').includes('..')) throw new LocalClientUnavailableError()
     const members = await readFile(`/sys/fs/cgroup${cgroup}/cgroup.procs`, 'utf8')
     pids = members.trim().split(/\s+/).map(Number).filter(pid => Number.isInteger(pid) && pid > 0)
   }
-  if (!pids.length) return false
+  if (!pids.length) throw new LocalClientUnavailableError()
   return !(await Promise.all(pids.map(pid => agentAncestor(pid, parents)))).some(Boolean)
 }
 
@@ -153,7 +162,7 @@ async function macClient(remoteAddress: string, remotePort: number,
     if (field.startsWith('p')) pid = Number(field.slice(1))
     if (field === `n${connection}` && pid !== undefined) pids.add(pid)
   }
-  if (!pids.size) return false
+  if (!pids.size) throw new LocalClientUnavailableError()
   return !(await Promise.all([...pids].map(pid => agentAncestor(pid, parents)))).some(Boolean)
 }
 
@@ -185,8 +194,11 @@ async function attributeClient(socket: ClientSocket): Promise<boolean> {
     if (process.platform === 'linux') return await linuxClient(remoteAddress, remotePort!, localAddress, localPort!, parents)
     return await macClient(remoteAddress, remotePort!, localAddress, localPort!, parents)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'EACCES') {
-      return false
+    if (error instanceof LocalClientUnavailableError) throw error
+    // OS lookups can time out or race a closing socket/process. They do not
+    // establish either human access or an agent denial.
+    if (error instanceof Error && ('code' in error || 'killed' in error || 'signal' in error)) {
+      throw new LocalClientUnavailableError({ cause: error })
     }
     throw error
   }
@@ -208,5 +220,17 @@ export async function localHumanProxyRequest(request: IncomingMessage, response:
     const error: ApiErrorResponse = { error: { code: 'LOCAL_HUMAN_REQUIRED',
       message: 'Agent processes require an application credential.' } }
     response.end(JSON.stringify(error))
-  } catch (error) { next(error as Error) }
+  } catch (error) {
+    if (!(error instanceof LocalClientUnavailableError)) {
+      next(error as Error)
+      return
+    }
+    response.writeHead(503, {
+      'content-type': 'application/json', 'cache-control': 'no-store', 'retry-after': '1',
+    })
+    const body: ApiErrorResponse = { error: {
+      code: error.code, message: error.message, details: { retryable: true },
+    } }
+    response.end(JSON.stringify(body))
+  }
 }
