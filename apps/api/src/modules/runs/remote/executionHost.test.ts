@@ -98,7 +98,8 @@ describe('actual worker native-port adapter', () => {
         await f.host.startTurn(f.intent.operationId, 'original turn', `execution:${f.intent.executionId}`)
         await f.host.drain()
       }
-      const { bindingHash: _bindingHash, ...pins } = f.placement
+      const pins: Omit<typeof f.placement, 'bindingHash'> & { bindingHash?: string } = { ...f.placement }
+      delete pins.bindingHash
       const placement = scenario === 'changed-host' ? freezePlacement({ ...pins,
         hostRef: { kind: 'device', mainId: f.placement.hostRef.mainId, deviceId: randomUUID() } }) : f.placement
       const intent = deriveDispatch(placement, { executionId: 'reactivated', occurrenceId: null,
