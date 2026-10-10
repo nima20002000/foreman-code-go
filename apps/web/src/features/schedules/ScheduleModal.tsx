@@ -8,6 +8,8 @@ import {
   type ScheduleEditorStore, type ScheduleMode,
 } from './editorStore'
 import { useScheduleCommand, useWorkflowSchedule } from './queries'
+import { recordScheduleUndo } from './undo'
+import { useQueryClient } from '@tanstack/react-query'
 import { ScheduleLastAttempt } from './ScheduleLastAttempt'
 
 const modes: readonly { value: ScheduleMode; label: string }[] = [
@@ -21,6 +23,7 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
   const state = useStore(store)
   const query = useWorkflowSchedule(scope, state.open)
   const write = useScheduleCommand(scope)
+  const client = useQueryClient()
   const id = useId()
   const form = useRef<HTMLFormElement>(null)
   const draft = state.draft
@@ -59,8 +62,9 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
       if (conflict) return false
       const validated = buildScheduleCommand(scope, store.getState())
       if (validated.errors) { store.getState().setErrors(validated.errors); return false }
+      const previous = query.data?.schedule ?? null
       const result = await write.submit(validated.command)
-      if (result) store.getState().hide()
+      if (result) { recordScheduleUndo(scope, previous, result.value, client); store.getState().hide() }
       return !!result
     } catch {
       // TanStack retains the normalized error and original command, not this form.

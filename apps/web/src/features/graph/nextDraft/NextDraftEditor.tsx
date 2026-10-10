@@ -8,7 +8,7 @@ import { useLocalHumanAccessQuery } from '../../../shared/api/settingsExperience
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Inbox, Save, Undo2 } from 'lucide-react'
+import { Inbox, Redo2, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV3Schema, staysOnWorkflowBoard, sameAuthoredWorkflow, type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { ActionMenu, AgentFacts, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
@@ -39,6 +39,9 @@ import { BoardAgentSettings, NewBoardAgent } from '../../workflow-board/AgentCon
 import { AgentPickerPanel } from '../../workflow-board/AgentPickerPanel'
 import { WorkflowName, type WorkflowNameHandle } from '../../workflow-board/WorkflowName'
 import { WorkflowWorktreeField } from '../../workflow-board/WorkflowWorktreeField'
+import { announceBoardChange, boardScope, clearBoardRedo, describeDraftChange, pendingBoardAction, popBoardAction,
+  popBoardRedo, publishDraftDepth, pushDraftRedo, useBoardUndo } from '../../workflow-board/boardUndo'
+import { BoardUndoNotice } from '../../workflow-board/BoardUndoNotice'
 import { BoardAlerts, type BoardUpdateFailure } from '../../workflow-board/BoardAlerts'
 import { RemoveWorkflowButton } from '../../workflows/RemoveWorkflowButton'
 import { boardDraftContextKey, boardRunListKey } from '../../workflow-board/keys'
@@ -109,6 +112,10 @@ type Panel = 'workflow' | 'agents' | 'repeat' | null
 function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit: NextDraftEdit; updateFailures?: readonly BoardUpdateFailure[] }) {
   const graph = edit.graph, context = edit.context, board = useWorkflowBoard()
   const editIntent = useGraphEditIntent(draftKey, edit)
+  const undoScope = boardScope(graph.workspaceId, graph.id)
+  useLayoutEffect(() => { publishDraftDepth(undoScope, edit.history.length) }, [undoScope, edit.history.length])
+  const undoAction = useBoardUndo((state) => state.actions[undoScope]?.at(-1))
+  const redoCount = useBoardUndo((state) => state.redo[undoScope]?.length ?? 0)
   const guard = useContext(UnsavedChangesContext)
   const [panel, setPanel] = useState<Panel>(null)
   const settingsPanel = useRef<HTMLElement>(null)
@@ -183,7 +190,8 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
       }
       return next
     }); setMessage(undefined)
-  }, [draftKey, editIntent.locked])
+    clearBoardRedo(boardScope(graph.workspaceId, graph.id))
+  }, [draftKey, editIntent.locked, graph.workspaceId, graph.id])
   const persistLayout = layout.mutate
   const geometry = useCallback((changes: GraphGeometryChange[]) => {
     change((value) => applyGraphGeometry(value, changes))
@@ -352,6 +360,8 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   }
   const dirty = nextDraftDirty(edit)
   const needsSave = dirty || !context.draft.baseWorkflowVersionId
+  const canUndo = (dirty && edit.history.length > 0) || !!undoAction
+  const canRedo = (edit.future?.length ?? 0) > 0 || redoCount > 0
   const startReloadRequired = !!edit.startRejectedVersionId && edit.startRejectedVersionId === context.draft.baseWorkflowVersionId
   let preflightReason: string | undefined
   try {
@@ -374,11 +384,37 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   const requestSave = () => { runAfterSave.current = false; void prepare(() => stopAndSave()).catch(report) }
   const historyAction = (direction: 'undo' | 'redo') => {
     if (saveBusy || starting || editIntent.locked || board?.run) return
-    void prepare(() => {
+    void prepare(async () => {
       canvas.current?.flush()
       const store = useGraphDraftStore.getState()
-      if (direction === 'undo') store.undoNextDraft(draftKey)
-      else store.redoNextDraft(draftKey)
+      const current = store.nextDrafts[draftKey]
+      if (!current) return
+      // Settings saved straight to the server (schedule) interleave with draft steps in the order they happened.
+      if (direction === 'undo') {
+        const action = pendingBoardAction(undoScope, current.history.length)
+        if (action) {
+          await action.undo()
+          popBoardAction(undoScope, action)
+          announceBoardChange(undoScope, `Undid ${action.label}`)
+          return
+        }
+        const previous = current.history.at(-1)
+        if (!previous) return
+        store.undoNextDraft(draftKey)
+        pushDraftRedo(undoScope)
+        announceBoardChange(undoScope, `Undid ${describeDraftChange(previous, current.graph)}`)
+      } else {
+        const next = popBoardRedo(undoScope)
+        if (next?.kind === 'action') {
+          await next.action.redo()
+          announceBoardChange(undoScope, `Redid ${next.action.label}`)
+          return
+        }
+        const target = current.future?.at(-1)
+        if (!target) return
+        store.redoNextDraft(draftKey)
+        announceBoardChange(undoScope, `Redid ${describeDraftChange(current.graph, target.graph)}`)
+      }
       layout.mutate()
     }).catch(report)
   }
@@ -484,16 +520,18 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
             })} />
         </div>
         <div className="board-control-cluster">
-          {needsSave || edit.pending || editIntent.locked ? <Toolbar label="Draft actions">
-            {dirty ? <>
-              <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || !edit.history.length}
-                onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton>
-              <IconButton label="Discard changes" variant="ghost" disabled={saveBusy || starting} onClick={() => setConfirm('discard')}><Icon name="close" size={22} /></IconButton>
-            </> : null}
+          {needsSave || edit.pending || editIntent.locked || canUndo || canRedo ? <Toolbar label="Draft actions">
+            {canUndo ? <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked}
+              onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton> : null}
+            {canRedo ? <IconButton label="Redo" variant="ghost" disabled={saveBusy || starting || editIntent.locked}
+              onClick={() => historyAction('redo')}><Redo2 aria-hidden="true" size={16} /></IconButton> : null}
+            {dirty ? <IconButton label="Discard changes" variant="ghost" disabled={saveBusy || starting} onClick={() => setConfirm('discard')}><Icon name="close" size={22} /></IconButton> : null}
+            {needsSave || edit.pending || editIntent.locked ? <>
             {edit.pending ? <Button disabled={saveBusy || starting} onClick={requestSave}>Retry save</Button> : null}
             {editIntent.locked ? <Button disabled={saveBusy || starting || !!editIntent.storageError || stopBlocked} onClick={requestSave}>
               {affectedRuns.length ? 'Stop affected Runs and save' : 'Reconcile Save'}</Button>
               : <IconButton label="Save changes" disabled={saveBusy || starting || !!editIntent.storageError} onClick={requestSave}><Save aria-hidden="true" size={16} /></IconButton>}
+            </> : null}
           </Toolbar> : null}
         {board?.navigationControls}
         <Toolbar label="Workflow controls">
@@ -517,6 +555,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
         </Toolbar>
         </div>
       </header>
+      <BoardUndoNotice scope={undoScope} />
       <BoardAlerts scope={draftKey} hints={hints} validation={edit.validation} error={editIntent.mutation.error ?? undefined} updateFailures={updateFailures}
         pending={editIntent.mutation.isPending} openField={openSaveField} openIssue={(issue) => {
           if (issue.nodeId) openAgent(issue.nodeId)

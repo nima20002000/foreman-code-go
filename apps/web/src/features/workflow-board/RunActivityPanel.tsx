@@ -11,6 +11,7 @@ import { useProtectedAccessError } from '../../shared/api/useProtectedAccessErro
 import { CurrentRunDetails } from './RunDetails'
 import { readBoardRun, readBoardRuns, scopeForBoardRun } from './client'
 import { useWorkflowBoard } from './context'
+import { boardScope, useBoardUndo } from './boardUndo'
 
 import { boardRunListKey } from './keys'
 import { refreshFirstInspectionPage } from './inspect/queries'
@@ -124,9 +125,22 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     </section> : null}
   </>
   return <div className="workflow-board-run-panel" aria-label="Run activity" data-testid="board-run-activity">
+    <BoardChanges scope={boardScope(workspaceId, workflowId)} />
     {selected ? <>
       <Activities key={JSON.stringify(selected)} scope={selected} />
       <details className="board-run-more"><summary>Runs and Run details</summary>{runParts}</details>
     </> : runParts}
   </div>
+}
+
+/** Undo and redo steps taken on this Board in this session, newest first. */
+function BoardChanges({ scope }: { scope: string }) {
+  const changes = useBoardUndo((state) => state.changes[scope])
+  if (!changes?.length) return null
+  return <section className="board-activities board-changes" aria-label="Board changes"><header><h3>Board changes</h3></header>
+    <ol className="board-activities-list">{changes.map((change) => <li key={change.id} data-status="recorded">
+      <span className="board-activity-dot" aria-hidden="true" />
+      <time dateTime={change.at}>{new Date(change.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>
+      <div><p>{change.text}</p></div></li>)}</ol>
+  </section>
 }

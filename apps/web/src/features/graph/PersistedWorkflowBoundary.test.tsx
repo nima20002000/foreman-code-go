@@ -34,6 +34,8 @@ async function rename() {
   const name = screen.getByRole('textbox', { name: 'Workflow name' })
   await user.clear(name)
   await user.type(name, 'Renamed workflow{Enter}')
+  // A new name is applied only after the rename is confirmed.
+  await user.click(await screen.findByRole('button', { name: 'Rename' }))
   return user
 }
 

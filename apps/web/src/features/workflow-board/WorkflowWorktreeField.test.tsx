@@ -45,7 +45,7 @@ describe('workflow default worktree', () => {
     }
     renderWithRouter(<UnsavedChangesProvider><Field /></UnsavedChangesProvider>)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Default worktree' }))
+    await user.click(await screen.findByRole('button', { name: /^Worktree:/ }))
     const dialog = await screen.findByRole('dialog', { name: 'Default worktree' })
     const workspaceProject = await within(dialog).findByRole('button', { name: 'Use workspace project' })
     await waitFor(() => expect(workspaceProject).toBeEnabled())
@@ -56,7 +56,7 @@ describe('workflow default worktree', () => {
     expect(within(dialog).getByText(fixture.location.binding.canonicalProjectRoot)).toBeVisible()
     await user.click(within(dialog).getByRole('button', { name: 'Apply worktree' }))
     expect(change).toHaveBeenCalledExactlyOnceWith({ rootBinding: fixture.rootBinding, branchPrefix: 'foreman/site/review' })
-    expect(screen.getByText('Draft')).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Worktree:/ })).toHaveAccessibleName(/\(unsaved\)$/)
     expect(screen.queryByRole('dialog', { name: 'Default worktree' })).not.toBeInTheDocument()
   })
 
@@ -69,7 +69,7 @@ describe('workflow default worktree', () => {
     renderWithRouter(<WorkflowWorktreeField workspaceId="workspace-1" value={{ rootBinding: fixture.rootBinding }}
       savedValue={{ rootBinding: fixture.rootBinding }} onChange={change} />)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Default worktree' }))
+    await user.click(await screen.findByRole('button', { name: /^Worktree:/ }))
     const select = await screen.findByRole('combobox', { name: 'Approved source root' })
     expect(select).toHaveValue('retained')
     expect(screen.getByText(/configured source is unavailable/)).toBeVisible()
@@ -91,7 +91,7 @@ describe('workflow default worktree', () => {
     }
     renderWithRouter(<UnsavedChangesProvider><Field /></UnsavedChangesProvider>)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Default worktree' }))
+    await user.click(await screen.findByRole('button', { name: /^Worktree:/ }))
     await user.type(screen.getByRole('textbox', { name: 'Agent branch prefix' }), 'foreman/local')
     const dialog = screen.getByRole('dialog', { name: 'Default worktree' })
     fireEvent.pointerDown(dialog)
@@ -111,7 +111,7 @@ describe('workflow default worktree', () => {
     renderWithRouter(<WorkflowWorktreeField workspaceId="workspace-1" value={{ rootBinding: fixture.rootBinding }}
       onChange={change} />)
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Default worktree' }))
+    await user.click(await screen.findByRole('button', { name: /^Worktree:/ }))
     await user.type(screen.getByRole('textbox', { name: 'Agent branch prefix' }), 'foreman/../bad')
     await user.click(screen.getByRole('button', { name: 'Apply worktree' }))
     expect(await screen.findByText('Use a valid foreman/ Agent branch prefix.')).toBeVisible()

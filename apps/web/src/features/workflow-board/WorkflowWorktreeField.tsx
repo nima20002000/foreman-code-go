@@ -22,12 +22,12 @@ export function WorkflowWorktreeField({ workspaceId, value, savedValue, disabled
   const project = useWorkspaceRepository(workspaceId)
   const options = choices.isError ? [] : choices.data ?? []
   const draft = !sameWorkflowValue(value, savedValue)
+  const label = worktreeLabel(value, options)
+  // Plain text under the workflow name; the Board's Save state already covers an unsaved change.
   return <div className="workflow-worktree-field">
-    <Button ref={trigger} size="sm" variant="secondary" disabled={disabled} aria-label="Default worktree"
-      aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}>
-      <span>Default worktree</span><span>{worktreeLabel(value, options)}</span>
-    </Button>
-    <span className="workflow-worktree-stage" role="status">{draft ? 'Draft' : 'Saved'}</span>
+    <button ref={trigger} type="button" className="workflow-worktree-link" disabled={disabled}
+      aria-label={`Worktree: ${label}${draft ? ' (unsaved)' : ''}`} aria-haspopup="dialog" aria-expanded={open}
+      onClick={() => setOpen(true)}>Worktree: <span>{label}</span>{draft ? <em> · unsaved</em> : null}</button>
     {open && <WorktreeEditor key={JSON.stringify(value ?? null)} value={value} options={options}
         optionsState={choices.isError ? 'unavailable' : choices.isPending ? 'loading' : 'ready'}
         workspaceProject={project.isError || project.data?.state !== 'ready' ? undefined : project.data.rootBinding}
@@ -72,7 +72,7 @@ function WorktreeEditor({ value, options, optionsState, workspaceProject, disabl
     <div className="worktree-editor">
     <Select label="Approved source root" value={selection} disabled={disabled}
       options={[
-        { value: 'workspace', label: 'Use workspace placement' },
+        { value: 'workspace', label: 'Use workspace default' },
         ...(rootBinding && selected < 0 ? [{ value: 'retained', label: 'Configured source — retained', disabled: true }] : []),
         ...options.map((option, index) => ({ value: String(index), label: option.label,
           disabled: Boolean(option.unavailableReason) })),

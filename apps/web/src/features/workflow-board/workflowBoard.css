@@ -53,11 +53,18 @@
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); pointer-events: none;
 }
 .board-topbar > * { pointer-events: auto; }
-.board-title { display: flex; min-width: 0; flex: 1; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+/* Workflow name, with its worktree as a quiet line underneath. */
+.board-title { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 0; }
 .workflow-worktree-field { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
-.workflow-worktree-field button { display: grid; min-width: 0; max-width: 22rem; text-align: start; }
-.workflow-worktree-field button span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-worktree-stage { color: var(--text-muted); font-size: var(--text-xs); }
+.workflow-worktree-link {
+  max-width: min(28rem, 60vw); padding: 0; overflow: hidden; border: 0; background: none; color: var(--text-muted);
+  font: var(--type-caption); text-align: start; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+.workflow-worktree-link span { color: var(--text); }
+.workflow-worktree-link em { font-style: normal; color: var(--warning); }
+.workflow-worktree-link:hover:not(:disabled) span { text-decoration: underline; text-underline-offset: 2px; }
+.workflow-worktree-link:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px; border-radius: 2px; }
+.workflow-worktree-link:disabled { cursor: default; opacity: 0.7; }
 .worktree-editor, .agent-worktree-fields { display: grid; gap: var(--space-2); }
 .worktree-editor-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
 .board-title h2 { margin: 0; overflow: hidden; color: var(--text-strong); font: var(--type-heading); text-overflow: ellipsis; white-space: nowrap; }
@@ -164,3 +171,12 @@
 .board-run-more { border-top: 1px solid var(--border); padding-top: var(--space-3); }
 .board-run-more > summary { cursor: pointer; color: var(--text-muted); font: var(--type-caption); }
 .board-run-more[open] > summary { margin-bottom: var(--space-3); }
+
+.board-undo-notice {
+  position: fixed; z-index: 950; right: var(--space-5, 20px); bottom: var(--space-5, 20px); display: flex; align-items: center; gap: var(--space-2);
+  max-width: min(420px, calc(100vw - 32px)); padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface-raised);
+  box-shadow: var(--shadow-popover); color: var(--text); font: var(--type-body); animation: n-appear 160ms ease;
+}
+.board-undo-notice > svg { flex: none; color: var(--text-muted); }
+.board-undo-notice > span { min-width: 0; overflow-wrap: anywhere; }

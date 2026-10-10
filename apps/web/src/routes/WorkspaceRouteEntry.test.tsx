@@ -188,6 +188,7 @@ describe('WorkspaceRouteEntry integration', () => {
     const name = screen.getByRole('textbox', { name: 'Workflow name' })
     await user.clear(name)
     await user.type(name, 'Activities persisted workflow{Enter}')
+    await user.click(await screen.findByRole('button', { name: 'Rename' }))
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByText('Saved.')).toBeVisible()
     first.unmount()
