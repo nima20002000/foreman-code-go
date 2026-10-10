@@ -52,9 +52,10 @@ const subscribeNetwork = (notify: () => void) => {
 const isOnline = () => typeof navigator === 'undefined' || navigator.onLine
 export const agentChatStateKey = (context: AgentChatContext, generation = sessionGeneration()) => ['agent-chat', generation, agentChatContextKey(context), 'state'] as const
 
-/** Network/invalid-success/5xx failures may have happened AFTER durable admission. No automatic retry. */
+/** Access can be revoked during response readback after the command was accepted. */
 export function commandMayHaveBeenAccepted(error: unknown): boolean {
-  return !ApiError.is(error) || error.status === 0 || error.status >= 500 || error.code === 'INVALID_RESPONSE'
+  return !ApiError.is(error) || isApiAccessError(error)
+    || error.status === 0 || error.status >= 500 || error.code === 'INVALID_RESPONSE'
 }
 
 export function useAgentChat(inputContext: AgentChatContext) {
