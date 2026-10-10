@@ -11,6 +11,7 @@ import type { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { workflowSettlementFixture } from './helpers/workflowSettlementFixture.js'
 import { graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { assertWorkflowFailureReadback } from './helpers/workflowFailureReadback.js'
+import { hasWorkDirectionWait } from '../src/modules/runs/workflowLifecycle.js'
 
 // Native terminals and physical closure are explicit test inputs. Authenticated
 // Save/MCP reads, canonical publication, SQL transactions and settlement execute.
@@ -32,7 +33,7 @@ const handoffs = (budget: number) => (graph: WorkflowDefinitionV3): WorkflowDefi
 })
 
 async function withFixture(configure: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3,
-  work: (fixture: Fixture) => Promise<void>, form: 'sequential' | 'parallel' = 'sequential') {
+  work: (fixture: Fixture) => Promise<void>, form: 'single' | 'sequential' | 'parallel' = 'sequential') {
   await nim2691TaskDatabase(async (pool, directory) => {
     await applyApplicationMigrations(pool)
     const db = { pool, directory, schema: 'public', close: async () => undefined } as
@@ -65,6 +66,95 @@ function runtime(f: Fixture, observe: (execution: HarnessExecution) => Promise<v
 }
 
 describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement and execution capacity', () => {
+  it.each(['none', 'accepted', 'checkpoint'] as const)(
+    'finalizes a sole finish result without findings (restart point: %s)', async (restartAt) => {
+      await withFixture((graph) => ({ ...handoffs(1)(graph),
+        executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+      }), async (f) => {
+        const saver = new MemorySaver()
+        const before = await f.readRun()
+        let launches = 0
+        const execute = runtime(f, async (execution) => {
+          if (execution.state === 'completed') return
+          launches++
+          await f.finish(execution.id, finish())
+        }, saver)
+        if (restartAt === 'accepted') {
+          await acceptedActivation(f, await f.store.ensureWorkEntry(), finish())
+          await f.restart()
+        }
+        if (restartAt === 'checkpoint') {
+          const crash = new Error('Run completion unavailable after the graph checkpoint')
+          f.store.completeWorkRun = async () => { throw crash }
+          await expect(execute()).rejects.toBe(crash)
+          expect(await f.readRun()).toMatchObject({ executionState: 'running', outcome: 'pending' })
+          await f.restart()
+        }
+        await execute()
+        const completed = await f.readRun()
+        expect(completed).toMatchObject({ executionState: 'completed', outcome: 'succeeded',
+          workflowVersionId: before.workflowVersionId, startedAt: before.startedAt,
+          result: { outcome: 'succeeded', output: finish().output },
+        })
+        expect(launches).toBe(restartAt === 'accepted' ? 0 : 1)
+        const executions = await f.db.pool.query<{ record: HarnessExecution; accepted: boolean }>(
+          'select record,accepted from harness_executions where run_id=$1', [f.run.id])
+        expect(executions.rows).toHaveLength(1)
+        expect(executions.rows[0]).toMatchObject({ accepted: true,
+          record: { state: 'completed', result: finish() },
+        })
+        const read = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current, { protocolVersion: 1, scope: f.scope })
+        expect(read.result?.isError, JSON.stringify(read)).not.toBe(true)
+        const persisted = CanonicalRunGraphCurrentSchema.parse(graphRpcValue(read.result))
+        expect(persisted.state.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+        expect(persisted.state.executions).toHaveLength(1)
+        const denied = await f.credential([{ actions: ['workflows:read'],
+          scope: { workspaceIds: [f.run.workspaceId] },
+        }])
+        const denial = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current,
+          { protocolVersion: 1, scope: f.scope }, denied.token)
+        expect(denial.result?.isError).toBe(true)
+        await f.restart()
+        expect(await f.store.completeWorkRun()).toBe('completed')
+        expect(await f.readRun()).toEqual(completed)
+        expect(await hasWorkDirectionWait(f.owner)).toBe(false)
+      }, 'single')
+    }, timeout,
+  )
+
+  it('preserves a sole finish result with findings as a direction wait across restart', async () => {
+    await withFixture((graph) => ({ ...handoffs(1)(graph),
+      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+    }), async (f) => {
+      const result: ExecutionResult = { outcome: 'succeeded', output: {
+        routing: { kind: 'finish' }, data: { latestDeliverable: { revision: 1 },
+          remainingFindings: ['Full verification remains pending', 'Worktree retained for the orchestrator'],
+        },
+      } }
+      let launches = 0
+      const execute = runtime(f, async (execution) => {
+        if (execution.state === 'completed') return
+        launches++
+        await f.finish(execution.id, result)
+      })
+      await execute()
+      const waiting = await f.readRun()
+      expect(waiting).toMatchObject({ executionState: 'waiting', outcome: 'pending' })
+      expect(await hasWorkDirectionWait(f.owner)).toBe(true)
+      await f.restart()
+      expect(await hasWorkDirectionWait(f.owner)).toBe(true)
+      await execute()
+      expect(await f.readRun()).toEqual(waiting)
+      expect(await f.store.completeWorkRun()).toBe('needs_direction')
+      expect(launches).toBe(1)
+      const read = await f.call(CANONICAL_RUN_GRAPH_MCP_TOOLS.current, { protocolVersion: 1, scope: f.scope })
+      expect(read.result?.isError, JSON.stringify(read)).not.toBe(true)
+      const persisted = CanonicalRunGraphCurrentSchema.parse(graphRpcValue(read.result))
+      expect(persisted.state.run).toMatchObject({ executionState: 'waiting', outcome: 'pending' })
+      expect(persisted.state.executions).toHaveLength(1)
+    }, 'single')
+  }, timeout)
+
   it.each([false, true])('settles a nonretryable handoff failure once (restart before acceptance: %s)', async (restart) => {
     await withFixture(handoffs(2), async (f) => {
       let launches = 0
