@@ -172,15 +172,19 @@ it('prepares an approved unpublished commit on a fresh worker using the transfer
   await reader.open(manifest)
   const binding = { ...f.binding, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   const materializer = new PrivateSourceMaterializer(reader, async () => {}, undefined, f.ports)
-  const receipt = await materializer.prepare({ manifest, binding, attempt: f.attempt(), sharedWritableTree: true,
-    worktree: { repository: 'octo/site', branch: 'foreman/review/unpublished' } })
+  const input = { manifest, binding, attempt: f.attempt(), sharedWritableTree: true as const,
+    worktree: { repository: 'octo/site', branch: 'foreman/review/unpublished' } }
+  const receipt = await materializer.prepare(input)
   await reader.complete()
   expect(receipt.worktree?.commit).toBe(commit)
+  expect(receipt.worktree?.startCommit).toBeUndefined()
   expect(git(sourceWorkingTreePath(receipt), 'rev-parse', 'HEAD')).toBe(commit)
   expect(await readFile(join(sourceWorkingTreePath(receipt), 'src/app.ts'), 'utf8')).toBe('unpublished source\n')
   expect(git(f.origin, 'rev-parse', 'HEAD')).toBe(f.commit)
   expect((await f.ports.git(['cat-file', '-e', ancestor],
     { cwd: f.ports.cloneDirectory('octo/site'), signal })).code).not.toBe(0)
+  await materializer.verify(receipt, { binding, attempt: input.attempt })
+  expect(await materializer.prepare(input)).toEqual(receipt)
 })
 
 

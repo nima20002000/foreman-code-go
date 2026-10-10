@@ -186,7 +186,13 @@ export async function prepareAgentWorktree(input: {
   const commit = manifest.git?.commit
   if (!commit) throw new SourceError('SOURCE_WORKTREE_INVALID', 'Only Git sources can become agent worktrees.')
   const clone = await ensureCommit(input.ports, input.request.repository, commit, signal)
-  const startCommit = await latestDefaultCommit(input.ports, clone, signal)
+  const defaultCommit = await latestDefaultCommit(input.ports, clone, signal)
+  // Transferred approvals omit parent history; walk only the fetched default branch.
+  const history = await input.ports.git(['rev-list', defaultCommit], { cwd: clone, signal })
+  if (history.code !== 0) {
+    throw new SourceError('SOURCE_WORKTREE_FAILED', 'The default branch history could not be read.')
+  }
+  const startCommit = history.stdout.split('\n').includes(commit) ? defaultCommit : commit
   const id = randomUUID()
   await mkdir(anchored(root, id), { mode: 0o700 })
   const path = join(binding.canonicalPath, id, 'tree')
