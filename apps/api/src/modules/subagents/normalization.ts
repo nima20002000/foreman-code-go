@@ -33,7 +33,16 @@ function state(value: unknown): RunSubagentTool['status'] {
     : ['interrupted', 'stopped', 'canceled'].includes(String(value)) ? 'canceled'
       : ['running', 'inProgress', 'busy'].includes(String(value)) ? 'running' : value === 'pending' ? 'pending' : 'unknown'
 }
-export function isChildCandidate(event: HarnessNativeEvent) {
+const codexChildMethods = ['turn/started', 'turn/completed', 'turn.started', 'turn.completed', 'item/started', 'item/completed', 'item.started', 'item.completed']
+/** Queue only evidence a later child discovery could still claim; retrying anything else holds the Run lock for nothing. */
+export function isChildCandidate(context: SubagentProjectionContext, event: HarnessNativeEvent, children: readonly RunSubagent[]) {
+  if (context.provider === 'codex') {
+    const unlinked = event.type === 'native.unlinked_notification'
+    const method = unlinked ? String(event.payload.method) : event.type
+    const threadId = text(object(unlinked ? event.payload.params : event.payload).threadId)
+    return codexChildMethods.includes(method) && threadId !== undefined && threadId !== context.parentSessionId
+      && !children.some(child => nativeChild(child) === threadId)
+  }
   return event.type === 'native.unlinked_notification' || Boolean(event.payload.parentToolUseId) || Boolean(event.payload.subagentNativeId)
     || event.type === 'claude.subagent' || event.type === 'claude.task'
 }
@@ -55,7 +64,9 @@ export function normalizeSubagentEvent(context: SubagentProjectionContext, event
       const childId = item.agentThreadId as string
       if (childId === context.parentSessionId || childId === sessionId) return []
       return [{ kind: 'discover', childId, parentSessionId: sessionId!, nativeMode: 'codex-multi-agent-v2',
-        status: item.kind === 'started' ? event.connectionId?.startsWith('child-history-') ? 'unknown' : 'running' : item.kind === 'completed' ? 'completed' : item.kind === 'interrupted' ? 'canceled' : 'unknown',
+        // interacted: the parent sent the child new input, so it is working again.
+        status: item.kind === 'started' || item.kind === 'interacted' ? event.connectionId?.startsWith('child-history-') ? 'unknown' : 'running'
+          : item.kind === 'completed' ? 'completed' : item.kind === 'interrupted' ? 'canceled' : 'unknown',
         ...(text(item.agentPath) ? { agentPath: item.agentPath as string } : {}) }]
     }
     if (knownParent && item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent' && Array.isArray(item.receiverThreadIds)) {

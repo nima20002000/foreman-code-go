@@ -25,7 +25,7 @@ export async function readProjectionContext(sql: GraphSqlClient, executionId: st
     profile: { deviceId: row.placement?.hostRef?.deviceId ?? row.placement?.hostRef?.mainId ?? row.main_id,
       harnessInstanceId: row.placement?.payload?.instanceId ?? row.configuration_id, providerVersion: session.data.providerVersion } }
 }
-export async function projectSubagentEvent(sql: GraphSqlClient, context: SubagentProjectionContext, input: unknown) {
+export async function projectSubagentEvent(sql: GraphSqlClient, context: SubagentProjectionContext, input: unknown, pending = false) {
   const event = HarnessNativeEventSchema.parse(input)
   if (context.provider === 'opencode') return
   const payload = event.payload
@@ -49,9 +49,9 @@ export async function projectSubagentEvent(sql: GraphSqlClient, context: Subagen
     ? children.filter(child => !['completed', 'failed', 'canceled'].includes(child.status)).map(child => ({ kind: 'status' as const, childId: (child.native.childSessionId ?? child.native.agentId)!, status: 'unknown' as const }))
     : normalizeSubagentEvent(context, event, children, aliases)
   await applySubagentChanges(sql, context, HarnessNativeEventSchema.parse(input), changes)
-  if (!changes.length && isChildCandidate(event)) {
+  if (!changes.length && isChildCandidate(context, event, children)) {
     await sql.query('insert into run_subagent_pending_events(execution_id,sequence) values($1,$2) on conflict do nothing', [event.executionId, event.sequence])
-  } else if (changes.length) {
+  } else if (changes.length || pending) {
     await sql.query('delete from run_subagent_pending_events where execution_id=$1 and sequence=$2', [event.executionId, event.sequence])
   }
 }
@@ -74,9 +74,11 @@ export async function reconcileRunSubagents(sql: GraphSqlClient, runId: string):
   const pending = (await sql.query<{ execution_id: string; sequence: number; record: unknown }>(`select p.execution_id,p.sequence,n.record
     from run_subagent_pending_events p join harness_native_events n using(execution_id,sequence)
     join harness_executions e on e.id=p.execution_id where e.run_id=$1 order by p.sequence limit 500`, [runId])).rows
+  const contexts = new Map<string, Promise<SubagentProjectionContext | undefined>>()
   for (const row of pending) {
-    const context = await readProjectionContext(sql, row.execution_id)
-    if (context) await projectSubagentEvent(sql, context, { ...row.record as Record<string, unknown>, sequence: row.sequence })
+    if (!contexts.has(row.execution_id)) contexts.set(row.execution_id, readProjectionContext(sql, row.execution_id))
+    const context = await contexts.get(row.execution_id)
+    if (context) await projectSubagentEvent(sql, context, { ...row.record as Record<string, unknown>, sequence: row.sequence }, true)
   }
   const remaining = (await sql.query<{ pending: boolean }>(`select exists(select 1 from run_subagent_projection_queue q join harness_executions e on e.id=q.execution_id
     where e.run_id=$1 and q.projected_sequence<q.latest_sequence) as pending`, [runId])).rows[0]!.pending

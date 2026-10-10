@@ -2,7 +2,7 @@ import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import { completedNativeAssistantMessage, nativeAssistantText } from '../conversations/operatorText.js'
 import { createClaudeEventNormalizer } from '../harnesses/claudeSdk/normalization.js'
 import { describe, expect, it } from 'vitest'
-import { normalizeSubagentEvent, sanitizeSubagentValue } from './normalization.js'
+import { isChildCandidate, normalizeSubagentEvent, sanitizeSubagentValue } from './normalization.js'
 import type { SubagentProjectionContext } from './types.js'
 
 export const context: SubagentProjectionContext = { workspaceId: 'w', workflowId: 'wf', workflowVersionId: 'v', runId: 'r',
@@ -14,6 +14,19 @@ describe('child evidence normalization', () => {
   it('discovers one child from subAgentActivity with stable parent proof', () => {
     const changes = normalizeSubagentEvent(context, event('item.completed', { threadId: 'root', item: { type: 'subAgentActivity', id: 'spawn', kind: 'started', agentThreadId: 'child', agentPath: '/root/worker' } }), [])
     expect(changes).toMatchObject([{ kind: 'discover', childId: 'child', parentSessionId: 'root', nativeMode: 'codex-multi-agent-v2', status: 'running' }])
+  })
+  it('keeps a child running when its parent sends it more input', () => {
+    const changes = normalizeSubagentEvent(context, event('item.completed', { threadId: 'root', item: { type: 'subAgentActivity', id: 'send', kind: 'interacted', agentThreadId: 'child', agentPath: '/root/worker' } }), [])
+    expect(changes).toMatchObject([{ kind: 'discover', childId: 'child', status: 'running' }])
+  })
+  it('queues only Codex child evidence that a later discovery could still claim', () => {
+    const known = { native: { childSessionId: 'child' } } as RunSubagent
+    const note = (method: string, threadId: string) => event('native.unlinked_notification', { method, params: { threadId, item: { id: 'i', type: 'reasoning' } } })
+    expect(isChildCandidate(context, note('item/completed', 'unseen'), [known])).toBe(true)
+    expect(isChildCandidate(context, note('item/completed', 'child'), [known])).toBe(false)
+    expect(isChildCandidate(context, note('item/agentMessage/delta', 'unseen'), [known])).toBe(false)
+    expect(isChildCandidate(context, note('thread/tokenUsage/updated', 'unseen'), [known])).toBe(false)
+    expect(isChildCandidate(context, note('item/completed', 'root'), [known])).toBe(false)
   })
   it('quarantines foreign notifications until structured parent proof exists', () => {
     expect(normalizeSubagentEvent(context, event('native.unlinked_notification', { threadId: 'foreign', method: 'item/completed', params: { threadId: 'foreign', item: { id: 'm', type: 'agentMessage', text: 'CHILD ONLY' } } }), [])).toEqual([])
