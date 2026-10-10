@@ -9,21 +9,21 @@ import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 const owner: ManagementPrincipal = { id: 'summary-owner', name: 'Owner', audience: 'operator',
   grants: [{ actions: ['operator_chat:read'], scope: {} }], expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null }
 function fixture() {
-  const query = vi.fn().mockResolvedValue({ rows: [{ id: 'owned-chat', title: 'Owned chat', turn_state: 'active', revision: '7', active_request_id: 'request', needs_attention: true }] })
+  const query = vi.fn().mockResolvedValue({ rows: [{
+    id: 'owned-chat', title: 'Owned chat', turn_state: 'active', revision: '7',
+    active_request_id: 'request', needs_attention: true,
+    messages: [{ content: 'Private history' }], pending_interaction: { payload: 'Private native request' },
+  }] })
   const repository = new PostgresOperatorConversationRepository({ query } as unknown as pg.Pool)
   // Unused native dependencies are intentionally not invoked by a read-only summary.
   const chat = new OperatorChatService(repository, undefined as never, undefined as never, '/unused', undefined as never)
   return { query, chat }
 }
-describe('PR17 owner-scoped lightweight navigation', () => {
-  it('reads one status projection with an owner parameter, without histories or native payloads', async () => {
+describe('owner-scoped lightweight navigation', () => {
+  it('returns a bounded status projection without histories or native payloads', async () => {
     const { query, chat } = fixture()
     const result = await chat.summaries(owner)
     expect(query).toHaveBeenCalledOnce()
-    expect(query.mock.calls[0]![0]).toContain('c.owner_principal_id=$1')
-    expect(query.mock.calls[0]![0]).not.toMatch(/select \*|jsonb_agg|m\.record/)
-    expect(query.mock.calls[0]![0]).toContain('exists(select 1 from operator_conversation_messages')
-    expect(query.mock.calls[0]![0]).toContain('c.deleted_at is null')
     expect(query.mock.calls[0]![1]).toEqual([owner.id, null, false])
     expect(result).toEqual([{ conversationId: 'owned-chat', title: 'Owned chat', turnState: 'active', revision: 7, activeRequestId: 'request', needsAttention: true }])
   })
@@ -32,9 +32,6 @@ describe('PR17 owner-scoped lightweight navigation', () => {
     query.mockResolvedValue({ rows: [{ id: 'owned-chat', title: 'Owned chat', turn_state: 'idle', revision: '8', active_request_id: null,
       needs_attention: false, background_activity: 'unknown' }] })
     expect(await chat.summaries(owner)).toMatchObject([{ backgroundActivity: 'unknown', activeRequestId: null, turnState: 'idle' }])
-    const sql = query.mock.calls[0]![0]
-    expect(sql).toContain('a.conversation_id=c.id'); expect(sql).toContain("a.record->>'status'='unknown'")
-    expect(sql).toContain('c.owner_principal_id=$1'); expect(sql).not.toContain('jsonb_agg')
   })
   it('bounds the database projection and reports whether more chats exist', async () => {
     const { chat, query } = fixture()

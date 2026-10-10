@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto'
 import * as nativeRetention from '../src/modules/harnesses/installedNativeQualificationRetention.js'
 import { ProductionDeviceRuntime } from '../src/modules/devices/productionRuntime.js'
 import type { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
+import { RunWorktrees } from '../src/modules/runs/runWorktrees.js'
 
 vi.mock('../src/app.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/app.js')>()
@@ -64,6 +65,7 @@ it('production recovery drains every delivery page and coalesces concurrent tick
   const report = vi.fn()
   await Promise.all([production.reconcile(report), production.reconcile(report)])
   expect(recover.mock.calls).toEqual([[{ limit: 100 }], [{ limit: 100, afterId: 'next-interaction' }]])
+  expect(RunWorktrees.prototype.cleanup).toHaveBeenCalledExactlyOnceWith(report)
   expect(report).not.toHaveBeenCalled()
 })
 
@@ -91,6 +93,7 @@ beforeEach(() => {
   vi.spyOn(InteractionService.prototype, 'get').mockImplementation(get)
   vi.spyOn(InteractionService.prototype, 'respond').mockImplementation(respond)
   vi.spyOn(PostgresCommandCoordinator.prototype, 'recordDenied').mockResolvedValue(undefined)
+  vi.spyOn(RunWorktrees.prototype, 'cleanup').mockResolvedValue(undefined)
   vi.spyOn(PostgresAccessService.prototype, 'authenticate').mockImplementation(async (token, audience) => {
     if (token !== 'test-operator' || principal.audience !== audience) throw new DomainError('AUTH_REQUIRED', 'Authentication required.', 401)
     return principal

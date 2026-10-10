@@ -1479,6 +1479,9 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     expect(await repository.activity.append(conversation.id, 'activity-request', started)).toBeUndefined()
     expect(await repository.activity.append(conversation.id, 'activity-request', completed)).toBeUndefined()
     const second = await repository.activity.append(conversation.id, 'activity-request', { ...started, id: 'native-command', kind: 'tool' })
+    expect(await chat.summaries(owner)).toEqual([
+      expect.objectContaining({ conversationId: conversation.id, backgroundActivity: 'running' }),
+    ])
     const page = await chat.activityPage(conversation.id, owner, { limit: 1 })
     expect(page.nextCursor).toBe(second?.activity.sequence)
     const older = await chat.activityPage(conversation.id, owner, { limit: 1, before: page.nextCursor! })
@@ -1489,8 +1492,12 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     const final = await chat.get(conversation.id, owner)
     expect(final.messages[0]?.requestId).toBe('activity-request')
     expect(final.activities?.find((entry) => entry.id === 'native-command')?.status).toBe('unknown')
+    expect(await chat.summaries(owner)).toEqual([
+      expect.objectContaining({ conversationId: conversation.id, backgroundActivity: 'unknown' }),
+    ])
     expect(await repository.activity.append(conversation.id, 'activity-request', completed)).toBeUndefined()
     const other = (await access.issue({ name: 'activity other owner', audience: 'operator', grants: owner.grants, expiresAt: new Date(Date.now() + 600_000) })).principal
+    expect(await chat.summaries(other)).toEqual([])
     await expect(chat.activityPage(conversation.id, other, {})).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
   })
 
@@ -1536,6 +1543,7 @@ describe.skipIf(!connectionString)('Operator chat persistence and native binding
     await waitFor(async () => (await chat.get(conversation.id, owner)).turnState === 'idle')
     expect(await chat.summaries(owner)).toEqual([expect.objectContaining({ conversationId: conversation.id, title: 'A named topic' })])
     const other = (await access.issue({ name: 'other', audience: 'operator', grants: owner.grants, expiresAt: new Date(Date.now() + 600_000) })).principal
+    expect(await chat.summaries(other)).toEqual([])
     await expect(chat.setDeleted(conversation.id, other, true)).rejects.toMatchObject({ code: 'CONVERSATION_NOT_FOUND' })
     await chat.setDeleted(conversation.id, owner, true)
     expect(await chat.summaries(owner)).toEqual([])

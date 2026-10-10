@@ -137,20 +137,34 @@ describe('actual installed worker mount availability, no physical acceptance', (
       await rm(stateDirectory, { recursive: true, force: true })
     }
   })
-  it('keeps native/source/CI domains unavailable without protected approved roots', async () => {
+  it('keeps execution domains unavailable while exposing guarded CI setup without protected approved roots', async () => {
     const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(), deviceId: randomUUID(),
       workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, endpoint: 'wss://unconnected.example/device/connect',
       mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString() })
     const mounted = await createInstalledWorkerDomains({ stateDirectory: '/uncreated-model-free-fixture', pairing, bootId: randomUUID(),
       configuration: null, approvedRoots: async () => null, connection: () => undefined, codexSuiteRevision: 'source-test-current-suite' })
-    expect(mounted.workflowAvailable).toBe(false)
-    expect(mounted.sourceAvailable).toBe(false)
-    expect(mounted.rsyncAvailable).toBe(false)
-    expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
-    expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual([
-      'agent-snapshot-v1', 'computer-accounts-v1', 'computer-github-v1', 'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1',
-    ])
-    await mounted.close(); await mounted.close()
+    try {
+      expect(mounted.workflowAvailable).toBe(false)
+      expect(mounted.sourceAvailable).toBe(false)
+      expect(mounted.rsyncAvailable).toBe(false)
+      expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
+      expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual([
+        'agent-snapshot-v1', 'ci-runtime-v1', 'computer-accounts-v1', 'computer-github-v1',
+        'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1',
+      ])
+      const ci = mounted.extensions.find(extension => extension.namespace === 'ci-runtime-v1')!
+      await expect(ci.handle!({ operation: 'status' }, {
+        signal: AbortSignal.timeout(1000),
+        binding: {
+          mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
+          keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(),
+          connectionEpoch: randomUUID(), connectionGeneration: 1,
+        },
+      })).rejects.toMatchObject({ code: 'WORKER_DOMAIN_UNAVAILABLE' })
+    } finally {
+      await mounted.close()
+      await mounted.close()
+    }
   })
   it('advertises the actual Job input client on the existing channel only with an explicit Job installation',async()=>{
     const pairing=WorkerPairingConfigurationSchema.parse({formatVersion:1,mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),
