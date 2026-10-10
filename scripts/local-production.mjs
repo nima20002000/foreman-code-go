@@ -9,7 +9,7 @@ import { promisify } from 'node:util'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
-import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
+import { buildWorkerReleaseArtifacts, publishWorkerArtifactsToGitHub } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
@@ -95,7 +95,7 @@ async function stageRelease() {
     await copyFile(process.execPath, join(release, 'node'))
     await chmod(join(release, 'node'), 0o700)
     await buildWorkerReleaseArtifacts({ repository: source, directory: join(release, 'worker-artifacts'),
-      productManifestPath: join(release, 'package.json'), run })
+      productManifestPath: join(release, 'package.json'), run, publish: publishWorkerArtifactsToGitHub })
     return release
   } catch (error) {
     await removeUninstalledRelease(release, current)

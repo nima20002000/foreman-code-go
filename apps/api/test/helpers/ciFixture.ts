@@ -7,7 +7,6 @@ import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/
 import type { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import type { PostgresSourceService } from '../../src/modules/sources/service.js'
 import { JobService } from '../../src/modules/jobs/service.js'
-import { CiService } from '../../src/modules/jobs/ci.js'
 import type { CiAuthority } from '../../src/modules/jobs/ciAuthority.js'
 import { requireAuthorization } from '../../src/modules/access/policy.js'
 import { DomainError } from '../../src/modules/errors.js'
@@ -220,14 +219,8 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
       materialization: { receipt: { binding: { mainId: agent.mainId, deviceId: agent.deviceId },
         worktree: { repository: 'octo/site', branch: 'foreman/review/coder-1', commit: 'b'.repeat(40) } } },
       workingTree: { canonicalProjectRoot: '/home/laptop/root/x/tree' } } }] } : { rows: [] } } as unknown as pg.Pool
-  const snapshotCalls: { hostRef: unknown; path: string; baseCommit: string }[] = []
-  const createCi = () => Object.assign(new CiService(pool, commands, authority, sources, jobs), {
-    snapshots: async (hostRef: unknown, path: string, baseCommit: string) => {
-      snapshotCalls.push({ hostRef, path, baseCommit })
-      return { commit: 'c'.repeat(40), bundle: Buffer.from('bundle') }
-    } })
-  const services = { commands, ci: createCi() } as unknown as OperatorServices
-  return { workspaceId, worker, operator, readonly, accepted, buildTarget: runtime.spec.target, services, audits, createCi, roots, snapshotCalls, approvals, enqueued, agent, agentExecution,
+  const services = { commands } as unknown as OperatorServices
+  return { workspaceId, worker, operator, readonly, accepted, buildTarget: runtime.spec.target, services, audits, roots, approvals, enqueued, agent, agentExecution,
     templates, jobs, sources, commands, ticket: () => structuredClone(ticket!), definition: () => structuredClone(definition!),
     pool, authority,
     counts: () => ({ sourceCaptures, enqueues }), advanceHead: () => { head = 'd'.repeat(40) },

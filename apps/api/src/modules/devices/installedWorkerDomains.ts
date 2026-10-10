@@ -57,7 +57,8 @@ import { SyncthingComputer } from '../computers/syncthingComputer.js'
 import { GitHubLoginRunner } from '../computers/githubLogin.js'
 import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
-import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
+import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
+import { HostCiRunner } from '../ci-host/runner.js'
 import { CiRuntimeWorker } from '../jobs/ciRuntimeWorker.js'
 import { prepareCiRuntime } from '../jobs/ciRuntimePrepare.js'
 import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurations,
@@ -355,6 +356,16 @@ export async function createInstalledWorkerDomains(input: {
         throw new DomainError('CI_RUNTIME_STALE', 'CI runtime preparation requires the actual authenticated worker channel.', 409)
       }
       return { payload: await ciRuntime.handle(payload) }
+    },
+  })
+  // Host CI: this computer runs CI suites directly, fetching from GitHub with its own gh login.
+  const hostCi = new HostCiRunner()
+  extensions.push({ namespace: CI_HOST_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('CI_HOST_STALE', 'Host CI requires the actual authenticated worker channel.', 409)
+      }
+      return { payload: await hostCi.handle(payload) }
     },
   })
   extensions.push({ namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 65_536, maxBinaryBytes: 0,

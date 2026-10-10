@@ -14,6 +14,7 @@
   "apps/api/src/modules/byte-transfer/rsyncWriterOwnership.ts",
   "apps/api/src/modules/byte-transfer/sender.ts",
   "apps/api/src/modules/byte-transfer/service.ts",
+  "apps/api/src/modules/ci-host/runner.ts",
   "apps/api/src/modules/computers/accountProbe.ts",
   "apps/api/src/modules/computers/claudePlugins.ts",
   "apps/api/src/modules/computers/githubLogin.ts",

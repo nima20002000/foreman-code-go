@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.59] - 2026-10-10
+
+### CI
+
+- CI runs directly on build computers, like self-hosted runners: each computer fetches the commit with its own GitHub login, installs packages and runs the repository's own scripts in a fresh worktree, capped by a systemd unit. Integration can be split across computers with `partitions`. The container image, offline seed and qualification path is no longer used.
+- Paired Workers download updates from a GitHub release instead of through Main.
+
 ## [0.0.58] - 2026-10-10
 
 ### Workflows and Runs

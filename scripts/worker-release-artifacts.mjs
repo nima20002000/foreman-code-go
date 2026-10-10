@@ -49,7 +49,32 @@ async function verifyArtifact(directory, target, version, commit) {
   return sha256(bytes)
 }
 
-export async function buildWorkerReleaseArtifacts({ repository, directory, productManifestPath, run }) {
+/** Uploads each artifact as <manifestSha256>.tar.gz to the GitHub release worker-<commit>, so paired Workers download
+ * their update from GitHub with their own login instead of through Main. */
+export async function publishWorkerArtifactsToGitHub({ repository, directory, commit, artifacts, run }) {
+  const origin = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: repository, encoding: 'utf8' }).trim()
+  const name = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/u.exec(origin)?.[1]
+  if (!name) throw new Error('Worker artifacts publish to GitHub: the repository origin is not a GitHub repository.')
+  const tag = `worker-${commit}`
+  const staging = await mkdtemp(join(directory, '.publish-'))
+  try {
+    const assets = []
+    for (const { manifestSha256 } of artifacts) {
+      const asset = join(staging, `${manifestSha256}.tar.gz`)
+      await run('tar', ['-czf', asset, '-C', join(directory, manifestSha256), '.'], { cwd: repository })
+      assets.push(asset)
+    }
+    const exists = await run('gh', ['release', 'view', tag, '--repo', name], { cwd: repository }).then(() => true, () => false)
+    await run('gh', exists ? ['release', 'upload', tag, ...assets, '--repo', name, '--clobber']
+      : ['release', 'create', tag, ...assets, '--repo', name, '--prerelease', '--title', `Worker ${commit.slice(0, 12)}`,
+        '--notes', `Foreman Code Worker artifacts built from ${commit}.`], { cwd: repository })
+    return { repository: name, tag }
+  } finally {
+    await rm(staging, { recursive: true, force: true })
+  }
+}
+
+export async function buildWorkerReleaseArtifacts({ repository, directory, productManifestPath, run, publish }) {
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim()
   const productManifest = committedBytes(repository, commit, 'package.json')
   const version = workerReleaseVersion(JSON.parse(productManifest))
@@ -70,7 +95,8 @@ export async function buildWorkerReleaseArtifacts({ repository, directory, produ
       await rename(staging, join(directory, manifestSha256))
       artifacts.push({ target, manifestSha256 })
     }
-    const index = { format: 1, version, artifacts }
+    const github = publish ? await publish({ repository, directory, commit, artifacts, run }) : undefined
+    const index = { format: 1, version, ...(github ? { github } : {}), artifacts }
     await writeFile(join(directory, 'index.json'), `${JSON.stringify(index, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
     await writeFile(productManifestPath, productManifest, { flag: 'wx', mode: 0o600 })
     return index

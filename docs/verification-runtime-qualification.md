@@ -77,8 +77,11 @@ Verification qualification requires `job_definitions:write`, `jobs:start` and
 `job_artifacts:read`. Measured qualification records
 include diagnostic execution IDs and canonical artifact references. Operators
 read them through `job_get`, `job_artifacts_list` and `job_artifact_read`; ordinary
-verification Jobs use `job_choices_get`, `job_definition_save` and `job_start`, or
-`ci_run` and `ci_get`, which workflow Agents also use for their Run's workspace.
+verification Jobs use `job_choices_get`, `job_definition_save` and `job_start`.
+The separate host CI tools run repository scripts directly on build computers:
+`ci_run` starts a suite, `ci_get` reads its state and log tail,
+`ci_computers_list` reads readiness, `ci_logs_read` pages log text, and
+`ci_cancel` stops a run. Workflow Agents use these tools within their Run workspace.
 Generated qualification definitions retain historical diagnostic commands and
 reports; create ordinary verification Jobs from the authoring templates.
 

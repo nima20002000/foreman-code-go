@@ -35,7 +35,7 @@ describe('cross-computer CI graph', () => {
       const node = graph.nodes[index + 1]!
       if (node.kind === 'job') throw new Error('The CI scenario uses Agent nodes.')
       expect(node.initialPrompt).toContain(`suite ${suite}`)
-      expect(node.initialPrompt).toContain('placementOverride {"kind":"auto"}')
+      expect(node.initialPrompt).toContain('run.state is passed, failed, canceled or lost')
     }
     expect(base.nodes).toEqual([])
   })

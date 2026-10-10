@@ -358,6 +358,7 @@ export async function scheduleIntegrationQueue(files, slots, {
   const freeSlot = () => slots.find((slot) => !slot.unavailable && !busy.has(slot.index))
   return scheduleQueue(items, {
     maxConcurrency, profiles, samplePressure,
+    dedicated: process.env.FOREMAN_CODE_CI_DEDICATED === '1',
     shouldStop: () => Boolean(processFailure) || shouldStop(),
     onEvent, pollIntervalMs, retest: true,
     canUseWorker: (_index, item) => item.kind !== 'integration' || Boolean(freeSlot()),

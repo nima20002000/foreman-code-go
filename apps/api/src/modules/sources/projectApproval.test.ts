@@ -16,8 +16,6 @@ import { createSourceManifest } from './manifest.js'
 import { PostgresSourceService, type SourceExecutionHostPort } from './service.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { systemGitWorktreePorts } from './gitWorktree.js'
-import { CiService } from '../jobs/ci.js'
-import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 
 vi.mock('./authority.js', () => ({ authorizeSource: async (_sql: unknown, principal: ManagementPrincipal) =>
@@ -99,7 +97,7 @@ async function fixture() {
     }
     return { value: source, replayed: approved.has(input.commandId) }
   })
-  return { service, principal, workspaceId, origin, clone, system, mainCommit, otherCommit, repository, pool, commands }
+  return { service, principal, workspaceId, origin, clone, system, mainCommit, otherCommit }
 }
 
 it('approves its own fetched default-branch commit when another fetch changes FETCH_HEAD before resolution', async () => {
@@ -163,23 +161,4 @@ it('preserves the fetch failure when temporary ref cleanup also fails', async ()
     code: 'SOURCE_REPOSITORY_UNAVAILABLE',
     message: 'Main could not fetch octo/site@main. Sign GitHub in on Main.',
   })
-})
-
-
-it('rejects CI replay after a captured commit is interrupted and its workspace repository changes', async () => {
-  const f = await fixture()
-  const jobs = ciFixture()
-  const ci = new CiService(f.pool, f.commands, jobs.authority, f.service, jobs.jobs)
-  const input = { workspaceId: f.workspaceId, commandId: 'interrupted-source', suite: 'unit' as const }
-  const approve = vi.mocked(f.service.approve)
-  approve.mockRejectedValueOnce(new Error('Interrupted before source approval'))
-  await expect(ci.run(f.principal, input)).rejects.toThrow('Interrupted before source approval')
-  expect(jobs.counts().enqueues).toBe(0)
-  // Both configured repositories use the same clone here, so the accepted commit exists in either.
-  f.repository.name = 'another-site'
-  const fetch = vi.spyOn(f.service.git, 'git')
-  await expect(ci.run(f.principal, input)).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
-  expect(jobs.counts().enqueues).toBe(0)
-  expect(approve).toHaveBeenCalledTimes(1)
-  expect(fetch).not.toHaveBeenCalled()
 })
