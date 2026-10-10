@@ -2,51 +2,38 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { CiRunInputSchema, OperatorCiRunInputSchema, CiRunOutputSchema,
   CiGetInputSchema, OperatorCiGetInputSchema, CiGetOutputSchema,
   CiCancelInputSchema, OperatorCiCancelInputSchema, CiCancelOutputSchema,
-  CiLogsInputSchema, OperatorCiLogsInputSchema, CiLogsOutputSchema,
-  CiArtifactsOutputSchema, CiArtifactInputSchema, OperatorCiArtifactInputSchema, CiArtifactOutputSchema } from '@foreman-code/contracts'
+  CiLogsInputSchema, OperatorCiLogsInputSchema, CiLogsOutputSchema, CiComputersOutputSchema } from '@foreman-code/contracts'
 import { z } from 'zod'
-import { JobAuthoringChoicesRecordSchema } from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal, ManagementAction } from '@foreman-code/contracts/management'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../../modules/jobs/ciAuthority.js'
-import type { CiService } from '../../modules/jobs/ci.js'
+import type { HostCiService } from '../../modules/ci-host/service.js'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
 import { DomainError } from '../../modules/errors.js'
 import { toolFailure, toolResult } from './results.js'
 import { logOperatorToolFailure } from '../operator/invoke.js'
 
-export const CI_CAPABILITY_DETAIL = 'ci_run captures tracked files at the requested commit, the Agent’s accepted worktree, or Main project HEAD. '
-  + 'An interrupted capture retry requires the original workspace repository settings; changed settings require a new commandId. '
-  + 'Supports install, typecheck, lint, unit, build and integration. '
-  + 'Integration uses isolated offline PostgreSQL and qualified shard limits. partitions (2–12, integration only) splits '
-  + 'the run into duration-balanced Jobs that build computers run in parallel; poll every partition ticket. It '
-  + 'reuses a workspace/suite Auto verification definition and queues build capacity. Retrying commandId returns the original ticket. '
-  + 'ci_get returns queue reasons, selected computer, process, publication, digest-verified summary and a 32 KiB log tail. '
-  + 'Completed tickets are terminal; their execution, logs and published artifacts remain readable. '
-  + 'Agent-triggered tickets retain initiatingAgent (workflow, Run, Agent and execution), separate from graph job membership. '
-  + 'Agents are restricted to their active Run workspace and its accepted grants. Qualification matches dependency inputs; '
-  + 'changed dependencies trigger persisted runtime preparation from the queue on enabled build computers. '
-  + 'Preparation requires the original caller’s job_artifacts:read and profile/source write grants; no grants are added. '
-  + 'The original ticket resolves its image from a reviewed qualified profile and retains its other policy and resource limits. '
-  + 'placementOverride selects Auto, a preferred computer with fallback, or an explicit computer/root from ci_computers_list. '
-  + 'Poll ci_get by ticketId until process and publication finish; read complete logs with ci_logs_read and '
-  + 'published revisions with ci_artifacts_list and ci_artifact_read. Cancel with ci_cancel using the queue revision. '
-  + 'No CI approval step is required.'
-export const CI_TOOLS = ['ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', 'ci_logs_read',
-  'ci_artifacts_list', 'ci_artifact_read'] as const
+export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, lint, unit, build, integration) of the workspace '
+  + 'GitHub repository at a commit: the requested one, the Agent’s current files (published to GitHub first) or the default '
+  + 'branch head. A build computer fetches it with its own GitHub CLI login, installs packages and runs the repository’s '
+  + 'own script in a fresh worktree, like a self-hosted runner. partitions (2–12, integration only) splits integration '
+  + 'into duration-balanced runs on separate computers; poll every partition ticket. Retrying commandId returns the '
+  + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '
+  + 'computer, exit code and a 32 KiB log tail; ci_logs_read pages the full log; ci_cancel stops a run. '
+  + 'Agents are restricted to their active Run workspace. Computers without a GitHub login report it in ci_computers_list.'
+
+export const CI_TOOLS = ['ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', 'ci_logs_read'] as const
 type CiTool = typeof CI_TOOLS[number]
 interface CiContext {
   principal: ManagementPrincipal
-  services: { ci?: CiService; commands: PostgresCommandCoordinator }
+  services: { ci?: HostCiService; commands: PostgresCommandCoordinator }
 }
 const actions: Record<CiTool, ManagementAction[]> = {
   ci_run: CI_RUN_ACTIONS,
   ci_get: CI_GET_ACTIONS,
-  ci_computers_list: ['job_definitions:read', 'sources:read', 'source_roots:read'],
+  ci_computers_list: CI_GET_ACTIONS,
   ci_cancel: ['jobs:cancel'],
-  ci_logs_read: ['jobs:read', 'job_logs:read'],
-  ci_artifacts_list: ['jobs:read', 'job_artifacts:read'],
-  ci_artifact_read: ['jobs:read', 'job_artifacts:read'],
+  ci_logs_read: CI_GET_ACTIONS,
 }
 export function ciCapabilities(context: CiContext, resource: AuthorizedResource) {
   if (!context.services.ci) return []
@@ -89,38 +76,21 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke('ci_get', () => ci.get(context.principal, input)))
   if (available('ci_computers_list')) server.registerTool('ci_computers_list', {
-    description: 'Read authorized build computer/root choices, Auto resource envelopes and verification templates. '
-      + 'Pass a target to ci_run placementOverride.kind=explicit or its hostRef to kind=prefer. '
-      + 'Readiness and capacity are rechecked at launch. ' + CI_CAPABILITY_DETAIL,
+    description: 'List the build computers CI can use, with readiness (GitHub login, git, corepack), size and running runs. '
+      + CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiGetInputSchema.pick({ workspaceId: true }) : z.object({}).strict(),
-    outputSchema: JobAuthoringChoicesRecordSchema, annotations: read,
+    outputSchema: CiComputersOutputSchema, annotations: read,
   }, input => invoke('ci_computers_list', () => ci.computers(context.principal, input)))
   if (available('ci_cancel')) server.registerTool('ci_cancel', {
-    description: 'Cancel a waiting, claimed or accepted CI ticket with expectedRevision from ci_get.queue. '
-      + 'Retry the same commandId and payload after unknown acknowledgment. Requires jobs:cancel; '
-      + 'poll ci_get to confirm process closure and cleanup before assuming capacity is released.',
+    description: 'Cancel a queued or running CI run by ticketId. Requires jobs:cancel. ' + CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiCancelInputSchema : CiCancelInputSchema,
     outputSchema: CiCancelOutputSchema,
     annotations: { ...read, readOnlyHint: false, destructiveHint: true },
   }, input => invoke('ci_cancel', () => ci.cancel(context.principal, input)))
   if (available('ci_logs_read')) server.registerTool('ci_logs_read', {
-    description: 'Read sequenced log chunks of the execution accepted for ticketId. Resume with nextCursor; '
-      + 'truncation is explicit. Waiting tickets return CI_NOT_ACCEPTED. Requires jobs:read and job_logs:read.',
+    description: 'Read a CI run log from its computer: omit afterOffset for the last maxBytes, or page forward with '
+      + 'nextOffset. Queued runs return CI_NOT_STARTED. ' + CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiLogsInputSchema : CiLogsInputSchema,
     outputSchema: CiLogsOutputSchema, annotations: read,
   }, input => invoke('ci_logs_read', () => ci.logs(context.principal, input)))
-  if (available('ci_artifacts_list')) server.registerTool('ci_artifacts_list', {
-    description: 'List the accepted CI execution’s artifact file/revision IDs, digests, sizes and expiry. '
-      + 'Requires jobs:read and job_artifacts:read. Waiting tickets return CI_NOT_ACCEPTED.',
-    inputSchema: operator ? OperatorCiGetInputSchema : CiGetInputSchema,
-    outputSchema: CiArtifactsOutputSchema, annotations: read,
-  }, input => invoke('ci_artifacts_list', () => ci.artifacts(context.principal, input)))
-  if (available('ci_artifact_read')) server.registerTool('ci_artifact_read', {
-    description: 'Read digest-verified immutable CI artifact bytes in chunks up to 1 MiB as base64 by ticketId, fileId '
-      + 'and revisionId from ci_artifacts_list. Keep these IDs and resume with nextOffset as offset until null. '
-      + 'Missing, expired or corrupt revisions fail. '
-      + 'Requires jobs:read and job_artifacts:read.',
-    inputSchema: operator ? OperatorCiArtifactInputSchema : CiArtifactInputSchema,
-    outputSchema: CiArtifactOutputSchema, annotations: read,
-  }, input => invoke('ci_artifact_read', () => ci.artifact(context.principal, input)))
 }

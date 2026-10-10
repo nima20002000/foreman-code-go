@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CiRunRecordSchema, CiSuiteSchema } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
 import { JobOrdinaryVerificationSuiteSchema, JobVerificationReportReadSchema } from './jobVerification.js'
 import { JobPlacementIntentSchema, JobQueueCancelSchema, JobQueueTicketSchema } from './jobAdmission.js'
@@ -8,11 +9,10 @@ import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
 const CiRunInputObjectSchema = z.object({
-  suite: JobOrdinaryVerificationSuiteSchema,
+  suite: CiSuiteSchema,
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
   commandId: IdSchema,
-  placementOverride: JobPlacementIntentSchema.optional(),
-  /** Split an integration run into this many duration-balanced Jobs that build computers run in parallel. */
+  /** Split an integration run into this many duration-balanced runs on separate build computers. */
   partitions: z.number().int().min(2).max(12).optional(),
 }).strict()
 const partitionedSuite = (value: { suite: string; partitions?: number | undefined }) =>
@@ -21,42 +21,39 @@ const partitionIssue = { message: 'Only the integration suite can be partitioned
 export const CiRunInputSchema = CiRunInputObjectSchema.refine(partitionedSuite, partitionIssue)
 export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspaceId: IdSchema }).strict()
   .refine(partitionedSuite, partitionIssue)
-const CiRunTicketSchema = z.object({ ticketId: IdSchema, executionId: IdSchema.optional() }).strict()
+const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every partition's ticket in order; the first is also `ticketId`. Poll each with ci_get. */
 export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(12).optional() }).strict()
 export const CiGetInputSchema = z.object({ ticketId: IdSchema }).strict()
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({
-  queue: JobQueueTicketSchema,
-  executionId: IdSchema.nullable(),
-  process: JobExecutionSchema.shape.process.nullable(),
-  publication: JobExecutionSchema.shape.publication.nullable(),
-  resultIssue: JobExecutionSchema.shape.resultIssue,
-  summaryReport: JobVerificationReportReadSchema.nullable(),
-  logTail: z.object({ text: z.string().max(32768), truncated: z.boolean() }).strict(),
+  run: CiRunRecordSchema, partitions: z.array(CiRunRecordSchema).optional(), logTail: z.string(),
 }).strict()
 export type CiRunInput = z.infer<typeof CiRunInputSchema>
 export type CiGetInput = z.infer<typeof CiGetInputSchema>
-
-export const CiCancelInputSchema = JobQueueCancelSchema
-export const OperatorCiCancelInputSchema = CiCancelInputSchema.extend({ workspaceId: IdSchema }).strict()
-export const CiCancelOutputSchema = z.object({ ticket: JobQueueTicketSchema }).strict()
+export const CiCancelInputSchema = CiGetInputSchema
+export const OperatorCiCancelInputSchema = OperatorCiGetInputSchema
+export const CiCancelOutputSchema = z.object({ run: CiRunRecordSchema }).strict()
 export const CiLogsInputSchema = CiGetInputSchema.extend({
-  afterSequence: z.number().int().nonnegative().default(0),
-  limit: z.number().int().min(1).max(100).default(50),
+  /** Omit to read the last maxBytes; continue with nextOffset. */
+  afterOffset: z.number().int().nonnegative().optional(),
+  maxBytes: z.number().int().min(1).max(65_536).optional(),
 }).strict()
 export const OperatorCiLogsInputSchema = CiLogsInputSchema.extend({ workspaceId: IdSchema }).strict()
-export const CiLogsOutputSchema = JobLogPageSchema
-export const CiArtifactsOutputSchema = z.object({ artifacts: z.array(JobArtifactSchema) }).strict()
-export const CiArtifactInputSchema = CiGetInputSchema.extend(JobArtifactReadInputSchema.shape).strict()
-export const OperatorCiArtifactInputSchema = CiArtifactInputSchema.extend({ workspaceId: IdSchema }).strict()
-export const CiArtifactOutputSchema = JobArtifactReadOutputSchema
+export const CiLogsOutputSchema = z.object({ text: z.string(), nextOffset: z.number().int().nonnegative(),
+  logBytes: z.number().int().nonnegative() }).strict()
+export const CiComputersOutputSchema = z.object({ computers: z.array(z.object({
+  label: z.string(), hostRef: z.object({ kind: z.enum(['main', 'device']), mainId: z.string(), deviceId: z.string().optional() }).strict(),
+  priority: z.number().int(), ready: z.boolean(), reasons: z.array(z.string()),
+  cpuCount: z.number().int().positive().optional(), memoryBytes: z.number().int().positive().optional(),
+  running: z.array(z.string()).optional(),
+}).strict()) }).strict()
 export type CiCancelInput = z.infer<typeof CiCancelInputSchema>
 export type CiLogsInput = z.infer<typeof CiLogsInputSchema>
-export type CiArtifactInput = z.infer<typeof CiArtifactInputSchema>
 
 export * from './ciEnrollment.js'
 import { CiInstalledStorageSchema, CiManagedSetupSchema } from './ciEnrollment.js'
+
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 const AbsolutePathSchema = z.string().min(2).max(4096).startsWith('/')
 /** Build computers prepare their own CI runtime for a commit: offline seed, image and qualification source. */

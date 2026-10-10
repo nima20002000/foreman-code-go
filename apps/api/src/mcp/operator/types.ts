@@ -25,7 +25,7 @@ import type { OperatorInteractionService } from '../../modules/interactions/oper
 export interface OperatorServices {
   bugReports?: import('../../modules/bug-reports/service.js').BugReportService
   providerAccounts?: import('../../modules/provider-accounts/service.js').ProviderAccountsService
-  ci?: import('../../modules/jobs/ci.js').CiService
+  ci?: import('../../modules/ci-host/service.js').HostCiService
   remoteExecution?: import('../../modules/settings/remoteExecution.js').RemoteExecutionSettingsService
   workerExecution?: import('../../modules/settings/workerExecution.js').WorkerExecutionPolicy
   jobs?: import('../../modules/jobs/service.js').JobService

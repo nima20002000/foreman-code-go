@@ -9,7 +9,12 @@ import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
 import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
 import { CiEnrollment } from './modules/jobs/ciEnrollment.js'
 import { ProductionCiEnrollmentInventory } from './modules/jobs/ciEnrollmentInventory.js'
-import { CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
+import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
+import { HostCiService } from './modules/ci-host/service.js'
+import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
+import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
+import { HostCiRunner } from './modules/ci-host/runner.js'
+import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
@@ -420,6 +425,7 @@ export function buildProductionApp(
       { namespace: COMPUTER_SYNC_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { namespace: CI_HOST_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
@@ -1938,8 +1944,7 @@ export function buildProductionApp(
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs
-      runtimeServices.ci = jobRuntime.ci
-      jobRuntime.ci.snapshots = async (hostRef, path, baseCommit) => {
+      const readAgentFiles: ReadAgentFiles = async (hostRef, path, baseCommit) => {
         const signal = AbortSignal.timeout(150_000)
         if (hostRef.kind === 'main') return snapshotAgentWorktree(systemGitWorktreePorts(), { path, baseCommit }, signal)
         const endpoint = deviceRuntime.endpointForDomains()
@@ -1950,6 +1955,13 @@ export function buildProductionApp(
           { path, baseCommit }, { signal })).payload)
         return { commit: reply.commit, bundle: Buffer.from(reply.bundleBase64, 'base64') }
       }
+      // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
+      const hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), jobRuntime.sources,
+        new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner()),
+        agentSnapshots(database.pool, readAgentFiles))
+      hostCi.start()
+      app.addHook('onClose', async () => { await hostCi.close() })
+      runtimeServices.ci = hostCi
       runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
       runtimeServices.ciRuntime = new CiRuntimeProvisioner(database.pool, jobRuntime.profiles, jobRuntime.sources,
         () => deviceRuntime.endpointForDomains(), commands, { changed: () => jobRuntime?.jobs.requestQueueWake(),
