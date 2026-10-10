@@ -1,12 +1,12 @@
 import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
-import { createContext, forwardRef, memo, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Background, ConnectionMode, NodeResizer, ReactFlow, useViewport, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
+import { createContext, forwardRef, memo, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Background, ConnectionMode, ReactFlow, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
 import { WorkflowRelationshipSchema, type WorkflowDefinitionV3, type WorkflowRelationship } from '@foreman-code/contracts/wave25'
 import type { Agent } from '@foreman-code/contracts'
 import { AgentNodeView, AgentPopover, Dialog, IconButton, Icon, type AgentPanel } from '../../../shared/ui/nocturne'
 import { createGraphTopologyProjector } from '../topology'
 import { createGraphGeometryAdapter, type GraphGeometryChange } from '../geometry'
-import { GRAPH_NODE_MIN_WIDTH, GRAPH_NODE_MAX_WIDTH, GRAPH_NODE_MIN_HEIGHT, GRAPH_NODE_MAX_HEIGHT } from '../mapper'
+import { CircularNodeResizer } from '../CircularNodeResizer'
 import { useGraphDraftStore } from '../store'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
 import { AgentHandles } from '../AgentHandles'
@@ -33,21 +33,20 @@ type Canvas = {
   setOpen: (next?: OpenAgentPanel) => void
   panels: AgentPanelRenderer
   selectNode?: (nodeId: string) => void
-  prepareResize?: () => void
   beginResize?: () => void
+  resize?: (change: GraphGeometryChange) => void
   finishResize?: (id: string, width: number, height: number, position?: { x: number; y: number }) => void
 }
 const CanvasContext = createContext<Canvas>({ draftKey: '', inspect: (action) => action(), setOpen: () => undefined,
   panels: () => ({ chat: null, settings: null, info: null }) })
 
 const DraftAgent = memo(function DraftAgent({ id, data, selected, width, height }: NodeProps<AgentGraphNode>) {
-  const { draftKey, inspect, open, setOpen, panels, selectNode, prepareResize, beginResize, finishResize } = useContext(CanvasContext)
+  const { draftKey, inspect, open, setOpen, panels, selectNode, beginResize, resize, finishResize } = useContext(CanvasContext)
   const entry = useGraphDraftStore((state) => state.nextDrafts[draftKey]?.graph.entryNodeId === id)
   const presentation = useGraphPresentationStore()
   const runSelected = Boolean(useWorkflowBoard()?.run)
   const run = { label: 'Idle', state: 'idle' as const }
   const facts = agentNodeFacts(data.agent)
-  const { zoom } = useViewport()
   const core = useRef<HTMLButtonElement>(null)
   const panel = open?.nodeId === id ? open.panel : undefined
   const select = () => inspect(() => { presentation.getState().setFocusedNodeId(id); presentation.getState().setFocusedEdgeId(undefined) })
@@ -61,24 +60,9 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected, width, height 
         setOpen(panel === next ? undefined : { nodeId: id, panel: next })
       })}>
       <AgentHandles name={data.label} />
-      <div className="board-agent-resize nodrag nopan" role="group" aria-label={`Resize ${data.label}`}
-      aria-hidden={!selected} tabIndex={selected ? 0 : -1} title="Drag an edge or corner to resize. Arrow keys resize; Shift uses larger steps."
-      onClick={(event) => event.stopPropagation()}
-      onKeyDown={(event) => {
-        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
-        event.preventDefault(); event.stopPropagation()
-        const step = event.shiftKey ? 24 : 8
-        beginResize?.()
-        finishResize?.(id, (width ?? 212) + (event.key === 'ArrowRight' ? step : event.key === 'ArrowLeft' ? -step : 0),
-          (height ?? 212) + (event.key === 'ArrowDown' ? step : event.key === 'ArrowUp' ? -step : 0))
-      }}>
-      <NodeResizer isVisible={selected} minWidth={GRAPH_NODE_MIN_WIDTH} minHeight={GRAPH_NODE_MIN_HEIGHT}
-        maxWidth={GRAPH_NODE_MAX_WIDTH} maxHeight={GRAPH_NODE_MAX_HEIGHT}
-        handleClassName="board-agent-resize-handle nodrag nopan" lineClassName="board-agent-resize-line nodrag nopan"
-        lineStyle={{ '--resize-hit-size': `${10 / zoom}px` } as CSSProperties}
-        onResizeStart={() => prepareResize?.()} onResize={() => beginResize?.()}
-        onResizeEnd={(_, size) => finishResize?.(id, size.width, size.height, { x: size.x, y: size.y })} />
-      </div>
+      <CircularNodeResizer id={id} name={data.label} width={width ?? 212} height={height ?? 212}
+        onStart={beginResize} onResize={resize}
+        onFinish={(change) => finishResize?.(id, change.width!, change.height!, change.position)} />
     </AgentNodeView>
     {panel && !runSelected ? <AgentPopover open anchor={core} title={data.label} subtitle={`${facts.roleLabel} · ${facts.harnessLabel}${facts.model ? ` · ${facts.model}` : ''}`}
       icon={facts.icon} harness={facts.harness} panel={panel}
@@ -225,7 +209,15 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
     presentation.getState().setSelectedNodeIds(new Set([nodeId]))
     presentation.getState().setFocusedEdgeId(undefined)
   })
-  const context = { draftKey, inspect, open, setOpen, panels, selectNode, prepareResize, beginResize, finishResize }
+  const resize = (change: GraphGeometryChange) => {
+    const result = adapter.update([
+      { id: change.id, type: 'dimensions', dimensions: { width: change.width!, height: change.height! }, resizing: true },
+      { id: change.id, type: 'position', position: change.position },
+    ])
+    setNodes(result.nodes)
+    pending(result.pending)
+  }
+  const context = { draftKey, inspect, open, setOpen, panels, selectNode, beginResize, resize, finishResize }
   return <CanvasContext.Provider value={context}>
     <div ref={responsive.containerRef} className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} style={selectedRun ? { display: 'none' } : undefined} aria-hidden={!!selectedRun} inert={!!selectedRun} aria-label="Editable workflow graph">
       {/* While a Run is shown, the draft's data stays mounted but its flow does not: a hidden
@@ -247,6 +239,6 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       </ReactFlow>}
       {children}
     </div>
-    {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} panels={panels} /> : null}
+    {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} panels={panels} layout={topology.nodes} geometry={geometry} /> : null}
   </CanvasContext.Provider>
 })

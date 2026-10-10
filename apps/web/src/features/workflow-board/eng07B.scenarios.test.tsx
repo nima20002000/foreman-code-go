@@ -2,8 +2,9 @@ import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { runInspectionKey } from '@foreman-code/contracts/wave25'
+import { installFlowLayout } from '../run-board/testFlowLayout'
 import { useGraphDraftStore } from '../graph/store'
 import { nextDraftKey } from '../graph/nextDraft/state'
 import { inspectionBoardFixture } from './inspect/inspectionFixtures'
@@ -12,6 +13,7 @@ import { boardHref, installBoardTestLifecycle, measureBoardWire, mountMeasuredBo
 import { eng07BoardFixture, scenarioIds } from './eng07B.testSupport'
 
 installBoardTestLifecycle()
+beforeEach(() => { installFlowLayout(1000, 720) })
 let serial = 0
 const inspector = () => screen.getByRole('region', { name: 'Exact execution inputs and results' })
 const canvas = () => screen.getByRole('region', { name: 'Selected Run pinned topology' })

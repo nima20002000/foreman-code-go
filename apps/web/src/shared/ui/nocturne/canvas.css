@@ -453,16 +453,15 @@
 .react-flow__node-agent .n-agent-action--chat { left: 69%; }
 .react-flow__node-agent .n-agent-action--settings { left: 92%; top: 5%; }
 .react-flow__node-agent .n-agent-action--info { left: calc(100% + 6px); top: 31%; }
-.board-agent-resize-handle.react-flow__resize-control.handle { z-index: 5; width: 12px; height: 12px; border: 2px solid var(--surface-raised); border-radius: var(--radius-sm); background: var(--focus); }
-.board-agent-resize-line.react-flow__resize-control.line { z-index: 2; border: 0; }
-.board-agent-resize-line.line.left, .board-agent-resize-line.line.right { width: var(--resize-hit-size); }
-.board-agent-resize-line.line.top, .board-agent-resize-line.line.bottom { height: var(--resize-hit-size); }
-.board-agent-resize-line::after { content: ''; position: absolute; background: color-mix(in srgb, var(--focus) 45%, transparent); pointer-events: none; }
-.board-agent-resize-line.line.left::after, .board-agent-resize-line.line.right::after { inset: 0 auto 0 50%; width: 1px; }
-.board-agent-resize-line.line.top::after, .board-agent-resize-line.line.bottom::after { inset: 50% 0 auto; height: 1px; }
-.board-agent-resize:focus-visible { outline: none; }
-.board-agent-resize:focus-visible .board-agent-resize-handle { outline: 2px solid var(--focus); outline-offset: 3px; }
-.is-connecting .board-agent-resize { visibility: hidden; }
+.board-agent-resize { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; pointer-events: none; outline: none; touch-action: none; }
+.board-agent-resize ellipse { fill: none; stroke: transparent; pointer-events: stroke; cursor: nwse-resize; touch-action: none; }
+.board-agent-resize:focus-visible ellipse { stroke: var(--focus); }
+.react-flow__node-pinnedRunNode .n-agent { width: 100%; height: 100%; }
+.react-flow__node-pinnedRunNode .n-agent-core { justify-content: center; padding: 20px 0; }
+.n-agent:has(.board-agent-resize) .n-agent-actions::before { pointer-events: none; }
+.react-flow__node-pinnedRunNode .n-agent-action--chat { left: 69%; }
+.react-flow__node-pinnedRunNode .n-agent-action--settings { left: 92%; top: 5%; }
+.react-flow__node-pinnedRunNode .n-agent-action--info { left: calc(100% + 6px); top: 31%; }
 .react-flow__node.react-flow__node-agent.selected, .react-flow__node.react-flow__node-agent:focus-visible { outline: none; box-shadow: none; }
 .react-flow__node-agent:focus-visible .n-agent-core { outline: 2px solid var(--focus); outline-offset: 4px; }
 .is-connecting .n-agent .n-agent-target.react-flow__handle { z-index: 6; pointer-events: auto; }

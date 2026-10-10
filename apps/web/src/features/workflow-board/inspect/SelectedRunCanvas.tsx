@@ -2,10 +2,12 @@ import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-
 import { createContext, useContext, memo, useMemo, useRef, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
-import type { RepeatGraphScopeV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
+import type { RepeatGraphScopeV3, WorkflowNodeV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
 import { AgentNodeView, AgentPopover, Dialog, Alert, Button, type AgentNodeState, type AgentNodeTransition } from '../../../shared/ui/nocturne'
 import { useProtectedAccessError } from '../../../shared/api/useProtectedAccessError'
 import type { AgentPanelRenderer, OpenAgentPanel } from '../../graph/nextDraft/DraftCanvas'
+import { CircularNodeResizer } from '../../graph/CircularNodeResizer'
+import type { GraphGeometryChange } from '../../graph/geometry'
 import { AgentHandles } from '../../graph/AgentHandles'
 import { SignalEdgeShape } from '../../graph/SignalEdgeShape'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../../graph/signalEdge'
@@ -21,16 +23,19 @@ import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
 import type { SubagentLayoutNode } from '../../run-subagents/layout'
 import './inspection.css'
 
-const RunAgentPanels = createContext<{ panels?: AgentPanelRenderer; open?: OpenAgentPanel; setOpen(value?: OpenAgentPanel): void } | null>(null)
+const RunAgentPanels = createContext<{
+  panels?: AgentPanelRenderer; open?: OpenAgentPanel; setOpen(value?: OpenAgentPanel): void
+  resize?: (change: GraphGeometryChange) => void; finishResize?: (change: GraphGeometryChange) => void
+} | null>(null)
 
 type Facts = ReturnType<typeof agentNodeFacts>
 type RunNode = Node<ReturnType<typeof pinnedTopology>['nodes'][number] & {
   workflowExecution?: JobWorkflowAdmissionReference
   blockId?: string; recorded: string; status: string; state: AgentNodeState; transition?: AgentNodeTransition; transitionKey?: number; facts: Facts
-  selected: boolean; inspect(): void
+  selected: boolean; resizable?: boolean; inspect(): void
 }, 'pinnedRunNode'>
-/** The editor's agent card, locked for edits. The same chat popover uses the Run's pinned identity. */
-const PinnedRunNode = memo(function PinnedRunNode({ id, data }: NodeProps<RunNode>) {
+/** Run identity is pinned; its circle uses the workflow's editable presentation. */
+const PinnedRunNode = memo(function PinnedRunNode({ id, data, width, height }: NodeProps<RunNode>) {
   const ui = useContext(RunAgentPanels), anchor = useRef<HTMLButtonElement>(null)
   const panel = ui?.open?.nodeId === id ? ui.open.panel : undefined
   const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []), ...data.facts.meta].slice(0, 2)
@@ -39,6 +44,8 @@ const PinnedRunNode = memo(function PinnedRunNode({ id, data }: NodeProps<RunNod
     entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={()=>{if(data.kind==='job'){data.inspect();ui?.setOpen({nodeId:id,panel:'info'})}}} openPanel={panel}
     onAction={ui?.panels && data.kind==='agent' ? (next) => ui.setOpen(panel === next ? undefined : { nodeId: id, panel: next }) : undefined}>
     <AgentHandles name={data.label} connectable={false} />
+    {data.kind === 'agent' && data.resizable ? <CircularNodeResizer id={id} name={data.label}
+      width={width ?? 212} height={height ?? 212} onResize={ui?.resize} onFinish={ui?.finishResize} /> : null}
   </AgentNodeView>
     {panel && ui?.panels && data.kind==='job'?<Dialog open className="job-dialog" title={data.label} description={`Selected Run · ${data.recorded}`} onOpenChange={value=>{if(!value)ui.setOpen(undefined)}}>{ui.panels(id,{kind:'job',jobDefinitionId:data.jobDefinitionId,jobDefinitionRevision:data.jobDefinitionRevision,jobDefinitionVersionId:data.jobDefinitionVersionId,name:data.label,workflowExecution:data.workflowExecution}).info}</Dialog>:null}
     {panel && ui?.panels && data.kind==='agent' ? <AgentPopover open anchor={anchor} title={data.label} subtitle={`Selected Run · ${data.recorded}`}
@@ -86,10 +93,13 @@ const fitViewOptions = { padding: 0.25, minZoom: 0.3, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
 const unknownFacts: Facts = { harnessLabel: 'Pinned settings unavailable', icon: 'bot', roleLabel: 'Agent', meta: [] }
 
-/** Mounted in the EXISTING canvas region. The editor owner and buffered draft
- * stay mounted beside it, but neither draft nodes nor current Agent settings
- * enter this read-only topology. URL pins are verified by the /version service. */
-export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3; panels?: AgentPanelRenderer }) {
+/** The editor stays mounted beside this canvas. Only geometry is shared with
+ * the draft; node identities and Run facts remain pinned by the /version service. */
+export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
+  scope: RepeatGraphScopeV3; panels?: AgentPanelRenderer
+  layout?: readonly Pick<WorkflowNodeV3, 'id' | 'position' | 'width' | 'height'>[]; geometry?: (changes: GraphGeometryChange[]) => void
+}) {
+  const [resizing, setResizing] = useState<GraphGeometryChange>()
   const [open, setOpen] = useState<OpenAgentPanel>()
   const board = useWorkflowBoard()!
   const query = useRunVersionQuery(scope)
@@ -189,6 +199,32 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
     previous.current = next
     return result
   }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes])
+  const layoutById = useMemo(() => new Map(layout?.map((node) => [node.id, node])), [layout])
+  const pinnedById = useMemo(() => new Map(version?.definition.nodes.map((node) => [node.id, node])), [version])
+  const presented = useRef(new Map<string, { source: RunNode; node: RunNode }>())
+  const presentedNodes = useMemo(() => nodes.map((node) => {
+    const saved = layoutById.get(node.id)
+    const pinned = pinnedById.get(node.id)
+    const placement = resizing?.id === node.id ? resizing : saved ?? pinned
+    const width = placement?.width ?? 212
+    const height = placement?.height ?? 212
+    const position = placement?.position ?? node.position
+    const resizable = Boolean(saved && geometry)
+    const cached = presented.current.get(node.id)
+    if (cached && cached.source === node && cached.node.width === width && cached.node.height === height
+      && cached.node.position.x === position.x && cached.node.position.y === position.y
+      && cached.node.data.resizable === resizable) return cached.node
+    const result = { ...node, position, width, height, style: { width, height },
+      data: { ...node.data, resizable } }
+    presented.current.set(node.id, { source: node, node: result })
+    return result
+  }), [nodes, layoutById, pinnedById, resizing, geometry])
+  const finishResize = (change: GraphGeometryChange) => {
+    const saved = layout?.find((node) => node.id === change.id)
+    if (saved && (change.width !== (saved.width ?? 212) || change.height !== (saved.height ?? 212)
+      || change.position?.x !== saved.position?.x || change.position?.y !== saved.position?.y)) geometry?.([change])
+    setResizing(undefined)
+  }
   const edges = useMemo<RunEdge[]>(() => {
     const counts = new Map<string, number>()
     return lines.lines.map((edge) => {
@@ -226,13 +262,13 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
       if (!edgeId || !topology?.edges.some((edge) => edge.id === edgeId)) return
       event.preventDefault(); board.selectInspection({ runRelationshipId: edgeId }); board.openRuns()
     }}>
-      <ReactFlowProvider><RunAgentPanels.Provider value={{ panels, open, setOpen }}><Choreography.Provider value={motion}><ReactFlow<RunNode, RunEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      <ReactFlowProvider><RunAgentPanels.Provider value={{ panels, open, setOpen, resize: setResizing, finishResize }}><Choreography.Provider value={motion}><ReactFlow<RunNode, RunEdge> nodes={presentedNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable
         elementsSelectable deleteKeyCode={null} onlyRenderVisibleElements
         onEdgeClick={(_, edge) => { board.selectInspection({ runRelationshipId: edge.id }); board.openRuns() }}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.1} maxZoom={1.6}
         aria-label="Run graph canvas">
-        <SelectedRunSubagents key={scope.runId} scope={scope} nodes={nodes} />
+        <SelectedRunSubagents key={scope.runId} scope={scope} nodes={presentedNodes} />
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow></Choreography.Provider></RunAgentPanels.Provider></ReactFlowProvider>
     </div> : null}
