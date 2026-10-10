@@ -7,11 +7,13 @@ import { WorkspaceRepositoryAddResultSchema, WorkspaceRepositoryReadResultSchema
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { AgentMutationResultSchema, ManagedAgentDetailSchema, ManagedWorkspaceCommandResultSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import {
-  CurrentEditReadResultSchema, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
+  CURRENT_WORKFLOW_ROUTES, CurrentEditReadResultSchema, CurrentWorkflowCapabilitiesSchema,
+  CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
   SavedManagedWorkflowCommandResultSchema, SavedManagedWorkflowSchema,
   makeCurrentWorkflowFixture, type CurrentWorkflowSaveInput,
 } from '@foreman-code/contracts/wave25'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
+import { buildApp } from '../src/app.js'
 import { ProviderAccountConfigurationService } from '../src/modules/harnesses/providerAccountConfiguration.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './helpers/mixedComputerPlacement.js'
@@ -85,6 +87,91 @@ async function setup(options: {
 }
 
 describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP', () => {
+  it('rejects a rootless prefix before staging and preserves the saved state after correction and Discard', async () => {
+    const f = await setup()
+    const app = buildApp({ readiness: { database: { ping: async () => undefined },
+      checkpoints: { ping: async () => undefined } }, operator: { access: f.base.access, services: f.base.services } })
+    try {
+      const workspaceResult = await f.base.client.callTool({ name: 'workspace_create', arguments: {
+        commandId: randomUUID(), name: 'Workspace without approved roots',
+      } })
+      expect(workspaceResult.isError).not.toBe(true)
+      const workspace = ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(workspaceResult)).value
+      const workspaceId = workspace.workspace.id
+      const location = await f.base.services.locations.set(f.base.writer.principal, 'http', {
+        workspaceId, commandId: randomUUID(), expectedLocationRevision: workspace.locationRevision,
+        runnerId: f.base.locations.runnerId, rootPath: f.placement.local.projectRoot,
+      })
+      const agentResult = await f.base.client.callTool({ name: 'agent_create', arguments: {
+        workspaceId, agentId: randomUUID(), commandId: randomUUID(), name: 'Worker',
+        configuration: f.base.f.configurations[0]!.harness,
+      } })
+      expect(agentResult.isError).not.toBe(true)
+      const agentDetail = AgentMutationResultSchema.parse(decodeMcpToolResult(agentResult)).value
+      const agent = agentDetail.agent
+      const createdResult = await f.base.client.callTool({ name: 'workflow_create', arguments: {
+        workspaceId, commandId: randomUUID(), name: 'Prefix recovery', defaultWorktree: null,
+      } })
+      expect(createdResult.isError).not.toBe(true)
+      const created = SavedManagedWorkflowCommandResultSchema.parse(decodeMcpToolResult(createdResult)).value
+      const nodeId = randomUUID()
+      const input: CurrentWorkflowSaveInput = {
+        workspaceId, workflowId: created.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
+        expectedRevision: created.revision, expectedWorkflowVersionId: null,
+        expectedLocationRevision: location.value.locationRevision,
+        expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId! },
+        graph: { ...created.workflow, entryNodeId: nodeId, approval: { handler: 'user' },
+          executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
+          nodes: [{ id: nodeId, kind: 'agent', name: 'Worker', agentId: agent.id }] },
+      }
+      const saved = (await f.save(input)).value
+      const stage = { ...input, action: 'stage_edits', commandId: randomUUID(), draftId: randomUUID(),
+        expectedRevision: saved.revision, expectedWorkflowVersionId: saved.currentVersionId,
+        graph: { ...saved.version.definition, nodes: [{ ...saved.version.definition.nodes[0]!,
+          worktree: { branchPrefix: 'foreman/journey-worker' } }] },
+        stagedAgents: [{ agent: { ...agent, name: 'Unsaved Worker' }, baseRevision: agentDetail.metadataRevision }],
+      }
+      const reader = await f.base.access.issue({ name: 'Read-only prefix caller', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['workflows:read', 'graph:read', 'agents:read'],
+          scope: { workspaceIds: [workspaceId] } }] })
+      await expectMcpAccessDenied((await f.base.connect(reader.token)).callTool({
+        name: 'workflow_edit_v3', arguments: stage,
+      }))
+      const headers = { authorization: `Bearer ${f.base.writer.token}` }
+      const url = CURRENT_WORKFLOW_ROUTES.edits.replace(':workspaceId', workspaceId)
+        .replace(':workflowId', input.workflowId)
+      const rejected = await app.inject({ method: 'POST', url, headers, payload: stage })
+      expect(rejected.statusCode, rejected.body).toBe(409)
+      expect(rejected.json()).toMatchObject({ error: { code: 'WORKTREE_BINDING_REQUIRED' } })
+      expect(await f.base.client.callTool({ name: 'workflow_edit_v3', arguments: stage }))
+        .toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('WORKTREE_BINDING_REQUIRED') }] })
+      const readInput = { action: 'read_edits', workspaceId, workflowId: input.workflowId, draftId: stage.draftId }
+      const read = await f.base.client.callTool({ name: 'workflow_edits_get_v3', arguments: readInput })
+      expect(CurrentEditReadResultSchema.parse(decodeMcpToolResult(read)).intent).toBeNull()
+
+      const corrected = { ...stage, commandId: randomUUID(), graph: saved.version.definition }
+      const staged = await f.base.client.callTool({ name: 'workflow_edit_v3', arguments: corrected })
+      expect(staged.isError, JSON.stringify(staged)).not.toBe(true)
+      const intent = CurrentEditReadResultSchema.parse(decodeMcpToolResult(staged)).intent!
+      const discard = { ...readInput, action: 'discard_edits', intentId: intent.id, commandId: intent.discardCommandId }
+      const discarded = await f.base.client.callTool({ name: 'workflow_edit_v3', arguments: discard })
+      expect(discarded.isError, JSON.stringify(discarded)).not.toBe(true)
+      expect(CurrentEditReadResultSchema.parse(decodeMcpToolResult(discarded)).intent?.state).toBe('discarded')
+      const reloaded = await app.inject({ method: 'GET', url: `${url}?draftId=${stage.draftId}`, headers })
+      expect(reloaded.statusCode, reloaded.body).toBe(200)
+      expect(CurrentEditReadResultSchema.parse(reloaded.json()).intent?.state).toBe('discarded')
+      const savedRead = await f.base.client.callTool({ name: 'workflow_saved_get_v3', arguments: {
+        workspaceId, workflowId: input.workflowId,
+      } })
+      expect(CurrentWorkflowReadResultSchema.parse(decodeMcpToolResult(savedRead)).version).toEqual(saved.version)
+      const agentRead = await f.base.client.callTool({ name: 'agent_get', arguments: { workspaceId, agentId: agent.id } })
+      expect(ManagedAgentDetailSchema.parse(decodeMcpToolResult(agentRead)).agent).toEqual(agent)
+    } finally {
+      await app.close()
+      await f.close()
+    }
+  }, 30_000)
+
   it('pins a provider account and worktree together through staged edits and persisted reads', async () => {
     const accountId = randomUUID()
     const accountConfigurations = new ProviderAccountConfigurationService({
