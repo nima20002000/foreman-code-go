@@ -37,7 +37,9 @@ export function createMainWorkerClaudeFiles(input: {
   }
   const admission = productionClaudeFileAdmission({ ...input, manager: () => manager })
   return {
-    async call(request: Extract<WorkerClaudeAuthorityRequest, { phase: 'file' }>, identity: ClaudeCallbackIdentity) {
+    async call(request: Extract<WorkerClaudeAuthorityRequest, { phase: 'file' }>, identity: ClaudeCallbackIdentity,
+      signal: AbortSignal) {
+      signal.throwIfAborted()
       if (closed) throw new DomainError('CLAUDE_FILE_CONTEXT_DENIED', 'The file observer is closed.', 403)
       return current.run(identity, async () => {
         const key = JSON.stringify(identity)
@@ -46,7 +48,7 @@ export function createMainWorkerClaudeFiles(input: {
           bridge = new ClaudeFileBridge(identity, admission, input.service())
           bridges.set(key, bridge)
         }
-        return bridge.call(request.operation, request.args)
+        return bridge.call(request.operation, request.args, signal)
       })
     },
     async close() {

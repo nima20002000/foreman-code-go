@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { AgentFileCreateWorkingCopyResultSchema, AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
-import { describe, expect, it, onTestFinished } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { ApiConfig } from '../src/config.js'
 import type { ClaudeNativeSessionManager } from '../src/modules/harnesses/claudeSdk/sessionManager.js'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
@@ -84,17 +84,22 @@ async function fixture(readOnly: boolean) {
     configurationHash: commandInputHash(selected.configuration) } }
   const source: WorkerConversationRpcRequest = { method: 'conversation.start-turn', binding, session,
     prompt: 'Read the attached document.', correlationId }
+  const fileCompleted = Promise.withResolvers<void>()
+  let fileSignal: AbortSignal | undefined
   const lease = bridge.capture({ request: source, channel: { binding: recorded.connection,
     request: async () => ({ payload: {} }) }, current: async () => { await authority.callbackAdmission() },
   callbacks: { submitted: async (_correlationId, value) => {
     expect(await repository.submittedMessage(conversation.id, requestId, value.nativeSubmission!)).toBe(true)
-  }, claudeAuthority: async (request) => {
+  }, claudeAuthority: async (request, signal) => {
     if (request.phase !== 'file') throw new Error('Expected file callback')
+    fileSignal = signal
     const root = { nativeSessionId: request.identity.nativeSessionId, nativeMessageId: request.identity.nativeMessageId,
       clientCorrelationId: request.identity.clientCorrelationId, ownerPrincipalId: request.identity.ownerPrincipalId,
       attemptId: request.identity.attemptId, generation: request.identity.generation, toolUseId: request.identity.toolUseId }
-    await authority.validate(root)
-    return mainFiles.call(request, root)
+    try {
+      await authority.validate(root)
+      return await mainFiles.call(request, root, signal)
+    } finally { fileCompleted.resolve() }
   } } })
   const lifetime = new AbortController()
   const workerFiles = createWorkerClaudeFiles({ sdk: { createSdkMcpServer, tool }, allowMutation: !readOnly,
@@ -123,22 +128,101 @@ async function fixture(readOnly: boolean) {
   await storage.upload(sender.principal, target, uploadId, Readable.from([bytes]))
   const uploaded = await storage.finalize(sender.principal, target, uploadId)
   const ref = { fileId: uploaded.value.file.fileId, revisionId: uploaded.value.revision.revisionId }
-  const call = (name: string, args: Record<string, unknown>, toolUseId = identity.toolUseId) => client.callTool({
-    name, arguments: args, _meta: { 'claudecode/toolUseId': toolUseId },
-  })
+  const call = (name: string, args: Record<string, unknown>,
+    options: { toolUseId?: string; signal?: AbortSignal } = {}) => client.callTool({
+    name, arguments: args, _meta: { 'claudecode/toolUseId': options.toolUseId ?? identity.toolUseId },
+  }, undefined, { ...(options.signal ? { signal: options.signal } : {}) })
   const acknowledge = () => bridge.handle({ method: 'conversation.submitted', binding,
     admissionId: lease.admissionId, correlationId, identity: { nativeSubmission: submission } },
   recorded.connection, AbortSignal.timeout(5000))
-  return { db, client, call, acknowledge, ref, scope, sender, lease, mainFiles,
+  return { db, client, call, acknowledge, ref, scope, sender, lease, mainFiles, service,
+    fileSignal: () => fileSignal, fileCompleted: fileCompleted.promise,
     readConversation: () => repository.get(conversation.id) }
 }
 
 describe.skipIf(!postgresEnabled)('Claude worker file calls on admitted native messages', () => {
+  it('rejects cancellation during Main credential issuance and revokes the credential on closure', async () => {
+    const f = await fixture(false)
+    await f.acknowledge()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const issue = f.service.sessions.issueForAcceptedSession.bind(f.service.sessions)
+    const issuance = vi.spyOn(f.service.sessions, 'issueForAcceptedSession').mockImplementationOnce(async (...args) => {
+      const token = await issue(...args)
+      entered.resolve()
+      await release.promise
+      return token
+    })
+    const controller = new AbortController()
+    const result = f.call('files.create_working_copy', {
+      commandId: randomUUID(), source: f.ref, destination: f.scope,
+    }, { signal: controller.signal }).catch(error => error)
+    try {
+      await Promise.race([entered.promise, result.then(() => {
+        throw new Error('The file call ended before the credential issuance barrier.')
+      })])
+      controller.abort()
+      await vi.waitFor(() => expect(f.fileSignal()?.aborted).toBe(true))
+      release.resolve()
+      await result
+      await f.fileCompleted
+      const token = await issuance.mock.results[0]!.value
+      const artifacts = await f.db.pool.query('select count(*)::int as count from file_tool_artifacts')
+      expect(artifacts.rows[0].count).toBe(0)
+      await f.mainFiles.close()
+      await expect(f.service.sessions.authenticate(token)).rejects.toMatchObject({ code: 'FILE_SESSION_EXPIRED' })
+    } finally {
+      release.resolve()
+      await result
+      if (f.fileSignal()) await f.fileCompleted
+      issuance.mockRestore()
+    }
+  })
+
+  it('reads back an accepted mutation after its SDK file request is cancelled', async () => {
+    const f = await fixture(false)
+    await f.acknowledge()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const create = f.service.createWorkingCopy.bind(f.service)
+    const accepted = vi.spyOn(f.service, 'createWorkingCopy').mockImplementationOnce(async (...args) => {
+      const result = await create(...args)
+      entered.resolve()
+      await release.promise
+      return result
+    })
+    const controller = new AbortController()
+    const args = { commandId: randomUUID(), source: f.ref, destination: f.scope }
+    const result = f.call('files.create_working_copy', args, { signal: controller.signal }).catch(error => error)
+    try {
+      await Promise.race([entered.promise, result.then(() => {
+        throw new Error('The file call ended before the accepted mutation barrier.')
+      })])
+      controller.abort()
+      await vi.waitFor(() => expect(f.fileSignal()?.aborted).toBe(true))
+      release.resolve()
+      await result
+      await f.fileCompleted
+      const replay = AgentFileCreateWorkingCopyResultSchema.parse(
+        (await f.call('files.create_working_copy', args)).structuredContent)
+      expect(replay.replayed).toBe(true)
+      expect(replay.value).toEqual((await accepted.mock.results[0]!.value).value)
+      await f.mainFiles.close()
+      const live = await f.db.pool.query('select count(*)::int as count from file_tool_sessions where revoked_at is null')
+      expect(live.rows[0].count).toBe(0)
+    } finally {
+      release.resolve()
+      await result
+      if (f.fileSignal()) await f.fileCompleted
+      accepted.mockRestore()
+    }
+  })
+
   it('requires persisted ACK, reads bytes, publishes once and denies another conversation or revoked sender', async () => {
     const f = await fixture(false)
     expect((await f.call('files.read', f.ref)).isError).toBe(true)
     await f.acknowledge()
-    expect((await f.call('files.read', f.ref, 'foreign-tool')).isError).toBe(true)
+    expect((await f.call('files.read', f.ref, { toolUseId: 'foreign-tool' })).isError).toBe(true)
     const read = await f.call('files.read', f.ref)
     expect(read.structuredContent).toMatchObject({ status: 'ready',
       contentBase64: Buffer.from('Worker attachment contents').toString('base64') })

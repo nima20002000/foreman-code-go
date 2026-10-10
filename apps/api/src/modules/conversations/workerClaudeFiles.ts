@@ -7,6 +7,7 @@ import { toolFailure, toolResult } from '../../mcp/shared/results.js'
 import { DomainError } from '../errors.js'
 import { AgentFileReadResultSchema } from '@foreman-code/contracts/files'
 import { markdownReadText } from '../files/tools/markdownReadText.js'
+import { z } from 'zod'
 
 export function createWorkerClaudeFiles(input: {
   sdk: ClaudeFileSdk
@@ -27,7 +28,10 @@ export function createWorkerClaudeFiles(input: {
           throw new DomainError('CLAUDE_FILE_NATIVE_CONTEXT_REQUIRED',
           'The file call requires an observed root SDK callback.', 403)
         }
-        const value = await input.authority.file(identity, operation, args, input.signal)
+        const { signal: toolSignal } = z.object({ signal: z.instanceof(AbortSignal) }).parse(extra)
+        const signal = AbortSignal.any([input.signal, toolSignal])
+        signal.throwIfAborted()
+        const value = await input.authority.file(identity, operation, args, signal)
         const result = toolResult(value)
         if (operation === 'files.read') {
           const text = markdownReadText(AgentFileReadResultSchema.parse(value))
