@@ -14,6 +14,7 @@ export * from "./codexPlugins.js";
 export * from "./claudePlugins.js";
 export * from "./settingsExperience.js";
 export * from './generalSettings.js';
+export * from './bugReports.js';
 
 import {
   AgentSchema,
@@ -597,6 +598,7 @@ export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
 ] as const;
 
 export const OperatorToolNameSchema = z.enum([
+  'bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update',
   "ci_run", "ci_get", "ci_computers_list", "ci_cancel", "ci_logs_read", "ci_artifacts_list", "ci_artifact_read",
   ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
   ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,

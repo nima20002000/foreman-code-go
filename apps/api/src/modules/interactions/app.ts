@@ -96,6 +96,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
       // Only tools enabled for this Agent and node are usable capabilities.
       capabilities: {
         contextGet: true,
+        bugReport: hasWorkerAction(principal, 'bug_reports:report') && enabled('bug_report'),
         interactionList: readAllowed && enabled('interaction_list'),
         interactionGet: readAllowed && enabled('interaction_get'),
         interactionRespond: responseAllowed && enabled('interaction_respond'),

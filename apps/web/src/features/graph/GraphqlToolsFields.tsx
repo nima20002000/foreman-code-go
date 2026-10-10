@@ -42,10 +42,22 @@ export function GraphqlToolsFields({ role, defaults, override, onChange }: {
   const effective = effectiveGraphqlTools(role, agentDefault, override)
   return <fieldset className="agent-graphql-tools">
     <legend>Foreman Code MCP tools</legend>
-    <p className="settings-help">The Agent default applies in every workflow. This workflow can turn a tool on or off for this node only.</p>
+    <p className="settings-help">
+      Bug reporting is always available. For other tools, the Agent default applies in every workflow.
+      This workflow can turn a tool on or off for this node only.
+    </p>
     <div className="agent-graphql-tools-list">
       {tools.map((tool) => {
         const definition = GRAPHQL_AGENT_TOOLS[tool]
+        if (tool === 'bug_report') {
+          return <div key={tool} className="agent-graphql-tool">
+            <div className="agent-graphql-tool-name">
+              <strong>{definition.label}</strong>
+              <span><code>{tool}</code> · {definition.description}</span>
+            </div>
+            <span>Always available</span>
+          </div>
+        }
         const inDefault = agentDefault.includes(tool)
         return <div key={tool} className="agent-graphql-tool" data-changed={choice(tool) !== 'default' || undefined}>
           <div className="agent-graphql-tool-name">

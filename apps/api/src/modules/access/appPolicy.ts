@@ -10,7 +10,7 @@ export interface WorkerScope {
   runIds?: readonly string[]
 }
 
-type WorkerAction = Extract<ManagementAction, 'interactions:read' | 'interactions:respond'>
+type WorkerAction = Extract<ManagementAction, 'interactions:read' | 'interactions:respond' | 'bug_reports:report'>
 
 /** Keep action and all three scope dimensions in the same grant. */
 export function workerScopesForAction(principal: ManagementPrincipal, action: WorkerAction): WorkerScope[] {
@@ -35,7 +35,11 @@ export function workerScope(principal: ManagementPrincipal): WorkerScope {
     || Date.parse(parsed.expiresAt) <= Date.now()) {
     throw new DomainError('APP_ACCESS_DENIED', 'The App caller is not authorized.', 403)
   }
-  const scopes = [...workerScopesForAction(parsed, 'interactions:read'), ...workerScopesForAction(parsed, 'interactions:respond')]
+  const scopes = [
+    ...workerScopesForAction(parsed, 'interactions:read'),
+    ...workerScopesForAction(parsed, 'interactions:respond'),
+    ...workerScopesForAction(parsed, 'bug_reports:report'),
+  ]
   if (scopes.length === 0) {
     throw new DomainError('APP_SCOPE_REQUIRED', 'The App credential does not have an explicit execution scope.', 403)
   }

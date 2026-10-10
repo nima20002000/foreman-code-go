@@ -13,6 +13,8 @@ import {
   RespondToInteractionResponseSchema,
 } from './schemas.js'
 import type { AppRequestContext } from './types.js'
+import { hasWorkerAction } from '../../modules/access/appPolicy.js'
+import { registerBugReportTool } from '../shared/bugReports.js'
 
 const readAnnotations = {
   readOnlyHint: true,
@@ -28,6 +30,13 @@ export async function createAppMcpServer(context: AppRequestContext): Promise<Mc
 }
 
 export async function registerAppTools(server: McpServer, context: AppRequestContext): Promise<void> {
+  if (context.bugReports && hasWorkerAction(context.principal, 'bug_reports:report')) {
+    registerBugReportTool(server, {
+      principal: context.principal,
+      service: context.bugReports,
+      invoke: work => invokeAppTool(context, 'bug_report', work),
+    })
+  }
   server.registerTool('context_get', {
     description: 'Return this authenticated Foreman Code Agent identity, role, immutable scope, and current App capabilities. Response capability requires a directly connected requester in the saved Run graph; every decision also checks the exact request, role and credential.',
     inputSchema: z.object({}).strict(),

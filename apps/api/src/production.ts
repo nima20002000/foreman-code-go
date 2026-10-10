@@ -197,6 +197,7 @@ import { PostgresOperatorChatAuthority } from './modules/conversations/operatorC
 import { AgentChatService, type AgentChatManagerFactory } from './modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from './modules/conversations/agentChatRepository.js'
 import { PostgresCommandCoordinator } from './modules/commands/postgres.js'
+import { BugReportService } from './modules/bug-reports/service.js'
 import { DomainError } from './modules/errors.js'
 import { productionSubagentControls } from './modules/subagents/productionControls.js'
 import { HarnessCatalogService } from './modules/harnesses/catalog.js'
@@ -471,6 +472,7 @@ export function buildProductionApp(
     },
   })
   const commands = new PostgresCommandCoordinator(database.pool)
+  const bugReports = new BugReportService(database.pool, commands)
   // Producer/consumer halves are installed during construction. Neither HTTP,
   // MCP nor a caller-supplied JSON observation can manufacture these captures.
   const workflowCapture = createWorkflowNativeCaptureChannel()
@@ -1326,6 +1328,7 @@ export function buildProductionApp(
   })
 
   const operatorServices = {
+    bugReports,
     devices: deviceRuntime.management,
     harnessInstances, harnessRegistry,
     fileRetention: new FileRetentionService(database.pool, commands),
@@ -1418,7 +1421,7 @@ export function buildProductionApp(
     readinessTimeoutMs: config.readinessTimeoutMs,
     product: { workspaces, workflows, runs, settings, foundationSettings, engine, interactions, chat },
     operator: { access, services: runtimeServices },
-    appMcp: { access, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
+    appMcp: { access, commands, bugReports, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
       syncedFolder: (workspaceId: string, hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) =>
         runtimeServices.computerSync?.sharedFolder(workspaceId, hostRef) ?? Promise.resolve(null) }) },
     workerArtifacts: () => workflowArtifacts?.extension,

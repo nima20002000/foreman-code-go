@@ -33,7 +33,7 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
     return this.locked(executionId, async (client) => {
       const a = await credentialAuthority(client, executionId, purpose)
       const issued = await this.approvalAccess.issue({ name: `execution:${executionId}`, audience: 'worker', agentId: a.execution.agentId,
-        grants: [{ actions: ['interactions:read', ...(a.canRespond ? ['interactions:respond' as const] : [])],
+        grants: [{ actions: ['bug_reports:report', 'interactions:read', ...(a.canRespond ? ['interactions:respond' as const] : [])],
           scope: { workspaceIds: [a.run.workspaceId], workflowIds: [a.run.workflowId], runIds: [a.run.id] } }],
         expiresAt: new Date(Date.now() + this.ttlMs) }, client)
       const jobs = purpose === 'reviewer' ? (await client.query<{ id: string; lease_fence: string }>(

@@ -214,6 +214,7 @@ export function operatorToolAvailable(context: OperatorRequestContext, name: Ope
   if (retiredExecutionTool(name)) return false
   if (!OPERATOR_TOOL_ACTIONS.some((entry)=>entry.name===name)) return false
   const service = context.services
+  if (name.startsWith('bug_report') && !service.bugReports) return false
   if (name.startsWith('general_settings_') && !service.settings) return false
   if (name === 'resource_telemetry_read' || name === 'resource_telemetry_selector_get') {
     if (!service.resourceTelemetry) return false

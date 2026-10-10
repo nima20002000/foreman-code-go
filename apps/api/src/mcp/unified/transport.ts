@@ -16,6 +16,8 @@ import { z } from 'zod'
 import { requireLocalRequest } from '../../modules/access/http.js'
 import { bearerToken, type PostgresAccessService } from '../../modules/access/postgres.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'
+import type { BugReportService } from '../../modules/bug-reports/service.js'
+import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import { retiredExecutionToolCall } from '../operator/retiredExecutionTools.js'
 import { unavailableCurrentWorkflowToolCall } from '../operator/tools/currentWorkflow.js'
 import { unavailableRunGraphToolCall } from '../operator/tools/runGraph.js'
@@ -51,6 +53,8 @@ export interface GraphqlMcpServices {
   operator?: OperatorServices
   /** Serves Worker credentials (Orchestrator and Coder Agents). */
   interactions?: AppInteractionService
+  bugReports?: BugReportService
+  commands?: PostgresCommandCoordinator
   workerArtifacts?: () => WorkerArtifactMcpExtension | undefined
 }
 
@@ -114,7 +118,9 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
     const context = { role, principal, ...(access ? { tools: access.tools } : {}),
       ...(operation ? { signal: operation.signal } : {}),
       ...(services.operator ? { operator: services.operator } : {}),
-      ...(services.interactions ? { interactions: services.interactions } : {}) }
+      ...(services.interactions ? { interactions: services.interactions } : {}),
+      ...(services.bugReports ? { bugReports: services.bugReports } : {}),
+      ...(services.commands ? { commands: services.commands } : {}) }
     // Cover every other known tool hidden by grants before the SDK handles unknown names.
     const denied = await roleDeniedToolCall(context, request.body)
     if (denied) return reply.send(denied)

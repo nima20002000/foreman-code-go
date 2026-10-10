@@ -111,6 +111,7 @@ export class WorkerCredentialService {
         agentId: identity.agent_id,
         grants: [{
           actions: [
+            'bug_reports:report',
             'interactions:read',
             ...(run.approval?.handler === 'orchestrator'
               && run.approval.designatedOrchestratorAgentId === identity.agent_id

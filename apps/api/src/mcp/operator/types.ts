@@ -23,6 +23,7 @@ import type { FoundationSettingsManagementService } from '../../modules/settings
 import type { OperatorInteractionService } from '../../modules/interactions/operator.js'
 
 export interface OperatorServices {
+  bugReports?: import('../../modules/bug-reports/service.js').BugReportService
   ci?: import('../../modules/jobs/ci.js').CiService
   workerExecution?: import('../../modules/settings/workerExecution.js').WorkerExecutionPolicy
   jobs?: import('../../modules/jobs/service.js').JobService

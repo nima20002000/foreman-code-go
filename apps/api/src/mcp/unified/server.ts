@@ -6,7 +6,10 @@ import { z } from 'zod'
 import { GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
 import { DomainError } from '../../modules/errors.js'
+import { hasWorkerAction } from '../../modules/access/appPolicy.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'
+import type { BugReportService } from '../../modules/bug-reports/service.js'
+import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import { registerAppTools } from '../app/server.js'
 import { registerCiTools } from '../shared/ciTools.js'
 import { registerOperatorTools } from '../operator/server.js'
@@ -20,6 +23,8 @@ export interface GraphqlMcpContext {
   principal: ManagementPrincipal
   operator?: OperatorServices
   interactions?: AppInteractionService
+  bugReports?: BugReportService
+  commands?: PostgresCommandCoordinator
   /** Worker roles only: the tools enabled for this Agent's configuration and workflow node. */
   tools?: readonly string[]
   signal?: AbortSignal
@@ -65,16 +70,20 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
   if (!call.success) return undefined
   const name = call.data.params.name
   const allowed = toolRoles(name)
-  const enabled = !context.tools || context.tools.includes(name)
+  const enabled = name === 'bug_report' || !context.tools || context.tools.includes(name)
   const roleAllowed = allowed.includes(context.role)
-  if (roleAllowed && enabled && context.role !== 'operator') return undefined
+  const workerReportDenied = context.role !== 'operator' && name === 'bug_report'
+    && !hasWorkerAction(context.principal, 'bug_reports:report')
+  if (roleAllowed && enabled && context.role !== 'operator' && !workerReportDenied) return undefined
   const catalog = [
     ...(context.operator ? await operatorCatalog(context.operator) : []),
     ...(context.interactions ? await agentCatalog() : []),
   ]
   if (!catalog.some((tool) => tool.name === name)) return undefined
   let error: DomainError
-  if (roleAllowed && enabled) {
+  if (workerReportDenied) {
+    error = new DomainError('ACCESS_DENIED', 'The caller is not authorized to report bugs in this execution.', 403)
+  } else if (roleAllowed && enabled) {
     const services = context.operator
     if (!services) return undefined
     const available = await collectTools((server) => registerOperatorTools(server, {
@@ -91,7 +100,8 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
       `Your ${MCP_ROLE_LABELS[context.role]} role cannot use ${name}. Allowed roles: ${roleList(allowed)}.`, 403,
       { role: context.role, allowedRoles: [...allowed] })
   }
-  await context.operator?.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
+  const commands = context.commands ?? context.operator?.commands
+  await commands?.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
   return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(error) }
 }
 
@@ -108,12 +118,13 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promis
     const tools = context.tools
     // Registers only the tools enabled for this Agent; the rest are never listed.
     const enabled = tools ? new Proxy(server, { get(target, key) {
-      if (key === 'registerTool') return (name: string, ...rest: unknown[]) => tools.includes(name)
+      if (key === 'registerTool') return (name: string, ...rest: unknown[]) => name === 'bug_report' || tools.includes(name)
         ? (target.registerTool as (...args: unknown[]) => unknown).call(target, name, ...rest) : undefined
       const value: unknown = Reflect.get(target, key, target)
       return typeof value === 'function' ? value.bind(target) : value
     } }) : server
     await registerAppTools(enabled, { principal: context.principal, interactions: context.interactions,
+      ...(context.bugReports ? { bugReports: context.bugReports } : {}),
       ...(context.signal ? { signal: context.signal } : {}) })
     if (context.operator) registerCiTools(enabled, { principal: context.principal, services: context.operator })
   }

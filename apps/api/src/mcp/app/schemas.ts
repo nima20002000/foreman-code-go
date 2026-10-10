@@ -27,6 +27,7 @@ export const AppContextSchema = z.object({
   }).strict(),
   capabilities: z.object({
     contextGet: z.literal(true),
+    bugReport: z.boolean(),
     interactionList: z.boolean(),
     interactionGet: z.boolean(),
     interactionRespond: z.boolean(),

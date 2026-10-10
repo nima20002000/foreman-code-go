@@ -19,11 +19,26 @@ it('advertises only the interaction capabilities whose tools are enabled for the
   const query = vi.fn(async (): Promise<{ rows: unknown[] }> => ({ rows: [{ role: 'coder', defaults: ['context_get'], override: null }] }))
   const service = new PostgresAppInteractionService({ query } as unknown as pg.Pool, {} as never, {} as never)
   const context = await service.context(worker) as { tools: string[]; capabilities: Record<string, boolean> }
-  expect(context.tools).toEqual(['context_get'])
-  expect(context.capabilities).toEqual({ contextGet: true, interactionList: false, interactionGet: false, interactionRespond: false })
+  expect(context.tools).toEqual(['bug_report', 'context_get'])
+  expect(context.capabilities).toEqual({ contextGet: true, bugReport: false,
+    interactionList: false, interactionGet: false, interactionRespond: false })
   query.mockResolvedValueOnce({ rows: [{ role: 'coder', defaults: ['context_get'], override: { add: ['interaction_get'], remove: [] } }] })
   expect((await service.context(worker) as { capabilities: Record<string, boolean> }).capabilities)
     .toMatchObject({ interactionList: false, interactionGet: true })
+})
+
+it('keeps scoped bug reporting available when all configurable tools are removed', async () => {
+  const query = vi.fn(async (): Promise<{ rows: unknown[] }> => ({
+    rows: [{ role: 'coder', defaults: [], override: { add: [], remove: ['bug_report'] } }],
+  }))
+  const service = new PostgresAppInteractionService({ query } as unknown as pg.Pool, {} as never, {} as never)
+  const reporter: ManagementPrincipal = { ...worker, grants: [{ actions: ['bug_reports:report'], scope }] }
+  expect(await service.context(reporter)).toMatchObject({
+    tools: ['bug_report'],
+    capabilities: {
+      bugReport: true, interactionList: false, interactionGet: false, interactionRespond: false,
+    },
+  })
 })
 
 it('tells the Agent which worktree and branch it owns', async () => {

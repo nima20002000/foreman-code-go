@@ -8,14 +8,16 @@ import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from './workerNativeOutput.js'
 describe('Foreman Code MCP tools per Agent', () => {
   it('starts from every role tool, applies the Agent default, then the node override, never beyond the role', () => {
     const outputs = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
-    expect(graphqlRoleTools('coder')).toEqual(['context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
+    expect(graphqlRoleTools('coder')).toEqual(['bug_report', 'context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
       'ci_computers_list', 'ci_cancel', 'ci_logs_read', 'ci_artifacts_list', 'ci_artifact_read'])
-    expect(effectiveGraphqlTools('coder')).toEqual(['context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
+    expect(effectiveGraphqlTools('coder')).toEqual(['bug_report', 'context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
       'ci_computers_list', 'ci_cancel', 'ci_logs_read', 'ci_artifacts_list', 'ci_artifact_read'])
-    expect(effectiveGraphqlTools('coder', ['context_get'])).toEqual(['context_get'])
-    expect(effectiveGraphqlTools('coder', ['context_get'], { add: ['interaction_get'], remove: ['context_get'] })).toEqual(['interaction_get'])
-    expect(effectiveGraphqlTools('coder', [], { add: ['interaction_respond'], remove: [] })).toEqual([])
-    expect(effectiveGraphqlTools('orchestrator', [], { add: ['interaction_respond'], remove: [] })).toEqual(['interaction_respond'])
+    expect(effectiveGraphqlTools('coder', ['context_get'])).toEqual(['bug_report', 'context_get'])
+    expect(effectiveGraphqlTools('coder', ['context_get'], { add: ['interaction_get'], remove: ['context_get'] }))
+      .toEqual(['bug_report', 'interaction_get'])
+    expect(effectiveGraphqlTools('coder', [], { add: ['interaction_respond'], remove: [] })).toEqual(['bug_report'])
+    expect(effectiveGraphqlTools('orchestrator', [], { add: ['interaction_respond'], remove: [] }))
+      .toEqual(['bug_report', 'interaction_respond'])
     expect(graphqlToolRoles('interaction_respond')).toEqual(['operator', 'orchestrator'])
   })
   it('keeps workflow output settings within Agent roles and honors explicit defaults and node removals', () => {
@@ -24,9 +26,16 @@ describe('Foreman Code MCP tools per Agent', () => {
       expect(graphqlToolRoles(tool)).toEqual(['orchestrator', 'coder'])
       expect(GraphqlToolOverrideSchema.parse({ add: [tool], remove: [] }).add).toEqual([tool])
       expect(effectiveGraphqlTools('coder', ['context_get'], { add: [tool], remove: [] }))
-        .toEqual(['context_get', tool])
+        .toEqual(['bug_report', 'context_get', tool])
     }
-    expect(effectiveGraphqlTools('coder', outputs, { add: [], remove: outputs })).toEqual([])
+    expect(effectiveGraphqlTools('coder', outputs, { add: [], remove: outputs })).toEqual(['bug_report'])
+  })
+
+  it('keeps bug reporting available for existing explicit defaults and node removals', () => {
+    for (const role of ['coder', 'orchestrator'] as const) {
+      expect(effectiveGraphqlTools(role, [], { add: [], remove: ['bug_report'] })).toEqual(['bug_report'])
+    }
+    expect(graphqlToolRoles('bug_report')).toEqual(['operator', 'orchestrator', 'coder'])
   })
 
   it('accepts only known Agent tools, without overlap', () => {

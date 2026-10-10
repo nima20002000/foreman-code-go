@@ -176,10 +176,14 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (options.operator?.services.agentChat) registerAgentChatRoutes(app, options.operator.services.agentChat)
   if (options.operator && options.product?.interactions) registerUserInteractions(app, options.product.interactions)
   if (options.product) registerProductRoutes(app, options.product, Boolean(options.operator), options.operator?.services)
+  const bugReports = options.appMcp?.bugReports ?? options.operator?.services.bugReports
+  const commands = options.appMcp?.commands ?? options.operator?.services.commands
   if (options.operator || options.appMcp) registerGraphqlMcp(app, {
     access: (options.operator?.access ?? options.appMcp?.access)!,
     ...(options.operator ? { operator: Object.assign(options.operator.services, { workerToolsMcpImplemented: Boolean(options.appMcp) }) } : {}),
     ...(options.appMcp ? { interactions: options.appMcp.interactions } : {}),
+    ...(bugReports ? { bugReports } : {}),
+    ...(commands ? { commands } : {}),
     ...(options.workerArtifacts ? { workerArtifacts: options.workerArtifacts } : {}),
   })
 

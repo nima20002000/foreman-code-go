@@ -11,6 +11,13 @@ export const GRAPHQL_MCP_ROLE_LABELS: Record<GraphqlMcpRole, string> = {
 /** Agent-facing Foreman Code MCP tools. Every other Foreman Code MCP tool is Operator-only and can
  * never be enabled for an Agent. Grants and scope are still checked per call. */
 export const GRAPHQL_AGENT_TOOLS = {
+  bug_report: {
+    label: 'Report a bug',
+    description: 'Always available to workflow Agents. Report a Foreman Code feature or MCP tool failure. '
+      + 'Summarize inputs without secrets; reporter, workspace, time and harness are derived by the server. '
+      + 'Requires the scoped reporting grant. Retry the same commandId and input.',
+    roles: ['operator', 'orchestrator', 'coder'],
+  },
   context_get: { label: "Read run context", description: "Its own identity, role, scope and enabled tools.", roles: ["orchestrator", "coder"] },
   interaction_list: { label: "List interactions", description: "Approval requests in its run.", roles: ["operator", "orchestrator", "coder"] },
   interaction_get: { label: "Read an interaction", description: "One approval request and its options.", roles: ["operator", "orchestrator", "coder"] },
@@ -51,11 +58,11 @@ export const GraphqlAgentToolSchema = z.enum(
 );
 export type GraphqlAgentTool = z.infer<typeof GraphqlAgentToolSchema>;
 
-/** An Agent's default Foreman Code MCP tools. Absent means every tool its role allows. */
+/** An Agent's default tools. Absent enables every role tool; bug_report is always included. */
 export const GraphqlToolDefaultsSchema = z.array(GraphqlAgentToolSchema).max(100)
   .refine((tools) => new Set(tools).size === tools.length, "Foreman Code MCP tools must be unique");
 
-/** A workflow node's change to its Agent's default Foreman Code MCP tools. */
+/** A workflow node's tool changes. bug_report remains available even when named in remove. */
 export const GraphqlToolOverrideSchema = z.object({
   add: z.array(GraphqlAgentToolSchema).max(100),
   remove: z.array(GraphqlAgentToolSchema).max(100),
@@ -82,7 +89,7 @@ export function graphqlToolsOutsideRole(role: "orchestrator" | "coder", tools: r
   return tools.filter((tool) => !graphqlToolRoles(tool).includes(role));
 }
 
-/** (agent default, or every role tool) + node additions - node removals, never beyond the role. */
+/** Applies saved tool choices within the role. Bug reporting is available to every workflow Agent. */
 export function effectiveGraphqlTools(
   role: "orchestrator" | "coder", defaults?: readonly string[], override?: GraphqlToolOverride,
 ): GraphqlAgentTool[] {
@@ -90,5 +97,6 @@ export function effectiveGraphqlTools(
   const enabled = new Set<string>(defaults ?? roleTools);
   for (const tool of override?.add ?? []) enabled.add(tool);
   for (const tool of override?.remove ?? []) enabled.delete(tool);
+  enabled.add('bug_report');
   return roleTools.filter((tool) => enabled.has(tool));
 }

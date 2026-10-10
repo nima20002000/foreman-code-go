@@ -204,6 +204,13 @@ export function GlobalSettingsRouteEntry() {
                   </Link>
                 </Card>
               </li>
+              <li>
+                <Card className="settings-card">
+                  <Link to="/settings/bugs" className="settings-card-open">
+                    <SettingsCardBody icon="warning" title="Bugs" description="Review Agent reports and update their status" />
+                  </Link>
+                </Card>
+              </li>
             </ul>
             <h2 className="settings-group-heading" id="settings-defaults-heading">Defaults</h2>
             <ul className="settings-card-list" aria-labelledby="settings-defaults-heading">

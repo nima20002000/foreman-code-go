@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+import type { GraphqlAgentTool, GraphqlToolOverride } from '@foreman-code/contracts'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +10,7 @@ import { AgentSettingsForm } from './AgentSettingsForm'
 
 afterEach(cleanup)
 
-function open(role: 'orchestrator' | 'coder', extra: { graphqlTools?: ['context_get'] } = {}, nodeGraphqlTools?: { add: ['interaction_list'], remove: [] }) {
+function open(role: 'orchestrator' | 'coder', extra: { graphqlTools?: GraphqlAgentTool[] } = {}, nodeGraphqlTools?: GraphqlToolOverride) {
   const agent = { ...defaultAgentForHarness('codex', 'agent', 'Agent', DEFAULT_HARNESS_DEFAULTS.codex, role), ...extra }
   const onSave = vi.fn()
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -20,6 +21,15 @@ function open(role: 'orchestrator' | 'coder', extra: { graphqlTools?: ['context_
 }
 
 describe('Foreman Code MCP tools in Agent settings', () => {
+  it('keeps bug reporting available with no controls to disable it', () => {
+    const { tools } = open('coder', { graphqlTools: [] }, { add: [], remove: ['bug_report'] })
+    expect(within(tools).getByText('Report a bug')).toBeVisible()
+    expect(within(tools).getByText('Always available')).toBeVisible()
+    expect(within(tools).queryByLabelText('Report a bug: Agent default')).not.toBeInTheDocument()
+    expect(within(tools).queryByRole('group', { name: 'Report a bug: this workflow' })).not.toBeInTheDocument()
+    expect(tools).toHaveTextContent('Enabled in this workflow: Report a bug.')
+  })
+
   it('lists only the role tools, never Operator tools', () => {
     const coder = open('coder').tools
     expect(within(coder).queryByText('Respond to approvals')).toBeNull()
@@ -34,9 +44,9 @@ describe('Foreman Code MCP tools in Agent settings', () => {
     fireEvent.click(within(tools).getByLabelText('Read run context: Agent default'))
     const group = within(tools).getByRole('group', { name: 'Read run context: this workflow' })
     fireEvent.click(within(group).getByLabelText('On'))
-    expect(tools).toHaveTextContent('Enabled in this workflow: Read run context, List interactions, Create workflow output, Append workflow output, Seal workflow output, Publish workflow output, Run CI, Read CI result, List CI computers, Cancel CI, Read CI logs, List CI artifacts, Read CI artifact.')
+    expect(tools).toHaveTextContent('Enabled in this workflow: Report a bug, Read run context, List interactions, Create workflow output, Append workflow output, Seal workflow output, Publish workflow output, Run CI, Read CI result, List CI computers, Cancel CI, Read CI logs, List CI artifacts, Read CI artifact.')
     fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
-    expect(onSave.mock.calls[0]![0].graphqlTools).toEqual(['interaction_list', 'files.native_output_create',
+    expect(onSave.mock.calls[0]![0].graphqlTools).toEqual(['bug_report', 'interaction_list', 'files.native_output_create',
       'files.native_output_append', 'files.native_output_seal', 'files.native_output_publish', 'ci_run', 'ci_get',
       'ci_computers_list', 'ci_cancel', 'ci_logs_read', 'ci_artifacts_list', 'ci_artifact_read'])
     expect(onSave.mock.calls[0]![3]).toEqual({ add: ['context_get'], remove: [] })

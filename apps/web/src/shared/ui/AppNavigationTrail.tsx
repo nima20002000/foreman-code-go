@@ -14,6 +14,7 @@ const sectionNames: Record<string, string> = {
   workflows: 'Workflows', settings: 'Settings', files: 'Project files', agents: 'Agents',
   tasks: 'Tasks', runs: 'Runs', terminal: 'Terminal', approvals: 'Approvals', location: 'Location',
   harnesses: 'Harnesses', computers: 'Computers', skills: 'Skills', workspaces: 'Workspaces', general: 'General',
+  bugs: 'Bugs',
 }
 
 function BreadcrumbLink({ crumb }: { crumb: Crumb }) {

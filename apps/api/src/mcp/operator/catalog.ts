@@ -1,6 +1,10 @@
 import type { ManagementAction, OperatorToolName } from '@foreman-code/contracts/management'
 
 export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; action: ManagementAction }> = [
+  { name: 'bug_report', action: 'bug_reports:report' },
+  { name: 'bug_reports_list', action: 'bug_reports:read' },
+  { name: 'bug_report_get', action: 'bug_reports:read' },
+  { name: 'bug_report_update', action: 'bug_reports:update' },
   { name: 'operator_tool_schema_get', action: 'capabilities:read' },
   { name: 'general_settings_get', action: 'settings:read' },
   { name: 'general_settings_update', action: 'settings:update' },
