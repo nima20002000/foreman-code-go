@@ -86,6 +86,56 @@ test('resolves an upgraded npm Codex launcher to its native optional package wit
   assert.equal(JSON.parse(await readFile(f.path, 'utf8')).expectedVersion, 'codex-cli 0.163.0');
 });
 
+for (const ambientHarness of ['absent', 'different']) {
+  test(`keeps an explicit Codex selection when PATH discovery is ${ambientHarness}`, async t => {
+    const f = await fixture(t);
+    const binary = join(f.root, 'selected/codex');
+    await nativeCodex(binary);
+    if (ambientHarness === 'different') await nativeCodex(join(f.bin, 'codex'), '0.163.0');
+    const payload = join(f.root, 'selected/payload.json');
+    await writeFile(payload, '{}');
+    const selection = { schemaVersion: 1, codexBinary: binary, expectedVersion: 'codex-cli 0.162.0',
+      payloadPaths: [payload], appMcpLauncher: join(f.release, 'artifacts/graphql-mcp.mjs') };
+    const bytes = JSON.stringify(selection);
+    await writeFile(f.path, bytes, { mode: 0o600 });
+    const info = await stat(f.path);
+    assert.deepEqual(await refreshWorkflowSelection(f.options), { path: f.path, ownerUid: process.getuid() });
+    assert.equal(await readFile(f.path, 'utf8'), bytes);
+    assert.equal((await stat(f.path)).ino, info.ino);
+
+    await nativeCodex(binary, '0.164.0');
+    await refreshWorkflowSelection(f.options);
+    assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), {
+      ...selection, expectedVersion: 'codex-cli 0.164.0',
+    });
+    await rm(binary);
+    if (ambientHarness === 'different') {
+      await refreshWorkflowSelection(f.options);
+      assert.equal(JSON.parse(await readFile(f.path, 'utf8')).codexBinary, join(f.bin, 'codex'));
+    } else {
+      assert.equal(await refreshWorkflowSelection(f.options), null);
+      await assert.rejects(readFile(f.path), { code: 'ENOENT' });
+    }
+  });
+}
+
+test('a retained selection follows the running release launcher after a Worker update', async t => {
+  const f = await fixture(t);
+  const previous = join(f.root, 'versions/1'), current = join(f.root, 'versions/2');
+  for (const release of [previous, current]) {
+    await mkdir(join(release, 'artifacts'), { recursive: true, mode: 0o700 });
+    await writeFile(join(release, 'artifacts/graphql-mcp.mjs'), 'export {};', { mode: 0o600 });
+  }
+  const binary = join(f.root, 'selected/codex');
+  await nativeCodex(binary);
+  await writeFile(f.path, JSON.stringify({ schemaVersion: 1, codexBinary: binary, expectedVersion: 'codex-cli 0.162.0',
+    payloadPaths: [], appMcpLauncher: join(previous, 'artifacts/graphql-mcp.mjs') }), { mode: 0o600 });
+  await refreshWorkflowSelection({ ...f.options, release: current });
+  const selection = JSON.parse(await readFile(f.path, 'utf8'));
+  assert.equal(selection.codexBinary, binary);
+  assert.equal(selection.appMcpLauncher, join(current, 'artifacts/graphql-mcp.mjs'));
+});
+
 test('an absent or removed harness is not selected and retired launchers are replaced', async t => {
   const f = await fixture(t);
   assert.equal(await refreshWorkflowSelection(f.options), null);
@@ -119,6 +169,13 @@ test('selects installed Claude with its actual SDK integrity metadata without re
   assert.equal(selection.codexBinary, undefined);
   assert.deepEqual(selection.claude, { binary: join(f.bin, 'claude'), installedLockPath: lock,
     sdkEntrypoint: join(sdkDirectory, 'sdk.mjs') });
+  const info = await stat(f.path);
+  await nativeCodex(join(f.bin, 'codex'));
+  await refreshWorkflowSelection({ ...f.options, environment: { PATH: '' } });
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), selection);
+  assert.equal((await stat(f.path)).ino, info.ino);
+  await refreshWorkflowSelection(f.options);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), selection);
 });
 
 for (const defect of ['symlink', 'hardlink', 'public']) {
