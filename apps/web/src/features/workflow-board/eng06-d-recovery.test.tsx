@@ -99,7 +99,7 @@ function recover(f: Fixture, runId: string, state: 'running' | 'interrupted') {
   current.asOfSequence = String(BigInt(current.asOfSequence) + 1n)
 }
 async function showActions(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: 'Details' }))
+  await user.click(screen.getByRole('button', { name: 'Activities' }))
   await screen.findByRole('region', { name: 'Selected Run actions' })
   await waitFor(() => expect(action('Resume execution — unavailable')).toBeDisabled())
   await waitFor(() => expect(action('Stop this Run')).toBeEnabled())

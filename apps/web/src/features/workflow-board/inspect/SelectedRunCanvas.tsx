@@ -36,14 +36,14 @@ const PinnedRunNode = memo(function PinnedRunNode({ id, data }: NodeProps<RunNod
   const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []), ...data.facts.meta].slice(0, 2)
   return <><AgentNodeView ref={anchor} className="pinned-run-node" name={data.label} harness={data.facts.harness} harnessLabel={data.facts.harnessLabel}
     model={data.facts.model} icon={data.facts.icon} statusLabel={data.status} state={data.state} transition={data.transition} transitionKey={data.transitionKey} meta={meta}
-    entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={()=>{data.inspect();if(data.kind==='job')ui?.setOpen({nodeId:id,panel:'info'})}} openPanel={panel}
+    entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={()=>{if(data.kind==='job'){data.inspect();ui?.setOpen({nodeId:id,panel:'info'})}}} openPanel={panel}
     onAction={ui?.panels && data.kind==='agent' ? (next) => ui.setOpen(panel === next ? undefined : { nodeId: id, panel: next }) : undefined}>
     <AgentHandles name={data.label} connectable={false} />
   </AgentNodeView>
     {panel && ui?.panels && data.kind==='job'?<Dialog open className="job-dialog" title={data.label} description={`Selected Run · ${data.recorded}`} onOpenChange={value=>{if(!value)ui.setOpen(undefined)}}>{ui.panels(id,{kind:'job',jobDefinitionId:data.jobDefinitionId,jobDefinitionRevision:data.jobDefinitionRevision,jobDefinitionVersionId:data.jobDefinitionVersionId,name:data.label,workflowExecution:data.workflowExecution}).info}</Dialog>:null}
     {panel && ui?.panels && data.kind==='agent' ? <AgentPopover open anchor={anchor} title={data.label} subtitle={`Selected Run · ${data.recorded}`}
       harness={data.facts.harness} icon={data.facts.icon} panel={panel}
-      onPanelChange={(next) => ui.setOpen({ nodeId: id, panel: next })} onClose={() => ui.setOpen(undefined)}
+      onClose={() => ui.setOpen(undefined)}
       {...ui.panels(id,{agentId:data.agentId,name:data.label})} /> : null}
   </>
 })
@@ -141,6 +141,7 @@ export function SelectedRunCanvas({ scope, panels }: { scope: RepeatGraphScopeV3
   // object (and its inspect callback) unless that node's own presentation changed,
   // so React Flow does not rebuild the pinned canvas on every poll.
   const inspectRef = useRef<(nodeId: string) => void>(() => undefined)
+  // An agent click opens nothing: its Activity is in its Info panel, the Run's in Activities on top. Jobs open their details.
   inspectRef.current = (nodeId: string) => { board.selectInspection({ runNodeId: nodeId }); board.openRuns() }
   const jobReferences = useRef(new Map<string, JobWorkflowAdmissionReference>())
   const jobExecutions = useMemo(() => {

@@ -2,7 +2,6 @@ import { forwardRef, useEffect, useId, useLayoutEffect, useRef, type CSSProperti
 import { createPortal } from 'react-dom'
 import { Icon, type IconName } from './Icon'
 import { IconButton } from './Button'
-import { Tabs } from './Navigation'
 import { cx } from './utils'
 
 /** Visual state only. Feature code maps runtime facts to one of these; the canvas never infers progress. */
@@ -12,6 +11,7 @@ export type AgentNodeTransition = 'arrive' | 'ask' | 'grant' | 'ignite' | 'compl
 export type AgentPanel = 'chat' | 'settings' | 'info'
 
 const actionLabels: Record<AgentPanel, string> = { chat: 'chat', settings: 'settings', info: 'information' }
+const panelTitles: Record<AgentPanel, string> = { chat: 'Chat', settings: 'Settings', info: 'Info' }
 const actionIcons: Record<AgentPanel, IconName> = { chat: 'chat', settings: 'settings', info: 'info' }
 
 export interface AgentNodeViewProps {
@@ -85,8 +85,8 @@ export interface AgentPopoverProps {
   subtitle?: string
   icon?: IconName
   harness?: string
+  /** Each rim action opens its own surface; Info may carry its own tabs. */
   panel: AgentPanel
-  onPanelChange: (panel: AgentPanel) => void
   onClose: () => void
   chat: ReactNode
   settings: ReactNode
@@ -96,7 +96,7 @@ export interface AgentPopoverProps {
 
 const GAP = 20
 /** Nonmodal panel anchored beside an agent. Escape closes it; a phone gets a bottom sheet from CSS. */
-export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harness, panel, onPanelChange, onClose, chat, settings, info, className }: AgentPopoverProps) {
+export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harness, panel, onClose, chat, settings, info, className }: AgentPopoverProps) {
   const surface = useRef<HTMLElement>(null)
   const id = useId()
   const close = useRef(onClose)
@@ -162,7 +162,8 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
       // Never pull focus away from something the person moved to meanwhile.
       const now = document.activeElement
       if (now && now !== document.body && now !== trigger && !owner?.contains(now)) return
-      const panel = surface.current?.querySelector('[role=tabpanel]:not([hidden])')
+      const body = surface.current?.querySelector('.n-agent-popover-body')
+      const panel = body?.querySelector('[role=tabpanel]:not([hidden])') ?? body
       const field = panel?.querySelector<HTMLElement>('input:not([type=checkbox]):not([type=radio]):not(:disabled), textarea:not(:disabled), select:not(:disabled)')
       ;(field ?? surface.current?.querySelector<HTMLElement>('[role=tab][aria-selected=true]'))?.focus({ preventScroll: true })
     })
@@ -196,14 +197,10 @@ export function AgentPopover({ open, anchor, title, subtitle, icon = 'bot', harn
     onKeyDown={(event) => { if (event.key !== 'Escape') event.stopPropagation() }}>
     <header className="n-agent-popover-header">
       <span className="n-agent-popover-glyph" aria-hidden="true"><Icon name={icon} size={18} /></span>
-      <div><h2 id={`${id}-title`}>{title}</h2>{subtitle ? <p>{subtitle}</p> : null}</div>
+      <div><h2 id={`${id}-title`}>{title} · {panelTitles[panel]}</h2>{subtitle ? <p>{subtitle}</p> : null}</div>
       <IconButton label={`Close ${title}`} variant="ghost" onClick={onClose}><Icon name="close" size={16} /></IconButton>
     </header>
-    <Tabs label={`${title} panels`} value={panel} onValueChange={(value) => onPanelChange(value as AgentPanel)} items={[
-      { value: 'chat', label: 'Chat', content: <div className="n-agent-popover-body">{chat}</div> },
-      { value: 'settings', label: 'Settings', content: <div className="n-agent-popover-body">{settings}</div> },
-      { value: 'info', label: 'Info', content: <div className="n-agent-popover-body">{info}</div> },
-    ]} />
+    <div className="n-agent-popover-body">{panel === 'chat' ? chat : panel === 'settings' ? settings : info}</div>
   </section>, document.body)
 }
 

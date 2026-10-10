@@ -81,7 +81,7 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected, width, height 
       </div>
     </AgentNodeView>
     {panel && !runSelected ? <AgentPopover open anchor={core} title={data.label} subtitle={`${facts.roleLabel} · ${facts.harnessLabel}${facts.model ? ` · ${facts.model}` : ''}`}
-      icon={facts.icon} harness={facts.harness} panel={panel} onPanelChange={(next) => setOpen({ nodeId: id, panel: next })}
+      icon={facts.icon} harness={facts.harness} panel={panel}
       onClose={() => inspect(() => setOpen(undefined))} {...panels(id)} /> : null}
   </>
 })

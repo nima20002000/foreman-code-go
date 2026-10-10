@@ -29,6 +29,7 @@ import { draftFailure } from './writer'
 import { useInteractionsQuery, useManagedWorkspaceQuery, useManagedWorkflowQuery } from '../../../shared/api/query'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { ApprovalFields, AttachAgentField, EntryFields, NodeConnections, NodeWorkflowFields } from './AuthoringFields'
+import { AgentInfoTabs } from '../../workflow-board/AgentInfoTabs'
 import { DraftCanvas, type AgentPanels, type DraftCanvasHandle, type OpenAgentPanel } from './DraftCanvas'
 import { AgentChatPanel } from '../AgentPanels'
 import { agentSettingRows } from '../signalEdge'
@@ -424,9 +425,9 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
       }} />
     if (pinned) return { chat,
       settings: <p className="agent-panel-note">This is a saved Run Agent. Return to the draft to edit settings for future work. Chat does not change this Run.</p>,
-      info: <AgentFacts items={[{ label: 'Status', value: run.activity ? `${run.label} · ${run.activity}` : run.label },
+      info: <AgentInfoTabs scope={board?.run} agentId={node.agentId} details={<AgentFacts items={[{ label: 'Status', value: run.activity ? `${run.label} · ${run.activity}` : run.label },
         { label: 'Node', value: node.id, mono: true }, { label: 'Agent', value: node.agentId, mono: true },
-        { label: 'Run', value: board?.run?.runId, mono: true }]} /> }
+        { label: 'Run', value: board?.run?.runId, mono: true }]} />} /> }
     const role = roleEvidence(context, node.agentId, edit.agentEdits)
     return {
       chat,
@@ -436,7 +437,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
           remove={() => { setOpenNode(undefined); change((value) => removeNode(value, node.id)) }} />
         <NodeWorkflowFields graph={graph} node={graph.nodes.find((item) => item.id === node.id)!} context={context} agentEdits={edit.agentEdits} change={change} />
       </fieldset>,
-      info: <>
+      info: <AgentInfoTabs scope={board?.run} agentId={node.agentId} details={<>
         <AgentFacts items={[
           { label: 'Status', value: run.activity ? `${run.label} · ${run.activity}` : run.label },
           { label: 'Role', value: role.role === 'orchestrator' ? 'Orchestrator' : role.role === 'coder' ? 'Worker' : 'Unknown' },
@@ -450,7 +451,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
           <AgentFacts items={[{ label: 'Node', value: node.id, mono: true }, { label: 'Agent', value: node.agentId, mono: true },
             ...(role.configurationVersionId ? [{ label: 'Configuration', value: role.configurationVersionId, mono: true }] : [])]} />
         </details>
-      </>,
+      </>} />,
     }
   }
   const rawErrorText = edit.error ? edit.error.message : startOutbox.error ?? localError

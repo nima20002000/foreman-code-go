@@ -11,7 +11,7 @@
 /* The selected Run is the same Board; only a small tag names it. */
 .board-run-tag {
   position: absolute; z-index: 6; top: 76px; left: var(--space-4); display: flex; align-items: center; gap: 2px;
-  padding-left: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--surface-raised);
+  padding-left: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--surface-raised);
   color: var(--text-muted); font: var(--type-caption);
 }
 .board-run-tag code { font: var(--type-mono); font-size: 11px; color: var(--text); }
@@ -169,19 +169,6 @@
   .board-notice, .board-notice[data-closing="true"] { animation: none; }
 }
 
-/* Agent focus in the Activities drawer: who, its state, then its own timeline. */
-.board-agent-focus { display: grid; gap: var(--space-3); min-width: 0; }
-.board-agent-focus > header { display: flex; align-items: center; gap: var(--space-3); }
-.board-agent-focus > header > div { flex: 1; min-width: 0; }
-.board-agent-focus h3, .board-agent-focus header p { margin: 0; }
-.board-agent-focus header p { color: var(--text-muted); font: var(--type-caption); text-transform: capitalize; }
-.board-agent-focus header code { font: var(--type-mono); font-size: 11px; text-transform: none; }
-.board-agent-focus-avatar {
-  display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; border: 2px solid var(--border-strong);
-  background: var(--surface-raised); color: var(--text-muted);
-}
-.board-agent-focus .board-activities { border: 0; padding: 0; }
-.board-agent-focus .board-activities-list { max-height: none; }
 .board-run-more { border-top: 1px solid var(--border); padding-top: var(--space-3); }
 .board-run-more > summary { cursor: pointer; color: var(--text-muted); font: var(--type-caption); }
 .board-run-more[open] > summary { margin-bottom: var(--space-3); }

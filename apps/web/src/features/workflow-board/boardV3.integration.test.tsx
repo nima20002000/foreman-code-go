@@ -558,7 +558,7 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     const mock = newBoardMock({ allowSimulatedStart: true }), user = userEvent.setup(), mounted = await mount(mock)
     const { key } = await create(mock, user); stageShape(key, 'single', mock); await save(mock, user, 1)
     const run = await start(mock, user), scope = mock.currents.get(run.id)!.scope
-    await user.click(screen.getByRole('button', { name: 'Details' }))
+    await user.click(screen.getByRole('button', { name: 'Activities' }))
     mock.controls.loseStopReply = true
     const stop = await screen.findByRole('button', { name: 'Stop this Run' })
     await waitFor(() => expect(stop).toBeEnabled()); await user.click(stop)

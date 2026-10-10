@@ -63,9 +63,7 @@
   max-height: var(--agent-chat-available-height, calc(var(--agent-chat-viewport-height, 100dvh) - 24px));
   bottom: auto;
 }
-.n-agent-popover[data-panel='chat'] > .n-agent-popover-header,
-.n-agent-popover[data-panel='chat'] .n-tab-list { flex-shrink: 0; }
-.n-agent-popover[data-panel='chat'] .n-tab-panel:not([hidden]),
+.n-agent-popover[data-panel='chat'] > .n-agent-popover-header { flex-shrink: 0; }
 .n-agent-popover[data-panel='chat'] .n-agent-popover-body {
   display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: hidden;
 }

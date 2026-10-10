@@ -4,11 +4,7 @@ import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData, type 
 import type { WorkflowRunSummary } from '@foreman-code/contracts'
 import { sameCanonicalGraphScope } from '@foreman-code/contracts/wave25'
 import { Alert, Button, EmptyState, Icon, LoadingState, StatusBadge } from '../../shared/ui/nocturne'
-import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { Activities } from './Activities'
-import { pinnedNodeStates } from './inspect/pinnedTopology'
-import { useRunVersionQuery } from './inspect/queries'
-import { useSelectedRunRecord } from './runFacts'
 import { isActiveRun, runLabel, runTone, shortRunId, when } from './runFacts'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { useProtectedAccessError } from '../../shared/api/useProtectedAccessError'
@@ -83,7 +79,6 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
   }, [summaryRuns, client, denied, workspaceId, workflowId])
   const inspect = (runId: string) => discovery.mutate({ runId, generation: sessionGeneration(), ticket: ++request.current })
   const listedIds = new Set(listed.map((item) => item.id))
-  const focusNodeId = selected ? board.inspection.runNodeId : undefined
   const runParts = <>
     <h3>Current and past Runs</h3>
     <p>Select a Run to show its own immutable topology, even when repeat was added or removed in a later saved version.</p>
@@ -129,27 +124,9 @@ export function RunActivityPanel({ summaries }: { summaries: readonly WorkflowRu
     </section> : null}
   </>
   return <div className="workflow-board-run-panel" aria-label="Run activity" data-testid="board-run-activity">
-    {selected && focusNodeId ? <>
-      <AgentFocus scope={selected} nodeId={focusNodeId} onClose={() => board.selectInspection({})} />
+    {selected ? <>
+      <Activities key={JSON.stringify(selected)} scope={selected} />
       <details className="board-run-more"><summary>Runs and Run details</summary>{runParts}</details>
     </> : runParts}
   </div>
-}
-
-/** A clicked agent opens on its own timeline; Run-wide facts stay one click away. */
-function AgentFocus({ scope, nodeId, onClose }: { scope: RepeatGraphScopeV3; nodeId: string; onClose(): void }) {
-  const version = useRunVersionQuery(scope).data?.version
-  const record = useSelectedRunRecord()
-  const node = version?.definition.nodes.find((item) => item.id === nodeId)
-  if (!node || node.kind !== 'agent') return null
-  const name = node.name ?? node.label ?? 'Agent'
-  const state = pinnedNodeStates(record).get(nodeId)
-  return <section className="board-agent-focus" aria-label={`Agent ${name}`}>
-    <header>
-      <span className="board-agent-focus-avatar" aria-hidden="true"><Icon name="bot" size={18} /></span>
-      <div><h3>{name}</h3><p>{state ? state.label.replaceAll('_', ' ') : 'Not started'} · Run <code>{shortRunId(scope.runId)}</code></p></div>
-      <Button size="sm" variant="ghost" onClick={onClose}>Whole Run</Button>
-    </header>
-    <Activities scope={scope} focusAgentId={node.agentId} />
-  </section>
 }

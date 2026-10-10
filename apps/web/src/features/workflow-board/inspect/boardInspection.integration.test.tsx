@@ -75,7 +75,7 @@ const inspector = () => screen.getByRole('region', { name: 'Exact execution inpu
 const eventCalls = () => fixture.mock.calls.filter((call) => call.method === 'GET' && call.path.endsWith('/events'))
 async function openDetails() {
   const close = screen.queryByRole('button', { name: 'Close runs' })
-  if (!close) await userEvent.setup().click(await screen.findByRole('button', { name: 'Details' }))
+  if (!close) await userEvent.setup().click(await screen.findByRole('button', { name: 'Activities' }))
   await screen.findByRole('region', { name: 'Exact execution inputs and results' })
 }
 async function retainStop(status?: NonNullable<BoardStopJournal['receipt']>['status'], processStopped = false) {
@@ -410,7 +410,7 @@ describe('Run inspection inside the one mounted Board', () => {
   it('returns keyboard focus to the stable Details trigger when closing the Run drawer', async () => {
     const user = userEvent.setup()
     await mount(href(fixture.runs.before.scope))
-    const trigger = await screen.findByRole('button', { name: 'Details' })
+    const trigger = await screen.findByRole('button', { name: 'Activities' })
     trigger.focus()
     await user.keyboard('{Enter}')
     await screen.findByRole('button', { name: 'Close runs' })

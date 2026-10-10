@@ -126,7 +126,7 @@ export async function mountMeasuredBoard(url: string) {
 }
 export async function openRunDetails() {
   if (!screen.queryByRole('button', { name: 'Close runs' })) {
-    await userEvent.setup().click(await screen.findByRole('button', { name: 'Details' }))
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Activities' }))
   }
   return screen.findByRole('region', { name: 'Exact execution inputs and results' })
 }

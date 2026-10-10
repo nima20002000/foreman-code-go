@@ -75,13 +75,12 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   const runsKey = JSON.stringify(['board-run-drawer', workspaceId, workflowId])
   const runsOpen = useInspectionPresentation((state) => !!state.open[runsKey])
   const toolbar = useRef<HTMLDivElement>(null)
-  const detailsTrigger = useRef<HTMLButtonElement>(null)
   const setRunsOpen = useCallback((open: boolean) => {
     if (open && !currentRef.current) return
     useInspectionPresentation.getState().setOpen(runsKey, open)
     if (!open) setTimeout(() => {
       if (!document.activeElement || document.activeElement === document.body) {
-        ;(detailsTrigger.current ?? toolbar.current?.querySelector<HTMLButtonElement>('button[aria-label="Activities"]'))?.focus()
+        toolbar.current?.querySelector<HTMLButtonElement>('button[aria-label="Activities"]')?.focus()
       }
     }, 0)
   }, [runsKey])
@@ -133,11 +132,10 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
           {legacyRun ? <CurrentRunObserver scope={legacyRun} /> : null}
           {legacyRun ? <div className="board-run-tag" role="status">
             <RunContextLabel scope={legacyRun} />
-            <Button ref={detailsTrigger} size="sm" variant="ghost" onClick={() => setRunsOpen(true)}>Details</Button>
             <IconButton size="sm" variant="ghost" label="Return to draft" onClick={() => selectRun()}><Icon name="close" size={12} /></IconButton>
           </div> : null}
           <Drawer open={current && runsOpen} onOpenChange={setRunsOpen} title="Activities" className="workflow-board-runs-dialog"
-            closeLabel="Close runs" size="lg" closeOnOutsideClick returnFocusRef={detailsTrigger}>
+            closeLabel="Close runs" size="lg" closeOnOutsideClick>
             {current ? <RunActivityPanel summaries={summaries} /> : null}
           </Drawer>
           <Dialog open={current && locationOpen} onOpenChange={setLocationOpen} title="Execution folder" closeLabel="Close execution folder"

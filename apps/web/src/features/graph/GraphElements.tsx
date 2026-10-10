@@ -79,7 +79,7 @@ export const AgentNode = memo(function AgentNode({ data: staticData, isConnectab
     >
       {view(<AgentHandles name={data.label} connectable={isConnectable && !readOnly} />, true)}
       <AgentPopover open={menuOpen} anchor={core} title={data.label} subtitle={`${facts.harnessLabel}${facts.model ? ` · ${facts.model}` : ''}`}
-        icon={facts.icon} harness={facts.harness} panel={panel} onPanelChange={setPanel}
+        icon={facts.icon} harness={facts.harness} panel={panel}
         onClose={() => void (async () => { if (!guard || await guard.surfaces()) setMenuOpen(false) })()}
         chat={<AgentChatPanel name={data.label} activity={nodeView.actionLabel} running={nodeView.working} />}
         settings={readOnly || !data.onSaveSettings ? <>

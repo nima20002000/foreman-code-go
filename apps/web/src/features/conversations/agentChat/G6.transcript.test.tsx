@@ -47,7 +47,7 @@ function toolState(harness: Harness, completed = false, boundaries = true): Agen
 function ChatPopover({ client, state }: { client: QueryClient; state: AgentChatState }) {
   const anchor = useRef<HTMLButtonElement>(null)
   return <QueryClientProvider client={client}><button ref={anchor}>Agent node</button>
-    <AgentPopover open anchor={anchor} title="Coder" panel="chat" onClose={() => {}} onPanelChange={() => {}}
+    <AgentPopover open anchor={anchor} title="Coder" panel="chat" onClose={() => {}}
       settings={null} info={null} chat={<AgentChatPanel name="Coder" context={state.context} activity="Current activity" running />} />
   </QueryClientProvider>
 }

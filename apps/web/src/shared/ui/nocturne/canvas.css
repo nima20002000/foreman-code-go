@@ -357,10 +357,8 @@
 .n-agent-popover-header h2 { margin: 0; overflow: hidden; color: var(--text-strong); font: var(--type-heading); text-overflow: ellipsis; white-space: nowrap; }
 .n-agent-popover-header p { margin: 0; color: var(--text-muted); font: var(--type-caption); }
 .n-agent-popover-glyph { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-hover); color: var(--agent-hue); }
-.n-agent-popover > .n-tabs { display: flex; min-height: 0; flex: 1; flex-direction: column; }
-.n-agent-popover .n-tab-list { padding: 0 var(--space-4); }
-.n-agent-popover .n-tab-panel { min-height: 0; flex: 1; overflow: auto; padding: 0; overscroll-behavior: contain; }
-.n-agent-popover-body { display: grid; gap: var(--space-4); padding: var(--space-4); }
+.n-agent-popover-body { display: grid; gap: var(--space-4); min-height: 0; flex: 1; overflow: auto; padding: var(--space-4); overscroll-behavior: contain; }
+.n-agent-popover-body .n-tab-panel { padding: var(--space-3) 0 0; }
 .n-agent-popover-body > * { min-width: 0; }
 @media (max-width: 720px) {
   .n-agent-popover { inset: auto 0 0; width: 100%; max-height: 75vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; box-shadow: var(--shadow-dialog); }
