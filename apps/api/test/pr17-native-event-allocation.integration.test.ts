@@ -134,8 +134,10 @@ async function forcedRace(pool: pg.Pool, first: HarnessNativeEvent, second: Harn
     secondWrite = appendNativeEvent(b, second)
     void secondWrite.catch(() => undefined) // Observe failures while the test polls the independent observer.
     await waitForBlocked(pool, waiter, holder)
+    expect(await counts(pool)).toEqual({ events: 0, activity: 0 })
     await a.query('commit')
     await secondWrite
+    expect(await counts(pool)).toEqual({ events: 1, activity: 1 })
     await b.query('commit')
   } finally {
     // Release the holder BEFORE awaiting the waiter, including on a failed assertion.
@@ -201,22 +203,43 @@ describe('PR17 F10 PostgreSQL event allocation', () => {
     })
   }, 20_000)
 
-  it('does not serialize different executions, even in the same Run', async () => {
+  it('publishes Activity in commit order across different executions of the same Run', async () => {
     await database(async (pool) => {
-      const a = await pool.connect(); const b = await pool.connect()
+      await forcedRace(pool, event(), event(0, { executionId: 'other-execution' }))
+      const activity = await pool.query<{ sequence: string; harness_execution_id: string }>(`
+        select sequence::text, harness_execution_id from run_activity
+        where run_id='run' and kind='harness_output' order by run_activity.sequence`)
+      expect(activity.rows.map((row) => row.harness_execution_id)).toEqual(['execution', 'other-execution'])
+      expect(BigInt(activity.rows[0]!.sequence)).toBeLessThan(BigInt(activity.rows[1]!.sequence))
+      expect(await counts(pool)).toEqual({ events: 2, activity: 2 })
+      const events = await pool.query(`select execution_id, sequence from harness_native_events order by execution_id`)
+      expect(events.rows).toEqual([
+        { execution_id: 'execution', sequence: 0 },
+        { execution_id: 'other-execution', sequence: 0 },
+      ])
+    })
+  }, 20_000)
+
+  it('does not serialize different executions when native events produce no Activity', async () => {
+    await database(async (pool) => {
+      const a = await pool.connect()
+      const b = await pool.connect()
+      const payload = { nativeMethod: 'item/agentMessage/delta', text: 'stream chunk' }
       try {
         await a.query('begin')
-        await appendNativeEvent(a, event())
+        await appendNativeEvent(a, event(17, { payload }))
         await b.query('begin')
         await b.query("set local lock_timeout='2s'")
-        await appendNativeEvent(b, event(0, { executionId: 'other-execution' }))
+        await appendNativeEvent(b, event(0, { executionId: 'other-execution', payload }))
         await b.query('commit') // Must finish while a still owns its execution row.
-        expect(await counts(pool)).toEqual({ events: 1, activity: 1 })
+        expect(await counts(pool)).toEqual({ events: 1, activity: 0 })
         await a.query('commit')
-        expect(await counts(pool)).toEqual({ events: 2, activity: 2 })
+        expect(await counts(pool)).toEqual({ events: 2, activity: 0 })
       } finally {
-        await a.query('rollback'); await b.query('rollback')
-        a.release(); b.release()
+        await a.query('rollback')
+        await b.query('rollback')
+        a.release()
+        b.release()
       }
     })
   })
