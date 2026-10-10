@@ -1,3 +1,4 @@
+import { closeSourceWorktree } from './worktreeCleanup.js'
 import type { SourceQuotaPool } from './materialization.js'
 /** Worker-safe actual source filesystem operations: Node/shared contracts only. */
 import { constants } from 'node:fs'
@@ -298,7 +299,8 @@ export class SourceOperationWorkerService {
       }, quotaPool, context.signal)
       await this.options.executionTransfersClosed?.(record, context.signal)
       await reauthorize()
-      const footprint = await measureRetainedMaterializationFootprint(record.receipt)
+      const worktree = await closeSourceWorktree(record.receipt, context.signal)
+      const footprint = { ...await measureRetainedMaterializationFootprint(record.receipt), ...(worktree ? { worktree } : {}) }
       await reauthorize()
       return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation,
         materializationId: record.receipt.materializationId, operationId: record.operationId, released: true, ...footprint })

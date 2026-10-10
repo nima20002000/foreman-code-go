@@ -553,6 +553,14 @@ export class PostgresSourceService implements SourceAdmissionPort {
   async confirmClosed(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<void> {
     record = SourceMaterializationRecordSchema.parse(record)
     options?.signal?.throwIfAborted()
+    if (record.receipt.worktree) {
+      const run = (await this.pool.query<{ execution_state: string }>(
+        'select r.execution_state from runs r join harness_executions e on e.run_id=r.id where e.id=$1',
+        [record.receipt.executionId])).rows[0]
+      if (!run || !['completed', 'interrupted'].includes(run.execution_state)) {
+        throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Git worktrees stay available until their Run is terminal.', 409)
+      }
+    }
     if (!await this.closure.confirmedClosed(record)) throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original execution physical closure is not confirmed.', 409)
     if (record.receipt.quota) {
       const binding = record.receipt.binding
@@ -577,7 +585,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${reservation.scopeId}`])
       const row = (await sql.query<{ record: unknown }>('select record from source_execution_materializations where materialization_id=$1 for update', [record.receipt.materializationId])).rows[0]
       if (!row || !isDeepStrictEqual(row.record, record)) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Closure does not match the original materialization.', 409)
-      await sql.query(`update source_execution_materializations set state='closed' where materialization_id=$1`, [record.receipt.materializationId])
+      await sql.query(`update source_execution_materializations set state='closed',worktree_cleanup=$2::jsonb where materialization_id=$1`,
+        [record.receipt.materializationId, JSON.stringify(footprint.worktree ?? null)])
       if (record.receipt.quota) {
         await this.reservations.reclaimed(sql, reservation, async () => quotaReclaimed
           && await this.closure.confirmedClosed(record))

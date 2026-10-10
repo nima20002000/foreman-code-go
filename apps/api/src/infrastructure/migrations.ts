@@ -1,3 +1,4 @@
+import { runWorktreesMigration } from './runWorktreesMigration.js'
 import { workspaceRepositoryImportsMigration } from './workspaceRepositoryImportsMigration.js'
 import { retiredHarnessCredentialsMigration } from './retiredHarnessCredentialsMigration.js'
 import { bugReportsMigration } from './bugReportsMigration.js'
@@ -897,6 +898,7 @@ export const migrations = [
   workflowExecutionFailureMigration,
   workspaceRepositoryImportsMigration,
   bugReportsMigration,
+  runWorktreesMigration,
   runActivityCommitOrderMigration,
 ] as const
 

@@ -1,3 +1,4 @@
+import { RunWorktrees } from './modules/runs/runWorktrees.js'
 import { inTransaction } from './infrastructure/transaction.js'
 import type pg from 'pg'
 import { ComputerActivityService } from './modules/computers/activity.js'
@@ -71,7 +72,7 @@ import { MainWorkerMcpRelay, selectedMainMcpForward, createWorkerNativeOutputAut
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { recoverWorkflowArtifactOutputs } from './modules/runs/remote/workflowArtifactRecovery.js'
 import { readAcceptedPlacement } from './modules/placement/persistence.js'
-import type { RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
+import { repeatRuntimeDirectory, type RepeatRepositoryServices } from './modules/runs/repeatRepositoryHost.js'
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
 import { retainInstalledHarnessInventory } from './modules/harnesses/installedCodexInspection.js'
@@ -162,7 +163,7 @@ import { createCurrentNativeProductionFactory, isCurrentNativeProductionBinding 
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
 import { NativeProcessRegistry, type NativeProcessRecovery } from './modules/harnesses/recovery/processRegistry.js'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
 import { buildApp } from './app.js'
@@ -252,7 +253,7 @@ import { FoundationSettingsManagementService } from './modules/settings/manageme
 import { WorkflowManagementService } from './modules/workflows/management.js'
 import { PostgresWorkflowRepository } from './modules/workflows/postgres.js'
 import { AgentManagementService } from './modules/workspaces/agents.js'
-import { WorkspaceLocationService } from './modules/workspaces/location.js'
+import { requiredLocationAccess, WorkspaceLocationService } from './modules/workspaces/location.js'
 import { WorkspaceManagementService } from './modules/workspaces/management.js'
 import { PostgresWorkspaceRepository } from './modules/workspaces/postgres.js'
 import { RunGraphReadService } from './modules/run-graph/readService.js'
@@ -557,11 +558,25 @@ export function buildProductionApp(
       await owner.oneShotConnection().transaction(sql => artifactResultSource!.assertLaunchDeclarationLocked(sql, execution.id, run.id))
       if (agentPreparation) {
         const prepared = await approvals.withSourceObservationLane(owner, execution, () => agentPreparation!.prepare(owner, run, execution))
-        return prepared ? { ...prepared, revalidate: () => approvals.withSourceObservationLane(owner, execution, prepared.revalidate) } : undefined
+        if (prepared) return { ...prepared, revalidate: () => approvals.withSourceObservationLane(owner, execution, prepared.revalidate) }
       }
       const placed = await owner.oneShotConnection().transaction(sql => readAcceptedPlacement(sql, run.id, execution.workflowNodeId))
       if (placed) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual Agent source preparation producer is unavailable.', 503)
-      return undefined
+      await locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
+      const configuration = await workflows.getAgentConfiguration(execution.agentConfigurationVersionId)
+      if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', 'The accepted Agent configuration is unavailable.', 409)
+      const access = requiredLocationAccess([configuration])
+      await locations.revalidateSnapshot(run.workspaceId, run.executionLocation, access)
+      const tree = await runWorktrees.prepare(run)
+      if (!tree) return undefined
+      return { workingDirectory: tree.workingDirectory,
+        runtimeDirectory: repeatRuntimeDirectory(config.harnesses.workspaceRoot, { workspaceId: run.workspaceId,
+          workflowId: run.workflowId, workflowVersionId: run.workflowVersionId, runId: run.id, executionSemanticsVersion: 3 }, execution),
+        revalidate: async () => {
+          owner.assertOwned()
+          await locations.revalidateSnapshot(run.workspaceId, run.executionLocation, access)
+          await runWorktrees.verify(tree)
+        } }
     },
   }
   const reviewNativeProofs = new ReviewNativeProofServices(reviewCapture.verify,
@@ -569,6 +584,7 @@ export function buildProductionApp(
   const repository = new PostgresInteractionRepository(database.pool, reviewNativeProofs)
   const budgets = new PostgresApprovalBudgetRepository(database.pool)
   const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
+  const runWorktrees = new RunWorktrees(database.pool, join(config.harnesses.workspaceRoot, 'run-worktrees'))
   const locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot, 'runner-local', projectRoot)
   const workflows = new PostgresWorkflowRepository(database.pool)
   const runs = new PostgresRunRepository(database.pool, workflows, locations,
@@ -1985,6 +2001,7 @@ export function buildProductionApp(
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
       if (jobRuntime) await jobRuntime.sources.releaseUnusedSnapshots(report)
       await engine.reconcile(report)
+      await runWorktrees.cleanup(report)
       if (closing) return
       if (initialized) {
         await appRoutes.refresh()

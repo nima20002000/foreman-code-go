@@ -1,3 +1,4 @@
+import { worktreeSecurity } from './worktreeSecurity.js'
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../diagnostics/runtimeTiming.js'
 import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartOwner,
@@ -1912,8 +1913,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (this.appMcpAccess === 'none' && Object.keys(input.environment?.variables ?? {}).length) {
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'Agent chat cannot receive scoped App MCP credentials.')
     }
-    const harnessConfiguration = configuration(input)
     const workingDirectory = sessionStartDirectory(input)
+    const harnessConfiguration = isWorkflowStart(input)
+      ? await worktreeSecurity(configuration(input), workingDirectory, signal)
+      : configuration(input)
     const environment = io.environment(input.environment)
     const qualified = await io.qualify(binary, workingDirectory, environment, true, signal)
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal, io)

@@ -17,6 +17,7 @@ export function compactRunDetails(details: SavedRunDetails) {
   const recent = activities.slice(-25)
   return OperatorRunCompactSchema.parse({
     detail: 'compact',
+    ...(details.worktrees ? { worktrees: details.worktrees.slice(-25) } : {}),
     detailsOmitted: true,
     run: OperatorRunSummarySchema.parse({ ...details.run, failure: details.run.result?.error }),
     executions: details.executions.slice(-25).map(execution => OperatorExecutionSummarySchema.parse({

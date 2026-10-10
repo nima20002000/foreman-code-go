@@ -1,3 +1,5 @@
+import { RunWorktreeSchema } from '../runWorktrees.js'
+export { RunWorktreeSchema, type RunWorktree } from '../runWorktrees.js'
 import { z } from 'zod'
 import { ActivitySnapshotV1Schema } from '../activity.js'
 import {
@@ -25,6 +27,7 @@ export type SavedWorkflowRun = z.infer<typeof SavedWorkflowRunSchema>
  * This is NOT the content-free graph/occurrence metadata contract. A redacted
  * Run may omit location and principal; internal admission uses a stronger schema. */
 export const RunDetailsV3Schema = z.object({ run: WorkflowRunV3Schema,
+  worktrees: z.array(RunWorktreeSchema).optional(),
   activitySnapshot: ActivitySnapshotV1Schema.optional(),
   executions: z.array(HarnessExecutionSchema), activity: z.array(RunActivitySchema), cleanupPending: z.boolean().optional(),
   liveActivity: RunLiveActivitySchema.optional(),

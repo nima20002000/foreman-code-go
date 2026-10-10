@@ -1,3 +1,4 @@
+import { closeSourceWorktree } from './worktreeCleanup.js'
 import { tmpdir } from 'node:os'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { randomUUID } from 'node:crypto'
@@ -171,15 +172,19 @@ it('prepares an approved unpublished commit on a fresh worker using the transfer
   await reader.open(manifest)
   const binding = { ...f.binding, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   const materializer = new PrivateSourceMaterializer(reader, async () => {}, undefined, f.ports)
-  const receipt = await materializer.prepare({ manifest, binding, attempt: f.attempt(), sharedWritableTree: true,
-    worktree: { repository: 'octo/site', branch: 'foreman/review/unpublished' } })
+  const input = { manifest, binding, attempt: f.attempt(), sharedWritableTree: true as const,
+    worktree: { repository: 'octo/site', branch: 'foreman/review/unpublished' } }
+  const receipt = await materializer.prepare(input)
   await reader.complete()
   expect(receipt.worktree?.commit).toBe(commit)
+  expect(receipt.worktree?.startCommit).toBeUndefined()
   expect(git(sourceWorkingTreePath(receipt), 'rev-parse', 'HEAD')).toBe(commit)
   expect(await readFile(join(sourceWorkingTreePath(receipt), 'src/app.ts'), 'utf8')).toBe('unpublished source\n')
   expect(git(f.origin, 'rev-parse', 'HEAD')).toBe(f.commit)
   expect((await f.ports.git(['cat-file', '-e', ancestor],
     { cwd: f.ports.cloneDirectory('octo/site'), signal })).code).not.toBe(0)
+  await materializer.verify(receipt, { binding, attempt: input.attempt })
+  expect(await materializer.prepare(input)).toEqual(receipt)
 })
 
 
@@ -218,3 +223,50 @@ it('preserves a closed Agent Git worktree and reports its retained bytes during 
     expect(git(sourceWorkingTreePath(receipt), 'branch', '--show-current')).toBe(receipt.worktree!.branch)
   }
 }, 60_000)
+
+
+it('cleans up committed local and Worker source worktrees and reports a dirty checkout', async () => {
+  const f = await fixture()
+  for (const host of ['main', 'worker']) {
+    const binding = host === 'worker' ? { ...f.binding, deviceId: randomUUID(), workerInstallationId: randomUUID() } : f.binding
+    const attempt = host === 'worker' ? { ...f.attempt(), keyRevision: 1, authorizationRevision: 1 } : f.attempt()
+    const input = { manifest: f.manifest, binding, attempt, sharedWritableTree: true as const,
+      worktree: { repository: 'octo/site', branch: `foreman/site/${host}` } }
+    const receipt = await f.materializer().prepare(input)
+    const directory = sourceWorkingTreePath(receipt)
+    await writeFile(join(directory, 'src/app.ts'), `${host} result\n`)
+    expect(await closeSourceWorktree(receipt, AbortSignal.timeout(30_000), f.ports))
+      .toMatchObject({ state: 'retained', message: expect.any(String) })
+    git(directory, 'commit', '-qam', 'Run result')
+    const commit = git(directory, 'rev-parse', 'HEAD')
+    expect(await closeSourceWorktree(receipt, AbortSignal.timeout(30_000), f.ports)).toEqual({ state: 'removed' })
+    expect(git(f.ports.cloneDirectory('octo/site'), 'rev-parse', receipt.worktree!.branch)).toBe(commit)
+    expect(await closeSourceWorktree(receipt, AbortSignal.timeout(30_000), f.ports)).toEqual({ state: 'removed' })
+  }
+})
+
+
+it('starts local and Worker executions at the fetched default branch while retaining the approved reference', async () => {
+  const f = await fixture()
+  await writeFile(join(f.origin, 'src/app.ts'), 'latest default source\n')
+  await writeFile(join(f.origin, 'new.txt'), 'new default file\n')
+  git(f.origin, 'add', '.')
+  git(f.origin, 'commit', '-qm', 'Advance default branch')
+  const latest = git(f.origin, 'rev-parse', 'HEAD')
+  for (const host of ['main', 'worker']) {
+    const binding = host === 'worker' ? { ...f.binding, deviceId: randomUUID(), workerInstallationId: randomUUID() } : f.binding
+    const attempt = host === 'worker' ? { ...f.attempt(), keyRevision: 1, authorizationRevision: 1 } : f.attempt()
+    const input = { manifest: f.manifest, binding, attempt, sharedWritableTree: true as const,
+      worktree: { repository: 'octo/site', branch: `foreman/site/${host}-fresh` } }
+    const receipt = await f.materializer().prepare(input)
+    const directory = sourceWorkingTreePath(receipt)
+    expect(receipt.worktree).toMatchObject({ commit: f.commit, startCommit: latest })
+    expect(git(directory, 'rev-parse', 'HEAD')).toBe(latest)
+    expect(await readFile(join(directory, 'src/app.ts'), 'utf8')).toBe('latest default source\n')
+    expect(await readFile(join(directory, 'new.txt'), 'utf8')).toBe('new default file\n')
+    expect(await readFile(join(binding.canonicalPath, receipt.materializationId, 'tree', 'src/app.ts'), 'utf8'))
+      .toBe('accepted source\n')
+    await f.materializer().verify(receipt, { binding, attempt })
+    expect(await f.materializer().prepare(input)).toEqual(receipt)
+  }
+})

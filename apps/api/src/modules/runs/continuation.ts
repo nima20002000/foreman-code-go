@@ -1,5 +1,5 @@
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
-import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, RunWorktreeSchema } from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 import { DomainError } from '../errors.js'
 import { interactionConnection } from '../interactions/connection.js'
@@ -24,12 +24,16 @@ export function continuationValidator(pool: pg.Pool, locations: WorkspaceLocatio
     const execution = HarnessExecutionSchema.parse(row.execution)
     const run = AcceptedWorkflowRunV3Schema.parse(row.run)
     const configuration = AgentConfigurationVersionSchema.parse(row.configuration)
+    const treeRow = (await client.query<{ record: unknown }>(
+      'select record from run_worktrees where run_id=$1', [run.id])).rows[0]
+    const tree = treeRow ? RunWorktreeSchema.parse(treeRow.record) : undefined
+    if (tree && tree.state !== 'active') throw new DomainError('RUN_WORKTREE_CLOSED', 'The Run worktree is closed.', 409)
     if (row.stopped !== false || row.cleanup_pending !== false
       || row.workflow_version_id !== run.workflowVersionId || row.location_revision !== String(run.executionLocation.locationRevision)
       || row.runner_id !== run.executionLocation.runnerId || row.root !== run.executionLocation.rootPath
       || run.executionState === 'completed' || run.executionState === 'interrupted' || !run.executionLocation
       || execution.id !== executionId || execution.runId !== run.id
-      || execution.workingDirectory !== run.executionLocation.rootPath
+      || execution.workingDirectory !== (tree?.workingDirectory ?? run.executionLocation.rootPath)
       || configuration.agentId !== execution.agentId || configuration.workspaceId !== run.workspaceId
       || configuration.id !== execution.agentConfigurationVersionId
       || run.agentConfigurationVersionIds[execution.agentId] !== configuration.id) {
