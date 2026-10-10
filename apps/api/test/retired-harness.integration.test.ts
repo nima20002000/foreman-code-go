@@ -144,7 +144,7 @@ it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewrit
     const version = await new PostgresWorkflowRepository(f.db.pool).getVersion(f.f.version.id)
     expect(version).toEqual(f.f.version)
     const run = await f.client.callTool({ name: 'run_get',
-      arguments: { workspaceId: args.workspaceId, runId: f.f.run.id } })
+      arguments: { workspaceId: args.workspaceId, runId: f.f.run.id, detail: 'full' } })
     expect(run.isError, JSON.stringify(run.content)).not.toBe(true)
     const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(run))
     const visibleRun = { ...f.f.run }
@@ -167,7 +167,7 @@ it('reads saved OpenCode Agent and Run facts through HTTP and MCP without rewrit
       grants: [{ actions: ['runs:read'], scope: { workspaceIds: ['unrelated-workspace'] } }] })
     const deniedClient = await f.connect(denied.token)
     await expectMcpAccessDenied(deniedClient.callTool({ name: 'run_get',
-      arguments: { workspaceId: args.workspaceId, runId: f.f.run.id } }))
+      arguments: { workspaceId: args.workspaceId, runId: f.f.run.id, detail: 'full' } }))
     const deniedHttp = await f.app.inject({ method: 'GET',
       url: `/api/management/workspaces/${args.workspaceId}/runs/${f.f.run.id}`,
       headers: { authorization: `Bearer ${denied.token}` } })
