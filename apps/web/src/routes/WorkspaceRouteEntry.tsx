@@ -93,6 +93,14 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
       hash: (previous) => run?.runId === scope?.runId ? previous ?? '' : clearSelectedSubagentHash(previous ?? ''),
       search: (previous) => boardSearchForRun(withoutRunsSelectorSearch(previous), workflowId, scope) })
   }, [workflowId, workspaceId, navigate, run?.runId, selectedRunId])
+  useEffect(() => {
+    if (!run || !location.pathname.includes('/runs/')) return
+    void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, replace: true, hash: true,
+      search: previous => boardSearchForInspection(withoutRunsSelectorSearch(previous), run.workflowId, run, {
+        runNodeId: previous.runNodeId, runRelationshipId: previous.runRelationshipId,
+        runExchangeKey: previous.runExchangeKey,
+      }) })
+  }, [run, location.pathname, navigate, workspaceId])
   const selectInspection = useCallback((inspection: WorkspaceBoardInspection) => {
     if (!workflowId || !run) return
     void navigate({ to: '/workspaces/$workspaceId', params: { workspaceId }, hash: true, search: (previous) => {

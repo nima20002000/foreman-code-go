@@ -26,10 +26,9 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
 }) {
   const location = useLocation()
   const selectedRun = useSelectedRun({ workspaceId, workflowId })
-  // The existing Board keeps its editor and pinned Run inspector for its own
-  // runId search. The new selector and Run deep links show immutable history.
+  // Canonical and legacy Run links share the pinned canvas and retained editor.
   const legacyRun = requestedRun?.workspaceId === workspaceId && requestedRun.workflowId === workflowId
-    && !location.search.selectedRunId && !location.pathname.includes('/runs/') ? requestedRun : undefined
+    && !location.search.selectedRunId ? requestedRun : undefined
   // A Run picked from Runs opens on this Board (live node cards and their native
   // subagents), not on the separate saved-topology page; only legacy Runs without a
   // captured version stay there.

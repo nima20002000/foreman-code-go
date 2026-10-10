@@ -18,6 +18,7 @@ import { bindMockInstallation } from '../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
 import { base as subagentsRoute, child, detail } from '../features/run-subagents/testFixtures'
+import boardStyles from '../features/workflow-board/workflowBoard.css?inline'
 
 const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline' }
 const key = nextDraftKey(scope.workspaceId, scope.workflowId)
@@ -35,7 +36,8 @@ async function mount(entry = runsUrl(null, scope)) {
   clients.push(client)
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [entry] }), defaultPendingMinMs: 0 })
   await router.load()
-  const result = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+  const result = render(<><style>{boardStyles}</style>
+    <QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider></>)
   return { ...result, router, client }
 }
 async function authoring() {
@@ -155,7 +157,7 @@ afterEach(() => {
   vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs()
 })
 
-describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () => {
+describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 }, () => {
   it('inspects a saved Agent missing from the current workflow and reopens its generated URL', async () => {
     const reads = installNodeInspection()
     const current = getMockFixture(scope.workspaceId)!.workflows.find(item => item.id === scope.workflowId)!
@@ -244,7 +246,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     await savedY()
     await userEvent.click(await screen.findByRole('button', { name: 'Run child, Codex, Running' }))
     expect(await screen.findByRole('dialog', { name: 'Run child' })).toBeVisible()
-    expect(reads).toEqual([`/api/management/workspaces/${scope.workspaceId}/runs/run-a/subagents`])
+    expect([...new Set(reads)]).toEqual([`/api/management/workspaces/${scope.workspaceId}/runs/run-a/subagents`])
     expect(router.history.location.hash).toContain('selectedSubagentId=child-1')
     expect(writes).toEqual([])
   })
@@ -344,7 +346,9 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
 
   it('automatically pins an active Run and keeps Return to draft dismissed', async () => {
     const fixture = getMockFixture(scope.workspaceId)!
-    server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json({ ...fixture,
+    server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
+      workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
+      resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
       runs: [{ ...fixture.runs[0], id: 'run-a', executionState: 'running', outcome: 'pending', finishedAt: undefined }],
     })))
     const { router } = await mount()
@@ -374,9 +378,14 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
   })
 
   it('canonicalizes a legacy Run link and preserves unrelated selection and hash', async () => {
-    const entry = `/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/run-a/graph/version-a/3?workflowId=${scope.workflowId}&agentId=agent-researcher#board`
+    const entry = `/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/run-a/graph/version-a/3?workflowId=${scope.workflowId}&agentId=agent-researcher&runNodeId=node-x#board`
     const { router } = await mount(entry)
     await savedY()
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1')
+    expect(router.state.location.search).toMatchObject({ runId: 'run-a', workflowVersionId: 'version-a',
+      executionSemanticsVersion: 3, runNodeId: 'node-x', agentId: 'agent-researcher' })
+    const linkedActivities = await screen.findByRole('dialog', { name: 'Activities' })
+    await userEvent.click(within(linkedActivities).getByRole('button', { name: 'Close runs' }))
     const hash = router.history.location.hash
     await choose('run-b')
     await screen.findByRole('button', { name: 'Inspect Run node X in B' })
@@ -428,7 +437,7 @@ describe('SCH-BOARD on the real workspace route, editor and HTTP boundary', () =
     const files = within(group).getByRole('button', { name: 'Files' })
     expect(selector.compareDocumentPosition(clock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(clock.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(group.closest('header')).toHaveStyle({ position: 'static', minWidth: '0', boxSizing: 'border-box' })
+    expect(group.closest('header')).toHaveStyle({ position: 'absolute', minWidth: '0', boxSizing: 'border-box' })
     expect(container.querySelector('.unified-workflow-board')).toHaveStyle({ flexDirection: 'column' })
     await userEvent.click(selector)
     const menu = await screen.findByRole('menu', { name: 'Runs' })

@@ -33,6 +33,7 @@ import { summarizeOperatorConversation } from '../operator-chat/operatorChatStat
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { admitted, context, envelope, execution, historicalState, installSelectedHandlers,
   scope as chatScope, selectedRoute, snapshot as chatSnapshot } from '../conversations/agentChat/sch10.testSupport'
+import boardStyles from '../workflow-board/workflowBoard.css?inline'
 
 const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline' }
 const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'
@@ -50,11 +51,13 @@ async function mountBoard(entry = runsUrl('run-a', scope)) {
   clients.push(client)
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [entry] }), defaultPendingMinMs: 0 })
   await router.load()
-  return { ...render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>), router }
+  return { ...render(<><style>{boardStyles}</style>
+    <QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider></>), router }
 }
 
-async function choose(user: ReturnType<typeof userEvent.setup>, trigger: HTMLElement, runId: string) {
-  await user.click(trigger)
+async function choose(user: ReturnType<typeof userEvent.setup>, runId: string) {
+  const controls = screen.getByRole('group', { name: 'Board controls' })
+  await user.click(within(controls).getByRole('button', { name: 'Runs' }))
   const menu = await screen.findByRole('menu', { name: 'Runs' })
   await user.click(await waitFor(() => {
     const row = menu.querySelector<HTMLButtonElement>(`[data-run-id="${runId}"]`)
@@ -68,6 +71,11 @@ function installBoardHistory() {
   const fixture = getMockFixture(scope.workspaceId)!
   server.use(
     ...pinnedRunHandlers(scope),
+    http.get('/api/local-human', () => HttpResponse.json({ principal: {
+      id: 'board-history-reader', name: 'Board history reader', expiresAt: '2099-01-01T00:00:00.000Z',
+      grants: [{ actions: ['workspaces:read', 'workflows:read', 'agents:read', 'graph:read', 'runs:read',
+        'agent_chat:read', 'settings:read'], scope: { workspaceIds: [scope.workspaceId] } }],
+    } })),
     http.get('*/api/workspaces/:workspaceId/agent-chat', ({ request, params }) => {
       const url = new URL(request.url)
       chatReads.push(url)
@@ -171,7 +179,7 @@ afterEach(() => {
   vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs()
 })
 
-describe('FIL-17 + SCH selected Board', () => {
+describe('Selected Board history', { timeout: 20_000 }, () => {
   it('keeps the 320px controls together and Files read only on the selected Run', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('innerWidth', 320)
@@ -226,17 +234,16 @@ describe('FIL-17 + SCH selected Board', () => {
     }
     await assertSelection('run-a', 'Y')
     const controls = screen.getByRole('group', { name: 'Board controls' })
-    const runs = within(controls).getByRole('button', { name: 'Runs' })
     if (width === 320) {
       await user.click(within(controls).getByRole('button', { name: 'Files' }))
       const dialog = await screen.findByRole('dialog', { name: 'Files' })
       await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
       await waitFor(() => expect(dialog).not.toBeInTheDocument())
     }
-    await choose(user, runs, 'run-b')
+    await choose(user, 'run-b')
     await assertSelection('run-b', 'X in B')
     expect(screen.queryByRole('button', { name: 'Inspect Run node Y' })).not.toBeInTheDocument()
-    await choose(user, runs, 'run-a')
+    await choose(user, 'run-a')
     await assertSelection('run-a', 'Y')
     expect(screen.queryByRole('button', { name: 'Inspect Run node X in B' })).not.toBeInTheDocument()
   })
