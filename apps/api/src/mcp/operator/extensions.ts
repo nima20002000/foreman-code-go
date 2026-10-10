@@ -27,7 +27,7 @@ export function createOperatorExtensions(input: {
     native:input.native,
     agents,
     skillUsage:new SkillUsageService(input.pool,agents,new CurrentWorkflowAuthoring(input.pool,input.commands,
-      { accountConfigurations: input.accountConfigurations })),
+      { accountConfigurations: input.accountConfigurations }),input.commands),
     history:new VersionHistoryService(input.pool),
     lifecycle:new OperatorLifecycleService(input.commands),
     workspace:new OperatorWorkspaceControls(input.pool,input.commands,input.locations,input.detection,input.provisioningRoot),

@@ -46,7 +46,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
     commands, locations, workspaces: new WorkspaceManagementService(pool, commands, locations),
     workflows: new WorkflowManagementService(pool, commands),
     extensions: { agents, skills: new SkillCatalogService(pool, commands),
-      skillUsage: new SkillUsageService(pool, agents, new CurrentWorkflowAuthoring(pool, commands)) },
+      skillUsage: new SkillUsageService(pool, agents, new CurrentWorkflowAuthoring(pool, commands), commands) },
   } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
     operator: { access, services } })
@@ -109,7 +109,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
     expect(denied.isError).toBe(true)
     expect((await pool.query('select count(*)::int as count from agent_configuration_versions where agent_id=$1', ['reviewer'])).rows[0].count).toBe(1)
 
-    const commandId = randomUUID()
+    const commandId = 'c'.repeat(200)
     const updated = await call('skill_users_update', c.SkillUsersUpdateResultSchema, { workspaceId, skillId, commandId })
     expect(updated.failed).toEqual([])
     expect(updated.agents.map(value => value.agentId)).toEqual(['reviewer'])
@@ -125,7 +125,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
     expect(await call('skill_usage_get', c.SkillUsageSchema, { workspaceId, skillId })).toMatchObject({ agents: [], workflows: [] })
     const http = await fetch(new URL(`/api/management/workspaces/${workspaceId}/skills/${skillId}/update-users`, address), {
       method: 'POST', headers: { authorization: `Bearer ${owner.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ commandId }) })
-    expect(c.SkillUsersUpdateResultSchema.parse(await http.json())).toEqual({ headVersion: '2', agents: [], workflows: [], failed: [] })
+    expect(c.SkillUsersUpdateResultSchema.parse(await http.json())).toEqual(updated)
+    expect((await pool.query('select count(*)::int as count from agent_configuration_versions where agent_id=$1',
+      ['reviewer'])).rows[0].count).toBe(2)
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))
     await app.close(); await pool.end(); await dropFixtureSchema(admin, schema); await admin.end(); await removeFixtureDirectory(parentPath)

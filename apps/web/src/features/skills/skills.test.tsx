@@ -14,7 +14,10 @@ import { SkillDetailPage } from './SkillPages'
 import { AgentSkillsField } from './AgentSkillsField'
 import { readSkillFile } from './skillImport'
 
-vi.mock('@tanstack/react-router', () => ({ Link: ({ children, className }: { children: ReactNode; className?: string }) => <a href="#" className={className}>{children}</a> }))
+vi.mock('@tanstack/react-router', () => ({ Link: ({ children, className, params }: {
+  children: ReactNode; className?: string; params?: { workspaceId: string; skillId: string }
+}) => <a href={params ? `/settings/skills/${params.workspaceId}/${params.skillId}` : '#'}
+  className={className}>{children}</a> }))
 
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
@@ -37,6 +40,29 @@ function requests(method: string, fragment: string) {
 }
 
 describe('Settings → Skills library', () => {
+  it('keeps the newest row across overlapping pages and scopes equal skill IDs by workspace', async () => {
+    const user = userEvent.setup()
+    const first = seedSkill('workspace-a', 'Early name', 'First', { skillId: 'shared-guide' })
+    const foreign = seedSkill('workspace-b', 'Other workspace guide', 'Other', { skillId: 'shared-guide' })
+    const renamed = { ...first, name: 'Renamed guide', version: '2', revision: 2, versionCount: 2 }
+    server.use(http.get('/api/management/skills', ({ request }) => {
+      const next = new URL(request.url).searchParams.has('cursor')
+      return HttpResponse.json({ items: next ? [renamed, first, foreign] : [first],
+        pageInfo: { nextCursor: next ? null : 'second-page' } })
+    }))
+    wrap(<Library />)
+    expect(await screen.findByText('Early name')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Show more skills' }))
+    expect(await screen.findByText('Renamed guide')).toBeVisible()
+    expect(screen.queryByText('Early name')).toBeNull()
+    expect(within(screen.getByRole('list', { name: 'Skills' })).getAllByRole('listitem')).toHaveLength(2)
+    expect(screen.getByText('2 skills shown')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Renamed guide/ })).toHaveAttribute('href',
+      '/settings/skills/workspace-a/shared-guide')
+    expect(screen.getByRole('link', { name: /Other workspace guide/ })).toHaveAttribute('href',
+      '/settings/skills/workspace-b/shared-guide')
+  })
+
   it('shows loading, then one row per logical skill; never a false empty list while loading', async () => {
     seedSkill('workspace-1', 'Reviewer', 'Review carefully.', { description: 'Checks diffs' })
     server.use(http.get('/api/management/skills', async () => { await delay(50); return undefined }, { once: true }))
@@ -263,6 +289,23 @@ describe('Board Agent skill assignment', () => {
     const [value, setValue] = useState(initial)
     return <AgentSkillsField workspaceId="workspace-a" value={value} onChange={(next) => { setValue(next); onChange(next) }} />
   }
+  it('previews and assigns the catalog version after another caller publishes a new head', async () => {
+    const user = userEvent.setup()
+    const skill = seedSkill('workspace-a', 'Guide', 'Instructions from version one', { skillId: 'shared-guide' })
+    seedSkill('workspace-b', 'Foreign guide', 'Foreign instructions', { skillId: 'shared-guide' })
+    const onChange = vi.fn()
+    wrap(<Field onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: 'Add' }))
+    editSkillElsewhere('workspace-a', skill.skillId, 'Instructions from version two')
+    await user.click(screen.getByRole('button', { name: 'Preview Guide' }))
+    expect(await screen.findByLabelText('Instructions preview')).toHaveTextContent('Instructions from version one')
+    expect(screen.queryByText('Instructions from version two')).toBeNull()
+    expect(screen.queryByText('Foreign instructions')).toBeNull()
+    await user.click(screen.getByRole('checkbox', { name: 'Guide' }))
+    await user.click(screen.getByRole('button', { name: 'Add 1 skill' }))
+    expect(onChange).toHaveBeenLastCalledWith([{ skillId: skill.skillId, version: '1' }])
+  })
+
   it('adds several skills in picked order, reorders, removes and offers an explicit newer version', async () => {
     const user = userEvent.setup()
     const first = seedSkill('workspace-a', 'First', 'One')
@@ -300,6 +343,44 @@ describe('Board Agent skill assignment', () => {
 })
 
 describe('Skill users', () => {
+  it('offers workflow-only recovery after mounting with no outdated Agents', async () => {
+    const user = userEvent.setup()
+    const skill = seedSkill('workspace-a', 'Reviewer', 'First')
+    editSkillElsewhere('workspace-a', skill.skillId, 'Second')
+    let updated = false
+    server.use(
+      http.get('/api/management/workspaces/:workspaceId/skills/:skillId/usage', () => HttpResponse.json({
+        skillId: skill.skillId, headVersion: '2', agents: [],
+        workflows: updated ? [] : [{ workflowId: 'website', name: 'Website' }],
+      })),
+      http.post('/api/management/workspaces/:workspaceId/skills/:skillId/update-users', () => {
+        updated = true
+        return HttpResponse.json({ headVersion: '2', agents: [], failed: [],
+          workflows: [{ workflowId: 'website', workflowVersionId: 'website-updated' }] })
+      }),
+    )
+    wrap(<SkillDetailPage workspaceId="workspace-a" skillId={skill.skillId} onCancel={vi.fn()} />)
+    expect(await screen.findByText('1 workflow still uses an older version')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Update to v2' }))
+    await waitFor(() => expect(screen.queryByText(/still uses an older version/)).toBeNull())
+    expect(updated).toBe(true)
+  })
+
+  it('shows a failed usage read and recovers through its retry action while detail stays available', async () => {
+    const user = userEvent.setup()
+    const skill = seedSkill('workspace-a', 'Reviewer', 'First')
+    assignSkillUser('workspace-a', skill.skillId, { agentId: 'coder', name: 'Coder', version: '1', workflows: [] })
+    editSkillElsewhere('workspace-a', skill.skillId, 'Second')
+    server.use(http.get('/api/management/workspaces/:workspaceId/skills/:skillId/usage', () =>
+      HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Usage unavailable.' } }, { status: 503 }), { once: true }))
+    wrap(<SkillDetailPage workspaceId="workspace-a" skillId={skill.skillId} onCancel={vi.fn()} />)
+    expect(await screen.findByRole('textbox', { name: /^Instructions/ })).toHaveValue('Second')
+    expect(await screen.findByText('Skill usage could not be loaded.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('1 Agent still uses an older version')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Update to v2' })).toBeEnabled()
+  })
+
   it('offers one click to move Agents and their workflows to the saved version', async () => {
     const user = userEvent.setup()
     const summary = seedSkill('workspace-a', 'Reviewer', 'First')
