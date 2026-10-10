@@ -233,6 +233,7 @@ async function assertInteractionsSettled(sql: GraphTransactionSql, runId: string
     const rows = (await sql.query<{ id: string; execution_id: string; status: string; record: unknown; retired: boolean }>(
       `select i.id,i.execution_id,i.status,i.record,(${CANCELED_INTERACTION_RETIRED_SQL}) as retired
        from durable_interactions i where i.run_id=$1 and i.execution_id=$2 and i.id>$3
+         and i.record->>'kind' is distinct from 'work_direction'
        order by i.id limit 100 for update of i`, [runId, execution.id, after])).rows
     for (const stored of rows) {
       const interaction = DurableInteractionSchema.parse(stored.record)

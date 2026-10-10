@@ -387,7 +387,8 @@ export class WorkflowNativeProofServices {
     assertOriginalWorkflowTerminal(stored.execution, capture.session, history)
     const publication = currentRunGraphPublication(sql, scope)
     const rows = (await sql.query<{ record: unknown }>(`select record from durable_interactions
-      where run_id=$1 and execution_id=$2 and status='delivered' order by id limit 1001 for update`,
+      where run_id=$1 and execution_id=$2 and status='delivered'
+        and record->>'kind' is distinct from 'work_direction' order by id limit 1001 for update`,
     [run.id, stored.execution.id])).rows
     if (rows.length > 1000) return fail('GRAPH_RESUME_LIMIT')
     const fence = await owner.readOneShotFence(sql)

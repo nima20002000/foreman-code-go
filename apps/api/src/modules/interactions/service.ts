@@ -9,6 +9,7 @@ import type { PostgresApprovalBudgetRepository } from './budget.js'
 import type { InteractionNativeRuntime } from './runtimePorts.js'
 import { Wave25InteractionRepository } from './wave25/repository.js'
 import type { InteractionResponseOptions } from './cancellation.js'
+import type { WorkDirectionActions } from './workDirection.js'
 import { deliverApproval, respondToApproval, resumeApproval,
   type ApprovalRuntimeDependencies, type AtomicApprovalResumeConsumer } from './wave25/service.js'
 
@@ -23,6 +24,7 @@ const message = (error: unknown) => error instanceof DomainError ? error.code : 
 /** One current authenticated decision/delivery/resume service. Transport source
  * and graph complexity never select another repository or approval protocol. */
 export class InteractionService {
+  useWorkDirectionActions(actions: WorkDirectionActions): void { this.interactions.directions.useActions(actions) }
   private atomicApprovalResume: AtomicApprovalResumeConsumer | undefined
   private prepareRequester: ((interaction: DurableInteraction) => Promise<void>) | undefined
   useApprovalPreparation(prepare: (interaction: DurableInteraction) => Promise<void>): void {
@@ -99,6 +101,12 @@ export class InteractionService {
 
   /** Read-only availability. Caller supplies the result of its existing responder-role policy. */
   async readActivity(interaction: DurableInteraction, authorized: boolean) {
+    if (interaction.kind === 'work_direction') {
+      const available = await this.interactions.directions.available(interaction)
+      return projectInteractionActivity(interaction, { response: { authorized, qualified: available, usable: available,
+        path: 'workflow_decision', identity: { interactionId: interaction.id, revision: interaction.revision,
+          sessionId: interaction.nativeSessionId, requestId: interaction.nativeRequestId, executionId: interaction.executionId } } })
+    }
     const qualified = this.activityEvidence ? await this.activityEvidence(interaction) : {
       response: { qualified: false, usable: false, path: null, authorized: false },
     } satisfies InteractionActivityEvidence
@@ -125,13 +133,21 @@ export class InteractionService {
     return { items, nextCursor: rows.length > input.limit ? items.at(-1)!.id : null, ...counts }
   }
 
-  respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number;
+  async respond(responder: InteractionResponder, input: { interactionId: string; optionId: string; expectedRevision: number;
     commandId?: string; response?: InteractionResponseValue | undefined },
     options: InteractionResponseOptions = {}) {
+    const interaction = await this.get(input.interactionId)
+    if (interaction.kind === 'work_direction') {
+      if (!responder.principal || responder.kind === 'orchestrator') throw new DomainError(
+        'INTERACTION_ACCESS_DENIED', 'Workflow direction is assigned to the owner.', 403)
+      return this.interactions.directions.respond(responder.principal,
+        responder.kind === 'operator' ? responder.source ?? 'http' : 'http', input, options)
+    }
     return respondToApproval(this.approvalDependencies(), responder, input, options)
   }
 
   async reconcile(interaction: DurableInteraction): Promise<DurableInteraction> {
+    if (interaction.kind === 'work_direction') return this.interactions.directions.complete(interaction)
     const current = await this.deliver(interaction.id, true)
     await this.resumeDelivered(current)
     return this.get(current.id)
@@ -146,6 +162,10 @@ export class InteractionService {
     const errors: Array<{ interactionId: string; error: string }> = []
     for (const candidate of rows.slice(0, input.limit)) {
       try {
+        if (candidate.kind === 'work_direction') {
+          await this.interactions.directions.complete(candidate)
+          continue
+        }
         const current = candidate.deliveryState === 'delivered' ? candidate : await this.deliver(candidate.id)
         await this.resumeDelivered(current)
       } catch (error) {

@@ -7,7 +7,7 @@ import { InteractionActivityProjectionSchema, type InteractionActivityProjection
 export interface InteractionResponseAvailability {
   authorized: boolean
   qualified: boolean
-  path: 'live_callback' | 'qualified_recovery' | null
+  path: 'live_callback' | 'qualified_recovery' | 'workflow_decision' | null
   usable: boolean
   identity?: { interactionId: string; revision: number; sessionId: string; requestId: string; executionId: string }
 }

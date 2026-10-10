@@ -15,6 +15,9 @@ function strings(value: unknown): string[] {
 
 /** Best-effort display of provider-supplied facts; never invent a command, target, or safety guarantee. */
 export function summarizeApprovalRequest(value: DurableInteraction['request'], nativeRequestType = '') {
+  if (nativeRequestType === 'workflow/work_direction') return {
+    operation: 'Choose direction for the remaining findings', explanation: 'Finish with findings, continue with direction, or stop.',
+  }
   const request: Record<string, unknown> = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
   const metadata: Record<string, unknown> = request.metadata && typeof request.metadata === 'object' && !Array.isArray(request.metadata)
     ? request.metadata as Record<string, unknown> : {}

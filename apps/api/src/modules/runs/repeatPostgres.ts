@@ -1118,9 +1118,13 @@ export class RepeatRunRepository {
         return repeatConflict('WORK_DENIAL_CONTINUATION_UNRESOLVED')
       }
       const unresolved = (await context.sql.query<{ unresolved_id: string; execution_id: string;
-        result_digest: string; reason: 'finish_with_findings' | 'repeated_exhausted_route'
-      }>(`select unresolved_id,execution_id,result_digest,reason
-          from run_work_unresolved where run_id=$1 order by unresolved_id`,
+        result_digest: string; reason: 'finish_with_findings' | 'repeated_exhausted_route'; resolved: boolean
+      }>(`select u.unresolved_id,u.execution_id,u.result_digest,u.reason,exists(
+          select 1 from durable_interactions i join run_work_direction_responses d on d.interaction_id=i.id
+          where i.run_id=u.run_id and i.record->>'kind'='work_direction' and i.status='delivered'
+            and (i.record->>'selectedOptionId'='finish'
+              or i.record->>'selectedOptionId'='continue' and d.continuation_run_id is not null)) as resolved
+          from run_work_unresolved u where u.run_id=$1 order by u.unresolved_id`,
       [context.scope.runId])).rows
       const unresolvedByExecution = new Map<string, typeof unresolved>()
       for (const item of unresolved) {
@@ -1171,6 +1175,10 @@ export class RepeatRunRepository {
             return repeatConflict('WORK_UNRESOLVED_RECEIPT_CONFLICT')
           }
           unresolvedByExecution.delete(row.execution_id)
+          if (unresolvedItems.every((item) => item.resolved)) {
+            terminals.push({ relationshipId: 'terminal', execution: repeatExecutionIdentity(execution),
+              occurrence: null, acceptedResultDigest: row.result_digest, acceptedResult: result })
+          }
           continue
         }
         if (routing.kind === 'return' && routing.outcome === 'needs_changes') continue
@@ -1185,7 +1193,7 @@ export class RepeatRunRepository {
         || terminals.length > context.version.definition.executionPolicy!.maxNodeExecutions) {
         return repeatConflict('WORKFLOW_UNRESOLVED')
       }
-      if (unresolved.length) {
+      if (unresolved.some((item) => !item.resolved)) {
         this.active(context)
         await this.settleAttempts(context, { kind: 'run' })
         return 'needs_direction'

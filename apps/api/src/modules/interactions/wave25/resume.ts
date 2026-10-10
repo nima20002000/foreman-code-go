@@ -46,6 +46,10 @@ export async function assertApprovalTerminalSettlement(sql: GraphTransactionSql,
     const i = DurableInteractionSchema.parse(stored.record)
     if (i.id !== stored.id || i.executionId !== stored.execution_id || i.runId !== runId
       || i.graphThreadId !== runId) return fail('APPROVAL_IDENTITY_MISMATCH')
+    if (i.kind === 'work_direction') {
+      if (i.status !== 'delivered') return fail('WORK_DIRECTION_WAIT_CONFLICT')
+      continue
+    }
     // Acceptance may follow legitimate exact-session cleanup. These durable
     // receipts are settlement evidence, NOT a fresh native/credential authority.
     // The caller separately arbitrates Stop under its Run-owner lock.

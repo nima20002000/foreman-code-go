@@ -12,7 +12,7 @@ export const InteractionActivityProjectionSchema = z.object({
   answerRecorded: z.boolean(),
   nativeDelivery: z.enum(['not_started', 'pending', 'submitted', 'uncertain', 'delivered', 'failed']),
   workerAcknowledgment: z.enum(['confirmed', 'unknown']),
-  response: z.object({ available: z.boolean(), path: z.enum(['live_callback', 'qualified_recovery']).nullable(),
+  response: z.object({ available: z.boolean(), path: z.enum(['live_callback', 'qualified_recovery', 'workflow_decision']).nullable(),
     reason: z.enum(['available', 'not_pending', 'unauthorized', 'unqualified', 'callback_unavailable', 'identity_mismatch']) }).strict(),
 }).strict()
 export type InteractionActivityProjection = z.infer<typeof InteractionActivityProjectionSchema>

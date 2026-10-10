@@ -4,6 +4,7 @@ import { bugReportsMigration } from './bugReportsMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
 import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
+import { workDirectionResponseMigration } from './workDirectionResponseMigration.js'
 import { localWorkflowNativeOutputMigration } from './localWorkflowNativeOutputMigration.js'
 import { workExhaustedRouteMigration } from './workExhaustedRouteMigration.js'
 import { workJoinRoundMigration } from './workJoinRoundMigration.js'
@@ -868,6 +869,7 @@ export const migrations = [
   workJoinRoundMigration,
   workExhaustedRouteMigration,
   workDeliverySettlementMigration,
+  workDirectionResponseMigration,
   workUnresolvedRoutesMigration,
   workJoinDispatchMigration,
   workJoinDispositionMigration,

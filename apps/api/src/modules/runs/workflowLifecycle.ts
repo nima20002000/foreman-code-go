@@ -22,6 +22,7 @@ import { lockInteraction, readContext } from '../interactions/wave25/context.js'
 import { decisionDigest, nextInteraction, publishInteraction } from '../interactions/wave25/publication.js'
 import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
 import { isSettlementPendingCheckpointError } from '../interactions/repeatNativeEvidence.js'
+import { ensureWorkDirectionInteraction } from './workDirectionInteraction.js'
 
 function fail(code: string): never {
   throw new DomainError(code, 'The workflow lifecycle requires its exact persisted owner, checkpoint and settlement evidence.', 409)
@@ -257,6 +258,7 @@ export async function persistWorkDirectionWait(owner: RunOwnership,
       const prior = (await sql.query<{ unresolved_ids: unknown }>(
         'select unresolved_ids from run_work_direction_waits where run_id=$1', [run.id])).rows[0]
       if (!sameRepeatValue(prior?.unresolved_ids, unresolvedIds)) return fail('WORK_DIRECTION_WAIT_CONFLICT')
+      await ensureWorkDirectionInteraction(publication, run)
       return
     }
     const incomplete = await sql.query(`select 1 from run_work_activations
@@ -278,6 +280,7 @@ export async function persistWorkDirectionWait(owner: RunOwnership,
         values($1,'backend','work_direction_wait',clock_timestamp(),$2::jsonb)`,
       [run.id, canonicalGraphJson({ unresolvedIds })])
     })
+    await ensureWorkDirectionInteraction(publication, next)
   })
 }
 

@@ -181,7 +181,15 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (!['queued', 'running', 'waiting'].includes(snapshot.run.executionState)) throw new DomainError(
         'RUN_NOT_RESUMABLE', 'This Run requires Stop settlement or a separately authorized new Run.', 409)
       if (snapshot.run.executionState === 'waiting' && snapshot.version.definition.handoffs
-        && await hasWorkDirectionWait(owner)) return
+        && await hasWorkDirectionWait(owner)) {
+        await persistWorkDirectionWait(owner, this.locations)
+        const store = await this.runs.repeat(owner)
+        if (await store.completeWorkRun() === 'needs_direction') return
+        await this.nativeExecutions.finishRun(runId)
+        await this.runs.finishCleanup(runId, false, owner)
+        await this.finishOwned(owner)
+        return
+      }
       const checkpoint = await readWorkflowCheckpoint(runId, snapshot.version, this.checkpointer)
       if (checkpoint.values.runId && checkpoint.values.runId !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'The checkpoint belongs to another Run.', 409)
       const current = checkpoint.tasks.some((task) => task.interrupts?.length)

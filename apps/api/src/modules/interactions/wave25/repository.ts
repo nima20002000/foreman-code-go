@@ -10,16 +10,19 @@ import { fail, isCurrentApprovalRun, lockInteraction, readContext, runFor, trans
 import { CANCELED_INTERACTION_RETIRED_SQL, nextInteraction, publishInteraction, retireCanceledInteraction, retireCanceledInteractionsAfterCleanup } from './publication.js'
 import type { RunGraphPublication } from '../../run-graph/publication.js'
 import { runCleanupAllowed } from './cleanupAuthority.js'
+import { WorkDirectionRepository } from '../workDirection.js'
 
 /** Current approval repository: every product mutation joins canonical G1.
  * The base provides shared bounded reads and native lane primitives only. */
 export class Wave25InteractionRepository extends PostgresInteractionRepository {
   override readonly delivery: Wave25InteractionDeliveryRepository
   override readonly coordination: Wave25InteractionCoordinationRepository
+  readonly directions: WorkDirectionRepository
   constructor(private readonly approvalPool: pg.Pool, nativeProofs?: ReviewNativeProofServices) {
     super(approvalPool)
     this.delivery = new Wave25InteractionDeliveryRepository(approvalPool)
     this.coordination = new RetiringInteractionCoordinationRepository(approvalPool, nativeProofs)
+    this.directions = new WorkDirectionRepository(approvalPool)
   }
   usesAtomicApproval(runId: string): Promise<boolean> { return isCurrentApprovalRun(this.approvalPool, runId) }
   private async mode(id: string) { const runId = await runFor(this.approvalPool, 'interaction', id)
@@ -85,7 +88,8 @@ export class Wave25InteractionRepository extends PostgresInteractionRepository {
       const rows = (await sql.query<{ id: string }>(`select i.id from durable_interactions i
         left join interaction_graph_resumes g on g.interaction_id=i.id where i.run_id=$1
         and (i.status<>'canceled' or not (${CANCELED_INTERACTION_RETIRED_SQL}))
-        and not (i.status='delivered' and g.approval_native_ack_id is not null) order by i.id`, [runId])).rows
+        and not (i.status='delivered' and (g.approval_native_ack_id is not null
+          or i.record->>'kind'='work_direction')) order by i.id`, [runId])).rows
       let canceled = 0
       for (const { id } of rows) {
         const current = await lockInteraction(sql, id), context = await readContext(sql, current)

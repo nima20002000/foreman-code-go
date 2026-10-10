@@ -75,7 +75,8 @@ export async function readPublicAttentionCounts(sql: GraphTransactionSql, runId:
   const interaction = overlay.interaction
   if (interaction && (!nodeIds || nodeIds.includes(interaction.workflowNodeId))) {
     const value = get(interaction.workflowNodeId), record = interaction.record
-    if (publicInteractionPending(record.status, interaction.nativeAcknowledged)) {
+    if (publicInteractionPending(record.status,
+      record.kind === 'work_direction' || interaction.nativeAcknowledged)) {
       value.pendingInteractionCount++
       if (record.status === 'pending') {
         value.pendingInteractionId = [value.pendingInteractionId, record.id].filter((id): id is string => !!id).sort()[0]!

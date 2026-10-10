@@ -25,7 +25,8 @@ export async function readCurrentGraphExchanges(
      left join interaction_graph_resumes g on g.interaction_id=i.id
      where i.run_id=$1 and (
        i.status not in ('delivered','canceled')
-       or (i.status='delivered' and g.approval_native_ack_id is null)
+       or (i.status='delivered' and i.record->>'kind' is distinct from 'work_direction'
+         and g.approval_native_ack_id is null)
        or (i.status='canceled' and not (${CANCELED_INTERACTION_RETIRED_SQL}))
      ) order by i.id limit $2`,
     [scope.runId, RUN_GRAPH_LIMITS.exchanges + 1],

@@ -1477,6 +1477,10 @@ export function buildProductionApp(
     buildComputers?: import('./modules/settings/buildComputers.js').BuildComputerSettings
     jobRuntimeProfiles?: import('./modules/jobs/runtimeProfiles.js').JobRuntimeProfiles } = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
   const localHuman = new PostgresLocalHumanAccess(database.pool, access)
+  interactions.useWorkDirectionActions({
+    start: (principal, source, input) => operatorServices.runs.start(principal, source, input),
+    wake: () => engine.reconcile(),
+  })
   const app = buildApp({
     runtimeIdentity: async () => {
       const identity = await readRuntimeIdentity(database.pool,

@@ -180,6 +180,38 @@ afterEach(() => {
 })
 
 describe('ENG-05 contextual Run actions on current S3 contracts', () => {
+  it.each(['finish', 'continue', 'stop'] as const)('offers a Run direction choice for %s through the existing interaction UI', async (choice) => {
+    const mock = fixture()
+    const user = userEvent.setup()
+    const base = mock.state.interactions[0]!
+    const offered = approveOption(mock)
+    mock.state.interactions = [DurableInteractionSchema.parse({ ...base, kind: 'work_direction',
+      nativeRequestType: 'workflow/work_direction', request: { message: 'Review is incomplete', remainingFindings: ['Review is incomplete'] },
+      responseOptions: [
+        { ...offered, optionId: 'finish', label: 'Finish Run and accept remaining findings' },
+        { ...offered, optionId: 'continue', label: 'Continue in a new Run', input: { kind: 'form', schema: {
+          type: 'object', properties: { direction: { type: 'string', title: 'Direction for the agents', minLength: 1 } },
+          required: ['direction'], additionalProperties: false,
+        } } },
+        { ...offered, optionId: 'stop', label: 'Stop Run', semantic: 'cancel' },
+      ],
+    })]
+    await mount(mock)
+    await user.click(screen.getByText('Human approvals for this Run'))
+    await user.click(await screen.findByText(`Run direction ${base.id} · pending`))
+    expect(await screen.findByLabelText('Exact human approval request')).toHaveTextContent('Review is incomplete')
+    expect(screen.getByRole('button', { name: 'Finish Run and accept remaining findings' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Continue in a new Run' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Stop Run' })).toBeEnabled()
+    if (choice === 'continue') await user.type(screen.getByLabelText('Direction for the agents (required)'), 'Complete the review')
+    const label = mock.state.interactions[0]!.responseOptions.find((item) => item.optionId === choice)!.label
+    await user.click(screen.getByRole('button', { name: label }))
+    await screen.findByText('Run direction recorded.')
+    expect(writes(mock, '/respond').map((request) => request.body)).toEqual([{
+      interactionId: base.id, expectedRevision: base.revision, optionId: choice,
+      ...(choice === 'continue' ? { response: { direction: 'Complete the review' } } : {}),
+    }])
+  })
   it('reads bounded metadata only on mount and refresh, and never advertises node retry or provider recovery', async () => {
     const mock = fixture(), user = userEvent.setup()
     await mount(mock, true)

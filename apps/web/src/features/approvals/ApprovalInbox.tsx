@@ -3,6 +3,7 @@ import type { Agent, DurableInteraction } from '@foreman-code/contracts'
 import { useInfiniteInteractionsQuery, useWorkspaceDetailsQuery } from '../../shared/api/query'
 import { useUserInteractionResponse } from '../../shared/api/userApprovals'
 import { approvalOptionScope } from '../../shared/ui/approvalOptionScope'
+import { NativeInteractionResponse } from '../../shared/ui/NativeInteractionResponse'
 import { Alert, Avatar, Button, ErrorState, Icon, IconButton, LoadingState } from '../../shared/ui/nocturne'
 import { usePresence } from '../../shared/ui/usePresence'
 import { interactionMatchesScope } from './approvalState'
@@ -14,6 +15,13 @@ import './approvals.css'
 
 function QuickApprovalActions({ interaction, onChanged }: { interaction: DurableInteraction; onChanged(): void }) {
   const response = useUserInteractionResponse()
+  if (interaction.kind === 'work_direction') return <div className="approval-row-actions">
+    <NativeInteractionResponse options={interaction.responseOptions} disabled={response.isPending}
+      onSelect={(optionId, values) => response.mutate({ interactionId: interaction.id, optionId,
+        expectedRevision: interaction.revision, ...(values !== undefined ? { response: values } : {}) },
+      { onSuccess: onChanged })} />
+    {response.isError ? <span role="alert">{response.error.message}</span> : null}
+  </div>
   if (interaction.harness === 'opencode') return <span>Retired harness (OpenCode): read-only</span>
   const approve = interaction.responseOptions.find((option) => option.semantic === 'approve_once')
     ?? interaction.responseOptions.find((option) => option.semantic === 'allow_turn')
