@@ -27,6 +27,8 @@ import type { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { SourceReservationReclamationRequestSchema, SourceReservationReclamationAuthorityResponseSchema } from '@foreman-code/contracts/source-operations'
 import type { MaterializationReservationCleanup } from './materializationReservationCleanup.js'
 
+const GITHUB_PUBLISH_TIMEOUT_MS = 10 * 60_000
+
 export interface SourceGitHubPublication {
   /** GitHub serves the approved commit before the computer fetches it; Main sends no source bytes. */
   publish(manifest: SourceManifest, signal: AbortSignal): Promise<z.infer<typeof SourceGitHubReferenceSchema>>
@@ -86,7 +88,9 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     options?: { worktree?: SourceWorktreeRequest }) {
     const identity = await this.owners.prepareIdentity(root, attempt)
     this.connection(root) // Validate actual host before any source transfer.
-    const github = await this.github.publish(manifest, AbortSignal.timeout(Math.max(1, Date.parse(identity.expiresAt) - Date.now())))
+    // Publishing one commit is bounded well inside the attempt; long attempt leases exceed timer limits.
+    const github = await this.github.publish(manifest, AbortSignal.timeout(
+      Math.min(GITHUB_PUBLISH_TIMEOUT_MS, Math.max(1, Date.parse(identity.expiresAt) - Date.now()))))
     const response = await this.call(root, { version: 1, operation: 'sources.prepare', root, attempt, identity, github,
       ...(options?.worktree ? { worktree: options.worktree } : {}) })
     if (response.operation !== 'sources.prepare' || !isDeepStrictEqual(response.receipt.binding, root.binding) || response.receipt.executionId !== attempt.executionId
