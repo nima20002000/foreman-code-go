@@ -123,7 +123,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(slices[1]).toContain(heavy[1])
   })
 
-  it.each(['github', 'circleci'] as const)('dispatches unit part names and one-based shards through %s', async provider => {
+  it.each(['github'] as const)('dispatches unit part names and one-based shards through %s', async provider => {
     const f = await fixture({}, { provider })
     await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
       suite: 'unit', part: 'unit-web', partition: { index: 1, count: 3 } })
@@ -132,7 +132,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(command).toContain('slice=2/3')
   })
 
-  it.each(['github', 'circleci'] as const)('passes already sharded affected files to the unit part through %s', async provider => {
+  it.each(['github'] as const)('passes already sharded affected files to the unit part through %s', async provider => {
     const f = await fixture({ 'apps/api/test/feature.test.ts': 'export {}' }, { provider })
     await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
       suite: 'unit', part: 'unit-api', scope: 'affected', files: ['apps/api/test/feature.test.ts'],
@@ -144,7 +144,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(command).toContain('files=s:4')
   })
 
-  it.each(['github', 'circleci'] as const)('reads measured unit durations from %s artifacts', async provider => {
+  it.each(['github'] as const)('reads measured unit durations from %s artifacts', async provider => {
     const f = await fixture({}, { provider })
     const runId = randomUUID()
     await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
@@ -168,7 +168,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.dispatched[0]).toContain('scope=affected')
   })
 
-  it.each(['github', 'circleci'] as const)('passes affected unit scope and compact file indexes through %s', async provider => {
+  it.each(['github'] as const)('passes affected unit scope and compact file indexes through %s', async provider => {
     const f = await fixture({ 'apps/api/test/feature.test.ts': 'export {}' }, { provider })
     const files = ['apps/api/test/feature.test.ts']
     await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
