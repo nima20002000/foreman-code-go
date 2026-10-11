@@ -1,3 +1,6 @@
+import type { ProviderAccountResolver } from '../provider-accounts/service.js'
+import { assertWorkerProviderAccountBinding } from '../provider-accounts/workerOperations.js'
+import { managedProviderEnvironment, resolveRuntimeProviderAccount } from '../harnesses/providerAccountRuntime.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -45,22 +48,29 @@ export async function allocateInstalledWorkerClaude(input: {
   journal: WorkerConversationJournal
   request(namespace: string, payload: unknown, options: { signal: AbortSignal }): Promise<DeviceApplicationResult>
   signal: AbortSignal
+  accounts?: ProviderAccountResolver
 }): Promise<WorkerConversationAllocation> {
   const binding = structuredClone(input.binding)
   const configuration = structuredClone(input.configuration)
   if (configuration.harness.harness !== 'claude' || binding.harness !== 'claude') throw new DomainError(
     'HARNESS_CONFIGURATION_MISMATCH', 'Claude allocation requires the saved Claude profile.', 409)
+  assertWorkerProviderAccountBinding(binding.accountBinding, input.connection)
+  const account = await resolveRuntimeProviderAccount(input.accounts, 'claude', configuration.harness.accountId,
+    input.registry.scope(`conversation:${binding.owner.conversationId}`), undefined, binding.accountBinding)
+  if (account && (account.homePath !== configuration.harness.configDirectory
+    || account.authMode !== configuration.harness.authMode)) throw new DomainError(
+      'PROVIDER_ACCOUNT_CONFIGURATION_CONFLICT', 'The accepted Worker Claude profile differs from its account.', 409)
+  const nativeEnvironment = account ? managedProviderEnvironment(process.env, account, 'claude') : process.env
   const directory = await installedConversationDirectory({ binding, configuration, approvedRoots: input.approvedRoots })
   const profiles = createInstalledClaudeConversationProfile({ binding, configuration, connection: input.connection,
     current: input.current, signal: input.signal, readFacts: signal => input.callbacks.profile(input.source(), signal),
     inspect: signal => inspectInstalledClaude({ binding: input.current(), configuration: input.selection,
-      environment: process.env, cwd: input.stateDirectory, signal }) })
+      environment: nativeEnvironment, cwd: input.stateDirectory, signal }) })
   const original = await profiles.capture()
   const binary = original.installation.launcher.resolvedLauncher
   if (!binary) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The installed Claude executable is unavailable.', 409)
-  const nativeEnvironment = { ...process.env }
   const compiled = compileClaudeConfiguration(configuration.harness, binding.workingDirectory,
-    original.accepted, nativeEnvironment)
+    original.accepted, nativeEnvironment, account?.apiKey)
   const reader = input.purpose === 'compaction-read'
   let owner = `conversation:${binding.owner.conversationId}`
   if (reader) owner = `conversation-read:${binding.owner.conversationId}:${randomUUID()}`
@@ -72,7 +82,7 @@ export async function allocateInstalledWorkerClaude(input: {
     await directory.assertCurrent(signal)
     const current = await profiles.capture()
     const policy = compileClaudeConfiguration(configuration.harness, binding.workingDirectory,
-      current.accepted, nativeEnvironment)
+      current.accepted, nativeEnvironment, account?.apiKey)
     const changedFields = (Object.keys(policy) as Array<keyof typeof policy>)
       .filter(field => !isDeepStrictEqual(policy[field], compiled[field]))
     const nativePinChanged = !isDeepStrictEqual(current.accepted.currentBinding.pin, original.accepted.currentBinding.pin)

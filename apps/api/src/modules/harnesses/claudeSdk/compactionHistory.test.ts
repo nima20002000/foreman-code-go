@@ -1,3 +1,6 @@
+import { vi } from 'vitest'
+import type { ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
+import { resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
 import { saveClaudeCompactionResult, claudeCompactionResultMatches } from './compactionResults.js'
 import { recoverPersistedClaudeCompaction } from './recoverCompaction.js'
 import { mkdtemp, mkdir, appendFile, rm, writeFile } from 'node:fs/promises'
@@ -104,4 +107,54 @@ it('does not settle a command from another result, a child or a malformed frame'
   expect(claudeCompactionResultMatches({ ...result, parent_tool_use_id: 'child' }, 'session', 'compact-uuid')).toBe(false)
   expect(claudeCompactionResultMatches({ ...result, session_id: 'foreign' }, 'session', 'compact-uuid')).toBe(false)
   expect(claudeCompactionResultMatches({ ...result, is_error: undefined }, 'session', 'compact-uuid')).toBe(false)
+})
+
+
+it('reconciles uncertain compaction only in the accepted account after a default switch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'account-compaction-'))
+  const accountId = randomUUID()
+  const otherId = randomUUID()
+  const binding: ProviderAccountBinding = { kind: 'slot', accountId, provider: 'claude', bindingRevision: 1,
+    profileRef: randomUUID(), subject: null,
+    target: { hostRef: { kind: 'main', mainId: randomUUID() }, applicationInstallationId: randomUUID(),
+      keyRevision: null, authorizationRevision: null } }
+  const homePath = join(root, 'account-a')
+  const otherHome = join(root, 'account-b')
+  let defaultId = accountId
+  const resolve = vi.fn(async (_provider: 'codex' | 'claude', id?: string) => ({ accountId: id ?? defaultId,
+    homePath: id === accountId ? homePath : otherHome, authMode: 'subscription' as const, binding }))
+  const recovery = { root: join(root, 'processes'), owner: 'conversation:compaction' }
+  const nativeSessionId = randomUUID()
+  const nativeRequestId = randomUUID()
+  const cwd = '/owned-project'
+  const scope = { deviceId: 'recorded-host', configRevision: 'accepted-configuration', profilePath: homePath, cwd }
+  const frame = (uuid: string) => ({ type: 'system', subtype: 'compact_boundary', uuid,
+    cwd, sessionId: nativeSessionId, compactMetadata: { trigger: 'manual', preTokens: 1000 },
+    timestamp: new Date().toISOString() })
+  try {
+    await mkdir(join(homePath, 'projects', '-owned-project'), { recursive: true })
+    await mkdir(join(otherHome, 'projects', '-owned-project'), { recursive: true })
+    const history = join(homePath, 'projects', '-owned-project', `${nativeSessionId}.jsonl`)
+    await appendFile(history, `${JSON.stringify(frame('old-boundary'))}\n`)
+    await resolveRuntimeProviderAccount({ resolve }, 'claude', accountId, recovery, undefined, binding)
+    const before = await readClaudeCompactionHistory({ ...scope, nativeSessionId })
+    const state = { requestId: 'original-compaction', nativeRequestId, nativeSessionId, nativeOperationId: null,
+      claudeSession: scope, claudeCursor: before.cursor, status: 'uncertain' as const,
+      message: '', beforeTokens: null, observedAt: new Date().toISOString() }
+    defaultId = otherId
+    await appendFile(join(otherHome, 'projects', '-owned-project', `${nativeSessionId}.jsonl`),
+      `${JSON.stringify(frame('other-account-boundary'))}\n`)
+    await saveClaudeCompactionResult({ ...scope, profilePath: otherHome, nativeSessionId }, nativeRequestId, 'completed')
+    const accepted = await resolveRuntimeProviderAccount({ resolve }, 'claude', undefined, recovery)
+    expect(accepted?.homePath).toBe(homePath)
+    expect((await recoverPersistedClaudeCompaction(state)).status).toBe('uncertain')
+    expect((await readClaudeCompactionHistory({ ...scope, nativeSessionId }, before.cursor)).boundaries).toEqual([])
+    await appendFile(history, `${JSON.stringify(frame('accepted-account-boundary'))}\n`)
+    const observed = await readClaudeCompactionHistory({ ...scope, nativeSessionId }, before.cursor)
+    const pending = recoveredClaudeCompaction(state, observed.boundaries)
+    await saveClaudeCompactionResult({ ...scope, nativeSessionId }, nativeRequestId, 'completed')
+    expect(await recoverPersistedClaudeCompaction(pending)).toMatchObject({ status: 'completed',
+      nativeSessionId, nativeRequestId, nativeOperationId: 'accepted-account-boundary' })
+    expect(resolve.mock.calls.every(call => call[1] === accountId)).toBe(true)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

@@ -242,17 +242,24 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     return { status: 'signed-in', identity: safeIdentity(observation.email), subject }
   }
 
+  async requireRuntimeAccount(input: ProviderAccountNativeInput): Promise<void> {
+    await this.selected(input)
+  }
+
   async authenticationGeneration(input: ProviderAccountNativeInput): Promise<number> {
     const selection = await this.selected({ account: input.account, homePath: input.homePath, userHome: input.userHome })
     return selection.generation
   }
 
-  async observeAccount(input: ProviderAccountNativeInput): Promise<ProviderAccountObservation> {
+  async observeAccount(input: ProviderAccountNativeInput, requestedSequence?: number): Promise<ProviderAccountObservation> {
+    this.sequence = Math.max(this.sequence + 1, Date.now())
+    const sequence = requestedSequence ?? this.sequence
     const selected = await this.selected(input)
     const state = await this.status(input)
-    this.sequence = Math.max(this.sequence + 1, Date.now())
+    if (!isDeepStrictEqual(selected, await this.selected(input))) throw new DomainError(
+      'PROVIDER_OBSERVATION_STALE', 'The native account installation changed during observation.', 409)
     return { bindingRevision: selected.binding.bindingRevision, generation: selected.generation,
-      sequence: this.sequence, observedAt: new Date().toISOString(), status: state.status,
+      sequence, observedAt: new Date().toISOString(), status: state.status,
       identity: state.identity, subject: state.subject ?? null,
       readiness: state.status === 'signed-out' ? 'sign-in-required' : 'unknown' }
   }

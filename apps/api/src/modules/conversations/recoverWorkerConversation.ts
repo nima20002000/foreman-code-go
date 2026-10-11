@@ -1,3 +1,4 @@
+import { assertWorkerProviderAccountBinding } from '../provider-accounts/workerOperations.js'
 import { isDeepStrictEqual } from 'node:util'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -50,6 +51,7 @@ export async function recoverWorkerConversation(input: {
   for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
     if (record.connection[field] !== input.connection[field]) unavailable('The original paired worker authority changed.')
   }
+  assertWorkerProviderAccountBinding(record.binding.accountBinding, input.connection)
   const scopeOwner = `conversation:${record.binding.owner.conversationId}`
   const snapshot = input.registry.snapshot()
   const launches = snapshot.launches.filter(launch => launch.owner === scopeOwner)

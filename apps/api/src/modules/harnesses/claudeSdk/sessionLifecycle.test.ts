@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import { managedProviderEnvironment, resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
 import { describe, expect, it, vi } from 'vitest'
 import { getSessionMessages, type SessionStore } from '@anthropic-ai/claude-agent-sdk'
 import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
@@ -518,4 +520,62 @@ describe('Claude initial observer lease', () => {
       expect(f.offers).toHaveBeenCalledTimes(1)
     } finally { await f.manager.dispose?.() }
   })
+})
+
+
+it('keeps the accepted Claude account and real HOME through exact idle rollover after a default change', async () => {
+  const accountId = randomUUID()
+  let defaultId = accountId
+  const resolve = vi.fn(async (_provider: 'codex' | 'claude', id?: string) => ({ accountId: id ?? defaultId,
+    homePath: scope.profilePath, authMode: 'subscription' as const }))
+  const account = await resolveRuntimeProviderAccount({ resolve }, 'claude', accountId)
+  if (!account) throw new Error('Accepted account required')
+  const environment = managedProviderEnvironment({ HOME: '/human-context' }, account, 'claude')
+  const f = fixture({ env: environment })
+  try {
+    const session = await f.manager.attachSession(saved, start)
+    const events = drain(f.manager.startTurn(session, f.input('account-completed')))
+    const message = await f.nextMessage()
+    void f.assistant('account-reply', [{ type: 'text', text: 'done' }], message.uuid)
+    void f.result(message.uuid)
+    await events
+    defaultId = randomUUID()
+    f.frames.close(new Error('native query disconnected'))
+    await vi.waitFor(() => expect(f.close).toHaveBeenCalled())
+    expect(await f.manager.attachSession(saved, start)).toEqual(saved)
+    expect(f.query).toHaveBeenCalledTimes(2)
+    for (const [query] of f.query.mock.calls) {
+      expect(query.options).toMatchObject({ resume: saved.nativeSessionId,
+        env: { HOME: '/human-context', CLAUDE_CONFIG_DIR: scope.profilePath } })
+    }
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(resolve.mock.calls[0]?.[1]).toBe(accountId)
+    expect(f.offers).toHaveBeenCalledTimes(1)
+    expect((await f.manager.reconcile(saved, 'account-completed')).nativeSubmission?.nativeMessageId).toBe(message.uuid)
+  } finally { await f.manager.dispose?.() }
+})
+
+it('retains an uncertain initial Claude input under its accepted account after the default changes', async () => {
+  const accountId = randomUUID()
+  let defaultId = accountId
+  const resolve = vi.fn(async (_provider: 'codex' | 'claude', id?: string) => ({ accountId: id ?? defaultId,
+    homePath: scope.profilePath, authMode: 'subscription' as const }))
+  const account = await resolveRuntimeProviderAccount({ resolve }, 'claude', accountId)
+  if (!account) throw new Error('Accepted account required')
+  const f = fixture({ env: managedProviderEnvironment({ HOME: '/human-context' }, account, 'claude') })
+  try {
+    const acceptedStart = { ...start, correlationId: 'account-initial' }
+    const observing = drain(f.manager.startInitialTurn(acceptedStart, { ...f.input('account-initial'),
+      onSessionObserved: async () => undefined }))
+    const message = await f.nextMessage()
+    defaultId = randomUUID()
+    f.frames.close(new Error('native input acknowledgement lost'))
+    await expect(observing).rejects.toThrow('native input acknowledgement lost')
+    expect(f.query).toHaveBeenCalledTimes(1)
+    expect(f.offers).toHaveBeenCalledTimes(1)
+    expect(message.uuid).toBe(claudePromptUuid('account-initial'))
+    expect(resolve).toHaveBeenCalledTimes(1)
+    await expect(f.manager.attachSession(saved, acceptedStart)).rejects.toThrow()
+    expect(f.query).toHaveBeenCalledTimes(1)
+  } finally { await f.manager.dispose?.() }
 })

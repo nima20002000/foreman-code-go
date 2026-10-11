@@ -1,3 +1,5 @@
+import { assertRuntimeProviderAccountProfile } from './providerAccountRuntime.js'
+import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { isDeepStrictEqual } from 'node:util'
 import { withAdvancedDefaults, type CodexHarnessConfiguration } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
@@ -21,14 +23,17 @@ export function productionSelectedProfileManager(input: {
   ownerAgentId: string
   recovery: NativeProcessRecovery
   accountSourceRecovery?: NativeProcessRecovery
+  accountBinding?: AcceptedProviderAccountBinding
   appMcpAccess: 'scoped' | 'none'
   files?: Extract<NativeHarnessAllocation, { harness: 'codex' }>['chatFiles']
   nativeOutputs?: Extract<NativeHarnessAllocation, { harness: 'codex' }>['nativeOutputs']
 }) {
-  input = { ...input, configuration: structuredClone(input.configuration), selector: structuredClone(input.selector) }
+  input = { ...input, configuration: structuredClone(input.configuration), selector: structuredClone(input.selector),
+    ...(input.accountBinding ? { accountBinding: structuredClone(input.accountBinding) } : {}) }
   const result = input.factories.allocateAdmitted(input.configuration.harness, async (signal) => {
     const owner = { ...input.binding, admissionSignal: signal }
     const accepted = await input.profiles.admit(owner, input.selector)
+    assertRuntimeProviderAccountProfile(input.accountBinding, accepted.override.target)
     signal.throwIfAborted()
     if (!isDeepStrictEqual(withAdvancedDefaults(accepted.override.configuration), withAdvancedDefaults(input.configuration))) throw new DomainError('HARNESS_CONFIGURATION_MISMATCH',
       'The accepted configured profile differs from this immutable native configuration.', 409)
@@ -38,6 +43,7 @@ export function productionSelectedProfileManager(input: {
     const common = { selection, configured: selection.instance, role: input.role, workingDirectory: input.workingDirectory,
       ownerAgentId: input.ownerAgentId, processRecovery: input.recovery, appMcpAccess: input.appMcpAccess,
       ...(input.accountSourceRecovery ? { accountSourceRecovery: input.accountSourceRecovery } : {}),
+      ...(input.accountBinding ? { accountBinding: input.accountBinding } : {}),
       revalidateSelection: (effectSignal?: AbortSignal) => {
         const currentOwner = { ...owner, admissionSignal: effectSignal ?? signal }
         return input.profiles.revalidate(currentOwner, accepted)

@@ -1,3 +1,4 @@
+import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { dirname, join, resolve } from 'node:path'
@@ -28,7 +29,7 @@ function pinnedAccount(value: unknown, provider: AccountProvider, owner: string)
   }
   if (record.binding !== undefined) {
     const binding = AcceptedProviderAccountBindingSchema.parse(record.binding)
-    if (binding.provider !== provider || binding.kind === 'slot' && binding.accountId !== record.accountId) conflict()
+    if (binding.provider !== provider || (binding.accountId ?? null) !== record.accountId) conflict()
   }
   return record as unknown as RuntimeAccountRecord
 }
@@ -37,6 +38,16 @@ function bindingPath(provider: AccountProvider, recovery: NativeProcessRecovery)
   const registryRoot = resolve(recovery.root)
   const key = createHash('sha256').update(JSON.stringify([registryRoot, provider, recovery.owner])).digest('hex')
   return join(dirname(registryRoot), 'provider-account-bindings', `${key}.json`)
+}
+
+export function assertRuntimeProviderAccountProfile(binding: AcceptedProviderAccountBinding | undefined,
+  profile: HarnessProfileSelection['target']): void {
+  const target = binding?.target
+  if (!target) return
+  if (!isDeepStrictEqual(target.hostRef, profile.hostRef)
+    || target.applicationInstallationId !== profile.applicationInstallationId) {
+    throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT', 'The accepted native profile belongs to another account installation.', 409)
+  }
 }
 
 function conflict(): never {
@@ -69,7 +80,7 @@ export async function resolveRuntimeProviderAccount(accounts: ProviderAccountRes
   if (binding) {
     binding = AcceptedProviderAccountBindingSchema.parse(binding)
     if (binding.provider !== provider) conflict()
-    if (accountId !== undefined && (binding.kind !== 'slot' || binding.accountId !== accountId)) conflict()
+    if (accountId !== undefined && binding.accountId !== accountId) conflict()
   }
   const storedValue = recovery ? readRecord(bindingPath(provider, recovery)) : undefined
   const stored = storedValue === undefined ? undefined : pinnedAccount(storedValue, provider, recovery!.owner)
@@ -77,7 +88,7 @@ export async function resolveRuntimeProviderAccount(accounts: ProviderAccountRes
   let source: RuntimeAccountRecord | undefined
   if (sourceRecovery) {
     if (sourceValue !== undefined) source = pinnedAccount(sourceValue, provider, sourceRecovery.owner)
-    else if (binding) source = { accountId: binding.kind === 'slot' ? binding.accountId : null, binding }
+    else if (binding) source = { accountId: binding.accountId ?? null, binding }
     else source = { accountId: null }
   }
   if (stored && source && (stored.accountId !== source.accountId
@@ -85,13 +96,15 @@ export async function resolveRuntimeProviderAccount(accounts: ProviderAccountRes
     || stored.homePath !== undefined && source.homePath !== undefined && !isDeepStrictEqual(
       [stored.homePath, stored.authMode], [source.homePath, source.authMode]))) conflict()
   const accepted = stored ?? source
+  if (binding?.kind === 'legacy-profile' && !binding.accountId && accepted?.accountId && !accepted.binding) {
+    binding = { ...binding, accountId: accepted.accountId }
+  }
   if (accountId !== undefined && accepted && accountId !== accepted.accountId) conflict()
   if (binding && accepted) {
-    const bindingId = binding.kind === 'slot' ? binding.accountId : null
+    const bindingId = binding.accountId ?? null
     if (accepted.accountId !== bindingId || accepted.binding && !isDeepStrictEqual(accepted.binding, binding)) conflict()
   }
-  const selection: RuntimeAccountRecord = accepted ?? { accountId: binding?.kind === 'slot'
-    ? binding.accountId : accountId ?? null }
+  const selection: RuntimeAccountRecord = accepted ?? { accountId: binding?.accountId ?? accountId ?? null }
   if (binding) selection.binding = binding
   const selected = await selectedAccount(accounts, provider, selection)
   if (!recovery || stored) return selected
@@ -122,14 +135,25 @@ export function managedProviderEnvironment(source: NodeJS.ProcessEnv, account: R
 export function pinnedCodexAccountEnvironment(accounts: ProviderAccountResolver | undefined, accountId: string | undefined,
   recovery?: NativeProcessRecovery, sourceRecovery?: NativeProcessRecovery,
   binding?: AcceptedProviderAccountBinding) {
+  binding = binding ? AcceptedProviderAccountBindingSchema.parse(binding) : undefined
   let selected: ResolvedProviderAccount | null | undefined
   let pending: Promise<void> | undefined
   return {
     prepare(): Promise<void> {
       pending ??= Promise.resolve().then(async () => {
-        selected = await resolveRuntimeProviderAccount(accounts, 'codex', accountId, recovery, sourceRecovery, binding)
+        const resolved = await resolveRuntimeProviderAccount(accounts, 'codex', accountId, recovery, sourceRecovery, binding)
+        selected = resolved ? structuredClone(resolved) : null
       })
       return pending
+    },
+    async revalidate(): Promise<void> {
+      if (pending) await pending
+      if (selected === undefined) throw new DomainError('PROVIDER_ACCOUNT_NOT_RESOLVED',
+        'Resolve the selected account before starting the harness.', 500)
+      if (selected) {
+        await selectedAccount(accounts, 'codex', { accountId: selected.accountId, homePath: selected.homePath,
+          authMode: selected.authMode, ...((binding ?? selected.binding) ? { binding: binding ?? selected.binding } : {}) })
+      }
     },
     environment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       if (selected === undefined) throw new DomainError('PROVIDER_ACCOUNT_NOT_RESOLVED',

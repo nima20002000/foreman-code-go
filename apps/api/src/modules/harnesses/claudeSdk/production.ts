@@ -1,3 +1,4 @@
+import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { createClaudeFileCallResolver } from '../../files/claude/callResolver.js'
 import { createClaudeFileMcpServer, type ClaudeFileSdk } from '../../files/claude/server.js'
 import type { AgentFileToolService } from '../../files/tools/service.js'
@@ -26,7 +27,7 @@ import { claudeProductionMcpInspector } from './productionMcpInspector.js'
 import type { ClaudeNativeSessionManager } from './sessionManager.js'
 import type { OperatorProfileObservation } from '../operatorProfileObservation.js'
 import type { ProviderAccountResolver } from '../../provider-accounts/service.js'
-import { resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
+import { assertRuntimeProviderAccountProfile, resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
 import { requireClaudeApiKey } from './productionCredentials.js'
 
 /** Private lifetime signal is never serialized into accepted configuration or provenance. */
@@ -53,6 +54,7 @@ export function productionClaudeManager(input: {
   ownerAgentId: string
   recovery: NativeProcessRecovery
   accountSourceRecovery?: NativeProcessRecovery
+  accountBinding?: AcceptedProviderAccountBinding
   appMcpAccess: 'scoped' | 'none'
   inspectionStart(): Promise<NativeSessionStart>
   mode: 'native' | 'replay'
@@ -64,6 +66,7 @@ export function productionClaudeManager(input: {
     || input.role === 'agent-chat' && input.binding.kind !== 'agent') throw new DomainError('CLAUDE_OWNER_MISMATCH',
     'The Claude runtime role must match its actual domain owner.', 409)
   input = { ...input, configuration: structuredClone(input.configuration),
+    ...(input.accountBinding ? { accountBinding: structuredClone(input.accountBinding) } : {}),
     ...(input.selector ? { selector: structuredClone(input.selector) } : {}) }
   let actual: ClaudeNativeSessionManager | undefined
   let inspectedStart: NativeSessionStart | undefined
@@ -82,7 +85,7 @@ export function productionClaudeManager(input: {
       'Claude replay requires the SDK client port and cannot load a native SDK.', 500)
     const profileOwner: ClaudeProfileOwner = { ...input.binding, admissionSignal: signal }
     const account = await resolveRuntimeProviderAccount(input.accounts, 'claude', input.configuration.accountId,
-      input.recovery, input.accountSourceRecovery)
+      input.recovery, input.accountSourceRecovery, input.accountBinding)
     if (input.configuration.accountId && !account) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
       'The selected managed provider account is unavailable.', 409)
     if (account && (account.accountId !== input.configuration.accountId
@@ -93,6 +96,7 @@ export function productionClaudeManager(input: {
     const apiKey = account?.apiKey ?? input.apiKey
     requireClaudeApiKey(input.configuration, apiKey)
     const accepted = await input.profiles.admit(profileOwner, input.selector)
+    assertRuntimeProviderAccountProfile(input.accountBinding, accepted.override.target)
     signal.throwIfAborted()
     const compiled = compileClaudeConfiguration(input.configuration, input.workingDirectory, accepted,
       process.env, apiKey)

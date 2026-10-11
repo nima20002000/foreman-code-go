@@ -1,3 +1,4 @@
+import { createProviderAccountWorkerExtension, workerProviderAccountResolver, type WorkerAccountOperationPorts } from '../provider-accounts/workerOperations.js'
 import { inventoryPayloadFingerprints } from '../harnesses/payloadFingerprintCache.js'
 import { realpath } from 'node:fs/promises'
 import { setTimeout as wait } from 'node:timers/promises'
@@ -91,6 +92,7 @@ export async function createInstalledWorkerDomains(input: {
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
   connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest' | 'mainNow'> | undefined
   codexSuiteRevision: string
+  providerAccounts?: Omit<WorkerAccountOperationPorts, 'current'>
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
   rsync?: InstalledRsyncProviders
   workerUpdate?: NonNullable<MaintenancePorts['workerUpdate']>
@@ -173,6 +175,11 @@ export async function createInstalledWorkerDomains(input: {
     receiver: input.rsync.receiver, journal: await jobJournal(), channel: { request, currentBinding: current },
     receiptRoot: join(input.stateDirectory, 'job-input-receipts'), admissionRoot: join(input.stateDirectory, 'job-input-rsync-admissions') })
   const extensions: DeviceExtensionRegistration[] = rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const }))
+  const accounts = input.providerAccounts
+    ? workerProviderAccountResolver({ ...input.providerAccounts, current }) : undefined
+  if (input.providerAccounts) {
+    extensions.push(createProviderAccountWorkerExtension({ ...input.providerAccounts, current }))
+  }
   let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
   let native: Awaited<ReturnType<typeof createInstalledWorkflowHost>> | undefined
   if (approved) {
@@ -276,7 +283,7 @@ export async function createInstalledWorkerDomains(input: {
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
       ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
       codexSuiteRevision: input.codexSuiteRevision,
-      signal: lifetime.signal, registry, journal })
+      signal: lifetime.signal, registry, journal, ...(accounts ? { accounts } : {}) })
     extensions.push({ ...receiver.extension, role: 'duplex' }, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
     } }, ...(native.kind === 'configured' ? native.extensions : []))
@@ -490,7 +497,7 @@ export async function createInstalledWorkerDomains(input: {
   const conversations = approved ? await createInstalledWorkerConversations({ stateDirectory: input.stateDirectory,
     configuration: input.configuration, registry, journal, approvedRoots: roots, current,
     capture: () => input.connection()?.captureRequest('execution-v1'), request,
-    codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal }) : null
+    codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal, ...(accounts ? { accounts } : {}) }) : null
   if (conversations && !extensions.some(extension => extension.namespace === WORKER_MCP_EXTENSION.namespace)) {
     extensions.push({ ...WORKER_MCP_EXTENSION, role: 'client' })
   }
@@ -569,6 +576,7 @@ export async function createInstalledWorkerDomains(input: {
       lifetime.abort()
       const failures: unknown[] = []
       try { await ciRuntime.close() } catch (error) { failures.push(error) }
+      try { await input.providerAccounts?.native.close() } catch (error) { failures.push(error) }
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
       try { await telemetry?.close() } catch (error) { failures.push(error) }
       try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }

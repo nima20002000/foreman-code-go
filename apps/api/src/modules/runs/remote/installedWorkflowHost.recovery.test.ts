@@ -1,3 +1,5 @@
+import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
+import type { ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -714,4 +716,26 @@ describe('installed workflow construction concurrency', () => {
       expect(await f.journal.status(f.intent.operationId)).toMatchObject({ status: 'unknown' })
     } finally { await f.host.close() }
   })
+})
+
+
+it('persists the original workflow account beside the native owner without adopting a changed binding on restart', async () => {
+  const f = await restartedInstalledFixture()
+  const receipt = await f.journal.status(f.intent.operationId)
+  if (receipt.status !== 'known') throw new Error('Saved receipt required')
+  const original = f.recovery.read(receipt.receipt)
+  if (!original) throw new Error('Original native capture required')
+  const binding: ProviderAccountBinding = { kind: 'slot', accountId: randomUUID(), provider: 'codex',
+    profileRef: randomUUID(), bindingRevision: 1, subject: null,
+    target: { hostRef: { kind: 'device', mainId: f.context.binding.mainId, deviceId: f.context.binding.deviceId },
+      applicationInstallationId: f.context.binding.workerInstallationId,
+      keyRevision: f.context.binding.keyRevision, authorizationRevision: f.context.binding.authorizationRevision } }
+  const directory = join(f.root, 'account-recovery')
+  const recovery = new InstalledWorkflowRecovery(directory, f.registry)
+  recovery.remember({ ...original, accountBinding: binding })
+  const restarted = new InstalledWorkflowRecovery(directory, f.registry)
+  expect(restarted.read(receipt.receipt)).toMatchObject({ accountBinding: binding, session: original.session, native: original.native })
+  expect(() => restarted.remember({ ...original, accountBinding: { ...binding, accountId: randomUUID() } }))
+    .toThrow('capture changed')
+  expect(restarted.read(receipt.receipt)?.accountBinding).toEqual(binding)
 })

@@ -13,7 +13,7 @@ import { DomainError } from '../errors.js'
 
 type OperationInput = ProviderAccountNativeInput & { operation: ProviderAccountAuthenticationOperation }
 type ProcessRegistry = Pick<NativeProcessRegistry, 'reserveLaunch' | 'abandonReservedLaunch' | 'closeOwner'
-  | 'closedRegistration' | 'scope'>
+  | 'closedRegistration' | 'closeRegistration' | 'scope'>
 interface ResidentOperation { process: AccountCommandProcess; completion: Promise<void> }
 
 /** Owns native effects after the shared service has committed an operation. */
@@ -38,14 +38,20 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
     const binding = input.account.binding
     if (!binding) throw new DomainError('PROVIDER_ACCOUNT_BINDING_UNAVAILABLE', 'The account has no accepted native binding.', 409)
     const record = this.journal.accountOperation(binding)
+    const selected = await this.commands.selected(input)
+    const sequence = this.journal.nextObservationSequence(binding)
     if (record && !record.observation.nativeClosed) {
       return this.journal.saveObservation(binding, { bindingRevision: binding.bindingRevision,
-        generation: record.operation.generation, sequence: record.observation.sequence,
+        generation: selected.generation, sequence,
         observedAt: new Date(this.now()).toISOString(), status: 'login-pending', identity: null,
         subject: null, readiness: 'unknown' })
     }
-    return this.journal.saveObservation(binding, await this.commands.observeAccount(input))
+    const observed = await this.commands.observeAccount(input, sequence)
+    if (observed.generation !== selected.generation) throw new DomainError('PROVIDER_OBSERVATION_STALE',
+      'The native account generation changed during observation.', 409)
+    return this.journal.saveObservation(binding, observed)
   }
+  requireRuntimeAccount(input: ProviderAccountNativeInput) { return this.commands.requireRuntimeAccount(input) }
   authenticationGeneration(input: ProviderAccountNativeInput) { return this.commands.authenticationGeneration(input) }
   models(input: ProviderAccountNativeInput) { return this.commands.models(input) }
   resolveProfile(account: ProviderAccountNativeInput['account']) { return this.commands.resolveProfile(account) }
@@ -55,6 +61,12 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
   login(input: ProviderAccountNativeInput) { return this.commands.login(input) }
   logout(input: ProviderAccountNativeInput) { return this.commands.logout(input) }
   cancelLogin(accountId: string) { return this.commands.cancelLogin(accountId) }
+
+  private async closeOriginal(record: NativeAccountRecord): Promise<boolean> {
+    if (!record.launchId) return !record.dispatched
+    await this.processes.closeRegistration(this.processes.scope(record.owner), record.launchId)
+    return true
+  }
 
   private update(record: NativeAccountRecord, state: NativeAccountRecord['observation']['state'], closed: boolean) {
     record.observation = { ...record.observation, state, nativeClosed: closed, sequence: record.observation.sequence + 1 }
@@ -133,7 +145,7 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
 
   private async failedDispatch(id: string, recovery: NativeProcessRecovery) {
     const neverStarted = await this.processes.abandonReservedLaunch(recovery)
-    const closed = await this.processes.closeOwner(recovery.owner)
+    const closed = await this.closeOriginal(this.journal.read(id)!)
     const current = this.journal.read(id)!
     let state: NativeAccountRecord['observation']['state'] = 'outcome-unknown'
     if (closed) {
@@ -151,7 +163,7 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
     try {
       const outcome = await completion.then(result => ({ result }), () => ({ result: undefined }))
       const original = this.journal.read(input.operation.id)!
-      closureConfirmed = await this.processes.closeOwner(original.owner)
+      closureConfirmed = await this.closeOriginal(original)
       let current = this.journal.read(input.operation.id)!
       if (!closureConfirmed) { this.update(current, 'outcome-unknown', false); return }
       if (current.operation.cancelRequested || Date.parse(current.operation.expiresAt) <= this.now()) {
@@ -168,6 +180,22 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
       if (!isDeepStrictEqual(installation, selected) || !outcome.result) {
         this.update(current, 'outcome-unknown', true)
         return
+      }
+      if (outcome.result.code === 0 && !outcome.result.timedOut && input.account.binding) {
+        this.update(current, 'observing', false)
+        const sequence = this.journal.nextObservationSequence(input.account.binding)
+        const account = await this.commands.observeAccount(input, sequence)
+        await this.eligibility(input)
+        if (!isDeepStrictEqual(installation, await this.commands.selected(input))) {
+          throw new DomainError('PROVIDER_OBSERVATION_STALE', 'The native account changed before authentication publication.', 409)
+        }
+        current = this.journal.read(input.operation.id)!
+        if (current.operation.cancelRequested || Date.parse(current.operation.expiresAt) <= this.now()) {
+          this.update(current, current.operation.cancelRequested ? 'canceled' : 'expired', true)
+          return
+        }
+        current.observation = { ...current.observation,
+          account: this.journal.saveObservation(input.account.binding, account) }
       }
       let state: NativeAccountRecord['observation']['state'] = 'failed'
       if (outcome.result.timedOut) state = 'expired'
@@ -207,7 +235,7 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
     try {
       const resident = this.residents.get(record.operation.id)
       if (resident) { await resident.process.stop(); await resident.completion }
-      const closed = record.launchId ? await this.processes.closeOwner(record.owner) : !record.dispatched
+      const closed = await this.closeOriginal(record)
       const current = this.journal.read(record.operation.id)!
       this.update(current, closed ? state : 'outcome-unknown', closed)
       return structuredClone(current.observation)
@@ -227,7 +255,7 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
       try {
         await this.residents.get(id)!.process.stop()
         await this.residents.get(id)?.completion
-        if (!await this.processes.closeOwner(record.owner)) throw new Error('Native account cleanup is unconfirmed.')
+        if (!await this.closeOriginal(record)) throw new Error('Native account cleanup is unconfirmed.')
       } catch (error) { failures.push(error) }
     }
     try { await this.commands.close() } catch (error) { failures.push(error) }

@@ -66,6 +66,12 @@ export async function recoverInstalledWorkflowReply(input: {
     state = { status: 'known', receipt }
     orphanedEntry = true
   }
+  const recorded = input.recovery.readEntry(frame.intent.operationId)
+  const accountBinding = frame.placement.payload.kind === 'agent' ? frame.placement.payload.accountBinding : undefined
+  const savedBinding = recorded?.accountBinding ?? input.recovery.read(state.receipt)?.accountBinding
+  if (savedBinding && !isDeepStrictEqual(savedBinding, accountBinding)) {
+    throw new Error('Original workflow account binding changed')
+  }
   let receipt = state.receipt
   const renewed = frame.method === 'renew-owner'
     && isDeepStrictEqual({ ...receipt.intent, owner: frame.transition.nextOwner }, frame.intent)

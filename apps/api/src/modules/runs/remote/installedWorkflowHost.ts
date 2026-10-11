@@ -1,3 +1,6 @@
+import type { ProviderAccountResolver, ResolvedProviderAccount } from '../../provider-accounts/service.js'
+import { assertWorkerProviderAccountBinding } from '../../provider-accounts/workerOperations.js'
+import { managedProviderEnvironment, resolveRuntimeProviderAccount } from '../../harnesses/providerAccountRuntime.js'
 import { constants } from 'node:fs'
 import { componentLogger } from '../../diagnostics/logger.js'
 import { open, realpath } from 'node:fs/promises'
@@ -31,7 +34,7 @@ import { captureOriginalCodexSession } from '../../harnesses/originalCodexSessio
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart } from '../../harnesses/port.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../../harnesses/instanceRegistry.js'
 import { HarnessInstallationRegistry } from '../../harnesses/installationRegistry.js'
-import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
+import { CodexAppServerSessionManager, safeEnvironment } from '../../harnesses/codexAppServer.js'
 import { inspectInstalledCodex } from '../../harnesses/installedCodexInspection.js'
 import { PayloadFingerprintCache } from '../../harnesses/payloadFingerprintCache.js'
 import { createInstalledCodexQualificationReader } from '../../harnesses/installedCodexQualification.js'
@@ -245,6 +248,7 @@ export interface InstalledWorkflowHostOptions {
   sources:SourceOperationWorkerService
   approvedRoots():Promise<ApprovedRootAllowlist>
   codexSuiteRevision:string
+  accounts?:ProviderAccountResolver
   nativeOutputs?(context: InstalledWorkflowNativeOutputContext): InstalledNativeOutputProviders
   signal:AbortSignal
   /** Explicit installation initialization; absence of an established journal is otherwise recovery-required. */
@@ -260,6 +264,7 @@ interface InstalledOperation {
   reader:QualificationReader
   capture:QualificationCapture
   scope:NativeProcessRecovery
+  account:ResolvedProviderAccount|null
   host?:RemoteExecutionHost
   manager?:CodexAppServerSessionManager
   launchDisabled?:true
@@ -339,7 +344,9 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   }
   const rememberEntry = (resident: InstalledOperation) => {
     if (!resident.scope.launchId) return
-    recovery.rememberEntry({ version: 1, intent: resident.intent, connection: connectionIdentity(resident.capture.binding),
+    recovery.rememberEntry({ version: 1,
+      ...(resident.placement.payload.kind === 'agent' && resident.placement.payload.accountBinding
+        ? { accountBinding: resident.placement.payload.accountBinding } : {}), intent: resident.intent, connection: connectionIdentity(resident.capture.binding),
       owner: resident.scope.owner, initialLaunchId: resident.scope.launchId })
   }
   const refreshReviewer = (resident: InstalledOperation): void => {
@@ -411,13 +418,18 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       if(operations.size>=1000)unavailable('operation_retention_full')
       const harness = placement.payload.kind === 'agent' ? placement.payload.driverId : undefined
       if (harness !== 'codex') unavailable('installed_harness_selection_missing')
+      const binding = placement.payload.kind === 'agent' ? placement.payload.accountBinding : undefined
+      assertWorkerProviderAccountBinding(binding, context.binding)
+      const account = await resolveRuntimeProviderAccount(input.accounts, 'codex', undefined,
+        registry.scope(`execution:${intent.executionId}`), undefined, binding)
+      const environment = account ? managedProviderEnvironment(process.env, account, 'codex') : process.env
       const suiteRevision = input.codexSuiteRevision
       const readerInput: Parameters<typeof createInstalledCodexQualificationReader>[0] = {intent,placement,signal,
         trustedCurrentBinding:()=>input.currentBinding()??null,
         trustedCurrentIntent: () => operations.get(intent.executionId)?.intent ?? intent,
         inspect: (binding, effectSignal) => {
           const inspectionInput = { binding, configuration: input.configuration,
-            environment: process.env, cwd: input.stateDirectory, signal: effectSignal,
+            environment, cwd: input.stateDirectory, signal: effectSignal,
             fingerprintCache: payloadFingerprints }
           return inspectInstalledCodex(inspectionInput)
         },
@@ -449,10 +461,13 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         }, suiteRevision }
       const reader = createInstalledCodexQualificationReader(readerInput)
       const capture=await reader.capture()
+      const savedHarness = capture.facts.configuration.harness
+      if (savedHarness.harness === 'codex' && savedHarness.accountId
+        && savedHarness.accountId !== account?.accountId) unavailable('accepted_account_binding_missing')
       current(context.binding)
       if(operations.size>=1000)unavailable('operation_retention_full')
       owned={intent:structuredClone(intent),placement:structuredClone(placement),context,reader,capture,
-        scope:registry.scope(`execution:${intent.executionId}`),publications:new Map()}
+        scope:registry.scope(`execution:${intent.executionId}`),account,publications:new Map()}
       operations.set(intent.executionId,owned)
     }
     const generation=commandInputHash(context.binding)
@@ -560,6 +575,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           },
         })
         const manager=new CodexAppServerSessionManager(binary,undefined,undefined,actual.scope,'scoped',undefined,{...dependencies,
+          environment: (variables, scopedNames) => {
+            const source = safeEnvironment(variables, scopedNames)
+            return actual.account ? managedProviderEnvironment(source, actual.account, 'codex') : source
+          },
           qualify:async(binary,cwd,environment,authenticated,effectSignal)=>{
             await before()
             const result=await dependencies.qualify(binary,cwd,environment,authenticated,effectSignal,actual.scope)
@@ -663,7 +682,10 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           if(!lifetime)unavailable('original_native_residency_unavailable')
           lifetime!.assertCurrent()
           if (!resident.runtimeLeaf) unavailable('original_runtime_leaf_missing')
-          recovery.remember({ version: 1, intent: originalCapture?.intent ?? resident.intent,
+          recovery.remember({ version: 1,
+            ...(resident.placement.payload.kind === 'agent' && resident.placement.payload.accountBinding
+              ? { accountBinding: resident.placement.payload.accountBinding } : {}),
+            intent: originalCapture?.intent ?? resident.intent,
             connection: originalCapture?.connection ?? connectionIdentity(resident.capture.binding), native: resident.native.native,
             session: resident.session, launch: RemoteWorkflowPhysicalReadoutSchema.shape.launch.parse(resident.native.launch),
             runtimeLeaf: resident.runtimeLeaf!, approvedRoots: ApprovedRootAllowlistSchema.parse(resident.runtimeRoots),

@@ -1,3 +1,4 @@
+import { AcceptedProviderAccountBindingSchema } from '@foreman-code/contracts/provider-accounts'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { constants } from 'node:fs'
@@ -21,13 +22,14 @@ import { remoteWorkflowProcessDigest } from './workflowPhysicalReadout.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 
 const CaptureSchema = z.object({
+  accountBinding: AcceptedProviderAccountBindingSchema.optional(),
   version: z.literal(1), intent: DispatchIntentSchema, connection: DeviceConnectionIdentitySchema,
   native: RemoteNativeIdentitySchema, session: NativeSessionReferenceSchema,
   launch: RemoteNativeLaunchObservationSchema, runtimeLeaf: RuntimeLeafAttestationSchema,
   source: RemoteWorkflowPhysicalReadoutSchema.shape.source, approvedRoots: ApprovedRootAllowlistSchema,
 }).strict()
 export type InstalledWorkflowRecoveryCapture = z.infer<typeof CaptureSchema>
-const EntryCaptureSchema = z.object({ version: z.literal(1), intent: DispatchIntentSchema,
+const EntryCaptureSchema = z.object({ accountBinding: AcceptedProviderAccountBindingSchema.optional(), version: z.literal(1), intent: DispatchIntentSchema,
   connection: DeviceConnectionIdentitySchema, owner: z.string().min(1), initialLaunchId: z.uuid() }).strict()
 export type InstalledWorkflowEntryCapture = z.infer<typeof EntryCaptureSchema>
 

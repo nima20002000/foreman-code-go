@@ -1,3 +1,5 @@
+import type { AcceptedProviderAccountBinding, ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
+import { isDeepStrictEqual } from 'node:util'
 import { HarnessConfigurationSchema, RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { captureOriginalCodexSession, type OriginalCodexSession } from './originalCodexSession.js'
 import { createAdmittedNativeManager } from './admittedManager.js'
@@ -22,8 +24,8 @@ import type { NativeMcpInspector } from './mcpDetection.js'
 import type { NativeHarnessSessionManager, NativeSessionStart } from './port.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
-import type { ProviderAccountResolver } from '../provider-accounts/service.js'
-import { pinnedCodexAccountEnvironment } from './providerAccountConfiguration.js'
+import type { ProviderAccountResolver, ResolvedProviderAccount } from '../provider-accounts/service.js'
+import { pinnedCodexAccountEnvironment, resolveRuntimeProviderAccount } from './providerAccountRuntime.js'
 
 export type HarnessRuntimeRole = 'workflow' | 'operator' | 'agent-chat' | 'diagnostics' | 'qualification'
 interface AllocationContext {
@@ -35,6 +37,7 @@ interface AllocationContext {
   processRecovery?: NativeProcessRecovery
   accountRecovery?: NativeProcessRecovery
   accountSourceRecovery?: NativeProcessRecovery
+  accountBinding?: AcceptedProviderAccountBinding
   appMcpAccess: 'scoped' | 'none'
   revalidateSelection?: (signal?: AbortSignal) => Promise<void>
 }
@@ -85,6 +88,7 @@ export class NativeHarnessFactories {
     installationDiscovery?: typeof discoverLauncher
     selectDefault?: (harness: 'codex') => RegistryHarnessSelection
     selectConfiguration?: (configuration: HarnessConfiguration) => RegistryHarnessSelection
+    selectAccount?: (binding: ProviderAccountBinding) => RegistryHarnessSelection
     auxiliaryRecovery?: (role: 'diagnostics' | 'qualification') => NativeProcessRecovery
     admitRecovery?: (recovery: NativeProcessRecovery) => void
     abandonRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
@@ -107,12 +111,31 @@ export class NativeHarnessFactories {
     }
   }
 
-  async cacheIdentity(harness: 'codex', directory: string, configuration?: HarnessConfiguration) {
+  async cacheIdentity(harness: 'codex', directory: string, configuration?: HarnessConfiguration,
+    accountBinding?: ProviderAccountBinding) {
     await this.config.refreshInstallations?.()
-    const selection = configuration ? this.config.selectConfiguration?.(configuration) : this.config.selectDefault?.(harness)
+    if (accountBinding && !this.config.selectAccount) throw new DomainError(
+      'HARNESS_ACCOUNT_SELECTION_UNAVAILABLE', 'Select the qualified installed profile for this account before discovery.', 409)
+    let selection: RegistryHarnessSelection | undefined
+    if (accountBinding) selection = this.config.selectAccount!(accountBinding)
+    else if (configuration) selection = this.config.selectConfiguration?.(configuration)
+    else selection = this.config.selectDefault?.(harness)
     const binary = selection?.installation.launcher.resolvedLauncher
       ?? this.config.codexBinary
-    return binaryCacheIdentity(harness, binary, directory)
+    let account: ResolvedProviderAccount | null = null
+    if (accountBinding) {
+      account = await resolveRuntimeProviderAccount(this.config.accounts, harness, accountBinding.accountId,
+        undefined, undefined, accountBinding)
+    } else if (configuration?.harness === 'codex' && configuration.accountId) {
+      account = await resolveRuntimeProviderAccount(this.config.accounts, harness, configuration.accountId)
+    }
+    if (accountBinding && (!selection || !isDeepStrictEqual(selection.selection.hostRef, accountBinding.target.hostRef))) {
+      throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT', 'Model discovery requires the owning account installation.', 409)
+    }
+    return commandInputHash({ binary: await binaryCacheIdentity(harness, binary, directory), accountBinding: accountBinding ?? account?.binding,
+      profile: account?.homePath, selection: selection?.selection, inventoryRevision: selection?.inventoryRevision,
+      environmentGeneration: selection?.installation.environmentGeneration,
+      connectionGeneration: selection?.installation.connectionGeneration })
   }
 
   allocateAdmitted(harness: 'codex',
@@ -166,6 +189,12 @@ export class NativeHarnessFactories {
       if (result.inspector) this.inspectors.set(result.manager, result.inspector)
       return result
     }
+    if (!input.selection && input.harness === 'codex' && input.role === 'diagnostics'
+      && input.accountBinding?.kind === 'slot') {
+      if (!this.config.selectAccount) throw new DomainError('HARNESS_ACCOUNT_SELECTION_UNAVAILABLE',
+        'Account discovery requires its qualified installed native profile.', 409)
+      input = { ...input, selection: this.config.selectAccount(input.accountBinding) }
+    }
     if (!input.selection && (input.role === 'diagnostics' || input.role === 'qualification') && this.config.selectDefault) {
       input = { ...input, selection: this.config.selectDefault(input.harness) }
     }
@@ -213,7 +242,7 @@ export class NativeHarnessFactories {
       const configuration = rawConfiguration ? HarnessConfigurationSchema.parse(rawConfiguration) : undefined
       const account = pinnedCodexAccountEnvironment(this.config.accounts,
         configuration?.harness === 'codex' ? configuration.accountId : undefined,
-        input.accountRecovery ?? (auxiliary ? undefined : recovery), input.accountSourceRecovery)
+        input.accountRecovery ?? (auxiliary ? undefined : recovery), input.accountSourceRecovery, input.accountBinding)
       const environment = (variables?: NativeSessionStart['environment'], scopedNames: readonly string[] = []) => {
         const source = this.infrastructure.codex?.environment?.(variables, scopedNames)
           ?? safeEnvironment(variables, scopedNames)
@@ -266,7 +295,7 @@ export class NativeHarnessFactories {
         throw new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE', 'Native output requires the original scoped workflow allocation.', 403)
       }
       const diagnostic = dependencies!.withDiagnostics!
-      dependencies = { ...dependencies!, prepareEnvironment: () => account.prepare(), environment,
+      dependencies = { ...dependencies!, prepareEnvironment: async () => { await account.prepare(); await account.revalidate() }, environment,
         withDiagnostics: (pin, run) => diagnostic(pin, async io => {
           return run({ ...io, environment: (variables, scopedNames) =>
             account.environment(io.environment(variables, scopedNames)) })
@@ -303,6 +332,7 @@ export class NativeHarnessFactories {
           ...(diagnosticRecovery ? { processRecovery: diagnosticRecovery } : {}),
           ...(recovery ? { accountRecovery: input.accountRecovery ?? recovery } : {}),
           ...(input.accountSourceRecovery ? { accountSourceRecovery: input.accountSourceRecovery } : {}),
+          ...(input.accountBinding ? { accountBinding: input.accountBinding } : {}),
           ...(input.selection ? { selection: input.selection } : {}),
           ...(input.configured ? { configured: input.configured } : {}),
           ...(input.revalidateSelection ? { revalidateSelection: input.revalidateSelection } : {}),

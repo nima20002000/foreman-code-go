@@ -43,22 +43,44 @@ export class NativeAccountJournal {
     return join(this.root, `${this.owner(operation).replace(':', '-')}.json`)
   }
 
+  nextObservationSequence(binding: ProviderAccountBinding): number {
+    const path = join(this.root, `${binding.provider}-${binding.accountId}-sequence.json`)
+    const previous = readRecord(path)
+    let sequence = Date.now()
+    const observed = readRecord(join(this.root, `${binding.provider}-${binding.accountId}-observation.json`))
+    if (observed !== undefined) {
+      const saved = recordObject(observed)
+      if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(saved.binding), binding)) throw new DomainError(
+        'PROVIDER_OBSERVATION_STALE', 'The saved observation belongs to another account binding.', 409)
+      sequence = Math.max(sequence, ProviderAccountObservationSchema.parse(saved.observation).sequence + 1)
+    }
+    if (previous !== undefined) {
+      const record = recordObject(previous)
+      if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(record.binding), binding)
+        || !Number.isSafeInteger(record.sequence) || Number(record.sequence) < 0) {
+        throw new DomainError('PROVIDER_OBSERVATION_STALE', 'The account observation sequence belongs to another binding.', 409)
+      }
+      sequence = Math.max(sequence, Number(record.sequence) + 1)
+    }
+    writeRecord(path, { binding, sequence })
+    return sequence
+  }
+
   saveObservation(binding: ProviderAccountBinding, raw: ProviderAccountObservation): ProviderAccountObservation {
     const observation = ProviderAccountObservationSchema.parse(raw)
     if (binding.bindingRevision !== observation.bindingRevision) throw new DomainError(
       'PROVIDER_OBSERVATION_STALE', 'The observation belongs to another account binding revision.', 409)
     const path = join(this.root, `${binding.provider}-${binding.accountId}-observation.json`)
     const previous = readRecord(path)
-    let sequence = observation.sequence
     if (previous !== undefined) {
       const record = recordObject(previous)
       const old = ProviderAccountObservationSchema.parse(record.observation)
       if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(record.binding), binding)
         || observation.generation < old.generation) throw new DomainError(
           'PROVIDER_OBSERVATION_STALE', 'The saved native observation uses another account or generation.', 409)
-      sequence = Math.max(sequence, old.sequence + 1)
+      if (observation.generation === old.generation && observation.sequence <= old.sequence) return old
     }
-    const next = { ...observation, sequence }
+    const next = observation
     writeRecord(path, { binding, observation: next })
     return next
   }

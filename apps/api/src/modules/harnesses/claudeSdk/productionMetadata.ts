@@ -1,3 +1,4 @@
+import type { ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -14,7 +15,7 @@ import { commandInputHash } from '../../commands/postgres.js'
 import { ClaudeCheckedNativeConfigurationPort } from './nativeConfiguration.js'
 import { discoverClaudeMetadata } from './metadata.js'
 import type { ProviderAccountResolver } from '../../provider-accounts/service.js'
-import { ProviderAccountConfigurationService } from '../providerAccountConfiguration.js'
+import { resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
 import { requireClaudeProductionCredentialDelivery } from './productionCredentials.js'
 
 export const detectedClaudeProfilePath = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
@@ -31,14 +32,16 @@ export function productionClaudeMetadata(input: {
   // Options depend only on the selected default profile and its exact installation, which are part of the key.
   // A result is reused for five minutes, then served while one background read refreshes it.
   const results = new Map<string, { at: number; value: Metadata; refreshing: boolean }>()
-  const discover = async (workingDirectory: string, signal: AbortSignal, refresh = false): Promise<Metadata> => {
+  const discover = async (workingDirectory: string, signal: AbortSignal, refresh = false,
+    accountBinding?: ProviderAccountBinding): Promise<Metadata> => {
     signal.throwIfAborted()
     const requested = (await input.defaults()).claude ?? { harness: 'claude' as const, model: 'default', authMode: 'subscription' as const,
       configDirectory: detectedClaudeProfilePath(), permissionMode: 'default' as const, sandbox: 'danger-full-access' as const,
       tools: [], permissionRules: [], instructions: '', mcpServers: {} }
-    const configuration = input.accounts
-      ? await new ProviderAccountConfigurationService(input.accounts).resolve(requested) as Extract<HarnessConfiguration, { harness: 'claude' }>
-      : requested
+    const accountId = accountBinding?.accountId ?? requested.accountId
+    const account = await resolveRuntimeProviderAccount(input.accounts, 'claude', accountId, undefined, undefined, accountBinding)
+    const configuration = account ? { ...requested, accountId: account.accountId, configDirectory: account.homePath,
+      authMode: account.authMode } : requested
     const apiKey = await requireClaudeProductionCredentialDelivery(configuration, input.accounts)
     const binding = input.registry.pinAccepted({ id: `claude-metadata:${commandInputHash(configuration)}`, agentId: 'owned-catalog', harness: configuration })
     const binary = binding.installation.launcher.resolvedLauncher
@@ -46,12 +49,12 @@ export function productionClaudeMetadata(input: {
     signal.throwIfAborted()
     input.registry.installations.assertCurrent(binding)
     const key = commandInputHash({ configuration, workingDirectory, selection: binding.selection,
-      inventoryRevision: binding.inventoryRevision, installation: binding.installation })
+      inventoryRevision: binding.inventoryRevision, installation: binding.installation, accountBinding: account?.binding })
     const cached = results.get(key)
     if (cached) {
       if (Date.now() - cached.at >= 300_000 && !cached.refreshing) {
         cached.refreshing = true
-        void discover(workingDirectory, AbortSignal.timeout(60_000), true).catch(() => { if (results.get(key) === cached) results.delete(key) })
+        void discover(workingDirectory, AbortSignal.timeout(60_000), true, accountBinding).catch(() => { if (results.get(key) === cached) results.delete(key) })
           .finally(() => { cached.refreshing = false })
       }
       if (!refresh) return structuredClone(cached.value)
@@ -102,7 +105,7 @@ export function productionClaudeMetadata(input: {
       }
     }
   }
-  return new ClaudeCheckedNativeConfigurationPort({
+  const port = new ClaudeCheckedNativeConfigurationPort({
     discover: (workingDirectory, signal) => discover(workingDirectory, signal),
     async accepted(configuration, _directory, signal) {
       const binding = input.registry.pinAccepted({ id: `claude-configuration:${commandInputHash(configuration)}`, agentId: 'configuration-inspection', harness: configuration })
@@ -119,4 +122,6 @@ export function productionClaudeMetadata(input: {
     },
     invalidate() { results.clear() },
   })
+  return Object.assign(port, { discoverAccount: (directory: string, signal: AbortSignal, binding: ProviderAccountBinding) =>
+    discover(directory, signal, false, binding) })
 }

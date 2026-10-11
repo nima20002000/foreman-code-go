@@ -1,3 +1,4 @@
+import type { ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import {
   HarnessConfigurationSchema, HarnessQualificationSchema, type AgentHarness, type HarnessConfiguration,
@@ -16,21 +17,14 @@ import type { ProviderAccountResolver } from '../provider-accounts/service.js'
 export class NativeConfigurationService {
   private readonly catalogCache = new QualificationCache<ReturnType<typeof HarnessOptionsResultSchema.parse>>(300_000, 128, Date.now, true)
   private readonly configurationChecks = new QualificationCache<Awaited<ReturnType<NativeConfigurationService['inspectConfiguration']>>>()
-  invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear(); this.identities.clear(); this.claude?.invalidate?.() }
-  // Resolving the installed binary's identity costs over a second; settings reads reuse it briefly.
-  private readonly identities = new Map<string, { at: number; value: Promise<string> }>()
-  private identity(harness: 'codex'): Promise<string> {
-    const known = this.identities.get(harness)
-    if (known && Date.now() - known.at < 60_000) return known.value
-    const value = this.factories.cacheIdentity(harness, this.directory)
-    this.identities.set(harness, { at: Date.now(), value })
-    void value.catch(() => { if (this.identities.get(harness)?.value === value) this.identities.delete(harness) })
-    return value
-  }
+  invalidateOptions(): void { this.catalogCache.clear(); this.configurationChecks.clear(); this.claude?.invalidate?.() }
   async shutdownChecks(): Promise<void> { await Promise.all([this.catalogCache.close(), this.configurationChecks.close()]) }
   private readonly factories: NativeHarnessFactories
   constructor(codexBinary: string, private readonly directory: string, factories?: NativeHarnessFactories,
-    private readonly claude?: ClaudeNativeConfigurationPort, private readonly accounts?: ProviderAccountResolver) {
+    private readonly claude?: ClaudeNativeConfigurationPort & {
+      discoverAccount?(directory: string, signal: AbortSignal, binding: ProviderAccountBinding):
+        ReturnType<ClaudeNativeConfigurationPort['discover']>
+    }, private readonly accounts?: ProviderAccountResolver) {
     this.factories = factories ?? new NativeHarnessFactories({ codexBinary })
   }
 
@@ -42,7 +36,10 @@ export class NativeConfigurationService {
       // The selected Claude host/profile proof must be rechecked on every read.
       if (value.harness === 'claude') return await this.inspectConfiguration(value)
       const identity = await this.factories.cacheIdentity(value.harness, this.directory, value)
-      return await this.configurationChecks.get(JSON.stringify([identity, value]), () => this.inspectConfiguration(value))
+      const qualification = await this.configurationChecks.get(JSON.stringify([identity, value]), () => this.inspectConfiguration(value))
+      if (identity !== await this.factories.cacheIdentity(value.harness, this.directory, value)) throw new DomainError(
+        'PROVIDER_OBSERVATION_STALE', 'The account installation changed during qualification.', 409)
+      return qualification
     }
     catch (error) { throw qualificationError(error) }
   }
@@ -63,16 +60,24 @@ export class NativeConfigurationService {
     return this.claude
   }
 
-  async options(harness: AgentHarness) {
+  async options(harness: AgentHarness, accountBinding?: ProviderAccountBinding) {
     try {
-      if (harness === 'claude') return await this.discoverOptions(harness)
-      const identity = await this.identity(harness)
-      return await this.catalogCache.get(JSON.stringify([harness, identity]), () => this.discoverOptions(harness))
+      if (accountBinding && accountBinding.provider !== harness) throw new DomainError(
+        'PROVIDER_ACCOUNT_BINDING_CONFLICT', 'The requested catalog names another harness.', 409)
+      if (harness === 'claude') return await this.discoverOptions(harness, accountBinding)
+      const identity = await this.factories.cacheIdentity(harness, this.directory, undefined, accountBinding)
+      const value = await this.catalogCache.get(JSON.stringify([harness, identity, accountBinding]),
+        () => this.discoverOptions(harness, accountBinding))
+      if (identity !== await this.factories.cacheIdentity(harness, this.directory, undefined, accountBinding)) {
+        throw new DomainError('PROVIDER_OBSERVATION_STALE', 'The account installation changed during discovery.', 409)
+      }
+      return value
     }
     catch (error) { throw qualificationError(error) }
   }
 
-  async refreshOptions(harness: AgentHarness, refresh: 'catalog' | 'upstream' = 'catalog') {
+  async refreshOptions(harness: AgentHarness, refresh: 'catalog' | 'upstream' = 'catalog',
+    accountBinding?: ProviderAccountBinding) {
     try {
       try {
         if (refresh === 'upstream') {
@@ -80,19 +85,24 @@ export class NativeConfigurationService {
           throw new HarnessExecutionError('CODEX_MODEL_REFRESH_UNSUPPORTED', 'Codex has no upstream catalog refresh command.')
         }
       } finally { this.invalidateOptions() }
-      return await this.options(harness)
+      return await this.options(harness, accountBinding)
     } catch (error) { throw qualificationError(error) }
   }
 
-  private async discoverOptions(harness: AgentHarness) {
+  private async discoverOptions(harness: AgentHarness, accountBinding?: ProviderAccountBinding) {
     const signal = AbortSignal.timeout(60_000)
     if (harness === 'claude') {
-      const options = await this.claudePort().discover(this.directory, signal)
+      if (accountBinding && !this.claude?.discoverAccount) throw new DomainError(
+        'PROVIDER_MODELS_UNAVAILABLE', 'Account-scoped Claude discovery is unavailable.', 409)
+      const options = accountBinding
+        ? await this.claude!.discoverAccount!(this.directory, signal, accountBinding)
+        : await this.claudePort().discover(this.directory, signal)
       return HarnessOptionsResultSchema.parse({ harness, ...options, settings: claudeSettingSupport(),
         restrictions: ['Metadata comes from this API host’s installed SDK and the saved or detected local profile. Execution requires an exact qualified host profile.', 'Metadata discovery does not qualify execution or create a model turn.'], checkedAt: new Date().toISOString() })
     }
     const allocated = this.factories.allocate({ harness: 'codex', role: 'diagnostics',
-      workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none' })
+      workingDirectory: this.directory, ownerAgentId: 'catalog-inspection', appMcpAccess: 'none',
+      ...(accountBinding ? { accountBinding } : {}) })
     if (allocated.harness !== 'codex') throw new Error('The Codex driver returned another harness.')
     const manager = allocated.manager
     try {
