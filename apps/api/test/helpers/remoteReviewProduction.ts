@@ -287,13 +287,13 @@ export async function remoteReviewProduction(options: {
         }
       })
     }
-    const startMain = async () => {
+    const startMain = async (workingDirectory = fileURLToPath(new URL('../../../..', import.meta.url))) => {
       let ready = false
       mainFailure = ''
       const started = spawn(process.execPath, [
         '--import', tsxLoader,
         fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url)), mainConfiguration], {
-        cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
+        cwd: workingDirectory,
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
       })
       main = started
@@ -707,14 +707,15 @@ export async function remoteReviewProduction(options: {
         [command.executionId, command.operationId, command.owner.grantId, command.owner.epoch])
         if (changed.rowCount !== 1) throw new Error('The original response grant changed before retry.')
       },
-      async restartMain(options: { mode?: 'crash' | 'graceful'; afterShutdown?: () => Promise<void> } = {}) {
+      async restartMain(options: { mode?: 'crash' | 'graceful'; workingDirectory?: string;
+        afterShutdown?: () => Promise<void> } = {}) {
         const previousWorkerState = workerStateRevision
         ready = false
         await stopMain(options.mode === 'graceful' ? 'SIGTERM' : 'SIGKILL')
         await waitForRemoteReview(async () => workerStateRevision,
           value => value > previousWorkerState, 'Worker observing the stopped Main connection')
         await options.afterShutdown?.()
-        await startMain()
+        await startMain(options.workingDirectory)
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },
       async restartWorker(afterCrash?: () => void) {

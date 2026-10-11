@@ -20,7 +20,7 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'claude_setup_options_get', async () => context.services.harnesses.claudeSetupOptions(context.principal)))
   if (operatorToolAvailable(context, 'harness_compatibility_list')) server.registerTool('harness_compatibility_list', {
-    description: 'Read dynamic Codex protocol checks, observed versions, cached results and unmet contracts. Claude SDK compatibility is exposed by harness_get and execution_readiness_get. Authentication and host policy are checked separately.',
+    description: 'Read dynamic Codex protocol checks, observed versions, cached results and unmet contracts. Timed-out startup checks retry automatically. Claude SDK compatibility is exposed by harness_get and execution_readiness_get. Authentication and host policy are checked separately.',
     inputSchema: z.object({}).strict(), outputSchema: HarnessCompatibilityListSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'harness_compatibility_list', async () =>
@@ -32,7 +32,7 @@ export function registerHarnessTools(server: McpServer, context: OperatorRequest
   }, async (input) => invokeOperatorTool(context, 'harness_compatibility_retry', () =>
     context.services.harnessCompatibility!.requestRetry(context.principal, 'mcp', input.harness)))
   if (operatorToolAvailable(context, 'harness_qualifications_list')) server.registerTool('harness_qualifications_list', {
-    description: 'Read persisted exact-binary harness qualification results.', inputSchema: z.object({}).strict(),
+    description: 'Read persisted exact-binary harness qualification results. Main restores previously qualified Codex binaries after deployment and retries startup inspection timeouts automatically.', inputSchema: z.object({}).strict(),
     outputSchema: HarnessQualificationListSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async () => invokeOperatorTool(context, 'harness_qualifications_list', () => context.services.harnessQualifications!.list(context.principal)))

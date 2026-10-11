@@ -46,6 +46,7 @@ export class HarnessCompatibilityService {
   private readonly flights = new Map<CompatibilityHarness, Promise<void>>()
   private readonly cleanupBlocked = new Set<CompatibilityHarness>()
   private readonly refreshPending = new Set<CompatibilityHarness>()
+  private readonly retryTimers = new Map<CompatibilityHarness, NodeJS.Timeout>()
   private readonly lifetime = new AbortController()
   private readonly now: () => number
   private readonly revision: string
@@ -100,12 +101,16 @@ export class HarnessCompatibilityService {
   }
   async close(): Promise<void> {
     this.lifetime.abort(new Error('Compatibility checks are stopping.'))
+    for (const timer of this.retryTimers.values()) clearTimeout(timer)
+    this.retryTimers.clear()
     await Promise.allSettled(this.flights.values())
     await this.options.probe.close?.()
   }
   private begin(harness: CompatibilityHarness, force: boolean): void {
     if (this.lifetime.signal.aborted) throw new Error('Compatibility service is closed.')
     if (this.flights.has(harness) || this.cleanupBlocked.has(harness)) return
+    clearTimeout(this.retryTimers.get(harness))
+    this.retryTimers.delete(harness)
     this.reports[harness] = {
       ...this.initial(harness), status: 'checking',
       installedVersion: this.reports[harness].installedVersion,
@@ -132,6 +137,15 @@ export class HarnessCompatibilityService {
       }).finally(() => {
         this.flights.delete(harness)
         if (this.refreshPending.delete(harness) && !this.lifetime.signal.aborted) this.begin(harness, true)
+        else if (this.reports[harness].reason?.code === 'CHECK_TIMEOUT'
+          && !this.lifetime.signal.aborted && !this.cleanupBlocked.has(harness)) {
+          const timer = setTimeout(() => {
+            this.retryTimers.delete(harness)
+            this.begin(harness, true)
+          }, 30_000)
+          timer.unref()
+          this.retryTimers.set(harness, timer)
+        }
       })
     this.flights.set(harness, task)
   }

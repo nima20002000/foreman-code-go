@@ -116,6 +116,8 @@ int main(int argc, char **argv) {
     releaseModels: () => rm(join(directory, 'block-models')),
     blockQualification: () => writeFile(join(directory, 'block-qualification'), '', { mode: 0o600 }),
     releaseQualification: () => rm(join(directory, 'block-qualification')),
+    blockVersions: () => writeFile(join(directory, 'block-versions'), '', { mode: 0o600 }),
+    releaseVersions: () => rm(join(directory, 'block-versions')),
     calls: () => readActivity('calls.jsonl'),
     startupActivity: () => readActivity('startup.jsonl'),
     releaseReview: () => writeFile(join(directory, 'release-review'), '', { mode: 0o600 }),
