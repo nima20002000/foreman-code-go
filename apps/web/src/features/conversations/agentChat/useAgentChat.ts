@@ -54,8 +54,8 @@ export const agentChatStateKey = (context: AgentChatContext, generation = sessio
 
 /** Access can be revoked during response readback after the command was accepted. */
 export function commandMayHaveBeenAccepted(error: unknown): boolean {
-  return !ApiError.is(error) || isApiAccessError(error)
-    || error.status === 0 || error.status >= 500 || error.code === 'INVALID_RESPONSE'
+  if (!ApiError.is(error)) return true
+  return error.status === 0 || error.status >= 500 || error.code === 'INVALID_RESPONSE' || isApiAccessError(error)
 }
 
 export function useAgentChat(inputContext: AgentChatContext) {
