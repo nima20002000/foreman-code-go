@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.62] - 2026-10-11
+
+### CI
+
+- Host CI uses only computers whose build participation is enabled, in their build priority order.
+- Build computers prepare the test database and harness CLIs for unit and integration parts, as cloud runs do.
+- CPU-heavy integration files are spread one per partition.
+- `ci_computers_list` lists cloud CI slots; Main reads CI runs a few at a time; concurrent `ci-remote` commands share one pushed snapshot and name their parts.
+
 ## [0.0.61] - 2026-10-11
 
 ### CI
