@@ -4,7 +4,7 @@
 #   scripts/ci-suite.sh        — after `pnpm install`: waits for them, then runs the suite
 # SUITE: install, typecheck, lint, unit, build or integration, or one part of a check so the parts run on separate
 # machines: unit-api, unit-web, unit-web-heavy, unit-other, lint-api, lint-other. For unit-api and unit-web, SLICE is
-# a Vitest shard such as 2/3. SLICE: an integration partition's file indexes
+# a duration-balanced shard such as 2/3 (scripts/ci-unit-files.mjs). SLICE: an integration partition's file indexes
 # (scripts/ci-files.mjs); empty runs every file. DURATIONS_OUTPUT: where measured file durations go.
 set -euo pipefail
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
@@ -33,12 +33,33 @@ ready() {
   [ "$(cat "$state/$1.exit")" = 0 ] || { cat "$state/$1.log"; echo "$1 failed to start"; exit 1; }
 }
 
+unit_slice() {
+  local suite="$1" package="$2" code=0
+  local output
+  output="$(realpath -m "${DURATIONS_OUTPUT:-$state/durations.json}")"
+  mkdir -p "$state" "$(dirname "$output")"
+  node scripts/ci-unit-files.mjs select "$suite" "${SLICE:-}" > "$state/unit-files"
+  local files=() reporters=(--reporter=default --reporter=json "--outputFile.json=$output.vitest.json")
+  mapfile -d '' -t files < "$state/unit-files"
+  rm -f "$output" "$output.vitest.json"
+  if [ "$suite" = unit-api ]; then
+    (cd "$package" && pnpm test "${files[@]}" "${reporters[@]}") || code=$?
+  else
+    (cd "$package" && FOREMAN_WEB_TEST_PHASE=fast pnpm exec vitest run "${files[@]}" "${reporters[@]}") || code=$?
+  fi
+  if [ -f "$output.vitest.json" ]; then
+    node scripts/ci-unit-files.mjs record "$suite" "$output.vitest.json" "$output"
+  fi
+  return "$code"
+}
+
 case "$SUITE" in
   install) ;;
   unit) ready db; ready clis; delegate_cgroup; pnpm test ;;
-  unit-api) ready db; ready clis; delegate_cgroup; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api test ${SLICE:+--shard=$SLICE} ;;
+  unit-api) ready db; ready clis; delegate_cgroup; pnpm --filter @foreman-code/contracts build
+    unit_slice unit-api apps/api ;;
   unit-web) pnpm --filter @foreman-code/contracts build
-    (cd apps/web && FOREMAN_WEB_TEST_PHASE=fast pnpm exec vitest run ${SLICE:+--shard=$SLICE}) ;;
+    unit_slice unit-web apps/web ;;
   unit-web-heavy) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/web test:run-graph-smoke
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run) ;;
   unit-other) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
