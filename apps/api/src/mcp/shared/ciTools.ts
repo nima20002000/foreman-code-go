@@ -34,6 +34,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'affected selections omit empty parts and shard only selected tests. Poll every ticket in partitions. Retrying commandId returns the '
   + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '
   + 'computer, part, shard, exit code, group state and a 32 KiB log tail; ci_logs_read pages the full log '
+  + 'for authorized callers. Agent CI readback and cancellation are limited to tickets from that execution. '
+  + 'Agent requests publish their persisted lifecycle into their Run’s activities and Board activity snapshot. '
   + '(group=true includes bounded pages and individual cursors for every part); ci_cancel stops one ticket. '
   + 'Agents are restricted to their active Run workspace. Computers without a GitHub login report it in ci_computers_list.'
 

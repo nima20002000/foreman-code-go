@@ -10,6 +10,8 @@ import { isAuthorized, requireAuthorization, type AuthorizedResource } from '../
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
 import { decodeRunHistoryCursor, encodeRunHistoryCursor } from './historyCursor.js'
+import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { readRunActivitySnapshot } from './activitySnapshot.js'
 
 type WorkflowScope = { workspaceId: string; workflowId: string }
 
@@ -145,7 +147,17 @@ export class RunHistoryService {
       const snapshot = parsed.data
       if (snapshot.workspaceId !== input.workspaceId || snapshot.workflowId !== input.workflowId
         || snapshot.runId !== input.runId || snapshot.workflowVersionId !== row.workflow_version_id) storedDataInvalid()
-      return RunBoardSnapshotGetResultSchema.parse({ snapshot })
+      const ci = await client.query(`select 1 from ci_runs c join harness_executions e
+        on e.id=c.record#>>'{initiator,executionId}'
+        where e.run_id=$1 and c.workspace_id=$2 limit 1`, [input.runId, input.workspaceId])
+      if (!ci.rows.length) return RunBoardSnapshotGetResultSchema.parse({ snapshot })
+      const versionRow = (await client.query<{ record: unknown }>(
+        'select record from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3',
+        [snapshot.workflowVersionId, input.workspaceId, input.workflowId])).rows[0]
+      const version = WorkflowVersionV3Schema.parse(versionRow?.record)
+      const activitySnapshot = await readRunActivitySnapshot(client,
+        { ...input, workflowVersionId: snapshot.workflowVersionId }, version)
+      return RunBoardSnapshotGetResultSchema.parse({ snapshot, activitySnapshot })
     })
   }
 }

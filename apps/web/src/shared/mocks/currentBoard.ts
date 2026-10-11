@@ -3,6 +3,7 @@ import { http, HttpResponse, type RequestHandler } from 'msw'
 import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
 import { AgentConfigurationVersionSchema, AgentSchema, WorkflowRunSummarySchema, type Agent } from '@foreman-code/contracts'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
+import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { AgentCreateInputSchema, AgentUpdateInputSchema, AgentMutationResultSchema, LocalHumanAccessSchema, ManagedWorkspaceSchema, RunStopInputSchema, WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, WorkflowBatchArchiveInputSchema } from '@foreman-code/contracts/management'
 import {
   CurrentManagedWorkflowSchema, CurrentWorkspaceDetailsSchema, CurrentWorkflowCreateInputSchema,
@@ -365,6 +366,10 @@ export function createCurrentBoardMock(options: {
       if (match) {
         const runId = match[1]!, tail = match[2]!, detail = runs.get(runId)
         if (!detail) return failure('NOT_FOUND', 'Run not found', 404)
+        if (tail === '/snapshot' && method === 'GET') return HttpResponse.json(RunBoardSnapshotGetResultSchema.parse({
+          snapshot: { kind: 'unavailable', reason: 'legacy_run', workspaceId,
+            workflowId: detail.run.workflowId, runId },
+        }))
         if (!tail && method === 'GET') return HttpResponse.json(detail)
         if (tail === '/subagents' && method === 'GET') {
           return HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })

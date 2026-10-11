@@ -1,8 +1,9 @@
 import type { Edge, Node, ReactFlowProps } from '@xyflow/react'
 import type { RunBoardSnapshot, RunBoardNodeSnapshot, RunBoardEdgeSnapshot } from '@foreman-code/contracts/run-snapshots'
+import type { ActivitySnapshotV1, CiActivity, WorkRef } from '@foreman-code/contracts'
 
 export type AvailableRunBoardSnapshot = Extract<RunBoardSnapshot, { kind: 'available' }>
-export type SavedBoardNode = Node<{ snapshot: RunBoardNodeSnapshot; inspect?: () => void }, 'savedBoardNode'>
+export type SavedBoardNode = Node<{ snapshot: RunBoardNodeSnapshot; ci?: CiActivity; inspect?: () => void }, 'savedBoardNode'>
 export type SavedBoardEdge = Edge<{ snapshot: RunBoardEdgeSnapshot; lane: number }, 'savedBoardEdge'>
 
 /** No caller-provided canvas props may override these locks. Viewport movement is harmless. */
@@ -17,12 +18,14 @@ export const READ_ONLY_FLOW_PROPS = {
  * Copy mutable geometry for React Flow; retain the contract's readonly facts in data.
  * Keep every edge (including an approval parallel to a handoff), in snapshot order.
  */
-export function projectRunBoard(snapshot: AvailableRunBoardSnapshot): { nodes: SavedBoardNode[]; edges: SavedBoardEdge[] } {
+export function projectRunBoard(snapshot: AvailableRunBoardSnapshot, activity?: ActivitySnapshotV1): { nodes: SavedBoardNode[]; edges: SavedBoardEdge[] } {
   const names = new Map(snapshot.nodes.map((node) => [node.id, node.name]))
+  const cis = runBoardCi(snapshot, activity)
   const nodes: SavedBoardNode[] = snapshot.nodes.map((node) => ({
     id: node.id, type: 'savedBoardNode', position: { ...node.position }, origin: [0, 0],
     initialWidth: node.size.width, initialHeight: node.size.height,
-    style: { width: node.size.width, height: node.size.height }, data: { snapshot: node },
+    style: { width: node.size.width, height: node.size.height }, data: { snapshot: node,
+      ...(cis.has(node.id) ? { ci: cis.get(node.id)! } : {}) },
     draggable: false, connectable: false, selectable: false, deletable: false, focusable: true,
     ariaRole: 'group', ariaLabel: `${node.name}, saved ${node.kind==='job'?'job':'agent'}, read only`,
     domAttributes: { title: node.kind==='job'?`${node.name}\nJob: ${node.jobDefinitionId}\nRevision: ${node.jobDefinitionRevision}`:`${node.name}\nAgent: ${node.agentId}\nConfiguration: ${node.agentConfigurationVersionId}` },
@@ -44,4 +47,28 @@ export function projectRunBoard(snapshot: AvailableRunBoardSnapshot): { nodes: S
     }
   })
   return { nodes, edges }
+}
+
+export function runBoardCi(snapshot: AvailableRunBoardSnapshot, activity?: ActivitySnapshotV1) {
+  const cis = new Map<string, CiActivity>()
+  if (activity?.scope.kind !== 'workflow_run' || activity.scope.runId !== snapshot.runId
+    || activity.scope.workspaceId !== snapshot.workspaceId || activity.scope.workflowId !== snapshot.workflowId
+    || activity.scope.workflowVersionId !== snapshot.workflowVersionId) return cis
+  const accept = (owner: WorkRef, ci: CiActivity) => {
+    if (owner.kind !== 'ci' || owner.runId !== snapshot.runId || owner.ticketId !== ci.id
+      || owner.workspaceId !== snapshot.workspaceId || owner.workflowId !== snapshot.workflowId
+      || owner.workflowVersionId !== snapshot.workflowVersionId) return
+    const node = snapshot.nodes.find(node => node.id === owner.nodeId)
+    if (!node || node.kind === 'job' || node.agentId !== owner.agentId) return
+    cis.set(node.id, ci)
+  }
+  for (const item of activity.activities) {
+    if (item.kind === 'diagnostic' && item.ci) accept(item.owner, item.ci)
+  }
+  const priority = { queued: 0, starting: 1, running: 2, passed: -1, failed: -1, canceled: -1, lost: -1 }
+  for (const work of [...activity.active].sort((a, b) => (a.ci ? priority[a.ci.state] : -1)
+    - (b.ci ? priority[b.ci.state] : -1))) {
+    if (work.ci) accept(work.ref, work.ci)
+  }
+  return cis
 }

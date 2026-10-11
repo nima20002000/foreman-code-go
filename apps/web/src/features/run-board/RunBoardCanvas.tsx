@@ -1,6 +1,8 @@
 import { memo, useMemo } from 'react'
 import { Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, type EdgeProps, type NodeProps } from '@xyflow/react'
 import { AgentNodeView } from '../../shared/ui/nocturne/Canvas'
+import type { ActivitySnapshotV1 } from '@foreman-code/contracts'
+import { ciNodePresentation } from './ciPresentation'
 import { SignalEdgeShape } from '../graph/SignalEdgeShape'
 import { useResponsiveGraphViewport } from '../graph/useResponsiveGraphViewport'
 import { RunSubagentsOverlay } from '../run-subagents/RunSubagentsOverlay'
@@ -11,13 +13,17 @@ import './runBoard.css'
 
 const sides = [Position.Top, Position.Right, Position.Bottom, Position.Left] as const
 const SavedAgent = memo(function SavedAgent({ data }: NodeProps<SavedBoardNode>) {
+  const ci = data.ci
+  const presentation = ci ? ciNodePresentation(ci) : { label: 'Saved', state: 'idle' as const }
   return <>
     {/* Keep the authoring button inert; inspection has its own accessible action. */}
     <div className="run-board-node-visual" aria-hidden="true" inert>
-      <AgentNodeView className="run-board-agent" name={data.snapshot.name} harnessLabel="" statusLabel="Saved" />
+      <AgentNodeView className="run-board-agent" name={data.snapshot.name} harnessLabel=""
+        statusLabel={presentation.label} state={presentation.state} />
     </div>
     {data.inspect ? <button type="button" className="run-board-inspect nodrag nopan"
       aria-label={`Inspect ${data.snapshot.name}`} onClick={data.inspect}>Inspect</button> : null}
+    {ci ? <span role="status">{presentation.label}</span> : null}
     {/* Unlike the authoring AgentHandles, every saved target side must resolve. */}
     {sides.flatMap((side) => (['source', 'target'] as const).map((type) =>
       <Handle key={`${type}:${side}`} id={side} type={type} position={side} isConnectable={false}
@@ -38,19 +44,20 @@ const fitViewOptions = { padding: 0.2, minZoom: 0.02, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
 
 /** A private React Flow store, even when mounted beneath an editor's provider. */
-export function RunBoardCanvas({ snapshot, onInspectNode }: {
-  snapshot: AvailableRunBoardSnapshot; onInspectNode?: (nodeId: string) => void
+export function RunBoardCanvas({ snapshot, activitySnapshot, onInspectNode }: {
+  snapshot: AvailableRunBoardSnapshot; activitySnapshot?: ActivitySnapshotV1 | undefined
+  onInspectNode?: (nodeId: string) => void
 }) {
   const { containerRef, onInit, onMove, onManualMove } = useResponsiveGraphViewport<SavedBoardNode, SavedBoardEdge>({
     fitViewOptions,
   })
   const { nodes, edges } = useMemo(() => {
-    const projected = projectRunBoard(snapshot)
+    const projected = projectRunBoard(snapshot, activitySnapshot)
     if (onInspectNode) for (const node of projected.nodes) {
       node.data = { ...node.data, inspect: () => onInspectNode(node.id) }
     }
     return projected
-  }, [snapshot, onInspectNode])
+  }, [snapshot, activitySnapshot, onInspectNode])
   return <div ref={containerRef} className="run-board-canvas" data-testid="run-board-canvas" onKeyDown={(event) => {
     // History keystrokes must not bubble into an ancestor's authoring shortcuts.
     event.stopPropagation()

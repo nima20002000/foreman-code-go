@@ -59,6 +59,7 @@ function fixture() {
         created_at: f.createdAt, started_at: null, native_session_id: null, harness: null, native_revision: '0' }] }
     }
     if (sql.includes('from workflow_job_executions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId, run.workflowVersionId]); return { rows: [] } }
+    if (sql.includes('from ci_runs')) return { rows: [] }
     if (sql.includes('from durable_interactions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId]); return { rows: [] } }
     if (sql === RUN_ACTIVITIES_BOUNDS_SQL) { expect(values).toEqual([run.id]); return { rows: [{ high_water: '0', retained_from: '0', observed: 0 }] } }
     if (sql.includes('from harness_executions')) return { rows: [{ id: execution.id }] }

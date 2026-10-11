@@ -1,13 +1,12 @@
 import { GraphIdSchema, RunActivityPublicSchema, WorkHandoffResultSchema,
   type RunActivityPublic, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
-import { ExecutionResultSchema } from '@foreman-code/contracts'
+import { CiActivitySchema, ExecutionResultSchema } from '@foreman-code/contracts'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { repeatId } from './repeatResolution.js'
 import { safeNodeName, nativeToolTitle } from './nativeAction.js'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
 import { codexUnsupportedInteractionMessage } from '@foreman-code/contracts'
-import { JobOrdinaryVerificationSuiteSchema } from '@foreman-code/contracts/job-verification'
 
 export interface ActivityReadRow {
   sequence: string; source: string; kind: string; occurred_at: Date;
@@ -16,8 +15,7 @@ export interface ActivityReadRow {
   execution_attempt: number | null; work_activation_id: string | null;
   job_execution_id?: string | null; job_attempt_id?: string | null; job_operation_id?: string | null;
   node_execution_id?: string | null; job_definition_id?: string | null;
-  ci_ticket_id?: string | null; ci_execution_id?: string | null;
-  ci_attempt_id?: string | null; ci_operation_id?: string | null;
+  ci_ticket_id?: string | null; ci_activity?: unknown;
   job_definition_revision?: number | null; job_definition_version_id?: string | null;
   result_outcome: string | null;
   work_result?: unknown;
@@ -162,9 +160,11 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const requesterNode = id(payload.requesterNodeId)
   const destinationNode = id(payload.destinationNodeId)
   const continuedFromExecutionId = id(payload.continuedFromExecutionId)
+  const ciResult = CiActivitySchema.safeParse(row.ci_activity)
+  const ci = row.kind === 'ci_state_changed' && actor && 'agentId' in actor
+    && ciResult.success && ciResult.data.id === row.ci_ticket_id ? ciResult.data : undefined
   const refs = {
-    ...(row.ci_ticket_id && row.ci_execution_id ? { jobExecutionId: row.ci_execution_id,
-      jobAttemptId: id(row.ci_attempt_id), jobOperationId: id(row.ci_operation_id) } : {}),
+    ...(ci ? { ciTicketId: ci.id, ciGroupId: ci.groupId } : {}),
     ...(jobActor ? { executionId: row.job_execution_id, jobExecutionId: row.job_execution_id,
       jobAttemptId: id(row.job_attempt_id), jobOperationId: id(row.job_operation_id), nodeExecutionId: row.node_execution_id } : {}),
     ...(!jobActor && row.harness_execution_id && row.execution_node_id ? { executionId: row.harness_execution_id } : {}),
@@ -203,24 +203,17 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   switch (row.kind) {
     case 'ci_state_changed': {
       kind = 'job_work'
-      if (!row.ci_ticket_id || !refs.jobExecutionId || !actor) {
+      if (!ci) {
         status = 'unknown'
         summary = 'CI activity details unavailable'
         break
       }
-      const state = string(payload.state)
-      const outcome = string(payload.outcome)
-      const suite = JobOrdinaryVerificationSuiteSchema.safeParse(payload.suite)
-      const name = suite.success ? `CI ${suite.data}` : 'CI'
-      if (state === 'terminal') {
-        status = 'failed'
-        if (outcome === 'succeeded') status = 'completed'
-        else if (outcome === 'cancelled') status = 'canceled'
-        else if (!outcome || outcome === 'completed') status = 'unknown'
-      } else if (state === 'running') status = 'running'
-      else if (state === 'preparing') status = 'starting'
-      else status = 'queued'
-      summary = `${name} ${status}`
+      const statuses: Record<typeof ci.state, RunActivityPublic['status']> = {
+        queued: 'queued', starting: 'starting', running: 'running', passed: 'completed',
+        failed: 'failed', canceled: 'canceled', lost: 'unknown',
+      }
+      status = statuses[ci.state]
+      summary = `CI ${ci.suite} ${ci.state}`
       break
     }
     case 'run_state_changed': {
@@ -401,6 +394,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
     scope, sequence: row.sequence, occurredAt: row.occurred_at.toISOString(), source: row.source,
     kind, status, severity, summary,
     ...(workResult ? { workResult } : {}),
+    ...(ci ? { ci } : {}),
     ...(detail ? { detail } : {}), ...(actor ? { actor } : {}),
     ...(subject ? { subject } : {}), refs,
     ...(usage ? { usage } : {}) })

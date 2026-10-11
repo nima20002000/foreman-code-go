@@ -54,7 +54,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
   if (operatorToolAvailable(context, 'run_activities_get_v1')) server.registerTool('run_activities_get_v1', {
     description: 'Read a bounded, redacted public Activities page for an exact authorized Run. '
       + 'Execution references include continuedFromExecutionId for same-node session continuity. '
-      + 'Includes the Run’s Agent-requested CI queue and process states with Job execution references and initiating Agents. '
+      + 'Includes persisted Host CI lifecycle states with ciTicketId, ciGroupId, originating Agent execution, part, partition and computer. '
       + 'Native summaries identify messages, reasoning, commands, file edits and tool calls; details include safe counts, message phase and command exit code. '
       + 'Work result and needs-direction activities include redacted latestDeliverable, remainingFindings and outcome. '
       + 'Pages may return fewer items than limit to fit the 128 KiB public-page budget; follow the returned cursors. '

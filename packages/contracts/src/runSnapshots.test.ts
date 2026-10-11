@@ -155,6 +155,14 @@ describe("immutable Run-admission board snapshots", () => {
     expect(RunBoardSnapshotGetInputSchema.safeParse({ ...scope, expectedRevision: 1, commandId: "write-command" }).success).toBe(false);
     expect(RunBoardSnapshotGetResultSchema.safeParse({ snapshot: board, credentials: {} }).success).toBe(false);
   });
+  it('keeps live activity separate from the immutable Board capture and rejects another Run', () => {
+    const activitySnapshot = { schemaVersion: 1, scope: { kind: 'workflow_run', ...scope,
+      workflowVersionId: board.workflowVersionId }, revision: '1', active: [], queued: [], latest: null,
+      pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } };
+    expect(RunBoardSnapshotGetResultSchema.parse({ snapshot: board, activitySnapshot }).snapshot).toEqual(board);
+    expect(RunBoardSnapshotGetResultSchema.safeParse({ snapshot: board, activitySnapshot: {
+      ...activitySnapshot, scope: { ...activitySnapshot.scope, runId: 'another-run' } } }).success).toBe(false);
+  });
 });
 
 describe("selected-Run chat identity", () => {

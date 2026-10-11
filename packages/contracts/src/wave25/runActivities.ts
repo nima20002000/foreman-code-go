@@ -1,5 +1,6 @@
 import { canonicalGraphJson } from './json.js'
 import { ActivitySnapshotV1Schema } from '../activity.js'
+import { CiActivitySchema } from '../ciHost.js'
 import { z } from 'zod'
 import { GraphIdSchema, GraphSequenceSchema, RunGraphScopeSchema } from './graphPrimitives.js'
 import { TimestampSchema } from '../schemaPrimitives.js'
@@ -29,6 +30,7 @@ export const RunActivityPublicStatusSchema = z.enum([
 export const RunActivityReferenceSchema = z.object({
   executionId: GraphIdSchema.optional(), activationId: GraphIdSchema.optional(),
   continuedFromExecutionId: GraphIdSchema.optional(),
+  ciTicketId: CiActivitySchema.shape.id.optional(), ciGroupId: CiActivitySchema.shape.groupId.optional(),
   jobExecutionId: GraphIdSchema.optional(), jobAttemptId: GraphIdSchema.optional(),
   jobOperationId: GraphIdSchema.optional(), nodeExecutionId: GraphIdSchema.optional(),
   requestId: GraphIdSchema.optional(), returnId: GraphIdSchema.optional(),
@@ -70,6 +72,7 @@ export const RunActivityPublicSchema = z.object({
   actor: z.union([RunActivityAgentSchema, RunActivityJobSchema]).optional(),
   subject: z.union([RunActivityAgentSchema, RunActivityJobSchema]).optional(),
   refs: RunActivityReferenceSchema,
+  ci: CiActivitySchema.optional(),
   workResult: RunActivityWorkResultSchema.optional(),
   usage: z.object({ used: z.number().int().nonnegative(),
     limit: z.number().int().positive().nullable() }).strict()

@@ -82,6 +82,26 @@ afterEach(() => {
 })
 
 describe('Activities shared Agent and Job actors', () => {
+  it('renders CI lifecycle, partition and computer details under the initiating Agent without merging tickets', async () => {
+    const ci = { id: '00000000-0000-4000-8000-000000000001',
+      groupId: '00000000-0000-4000-8000-000000000002', suite: 'integration' as const,
+      part: null, partition: { index: 0, count: 2 }, state: 'running' as const,
+      computer: { hostRef: { kind: 'main' as const, mainId: 'synthetic-main' }, label: 'Build computer' },
+      step: 'integration', exitCode: null, queuedAt: '2026-10-01T12:00:00.000Z',
+      startedAt: '2026-10-01T12:00:01.000Z', finishedAt: null }
+    const ciItems = ['1', '2'].map((sequence, index) => RunActivityPublicSchema.parse({
+      ...event(sequence, 'CI integration running', { actor: agent }), status: 'running',
+      refs: { executionId: 'agent-execution', ciTicketId: index === 0 ? ci.id : ci.groupId, ciGroupId: ci.groupId },
+      ci: { ...ci, id: index === 0 ? ci.id : ci.groupId, partition: { index, count: 2 } },
+    }))
+    server.use(http.get(activitiesPath, () => HttpResponse.json(page({ items: ciItems }))))
+    await mount({ expectedText: 'Partition 1 of 2 · Build computer · integration' })
+    expect(screen.getAllByText('CI integration running')).toHaveLength(2)
+    expect(screen.getByText('Partition 2 of 2 · Build computer · integration')).toBeVisible()
+    for (const row of screen.getAllByRole('listitem')) expect(within(row).getByText('Builder')).toBeVisible()
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), agent.agentId)
+    expect(screen.getAllByText('CI integration running')).toHaveLength(2)
+  })
   it('shows recorded results and remaining findings on needs-direction rows', async () => {
     const workResult = { outcome: 'done', latestDeliverable: 'Implemented the requested change',
       remainingFindings: ['Review needs a decision', { message: 'One finding remains' }] }

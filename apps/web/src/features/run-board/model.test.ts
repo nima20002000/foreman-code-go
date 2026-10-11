@@ -71,3 +71,50 @@ describe('saved edge geometry', () => {
     }
   })
 })
+
+describe('Run Board Host CI ownership', () => {
+  const ci = {
+    id: '00000000-0000-4000-8000-000000000001', groupId: '00000000-0000-4000-8000-000000000002',
+    suite: 'integration' as const, part: null, partition: { index: 0, count: 2 }, state: 'queued' as const,
+    computer: null, step: null, exitCode: null, queuedAt: '2026-10-01T00:00:00.000Z', startedAt: null, finishedAt: null,
+  }
+  const scope = { workspaceId: runA.workspaceId, workflowId: runA.workflowId, runId: runA.runId,
+    workflowVersionId: runA.workflowVersionId }
+  const ref = { kind: 'ci' as const, ...scope, nodeId: 'node-x', agentId: 'agent-x', executionId: 'execution-x',
+    attemptKey: '1', ticketId: ci.id }
+  const activity = { schemaVersion: 1 as const, scope: { kind: 'workflow_run' as const, ...scope }, revision: '1',
+    active: [{ ref, phase: 'waiting' as const, outcome: null, delivery: null, evidence: 'confirmed' as const,
+      startedAt: null, ci }], queued: [ref], latest: ref, pendingInteractions: [], activities: [],
+    page: { before: null, nextCursor: null, hasMore: false } }
+
+  it('shows each CI ticket only on the originating Agent and leaves captured facts untouched', () => {
+    const before = JSON.stringify(runA)
+    const result = projectRunBoard(runA, activity)
+    expect(result.nodes[0]?.data.ci).toEqual(ci)
+    expect(result.nodes[1]?.data.ci).toBeUndefined()
+    expect(result.nodes[2]?.data.ci).toBeUndefined()
+    expect(JSON.stringify(runA)).toBe(before)
+    expect(projectRunBoard(runB, activity).nodes.every(node => !node.data.ci)).toBe(true)
+    const foreign = { ...activity, active: [{ ...activity.active[0]!, ref: { ...ref, agentId: 'foreign-agent' } }] }
+    expect(projectRunBoard(runA, foreign).nodes.every(node => !node.data.ci)).toBe(true)
+  })
+
+  it('keeps a running partition visible beside a newer queued partition', () => {
+    const running = { ...activity.active[0]!, ci: { ...ci, state: 'running' as const,
+      computer: { label: 'Build computer', hostRef: { kind: 'main' as const, mainId: 'synthetic-main' } } } }
+    const queued = { ...activity.active[0]!, ref: { ...ref, ticketId: ci.groupId },
+      ci: { ...ci, id: ci.groupId, partition: { index: 1, count: 2 } } }
+    expect(projectRunBoard(runA, { ...activity, active: [running, queued] }).nodes[0]?.data.ci).toEqual(running.ci)
+  })
+
+  it('replaces active CI with the recorded terminal result without marking other Agents complete', () => {
+    const done = { ...ci, state: 'passed' as const, exitCode: 0 }
+    const completed = { ...activity, active: [], queued: [], activities: [{ kind: 'diagnostic' as const,
+      id: 'ci-finished', revision: '0', order: '3', owner: ref, source: { schemaVersion: 1 as const,
+        system: 'run_activity', observedAt: done.queuedAt }, evidence: 'confirmed' as const,
+      code: 'job_work', message: 'CI integration passed', ci: done }] }
+    const result = projectRunBoard(runA, completed)
+    expect(result.nodes[0]?.data.ci?.state).toBe('passed')
+    expect(result.nodes[1]?.data.ci).toBeUndefined()
+  })
+})

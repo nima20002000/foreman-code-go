@@ -23,8 +23,7 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
   coalesce(e.workflow_node_id,j.record#>>'{workflow,nodeId}') as execution_node_id,e.agent_id as execution_agent_id,
   coalesce(e.attempt,x.technical_attempt) as execution_attempt,e.work_activation_id,
   j.id as job_execution_id,j.attempt_id as job_attempt_id,j.operation_id as job_operation_id,
-  cq.id::text as ci_ticket_id,cq.execution_id as ci_execution_id,
-  cq.attempt_id as ci_attempt_id,cq.operation_id as ci_operation_id,
+  cq.id::text as ci_ticket_id,case when cq.id is not null then a.payload->'ci' end as ci_activity,
   w.node_execution_id,j.accepted_spec->>'definitionId' as job_definition_id,
   (j.accepted_spec->>'definitionRevision')::integer as job_definition_revision,
   j.accepted_spec->>'definitionVersionId' as job_definition_version_id,
@@ -107,13 +106,13 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
 from run_activity a
 left join harness_executions e on e.id=a.harness_execution_id and e.run_id=a.run_id
 left join runs r on r.id=a.run_id
-left join job_admission_queue cq on a.kind='ci_state_changed' and cq.id::text=a.payload->>'ticketId'
-  and cq.workspace_id=r.workspace_id and cq.execution_id=a.payload->>'jobExecutionId'
-  and cq.attempt_id=a.payload->>'jobAttemptId' and cq.operation_id=a.payload->>'jobOperationId'
-  and cq.record #>> '{initiatingAgent,runId}'=r.id
-  and cq.record #>> '{initiatingAgent,workflowId}'=r.workflow_id
-  and cq.record #>> '{initiatingAgent,executionId}'=e.id
-  and cq.record #>> '{initiatingAgent,agentId}'=e.agent_id
+left join ci_runs cq on a.kind='ci_state_changed' and cq.id::text=a.payload->>'ticketId'
+  and cq.workspace_id=r.workspace_id and cq.record#>>'{initiator,executionId}'=e.id
+  and cq.record->>'id'=cq.id::text and cq.record->>'workspaceId'=r.workspace_id
+  and cq.group_id::text=a.payload#>>'{ci,groupId}' and cq.id::text=a.payload#>>'{ci,id}'
+  and cq.record->>'suite'=a.payload#>>'{ci,suite}'
+  and coalesce(cq.record->'part','null'::jsonb) is not distinct from a.payload#>'{ci,part}'
+  and e.record->>'agentConfigurationVersionId'=r.record->'agentConfigurationVersionIds'->>e.agent_id
 left join run_board_snapshots s on s.run_id=r.id and s.workspace_id=r.workspace_id
   and s.workflow_id=r.workflow_id and s.workflow_version_id=r.workflow_version_id
 left join workflow_job_executions w on w.run_id=a.run_id and w.job_execution_id=a.payload->>'jobExecutionId'

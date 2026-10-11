@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CiActivitySchema } from './ciHost.js'
 
 /** Decimal revisions compare only inside the exact same scope. Ordering keys are separate. */
 export const ActivityRevisionSchema = z.string().regex(/^(0|[1-9][0-9]*)$/)
@@ -21,6 +22,8 @@ export type ActivityScope = z.infer<typeof ActivityScopeSchema>
 export const WorkRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('run'), workspaceId: id, workflowId: id, runId: id, workflowVersionId: id }).strict(),
   z.object({ kind: z.literal('execution'), ...execution }).strict(),
+  z.object({ kind: z.literal('ci'), ...execution, nodeId: id, agentId: id,
+    ticketId: CiActivitySchema.shape.id }).strict(),
   z.object({ kind: z.literal('chat_request'), conversationId: id, requestId: id }).strict(),
   z.object({ kind: z.literal('native_turn'), native: ActivityNativeIdentitySchema }).strict(),
   z.object({ kind: z.literal('tool'), itemId: id, native: ActivityNativeIdentitySchema.optional() }).strict(),
@@ -34,12 +37,13 @@ export const WorkSummarySchema = z.object({
   evidence: z.enum(['confirmed', 'reconciling', 'unknown']), startedAt: timestamp.nullable(),
   native: ActivityNativeIdentitySchema.optional(),
   continuedFromExecutionId: id.optional(),
+  ci: CiActivitySchema.optional(),
 }).strict()
 export type WorkSummary = z.infer<typeof WorkSummarySchema>
 export const ActivitySourceSchema = z.object({ schemaVersion: z.literal(1), system: id, eventId: id.optional(), sequence: ActivityRevisionSchema.optional(), observedAt: timestamp.nullable() }).strict()
 export type ActivitySource = z.infer<typeof ActivitySourceSchema>
 export const ActivitySourceRevisionSchema = z.object({
-  source: z.enum(['scope', 'execution', 'run_activity', 'native_events', 'message', 'interaction', 'file', 'publication', 'command']), id, revision: ActivityRevisionSchema,
+  source: z.enum(['scope', 'execution', 'ci_run', 'run_activity', 'native_events', 'message', 'interaction', 'file', 'publication', 'command']), id, revision: ActivityRevisionSchema,
 }).strict()
 export type ActivitySourceRevision = z.infer<typeof ActivitySourceRevisionSchema>
 
@@ -61,7 +65,7 @@ export const ActivityItemSchema = z.discriminatedUnion('kind', [
   z.object({ ...item, kind: z.literal('subagent'), toolKind: z.literal('subagent').optional(), title: id, status: z.enum(['pending', 'running', 'completed', 'failed', 'canceled', 'unknown']) }).strict(),
   z.object({ ...item, kind: z.literal('interaction'), interaction: InteractionSummarySchema }).strict(),
   z.object({ ...item, kind: z.literal('file_publication'), receiptId: id, fileId: id.optional(), fileRevisionId: id.optional(), status: z.enum(['pending', 'ready', 'adopted', 'failed', 'unknown']) }).strict(),
-  z.object({ ...item, kind: z.literal('diagnostic'), code: id, message: z.string() }).strict(),
+  z.object({ ...item, kind: z.literal('diagnostic'), code: id, message: z.string(), ci: CiActivitySchema.optional() }).strict(),
 ])
 export type ActivityItem = z.infer<typeof ActivityItemSchema>
 
