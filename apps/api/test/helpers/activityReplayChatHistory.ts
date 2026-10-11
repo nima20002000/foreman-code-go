@@ -23,6 +23,17 @@ export async function replayChatHistory(options: { selectedRun: boolean }) {
     if (value && value.kind !== 'selected') throw new Error('Exact recorded source was substituted.')
     return value ? value.state : AgentChatStateSchema.parse(response.json())
   }
+  if (origin) {
+    // The terminal outcome is committed before the original writer finishes cleanup.
+    await eventually(async () => {
+      const result = await f.db.pool.query<{ pending: boolean; attempts: number }>(
+        'select pending,attempts from run_cleanup_intents where run_id=$1', [origin.run.id])
+      return result.rows[0]
+    }, (intent) => intent?.pending === false && intent.attempts > 0)
+    const ready = await read()
+    expect(ready.availability.canSend).toBe(true)
+    expect(ready.conversation).toBeNull()
+  }
   const message = (requestId: string, expectedConversationId: string | null) => ({ requestId, content: 'recorded active message', intent: 'next_turn', expectedConversationId })
   const first = await f.http('POST', `${base}/messages`, selected ? { ...message('active-A', null), executionId: execution!.id }
     : { ...message('active-A', null), context: query })
