@@ -368,6 +368,7 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
       input: bytes, encoding: 'utf8', timeout: 5000, maxBuffer: 65536,
     }))
     expect(summary).toEqual(diagnostics)
+    expect(summary.files.map((entry: { file: string }) => entry.file)).toEqual(selected)
     const retainedUnit = JSON.parse(execFileSync('tar', ['-xzOf', '-', 'logs/1-unit.json'], {
       input: bytes, encoding: 'utf8', timeout: 5000, maxBuffer: 65536,
     }))
@@ -379,11 +380,12 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     }])
     expect(summary).toMatchObject({ environment: { runtime: 'isolated-job',
       capabilities: { nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false } },
-      outcome: 'incomplete', completeness: 'partial', expectedPortions: 9, completedPortions: 0,
+      outcome: 'incomplete', completeness: 'partial', expectedPortions: 10, completedPortions: 0,
       totals: { total: 0, passed: 0, failed: 0, skipped: 0 },
       files: [
         { complete: false, requiredCapabilities: ['nativeCgroupDelegation'] },
         { complete: false, requiredCapabilities: ['testDatabaseStartup'] },
+        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
