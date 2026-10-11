@@ -17,6 +17,8 @@ it('reads a complete cloud and physical-computer Agent report from a native text
   value.tickets.push({ ...value.tickets[0]!, ticketId: randomUUID(), part: 'build-other' })
   expect(readAgentCiReport({ text: JSON.stringify(value) })).toEqual(value)
   expect(readAgentCiReport(value)).toEqual(value)
+  expect(readAgentCiReport({ text: JSON.stringify({ routing: { kind: 'finish' }, data: { latestDeliverable: value } }) }))
+    .toEqual(value)
   const physical = { ...value, tickets: value.tickets.map(ticket => ({ ...ticket,
     computer: { kind: 'device', mainId: ticket.computer.mainId, deviceId: randomUUID() } })) }
   expect(AgentCiReportSchema.safeParse(physical).success).toBe(true)

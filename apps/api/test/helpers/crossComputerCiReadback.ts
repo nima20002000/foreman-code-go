@@ -36,7 +36,10 @@ export type CiReadback = z.infer<typeof CiGetOutputSchema>
 export function readAgentCiReport(output: unknown): AgentCiReport {
   const envelope = z.object({ text: z.string() }).safeParse(output)
   const raw = envelope.success ? envelope.data.text : output
-  return AgentCiReportSchema.parse(typeof raw === 'string' ? JSON.parse(raw) : raw)
+  const value: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
+  // Workflow Agents return their deliverable inside the routed workflow output.
+  const routed = z.object({ data: z.object({ latestDeliverable: z.unknown() }) }).safeParse(value)
+  return AgentCiReportSchema.parse(routed.success ? routed.data.data.latestDeliverable : value)
 }
 
 export function ciTerminal(state: string): boolean {
