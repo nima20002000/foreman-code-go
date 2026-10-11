@@ -9,7 +9,7 @@ import { publishCommit } from '../src/modules/sources/githubPublisher.js'
 import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
 import { captureGitSource } from '../src/modules/sources/capture.js'
 import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
 import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, builder, oldImage, newImage, commit, newPin,
   otherWorkspaceImage, mainId }
@@ -110,11 +110,11 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
     const refreshGate = new Promise<void>(resolve => { finish = resolve })
     const f = await fixture({ refreshGate })
     try {
-      await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-drain' })
-      for (let attempt = 0; attempt < 500 && !f.calls.refresh.length; attempt++) {
-        await new Promise(resolve => setImmediate(resolve))
-      }
-      expect(f.calls.refresh).toHaveLength(1)
+      const started = await f.call('build_computer_prepare', {
+        workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-drain',
+      })
+      expect(started.isError).not.toBe(true)
+      await vi.waitFor(() => expect(f.calls.refresh).toHaveLength(1))
       expect(await f.workerState()).toMatchObject({ state: 'refreshing', stage: 'draining', commit })
       const status = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-unit' })
       expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(status)).state).toBe('refreshing')

@@ -9,7 +9,7 @@ import { ComputerGitHubService } from '../src/modules/computers/github.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
-import { DevicePresenceSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import { DevicePresenceSchema, type DevicePresence, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { deviceNegotiationHash, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
 import { mainIdentityProofMessage } from '@foreman-code/contracts/device-identity-node'
@@ -333,9 +333,16 @@ describe('device-only HTTP bootstrap', () => {
 
 
 it('refuses a GitHub mutation on a replacement authenticated installation after target validation', async () => {
+  // Transport deadlines advance only when this test advances time, independent of runner scheduling.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const extension: DeviceExtensionRegistration = { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1,
     role: 'client', maxJsonBytes: 2048, maxBinaryBytes: 0 }
-  const { endpoint, auth } = makeEndpoint([extension], 2000)
+  const { endpoint, auth, presence } = makeEndpoint([extension], 2000)
+  const waitForReady = (installationId: string) => new Promise<void>(resolve => {
+    presence.mockImplementation((view: DevicePresence) => {
+      if (view.phase === 'ready' && view.binding.workerInstallationId === installationId) resolve()
+    })
+  })
   const server = createServer()
   const carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
   server.on('upgrade', deviceUpgradeHandler(endpoint, carrier))
@@ -377,7 +384,8 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
   }
   const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
   const commands = { recordAudit: vi.fn(async () => {}), recordDenied: vi.fn(async () => {}) } as unknown as PostgresCommandCoordinator
-  const service = new ComputerGitHubService(pool, identity.mainId, () => endpoint, commands)
+  const local = { handle: vi.fn(async () => { throw new Error('Device requests must use the captured remote handler.') }) }
+  const service = new ComputerGitHubService(pool, identity.mainId, () => endpoint, commands, { local })
   const access = new PostgresAccessService(pool)
   const authenticate = vi.spyOn(access, 'authenticate').mockImplementation(async token => token === 'writer'
     ? caller : { ...caller, grants: [{ actions: ['settings:read'], scope: {} }] })
@@ -399,8 +407,10 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
     }
     const writer = await connectMcp('writer')
     const reader = await connectMcp('reader')
+    const originalReady = waitForReady(identity.workerInstallationId)
     original.start()
-    await vi.waitFor(() => expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined())
+    await originalReady
+    expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined()
     const args = { target, expectedAccount: 'owner' }
     expect((await reader.callTool({ name: 'computer_github_logout', arguments: args })).isError).toBe(true)
     expect(mutate).not.toHaveBeenCalled()
@@ -409,10 +419,12 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
     await original.stop()
     auth.authenticateDevice.mockResolvedValue({ ...principal, ...replacementIdentity })
     registrationIdentity = replacementIdentity
+    const replacementReady = waitForReady(replacementIdentity.workerInstallationId)
     replacement.start()
-    await vi.waitFor(() => expect(endpoint.currentBinding(identity.deviceId))
-      .toMatchObject({ workerInstallationId: replacementIdentity.workerInstallationId }))
-    await vi.waitFor(() => expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined())
+    await replacementReady
+    expect(endpoint.currentBinding(identity.deviceId))
+      .toMatchObject({ workerInstallationId: replacementIdentity.workerInstallationId })
+    expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined()
     release()
     expect((await pending).isError).toBe(true)
     expect(mutate).not.toHaveBeenCalled()
@@ -428,6 +440,7 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
       applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } })
     expect(retry.isError).toBe(true)
     expect(JSON.stringify(retry)).toContain('GITHUB_ACCOUNT_CHANGED')
+    expect(local.handle).not.toHaveBeenCalled()
   } finally {
     release()
     await Promise.allSettled(clients.map(client => client.close()))
