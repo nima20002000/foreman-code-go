@@ -39,6 +39,7 @@ jobs:
             export PATH="$bin:$PATH"
             corepack enable
             node --version
+      - run: scripts/ci-suite.sh start
       - restore_cache:
           keys:
             - pnpm-{{ checksum "pnpm-lock.yaml" }}
