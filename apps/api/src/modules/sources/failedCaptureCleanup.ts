@@ -51,13 +51,6 @@ async function reconcileCapture(sql: pg.PoolClient, store: CaptureStore, candida
   const replayable = await canReplay(sql, store, candidate, row)
   const bytes = await store.retainedCaptureBytes(candidate.snapshot_id)
   await sql.query('begin')
-  const command = (await sql.query<{ locked: boolean }>(
-    'select pg_try_advisory_xact_lock(hashtext($1)) as locked',
-    [`command:${candidate.requested_by}:source.approve:${candidate.command_id}`])).rows[0]
-  if (!command?.locked) {
-    await sql.query('commit')
-    return
-  }
   const storage = (await sql.query<{ locked: boolean }>(
     'select pg_try_advisory_xact_lock(hashtext($1)) as locked',
     [`source-storage:${row.record.scopeId}`])).rows[0]
@@ -84,7 +77,7 @@ async function reconcileCapture(sql: pg.PoolClient, store: CaptureStore, candida
   await sql.query('commit')
 }
 
-/** The cleanup claim spans commits; filesystem locks also exclude writers during database disconnects. */
+/** Command ownership spans commits; filesystem locks also exclude writers during database disconnects. */
 export async function reconcileFailedCaptures(pool: pg.Pool, store: CaptureStore,
   report: (error: unknown) => void, scopeId?: string): Promise<void> {
   const candidates = await pool.query<Candidate>(`select a.snapshot_id,a.requested_by,a.command_id
@@ -97,14 +90,14 @@ export async function reconcileFailedCaptures(pool: pg.Pool, store: CaptureStore
     order by (r.state='preparing') desc,a.created_at limit 100`, [scopeId ?? null, SOURCE_RETENTION_SECONDS])
   for (const candidate of candidates.rows) {
     const sql = await pool.connect()
-    const captureLock = `source-capture-reconcile:${candidate.snapshot_id}`
-    let captureLocked = false
+    const commandLock = `command:${candidate.requested_by}:source.approve:${candidate.command_id}`
+    let commandLocked = false
     let releaseError: Error | undefined
     try {
       const lock = (await sql.query<{ locked: boolean }>(
-        'select pg_try_advisory_lock(hashtext($1)) as locked', [captureLock])).rows[0]
-      captureLocked = lock?.locked === true
-      if (captureLocked) {
+        'select pg_try_advisory_lock(hashtext($1)) as locked', [commandLock])).rows[0]
+      commandLocked = lock?.locked === true
+      if (commandLocked) {
         const row = await readCapture(sql, candidate)
         if (row) {
           await store.withCaptureLock(candidate.snapshot_id,
@@ -115,9 +108,9 @@ export async function reconcileFailedCaptures(pool: pg.Pool, store: CaptureStore
       await sql.query('rollback')
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'SOURCE_CLAIM_LOCK_FAILED') report(error)
     } finally {
-      if (captureLocked) {
+      if (commandLocked) {
         try {
-          await sql.query('select pg_advisory_unlock(hashtext($1))', [captureLock])
+          await sql.query('select pg_advisory_unlock(hashtext($1))', [commandLock])
         } catch (error) {
           releaseError = error instanceof Error ? error : new Error('Capture reconciliation unlock failed.')
         }
