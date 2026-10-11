@@ -1,5 +1,6 @@
 import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
+import { cacheToolSchemaConversions } from '../shared/schemaCache.js'
 import { z } from 'zod'
 
 import { invokeAppTool } from './invoke.js'
@@ -25,6 +26,7 @@ const readAnnotations = {
 
 export async function createAppMcpServer(context: AppRequestContext): Promise<McpServer> {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
+  cacheToolSchemaConversions(server)
   await registerAppTools(server, context)
   return server
 }

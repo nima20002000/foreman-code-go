@@ -16,6 +16,7 @@ import { registerOperatorTools } from '../operator/server.js'
 import { installOperatorPresentation } from '../operator/presentation.js'
 import type { OperatorServices } from '../operator/types.js'
 import { toolFailure } from '../shared/results.js'
+import { cacheToolSchemaConversions } from '../shared/schemaCache.js'
 import { MCP_ROLE_LABELS, roleInstructions, roleList, toolRoles, type McpRole } from './roles.js'
 
 export interface GraphqlMcpContext {
@@ -108,6 +109,7 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
 /** One server for every role. Each caller lists only its enabled tools: the existing, grant-checked implementations. */
 export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promise<McpServer> {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' }, { instructions: roleInstructions(context.role) })
+  cacheToolSchemaConversions(server)
   paginateToolLists(server)
   if (context.role === 'operator') {
     if (context.operator) {

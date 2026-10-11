@@ -17,6 +17,7 @@ import { registerSourceTools } from '../../modules/sources/mcp.js'
 import { registerFileReferenceTools } from './tools/fileReferences.js'
 import { McpServer } from '@modelcontextprotocol/server'
 import { paginateToolLists } from '../toolListPagination.js'
+import { cacheToolSchemaConversions } from '../shared/schemaCache.js'
 import { installOperatorPresentation, type OperatorCatalog } from './presentation.js'
 import { registerToolSchemaLookup } from './tools/toolSchema.js'
 
@@ -44,6 +45,7 @@ import { registerBugReportTools } from './tools/bugReports.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
+  cacheToolSchemaConversions(server)
   paginateToolLists(server)
   const catalog = installOperatorPresentation(server)
   registerOperatorTools(server, context, catalog)
