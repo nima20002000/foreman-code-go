@@ -5,7 +5,7 @@ import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOu
   integrationPartition, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -22,6 +22,17 @@ import { genericCiRepository } from './helpers/genericCiRepository.js'
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { insertRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
+
+let database: Awaited<ReturnType<typeof migratedDatabase>>
+beforeAll(async () => { database = await migratedDatabase() }, 60_000)
+afterAll(async () => { await database?.close() }, 60_000)
+
+// Dispatch and learned timings are global; each case starts with an empty CI queue and history.
+beforeEach(async () => {
+  await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
+})
 
 // CircleCI's Bash startup prepends its real package managers ahead of the fixture shims.
 beforeEach(() => { vi.stubEnv('BASH_ENV', '') })
@@ -93,15 +104,21 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
 async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory
   cloud?: boolean | { github: number; circleci: number }; agent?: boolean
   repositoryRunner?: { commits: CiCommits; endpoint: HostCiEndpoint } } = {}) {
-  const saved = makeCurrentWorkflowFixture(randomUUID())
-  if (options.agent) {
+  const saved = options.agent ? makeCurrentWorkflowFixture(randomUUID()) : undefined
+  if (saved) {
     saved.configurations = saved.configurations.map(configuration => ({ ...configuration,
       graphqlTools: ['context_get' as const, 'ci_run' as const, 'ci_get' as const] }))
   }
-  const runtime = await codexApprovalRuntime('user', { fixture: saved })
-  const workspaceId = runtime.f.scope.workspaceId
+  const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved }) : undefined
+  const db = runtime?.db ?? database
+  const access = runtime?.access ?? new PostgresAccessService(db.pool)
+  const workspaceId = runtime?.f.scope.workspaceId ?? randomUUID()
+  if (!runtime) {
+    await db.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+      [workspaceId, JSON.stringify({ id: workspaceId, name: 'CI workspace' })])
+  }
   if (options.repository !== false) {
-    await runtime.db.pool.query(`update workspaces set record=record || '{"repository":{"provider":"github","owner":"octo","name":"site","defaultBranch":"main"}}'::jsonb where id=$1`,
+    await db.pool.query(`update workspaces set record=record || '{"repository":{"provider":"github","owner":"octo","name":"site","defaultBranch":"main"}}'::jsonb where id=$1`,
       [workspaceId])
   }
   const published: string[] = []
@@ -115,19 +132,19 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     return resolved
   } }
   const computers = fakeComputers(options.github, options.cloud)
-  const commands = new PostgresCommandCoordinator(runtime.db.pool)
-  const ci = new HostCiService(runtime.db.pool, commands, new RunCiAuthority(runtime.db.pool), commits,
+  const commands = new PostgresCommandCoordinator(db.pool)
+  const ci = new HostCiService(db.pool, commands, new RunCiAuthority(db.pool), commits,
     options.repositoryRunner?.endpoint ?? computers.endpoint)
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    operator: { access: runtime.access, services: { commands, ci } as unknown as OperatorServices },
-    ...(options.agent ? { appMcp: { access: runtime.access, commands,
-      interactions: new PostgresAppInteractionService(runtime.db.pool, runtime.repository, commands) } } : {}) })
+    operator: { access, services: { commands, ci } as unknown as OperatorServices },
+    ...(runtime ? { appMcp: { access, commands,
+      interactions: new PostgresAppInteractionService(db.pool, runtime.repository, commands) } } : {}) })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const clients: Client[] = []
-  const credential = (actions: ManagementAction[]) => runtime.access.issue({ name: 'CI HTTP caller', audience: 'operator',
+  const credential = (actions: ManagementAction[]) => access.issue({ name: 'CI HTTP caller', audience: 'operator',
     expiresAt: new Date(Date.now() + 600_000), grants: [{ actions, scope: { workspaceIds: [workspaceId] } }] })
   const connect = async (actions: ManagementAction[], scope: Record<string, unknown> = { workspaceIds: [workspaceId] }) => {
-    const issued = await runtime.access.issue({ name: 'CI Operator', audience: 'operator',
+    const issued = await access.issue({ name: 'CI Operator', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ actions, scope }] })
     const client = new Client({ name: 'host-ci-test', version: '1' })
     clients.push(client)
@@ -140,10 +157,10 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()
-    await runtime.close()
+    await runtime?.close()
   }
   let agent: Client | undefined
-  if (options.agent) {
+  if (runtime) {
     try {
       await runtime.db.pool.query(`update management_principals set grants=grants || $2::jsonb where id=$1`,
         [runtime.authorizationPrincipalId, JSON.stringify([{ actions: [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS],
@@ -194,8 +211,8 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     return decodeMcpToolResult(result)
   }
   return { ...computers, ci, app, credential, workspaceId, operator, agent,
-    authorizationPrincipalId: runtime.authorizationPrincipalId,
-    connect, call, value, published, pool: runtime.db.pool, close }
+    authorizationPrincipalId: runtime?.authorizationPrincipalId,
+    connect, call, value, published, pool: db.pool, close }
 }
 
 it.each([
