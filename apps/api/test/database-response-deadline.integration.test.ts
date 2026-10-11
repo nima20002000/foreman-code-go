@@ -1,4 +1,5 @@
 import { channel } from 'node:diagnostics_channel'
+import { lookup } from 'node:dns/promises'
 import type { Socket } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -7,8 +8,11 @@ import { createPool } from '../src/infrastructure/pool.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { ownedTestDatabaseUrl } from './helpers/testResources.js'
 
-function holdPostgresResponses(connectionString: string) {
+async function holdPostgresResponses(connectionString: string) {
   const target = new URL(connectionString)
+  // Socket addresses are resolved IPs, even when the endpoint uses localhost.
+  const hostname = target.hostname.replace(/^\[|\]$/g, '')
+  const addresses = new Set((await lookup(hostname, { all: true })).map(result => result.address))
   const connections = channel('net.client.socket')
   const sockets = new Set<Socket>()
   const pending = new Map<Socket, () => void>()
@@ -17,7 +21,8 @@ function holdPostgresResponses(connectionString: string) {
     const { socket } = message as { socket: Socket }
     const connected = () => {
       pending.delete(socket)
-      if (socket.remoteAddress !== target.hostname || socket.remotePort !== Number(target.port || 5432)) return
+      if (!socket.remoteAddress || !addresses.has(socket.remoteAddress)
+        || socket.remotePort !== Number(target.port || 5432)) return
       current = socket
       sockets.add(socket)
       socket.once('close', () => sockets.delete(socket))
@@ -51,7 +56,7 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
     const url = new URL(ownedTestDatabaseUrl())
     url.searchParams.set('options', `-c search_path=${fixture.schema}`)
     // Hold the real connection's incoming bytes; the dedicated endpoint and guard stay unchanged.
-    const responses = holdPostgresResponses(url.toString())
+    const responses = await holdPostgresResponses(url.toString())
     try {
       const pool = createPool({ connectionString: url.toString(), maxConnections: 1,
         connectionTimeoutMs: 2000, queryTimeoutMs: 1000 }, 'database-response-deadline')
