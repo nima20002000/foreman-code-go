@@ -387,19 +387,12 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     }])
     expect(summary).toMatchObject({ environment: { runtime: 'isolated-job',
       capabilities: { nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false } },
-      outcome: 'incomplete', completeness: 'partial', expectedPortions: 10, completedPortions: 0,
+      outcome: 'incomplete', completeness: 'partial', expectedPortions: selected.length, completedPortions: 0,
       totals: { total: 0, passed: 0, failed: 0, skipped: 0 },
       files: [
         { complete: false, requiredCapabilities: ['nativeCgroupDelegation'] },
         { complete: false, requiredCapabilities: ['testDatabaseStartup'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
-        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
+        ...selected.slice(2).map(file => ({ file, complete: false, requiredCapabilities: ['installedWorkerHost'] })),
       ] })
   })
   it.each([7, 0])('reads reports after a failed qualification with command exit %i over MCP after cleanup', async exitCode => {
