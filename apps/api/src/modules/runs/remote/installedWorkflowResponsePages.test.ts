@@ -1,4 +1,4 @@
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -25,15 +25,21 @@ class Socket extends EventEmitter {
   peer?: Socket
   closed = false
   frames: string[] = []
+  private readonly deliveries = new Set<ReturnType<typeof setImmediate>>()
   send(frame: string) {
     this.frames.push(frame)
-    queueMicrotask(() => {
+    // Match socket I/O scheduling so continuation traffic yields to heartbeat timers.
+    const delivery = setImmediate(() => {
+      this.deliveries.delete(delivery)
       if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(frame), false)
     })
+    this.deliveries.add(delivery)
   }
   close() {
     if (this.closed) return
     this.closed = true
+    for (const delivery of this.deliveries) clearImmediate(delivery)
+    this.deliveries.clear()
     this.emit('close')
     this.peer?.close()
   }
@@ -105,7 +111,7 @@ function carrier(f: ReturnType<typeof fixture>, journal: RemoteOperationJournal)
   const worker = new DeviceApplicationChannel({ side: 'worker', binding: f.binding, socket: workerSocket,
     signal: parent.signal, extensions, registrations: [registration] })
   const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
-    worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
+    worker.run(workerSocket.messages[Symbol.asyncIterator](), 500)]
   for (const task of tasks) void task.catch(() => {})
   const committed: RemoteOperationReceipt[] = []
   const manager = remoteNativeManager({ harness: 'codex', agentId: f.start.request.configuration.agentId,
@@ -139,11 +145,58 @@ function carrier(f: ReturnType<typeof fixture>, journal: RemoteOperationJournal)
       main.close()
       worker.close()
       await Promise.allSettled(tasks)
+      await Promise.all([main.join(), worker.join()])
       pages.clear()
     } }
 }
 
 describe('installed workflow receipt transfer', () => {
+  it('delivers carrier frames on an I/O turn after queued microtasks', async () => {
+    const sender = new Socket()
+    const receiver = new Socket()
+    sender.peer = receiver
+    receiver.peer = sender
+    const observed = vi.fn()
+    receiver.on('message', observed)
+    const delivered = once(receiver, 'message')
+    try {
+      sender.send('frame')
+      await Promise.resolve()
+      expect(observed).not.toHaveBeenCalled()
+      expect((await delivered)[0]).toEqual(Buffer.from('frame'))
+      expect(observed).toHaveBeenCalledOnce()
+    } finally {
+      sender.close()
+    }
+  })
+
+  it('keeps the authenticated receipt carrier alive across heartbeat boundaries', async () => {
+    const f = fixture()
+    const root = await mkdtemp(join(tmpdir(), 'workflow-receipt-heartbeat-'))
+    const journal = await RemoteOperationJournal.open(join(root, 'journal.json'), { initializeNewInstallation: true })
+    let channel: ReturnType<typeof carrier> | undefined
+    try {
+      await journal.accept(f.intent, f.connection, randomUUID())
+      await journal.reserveEntry(f.intent.operationId)
+      await journal.acknowledgeStart(f.intent.operationId, f.native)
+      vi.useFakeTimers()
+      channel = carrier(f, journal)
+      const session = channel.manager.createSession({ request: f.start.request, correlationId: f.history.correlationId })
+        .then(value => ({ value }), error => ({ error }))
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(await session).toEqual({ value: f.session })
+      expect(channel.rawWorker.frames.filter(frame => JSON.parse(frame).type === 'ping').length).toBeGreaterThan(3)
+      expect(channel.rawMain.frames.filter(frame => JSON.parse(frame).type === 'pong').length).toBeGreaterThan(3)
+      expect(channel.rawMain.closed).toBe(false)
+      expect(channel.rawWorker.closed).toBe(false)
+    } finally {
+      await channel?.close()
+      vi.useRealTimers()
+      await journal.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it.each(['terminal', 'retained reviewer'] as const)(
     'preserves a large %s receipt through the authenticated carrier and journal restart', async kind => {
       const f = fixture()
