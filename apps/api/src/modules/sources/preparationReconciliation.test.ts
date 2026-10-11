@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { mkdtemp, rm, readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { SourcePreparationReconcileInputSchema } from '@foreman-code/contracts/source-admission'
@@ -18,7 +19,7 @@ vi.mock('node:fs/promises', async importOriginal => {
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
 async function fixture(copy = true) {
-  const directory = await mkdtemp('/tmp/jobprep-reconcile-'); directories.push(directory)
+  const directory = await mkdtemp(join(tmpdir(), 'jobprep-reconcile-')); directories.push(directory)
   const handle = await openPrivateRoot(directory), filesystem = await identity(handle); await handle.close()
   const bytes = Buffer.from('retained source evidence'), manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
     capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip', entries: [{ path: 'source.txt', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }], deletions: [] })
@@ -93,13 +94,45 @@ it('does not accept an empty task set while an original namespace child is still
     expect(closure.childrenClosed).toBe(true)
   })
 })
-it.each(['exited', 'live'] as const)('checks process closure after denied descriptor reads (%s process)', async state => {
+it.each(['argument', 'descriptor'] as const)('retains a claim while a child holds a source %s', async reference => {
+  const f = await fixture()
+  const source = join(f.directory, f.owner.record!.receipt.materializationId, 'tree/source.txt')
+  const script = `process.on('message', path => {
+    require('node:fs').openSync(path, 'r')
+    process.send('ready')
+  })`
+  const child = spawn(process.execPath, ['-e', script, ...(reference === 'argument' ? [source] : [])], {
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  })
+  const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
+  try {
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+    const ready = new Promise<void>(resolve => child.once('message', () => resolve()))
+    child.send(source)
+    await ready
+    await expect(reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize))
+      .rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+    expect(await readdir(f.directory)).toContain(f.claimName)
+  } finally {
+    child.kill('SIGKILL')
+    await closed
+  }
+  const closure = await reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize)
+  expect(closure).toMatchObject({ childrenClosed: true, claimReleased: true, evidencePreserved: true })
+  expect(await readFile(source)).toEqual(f.bytes)
+})
+it.each([
+  { state: 'exited', code: 'EACCES' },
+  { state: 'live', code: 'EACCES' },
+  { state: 'exited', code: 'ENOENT' },
+  { state: 'live', code: 'EIO' },
+] as const)('checks unrelated process descriptor errors ($state, $code)', async ({ state, code }) => {
   const f = await fixture(false)
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
   const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
   await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
   const descriptors = `/proc/${child.pid}/fd`
-  const denied = Object.assign(new Error('Descriptor inspection denied'), { code: 'EACCES' })
+  const failure = Object.assign(new Error('Descriptor inspection failed'), { code })
   const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
   const inspect = vi.mocked(readdir).mockImplementation(async (...args) => {
     if (String(args[0]) === descriptors) {
@@ -107,18 +140,19 @@ it.each(['exited', 'live'] as const)('checks process closure after denied descri
         child.kill('SIGKILL')
         await closed
       }
-      throw denied
+      throw failure
     }
     return original.readdir(...args)
   })
   try {
-    if (state === 'exited') {
+    if (code !== 'EIO') {
       await expect(preparationChildrenClosed(f.directory)).resolves.toBe(true)
     } else {
       await expect(preparationChildrenClosed(f.directory)).rejects.toMatchObject({
-        code: 'source-reconciliation-unconfirmed', cause: denied,
+        code: 'source-reconciliation-unconfirmed', cause: failure,
       })
     }
+    expect(inspect).toHaveBeenCalledWith(descriptors)
   } finally {
     inspect.mockImplementation(original.readdir)
     child.kill('SIGKILL')
