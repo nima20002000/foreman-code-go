@@ -31,6 +31,7 @@ it('reclaims abandoned owned and preparing copies and restores placement through
   const before = await client.callTool({ name: 'job_queue_get', arguments: { workspaceId: f.workspaceId, ticketId: pending.ticket.id } })
   expect(before.isError, JSON.stringify(before)).not.toBe(true)
   expect(JobQueueTicketSchema.parse((decodeMcpToolResult(before) as { ticket: unknown }).ticket).waitingReasons).toEqual(['busy'])
+  expect(f.accept).not.toHaveBeenCalled()
   const denied = await f.access.issue({ name: 'Unscoped fixture reader', audience: 'operator',
     expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['jobs:read'], scope: { workspaceIds: ['another-workspace'] } }] })
   const readOnly = await f.connect(denied.token)

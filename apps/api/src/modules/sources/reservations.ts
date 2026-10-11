@@ -15,6 +15,7 @@ export { SOURCE_AGGREGATE_LIMITS } from './storageCapacity.js'
 
 export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number;
   preparation?: SourceOperationOwner; reclamation?: SourceReservationReclamation;
+  storageCapacity?: SourceStorageCapacity;
   retainedSharedTree?: { id: string; bytes: number } }
 export async function requireUnreclaimedSourceOperation(sql: GraphSqlClient, operationId: string): Promise<void> {
   const fenced = await sql.query(`select 1 from source_storage_reservations
@@ -87,7 +88,8 @@ export class PostgresSourceReservations {
       const { preparation: requestedPreparation, retainedSharedTree: _requestedTree, ...requested } = request
       void _retainedSharedTree
       void _requestedTree
-      if (!isDeepStrictEqual({ ...existingRequest, reservationId: undefined }, { ...requested, reservationId: undefined })
+      if (!isDeepStrictEqual({ ...existingRequest, reservationId: undefined, storageCapacity: undefined },
+        { ...requested, reservationId: undefined, storageCapacity: undefined })
         || existingPreparation && requestedPreparation && !isDeepStrictEqual(
           { ...existingPreparation, identity: { ...existingPreparation.identity, expiresAt: null } },
           { ...requestedPreparation, identity: { ...requestedPreparation.identity, expiresAt: null } })
@@ -133,7 +135,7 @@ export class PostgresSourceReservations {
       || Number(totals.preparing) >= limits.preparing
       || (request.ownerKind === 'materialization' && activeMaterializations >= capacity.materializations))
       throw new DomainError('SOURCE_CAPACITY', 'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409)
-    const reservation = { ...request, reservationId: randomUUID() }
+    const reservation = { ...request, reservationId: randomUUID(), storageCapacity: measured }
     await sql.query(`insert into source_storage_reservations(reservation_id,scope_id,owner_kind,owner_id,reserved_bytes,state,record)
       values($1,$2,$3,$4,$5,'preparing',$6::jsonb)`, [reservation.reservationId, request.scopeId, request.ownerKind, request.ownerId, request.reservedBytes, JSON.stringify(reservation)])
     return reservation

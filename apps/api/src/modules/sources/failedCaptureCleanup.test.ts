@@ -35,11 +35,12 @@ function fixture() {
     connect: async () => ({ query, release }),
   } as unknown as pg.Pool
   const store = { retainedCaptureBytes: vi.fn(async () => 8192),
-    withCaptureLock: vi.fn(async <T>(_snapshotId: string, work: () => Promise<T>): Promise<T> => work()),
+    withCaptureLock: async <T>(_snapshotId: string, work: () => Promise<T>): Promise<T> => work(),
     remove: vi.fn(async () => {}),
     manifest: vi.fn(async (): Promise<never> => { throw Object.assign(new Error('Capture not finalized'), { code: 'ENOENT' }) }) }
+  const withCaptureLock = vi.spyOn(store, 'withCaptureLock')
   const report = vi.fn()
-  return { pool, state, query, release, store, report }
+  return { pool, state, query, release, store, withCaptureLock, report }
 }
 
 it('corrects a failed capture reservation under its original command lock and retains metadata', async () => {
@@ -72,7 +73,7 @@ it('keeps an interrupted capture fully charged while a filesystem writer still o
   const f = fixture()
   f.state.approvalState = 'capturing'
   f.state.reservationState = 'preparing'
-  f.store.withCaptureLock.mockRejectedValueOnce(Object.assign(new Error('Live capture writer'),
+  f.withCaptureLock.mockRejectedValueOnce(Object.assign(new Error('Live capture writer'),
     { code: 'SOURCE_CLAIM_LOCK_FAILED' }))
   await reconcileFailedCaptures(f.pool, f.store, f.report)
   expect(f.store.manifest).not.toHaveBeenCalled()

@@ -21,6 +21,8 @@ import { DomainError } from '../errors.js'
 import { canonical, type JobSql } from './repository.js'
 import { matchesRuntimePolicy } from './runtimeSelection.js'
 import { SOURCE_AGGREGATE_LIMITS, verificationSourceStorageBytes } from '../sources/reservations.js'
+import { SourceStorageCapacitySchema, type SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
+import { sourceStorageLimits } from '../sources/storageCapacity.js'
 import { JobComputerEligibilityReasonSchema, type JobComputerEligibility, type JobPlacementIntent } from '@foreman-code/contracts/job-admission'
 
 export interface JobPreparationIdentity { executionId: string; attemptId: string; operationId: string }
@@ -337,31 +339,47 @@ export class JobComputerSelection {
   }
   private async fits(sql: JobSql, candidate: EnrolledCandidate): Promise<JobComputerCapacityDecision> {
     const storage = (await sql.query<{ bytes: string; verification_bytes: string; materializations: string;
-      verification_materializations: string }>(`select
+      verification_materializations: string; pending_bytes: string; preparing: string;
+      capacity: SourceStorageCapacity | null }>(`select
+      (select r.record->'storageCapacity' from source_storage_reservations r
+        where r.scope_id=$1 and r.record ? 'storageCapacity'
+        order by (r.record #>> '{storageCapacity,observedAt}')::timestamptz desc limit 1) as capacity,
       coalesce(sum(bytes) filter(where not verification),0)::text as bytes,
       coalesce(sum(bytes) filter(where verification),0)::text as verification_bytes,
       coalesce(sum(materializations) filter(where not verification),0)::text as materializations,
-      coalesce(sum(materializations) filter(where verification),0)::text as verification_materializations from (
+      coalesce(sum(materializations) filter(where verification),0)::text as verification_materializations,
+      coalesce(sum(pending_bytes),0)::text as pending_bytes,
+      coalesce(sum(preparing),0)::text as preparing from (
         select r.reserved_bytes as bytes,case when r.owner_kind='materialization' and r.state in ('preparing','owned','uncertain')
           then 1 else 0 end as materializations,exists(select 1 from job_computer_selections owner
-            where r.owner_kind='materialization' and owner.operation_id=r.owner_id and owner.spec ? 'verification') as verification
+            where r.owner_kind='materialization' and owner.operation_id=r.owner_id and owner.spec ? 'verification') as verification,
+          case when r.state in ('preparing','owned','uncertain') then r.reserved_bytes else 0 end as pending_bytes,
+          case when r.state='preparing' then 1 else 0 end as preparing
           from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed'
-        union all select source_bytes,1,s.spec ? 'verification' from job_computer_selections s
+        union all select source_bytes,1,s.spec ? 'verification',source_bytes,1 from job_computer_selections s
           where s.source_scope=$1 and s.released_at is null
           and not exists(select 1 from source_storage_reservations r where r.owner_kind='materialization' and r.owner_id=s.operation_id)
       ) usage`, [candidate.sourceReservation.scopeId])).rows[0]!
-    let sourceSlots: number = SOURCE_AGGREGATE_LIMITS.materializations
+    const capacity = storage.capacity ? SourceStorageCapacitySchema.parse(storage.capacity) : null
+    const age = capacity ? Date.now() - Date.parse(capacity.observedAt) : null
+    // Placement may defer using a recent host reading; reservation still measures its allocated host again.
+    const limits = capacity && age !== null && age >= -1000 && age <= 10_000
+      ? sourceStorageLimits(capacity) : null
+    let sourceSlots: number = limits?.materializations ?? SOURCE_AGGREGATE_LIMITS.materializations
     if (candidate.profile.schemaVersion === 2) {
       sourceSlots = candidate.profile.root.selection.hostRef.kind === 'main'
         ? JOB_VERIFICATION_OWNER_CONFIGURATION.mainConcurrentJobs : JOB_VERIFICATION_OWNER_CONFIGURATION.laptopConcurrentJobs
     }
     const sourceBytes = candidate.profile.schemaVersion === 2
-      ? verificationSourceStorageBytes(candidate.profile) : SOURCE_AGGREGATE_LIMITS.bytes
+      ? verificationSourceStorageBytes(candidate.profile) : limits?.bytes ?? SOURCE_AGGREGATE_LIMITS.bytes
     const usedBytes = candidate.profile.schemaVersion === 2 ? Number(storage.verification_bytes) : Number(storage.bytes)
     const usedSlots = candidate.profile.schemaVersion === 2
       ? Number(storage.verification_materializations) : Number(storage.materializations)
+    const hostStorageFull = limits !== null
+      && (Number(storage.pending_bytes) + candidate.sourceReservation.reservedBytes > limits.availableBytes
+        || Number(storage.preparing) >= limits.preparing)
     if (usedBytes + candidate.sourceReservation.reservedBytes > sourceBytes
-      || usedSlots >= sourceSlots) return { fits: false, reason: 'busy' }
+      || usedSlots >= sourceSlots || hostStorageFull) return { fits: false, reason: 'busy' }
     return jobComputerCapacityDecision(sql, candidate.spec.target, candidate.profile, this.availableMemory,
       candidate.preference.buildAllowancePercent)
   }

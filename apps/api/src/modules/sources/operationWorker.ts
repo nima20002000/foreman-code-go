@@ -138,11 +138,6 @@ export class SourceOperationWorkerService {
         }
       }
       await verifyApprovedRootAllowlist(allowlist)
-      if (request.operation === 'sources.capacity') {
-        const capacity = await readSourceStorageCapacity(owner.root.binding.canonicalPath, owner.root.binding.filesystem)
-        await this.authority(request, context)
-        return SourceOperationResponseSchema.parse({ version: 1, operation: 'sources.capacity', capacity })
-      }
       const result = await reclaimSourceReservation(grant, {
         authorize: async () => {
           context.signal.throwIfAborted()
@@ -207,6 +202,11 @@ export class SourceOperationWorkerService {
           throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Current source ownership changed during the filesystem operation.')
         }
         owner = current
+      }
+      if (request.operation === 'sources.capacity') {
+        const capacity = await readSourceStorageCapacity(owner.root.binding.canonicalPath, owner.root.binding.filesystem)
+        await reauthorize()
+        return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, capacity })
       }
       const reader = null
       const quotaPool = owner.quotaRequired || owner.record?.receipt.quota

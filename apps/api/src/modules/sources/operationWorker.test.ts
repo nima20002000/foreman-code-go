@@ -82,6 +82,7 @@ async function fixture() {
 
 it('measures only the authorized Worker filesystem without source writes or publication', async () => {
   const f = await fixture()
+  f.owner.quotaRequired = true
   const request = { version: 1, operation: 'sources.capacity', root: f.root,
     attempt: f.owner.attempt, identity: f.owner.identity }
   const response = await f.service.handle(request, f.context)
@@ -92,12 +93,28 @@ it('measures only the authorized Worker filesystem without source writes or publ
   expect(response.capacity.availableBytes).toBeLessThanOrEqual(response.capacity.totalBytes)
   expect(response.capacity.cpuCount).toBeGreaterThan(0)
   expect(f.git).not.toHaveBeenCalled()
+  expect(f.quotaPoolFor).not.toHaveBeenCalled()
+  expect(f.currentOwner).toHaveBeenCalledTimes(2)
   expect(f.owner.record).toBeNull()
   await expect(f.service.handle({ ...request, root: { ...f.root,
     binding: { ...f.root.binding, filesystem: { ...f.root.binding.filesystem, device: '999999' } } } },
   f.context)).rejects.toMatchObject({ code: 'SOURCE_OPERATION_AUTHORITY_CONFLICT' })
   f.currentOwner.mockRejectedValueOnce(new Error('Allocation denied'))
   await expect(f.service.handle(request, f.context)).rejects.toThrow('Allocation denied')
+})
+
+it('rejects capacity readback when the source owner changes during measurement', async () => {
+  const f = await fixture()
+  const roots = await f.readRoots()
+  f.readRoots.mockImplementation(async () => {
+    f.owner.quotaRequired = true
+    return roots
+  })
+  await expect(f.service.handle({ version: 1, operation: 'sources.capacity', root: f.root,
+    attempt: f.owner.attempt, identity: f.owner.identity }, f.context))
+    .rejects.toMatchObject({ code: 'SOURCE_OPERATION_AUTHORITY_CONFLICT' })
+  expect(f.git).not.toHaveBeenCalled()
+  expect(f.quotaPoolFor).not.toHaveBeenCalled()
 })
 
 it('allows concurrent host probes for several Agents without the former two-request bottleneck', async () => {

@@ -4,6 +4,7 @@ import { sourceMaterializationBytes } from '../sources/footprint.js'
 import { SOURCE_AGGREGATE_LIMITS } from '../sources/reservations.js'
 import { describe, expect, it, vi } from 'vitest'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
+import { sourceStorageCapacityFixture } from '../../../test/helpers/sourceStorageCapacityFixture.js'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 import { JobDefinitionRecordSchema, jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -276,6 +277,47 @@ it.each([false, true])('checks only the requesting source pool during placement 
   if (verification) storage.verification_materializations = '2'
   else storage.materializations = String(SOURCE_AGGREGATE_LIMITS.materializations)
   expect(await validate()).toMatchObject({ valid: false, canQueue: true, reasons: ['busy'] })
+})
+
+function measuredSourcePlacement() {
+  const { candidate, auto } = buildComputerFixture(mainId, 'workspace-fixture')
+  const capacity = sourceStorageCapacityFixture()
+  const storage = { capacity, bytes: '0', verification_bytes: '0', materializations: '0',
+    verification_materializations: '0', pending_bytes: '0', preparing: '0' }
+  const preference = { target: buildComputerTarget(candidate.spec.target), revision: 1, buildEnabled: true,
+    buildPriority: 100, buildAllowancePercent: 100 }
+  const selection = new JobComputerSelection({ preference: async () => preference } as unknown as BuildComputerSettings,
+    { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) },
+    { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
+  const sql = { query: async (_text: string, values?: unknown[]) => {
+    const rows = values?.[0] === candidate.sourceReservation.scopeId ? [storage] : []
+    return { rowCount: rows.length, rows }
+  } } as unknown as JobSql
+  const validate = () => selection.validateRequest(sql, {} as ManagementPrincipal, candidate.profile.workspaceId, auto)
+  return { capacity, storage, validate }
+}
+
+it('waits at the measured source slot limit and restores eligibility after reclamation', async () => {
+  const f = measuredSourcePlacement()
+  f.storage.materializations = '2'
+  expect(await f.validate()).toMatchObject({ valid: false, canQueue: true, reasons: ['busy'] })
+  f.storage.materializations = '0'
+  expect(await f.validate()).toEqual({ valid: true, canQueue: true, reasons: [], sideEffects: false })
+})
+
+it.each(['bytes', 'free-space', 'preparing'] as const)('defers placement at the measured %s limit', async limit => {
+  const f = measuredSourcePlacement()
+  if (limit === 'bytes') f.storage.bytes = String(2 ** 30)
+  if (limit === 'free-space') f.storage.pending_bytes = String(3 * 2 ** 30)
+  if (limit === 'preparing') f.storage.preparing = '2'
+  expect(await f.validate()).toMatchObject({ valid: false, canQueue: true, reasons: ['busy'] })
+})
+
+it.each([-60_000, 60_000])('leaves final reservation to remeasure an out-of-date host reading (%s ms)', async offset => {
+  const f = measuredSourcePlacement()
+  f.capacity.observedAt = new Date(Date.now() + offset).toISOString()
+  f.storage.materializations = '2'
+  expect(await f.validate()).toEqual({ valid: true, canQueue: true, reasons: [], sideEffects: false })
 })
 
 
