@@ -43,7 +43,7 @@ export function registerNodePlacementChoicesRoutes(app: FastifyInstance, reads: 
 export function registerNodePlacementChoicesTool(server: McpServer, reads: import('./choicesService.js').NodePlacementChoicesService,
   principal: ManagementPrincipal, commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
   server.registerTool('workflow_node_placement_choices', {
-    description: 'List authorized computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Existing host bindings remain selectable after workspace location changes while their saved policy and source remain authorized. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Clear node placement through workflow_save_v3 to inherit the workflow default, or Main when no default is saved. Discovery does not grant execution; Save and Start revalidate revisions and authority.',
+    description: 'List computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Unusable roots remain visible as unavailable choices with a reason, including released sources. Existing host bindings remain selectable after workspace location changes while their saved policy and source remain authorized. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Clear node placement through workflow_save_v3 to inherit the workflow default, or Main when no default is saved. Discovery does not grant execution; Save and Start revalidate revisions and authority.',
     inputSchema: NodePlacementChoicesInputSchema, outputSchema: NodePlacementChoicesResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async input => {
@@ -64,6 +64,7 @@ export function placementCapabilityLimit(composed: boolean) {
         + 'workflow_node_placement_choices requires scoped workflows:read, workspace_locations:read, '
         + 'source_roots:read and sources:read, plus global harnesses:read. '
         + 'Existing host bindings retain their saved revisions across workspace location changes while authorized. '
+        + 'Unusable roots remain visible as unavailable choices with a reason, including released sources. '
         + 'Clear a saved node placement through workflow_save_v3 to inherit the workflow default, '
         + 'or Main when no default is saved. Requested branches and persisted native branch/CWD facts are separate. '
         + 'Accepted Run binding remains unchanged; remote execution requires the approved device dispatch bridge.'

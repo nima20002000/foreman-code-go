@@ -10,7 +10,8 @@ import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { JobDefinitionSchema, JobExecutionSchema, type JobExecution } from '@foreman-code/contracts/jobs'
 import { JobVerificationProfileSchema } from '@foreman-code/contracts/job-verification-runtime'
 import { ApprovedSourceSchema, SourceApproveResultSchema, SourceListResultSchema,
-  SourceRootRecordSchema, type ApprovedSource } from '@foreman-code/contracts/source-admission'
+  SourceRootRecordSchema, SourceRootListResultSchema, type ApprovedSource,
+  type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -265,6 +266,72 @@ it('keeps active Jobs, recent terminal use, longer Job retention and a qualified
   expect((await f.reservation(active)).state).toBe('reclaimed')
   expect((await f.read(pinned)).availability).toBe('retained')
 }, 60_000)
+
+it.each(['age', 'pressure'] as const)(
+  'retains current Main and Worker bindings without a workflow while releasing superseded bindings by %s', async mode => {
+    fixture = await setup()
+    const f = fixture
+    const age = mode === 'age' ? SOURCE_RETENTION_SECONDS * 3 : 0
+    const superseded = (await f.approve(age)).source
+    const current = (await f.approve(age)).source
+    const roots: SourceRootRecord[] = []
+    let workerRootId = ''
+    for (const host of ['main', 'device'] as const) {
+      const base = verificationCapacityFixture(host).root
+      const rootId = randomUUID()
+      if (host === 'device') workerRootId = rootId
+      const hostRef = { ...base.selection.hostRef, mainId: f.mainId }
+      await f.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
+        values($1,$2,$3,$4)`, [rootId, f.workspaceId, randomUUID(), host === 'main' ? 2 : 1])
+      for (const [index, source] of [superseded, current].entries()) {
+        const root = SourceRootRecordSchema.parse({ ...base, source: f.sourcePin(source),
+          selection: { ...base.selection, hostRef },
+          binding: { ...base.binding, rootId, bindingRevision: index + 1, mainId: f.mainId,
+            workspaceId: f.workspaceId, snapshotId: source.manifest.snapshotId,
+            manifestDigest: source.manifest.manifestDigest },
+          ownerPrincipalId: f.owner.principal.id, authorizedByPrincipalId: f.owner.principal.id,
+          boundAt: source.approvedAt })
+        await f.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
+          values($1,$2,$3,$4,$5::jsonb)`,
+        [rootId, index + 1, f.workspaceId, source.manifest.snapshotId, JSON.stringify(root)])
+        if (index === 1) roots.push(root)
+      }
+    }
+
+    await f.sources.releaseUnusedSnapshots(undefined, mode === 'pressure')
+
+    expect((await f.read(superseded)).availability).toBe('retained')
+    expect((await f.reservation(superseded)).state).toBe('retained')
+    expect((await f.read(current)).availability).toBe('retained')
+    await f.pool.query('update source_root_catalog set current_binding_revision=2 where root_id=$1', [workerRootId])
+    await f.sources.releaseUnusedSnapshots(undefined, mode === 'pressure')
+
+    expect((await f.read(current)).manifest).toEqual(current.manifest)
+    expect((await f.reservation(current)).state).toBe('retained')
+    expect(await f.store.retainedCaptureBytes(current.manifest.snapshotId)).toBeGreaterThan(0)
+    expect((await f.reservation(superseded)).state).toBe('reclaimed')
+    expect(await f.store.retainedCaptureBytes(superseded.manifest.snapshotId)).toBe(0)
+    const listed = await f.client.callTool({ name: 'source_list',
+      arguments: { workspaceId: f.workspaceId, detail: 'full' } })
+    expect(listed.isError).not.toBe(true)
+    expect(SourceListResultSchema.parse(decodeMcpToolResult(listed)).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ manifest: superseded.manifest, availability: 'unavailable' }),
+      expect.objectContaining({ manifest: current.manifest, availability: 'retained' }),
+    ]))
+    const bound = await f.client.callTool({ name: 'source_root_list',
+      arguments: { workspaceId: f.workspaceId } })
+    expect(bound.isError).not.toBe(true)
+    expect(SourceRootListResultSchema.parse(decodeMcpToolResult(bound)).items)
+      .toEqual(expect.arrayContaining(roots))
+    const denied = await f.access.issue({ name: 'Other workspace reader', audience: 'operator',
+      grants: [{ actions: ['sources:read', 'source_roots:read', 'workspace_locations:read'],
+        scope: { workspaceIds: ['other-workspace'] } }], expiresAt: new Date(Date.now() + 120_000) })
+    const deniedClient = await f.connect(denied.token)
+    const deniedRead = await deniedClient.callTool({ name: 'source_root_list',
+      arguments: { workspaceId: f.workspaceId } })
+    expect(deniedRead.isError).toBe(true)
+    expect(JSON.stringify(deniedRead.content)).toContain('ACCESS_DENIED')
+  }, 60_000)
 
 it.each(['startup', 'admission'] as const)('reconciles an interrupted partial capture on %s without touching a live writer',
   async mode => {

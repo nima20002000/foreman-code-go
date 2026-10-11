@@ -100,6 +100,12 @@ async function releasable(sql: GraphSqlClient, snapshotId: string, underPressure
         and b.binding_revision::text=node#>>'{placement,rootBinding,bindingRevision}'
     where b.snapshot_id::text=$1 and w.archived_at is null and workspace.archived_at is null
     union all
+    select true,null::timestamptz,null::integer
+    from source_root_catalog c
+      join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
+      join workspaces w on w.id=c.workspace_id
+    where b.snapshot_id::text=$1 and w.archived_at is null
+    union all
     select false,(b.record->>'boundAt')::timestamptz,null::integer
     from source_root_bindings b where b.snapshot_id::text=$1
   ) select not coalesce(bool_or(active),false)
