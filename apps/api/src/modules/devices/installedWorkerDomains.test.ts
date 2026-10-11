@@ -238,18 +238,20 @@ describe('actual installed worker mount availability, no physical acceptance', (
       expect(mounted.rsyncAvailable).toBe(false)
       expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
       expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual([
-        'agent-snapshot-v1', 'ci-runtime-v1', 'computer-accounts-v1', 'computer-github-v1',
+        'agent-snapshot-v1', 'ci-host-v1', 'ci-runtime-v1', 'computer-accounts-v1', 'computer-github-v1',
         'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1',
       ])
-      const ci = mounted.extensions.find(extension => extension.namespace === 'ci-runtime-v1')!
-      await expect(ci.handle!({ operation: 'status' }, {
-        signal: AbortSignal.timeout(1000),
-        binding: {
-          mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
-          keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(),
-          connectionEpoch: randomUUID(), connectionGeneration: 1,
-        },
-      })).rejects.toMatchObject({ code: 'WORKER_DOMAIN_UNAVAILABLE' })
+      for (const namespace of ['ci-runtime-v1', 'ci-host-v1']) {
+        const ci = mounted.extensions.find(extension => extension.namespace === namespace)!
+        await expect(ci.handle!({ operation: 'status' }, {
+          signal: AbortSignal.timeout(1000),
+          binding: {
+            mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
+            keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(),
+            connectionEpoch: randomUUID(), connectionGeneration: 1,
+          },
+        })).rejects.toMatchObject({ code: 'WORKER_DOMAIN_UNAVAILABLE' })
+      }
     } finally {
       await mounted.close()
       await mounted.close()
