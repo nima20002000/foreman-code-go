@@ -13,13 +13,13 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import { PostgresInteractionCoordinationRepository, type WriterFence } from './coordination.js'
 import { ReviewEvidenceTracker, reviewTurnEvidence, type TurnEvidence } from './reviewerEvidence.js'
 
-/** Heartbeats start before any potentially long native await. Loss aborts the writer, never retries it. */
+/** Heartbeats start before native awaits; renewal failures retain the last confirmed expiry. */
 export class LeaseGuard {
   private readonly controller = new AbortController()
-  private readonly timer: ReturnType<typeof setInterval>
+  private timer: ReturnType<typeof setTimeout> | undefined
   private stopped = false
-  private renewal: Promise<void> | undefined
   private deadline: ReturnType<typeof setTimeout> | undefined
+  private expiresAt: number
   readonly signal: AbortSignal
 
   constructor(
@@ -32,31 +32,60 @@ export class LeaseGuard {
   ) {
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 3) throw new RangeError('leaseMs must be an integer of at least 3 milliseconds.')
     this.signal = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal
+    this.expiresAt = Date.parse(expiresAt)
     const armDeadline = (expiry: string) => {
+      this.expiresAt = Date.parse(expiry)
       if (this.deadline) clearTimeout(this.deadline)
       this.deadline = setTimeout(() => this.controller.abort(
         new DomainError(lostCode, 'The lease expired without a confirmed renewal.', 409),
-      ), Math.max(0, Date.parse(expiry) - Date.now()))
+      ), Math.max(0, this.expiresAt - Date.now()))
       this.deadline.unref()
     }
     armDeadline(expiresAt)
-    runtimeTimingPoint('harness', 'lease.heartbeat_interval', { intervalMs: Math.max(1, Math.floor(leaseMs / 3)) })
-    this.timer = setInterval(() => {
-      if (this.stopped || this.renewal || this.signal.aborted) return
-      this.renewal = Promise.resolve().then(() => timeRuntimeOperation('harness', 'lease.renew', renew)).then((expiry) => { if (!this.stopped && !this.signal.aborted) armDeadline(expiry) }).catch(() => { if (!this.stopped) this.controller.abort(new DomainError(lostCode, 'The lease could not be renewed.', 409)) })
-        .finally(() => { this.renewal = undefined })
-    }, Math.max(1, Math.floor(leaseMs / 3)))
-    this.timer.unref()
+    const intervalMs = Math.max(1, Math.floor(leaseMs / 3))
+    const retryMs = Math.max(1, Math.min(250, Math.floor(leaseMs / 10)))
+    const safetyMarginMs = Math.max(1, Math.min(1_000, Math.floor(leaseMs / 10)))
+    runtimeTimingPoint('harness', 'lease.heartbeat_interval', { intervalMs })
+    const scheduleRenewal = (delayMs: number) => {
+      if (this.stopped || this.signal.aborted || Date.now() + delayMs >= this.expiresAt - safetyMarginMs) return
+      this.timer = setTimeout(() => {
+        if (this.stopped || this.signal.aborted || Date.now() >= this.expiresAt - safetyMarginMs) return
+        void Promise.resolve().then(() => timeRuntimeOperation('harness', 'lease.renew', renew)).then((expiry) => {
+          if (this.stopped || this.signal.aborted) return
+          // A late response cannot revive a writer whose confirmed lease already expired.
+          this.checkExpiry()
+          armDeadline(expiry)
+          scheduleRenewal(intervalMs)
+        }).catch((error: unknown) => {
+          if (this.stopped || this.signal.aborted) return
+          if (error instanceof DomainError && error.code === lostCode) {
+            this.controller.abort(error)
+            return
+          }
+          componentLogger('harness').warn({ err: error }, 'Lease renewal failed while the lease is still valid.')
+          scheduleRenewal(retryMs)
+        })
+      }, delayMs)
+      this.timer.unref()
+    }
+    scheduleRenewal(intervalMs)
+  }
+
+  private checkExpiry(): void {
+    if (Date.now() >= this.expiresAt) {
+      this.controller.abort(new DomainError(this.lostCode, 'The lease expired without a confirmed renewal.', 409))
+    }
+    this.signal.throwIfAborted()
   }
 
   async check(): Promise<void> {
-    this.signal.throwIfAborted()
+    this.checkExpiry()
     try { await timeRuntimeOperation('harness', 'lease.check', () => this.assertOwned()) } catch {
       const error = new DomainError(this.lostCode, 'The lease could not be confirmed.', 409)
       this.controller.abort(error)
       throw error
     }
-    this.signal.throwIfAborted()
+    this.checkExpiry()
   }
 
   async wait<T>(work: Promise<T>, signal: AbortSignal = this.signal): Promise<T> {
@@ -72,7 +101,7 @@ export class LeaseGuard {
 
   async stop(): Promise<void> {
     this.stopped = true
-    clearInterval(this.timer)
+    if (this.timer) clearTimeout(this.timer)
     if (this.deadline) clearTimeout(this.deadline)
   }
 }
