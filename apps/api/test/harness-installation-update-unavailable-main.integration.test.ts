@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { localWorkflowSourceClosed } from '../src/modules/sources/workflowCleanup.js'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 import {
   installationUpdateFixture, profileReader, profiles, runningTurn, pinnedPlacements, startWhenReady, completedRun,
@@ -41,6 +42,12 @@ describe('installed harness updates', () => {
         blocked = false
         await completedRun(fixture, started.run.id)
         await completedRun(fixture, next.run.id)
+        const executions = await fixture.db.pool.query<{ id: string }>(
+          'select id from harness_executions where run_id=any($1::text[])', [[started.run.id, next.run.id]])
+        expect(executions.rows).toHaveLength(2)
+        for (const execution of executions.rows) {
+          expect(await localWorkflowSourceClosed(fixture.db.pool, execution.id)).toBe(true)
+        }
         expect(await pinnedPlacements(fixture, started.run.id)).toEqual(pins)
         expect(await fixture.provider.calls()).toContainEqual({ workflowCompleted: turn })
         expect((await pinnedPlacements(fixture, next.run.id))[0]!.payload).toMatchObject({

@@ -108,7 +108,24 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     const report = (error: unknown): never => { throw error }
     await closeCompletedWorkflowSources(pool, recovered, report)
     expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('prepared')
-    await pool.query(`update harness_executions set record=$1`, [{ state: 'completed' }])
+    const session = { harness: 'codex', nativeSessionId: 'source-session', providerVersion: '1.0.0' }
+    await pool.query(`update harness_executions set record=$1`, [{
+      state: 'completed', nativeSessionId: session.nativeSessionId, result: { outcome: 'succeeded' },
+    }])
+    await pool.query('insert into execution_native_sessions values($1,null,$2)', [receipt.executionId, session])
+    await pool.query(`insert into execution_native_closures(execution_id,generation,expected_reference)
+      values($1,1,$2)`, [receipt.executionId, session])
+    // Cleanup and Stop still need the original finalizer to commit physical closure.
+    for (const pending of [false, true]) {
+      await pool.query(`insert into run_cleanup_intents values('ongoing-workflow',$1)
+        on conflict(run_id) do update set pending=excluded.pending`, [pending])
+      await closeCompletedWorkflowSources(pool, recovered, report)
+      expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('prepared')
+    }
+    await pool.query('update runs set stop_requested_at=clock_timestamp()')
+    await closeCompletedWorkflowSources(pool, recovered, report)
+    expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('prepared')
+    await pool.query('update execution_native_closures set closed_at=clock_timestamp()')
     await closeCompletedWorkflowSources(pool, recovered, report)
     expect((await pool.query('select execution_state from runs')).rows[0].execution_state).toBe('running')
     await recovered.confirmClosed(record)

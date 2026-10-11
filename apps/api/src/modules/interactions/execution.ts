@@ -1980,6 +1980,9 @@ export class ApprovalExecutionCoordinator {
           if (exactTerminal) {
             const completed = HarnessExecutionSchema.parse({ ...execution, state: 'completed',
               result: safeValue(observed.terminalTurn!.result), finishedAt: capturedWorkflowNativeTime(captured) })
+            // Terminal publication ends workflow credential authority before native disposal finishes.
+            await stopRenewal?.()
+            signal.throwIfAborted()
             await timeRuntimeOperation('engine', 'execution.accept_terminal',
               () => this.runs.updateExecution(completed, input.owner, captured))
             // Read the first-terminal normalizer's immutable result, not a local

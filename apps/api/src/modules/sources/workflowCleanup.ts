@@ -25,9 +25,8 @@ export async function closeCompletedWorkflowSources(
   report: (error: unknown) => void,
 ): Promise<void> {
   const rows = await pool.query<{ record: unknown; execution: unknown; settlement_pending: boolean }>(`select m.record,e.record as execution,
-      (r.execution_state in ('running','waiting') and r.stop_requested_at is null
+      (r.execution_state in ('running','waiting')
         and e.record#>>'{result,outcome}'='succeeded'
-        and not exists(select 1 from run_cleanup_intents cleanup where cleanup.run_id=r.id and cleanup.pending)
         and exists(select 1 from execution_native_sessions n
           join execution_native_closures c on c.execution_id=n.execution_id
           where n.execution_id=e.id and n.workflow_finalized_at is null
@@ -49,7 +48,7 @@ export async function closeCompletedWorkflowSources(
     order by m.materialization_id limit 100`)
   for (const row of rows.rows) {
     try {
-      // Publishing the result precedes the native finalizer's closure commit.
+      // Stop or cleanup can arrive between result publication and the native closure commit.
       // Keep its source until that owner has finished; confirmClosed still fences release.
       if (row.settlement_pending) continue
       const record = SourceMaterializationRecordSchema.parse(row.record)
