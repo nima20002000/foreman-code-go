@@ -568,7 +568,11 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           },
           assertUnchanged:async value=>{await before();await dependencies.assertUnchanged(value)},
           runCommand:async(binary,args,cwd,effectSignal,environment,options)=>{await before();return dependencies.runCommand(binary,args,cwd,effectSignal,environment,{...options,recovery:actual.scope})},
-          qualifyModel:async(configuration,binary,cwd,environment,effectSignal)=>{await before();return dependencies.qualifyModel(configuration,binary,cwd,environment,effectSignal,actual.scope)},
+          qualifyModel: async (configuration, binary, cwd, environment, effectSignal, _recovery, inspection) => {
+            await before()
+            return dependencies.qualifyModel(configuration, binary, cwd, environment,
+              effectSignal, actual.scope, inspection)
+          },
         },{workingDirectory:configurationContext.workingDirectory},nativeOutputs)
         actual.manager=manager
         return manager
