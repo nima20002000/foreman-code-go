@@ -8,7 +8,7 @@ import type { CloudRun } from './cloud.js'
 export type CloudStatus = { done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string }
 export interface CloudDispatchInput {
   mirror: string; branch: string; runId: string; suite: CiExecutionSuite; slice: string
-  scope?: CiScope; files?: string
+  scope?: CiScope; files?: string; defaultBranch?: string; partition?: string; durations?: string
 }
 
 /** One cloud CI service: how Main starts a run of a mirror branch and reads it back, through the service's CLI login. */
@@ -71,7 +71,10 @@ export class GitHubActionsProvider implements CloudProvider {
     // Runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await this.gh(['workflow', 'run', WORKFLOW, '-R', input.mirror, '--ref', 'main', '-f', `ref=${input.branch}`,
       '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `slice=${input.slice}`,
-      ...(input.scope ? ['-f', `scope=${input.scope}`] : []), ...(input.files !== undefined ? ['-f', `files=${input.files}`] : [])])
+      ...(input.scope ? ['-f', `scope=${input.scope}`] : []), ...(input.files !== undefined ? ['-f', `files=${input.files}`] : []),
+      ...(input.defaultBranch ? ['-f', `default_branch=${input.defaultBranch}`] : []),
+      ...(input.partition ? ['-f', `partition=${input.partition}`] : []),
+      ...(input.durations ? ['-f', `durations=${input.durations}`] : [])])
     return null
   }
 
@@ -124,7 +127,10 @@ export class CircleCiProvider implements CloudProvider {
     const started = JSON.parse(await this.circleci(['run', 'trigger', '--project', `gh/${input.mirror}`, '--branch', input.branch,
       '--parameter', `run_id=${input.runId}`, '--parameter', `suite=${input.suite}`,
       '--parameter', `slice=${input.slice}`, ...(input.scope ? ['--parameter', `scope=${input.scope}`] : []),
-      ...(input.files !== undefined ? ['--parameter', `files=${input.files}`] : []), '--json'])) as { id: string }
+      ...(input.files !== undefined ? ['--parameter', `files=${input.files}`] : []),
+      ...(input.defaultBranch ? ['--parameter', `default_branch=${input.defaultBranch}`] : []),
+      ...(input.partition ? ['--parameter', `partition=${input.partition}`] : []),
+      ...(input.durations ? ['--parameter', `durations=${input.durations}`] : []), '--json'])) as { id: string }
     return started.id
   }
 

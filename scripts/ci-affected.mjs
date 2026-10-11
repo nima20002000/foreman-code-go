@@ -78,16 +78,21 @@ export function selectAffectedFiles({ suite, changedFiles, sources, exports = {}
   return { scope: 'affected', files: [...new Set(files)].sort(), reason: 'Selected from changed files and their imports.' }
 }
 
-/** Read the snapshot tree, never the live files or index, against its merge-base with origin/main. */
-export function affectedSnapshot(commit, suite, cwd = process.cwd()) {
+/** Read the snapshot tree, never the live files or index, against its default branch merge-base. */
+export function affectedSnapshot(commit, suite, cwd = process.cwd(), defaultRef = 'origin/main') {
   cwd = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8' }).trim()
   const git = (args, env) => execFileSync('git', args, { cwd, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).trim()
   if (git(['rev-list', '--parents', '-n', '1', commit]).split(' ').length > 2) {
     return { scope: 'full', files: [], reason: 'Merge commits require a full run.' }
   }
   let base
-  try { base = git(['merge-base', commit, 'origin/main']) }
-  catch { return { scope: 'full', files: [], reason: 'No merge-base with origin/main is available.' } }
+  try {
+    if (git(['rev-parse', '--verify', defaultRef]) === git(['rev-parse', commit])) {
+      return { scope: 'full', files: [], reason: 'The commit is the workspace default branch head.' }
+    }
+    base = git(['merge-base', commit, defaultRef])
+  }
+  catch { return { scope: 'full', files: [], reason: 'No merge-base with the default branch is available.' } }
   const changedFiles = git(['diff', '--name-only', '--no-renames', '-z', base, commit]).split('\0').filter(Boolean)
   const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-selection-'))
   try {

@@ -24,7 +24,8 @@ afterEach(async () => {
 /** A computer with a real git origin standing in for GitHub, gh and corepack shims, and a systemd-run that runs the
  * unit's script as a child process the way the user manager would. */
 async function computer(options: { github?: boolean; suiteExit?: number; pause?: boolean
-  measured?: Record<string, number>; databaseExit?: number } = {}) {
+  measured?: Record<string, number>; databaseExit?: number; selector?: boolean;
+  change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string } = {}) {
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? '/tmp', 'host-ci-'))
   roots.push(root)
   const environment = gitFixtureEnvironment()
@@ -51,9 +52,27 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   const unitFiles = ['apps/api/test/first.test.ts', 'apps/api/test/second.test.ts',
     'apps/web/src/first.test.tsx', 'apps/web/src/second.test.tsx']
   for (const file of unitFiles) await writeFile(join(origin, file), '')
+  if (options.selector) {
+    await writeFile(join(origin, 'scripts/ci-affected.mjs'),
+      await readFile(new URL('../../../../../scripts/ci-affected.mjs', import.meta.url), 'utf8'))
+    await mkdir(join(origin, 'apps/api/src'), { recursive: true })
+    await writeFile(join(origin, 'apps/api/src/feature.ts'), 'export const value = 1')
+    await writeFile(join(origin, unitFiles[0]!), "import '../src/feature.js'")
+    await writeFile(join(origin, 'apps/api/test/a.integration.test.ts'), "import '../src/feature.js'")
+  }
   await writeFile(join(origin, 'scripts/unit-durations.json'), JSON.stringify(Object.fromEntries(
     unitFiles.map((file, index) => [file, 100 + index * 10]))))
   git('init', '-q', '-b', 'main'); git('add', '.'); git('commit', '-qm', 'fixture')
+  if (options.defaultBranch) git('branch', '-m', options.defaultBranch)
+  if (options.change) {
+    git('checkout', '-qb', 'feature')
+    const changedFile = { source: 'apps/api/src/feature.ts', infrastructure: 'package.json', docs: 'README.md' }[options.change]
+    const text = options.change === 'infrastructure'
+      ? (await readFile(join(origin, changedFile), 'utf8')).replace('fixture', 'changed-fixture') : 'export const value = 2'
+    await writeFile(join(origin, changedFile), text)
+    git('add', '.')
+    git('commit', '-qm', 'feature change')
+  }
   const commit = git('rev-parse', 'HEAD')
   const bin = join(root, 'bin')
   await mkdir(bin)
@@ -123,6 +142,67 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
 }
 
 describe('host CI runner', () => {
+  it('derives omitted files against a non-main workspace default branch and selects the unit part', async () => {
+    const f = await computer({ selector: true, change: 'source', defaultBranch: 'release/stable' })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'unit', part: 'unit-api', defaultBranch: 'release/stable' })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed', message: 'Selected 1 affected files for unit-api.' })
+    expect(done.text).toContain('corepack pnpm --dir apps/api exec vitest run test/first.test.ts')
+    expect(done.text).not.toContain('second.test.ts')
+    expect(done.text).not.toContain('apps/web')
+  })
+
+  it.each(['docs', 'source'] as const)('passes an empty affected unit shard after a %s change without running the suite', async change => {
+    const f = await computer({ selector: true, change })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'unit', part: 'unit-api', partition: { index: 1, count: 5 } })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed', exitCode: 0, message: 'No affected files for this suite part.' })
+    expect(done.text).not.toContain('vitest run')
+    expect(done.text).not.toContain('corepack pnpm test')
+  })
+
+  it.each([
+    [{}, 'no affected selector'],
+    [{ selector: true }, 'workspace default branch head'],
+    [{ selector: true, change: 'infrastructure' as const }, 'Shared CI infrastructure changed'],
+  ])('runs the full suite and reports the fallback for %j', async (options, reason) => {
+    const f = await computer(options)
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit, suite: 'unit' })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    expect(done.run.message).toContain(reason)
+    expect(done.text).toContain('Running full suite:')
+    expect(done.text).toContain('corepack pnpm test')
+  })
+
+  it('runs explicit full scope even when the repository selector would select one test', async () => {
+    const f = await computer({ selector: true, change: 'source' })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'unit', scope: 'full' })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    expect(done.text).toContain('corepack pnpm test')
+    expect(done.text).not.toContain('Selected 1 affected')
+  })
+
+  it('derives affected integration files and lets an excess partition complete without running tests', async () => {
+    const f = await computer({ selector: true, change: 'source' })
+    for (const index of [0, 1]) {
+      const runId = randomUUID()
+      await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+        suite: 'integration', partition: { index, count: 2 } })
+      const done = await f.settle(runId)
+      expect(done.run.state).toBe('passed')
+      if (index === 0) expect(done.text).toContain('corepack pnpm test:integration --files apps/api/test/a.integration.test.ts')
+      else expect(done.text).not.toContain('corepack pnpm test:integration')
+    }
+  })
   it.each([
     ['unit', undefined, true], ['unit', 'unit-api', true], ['integration', undefined, true],
     ['unit', 'unit-web', false], ['unit', 'unit-web-heavy', false], ['unit', 'unit-other', false],

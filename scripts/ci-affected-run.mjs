@@ -46,6 +46,9 @@ async function run(command) {
   delete environment.SCOPE
   delete environment.SELECTED_FILES
   delete environment.SLICE
+  delete environment.DEFAULT_BRANCH
+  delete environment.CI_PARTITION
+  delete environment.CI_DURATIONS
   const child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment })
   return new Promise((resolve, reject) => {
     child.once('error', reject)

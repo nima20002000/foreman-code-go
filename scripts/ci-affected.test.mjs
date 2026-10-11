@@ -79,11 +79,12 @@ test('runs affected commands without leaking dispatch selections into nested com
   const selection = join(root, 'selected.json')
   writeFileSync(selection, JSON.stringify([source]))
   writeFileSync(join(root, 'corepack'), `#!${process.execPath}\n`
-    + "if ('SCOPE' in process.env || 'SELECTED_FILES' in process.env || 'SLICE' in process.env) process.exit(9)\n"
+    + "if (['SCOPE', 'SELECTED_FILES', 'SLICE', 'DEFAULT_BRANCH', 'CI_PARTITION', 'CI_DURATIONS'].some(key => key in process.env)) process.exit(9)\n"
     + "console.log(process.argv.slice(2).join(' '))\n", { mode: 0o755 })
   const run = spawnSync(process.execPath, [new URL('./ci-affected-run.mjs', import.meta.url).pathname,
     'lint', '--files-from', selection], { cwd: root, encoding: 'utf8', env: { ...process.env,
-    PATH: `${root}:${process.env.PATH}`, SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: 's:0' } })
+    PATH: `${root}:${process.env.PATH}`, SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: 's:0',
+    DEFAULT_BRANCH: 'stable', CI_PARTITION: '{}', CI_DURATIONS: '{}' } })
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /pnpm --dir apps\/api exec eslint src\/feature\.ts --max-warnings 0/)
 })
@@ -102,11 +103,16 @@ test('selects the snapshot tree against origin/main without reading later workin
   git('add', '.')
   git('commit', '-qm', 'base')
   git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  assert.deepEqual(affectedSnapshot('HEAD', 'unit', root), {
+    scope: 'full', files: [], reason: 'The commit is the workspace default branch head.',
+  })
+  git('update-ref', 'refs/remotes/origin/release/stable', 'HEAD')
   writeFileSync(join(root, source), 'export const value = 2')
   const commit = snapshot(root)
   writeFileSync(join(root, unit), 'export {}')
   assert.deepEqual(affectedSnapshot(commit, 'unit', root).files, [unit])
   assert.deepEqual(affectedSnapshot(commit, 'unit', join(root, 'apps/api')).files, [unit])
+  assert.deepEqual(affectedSnapshot(commit, 'unit', root, 'origin/release/stable').files, [unit])
   const merge = git('commit-tree', `${commit}^{tree}`, '-p', 'HEAD', '-p', commit, '-m', 'merge')
   assert.equal(affectedSnapshot(merge, 'unit', root).scope, 'full')
   git('update-ref', '-d', 'refs/remotes/origin/main')

@@ -21,11 +21,23 @@ on:
       scope:
         description: full or affected
         required: false
-        default: full
+        default: affected
       files:
         description: Selected repository file indexes for affected unit, lint or typecheck
         required: false
         default: ''
+      default_branch:
+        description: Workspace default branch comparison ref on the mirror
+        required: false
+        default: main
+      partition:
+        description: Runner-selected partition as JSON
+        required: false
+        default: ''
+      durations:
+        description: Learned file durations shared by every partition as JSON
+        required: false
+        default: '{}'
 
 permissions:
   contents: read
@@ -41,10 +53,14 @@ jobs:
       SLICE: ${{ inputs.slice }}
       SCOPE: ${{ inputs.scope }}
       SELECTED_FILES: ${{ inputs.files }}
+      DEFAULT_BRANCH: ${{ inputs.default_branch }}
+      CI_PARTITION: ${{ inputs.partition }}
+      CI_DURATIONS: ${{ inputs.durations }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2

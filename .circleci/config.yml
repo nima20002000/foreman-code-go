@@ -14,10 +14,19 @@ parameters:
     default: ''
   scope:
     type: string
-    default: full
+    default: affected
   files:
     type: string
     default: ''
+  default_branch:
+    type: string
+    default: main
+  partition:
+    type: string
+    default: ''
+  durations:
+    type: string
+    default: '{}'
 
 jobs:
   ci:
@@ -32,6 +41,9 @@ jobs:
       SLICE: << pipeline.parameters.slice >>
       SCOPE: << pipeline.parameters.scope >>
       SELECTED_FILES: << pipeline.parameters.files >>
+      DEFAULT_BRANCH: << pipeline.parameters.default_branch >>
+      CI_PARTITION: << pipeline.parameters.partition >>
+      CI_DURATIONS: << pipeline.parameters.durations >>
       DURATIONS_OUTPUT: /tmp/ci-durations/durations.json
     steps:
       - checkout

@@ -64,13 +64,40 @@ unit_slice() {
   return "$code"
 }
 
-if [ "${SCOPE:-full}" = affected ] && [ "$SUITE" != integration ]; then
+scope="${SCOPE:-affected}"
+selected_list=''
+if [ "$scope" = affected ] && [ -z "${SELECTED_FILES:-}" ] && { [ "$SUITE" != integration ] || [ -z "${SLICE:-}" ]; }; then
+  if [ ! -f scripts/ci-affected.mjs ]; then
+    echo 'Running full suite: The repository has no affected selector.'
+    scope=full
+  else
+    branch="${DEFAULT_BRANCH:-main}"
+    default_ref="refs/remotes/origin/$branch"
+    if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+      git fetch --quiet --no-tags --unshallow origin "+refs/heads/$branch:$default_ref"
+    else
+      git fetch --quiet --no-tags origin "+refs/heads/$branch:$default_ref"
+    fi
+    mkdir -p "$state"
+    selected_list="$state/selected-files.json"
+    scope="$(node scripts/ci-selection.mjs "$SUITE" "$default_ref" "${CI_PARTITION:-}" "$selected_list")"
+    if [ "$scope" = full ] && { [ "$SUITE" != integration ] || [ -z "${CI_PARTITION:-}" ]; }; then
+      selected_list=''
+    fi
+  fi
+fi
+
+if [ "$scope" = affected ] && [ "$SUITE" != integration ]; then
   case "$SUITE" in
     unit|unit-api) ready db; ready clis; delegate_cgroup ;;
     unit-web|unit-web-heavy|unit-other|lint|lint-api|lint-other|typecheck|typecheck-api|typecheck-other) ;;
     *) echo "Unsupported affected suite $SUITE"; exit 2 ;;
   esac
-  node scripts/ci-affected-run.mjs "${SUITE%%-*}" --indexes "${SELECTED_FILES:-}"
+  if [ -n "$selected_list" ]; then
+    node scripts/ci-affected-run.mjs "${SUITE%%-*}" --files-from "$selected_list"
+  else
+    node scripts/ci-affected-run.mjs "${SUITE%%-*}" --indexes "${SELECTED_FILES:-}"
+  fi
   exit $?
 fi
 
@@ -100,8 +127,14 @@ case "$SUITE" in
     ready db; ready clis
     export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$DURATIONS_OUTPUT"
     delegate_cgroup
-    FILES="$(node scripts/ci-files.mjs "${SLICE:-}")"
-    # shellcheck disable=SC2086 # the partition's files are separate arguments
-    pnpm test:integration ${SLICE:+--files $FILES} ;;
+    if [ -n "$selected_list" ]; then
+      mapfile -d '' -t files < <(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).map(file => file + "\0").join(""))' "$selected_list")
+      if [ "${#files[@]}" = 0 ]; then echo 'No affected files for this suite part.'; exit 0; fi
+      pnpm test:integration --files "${files[@]}"
+    else
+      FILES="$(node scripts/ci-files.mjs "${SLICE:-}")"
+      # shellcheck disable=SC2086 # the partition's files are separate arguments
+      pnpm test:integration ${SLICE:+--files $FILES}
+    fi ;;
   *) echo "Unknown suite $SUITE"; exit 2 ;;
 esac
