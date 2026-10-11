@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
+import { deferred } from '../../../test/helpers/wave25Agent3.js'
 import { fileToolFixture } from '../../../test/support/fileTools.js'
 import { ClaudeFileBridge } from '../harnesses/claudeSdk/files.js'
 import type { ClaudeNativeSessionManager } from '../harnesses/claudeSdk/sessionManager.js'
@@ -21,7 +22,7 @@ async function fixture() {
     expiresAt: new Date(f.clock().getTime() + 60_000),
   })) }
   const bridge = new ClaudeFileBridge(identity, admission, f.service)
-  const completed = Promise.withResolvers<void>()
+  const completed = deferred()
   let callSignal: AbortSignal | undefined
   const manager = { waitNativeCallbackContext: async () => context,
     nativeCallbackContext: () => context,
@@ -55,8 +56,8 @@ async function fixture() {
 
 it.each(['tool', 'owner'] as const)('cancels a %s request held before file admission without creating an artifact', async kind => {
   const f = await fixture()
-  const entered = Promise.withResolvers<void>()
-  const release = Promise.withResolvers<void>()
+  const entered = deferred()
+  const release = deferred()
   const current = f.admission.current.getMockImplementation()!
   f.admission.current.mockImplementationOnce(async () => {
     entered.resolve()
@@ -90,8 +91,8 @@ it.each(['tool', 'owner'] as const)('cancels a %s request held before file admis
 
 it('cancels during credential issuance before dispatch and revokes the issued credential on close', async () => {
   const f = await fixture()
-  const entered = Promise.withResolvers<void>()
-  const release = Promise.withResolvers<void>()
+  const entered = deferred()
+  const release = deferred()
   const issue = f.sessions.issueForAcceptedSession.bind(f.sessions)
   const issuance = vi.spyOn(f.sessions, 'issueForAcceptedSession').mockImplementationOnce(async (...args) => {
     const token = await issue(...args)
@@ -135,8 +136,8 @@ it('keeps an accepted file mutation after cancellation and denies a revoked call
   } finally { await f.close() }
 
   const revoked = await fixture()
-  const entered = Promise.withResolvers<void>()
-  const release = Promise.withResolvers<void>()
+  const entered = deferred()
+  const release = deferred()
   const current = revoked.admission.current.getMockImplementation()!
   revoked.admission.current.mockImplementationOnce(async () => {
     entered.resolve()
