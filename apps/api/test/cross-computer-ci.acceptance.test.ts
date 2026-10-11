@@ -220,7 +220,7 @@ it('runs concurrent projects through Agent Host CI with isolated readback twice 
         await persist()
         evidence.cleanupErrors = await cleanupFailedRound(writer, workflows, observation)
         throw new Error(`Cross-computer CI round ${round} failed; inspect its private evidence JSON.`,
-          { cause: evidence.failure })
+          { cause: error })
       } finally {
         evidence.finishedAt = new Date().toISOString()
         await persist()
