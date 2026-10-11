@@ -15,10 +15,12 @@ import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { DomainError } from '../src/modules/errors.js'
 
 /** Two build computers that answer the host CI protocol from memory; tests finish their runs. */
-function fakeComputers(github: Record<string, boolean> = {}) {
+function fakeComputers(github: Record<string, boolean> = {}, cloud = false) {
   const mainId = randomUUID()
   const computers: HostCiComputer[] = ['laptop', 'builder'].map((name, index) => ({ key: `${mainId}:${name}`,
     hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: name, priority: 60 - index }))
+  if (cloud) computers.push({ key: `${mainId}:cloud:github:0`, hostRef: { kind: 'cloud', mainId, provider: 'github', slot: 0 },
+    label: 'GitHub Actions 1', priority: 30 })
   const runs = new Map<string, { computer: string; run: CiHostRun; log: string; request: CiHostRequest
     durations?: Record<string, number> }>()
   const started: { computer: string; request: CiHostRequest }[] = []
@@ -66,7 +68,8 @@ function fakeComputers(github: Record<string, boolean> = {}) {
   return { endpoint, started, finish, computers }
 }
 
-async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory } = {}) {
+async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory
+  cloud?: boolean } = {}) {
   const runtime = await codexApprovalRuntime('user')
   const workspaceId = runtime.f.scope.workspaceId
   if (options.repository !== false) {
@@ -81,7 +84,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     published.push(resolved)
     return resolved
   } }
-  const computers = fakeComputers(options.github)
+  const computers = fakeComputers(options.github, options.cloud)
   const commands = new PostgresCommandCoordinator(runtime.db.pool)
   const ci = new HostCiService(runtime.db.pool, commands, new RunCiAuthority(runtime.db.pool), commits, computers.endpoint)
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -387,6 +390,15 @@ it('cancels queued and running runs and skips a computer without a GitHub login'
     expect(await f.value(f.operator, 'ci_cancel', { ticketId: running.ticketId })).toMatchObject({ run: { state: 'canceled' } })
     await f.ci.dispatch()
     expect(f.started).toHaveLength(1)
+  } finally { await f.close() }
+})
+
+it('lists cloud CI slots beside build computers through MCP', async () => {
+  const f = await fixture({ cloud: true })
+  try {
+    const computers = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
+    expect(computers.computers.find(value => value.label === 'GitHub Actions 1'))
+      .toMatchObject({ hostRef: { kind: 'cloud', provider: 'github', slot: 0 }, priority: 30 })
   } finally { await f.close() }
 })
 

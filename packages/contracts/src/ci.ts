@@ -53,7 +53,7 @@ export const CiLogsOutputSchema = z.object({ text: z.string(), nextOffset: z.num
     logBytes: z.number().int().nonnegative() }).strict()).optional(),
 }).strict()
 export const CiComputersOutputSchema = z.object({ computers: z.array(z.object({
-  label: z.string(), hostRef: z.object({ kind: z.enum(['main', 'device']), mainId: z.string(), deviceId: z.string().optional() }).strict(),
+  label: z.string(), hostRef: CiRunRecordSchema.shape.computer.unwrap().shape.hostRef,
   priority: z.number().int(), ready: z.boolean(), reasons: z.array(z.string()),
   cpuCount: z.number().int().positive().optional(), memoryBytes: z.number().int().positive().optional(),
   running: z.array(z.string()).optional(),
