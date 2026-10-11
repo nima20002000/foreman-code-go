@@ -18,7 +18,8 @@ function fakeComputers(github: Record<string, boolean> = {}) {
   const mainId = randomUUID()
   const computers: HostCiComputer[] = ['mana', 'dexter'].map((name, index) => ({ key: `${mainId}:${name}`,
     hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: name, priority: 60 - index }))
-  const runs = new Map<string, { computer: string; run: CiHostRun; log: string; request: CiHostRequest }>()
+  const runs = new Map<string, { computer: string; run: CiHostRun; log: string; request: CiHostRequest
+    durations?: Record<string, number> }>()
   const started: { computer: string; request: CiHostRequest }[] = []
   const endpoint: HostCiEndpoint = {
     computers: async () => computers,
@@ -48,12 +49,16 @@ function fakeComputers(github: Record<string, boolean> = {}) {
         return { operation: 'cancel', run: entry.run }
       }
       const text = entry.log.slice(request.afterOffset, request.afterOffset + request.maxBytes)
-      return { operation: 'read', run: entry.run, text, nextOffset: request.afterOffset + Buffer.byteLength(text) }
+      const finished = !['starting', 'running'].includes(entry.run.state)
+      return { operation: 'read', run: entry.run, text, nextOffset: request.afterOffset + Buffer.byteLength(text),
+        ...(request.durations && finished && entry.durations ? { durations: entry.durations } : {}) }
     },
   }
-  const finish = (runId: string, exitCode: number, log: string) => {
+  const finish = (runId: string, exitCode: number, log: string, durations?: Record<string, number>) => {
     const entry = runs.get(runId)!
     entry.log = log
+    if (durations) entry.durations = durations
+    else delete entry.durations
     entry.run = { ...entry.run, state: exitCode === 0 ? 'passed' : 'failed', exitCode, step: entry.request.operation === 'start'
       ? entry.request.suite : null, finishedAt: new Date().toISOString(), logBytes: Buffer.byteLength(log) }
   }
@@ -137,6 +142,35 @@ it('splits integration over two build computers, reports progress and logs, and 
   } finally { await f.close() }
 })
 
+it('sizes each partition by the measured speed of the computer it is planned for', async () => {
+  const f = await fixture()
+  try {
+    // History: mana finished half the suite in 200 s, dexter half in 400 s, so mana works twice as fast.
+    for (const [index, computer, seconds] of [[0, f.computers[0]!, 200], [1, f.computers[1]!, 400]] as const) {
+      const finishedAt = new Date(Date.now() - 60_000), startedAt = new Date(finishedAt.getTime() - seconds * 1000)
+      const run = { id: crypto.randomUUID(), workspaceId: f.workspaceId, suite: 'integration', commit: 'b'.repeat(40),
+        repository: 'octo/site', partition: { index, count: 2 }, groupId: crypto.randomUUID(), state: 'passed',
+        computer: { hostRef: computer.hostRef, label: computer.label }, step: 'integration', exitCode: 0, message: null,
+        queuedAt: startedAt.toISOString(), startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(),
+        initiator: { principalId: 'principal-history', executionId: null } }
+      await f.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record) values($1,$2,$3,'passed',$4::jsonb)`,
+        [run.id, f.workspaceId, run.groupId, JSON.stringify(run)])
+    }
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'weighted',
+      partitions: 2 }))
+    await f.ci.dispatch()
+    const requests = f.started.map(value => ({ computer: value.computer,
+      partition: value.request.operation === 'start' ? value.request.partition : undefined }))
+    expect(requests).toHaveLength(2)
+    const weights = requests[0]!.partition!.weights!
+    expect(requests.every(value => JSON.stringify(value.partition!.weights) === JSON.stringify(weights))).toBe(true)
+    const byComputer = Object.fromEntries(requests.map(value => [value.computer, weights[value.partition!.index]!]))
+    expect(byComputer.mana! / byComputer.dexter!).toBeCloseTo(2, 1)
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run.partition?.weights).toEqual(weights)
+  } finally { await f.close() }
+})
+
 it('queues a run while every computer is busy and starts it on the first one that frees up', async () => {
   const f = await fixture()
   try {
@@ -184,5 +218,40 @@ it('denies callers without CI grants and asks for a GitHub repository first', as
     expect(JSON.stringify(missing.content)).toContain('SOURCE_REPOSITORY_REQUIRED')
     expect((await f.call(f.operator, 'ci_run', { suite: 'unit', commandId: 'split-unit', partitions: 2 })).isError).toBe(true)
     expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+  } finally { await f.close() }
+})
+
+it('learns integration file durations from finished runs and hands every partition of the next run the same ones', async () => {
+  const f = await fixture()
+  const file = (name: string) => `apps/api/test/${name}.integration.test.ts`
+  const startedDurations = () => f.started.map(value => value.request.operation === 'start' ? value.request.durations : 'none')
+  try {
+    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'learn-1',
+      partitions: 2 }))
+    await f.ci.dispatch()
+    // Nothing learned yet: the build computers use the commit's committed durations.
+    expect(startedDurations()).toEqual([undefined, undefined])
+    f.finish(first.partitions![0]!.ticketId, 0, 'ok\n', { [file('a')]: 1000, [file('b')]: 2000 })
+    f.finish(first.partitions![1]!.ticketId, 1, 'FAIL\n', { [file('c')]: 3000 })
+    await f.ci.dispatch()
+    const learned = { [file('a')]: 1000, [file('b')]: 2000, [file('c')]: 3000 }
+    const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'learn-2',
+      partitions: 2 }))
+    await f.ci.dispatch()
+    expect(startedDurations().slice(2)).toEqual([learned, learned])
+    // A slower measurement moves the expectation halfway.
+    f.finish(second.partitions![0]!.ticketId, 0, 'ok\n', { [file('a')]: 3000 })
+    f.finish(second.partitions![1]!.ticketId, 0, 'ok\n')
+    await f.ci.dispatch()
+    expect((await f.pool.query(`select file,duration_ms,samples from ci_file_durations where repository='octo/site'
+      order by file`)).rows).toEqual([{ file: file('a'), duration_ms: 2000, samples: 2 },
+      { file: file('b'), duration_ms: 2000, samples: 1 }, { file: file('c'), duration_ms: 3000, samples: 1 }])
+    CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'learn-3' }))
+    CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'learn-unit' }))
+    // ci_run starts a dispatch of its own, which may predate the second run.
+    await f.ci.dispatch()
+    await f.ci.dispatch()
+    expect(f.started.slice(4).map(value => value.request.operation === 'start' && value.request.suite)).toEqual(['integration', 'unit'])
+    expect(startedDurations().slice(4)).toEqual([{ ...learned, [file('a')]: 2000 }, undefined])
   } finally { await f.close() }
 })

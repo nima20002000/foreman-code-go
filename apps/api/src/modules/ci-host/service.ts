@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CiHostReplySchema, CiRunRecordSchema, WorkspaceSchema,
-  type CiHostRequest, type CiHostReply, type CiPartition, type CiRunRecord, type CiSuite } from '@foreman-code/contracts'
+  type CiDurations, type CiHostRequest, type CiHostReply, type CiPartition, type CiRunRecord, type CiSuite } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
@@ -58,6 +58,8 @@ export class HostCiService {
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
         const commit = await this.commits.resolve(repository, workspace.repository.defaultBranch, input.commit, snapshot)
         const groupId = randomUUID(), now = new Date().toISOString()
+        // Every partition of the run splits and times its files by the same snapshot of learned durations.
+        const durations = input.suite === 'integration' ? await this.learnedDurations(repository) : null
         const partitions: (CiPartition | null)[] = input.partitions
           ? Array.from({ length: input.partitions }, (_, index) => ({ index, count: input.partitions! })) : [null]
         const runs = partitions.map(partition => CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: scope.workspaceId,
@@ -65,14 +67,97 @@ export class HostCiService {
           exitCode: null, message: null, queuedAt: now, startedAt: null, finishedAt: null,
           initiator: { principalId: caller.id, executionId: scope.executionId ?? null } }))
         for (const run of runs) {
-          await this.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record) values($1,$2,$3,'queued',$4::jsonb)`,
-            [run.id, run.workspaceId, groupId, JSON.stringify(run)])
+          await this.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
+            values($1,$2,$3,'queued',$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, JSON.stringify(run),
+            durations ? JSON.stringify(durations) : null])
         }
         return { ticketId: runs[0]!.id, ...(input.partitions ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
       },
     })
     void this.dispatch()
     return outcome.value
+  }
+
+  /** The repository's learned integration file durations, most recently measured first, within the start request's
+   * bound. Files no run has measured fall back to the commit's committed durations on the build computer. */
+  private async learnedDurations(repository: string): Promise<CiDurations | null> {
+    const rows = (await this.pool.query<{ file: string; duration_ms: number }>(`select file,duration_ms from ci_file_durations
+      where repository=$1 order by updated_at desc,file limit 1000`, [repository])).rows
+    return rows.length ? Object.fromEntries(rows.map(row => [row.file, row.duration_ms])) : null
+  }
+
+  /** Folds a finished integration run's measured file durations into the repository's history: an exponential moving
+   * average per file, so one slow run moves the expectation only halfway. Files not measured for 30 days are dropped. */
+  private async learnDurations(repository: string, durations: CiDurations) {
+    const files = Object.keys(durations)
+    if (!files.length) return
+    await this.pool.query(`insert into ci_file_durations(repository,file,duration_ms)
+      select $1,file,greatest(1,round(ms))::integer from unnest($2::text[],$3::double precision[]) as measured(file,ms)
+      on conflict (repository,file) do update set
+        duration_ms=greatest(1,round((ci_file_durations.duration_ms+excluded.duration_ms)/2.0))::integer,
+        samples=ci_file_durations.samples+1, updated_at=now()`, [repository, files, files.map(file => durations[file])])
+    await this.pool.query(`delete from ci_file_durations where repository=$1 and updated_at < now() - interval '30 days'`,
+      [repository])
+  }
+
+  /** Sizes a partitioned run's slices by the measured speed of the computers that will run them, so they finish
+   * together: each free computer takes one slice, weighted by its throughput; slices without a computer yet get the
+   * mean. Throughput is share of the suite per wall second from that computer's last integration slice. */
+  private async weighPartitions(queued: CiRunRecord[], free: HostCiComputer[]): Promise<CiRunRecord[]> {
+    const groups = new Map<string, CiRunRecord[]>()
+    for (const run of queued) {
+      if (run.partition && !run.partition.weights) groups.set(run.groupId, [...groups.get(run.groupId) ?? [], run])
+    }
+    if (!groups.size) return queued
+    const speed = await this.throughput(free)
+    const replaced = new Map<string, CiRunRecord>()
+    for (const group of groups.values()) {
+      const count = group[0]!.partition!.count
+      if (group.length !== count) continue
+      const ordered = [...free].sort((left, right) => (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0)
+        || right.priority - left.priority).slice(0, count)
+      const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
+      const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
+      const weights = group.map((_, index) => {
+        const computer = ordered[index]
+        return Number((computer ? speed.get(computer.key) ?? mean : mean).toPrecision(6))
+      })
+      for (const [index, run] of group.sort((left, right) => left.partition!.index - right.partition!.index).entries()) {
+        const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights },
+          plannedHostKey: ordered[index]?.key ?? null })
+        await this.save(next, null)
+        replaced.set(run.id, next)
+      }
+    }
+    return queued.map(run => replaced.get(run.id) ?? run)
+  }
+
+  private async throughput(computers: HostCiComputer[]): Promise<Map<string, number>> {
+    const rows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
+      where state in ('passed','failed') and record->>'suite'='integration' and record->'partition' is not null
+        and record->>'finishedAt' is not null order by created_at desc limit 200`)).rows
+      .map(row => CiRunRecordSchema.parse(row.record))
+    const speed = new Map<string, number>()
+    for (const run of rows) {
+      const key = computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(run.computer?.hostRef))?.key
+      if (!key || speed.has(key) || !run.startedAt || !run.finishedAt || run.step !== 'integration') continue
+      const seconds = (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000
+      // Fail-fast runs say nothing about speed.
+      if (seconds < 120) continue
+      const weights = run.partition!.weights
+      const share = weights ? weights[run.partition!.index]! / weights.reduce((sum, value) => sum + value, 0) : 1 / run.partition!.count
+      speed.set(key, share / seconds)
+    }
+    for (const computer of computers) {
+      if (speed.has(computer.key)) continue
+      // No measurement yet: CPU count relative to the measured computers' typical speed per CPU.
+      const status = await this.endpoint.request(computer, { operation: 'status' }).catch(() => null)
+      if (status?.operation === 'status' && speed.size) {
+        const perCpu = [...speed.values()].reduce((sum, value) => sum + value, 0) / speed.size / 12
+        speed.set(computer.key, perCpu * status.cpuCount)
+      }
+    }
+    return speed
   }
 
   private async read(id: string, workspaceId: string): Promise<CiRunRecord> {
@@ -177,20 +262,32 @@ export class HostCiService {
       const run = CiRunRecordSchema.parse(row.record)
       const computer = computers.find(value => value.key === row.host_key)
       if (!computer) continue
-      const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1 })
-        .catch(() => null)
-      if (reply?.operation === 'read') await this.settle(run, computer, reply.run)
+      const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
+        ...(run.suite === 'integration' ? { durations: true } : {}) }).catch(() => null)
+      if (reply?.operation !== 'read') continue
+      await this.settle(run, computer, reply.run)
+      // A run is read here until it finishes, so its measured durations are learned once.
+      if (reply.durations && !['starting', 'running'].includes(reply.run.state)) {
+        await this.learnDurations(run.repository, reply.durations)
+          .catch(error => log.warn({ err: error, runId: run.id }, 'CI durations not recorded'))
+      }
     }
     const busy = new Set((await this.pool.query<{ host_key: string }>(
       `select host_key from ci_runs where state in ('starting','running')`)).rows.map(row => row.host_key))
-    const queued = (await this.pool.query<{ record: unknown }>(
-      `select record from ci_runs where state='queued' order by created_at,id limit 50`)).rows.map(row => CiRunRecordSchema.parse(row.record))
+    const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
+      `select record,durations from ci_runs where state='queued' order by created_at,id limit 50`)).rows
+    let queued = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
+    const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
+    queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
     for (const run of queued) {
-      for (const computer of [...computers].sort((left, right) => right.priority - left.priority)) {
+      const order = [...computers].sort((left, right) => Number(right.key === run.plannedHostKey)
+        - Number(left.key === run.plannedHostKey) || right.priority - left.priority)
+      for (const computer of order) {
         if (busy.has(computer.key)) continue
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
-            repository: run.repository, commit: run.commit, suite: run.suite, ...(run.partition ? { partition: run.partition } : {}) }))
+            repository: run.repository, commit: run.commit, suite: run.suite, ...(run.partition ? { partition: run.partition } : {}),
+            ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
           if (reply.operation !== 'start') continue
           await this.settle({ ...run, computer: { hostRef: computer.hostRef, label: computer.label } }, computer, reply.run)
           busy.add(computer.key)

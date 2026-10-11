@@ -9,6 +9,13 @@ export const integrationProcessLimits = {
   graceMs: 5000,
 }
 
+/** How long a file with a known typical duration may run before it counts as hung: three times its usual time, but
+ * at least a minute more, scaled for host pressure and never above the fixed per-file limit. */
+export function adaptiveDeadlineMs(expectedMs, fileTimeoutMs, timeoutScale = 1) {
+  if (!Number.isFinite(expectedMs) || expectedMs <= 0) return null
+  return Math.min(fileTimeoutMs, Math.ceil(Math.max(3 * expectedMs, expectedMs + 60_000) * Math.max(1, timeoutScale)))
+}
+
 export function groupUsed(pgid) {
   if (!pgid) return false
   for (const entry of readdirSync('/proc')) {
@@ -69,13 +76,17 @@ export function waitForIntegrationProcess(child, {
   progress = integrationProcessProgress(),
   idleTimeoutMs = integrationProcessLimits.idleTimeoutMs,
   fileTimeoutMs = integrationProcessLimits.fileTimeoutMs,
+  deadlineMs = null,
   pollIntervalMs = integrationProcessLimits.pollIntervalMs,
   graceMs = integrationProcessLimits.graceMs,
   onTimeout = () => {},
 }) {
+  // A file past its adaptive deadline is hung even while it still logs; the idle watchdog stays as a backstop.
+  const hungAfterMs = deadlineMs !== null && deadlineMs < fileTimeoutMs ? deadlineMs : null
   return new Promise((resolve) => {
     let settled = false
     let timedOut = false
+    let hung = false
     const finish = (result) => {
       if (settled) return
       settled = true
@@ -96,16 +107,17 @@ export function waitForIntegrationProcess(child, {
         const now = Date.now()
         const elapsed = now - progress.started
         const idle = now - progress.lastOutputAt
-        if (elapsed < fileTimeoutMs && idle < idleTimeoutMs) return
+        hung = hungAfterMs !== null && elapsed >= hungAfterMs
+        if (!hung && elapsed < fileTimeoutMs && idle < idleTimeoutMs) return
         timedOut = true
-        const reason = elapsed >= fileTimeoutMs
-          ? `file exceeded ${fileTimeoutMs} ms`
-          : `no log output for ${idleTimeoutMs} ms`
+        const reason = hung ? `hung: still running after its ${hungAfterMs} ms deadline`
+          : elapsed >= fileTimeoutMs ? `file exceeded ${fileTimeoutMs} ms`
+            : `no log output for ${idleTimeoutMs} ms`
         const error = new Error(`Integration process timed out: ${reason}`)
         appendFileSync(log, `\n[integration] TIMEOUT: ${reason}\n`)
         onTimeout(error)
         await stopGroup(child.pid, { graceMs })
-        finish({ code: 124, error, timedOut: true })
+        finish({ code: 124, error, timedOut: true, ...(hung ? { hung: true } : {}) })
       } catch (error) {
         finish({ code: 1, error, timedOut })
       }

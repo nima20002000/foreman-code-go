@@ -10,7 +10,7 @@ import { readVerificationEnvironment } from '../packages/contracts/src/verificat
 import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl } from './test-resources.mjs'
 import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases,
   finalizeIntegrationResult, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission,
-  integrationEnvironment, integrationReport,
+  hungContext, integrationDurationsPath, integrationEnvironment, integrationReport, measuredDurations,
   integrationLogPath, integrationProgressLine, integrationShardLimit, integrationShardPlan,
   integrationTimeouts, integrationVitestArguments,
   isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases,
@@ -930,4 +930,50 @@ test('cleanup failures retain completed queue attempts, persisted facts and canc
     assert.equal(persisted.completeness, 'partial')
     assert.equal(persisted.outcome, interrupted ? 'cancelled' : 'incomplete')
   }
+})
+
+test('a hung file names the last case it finished and its last output line', () => {
+  const log = ['\x1b[32m ✓\x1b[39m test/a.integration.test.ts > installs > reads the version 812ms',
+    ' ✓ test/a.integration.test.ts > installs > updates the harness 1204ms',
+    'waiting for the update lock', '', '[integration] TIMEOUT: hung: still running after its 80000 ms deadline', ''].join('\n')
+  assert.deepEqual(hungContext(log), { lastCase: 'test/a.integration.test.ts > installs > updates the harness',
+    lastOutput: 'waiting for the update lock' })
+  assert.deepEqual(hungContext('[integration] TIMEOUT: hung\n'), { lastCase: null, lastOutput: null })
+})
+
+test('hung files are reported apart from failures, stay hung after a passing retest, and can be rerun from the log', () => {
+  const hung = { file: 'a', code: 124, complete: false, timedOut: true, status: 'HUNG',
+    hung: { expectedMs: 20_000, deadlineMs: 80_000, lastCase: 'suite > case', lastOutput: 'waiting' } }
+  const failed = { file: 'b', code: 1, complete: true, report: {
+    totals: { total: 1, passed: 0, failed: 1, skipped: 0 }, files: [] } }
+  const retest = { file: 'a', code: 0, complete: true, report: {
+    totals: { total: 1, passed: 1, failed: 0, skipped: 0 }, files: [] } }
+  const report = integrationReport(['a', 'b'], [hung, failed], [retest], {
+    startedAt: '2026-10-11T00:00:00.000Z', finishedAt: '2026-10-11T00:01:00.000Z',
+    interrupted: null, diagnostic: false, processStopped: true })
+  assert.deepEqual(report.hungFiles, ['a'])
+  assert.equal(report.files[0].status, 'HUNG')
+  assert.deepEqual(report.files[0].hung, hung.hung)
+  assert.equal(report.files[1].status, 'FAILED')
+  assert.equal(report.firstPassFailed, 2)
+  assert.notEqual(report.outcome, 'passed')
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/b.integration.test.ts']
+  assert.deepEqual(failedFilesFromLog('[integration] HUNG apps/api/test/a.integration.test.ts (slot 2, exit 124); 90000 ms\n'
+    + '[integration] FAIL apps/api/test/b.integration.test.ts (slot 1, exit 1); 10 ms\n', files), files)
+})
+
+test('only files that passed their first attempt contribute measured durations', () => {
+  assert.deepEqual(measuredDurations([
+    { file: 'passed', code: 0, complete: true, elapsedMs: 41_000 },
+    { file: 'failed', code: 1, complete: true, elapsedMs: 2_000 },
+    { file: 'hung', code: 124, complete: false, elapsedMs: 90_000, status: 'HUNG' },
+    { file: 'incomplete', code: 0, complete: false, elapsedMs: 5_000 },
+    { file: 'unavailable', code: null, complete: false },
+  ]), { passed: 41_000 })
+})
+
+test('learned durations from the CI runner replace the committed ones as expectations', () => {
+  assert.match(integrationDurationsPath({}), /scripts\/integration-durations\.json$/)
+  assert.equal(integrationDurationsPath({ FOREMAN_CODE_INTEGRATION_DURATIONS: '/runs/x/durations.json' }),
+    '/runs/x/durations.json')
 })
