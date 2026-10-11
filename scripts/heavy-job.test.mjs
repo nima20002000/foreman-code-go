@@ -580,6 +580,7 @@ function heldJob(f, label, cwd = f.first) {
   child.stderr.on('data', (data) => { output += data })
   const exited = new Promise((resolve) => child.once('exit', (code) => resolve({ code, output })))
   return { child, started, exited, queued: () => waitQueued(queued.promise, exited),
+    running: () => waitFor(() => /\[heavy-job\] running /.test(output)),
     release: () => writeFileSync(released, 'yes') }
 }
 async function stopJobs(jobs) {
@@ -745,18 +746,26 @@ test('a crashed wrapper retains its slot while token-bearing descendants are liv
     configureSlots(f, 1)
     const crashed = heldJob(f, 'crashed'); jobs.push(crashed)
     await waitFile(crashed.started)
+    // The child can start before the wrapper publishes all process-group records.
+    await crashed.running()
     crashed.child.kill('SIGKILL')
     await crashed.exited
     const recordPath = join(f.state, 'running', readdirSync(join(f.state, 'running'))[0])
     const crashedOwner = JSON.parse(readFileSync(recordPath, 'utf8'))
+    assert.equal(crashedOwner.phase, 'running')
+    assert.ok(pidRunning(crashedOwner.pgid))
     utimesSync(recordPath, new Date(0), new Date(0))
     utimesSync(join(f.state, 'active'), new Date(0), new Date(0))
+    // Publish descendant visibility before the next scheduler can inspect ownership.
+    writeFileSync(visible, JSON.stringify([crashed.child.pid, crashedOwner.pgid].map(String)))
     const next = heldJob(f, 'next'); jobs.push(next)
-    writeFileSync(visible, JSON.stringify([crashed.child.pid, crashedOwner.pgid, next.child.pid].map(String)))
     await waitFor(() => readdirSync(join(f.state, 'queue')).length === 2)
     await next.queued()
+    assert.equal(existsSync(recordPath), true)
+    assert.ok(pidRunning(crashedOwner.pgid))
     assert.equal(existsSync(next.started), false)
     crashed.release()
+    await waitFor(() => !pidRunning(crashedOwner.pgid) && !existsSync(recordPath))
     await waitFile(next.started)
     assert.equal(existsSync(recordPath), false)
     next.release()
