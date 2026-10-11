@@ -210,7 +210,8 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     return
   }
   const params = message.params ?? {}
-  log({ method: message.method, threadId: params.threadId, correlationId: params.clientUserMessageId })
+  log({ method: message.method, threadId: params.threadId, correlationId: params.clientUserMessageId,
+    ...(message.method === 'model/list' ? { workingDirectory: process.cwd() } : {}) })
   if (message.method === 'initialize') {
     reply(message.id, { userAgent: 'codex-cli 0.154.0', platformFamily: 'unix', platformOs: 'linux', codexHome: root })
   } else if (message.method === 'initialized') {
@@ -265,7 +266,19 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
       supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' },
         { reasoningEffort: 'medium', description: 'Medium' }] }]
     const respond = async () => {
-      while (existsSync(join(root, 'block-models'))) await new Promise(resolve => setTimeout(resolve, 20))
+      const blocked = () => {
+        let contents
+        try { contents = readFileSync(join(root, 'block-models'), 'utf8') }
+        catch (error) {
+          if (error.code === 'ENOENT') return false
+          throw error
+        }
+        if (!contents) return true
+        const { workingDirectory } = JSON.parse(contents)
+        const cwd = process.cwd()
+        return cwd === workingDirectory || cwd.startsWith(`${workingDirectory}/`)
+      }
+      while (blocked()) await new Promise(resolve => setTimeout(resolve, 20))
       reply(message.id, { data: existsSync(join(root, 'hide-models')) ? [] : models, nextCursor: null })
     }
     void respond()
