@@ -45,8 +45,8 @@ it('forwards explicit refresh and sign-in invalidation to both main and worker p
     : [{ record: registration }] })
   const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
   const observation = { accounts: [], observedAt: new Date().toISOString() }
-  const main = vi.fn(async (_refresh?: boolean) => observation)
-  const requests: Array<{ refresh?: boolean }> = []
+  const main = vi.fn<(refresh?: boolean) => Promise<typeof observation>>(async () => observation)
+  const requests: Array<ReturnType<typeof ComputerAccountsRequestSchema.parse>> = []
   const endpoint = {
     capabilities: () => [{ namespace: COMPUTER_ACCOUNTS_NAMESPACE, mainCanRequest: true }],
     request: async (_deviceId: string, _namespace: string, payload: unknown) => {
