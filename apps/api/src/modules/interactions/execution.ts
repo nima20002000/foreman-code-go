@@ -94,7 +94,6 @@ interface OwnedNativeSession {
   opening?: Promise<NativeSessionReference>
   openingFailed?: boolean
   preparing?: Promise<IssuedWorkerCredential['environment'] | undefined>
-  startupSignal?: AbortSignal
   // A canceled remote attach can leave the original Worker session running without a Main acknowledgment.
   restartAttachment?: { session: NativeSessionReference; request: HarnessExecutionRequest }
   cleanup?: Promise<Error[]>
@@ -1059,7 +1058,6 @@ export class ApprovalExecutionCoordinator {
       { ...context, workflowRequest: request, purpose: 'reviewer' }, resolved.manager)
     owned.runOwner = owner
     const signal = AbortSignal.any([owned.controller.signal, ...(parentSignal ? [parentSignal] : [])])
-    owned.startupSignal = signal
     owned.closureRegistration = Promise.resolve(retained.generation)
     owned.closureGeneration = retained.generation
     owned.restartAttachment = { session: native.session, request }
@@ -1143,15 +1141,12 @@ export class ApprovalExecutionCoordinator {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
         const failures: Error[] = []
         await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
-          // A failed drain can leave cleanup or create/attach in flight. Observe
-          // its actual completion; an abort/timeout is never a closure receipt.
+          // Startup errors belong to their caller; shutdown still needs to drain
+          // the captured manager and any cleanup started by the failed startup.
+          await Promise.allSettled([
+            this.reviewerRecoveries.get(owned.execution.id), owned.preparing, owned.opening,
+          ])
           await owned.cleanup
-          for (const startup of [this.reviewerRecoveries.get(owned.execution.id), owned.preparing, owned.opening]) {
-            try { await startup }
-            catch (error) {
-              if (!isRestartCancellation(error, owned.startupSignal)) throw error
-            }
-          }
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
           if (owned.restartAttachment && !owned.failed
@@ -1405,7 +1400,6 @@ export class ApprovalExecutionCoordinator {
     }
     owned.session = sessionReference
     signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
-    owned.startupSignal = signal
     if (resolutionContext.acceptedPlacement?.hostRef.kind === 'device') {
       owned.restartAttachment = { session: sessionReference, request }
     }
@@ -1874,7 +1868,6 @@ export class ApprovalExecutionCoordinator {
         ownedSession.restartAttachment = { session, request }
       }
       signal = AbortSignal.any([signal, ownedSession.controller.signal])
-      ownedSession.startupSignal = signal
 
       const observePending = async (history: NativeHistory, sourceEvent?: NativeHarnessEvent,
         sourceLease?: WorkflowNativeLease): Promise<ApprovalExecutionObservation | undefined> => {
@@ -2138,7 +2131,8 @@ export class ApprovalExecutionCoordinator {
       // manager, then let the repository prove a negative disposition.
       let held = true
       try { input.owner.assertOwned() } catch { held = false }
-      const restarting = isRestartCancellation(rawError, signal)
+      // Restart's cleanup intent can reject SQL preflight before it observes the abort.
+      const restarting = signal.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
       if (restarting) throw error
       if (held) {
         let code = 'NATIVE_EXECUTION_FAILED'
