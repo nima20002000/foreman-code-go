@@ -21,7 +21,7 @@ class ClosingClient extends EventEmitter {
 }
 
 it.each(['promise', 'callback'])('waits for every connection to close through the %s end API', async mode => {
-  const pool = createTestPool({ max: 2, Client: ClosingClient } as PoolConfig)
+  const pool = createTestPool({ max: 2, Client: ClosingClient } as unknown as PoolConfig)
   const first = await pool.connect()
   const second = await pool.connect()
   const firstClient = first as unknown as ClosingClient
