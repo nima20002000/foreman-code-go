@@ -19,6 +19,7 @@ import { adaptDeviceSocket } from '../devices/deviceWire.js'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { CodexRpcError } from '../harnesses/codexStdioTransport.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
+import { NativeDeliveryError } from '../harnesses/errors.js'
 
 /** Provider I/O fixture only; these cases do not qualify native installations. */
 class ProviderFixture implements NativeHarnessSessionManager {
@@ -132,6 +133,57 @@ async function setup(harness: AgentHarness = 'codex') {
 function receipt(value: unknown) {
   return WorkerConversationReceiptSchema.parse((value as { receipt: unknown }).receipt)
 }
+
+it.each(['first message', 'continuation'])('reads a %s before Worker reservation without changing native ownership', async phase => {
+  const f = await setup()
+  await f.request(f.open)
+  if (phase === 'continuation') {
+    await f.request({ method: 'conversation.start-turn', session: f.session,
+      prompt: 'Previous message', correlationId: 'previous' })
+    await f.host.drainForUpdate()
+    expect((await f.journal.conversations.read(f.binding))?.turns[0]?.status).toBe('completed')
+  }
+  const before = await f.journal.conversations.read(f.binding)
+  const reconcile = vi.spyOn(f.manager, 'reconcile')
+  let entered!: () => void
+  const entering = new Promise<void>(resolve => { entered = resolve })
+  let release!: () => void
+  const authorization = new Promise<void>(resolve => { release = resolve })
+  const authorize = f.ports.authorize
+  f.ports.authorize = async (request, connection, signal) => {
+    await authorize(request, connection, signal)
+    if (request.method === 'conversation.start-turn' && request.correlationId === 'next') {
+      entered()
+      await authorization
+    }
+  }
+  const next = { method: 'conversation.start-turn', session: f.session,
+    prompt: 'Next message', correlationId: 'next' }
+  const sending = f.request(next)
+  try {
+    await entering
+    for (const method of ['conversation.history', 'conversation.reconcile']) {
+      const result = await f.request({ method, session: f.session, correlationId: 'next' })
+      expect(result).toMatchObject({ history: { events: [], pendingInteractions: [] } })
+      expect(receipt(result)).toEqual(before)
+    }
+    expect(reconcile).not.toHaveBeenCalled()
+  } finally {
+    release()
+    await sending
+    await f.host.drainForUpdate()
+  }
+  const completed = await f.journal.conversations.read(f.binding)
+  expect(completed?.session).toEqual(f.session)
+  expect(completed?.turns.at(-1)).toMatchObject({ correlationId: 'next', status: 'completed',
+    result: { outcome: 'succeeded', output: { text: next.prompt } } })
+  const prompts = phase === 'continuation' ? ['Previous message', next.prompt] : [next.prompt]
+  expect(f.manager.prompts).toEqual(prompts)
+  await f.request(next)
+  await f.host.drainForUpdate()
+  expect(f.manager.prompts).toEqual(prompts)
+  expect(f.manager.creates).toBe(1)
+})
 
 it('keeps file callbacks with the live turn while its submitted input is still activating', async () => {
   const f = await setup()
@@ -647,6 +699,40 @@ it('persists definite non-delivery and admits a later message without replaying 
   await vi.waitFor(async () => expect((await f.journal.conversations.read(f.binding))?.turns[1]?.status).toBe('completed'))
   expect(f.manager.prompts).toEqual(['Delivered later'])
   expect(f.manager.creates).toBe(1)
+})
+
+it.each(['confirmed', 'pending'] as const)('persists native non-delivery with %s cleanup', async cleanup => {
+  const f = await setup()
+  await f.request(f.open)
+  const start = f.manager.startTurn.bind(f.manager)
+  f.manager.startTurn = async function* (session, input) {
+    if (input.clientCorrelationId === 'not-sent') {
+      throw new NativeDeliveryError('turn_submission', 'not_sent', new Error('Native startup refused input'), cleanup)
+    }
+    yield* start(session, input)
+  }
+  const message = { method: 'conversation.start-turn', session: f.session,
+    prompt: 'Never submitted', correlationId: 'not-sent' }
+  await f.request(message)
+  await f.host.drainForUpdate()
+  expect((await f.journal.conversations.read(f.binding))?.turns[0]?.status)
+    .toBe(cleanup === 'confirmed' ? 'rejected' : 'uncertain')
+  const next = { ...message, prompt: 'Continue later', correlationId: 'later' }
+  if (cleanup === 'pending') {
+    await expect(f.request(next)).rejects.toThrow('pending')
+    expect(f.manager.prompts).toEqual([])
+  } else {
+    const history = await f.request({ method: 'conversation.reconcile', session: f.session, correlationId: 'not-sent' })
+    expect(history).toMatchObject({ history: { nonSubmission: {
+      nativeSessionId: f.session.nativeSessionId, clientCorrelationId: 'not-sent', result: { outcome: 'failed' },
+    } } })
+    await f.request(message)
+    await f.request(next)
+    await f.host.drainForUpdate()
+    expect((await f.journal.conversations.read(f.binding))?.turns[1]?.status).toBe('completed')
+    expect(f.manager.prompts).toEqual([next.prompt])
+    expect(f.manager.creates).toBe(1)
+  }
 })
 
 it('keeps a possibly delivered message fenced even if an error claims non-delivery', async () => {

@@ -14,7 +14,7 @@ import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { compactionBlocksSend, type CompactionState } from '@foreman-code/contracts'
-import { isDefiniteCompactionRejection } from '../harnesses/errors.js'
+import { isDefiniteCompactionRejection, NativeDeliveryError } from '../harnesses/errors.js'
 import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'
 import { unavailableNativeResponse } from '../harnesses/responseAvailability.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
@@ -388,7 +388,9 @@ export class WorkerConversationHost {
         const history = await resident.allocation.manager.reconcile(record.session, request.correlationId, this.lifetime.signal)
         await this.finish(resident.binding, request.correlationId, history)
       } catch (error) {
-        const notDelivered = !streamStarted || error && typeof error === 'object'
+        const notDelivered = !streamStarted
+          || error instanceof NativeDeliveryError && error.delivery === 'not_sent' && error.cleanup === 'confirmed'
+          || error && typeof error === 'object'
           && 'certainty' in error && error.certainty === 'definite'
           && 'deliveryState' in error && error.deliveryState === 'not-delivered'
         if (notDelivered) await this.reject(resident.binding, request, error)
@@ -603,8 +605,12 @@ export class WorkerConversationHost {
           history = { events: [], pendingInteractions: [], nonSubmission: {
             nativeSessionId: request.session.nativeSessionId, clientCorrelationId: turn.correlationId, result: turn.result,
           } }
-        } else if (request.correlationId && !running) history = await manager.reconcile(request.session, request.correlationId, signal)
-        else history = await manager.history(request.session, signal)
+        } else if (turn && request.correlationId && !running) {
+          history = await manager.reconcile(request.session, request.correlationId, signal)
+        } else {
+          // Main can reconcile a message before its Worker reservation exists.
+          history = await manager.history(request.session, signal)
+        }
         if (request.correlationId && !running && record.turns.some(turn => turn.correlationId === request.correlationId)) {
           await this.finish(request.binding, request.correlationId, history)
         }
