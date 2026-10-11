@@ -91,6 +91,7 @@ export function useWorkspaceDetailsQuery(
 
 // Directory load-all must not expand the independently paged sidebar cache.
 type CatalogView = 'navigation' | 'directory'
+const CATALOG_REFRESH_MS = 3_000
 
 export function useWorkspacePages(enabled = true, view: CatalogView = 'navigation') {
   const client = useQueryClient()
@@ -101,6 +102,8 @@ export function useWorkspacePages(enabled = true, view: CatalogView = 'navigatio
     ...(view === 'directory' ? { maxPages: 0, placeholderData: () => client.getQueryData<Pages>([...queryKeys.managedWorkspaces, 'pages']) } : {}),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkspacePage(pageParam, { signal }),
+    // Workspaces created or deleted elsewhere (Operator, other tabs) appear without a reload.
+    refetchInterval: enabled ? CATALOG_REFRESH_MS : false,
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
       return next && !params.includes(next) ? next : undefined
@@ -193,6 +196,8 @@ export function useWorkflowPages(workspaceId: string, enabled = true, view: Cata
     ...(view === 'directory' ? { maxPages: 0, placeholderData: () => client.getQueryData<Pages>([...queryKeys.managedWorkflows(workspaceId), 'pages']) } : {}),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => apiClient.listManagedWorkflowPage(workspaceId, pageParam, { signal }),
+    // Workflows created or deleted elsewhere (Operator, Agents, other tabs) appear without a reload.
+    refetchInterval: enabled ? CATALOG_REFRESH_MS : false,
     getNextPageParam: (last, _pages, _lastParam, params) => {
       const next = last.pageInfo.nextCursor
       return next && !params.includes(next) ? next : undefined
