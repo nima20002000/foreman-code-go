@@ -15,7 +15,15 @@ on:
         description: install, typecheck, lint, unit, build, integration or a check part (scripts/ci-suite.sh)
         required: true
       slice:
-        description: The integration file indexes of this partition (scripts/ci-files.mjs); empty runs them all
+        description: Unit shard i/n or integration file indexes (scripts/ci-files.mjs); empty runs them all
+        required: false
+        default: ''
+      scope:
+        description: full or affected
+        required: false
+        default: full
+      files:
+        description: Selected repository file indexes for affected unit, lint or typecheck
         required: false
         default: ''
 
@@ -31,6 +39,8 @@ jobs:
       FOREMAN_CODE_CI_DEDICATED: '1'
       SUITE: ${{ inputs.suite }}
       SLICE: ${{ inputs.slice }}
+      SCOPE: ${{ inputs.scope }}
+      SELECTED_FILES: ${{ inputs.files }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,7 +51,7 @@ jobs:
       # The pinned pnpm through corepack, as on our computers; Worker tests read it offline from corepack's cache.
       - run: corepack enable && corepack install
       - run: scripts/ci-suite.sh start
-      # Keep the pnpm store inside node_modules so cache hits retain the package integrity index.
+      # Installed packages without the pnpm store: half the size, so the restore is twice as fast.
       - id: packages
         uses: actions/cache@v4
         with:
@@ -49,31 +59,63 @@ jobs:
             node_modules
             apps/*/node_modules
             packages/*/node_modules
+            !node_modules/.pnpm-store
             !node_modules/.vitest-cache
             !**/node_modules/.cache
             !apps/web/node_modules/.tmp
-          key: packages-with-store-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
-      - if: steps.packages.outputs.cache-hit != 'true'
-        run: pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store
-      # Compiled test modules, ESLint and TypeScript results from earlier runs; all are keyed by file content, so a
-      # stale entry only costs a recompile. Runs start from main so every run shares main's cache scope.
+          key: packages-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+      # Only suites that build the Worker artifact read the store (its package index and native packages for other
+      # platforms); it stays inside node_modules where the install recorded it.
+      - id: store
+        if: inputs.suite == 'integration' || inputs.suite == 'unit-other' || inputs.suite == 'unit-api' || inputs.suite == 'unit'
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - if: steps.packages.outputs.cache-hit != 'true' || (steps.store.conclusion == 'success' && steps.store.outputs.cache-hit != 'true')
+        run: |
+          # A store missing beside restored packages is only filled by a fresh install.
+          if [ "${{ steps.packages.outputs.cache-hit }}" = true ]; then rm -rf node_modules apps/*/node_modules packages/*/node_modules; fi
+          pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store
+      # Emitting compilers must restore their output and build info together. Keeping build info in dist also
+      # makes a local dist cleanup invalidate the compiler cache.
+      - name: Contracts build cache
+        if: inputs.suite != 'install'
+        uses: actions/cache@v4
+        with:
+          path: packages/contracts/dist
+          key: contracts-build-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('packages/contracts/src/**', 'packages/contracts/tsconfig*.json', 'packages/contracts/package.json') }}
+          restore-keys: contracts-build-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-
+      # Both suites check the same no-emit web projects; share semantic results instead of checking them twice.
+      - name: Web TypeScript cache
+        if: startsWith(inputs.suite, 'typecheck') || startsWith(inputs.suite, 'build')
+        uses: actions/cache@v4
+        with:
+          path: apps/web/node_modules/.cache/tsc
+          key: web-typecheck-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/src/**', 'apps/web/*.ts', 'apps/web/tsconfig*.json', 'apps/web/package.json', 'packages/contracts/src/**', 'packages/contracts/tsconfig*.json') }}
+          restore-keys: web-typecheck-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-
+      # Publish each run's updated incremental state even when a mutable mirror ref is reused. Compiler and
+      # ESLint entries validate file content. Runs start from main so every run shares main's cache scope.
       - uses: actions/cache@v4
         with:
           path: |
             node_modules/.vitest-cache
             apps/*/node_modules/.cache
-            apps/web/node_modules/.tmp
             packages/*/node_modules/.cache
-          key: ci-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ inputs.ref }}
-          restore-keys: ci-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            apps/api/dist
+            !apps/web/node_modules/.cache/tsc
+          key: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Suite
         run: scripts/ci-suite.sh
         env:
           DURATIONS_OUTPUT: ${{ runner.temp }}/durations.json
-      - if: always() && inputs.suite == 'integration'
+      - if: always() && contains(fromJSON('["integration", "unit-api", "unit-web"]'), inputs.suite)
         uses: actions/upload-artifact@v4
         with:
           name: durations
-          path: ${{ runner.temp }}/durations.json
+          path: |
+            ${{ runner.temp }}/durations.json
+            ${{ runner.temp }}/durations.json.vitest.json
           retention-days: 1
           if-no-files-found: ignore
