@@ -82,7 +82,7 @@ it('unblocks paired-computer preflight after startup registers its previous inte
   const manager = { harness: 'codex', inspectMcp: async () => (await detection.inspect(input)).detection,
     capabilities: async () => ({ provider: 'codex', providerVersion: 'fixture' }) }
   const preflight = remoteMcpPreflight(manager as unknown as NativeHarnessSessionManager,
-    input as NativeManagerResolutionContext)
+    input as unknown as NativeManagerResolutionContext)
   await expect(preflight.preflight(input)).rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_FAILED' })
   await registerWorkerMcpInstallation(f)
   expect(await preflight.preflight(input)).toMatchObject({
