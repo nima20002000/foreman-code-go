@@ -5,7 +5,7 @@ import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
 it('saves a completed computer workflow using each accepted native directory and rejects changed execution directories', async () => {
-  const fixture = await remoteReviewProduction({ workflow: 'sequential' })
+  const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true })
   try {
     const started = await fixture.start()
     const details = await waitForRemoteReview(async () => {
@@ -32,9 +32,12 @@ it('saves a completed computer workflow using each accepted native directory and
     else expect(denied.result.isError).toBe(true)
     const saved = CurrentWorkflowSaveResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.save, input)).value
     expect(saved.version.id).not.toBe(details.run.workflowVersionId)
-    expect(CurrentWorkflowReadResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope)).version)
-      .toEqual(saved.version)
-    expect((await fixture.details(started.run.id)).run).toEqual(details.run)
+    const [persisted, retainedRun] = await Promise.all([
+      fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope),
+      fixture.details(started.run.id),
+    ])
+    expect(CurrentWorkflowReadResultSchema.parse(persisted).version).toEqual(saved.version)
+    expect(retainedRun.run).toEqual(details.run)
 
     const execution = details.executions[0]!
     const originalDirectory = execution.workingDirectory!
