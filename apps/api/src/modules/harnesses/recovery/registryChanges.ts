@@ -41,11 +41,21 @@ export class RegistryChanges {
   start(): void {
     this.rootStamp = stamp(this.root)
     if (this.rootStamp === undefined || this.watcher) return
-    this.watcher = watch(this.root, { recursive: true, persistent: false }, (_event, filename) => {
-      if (filename === null) this.dirtyRoot = true
-      else this.changed(filename.toString())
+    try {
+      this.watcher = watch(this.root, { recursive: true, persistent: false }, (_event, filename) => {
+        if (filename === null) this.dirtyRoot = true
+        else this.changed(filename.toString())
+      })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      this.dirtyRoot = true
+      return
+    }
+    this.watcher.on('error', error => {
+      // Recursive watchers can encounter a tombstone while another process removes it.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') this.dirtyRoot = true
+      else this.watcherError = error
     })
-    this.watcher.on('error', error => { this.watcherError = error })
   }
 
   poll(): { root: boolean; owners: readonly string[]; launches: readonly string[] } {

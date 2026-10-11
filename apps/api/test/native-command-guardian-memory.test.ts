@@ -24,7 +24,7 @@ vi.mock('../src/modules/harnesses/qualification/gate.js', () => ({ requireHarnes
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { NATIVE_GUARDIAN_SOURCE } from '../src/modules/harnesses/recovery/nativeGuardian.js'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
-import { writeRecord } from '../src/modules/harnesses/recovery/storage.js'
+import { readRecord, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.resetAllMocks() })
@@ -47,7 +47,7 @@ function fixture(outcome: 0 | 7 | 'missing' | 'stale') {
         writeRecord(join(directory, 'birth.json'), { format: 1, id: recovery.launchId, owner: recovery.owner,
           boot: '22222222-2222-2222-2222-222222222222',
           guardian: { pid: 501, startTicks: '100', group: 501, session: 501 },
-          containment: { path: '/mock/containment', device: '1', inode: '2' } })
+          containment: { kind: 'cgroup-v2', path: '/mock/containment', device: '1', inode: '2' } })
         wrapper.emit('message', { operation: 'observation', id: recovery.launchId })
         if (outcome !== 'missing') wrapper.emit('message', { format: 1, operation: 'native_exit',
           id: recovery.launchId, owner: recovery.owner, boot: '22222222-2222-2222-2222-222222222222',
@@ -105,6 +105,31 @@ describe('combined native command outcome and cleanup', () => {
       lifecycle: 'closed',
       closureEvidence: 'cgroup_v2_empty',
     })
+  })
+
+  it('retains recovery records and withholds retirement publication when containment retirement fails', async () => {
+    const f = fixture(0)
+    const controller = new AbortController()
+    try {
+      seams.retire.mockImplementation(() => { throw new Error('containment retirement unavailable') })
+      await expect(runCommand('mock-codex', ['--version'], f.root, undefined, undefined, { recovery: f.recovery }))
+        .rejects.toThrow('containment retirement unavailable')
+      const changes = f.registry.changes('unobserved:0', controller.signal)[Symbol.asyncIterator]()
+      const event = await changes.next()
+      expect(event.value?.launches.find(launch => launch.launchId === f.recovery.launchId)?.lifecycle)
+        .not.toBe('closed')
+      controller.abort()
+      await changes.return?.()
+      const directory = join(f.root, createHash('sha256').update(f.recovery.owner).digest('hex'), f.recovery.launchId!)
+      expect(readRecord(join(directory, 'intent.json'))).toMatchObject({ owner: f.recovery.owner })
+      expect(f.registry.closedRegistration(f.recovery.owner, f.recovery.launchId!)).toBeUndefined()
+
+      seams.retire.mockReset()
+      expect(await f.registry.closeOwner(f.recovery.owner)).toBe(true)
+      expect(f.registry.closedRegistration(f.recovery.owner, f.recovery.launchId!)).toMatchObject({
+        launchId: f.recovery.launchId, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty',
+      })
+    } finally { controller.abort() }
   })
 
 })

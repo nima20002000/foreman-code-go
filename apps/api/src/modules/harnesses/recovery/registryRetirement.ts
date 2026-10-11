@@ -11,12 +11,21 @@ import { existingPrivateDirectory, privateDirectory, readRecord, syncDirectory, 
 const closureRetentionMs = 24 * 60 * 60 * 1000
 const preparedRoots = new Set<string>()
 
-function exists(path: string): boolean {
+function existingStat(path: string) {
   try {
-    lstatSync(path)
-    return true
+    return lstatSync(path)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+function directoryEntries(path: string): string[] {
+  try {
+    if (!existingPrivateDirectory(path)) return []
+    return readdirSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
 }
@@ -30,11 +39,12 @@ export function archivedClosure(directory: string, id: string): unknown | undefi
 /** Retain exact closure readback outside the hot process inventory. */
 export function pruneClosedObservation(directory: string, id: string): void {
   const path = join(directory, `closed-${id}.json`)
-  const stat = lstatSync(path)
-  if (Date.now() - stat.mtimeMs < closureRetentionMs) return
+  const stat = existingStat(path)
+  if (!stat || Date.now() - stat.mtimeMs < closureRetentionMs) return
   // A crash may leave a closure certificate beside an unfinished retirement.
-  if (exists(join(directory, id)) || exists(join(directory, `.retired-${id}`))) return
+  if (existingStat(join(directory, id)) || existingStat(join(directory, `.retired-${id}`))) return
   const raw = readRecord(path)
+  if (raw === undefined) return
   const row = NativeProcessObservationSchema.parse(raw)
   if (row.launchId !== id || row.lifecycle !== 'closed' || !row.closureEvidence
     || createHash('sha256').update(row.owner).digest('hex') !== basename(directory)) {
@@ -65,19 +75,19 @@ export function pruneClosedObservation(directory: string, id: string): void {
 
 /** Startup maintenance runs once per root; passive telemetry never performs GC. */
 export function prepareRegistryRetirement(root: string, retire: (directory: string) => void): void {
-  if (preparedRoots.has(root) || !exists(root)) return
-  privateDirectory(root)
+  if (preparedRoots.has(root) || !existingPrivateDirectory(root)) return
   nativeRegistryProjection(root).retirementBatch(() => {
-    for (const ownerKey of readdirSync(root)) {
+    for (const ownerKey of directoryEntries(root)) {
       if (!/^[0-9a-f]{64}$/.test(ownerKey)) continue
-      const directory = privateDirectory(join(root, ownerKey))
-      for (const name of readdirSync(directory)) {
+      const directory = join(root, ownerKey)
+      for (const name of directoryEntries(directory)) {
         const match = /^closed-([0-9a-f-]{36})\.json$/.exec(name)
         if (match) pruneClosedObservation(directory, match[1]!)
         if (/^[0-9a-f-]{36}$/.test(name)) {
-          const registration = privateDirectory(join(directory, name))
-          const closed = join(registration, 'closed.json')
-          if (exists(closed) && Date.now() - lstatSync(closed).mtimeMs >= closureRetentionMs) retire(registration)
+          const registration = join(directory, name)
+          if (!existingPrivateDirectory(registration)) continue
+          const closed = existingStat(join(registration, 'closed.json'))
+          if (closed && Date.now() - closed.mtimeMs >= closureRetentionMs) retire(registration)
         }
       }
     }

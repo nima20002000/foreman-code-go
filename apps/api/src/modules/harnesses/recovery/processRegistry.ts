@@ -18,7 +18,7 @@ import { nativeRegistryProjection, type NativeRegistrySnapshot, type NativeRegis
 export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryChange } from './registryObservation.js'
 import { nativeAgentEnvironment } from '../secrets.js'
 import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
-import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
+import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 import { archivedClosure, prepareRegistryRetirement, pruneClosedObservation } from './registryRetirement.js'
 
 export interface NativeProcessRecovery {
@@ -200,7 +200,6 @@ function retireRegistration(directory: string, launch: LaunchRecord): void {
     || !observation.boundary || cgroupPopulated(observation.boundary))) {
     throw new Error('Native registration still has a live process; retirement is unconfirmed.')
   }
-  publishRetirement(directory)
   const rawBirth = readRecord(join(directory, 'birth.json'))
   if (launch.boot === bootIdentity()) {
     let boundary = rawBirth === undefined ? undefined : birthRecord(rawBirth, launch).containment
@@ -218,6 +217,7 @@ function retireRegistration(directory: string, launch: LaunchRecord): void {
     }
     if (boundary) retireCgroup(boundary)
   }
+  publishRetirement(directory)
   // One compact receipt preserves "known closed" versus "no evidence" after GC.
   writeRecord(join(ownerDirectory, `closed-${launch.id}.json`), observation)
   writeRecord(join(ownerDirectory, 'retired.json'), {
@@ -282,7 +282,9 @@ function inventory(directory: string, owner: string): string[] {
 export class NativeProcessRegistry {
   constructor(private readonly root: string) {
     if (process.platform === 'linux') prepareRegistryRetirement(resolve(root), directory => {
-      const launch = launchRecord(readRecord(join(directory, 'intent.json')))
+      const intent = readRecord(join(directory, 'intent.json'))
+      if (intent === undefined && !existingPrivateDirectory(directory)) return
+      const launch = launchRecord(intent)
       if (launch.id !== basename(directory) || key(launch.owner) !== basename(dirname(directory))) {
         throw new Error('Native owner inventory mismatch.')
       }

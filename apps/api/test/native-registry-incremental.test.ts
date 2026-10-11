@@ -1,13 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { bootIdentity, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { privateDirectory, readRecord, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
 const io = vi.hoisted(() => ({ reads: 0, inventories: 0, metadata: 0 }))
+const races = vi.hoisted(() => ({
+  beforeWatch: undefined as (() => void) | undefined,
+  beforeOpen: undefined as (() => void) | undefined,
+  beforeRead: undefined as ((path: string) => void) | undefined,
+  watchers: [] as import('node:fs').FSWatcher[],
+}))
 vi.mock('node:fs', async original => {
   const actual = await original<typeof import('node:fs')>()
   return {
@@ -18,13 +24,35 @@ vi.mock('node:fs', async original => {
     } }),
     opendirSync: new Proxy(actual.opendirSync, { apply(open, receiver, args) {
       io.inventories++
+      const beforeOpen = races.beforeOpen
+      races.beforeOpen = undefined
+      beforeOpen?.()
       return Reflect.apply(open, receiver, args)
+    } }),
+    readdirSync: new Proxy(actual.readdirSync, { apply(read, receiver, args) {
+      races.beforeRead?.(String(args[0]))
+      return Reflect.apply(read, receiver, args)
+    } }),
+    watch: new Proxy(actual.watch, { apply(watch, receiver, args) {
+      const beforeWatch = races.beforeWatch
+      races.beforeWatch = undefined
+      beforeWatch?.()
+      const watcher = Reflect.apply(watch, receiver, args)
+      races.watchers.push(watcher)
+      return watcher
     } }),
     lstatSync: new Proxy(actual.lstatSync, { apply(stat, receiver, args) {
       io.metadata++
       return Reflect.apply(stat, receiver, args)
     } }),
   }
+})
+
+afterEach(() => {
+  races.beforeWatch = undefined
+  races.beforeOpen = undefined
+  races.beforeRead = undefined
+  for (const watcher of races.watchers.splice(0)) watcher.close()
 })
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -64,6 +92,96 @@ function age(path: string, elapsed = 2 * dayMs): void {
 }
 
 describe('incremental native registry', () => {
+  it('rescans persisted launches when a directory disappears during watcher startup', () => {
+    const f = fixture()
+    try {
+      const row = f.registration({ live: true })
+      const registry = new NativeProcessRegistry(f.root)
+      races.beforeWatch = () => {
+        throw Object.assign(new Error('registry directory disappeared'), { code: 'ENOENT' })
+      }
+      const snapshot = registry.snapshot()
+      expect(snapshot.launches).toContainEqual(expect.objectContaining({
+        launchId: row.id, lifecycle: 'active',
+      }))
+      expect(registry.snapshot()).toBe(snapshot)
+      expect(readRecord(join(row.path, 'intent.json'))).toEqual(row.intent)
+      expect(registry.closedRegistration(f.owner, row.id)).toBeUndefined()
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+
+  it('rescans after a watcher loses a directory without treating disappearance as closure', async () => {
+    const f = fixture()
+    try {
+      const row = f.registration({ live: true })
+      const registry = new NativeProcessRegistry(f.root)
+      expect(registry.snapshot().launches[0]?.lifecycle).toBe('active')
+      rmSync(row.path, { recursive: true })
+      races.watchers.at(-1)!.emit('error', Object.assign(new Error('retired directory disappeared'), {
+        code: 'ENOENT',
+      }))
+      expect(registry.snapshot().launches).toContainEqual(expect.objectContaining({
+        launchId: row.id, lifecycle: 'closure-unconfirmed',
+      }))
+      expect(registry.closedRegistration(f.owner, row.id)).toBeUndefined()
+      await expect(registry.closeRegistration(registry.scope(f.owner), row.id))
+        .rejects.toMatchObject({ code: 'ENOENT' })
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+
+  it.each(['root', 'owner'] as const)('tolerates a missing %s between validation and scanning', level => {
+    const f = fixture()
+    try {
+      const row = f.registration({ live: true })
+      const registry = new NativeProcessRegistry(f.root)
+      expect(registry.snapshot().launches[0]?.lifecycle).toBe('active')
+      const directory = level === 'root' ? f.root : f.directory
+      privateDirectory(join(directory, level === 'root' ? 'b'.repeat(64) : randomUUID()))
+      races.beforeOpen = () => rmSync(directory, { recursive: true })
+      const snapshot = registry.snapshot()
+      expect(snapshot.launches).toContainEqual(expect.objectContaining({
+        launchId: row.id, lifecycle: 'closure-unconfirmed',
+      }))
+      expect(registry.closedRegistration(f.owner, row.id)).toBeUndefined()
+      expect(registry.snapshot()).toBe(snapshot)
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+
+  it.each(['root', 'owner'] as const)('does not recreate a %s removed during startup maintenance', async level => {
+    const f = fixture()
+    try {
+      const row = f.registration({ live: true })
+      const directory = level === 'root' ? f.root : f.directory
+      races.beforeRead = path => {
+        if (path !== directory) return
+        races.beforeRead = undefined
+        rmSync(directory, { recursive: true })
+      }
+      const registry = new NativeProcessRegistry(f.root)
+      expect(registry.snapshot().launches).toEqual([])
+      expect(existsSync(directory)).toBe(false)
+      expect(registry.closedRegistration(f.owner, row.id)).toBeUndefined()
+      expect(readRecord(join(row.path, 'intent.json'))).toBeUndefined()
+      await expect(registry.closeRegistration(registry.scope(f.owner), row.id))
+        .rejects.toMatchObject({ code: 'ENOENT' })
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+
+  it.each(['startup', 'event'] as const)('preserves watcher permission failures during %s', phase => {
+    const f = fixture()
+    try {
+      f.registration()
+      const registry = new NativeProcessRegistry(f.root)
+      const denied = Object.assign(new Error('registry access denied'), { code: 'EACCES' })
+      if (phase === 'startup') races.beforeWatch = () => { throw denied }
+      else {
+        registry.snapshot()
+        races.watchers.at(-1)!.emit('error', denied)
+      }
+      expect(() => registry.snapshot()).toThrow(denied)
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+
   it('keeps unchanged snapshot IO constant with a thousand retired owners', () => {
     const costs: typeof io[] = []
     for (const history of [0, 1000]) {

@@ -20,7 +20,13 @@ export interface NativeRegistrySnapshot { readonly revision: string; readonly la
 export interface NativeRegistryChange extends NativeRegistrySnapshot { readonly gap: boolean }
 
 function* entries(path: string): Iterable<string> {
-  const handle = opendirSync(path)
+  let handle
+  try {
+    handle = opendirSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
   try {
     for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
       yield entry.name

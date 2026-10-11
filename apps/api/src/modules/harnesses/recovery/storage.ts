@@ -30,16 +30,16 @@ function recordWritten(path: string): void {
 export function existingPrivateDirectory(path: string): boolean {
   const absolute = resolve(path)
   let current = parse(absolute).root
+  let stat
   for (const part of absolute.slice(current.length).split(sep).filter(Boolean)) {
     current = join(current, part)
-    let stat
     try { stat = lstatSync(current) } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
       throw error
     }
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe native observation directory.')
   }
-  const stat = lstatSync(absolute)
+  stat ??= lstatSync(absolute)
   if ((stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) {
     throw new Error('Nonprivate native observation directory.')
   }
