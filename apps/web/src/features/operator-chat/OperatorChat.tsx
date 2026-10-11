@@ -426,7 +426,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const defaultAccountId = accounts.data?.accounts.find(account =>
     account.provider === settings?.harness && account.isDefault && !account.removedAt)?.id
   const requestedAccountId = settings?.accountId ?? (usesSavedAccount ? conversationAccountId : defaultAccountId)
-  const messageSettings = settings && settings.harness !== 'opencode' && !settings.accountId
+  const messageSettings = settings && !settings.accountId
     && usesSavedAccount && conversationAccountId ? { ...settings, accountId: conversationAccountId } : settings
   const pendingHandoff = Boolean(settings && conversation?.settings
     && (settings.harness !== conversation.settings.harness || requestedAccountId !== conversationAccountId)

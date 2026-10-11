@@ -12,7 +12,7 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
   value: OperatorChatSettings; onChange(value: OperatorChatSettings): void; disabled: boolean;
   access?: ReactNode;
 }) {
-  const catalog = useProviderHarnessModels(value.harness, value.harness === 'opencode' ? undefined : value.accountId)
+  const catalog = useProviderHarnessModels(value.harness, value.accountId)
   const defaults = useHarnessDefaultsQuery()
   const [open, setOpen] = useState(false)
   const [choosingModel, setChoosingModel] = useState(false)
@@ -46,7 +46,7 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
   function chooseModel(id: string) {
     const next = models.find((item) => item.id === id)
     if (!next) return
-    if (value.harness !== 'opencode' && value.accountId) {
+    if (value.accountId) {
       update({ ...value, model: next.id })
     } else if (value.harness === 'codex') {
       const allowed = supportedEfforts(next)
@@ -122,7 +122,7 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
           onChange={(event) => { if (value.harness === 'codex') update({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' }) }} />
         <Switch label="Show thinking" checked={value.showThinking} disabled={disabled} onChange={(event) => update({ ...value, showThinking: event.target.checked })} />
         </div>
-        {value.harness !== 'opencode' && value.accountId ? <p>Effort and service-tier availability require account-specific qualification. Saved values are kept.</p> : null}
+        {value.accountId ? <p>Effort and service-tier availability require account-specific qualification. Saved values are kept.</p> : null}
         {catalog.isPending ? <small role="status">Loading models…</small> : null}
         {catalog.isError || defaults.isError ? <div role="alert">Settings unavailable. <Button size="sm" onClick={() => { void catalog.refetch(); void defaults.refetch() }}>Retry</Button></div> : null}
       </>}

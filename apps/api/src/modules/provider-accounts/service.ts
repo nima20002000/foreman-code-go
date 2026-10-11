@@ -203,8 +203,8 @@ export class ProviderAccountsService implements ProviderAccountResolver {
   }
 
   private async change(principal: ManagementPrincipal, source: CommandSource, operation: string,
-    input: { commandId: string; expectedRevision: number; target?: DeviceProvisioningTarget;
-      expectedDefaultRevision?: number; expectedLabelRevision?: number },
+    input: { commandId: string; expectedRevision: number; target?: DeviceProvisioningTarget | undefined;
+      expectedDefaultRevision?: number | undefined; expectedLabelRevision?: number | undefined },
     payload: unknown, change: Change,
     afterRollback?: () => Promise<void>) {
     const targetKey = await this.repository.key()

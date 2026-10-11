@@ -514,7 +514,7 @@ export function buildProductionApp(
       new NativeAccountJournal(resolve(config.harnesses.workspaceRoot, 'provider-account-operations')), processRegistry,
       input => providerAccounts.assertAuthenticationEligibility(input.operation))
     : accountCommands
-  const providerAccounts = new ProviderAccountsService(database.pool,
+  const providerAccounts: ProviderAccountsService = new ProviderAccountsService(database.pool,
     new ProviderAccountsRepository(database.pool, () => accountCredentials.hostId()), accountCredentials,
     accountNative, commands)
   const workflowAccountBindings = new Map<string, AcceptedProviderAccountBinding>()

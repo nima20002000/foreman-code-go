@@ -146,7 +146,7 @@ export function useProviderAccountModels(binding?: ProviderAccountBinding, obser
 }
 export function useProviderAuthentication(binding?: ProviderAccountBinding, operationId?: string) {
   const generation = useHarnessSessionEpoch()
-  return useQuery({ queryKey: providerAuthenticationKey(binding, operationId),
+  return useQuery<ProviderAccountAuthenticationOperation>({ queryKey: providerAuthenticationKey(binding, operationId),
     enabled: Boolean(binding && operationId) && !sessionIsSwitching(), retry: false,
     refetchOnReconnect: 'always',
     refetchInterval: query => query.state.data?.nativeClosed || query.state.error ? false : 3_000,

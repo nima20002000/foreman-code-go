@@ -564,7 +564,7 @@ it('displays the accepted chat account after the provider default changes', asyn
 })
 
 it('retains a removed account and its source Run without offering a replacement chat', async () => {
-  const initial = structuredClone(agentChatFixtures.idleAfterCompletion)
+  const initial: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
   if (!initial.conversation) throw new Error('A saved conversation is required')
   initial.conversation.providerAccountBinding = accountBinding()
   initial.conversation.origin = { kind: 'run_execution', runId: 'saved-run', executionId: 'saved-execution',
