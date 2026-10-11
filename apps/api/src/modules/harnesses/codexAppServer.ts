@@ -34,7 +34,7 @@ import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, CODEX_NATI
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { readNativeCodexModelCatalog } from './codexModelCatalog.js'
 import { nativeQualification } from './nativeQualification.js'
-import type { NativeProcessRecovery } from './recovery/processRegistry.js'
+import { detachedStdioEnvironment, hasDetachedStdioProcess, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { codexModelOptions } from './operatorOptions.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from './port.js'
 import { runCommand } from './process.js'
@@ -57,7 +57,8 @@ import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonOb
 
 /** Structural client boundary shared by native production and recorded replay. */
 export type CodexTransport = Pick<CodexStdioTransport, 'start' | 'request' | 'respond' | 'reject' | 'close'>
-  & { isConnected?(): boolean }
+  & { isConnected?(): boolean; reattached?(): boolean; detachForRestart?(): Promise<void>
+    retainedThreadSettings?(threadId: string): JsonObject | undefined }
 interface CodexSessionOperations {
   prepareEnvironment?: () => Promise<void>
   transport: (...args: ConstructorParameters<typeof CodexStdioTransport>) => CodexTransport
@@ -803,27 +804,52 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         if (object(response.thread).id !== session.nativeSessionId) throw new HarnessExecutionError('CODEX_SESSION_ID_MISMATCH', 'Codex read a different native thread.')
         return structuredClone(loaded.session)
       }
-      const prepared = await this.prepareInput(input, signal)
+      const detached = this.processRecovery && hasDetachedStdioProcess(this.processRecovery)
+      const prepared = detached
+        ? await this.dependencies.withDiagnostics({ binary: this.binary, cwd: sessionStartDirectory(input),
+          configurationIdentity: canonical(configuration(input)),
+          scopedCredentialVariables: Object.keys(input.environment?.variables ?? {}),
+          ...(signal ? { signal } : {}) }, io => this.prepareInput(input, signal, io))
+        : await this.prepareInput(input, signal)
       if (advanced(prepared.harnessConfiguration).sessionPersistence === 'ephemeral') {
         throw new HarnessExecutionError('CODEX_SETTING_UNSUPPORTED', 'Ephemeral sessions cannot be resumed after their process exits.')
       }
       const candidate = await this.transport(prepared, 0, signal)
+      let attachedRuntime: Runtime | undefined
       try {
-        const response = object(await candidate.transport.request('thread/resume', {
-          ...threadParameters(prepared, Boolean(this.chatFiles)), threadId: session.nativeSessionId, excludeTurns: true,
-        }, signal), 'CODEX_THREAD_RESUME_INVALID')
-        this.validateThreadResponse(prepared, response, session.nativeSessionId)
+        const response = candidate.transport.reattached?.()
+          ? object(await candidate.transport.request('thread/read', {
+            threadId: session.nativeSessionId, includeTurns: false,
+          }, signal), 'CODEX_THREAD_READ_INVALID')
+          : object(await candidate.transport.request('thread/resume', {
+            ...threadParameters(prepared, Boolean(this.chatFiles)), threadId: session.nativeSessionId, excludeTurns: true,
+          }, signal), 'CODEX_THREAD_RESUME_INVALID')
+        const settings = candidate.transport.reattached?.()
+          ? candidate.transport.retainedThreadSettings?.(session.nativeSessionId) : response
+        if (!settings) throw new HarnessExecutionError('CODEX_EFFECTIVE_SETTINGS_MISMATCH',
+          'The original daemon has no accepted thread settings.')
+        this.validateThreadResponse(prepared, { ...settings, thread: response.thread }, session.nativeSessionId)
         const runtime = this.runtime(prepared, structuredClone(session), candidate.transport, true)
+        attachedRuntime = runtime
         const rejected = input.correlationId && this.responseJournal?.readTurnRejection(session, input.correlationId)
         if (!rejected) {
-          await this.synchronize(runtime, undefined, signal)
+          await this.synchronize(runtime, candidate.transport.reattached?.() ? input.correlationId : undefined, signal)
         }
+        if (candidate.transport.reattached?.()) await this.restoreNativeOutputTurn(runtime, signal)
         await candidate.activate(runtime)
         this.runtimes.set(session.nativeSessionId, runtime)
         this.record(runtime, 'thread.attached', { threadId: session.nativeSessionId })
         return structuredClone(session)
       } catch (error) {
-        await candidate.transport.close().catch(() => undefined)
+        if (attachedRuntime) attachedRuntime.disposed = true
+        const restarting = candidate.transport.reattached?.() && signal?.reason instanceof DomainError
+          && signal.reason.code === 'ENGINE_RESTART'
+        const results = await Promise.allSettled([
+          attachedRuntime ? this.finishTurnResources(attachedRuntime) : Promise.resolve(),
+          restarting ? candidate.transport.detachForRestart!() : candidate.transport.close(),
+        ])
+        const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+        if (failures.length) throw new AggregateError([error, ...failures], 'Native attachment cleanup is unconfirmed.')
         throw error
       }
     })
@@ -1648,7 +1674,49 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     })
   }
 
-  closeForRestart(session: NativeSessionReference): Promise<void> { return this.close(session) }
+  async originalEnvironment(session: NativeSessionReference, signal?: AbortSignal) {
+    this.assertSessionVersion(session)
+    if (!this.processRecovery) return undefined
+    return detachedStdioEnvironment(this.processRecovery, signal)
+  }
+
+  canDetachForRestart(session: NativeSessionReference): boolean {
+    const runtime = this.runtimes.get(session.nativeSessionId)
+    return !!this.processRecovery && process.platform === 'linux' && !!runtime
+      && runtime.session.providerVersion === session.providerVersion && !runtime.closed && !runtime.disposed
+      && runtime.activeTurnId !== undefined
+      && advanced(runtime.configuration).sessionPersistence !== 'ephemeral'
+      && runtime.transport.detachForRestart !== undefined
+  }
+
+  async closeForRestart(session: NativeSessionReference): Promise<void> {
+    this.assertSessionVersion(session)
+    const loaded = this.runtimes.get(session.nativeSessionId)
+    if (!this.processRecovery || process.platform !== 'linux' || !loaded?.transport.detachForRestart
+      || advanced(loaded.configuration).sessionPersistence === 'ephemeral') {
+      await this.close(session)
+      return
+    }
+    await this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.runtimes.get(session.nativeSessionId)
+      if (!runtime) return
+      runtime.closed = true
+      runtime.disposed = true
+      runtime.starting?.preparationController.abort()
+      await Promise.allSettled([runtime.starting?.filePreparation, runtime.starting?.nativeOutputPreparation])
+      await this.finishTurnResources(runtime)
+      await runtime.transport.detachForRestart!()
+      this.transports.delete(runtime.transport)
+      this.wake(runtime)
+      this.runtimes.delete(session.nativeSessionId)
+      for (const [id, child] of this.childRuntimes) {
+        if (child.runtime.parent !== runtime) continue
+        child.runtime.disposed = true
+        this.wake(child.runtime)
+        this.childRuntimes.delete(id)
+      }
+    })
+  }
 
   async inspectMcp(signal?: AbortSignal): Promise<McpDetection> {
     const checkedAt = this.dependencies.now().toISOString()
@@ -2156,7 +2224,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         disconnected = true
         if (runtime?.generation === generation && runtime.transport === transport && !runtime.disposed) this.handleDisconnect(runtime)
       },
-      undefined, this.processRecovery, prepared.disabledAppMcpServerNames,
+      undefined, this.processRecovery, prepared.disabledAppMcpServerNames, undefined,
+      { reconnectableStdio: isWorkflowStart(prepared.input)
+        && advanced(prepared.harnessConfiguration).sessionPersistence !== 'ephemeral' },
     )
     // Also own cold-attachment candidates before a Runtime has been published.
     this.ownTransport(transport)
@@ -2340,6 +2410,29 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       void attempt.catch(() => { if (runtime.nativeOutputCleanup === attempt) runtime.nativeOutputCleanup = undefined })
     }
     return Promise.all([this.finishFiles(runtime), runtime.nativeOutputCleanup]).then(() => undefined)
+  }
+
+  private async restoreNativeOutputTurn(runtime: Runtime, signal?: AbortSignal): Promise<void> {
+    if (!this.nativeOutputs || !runtime.activeTurnId || runtime.terminalResult) return
+    const correlationId = runtime.activeCorrelationId
+    if (!correlationId || !runtime.effectiveSandbox) throw new HarnessExecutionError(
+      'CODEX_NATIVE_OUTPUT_ADMISSION_REQUIRED', 'Recovered native output requires the original turn and sandbox.')
+    const activeSignal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    const bridge = await this.nativeOutputs.prepare({
+      ...this.nativeOutputQualification(runtime.configuration, runtime.qualified,
+        runtime.workingDirectory, runtime.effectiveSandbox.tmpdir),
+      effectiveSandbox: structuredClone(runtime.effectiveSandbox), session: structuredClone(runtime.session),
+      clientCorrelationId: correlationId, connectionId: runtime.connectionId, runtimeGeneration: runtime.generation,
+    }, activeSignal)
+    const output = new CodexRuntimeNativeOutputTurn(bridge)
+    runtime.nativeOutput = output
+    const turnId = runtime.activeTurnId
+    await output.activate({ session: structuredClone(runtime.session), connectionId: runtime.connectionId,
+      runtimeGeneration: runtime.generation, nativeTurnId: turnId, assertCurrent: () => {
+        if (runtime.nativeOutput !== output || runtime.closed || runtime.disposed || runtime.terminalResult
+          || runtime.activeTurnId !== turnId) throw new HarnessExecutionError(
+          'CODEX_NATIVE_OUTPUT_CLOSED', 'The recovered native output turn was withdrawn.')
+      } }, activeSignal)
   }
 
   private finishFiles(runtime: Runtime): Promise<void> {

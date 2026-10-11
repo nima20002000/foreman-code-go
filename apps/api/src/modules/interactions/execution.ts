@@ -703,9 +703,9 @@ export class ApprovalExecutionCoordinator {
   ) {
     const { signal, purpose, enterNative, restartOwner } = options
     restartOwner?.assertOwned()
+    const owned = this.ownedSessions.get(context.executionId)
+    if (!owned || owned.manager !== resolved.manager) throw new Error('Native preflight has no exact manager owner.')
     if (this.workflowClosures) {
-      const owned = this.ownedSessions.get(context.executionId)
-      if (!owned || owned.manager !== resolved.manager) throw new Error('Native preflight has no exact manager owner.')
       // The original process intent must be durable before entered commits.
       // Allocation/reviewer cleanup alone must not reserve or dispatch anything.
       if (resolved.processState === 'needs_start' && !owned.launchReserved) {
@@ -728,6 +728,53 @@ export class ApprovalExecutionCoordinator {
     await enterNative?.()
     signal?.throwIfAborted()
     if (!this.credentials) return undefined
+    if (owned.session && owned.restartAttachment && context.acceptedPlacement?.hostRef.kind === 'device'
+      && resolved.processState === 'needs_start') {
+      if (!this.credentials.restore) throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED',
+        'The original Worker credential cannot be restored.', 409)
+      const { session, request } = owned.restartAttachment
+      const lane = await this.interactions.coordination.getLane(session.harness, session.nativeSessionId)
+      const identity = reviewPreflightIdentity(lane, `execution:${context.executionId}`)
+      const attached = await this.openingSession(owned,
+        resolved.manager.attachSession(session, { request, ...identity }, signal))
+      this.assertSessionIdentity(session, attached)
+      const completed = async () => {
+        const history = await resolved.manager.reconcile(session, `execution:${context.executionId}`, signal)
+        const terminal = history.terminalTurn
+        return terminal?.correlationId === `execution:${context.executionId}`
+          && history.correlationId === terminal.correlationId
+          && terminal.providerId === (history.nativeTurnId ?? history.nativeMessageId)
+          && !history.pendingInteraction && history.pendingInteractions.length === 0
+      }
+      if (await completed()) {
+        resolved.markResident?.()
+        return undefined
+      }
+      let access: Awaited<ReturnType<typeof resolved.manager.originalApplicationAccess>>
+      try { access = await resolved.manager.originalApplicationAccess(session, signal) }
+      catch (error) {
+        if (!await completed()) throw error
+        resolved.markResident?.()
+        return undefined
+      }
+      const credential = await this.credentials.restore(context.executionId, { agentId: context.agentId,
+        variables: { [APP_MCP_TOKEN_ENVIRONMENT_VARIABLE]: access.token } })
+      this.managerCredentials.set(resolved.manager, credential)
+      signal?.throwIfAborted()
+      resolved.markResident?.()
+      return undefined
+    }
+    if (owned.session && resolved.manager.originalEnvironment && resolved.processState === 'needs_start') {
+      const variables = await resolved.manager.originalEnvironment(owned.session, signal)
+      if (variables) {
+        if (!this.credentials.restore) throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED',
+          'The original native process credential cannot be restored.', 409)
+        const credential = await this.credentials.restore(context.executionId, { agentId: context.agentId, variables })
+        this.managerCredentials.set(resolved.manager, credential)
+        signal?.throwIfAborted()
+        return credential.environment
+      }
+    }
     if (resolved.processState === 'resident') {
       const credential = this.managerCredentials.get(resolved.manager)
       if (!credential) throw new Error('The resident native process has no owned worker credential lease.')
@@ -1129,6 +1176,28 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
+  async preserveActiveForRestart(owner: RunOwnership): Promise<boolean> {
+    const snapshot = await this.runs.getRepeatSnapshot(owner.runId, owner)
+    if (snapshot.stopRequested || snapshot.cleanupPending || snapshot.run.executionState === 'completed') return false
+    const active: OwnedNativeSession[] = []
+    for await (const executions of this.runs.executionPages(owner.runId, owner)) {
+      for (const execution of executions) {
+        if (execution.state === 'completed' || execution.state === 'queued') continue
+        const owned = this.ownedSessions.get(execution.id)
+        if (!owned?.session || !execution.nativeSessionId || owned.opening || owned.openingFailed
+          || owned.failed || owned.cleanup || !owned.closureGeneration
+          || owned.session.nativeSessionId !== execution.nativeSessionId
+          || !owned.manager.canDetachForRestart?.(owned.session)) return false
+        active.push(owned)
+      }
+    }
+    if (!active.length) return false
+    owner.assertOwned()
+    for (const owned of active) await this.budgets.beginWait(owned.execution.id)
+    owner.assertOwned()
+    return true
+  }
+
   /** Production calls this AFTER stopping/draining producers and BEFORE raw
    * manager disposal. Waiting Workers and retained reviewers are not Stop: their
    * checkpoints, budgets, credentials and business records must survive restart.
@@ -1154,15 +1223,19 @@ export class ApprovalExecutionCoordinator {
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
           if (owned.restartAttachment && !owned.failed
-            && owned.context.acceptedPlacement?.hostRef.kind === 'device'
             && (!owned.session || owned.openingFailed || owned.generation === 0)) {
-            // Worker reattachment only observes the saved process; it cannot launch or resubmit a turn.
             const { session, request } = owned.restartAttachment
-            const lane = await this.interactions.coordination.getLane(session.harness, session.nativeSessionId)
-            const identity = reviewPreflightIdentity(lane, `execution:${owned.execution.id}`)
-            const attached = await this.openingSession(owned,
-              owned.manager.attachSession(session, { request, ...identity }))
-            this.assertSessionIdentity(session, attached)
+            const remote = owned.context.acceptedPlacement?.hostRef.kind === 'device'
+            const variables = remote ? undefined : await owned.manager.originalEnvironment?.(session)
+            if (remote || variables) {
+              const lane = await this.interactions.coordination.getLane(session.harness, session.nativeSessionId)
+              const identity = reviewPreflightIdentity(lane, `execution:${owned.execution.id}`)
+              const attached = await this.openingSession(owned, owned.manager.attachSession(session, {
+                request, ...identity,
+                ...(variables ? { environment: { agentId: owned.execution.agentId, variables } } : {}),
+              }))
+              this.assertSessionIdentity(session, attached)
+            }
           }
           // Creation can finish before the session binding commits. Dispose the
           // captured manager when startup settles without a persisted binding.
@@ -1416,7 +1489,8 @@ export class ApprovalExecutionCoordinator {
     }
     owned.session = sessionReference
     signal = signal ? AbortSignal.any([signal, owned.controller.signal]) : owned.controller.signal
-    if (resolutionContext.acceptedPlacement?.hostRef.kind === 'device') {
+    if (resolutionContext.acceptedPlacement?.hostRef.kind === 'device'
+      || resolutionContext.harness === 'codex' && !resolutionContext.purpose) {
       owned.restartAttachment = { session: sessionReference, request }
     }
     try {
@@ -1834,7 +1908,7 @@ export class ApprovalExecutionCoordinator {
         return { state: 'completed', execution, result: execution.result }
       }
       await this.budgets.ensure(execution.id, input.graphThreadId, input.agentActiveTimeoutMs ?? this.activeTimeoutMs)
-      if (execution.state === 'waiting') await this.budgets.resume(execution.id)
+      await this.budgets.resume(execution.id)
       const budgetStarted = performance.now()
       // An exhausted budget found on recovery takes the same deadline path as a
       // live timeout: abort, close the exact session and settle negatively.
@@ -1883,7 +1957,8 @@ export class ApprovalExecutionCoordinator {
       ownedSession = this.ownSession(execution, context, manager)
       ownedSession.runOwner = input.owner
       if (session && !ownedSession.session) ownedSession.session = session
-      if (session && context.acceptedPlacement?.hostRef.kind === 'device') {
+      if (session && (context.acceptedPlacement?.hostRef.kind === 'device'
+        || context.harness === 'codex' && !context.purpose)) {
         ownedSession.restartAttachment = { session, request }
       }
       signal = AbortSignal.any([signal, ownedSession.controller.signal])

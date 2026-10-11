@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
-import { connect } from 'node:net'
+import { connect, type Socket } from 'node:net'
 import { constants } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -623,6 +623,7 @@ function takeLaunch(scope: NativeProcessRecovery): LaunchRecord {
  */
 export function spawnNativeProcess(binary: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery; restartDetachable?: true
+  reconnectableStdio?: true
   purpose?: 'command' | 'inspection' | 'session'
   claudeSessionScope?: import('../claudeSdk/port.js').ClaudeSessionScope
 }): ChildProcessWithoutNullStreams {
@@ -665,6 +666,7 @@ function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: str
 
 function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   cwd: string; env: NodeJS.ProcessEnv; recovery?: NativeProcessRecovery; restartDetachable?: true
+  reconnectableStdio?: true
   claudeSessionScope?: import('../claudeSdk/port.js').ClaudeSessionScope
 }): ChildProcessWithoutNullStreams {
   if (!options.recovery || process.platform !== 'linux') return spawn(binary, args, {
@@ -719,7 +721,9 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
     })
     dispatchAttempted = true
     child.send({ operation: 'start', directory, binary, args, cwd: options.cwd, environment: options.env,
-      ...(options.claudeSessionScope ? { claudeSessionScope: options.claudeSessionScope } : {}), restartDetachable: options.restartDetachable === true }, (error) => {
+      ...(options.claudeSessionScope ? { claudeSessionScope: options.claudeSessionScope } : {}),
+      reconnectableStdio: options.reconnectableStdio === true,
+      restartDetachable: options.restartDetachable === true }, (error) => {
       if (error) { try { child.disconnect() } catch { /* Already disconnected. */ } }
     })
   } catch (error) {
@@ -761,6 +765,112 @@ export function readDetachedNativeProcess(scope: NativeProcessRecovery): NativeL
   })
   if (detached.length > 1) throw new Error('Detached native owner is ambiguous.')
   return detached[0]
+}
+
+function detachedStdioRegistration(scope: NativeProcessRecovery) {
+  const detached = readDetachedNativeProcess(scope)
+  if (!detached) return undefined
+  const directory = join(privateDirectory(scope.root), key(scope.owner), detached.launchId)
+  const marker = recordObject(readRecord(join(directory, 'restart-detached.json')))
+  if (marker.reconnectableStdio !== true) return undefined
+  const launch = launchRecord(readRecord(join(directory, 'intent.json')))
+  const birth = birthRecord(readRecord(join(directory, 'birth.json')), launch)
+  return { launch, birth }
+}
+
+export function hasDetachedStdioProcess(scope: NativeProcessRecovery): boolean {
+  return detachedStdioRegistration(scope) !== undefined
+}
+
+/** Authenticated control stays separate from provider JSON-RPC, including after takeover. */
+async function stdioControl(scope: NativeProcessRecovery, operation: 'attach' | 'environment' | 'detach',
+  connectionId?: string, signal?: AbortSignal): Promise<{ socket: Socket; reply: Record<string, unknown> }> {
+  const registration = detachedStdioRegistration(scope)
+  if (!registration) throw new Error('The original Codex daemon is unavailable.')
+  const { launch, birth } = registration
+  signal?.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const socket = connect({ path: socketName(launch.id) })
+    let buffer = Buffer.alloc(0)
+    const timer = setTimeout(() => fail(new Error('Native observer control timed out.')), 2_000)
+    const abort = () => fail(new Error('Native observer control canceled.', { cause: signal?.reason }))
+    const cleanup = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      socket.removeListener('data', receive)
+      socket.removeListener('error', fail)
+      socket.removeListener('end', ended)
+    }
+    const fail = (error: Error) => { cleanup(); socket.destroy(); reject(error) }
+    const ended = () => fail(new Error('Native observer disconnected before acknowledgement.'))
+    const receive = (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk])
+      const end = buffer.indexOf(10)
+      if (end < 0) {
+        if (buffer.length > 4 * 1024 * 1024) fail(new Error('Invalid native observer acknowledgement.'))
+        return
+      }
+      try {
+        const reply = recordObject(JSON.parse(buffer.subarray(0, end).toString('utf8')))
+        if (reply.id !== launch.id || reply.startTicks !== birth.guardian.startTicks || reply.accepted !== true) {
+          throw new Error('Native observer generation changed.')
+        }
+        socket.pause()
+        cleanup()
+        if (buffer.length > end + 1) socket.unshift(buffer.subarray(end + 1))
+        resolve({ socket, reply })
+      } catch (error) { fail(error instanceof Error ? error : new Error('Invalid native observer reply.')) }
+    }
+    socket.on('data', receive)
+    socket.once('error', fail)
+    socket.once('end', ended)
+    signal?.addEventListener('abort', abort, { once: true })
+    socket.once('connect', () => socket.write(JSON.stringify({ id: launch.id, owner: launch.owner,
+      controlKey: launch.controlKey, startTicks: birth.guardian.startTicks, operation, connectionId }) + '\n'))
+    if (signal?.aborted) abort()
+  })
+}
+
+export async function detachedStdioEnvironment(scope: NativeProcessRecovery, signal?: AbortSignal) {
+  if (!hasDetachedStdioProcess(scope)) return undefined
+  const { socket, reply } = await stdioControl(scope, 'environment', undefined, signal)
+  socket.destroy()
+  const variables = recordObject(reply.variables)
+  if (Object.entries(variables).some(([name, value]) =>
+    !['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN'].includes(name) || typeof value !== 'string' || !value)) {
+    throw new Error('Invalid retained native credential environment.')
+  }
+  const token = variables.GRAPHQL_MCP_TOKEN ?? variables.FOREMAN_CODE_MCP_TOKEN
+  if (typeof token !== 'string' || !token
+    || variables.GRAPHQL_MCP_TOKEN && variables.FOREMAN_CODE_MCP_TOKEN
+      && variables.GRAPHQL_MCP_TOKEN !== variables.FOREMAN_CODE_MCP_TOKEN) {
+    throw new Error('Retained native credential aliases do not match.')
+  }
+  return { GRAPHQL_MCP_TOKEN: token }
+}
+
+export async function attachDetachedStdio(scope: NativeProcessRecovery, signal?: AbortSignal) {
+  const connectionId = randomUUID()
+  const { socket, reply } = await stdioControl(scope, 'attach', connectionId, signal)
+  let threadSettings: Record<string, unknown>
+  try { threadSettings = recordObject(reply.threadSettings) }
+  catch (error) {
+    socket.destroy()
+    if (!await new NativeProcessRegistry(scope.root).closeOwner(scope.owner)) {
+      throw new AggregateError([error], 'Invalid observer reply and native closure remain unconfirmed.')
+    }
+    throw error
+  }
+  return { socket, threadSettings, detach: async () => {
+    const detached = await stdioControl(scope, 'detach', connectionId)
+    detached.socket.destroy()
+    socket.destroy()
+  }, close: async () => {
+    socket.destroy()
+    if (!await new NativeProcessRegistry(scope.root).closeOwner(scope.owner)) {
+      throw new Error('Original Codex daemon closure is unconfirmed.')
+    }
+  } }
 }
 
 /** Release the original HTTP daemon's pipes after authenticated guardian detachment. */

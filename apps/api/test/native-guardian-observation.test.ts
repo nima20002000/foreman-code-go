@@ -8,7 +8,7 @@ import { NATIVE_GUARDIAN_SOURCE } from '../src/modules/harnesses/recovery/native
 /** Execute the actual guardian program against deterministic private storage and
  * process APIs. No executable, kernel cgroup, signal or host setting is touched. */
 function guardianFixture(childAvailable = true, observationWriteFails = false,
-  options: { restartDetachable?: true; earlyInput?: string } = {}) {
+  options: { restartDetachable?: true; reconnectableStdio?: true; earlyInput?: string } = {}) {
   const id = '11111111-1111-1111-1111-111111111111'
   const boot = '22222222-2222-2222-2222-222222222222'
   const records = new Map<string, string>()
@@ -96,14 +96,18 @@ function guardianFixture(childAvailable = true, observationWriteFails = false,
   runInNewContext(NATIVE_GUARDIAN_SOURCE, { require: requireFixture, process, Buffer,
     setTimeout: (callback: () => void, delay: number) => timers.push({ callback, delay }) })
   process.emit('message', { operation: 'start', directory: '/private', binary: 'actual-cli', args: ['private-argument'],
-    cwd: '/workspace', environment: { SECRET: 'private-secret' }, restartDetachable: options.restartDetachable === true })
+    cwd: '/workspace', environment: { SECRET: 'private-secret',
+      ...(options.reconnectableStdio ? { FOREMAN_CODE_MCP_TOKEN: 'fixture-token' } : {}) },
+    restartDetachable: options.restartDetachable === true, reconnectableStdio: options.reconnectableStdio === true })
   const control = (message: unknown) => {
     const state = { destroyed: false, replies: [] as string[] }
-    const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, pause: () => {},
+    const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, setEncoding: () => {},
+      pause: () => {}, resume: () => {},
+      write: (reply: string) => { state.replies.push(reply); return true },
       destroy: () => { state.destroyed = true }, end: (reply: string) => state.replies.push(reply) })
     acceptSocket(socket)
     socket.emit('data', Buffer.from(JSON.stringify(message) + '\n'))
-    return state
+    return Object.assign(state, { socket })
   }
   return { records, native, ipc, signals, flushed, kills, timers, process, output, outputObservations, control, id }
 }
@@ -163,6 +167,47 @@ describe('guardian actual child observation receipts', () => {
     expect(f.records.has('/private/restart-detached.json')).toBe(false)
     f.process.connected = false
     f.process.emit('disconnect')
+    expect(f.signals).toEqual([[-501, 'SIGTERM']])
+  })
+  it('reconnects one authenticated stdio observer after release and preserves pending native requests', () => {
+    const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
+    const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }
+    const sent: unknown[] = []
+    f.native.stdin.on('data', chunk => sent.push(JSON.parse(String(chunk))))
+    f.process.stdin.write(JSON.stringify({ id: 'original:1', method: 'thread/start' }) + '\n')
+    f.native.stdout.write(JSON.stringify({ id: 'original:1', result: {
+      model: 'fixture-model', thread: { id: 'same-thread' }, sandbox: { type: 'readOnly' },
+    } }) + '\n')
+    expect(f.control({ ...command, operation: 'attach', connectionId: 'second' }).destroyed).toBe(true)
+    expect(f.control({ ...command, operation: 'detach', controlKey: 'b'.repeat(64) }).destroyed).toBe(true)
+    expect(f.control({ ...command, operation: 'detach' }).replies).toHaveLength(1)
+    f.process.connected = false
+    f.process.emit('disconnect')
+    f.process.stdin.end()
+    expect(f.native.stdin.writableEnded).toBe(false)
+    const request = { id: 7, method: 'item/tool/requestUserInput', params: { threadId: 'same-thread' } }
+    f.native.stdout.write(JSON.stringify(request) + '\n')
+    const environment = f.control({ ...command, operation: 'environment' })
+    expect(JSON.parse(environment.replies[0]!)).toMatchObject({ variables: { FOREMAN_CODE_MCP_TOKEN: 'fixture-token' } })
+    const attached = f.control({ ...command, operation: 'attach', connectionId: 'second' })
+    expect(attached.destroyed).toBe(false)
+    expect(JSON.parse(attached.replies[0]!)).toMatchObject({ accepted: true,
+      threadSettings: { 'same-thread': { model: 'fixture-model', sandbox: { type: 'readOnly' } } } })
+    expect(JSON.parse(attached.replies[1]!)).toEqual(request)
+    expect(f.control({ ...command, operation: 'attach', connectionId: 'third' }).destroyed).toBe(true)
+    expect(f.control({ ...command, operation: 'detach', connectionId: 'wrong' }).destroyed).toBe(true)
+    attached.socket.emit('data', Buffer.from(JSON.stringify({ id: 7, result: { answers: {} } }) + '\n'))
+    expect(sent.at(-1)).toEqual({ id: 7, result: { answers: {} } })
+    expect(f.control({ ...command, operation: 'detach', connectionId: 'second' }).replies).toHaveLength(1)
+    expect(attached.destroyed).toBe(true)
+    const resumed = f.control({ ...command, operation: 'attach', connectionId: 'third' })
+    expect(resumed.replies).toHaveLength(1)
+    const result = { method: 'turn/completed', params: { threadId: 'same-thread',
+      turn: { id: 'same-turn', status: 'completed', items: [{ type: 'agentMessage', text: 'Original result' }] } } }
+    f.native.stdout.write(JSON.stringify(result) + '\n')
+    expect(JSON.parse(resumed.replies[1]!)).toEqual(result)
+    expect(f.signals).toEqual([])
+    expect(f.control({ ...command, operation: 'stop' }).replies).toHaveLength(1)
     expect(f.signals).toEqual([[-501, 'SIGTERM']])
   })
   it('journals actual child PID/startTicks and positive CLI exit independently of wrapper termination', () => {
