@@ -1,7 +1,7 @@
 {
   "name": "foreman-code",
   "private": true,
-  "version": "0.0.64",
+  "version": "0.0.65",
   "type": "module",
   "packageManager": "pnpm@11.27.0",
   "engines": {

@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.65] - 2026-10-11
+
+### CI
+
+- `ci_run` defaults to affected tests; the runner selects them against the workspace default branch when no files are given, and `scope: full` runs everything.
+- Host CI runs any repository's own package scripts as single jobs, and Agent CI requests appear in the Run's activity and on the Board.
+- The heavy web unit phase runs as two shards; CircleCI takes up to 28 integration parts at once.
+
+### Sources
+
+- Stuck preparing source captures are reclaimed, and source storage capacity is sized from the host instead of fixed limits.
+
 ## [0.0.64] - 2026-10-11
 
 ### CI
