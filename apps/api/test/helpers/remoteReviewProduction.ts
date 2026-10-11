@@ -42,13 +42,15 @@ import { gitFixtureEnvironment } from './gitFixture.js'
 import { remoteReviewEnvironment } from './remoteReviewEnvironment.js'
 import { waitForChildReady } from './remoteReviewReadiness.js'
 import { measureIntegrationPhase, reportIntegrationPhase } from './integrationPhase.js'
+import { remoteReviewWorkerArtifacts } from './remoteReviewWorkerArtifacts.js'
+import { remoteReviewChanges } from './remoteReviewChanges.js'
 
 const execute = promisify(execFile)
 const tsxLoader = createRequire(import.meta.url).resolve('tsx')
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
-  description: string): Promise<T> {
-  return readUntil(read, accept, { timeoutMs: 90_000, description })
+  description: string, subscribe?: (changed: () => void) => () => void): Promise<T> {
+  return readUntil(read, accept, { timeoutMs: 90_000, description, ...(subscribe ? { subscribe } : {}) })
 }
 
 async function freePort() {
@@ -144,6 +146,8 @@ export async function remoteReviewProduction(options: {
       }
     }
     const [db, provider, claudeCommands, tls] = await setup()
+    const changes = await remoteReviewChanges(db.pool)
+    closes.push(changes.close)
     beginPhase('source repository and workflow seed')
     const claudeInventory = options.claudeInventory ? claudeCommands : undefined
     if (options.modelCatalog) await provider.hideModels()
@@ -207,6 +211,11 @@ export async function remoteReviewProduction(options: {
     const mainConfiguration = join(directory, 'main-configuration.json')
     await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure, claudeInventory: claudeInventory?.sdk }),
       { mode: 0o600 })
+    const [release] = await workerReleaseResult
+    if (release.status === 'rejected') throw release.reason
+    const workerRelease = release.value
+    logEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY = await measureIntegrationPhase(
+      'Worker update artifacts', () => remoteReviewWorkerArtifacts(workerRelease))
     let main: ChildProcess | undefined
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
@@ -422,9 +431,6 @@ export async function remoteReviewProduction(options: {
       appMcpLauncher: launcher, payloadPaths }), { mode: 0o600 })
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
     beginPhase('Worker release readiness')
-    const [release] = await workerReleaseResult
-    if (release.status === 'rejected') throw release.reason
-    const workerRelease = release.value
     beginPhase('installed Worker initialization')
     await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
       env: logEnvironment,
@@ -622,6 +628,7 @@ export async function remoteReviewProduction(options: {
       sourceManifest: approved.manifest,
       hostRef: executionHostRef, profiles, version, startupCatalog,
       start, call, value, details, reconcile, registry, close, origin: () => origin,
+      subscribeNativeChanges: changes.subscribe,
       failures: () => structuredClone(failures),
       async workerWorkflowStartup() {
         const journal = JSON.parse(await readFile(join(stateDirectory, 'workflow-operations.json'), 'utf8')) as {
@@ -689,6 +696,7 @@ export async function remoteReviewProduction(options: {
         }, 'Main observing the replacement Worker connection')
       },
       async pending(runId: string) {
+        changes.assertHealthy()
         const rows = await db.pool.query<{ record: unknown }>(
           "select record from durable_interactions where run_id=$1 and status='pending' order by id", [runId])
         return rows.rows.map(row => DurableInteractionSchema.parse(row.record))

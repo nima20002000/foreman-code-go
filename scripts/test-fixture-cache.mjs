@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstat, mkdir, mkdtemp, open, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, open, realpath, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -36,7 +36,9 @@ export async function workerFixtureInputs(repository, commit) {
 async function cacheEntryExists(directory) {
   try {
     const entry = await lstat(directory)
-    if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('Invalid fixture cache entry')
+    const owned = !process.getuid || entry.uid === process.getuid()
+    if (!entry.isDirectory() || entry.isSymbolicLink() || (entry.mode & 0o077) !== 0
+      || !owned) throw new Error('Invalid fixture cache entry')
     return true
   } catch (error) {
     if (error.code === 'ENOENT') return false
@@ -66,8 +68,9 @@ export async function cachedTestFixture(root, namespace, inputs, populate) {
     hash.update(':')
     hash.update(input)
   }
-  const parent = join(root, namespace)
-  await mkdir(parent, { recursive: true, mode: 0o700 })
+  await mkdir(join(root, namespace), { recursive: true, mode: 0o700 })
+  // Cache storage may have a symlinked ancestor; consumers require canonical private roots.
+  const parent = await realpath(join(root, namespace))
   const key = hash.digest('hex')
   const directory = join(parent, key)
   if (await cacheEntryExists(directory)) return directory

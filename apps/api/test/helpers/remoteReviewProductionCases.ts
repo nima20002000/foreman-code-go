@@ -13,11 +13,11 @@ import { remoteReviewProduction, waitForRemoteReview as waitForProduction } from
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
-  description: string): Promise<T> {
+  description: string, subscribe?: (changed: () => void) => () => void): Promise<T> {
   const started = performance.now()
   console.info(`[remote-review] waiting for ${description}`)
   try {
-    return await waitForProduction(read, accept, description)
+    return await waitForProduction(read, accept, description, subscribe)
   } finally {
     console.info(`[remote-review] ${description}: ${Math.round(performance.now() - started)} ms`)
   }
@@ -110,14 +110,14 @@ export async function reviewInProgress(fixture: Fixture) {
   expect(location.runnerId).toBe(fixture.profiles[0]!.target.applicationInstallationId)
   expect((await fixture.details(started.run.id)).run.executionLocation).toEqual(location)
   const interaction = await waitForRemoteReview(async () => {
-    await fixture.reconcile()
+    // Start already drives native execution. A full recovery sweep can outlast the routed interaction.
     const pending = (await fixture.pending(started.run.id))[0]
     if (!pending) {
       const failed = (await fixture.executions(started.run.id)).find(execution => execution.result?.outcome === 'failed')
       if (failed) throw new Error(`Native execution failed before review: ${failed.result?.error?.code}`)
     }
     return pending
-  }, value => value !== undefined, 'routed native interaction')
+  }, value => value !== undefined, 'routed native interaction', fixture.subscribeNativeChanges)
   if (!interaction) throw new Error('The requester has no pending interaction.')
   const job = await waitForRemoteReview(async () => {
     await fixture.reconcile()

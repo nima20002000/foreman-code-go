@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -77,6 +77,32 @@ test('unchanged inputs reuse complete output and changed inputs populate separat
   assert.equal(builds, 2)
   assert.equal(await readFile(join(reused, 'payload'), 'utf8'), 'build 1')
   assert.equal(await readFile(join(changed, 'payload'), 'utf8'), 'build 2')
+})
+
+test('symlinked cache ancestors return canonical output and reuse the same complete entry', async t => {
+  const root = await fixtureCache(t)
+  const storage = join(root, 'storage')
+  await mkdir(storage, { mode: 0o700 })
+  const alias = join(root, 'cache')
+  await symlink(storage, alias)
+  let builds = 0
+  const populate = async directory => {
+    builds++
+    await writeFile(join(directory, 'payload'), 'complete')
+  }
+  const first = await cachedTestFixture(alias, 'worker', ['input'], populate)
+  assert.equal(first, await realpath(first))
+  assert.equal(await cachedTestFixture(storage, 'worker', ['input'], populate), first)
+  assert.equal(builds, 1)
+  assert.equal(await readFile(join(first, 'payload'), 'utf8'), 'complete')
+})
+
+test('cache reuse refuses entries that are no longer private', async t => {
+  const root = await fixtureCache(t)
+  const populate = async directory => { await writeFile(join(directory, 'payload'), 'complete') }
+  const entry = await cachedTestFixture(root, 'worker', ['input'], populate)
+  await chmod(entry, 0o755)
+  await assert.rejects(cachedTestFixture(root, 'worker', ['input'], populate), /Invalid fixture cache entry/)
 })
 
 test('failed population releases the lock without publishing partial output', async t => {
