@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import { join } from 'node:path'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 import { reservationCleanupWorkflow, completeReservationCleanupWorkflow } from './helpers/reservationCleanupWorkflow.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -8,11 +9,16 @@ import type { SourceReservation } from '../src/modules/sources/reservations.js'
 it('defers reservation cleanup without waiting on a Run that is preparing native execution', async () => {
   const fixture = await reservationCleanupWorkflow()
   try {
-    await fixture.provider.blockModels()
+    const workingDirectory = join(fixture.directory, 'worker-runtime')
+    // Hold native preparation without blocking background inventory and profile checks.
+    await fixture.provider.blockModels({ workingDirectory })
     let runId: string
     try {
       const started = await fixture.start()
       runId = started.run.id
+      await waitForRemoteReview(() => fixture.provider.calls(), calls => calls.some(call =>
+        call.method === 'model/list' && typeof call.workingDirectory === 'string'
+        && call.workingDirectory.startsWith(`${workingDirectory}/`)), 'workflow native preparation entry')
       const reservation = await waitForRemoteReview(async () => {
         const result = await fixture.db.pool.query<{ record: SourceReservation }>(
           `select s.record from source_storage_reservations s
