@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -5,7 +6,6 @@ import { link, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from 'node
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, it } from 'vitest'
 import {
   DEFAULT_FILE_RETENTION_SECONDS, MAX_FILE_BYTES, FileWithRevisionSchema, TemporaryFileSchema,
@@ -288,12 +288,10 @@ describe.skipIf(!postgresEnabled)('FIL-04 temporary cleanup integration', () => 
       saving = retention.save(who.principal, 'http', { commandId: 'fil04-extension-race', expectedRevision: 1,
         durationSeconds: 7200, applyToExisting: true })
       void saving.catch(() => undefined)
-      let waiting = false
-      for (let attempt = 0; attempt < 100 && !waiting; attempt++) {
-        waiting = (await database.pool.query<{ waiting: boolean }>(`select exists(select 1 from pg_stat_activity
+      const waiting = await readUntil(async () => {
+        return (await database.pool.query<{ waiting: boolean }>(`select exists(select 1 from pg_stat_activity
           where $1::int=any(pg_blocking_pids(pid)) and wait_event_type='Lock') as waiting`, [blockerPid])).rows[0]!.waiting
-        if (!waiting) await delay(10)
-      }
+      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
       assert.equal(waiting, true, 'Pause the real retention command after its live-file update, before COMMIT')
       await database.pool.query("select pg_sleep(greatest(0,extract(epoch from $1::timestamptz-clock_timestamp()))+0.02)", [oldExpiry])
       const stale = await candidate(stored) // MVCC still exposes the pre-save overdue file and preference revision 1.

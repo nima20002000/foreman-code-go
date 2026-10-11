@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
@@ -176,14 +177,8 @@ function makeService() {
 
 async function settled(service: AgentChatService, state: () => Promise<AgentChatState>, until: (value: AgentChatState) => boolean = (value) =>
   !value.activeTurn && !value.turns.some((turn) => ['queued', 'submitting'].includes(turn.delivery))) {
-  const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    const value = await state()
-    if (until(value)) return value
-    await new Promise((resolve) => setTimeout(resolve, 20))
-  }
   void service
-  throw new Error('chat did not settle')
+  return readUntil(state, until, { timeoutMs: 30_000, description: 'chat settlement' })
 }
 
 function request(node: { id: string; agentId: string }, content: string, expectedConversationId: string | null,

@@ -1,5 +1,5 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
-import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { CI_GET_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
@@ -54,14 +54,11 @@ describe.skipIf(!postgresEnabled)('CI polling and credential admission lock orde
       const writerPid = (await writer.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       pending = new RunCiAuthority(pool).resolve(f.worker, undefined, CI_GET_ACTIONS)
       const settled = Promise.allSettled([pending])
-      let waiting = false
-      for (let attempt = 0; attempt < 100; attempt++) {
-        waiting = (await database.pool.query<{ waiting: boolean }>(`select exists(
+      const waiting = await readUntil(async () => {
+        return (await database.pool.query<{ waiting: boolean }>(`select exists(
           select 1 from pg_stat_activity where $1=any(pg_blocking_pids(pid))) as waiting`,
         [writerPid])).rows[0]!.waiting
-        if (waiting) break
-        await delay(10)
-      }
+      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
       expect(waiting).toBe(true)
       await writer.query('select principal_id from worker_credential_bindings where principal_id=$1 for update',
         [f.worker.id])

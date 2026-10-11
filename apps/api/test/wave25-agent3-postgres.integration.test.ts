@@ -1,5 +1,5 @@
+import { readUntil } from './helpers/observableCondition.js'
 import pg from 'pg'
-import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -100,12 +100,9 @@ describe.skipIf(!postgresEnabled)('Current workflow admission crash and owner ra
     const claim = t.store.claimLaunch(execution.id, paths(t, execution))
     const rejection = expect(claim).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
     try {
-      let blocked = false
-      for (let index = 0; index < 100; index++) {
-        blocked = (await db.pool.query<{ blocked: boolean }>('select cardinality(pg_blocking_pids($1))>0 as blocked', [pid])).rows[0]!.blocked
-        if (blocked) break
-        await delay(10)
-      }
+      const blocked = await readUntil(async () => {
+        return (await db.pool.query<{ blocked: boolean }>('select cardinality(pg_blocking_pids($1))>0 as blocked', [pid])).rows[0]!.blocked
+      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
       expect(blocked).toBe(true)
     } finally { release.resolve() }
     await stop; await rejection

@@ -1,4 +1,3 @@
-import { setTimeout } from 'node:timers/promises'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
@@ -71,7 +70,7 @@ describe.skipIf(!postgresEnabled)('scheduled Start concurrency and cancellation'
         ...repeatStartPublication,
         placementAdmission: { prepare: async (_input, _principal, signal) => {
           preparations++
-          await setTimeout(20, undefined, signal ? { signal } : {})
+          signal?.throwIfAborted()
           f.time.now = new Date(Date.parse(f.time.now) + 1_200).toISOString()
           return undefined
         } },

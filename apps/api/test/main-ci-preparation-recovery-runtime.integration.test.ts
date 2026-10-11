@@ -15,14 +15,14 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
       const reached = deferred()
       const paused = deferred()
       let interrupted = false
-      const pause = async () => {
+      const waitForRelease = async () => {
         if (interrupted) return
         reached.resolve()
         await paused.promise
       }
       const f = await suite.createFixture({
-        pause: async current => { if (current === stage) await pause() },
-        onMainRefresh: async () => { if (stage === 'refresh') await pause() },
+        pause: async current => { if (current === stage) await waitForRelease() },
+        onMainRefresh: async () => { if (stage === 'refresh') await waitForRelease() },
       })
       const original = await f.create()
       const request = input(f)

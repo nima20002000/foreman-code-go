@@ -37,7 +37,7 @@ it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the 
       'select exists(select 1 from pg_stat_activity where $1 = any(pg_blocking_pids(pid))) as blocked', [pid],
     )).rows[0]!.blocked, value => value, { timeoutMs: 5000, description: 'the migration DDL lock' })
     expect(blocked).toBe(true)
-    // Hold contention past the 100ms request deadline to prove migration uses its own deadline.
+    // eslint-disable-next-line no-restricted-syntax -- Holding the lock past the request deadline proves migration does not use that deadline.
     await new Promise(resolve => setTimeout(resolve, options.queryTimeoutMs + 1))
     await holder.query('rollback')
     const result = await command

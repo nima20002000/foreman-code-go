@@ -1,9 +1,9 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { channel } from 'node:diagnostics_channel'
 import { lookup } from 'node:dns/promises'
 import type { Socket } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import { setTimeout as delay } from 'node:timers/promises'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { createPool } from '../src/infrastructure/pool.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { ownedTestDatabaseUrl } from './helpers/testResources.js'
@@ -37,7 +37,9 @@ async function holdPostgresResponses(connectionString: string) {
       current.pause()
     },
     async received() {
-      await expect.poll(() => current?.readableLength ?? 0, { timeout: 2000 }).toBeGreaterThan(0)
+      const length = await readUntil(async () => current?.readableLength ?? 0, value => value > 0,
+        { timeoutMs: 2000, description: 'the withheld PostgreSQL response bytes' })
+      expect(length).toBeGreaterThan(0)
     },
     release() { current?.resume() },
     close() {
@@ -65,22 +67,22 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
         await pool.query('select 1')
         await pool.query(`create table ${table}(value int primary key)`)
         responses.hold()
-        const readStarted = Date.now()
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldClearNativeTimers: true })
         const completed = pool.query<{ value: number }>('select 42::int as value')
           .then(result => ({ rows: result.rows }), error => ({ error }))
         await responses.received()
-        await delay(Math.max(0, 1250 - (Date.now() - readStarted)))
+        await vi.advanceTimersByTimeAsync(1001)
         responses.release()
         expect(await completed).toEqual({ rows: [{ value: 42 }] })
 
         responses.hold()
-        const writeStarted = Date.now()
         const committed = pool.query<{ value: number }>(`insert into ${table}(value) values(42) returning value`)
           .then(result => ({ rows: result.rows }), error => ({ error }))
         await responses.received()
-        await delay(Math.max(0, 1250 - (Date.now() - writeStarted)))
+        await vi.advanceTimersByTimeAsync(1001)
         responses.release()
         expect(await committed).toEqual({ rows: [{ value: 42 }] })
+        vi.useRealTimers()
         expect((await pool.query(`select value from ${table}`)).rows).toEqual([{ value: 42 }])
 
         await expect(pool.query('select pg_sleep(2)')).rejects.toMatchObject({ code: '57014' })
@@ -89,10 +91,13 @@ it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply wh
         // handshake before withholding a query response.
         await pool.query('select 1')
         responses.hold()
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldClearNativeTimers: true })
         const silent = pool.query('select 1').catch(error => error as Error)
         await responses.received()
+        await vi.advanceTimersByTimeAsync(2001)
         await expect(silent).resolves.toMatchObject({ message: 'Query read timeout' })
       } finally {
+        vi.useRealTimers()
         responses.release()
         await pool.end()
       }

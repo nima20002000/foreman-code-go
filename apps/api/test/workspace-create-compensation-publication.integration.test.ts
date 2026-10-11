@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { fork, type ChildProcess } from 'node:child_process'
@@ -23,6 +24,7 @@ const { writeFile, stat } = require('node:fs/promises')
 const { join } = require('node:path')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
+const { setImmediate } = require('node:timers/promises')
 async function publish() {
   const gate = process.env.WORKSPACE_PUBLICATION_GATE
   await writeFile(join(gate, 'started'), String(process.pid))
@@ -30,7 +32,7 @@ async function publish() {
     try { await stat(join(gate, 'release')); break }
     catch (error) {
       if (error.code !== 'ENOENT') throw error
-      await new Promise(done => setTimeout(done, 10))
+      await setImmediate()
     }
   }
   await promisify(execFile)('/usr/bin/python3', process.argv.slice(2))
@@ -53,13 +55,13 @@ publish().catch(error => { console.error(error); process.exitCode = 1 })
         return child
       }
       const interrupted = launch(false)
-      for (let attempt = 0; ; attempt++) {
-        try { publisherPid = Number(await readFile(join(gate, 'started'), 'utf8')); break }
+      publisherPid = await readUntil(async () => {
+        try { return Number(await readFile(join(gate, 'started'), 'utf8')) }
         catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || attempt >= 1000) throw error
-          await new Promise(done => setTimeout(done, 10))
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          return undefined
         }
-      }
+      }, value => value !== undefined, { timeoutMs: 10_000, description: 'the publication process readiness' })
       expect((await f.pool.query('select identity from workspace_project_provisioning')).rows)
         .toEqual([{ identity: { device: expect.any(String), inode: expect.any(String) } }])
       const exited = once(interrupted, 'exit')

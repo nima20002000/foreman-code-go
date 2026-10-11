@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -19,10 +18,14 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const early = await Promise.allSettled(['early-first', 'early-second'].map((owner) =>
         f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`, new Date(Date.now() + 60000).toISOString())))
       expect(early.every((result) => result.status === 'rejected')).toBe(true)
-      await delay(Math.max(0, Date.parse(blocked!.retryAfter!) - Date.now() + 50))
-      const claims = await Promise.allSettled(['first', 'second'].map((owner) => f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`, new Date(Date.now() + 60000).toISOString())))
-      expect(claims.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
-      expect(claims.filter((result) => result.status === 'rejected')).toHaveLength(1)
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(blocked!.retryAfter!) + 1)
+      try {
+        const claims = await Promise.allSettled(['first', 'second'].map((owner) =>
+          f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`,
+            new Date(Date.now() + 60000).toISOString())))
+        expect(claims.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+        expect(claims.filter((result) => result.status === 'rejected')).toHaveLength(1)
+      } finally { clock.mockRestore() }
     } finally {
       if (busyLaneId) await f.coordination.releaseLane(busyLaneId, 'busy-writer', { observedStatus: 'idle' })
       try {

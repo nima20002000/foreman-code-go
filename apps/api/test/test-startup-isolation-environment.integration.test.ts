@@ -1,7 +1,7 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
 import { expect, it } from 'vitest'
 import pg from 'pg'
 import { provisionTestResources } from '../../../scripts/test-resources.mjs'
@@ -55,8 +55,17 @@ it.each(['explicit env file', 'default .env'])('isolates real API startup from %
       await assertOwnedTestApi(origin, pool, environment)
     }
     finally { await pool.end() }
-    await delay(50)
-    expect(JSON.parse(await readFile(observation, 'utf8'))).toEqual({ ambientKey: false, logFile: null })
+    const observed = await readUntil(async () => {
+      try {
+        return JSON.parse(await readFile(observation, 'utf8')) as { ambientKey: boolean; logFile: string | null }
+      }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        return undefined
+      }
+    }, value => value?.ambientKey === false && value.logFile === null,
+    { timeoutMs: 2000, description: 'the isolated startup environment observation' })
+    expect(observed).toEqual({ ambientKey: false, logFile: null })
     expect(await readFile(log, 'utf8')).toBe('application log sentinel')
     expect(await readFile(rotated, 'utf8')).toBe('application rotation sentinel')
     expect((await readdir(environment.LOG_DIR!)).length).toBeGreaterThan(0)
