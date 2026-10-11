@@ -1,11 +1,19 @@
 import { createFixtureDatabase, dropFixtureDatabase } from './helpers/testResources.js'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import Fastify from 'fastify'
 import pg from 'pg'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { OperatorRuntimeOwner } from '../src/infrastructure/operatorRuntimeOwner.js'
 import { RuntimeShutdown } from '../src/infrastructure/runtimeShutdown.js'
+import { NativeProcessRegistry, type NativeRegistryChange } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
+import { writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
 function gate() {
   let resolve!: () => void
@@ -47,6 +55,76 @@ function owner() {
 }
 
 describe('PR17 F7 PostgreSQL runtime ownership', () => {
+  it('joins an unstarted guardian before retiring its watched registration and releasing ownership', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'runtime-registry-shutdown-'))
+    const registry = new NativeProcessRegistry(root)
+    const watching = new AbortController()
+    const guardian = spawn(process.execPath, ['-e',
+      'process.on("message", () => process.exit(0)); process.send("ready")',
+    ], { env: {}, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+    const exited = once(guardian, 'exit')
+    let changes: AsyncIterator<NativeRegistryChange> | undefined
+    let finishing: Promise<unknown> | undefined
+    try {
+      await once(guardian, 'message')
+      const first = owner()
+      await first.acquire()
+      const recovery = registry.reserveLaunch(`diagnostic:${randomUUID()}`)
+      const directory = join(root, createHash('sha256').update(recovery.owner).digest('hex'), recovery.launchId!)
+      const identity = guardian.pid && processIdentity(guardian.pid)
+      if (!identity) throw new Error('The fixture guardian identity is unavailable.')
+      writeRecord(join(directory, 'dispatched.json'), { format: 1, id: recovery.launchId, guardian: identity })
+      writeRecord(join(directory, 'not-started.json'), { id: recovery.launchId, owner: recovery.owner })
+      const initial = registry.snapshot()
+      expect(initial.launches).toContainEqual(expect.objectContaining({
+        launchId: recovery.launchId, lifecycle: 'closure-unconfirmed', guardian: {
+          pid: identity.pid, startTicks: identity.startTicks,
+        },
+      }))
+      changes = registry.changes(initial.revision, watching.signal)[Symbol.asyncIterator]()
+      const observed = changes.next()
+      const entered = gate()
+      const shutdown = new RuntimeShutdown({
+        stop: [{ name: 'native process', run: () => {
+          const closing = registry.closeOwner(recovery.owner)
+          entered.resolve()
+          return closing
+        } }],
+        drain: [{ name: 'registry observation', run: async () => {
+          watching.abort()
+          await changes!.return?.()
+        } }],
+        dispose: [],
+        releaseOwnership: () => first.close(),
+      })
+      // Capture rejection immediately while checking the still-held real database lock.
+      finishing = shutdown.finish().then(() => undefined, (error: unknown) => error)
+      await entered.promise
+      await expect(owner().acquire()).rejects.toMatchObject({ code: 'OPERATOR_API_ALREADY_OWNED' })
+      expect(registry.closedRegistration(recovery.owner, recovery.launchId!)).toBeUndefined()
+      expect(() => registry.reserveLaunch(recovery.owner)).toThrow()
+      guardian.send('stop')
+      expect((await exited)[0]).toBe(0)
+      expect(await finishing).toBeUndefined()
+      expect((await observed).value?.launches).toContainEqual(expect.objectContaining({
+        launchId: recovery.launchId, lifecycle: 'closed', closureEvidence: 'native_not_started',
+      }))
+      expect(registry.closedRegistration(recovery.owner, recovery.launchId!)).toMatchObject({
+        launchId: recovery.launchId, lifecycle: 'closed', closureEvidence: 'native_not_started',
+      })
+      await expect(registry.closeOwner(recovery.owner)).resolves.toBe(true)
+      await expect(owner().acquire()).resolves.toBeUndefined()
+    } finally {
+      watching.abort()
+      if (guardian.exitCode === null && guardian.signalCode === null) guardian.kill('SIGTERM')
+      await exited
+      await changes?.return?.()
+      await finishing
+      rmSync(root, { recursive: true, force: true })
+      registry.snapshot()
+    }
+  }, 15_000)
+
   for (const pendingStage of ['runtime', 'reconciliation', 'manager'] as const) {
     it(`rejects a second real owner while ${pendingStage} cleanup is pending, then allows handoff`, async () => {
       const first = owner()

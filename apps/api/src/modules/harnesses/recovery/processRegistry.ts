@@ -238,6 +238,25 @@ function confirmClosed(directory: string, launch: LaunchRecord, evidence: Closur
   retireRegistration(directory, launch)
 }
 
+function unstartedGuardianAlive(directory: string, launch: LaunchRecord): boolean {
+  if (launch.boot !== bootIdentity()) return false
+  const guardian = nativeRegistryProjection(dirname(dirname(directory))).retirementObservation(directory)?.guardian
+  return !!guardian && identityAlive(guardian)
+}
+
+async function waitForUnstartedGuardian(directory: string, launch: LaunchRecord, signal?: AbortSignal): Promise<void> {
+  const end = Date.now() + 5_000
+  // IPC disconnection asks an unstarted guardian to exit; retirement must join that exit.
+  while (unstartedGuardianAlive(directory, launch)) {
+    signal?.throwIfAborted()
+    if (readRecord(join(directory, 'birth.json')) !== undefined) throw new Error('Conflicting native startup evidence.')
+    if (Date.now() >= end) throw new Error('Native registration still has a live process; retirement is unconfirmed.')
+    await delay(25, undefined, signal ? { signal } : {})
+  }
+  signal?.throwIfAborted()
+  if (readRecord(join(directory, 'birth.json')) !== undefined) throw new Error('Conflicting native startup evidence.')
+}
+
 /** Compact proven closures BEFORE enforcing the unresolved-work bound. */
 function inventory(directory: string, owner: string): string[] {
   return nativeRegistryProjection(dirname(directory)).retirementBatch(() => {
@@ -260,16 +279,24 @@ function inventory(directory: string, owner: string): string[] {
       const path = privateDirectory(join(directory, id))
       const launch = launchRecord(readRecord(join(path, 'intent.json')))
       if (launch.owner !== owner || launch.id !== id) throw new Error('Native owner inventory mismatch.')
-      if (closedRecord(path, launch)) { retireRegistration(path, launch); continue }
-      if (launch.boot !== bootIdentity()) { confirmClosed(path, launch, 'linux_boot_changed'); continue }
+      const alreadyClosed = closedRecord(path, launch)
       const notStarted = readRecord(join(path, 'not-started.json'))
+      if (alreadyClosed && (notStarted === undefined || readRecord(join(path, 'birth.json')) !== undefined
+        || !unstartedGuardianAlive(path, launch))) {
+        retireRegistration(path, launch)
+        continue
+      }
+      if (launch.boot !== bootIdentity()) { confirmClosed(path, launch, 'linux_boot_changed'); continue }
       if (notStarted !== undefined) {
         const row = recordObject(notStarted)
         if (row.id !== id || row.owner !== owner || readRecord(join(path, 'birth.json')) !== undefined) {
           throw new Error('Conflicting native startup evidence.')
         }
-        confirmClosed(path, launch, 'native_not_started')
-        continue
+        if (!unstartedGuardianAlive(path, launch)) {
+          if (alreadyClosed) retireRegistration(path, launch)
+          else confirmClosed(path, launch, 'native_not_started')
+          continue
+        }
       }
       ids.push(id)
       if (ids.length > 10_000) throw new Error('Native recovery inventory exceeds its unresolved-work scan limit.')
@@ -420,7 +447,7 @@ export class NativeProcessRegistry {
     privateDirectory(directory)
     const launch = launchRecord(readRecord(join(directory, 'intent.json')))
     if (launch.owner !== scope.owner || launch.id !== id) throw new Error('Native process owner mismatch.')
-    if (closedRecord(directory, launch)) { retireRegistration(directory, launch); return }
+    const alreadyClosed = closedRecord(directory, launch)
     const boot = bootIdentity()
     const neverStarted = readRecord(join(directory, 'not-started.json'))
     if (neverStarted !== undefined) {
@@ -428,8 +455,12 @@ export class NativeProcessRegistry {
       if (record.id !== id || record.owner !== scope.owner || readRecord(join(directory, 'birth.json')) !== undefined) {
         throw new Error('Conflicting native startup evidence.')
       }
-      confirmClosed(directory, launch, 'native_not_started'); return
+      await waitForUnstartedGuardian(directory, launch, signal)
+      if (alreadyClosed) retireRegistration(directory, launch)
+      else confirmClosed(directory, launch, 'native_not_started')
+      return
     }
+    if (alreadyClosed) { retireRegistration(directory, launch); return }
     // A different kernel boot proves no process from the earlier boot can execute.
     if (launch.boot !== boot) { confirmClosed(directory, launch, 'linux_boot_changed'); return }
     const end = Date.now() + 5_000
@@ -494,8 +525,10 @@ function assertOwnerIdle(directory: string, owner: string): void {
       if (record.id !== id || record.owner !== owner || readRecord(join(previous, 'birth.json')) !== undefined) {
         throw new Error('Conflicting native startup evidence.')
       }
-      confirmClosed(previous, intent, 'native_not_started')
-      continue
+      if (!unstartedGuardianAlive(previous, intent)) {
+        confirmClosed(previous, intent, 'native_not_started')
+        continue
+      }
     }
     const rawBirth = readRecord(join(previous, 'birth.json'))
     if (rawBirth !== undefined) {
