@@ -260,9 +260,9 @@ export class HostCiRunner {
       'unit-other': `${contracts} && corepack pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test`
         + ' && corepack pnpm test:scripts',
       'lint-api': `${contracts} && corepack pnpm --filter @foreman-code/api lint`,
-      'lint-other': `${contracts} && corepack pnpm -r --no-bail --filter \'!@foreman-code/api\' --if-present lint`,
+      'lint-other': `${contracts} && corepack pnpm -r --no-bail --filter '!@foreman-code/api' --if-present lint`,
       'typecheck-api': `${contracts} && corepack pnpm --filter @foreman-code/api typecheck`,
-      'typecheck-other': `${contracts} && corepack pnpm -r --filter \'!@foreman-code/api\' --if-present typecheck`,
+      'typecheck-other': `${contracts} && corepack pnpm -r --filter '!@foreman-code/api' --if-present typecheck`,
       'build-api': `${contracts} && corepack pnpm --filter @foreman-code/api build`,
       'build-other': 'corepack pnpm -r --filter \'!@foreman-code/api\' --if-present build',
     }
