@@ -96,7 +96,13 @@ describe('installed harness updates', () => {
       expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
       expect((await profiles(fixture, reader))[0]!.qualification).toBe('qualified')
       await fixture.releaseWorkerDiscovery()
-      await completedRun(fixture, (await startWhenReady(fixture))!.run.id)
+      const started = (await startWhenReady(fixture))!
+      expect(fixture.sourceManifest.git?.repository).toBe(fixture.repositoryName)
+      expect(await pinnedPlacements(fixture, started.run.id)).toEqual([expect.objectContaining({
+        hostRef: fixture.hostRef,
+        source: expect.objectContaining({ manifestDigest: fixture.sourceManifest.manifestDigest }),
+      })])
+      await completedRun(fixture, started.run.id)
     } finally {
       await fixture.releaseWorkerDiscovery()
       await fixture.close()

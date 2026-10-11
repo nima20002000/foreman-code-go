@@ -19,9 +19,11 @@ const database = createDatabase(config.database)
 const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
 const production = buildProductionApp(config, database, checkpoints, false,
   undefined, undefined, { codex: codexQualificationSuite }, infrastructure)
-production.registerFileStorage()
+const files = production.registerFileStorage()
 await checkpoints.setup()
 await production.initialize()
+// Complete disk initialization before Fastify's bounded onReady hook runs.
+await files.bytes.initialize()
 const origin = await production.app.listen({ host: '127.0.0.1', port: config.port })
 await production.startDeviceListener()
 process.send?.({ kind: 'ready', origin })
