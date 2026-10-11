@@ -9,6 +9,7 @@ import { releaseMaterializationClaim } from '../src/modules/sources/materializat
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { measureRetainedMaterializationFootprint, measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
+import { readSourceStorageCapacity } from '../src/modules/sources/storageCapacity.js'
 
 let fixture: Awaited<ReturnType<typeof setupMaterializationReservationCleanup>> | undefined
 afterEach(async () => { await fixture?.close(); fixture = undefined })
@@ -26,12 +27,15 @@ it.each(['timeout', 'invalid reply', 'adoption rollback'] as const)(
       values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [attempt.executionId, attempt.attemptId, operationId,
       f.workspaceId, definition.versionId, f.principal.id, commandId, JSON.stringify(definition)])
     const authorize = vi.fn(async () => {})
-    if (failure === 'adoption rollback') authorize.mockResolvedValueOnce().mockRejectedValueOnce(new Error('Adoption rolled back'))
+    if (failure === 'adoption rollback') {
+      authorize.mockResolvedValueOnce().mockResolvedValueOnce().mockRejectedValueOnce(new Error('Adoption rolled back'))
+    }
     const sources = new PostgresSourceService(f.pool, f.commands,
       new WorkspaceLocationService(f.pool, f.commands, f.runtime, 'fixture', f.runtime),
       new PrivateSourceSnapshotStore(join(f.runtime, 'snapshots')), f.root.binding.mainId,
       { authorize: f.unused, attest: f.unused, fence: f.unused },
       { authorize, authorizeFinal: f.unused, verify: f.unused, verifyWorkingDirectory: f.unused,
+        storageCapacity: root => readSourceStorageCapacity(root.binding.canonicalPath, root.binding.filesystem),
         releaseClaim: f.unused, prepare: async () => {
           const receipt = await f.materializer.prepare({ binding: f.root.binding, manifest: f.manifest, attempt })
           if (failure === 'timeout') throw new Error('Lost source activation reply')

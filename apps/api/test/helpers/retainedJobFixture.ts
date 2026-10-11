@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './sourceStorageCapacityFixture.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -134,7 +135,9 @@ export async function retainedJobFixture(pool: pg.Pool, directory: string, princ
   const attempt = { executionId, attemptId, keyRevision: null, authorizationRevision: null }
   const receipt = await new PrivateSourceMaterializer({ read: async () => bytes }, async () => {}).prepare({
     manifest, binding: root.binding, attempt: { ...attempt, placementHash: sourceBindingHash(root, attempt, operationId) } })
-  const reservations = new PostgresSourceReservations()
+  const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture({
+    totalBytes: 256 * 2 ** 30, availableBytes: 256 * 2 ** 30,
+  }))
   const scopeId = `${mainId}:original-main:${mainId}:${root.binding.filesystem.device}:${root.binding.filesystem.mountId}`
   const reservation = await reservations.reserve(pool, { ownerKind: 'materialization', ownerId: operationId,
     scopeId, reservedBytes: 2097152 })

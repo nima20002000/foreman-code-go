@@ -27,6 +27,7 @@ import { systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 import { SourceReservationReclamationRequestSchema, SourceReservationReclamationSchema,
   SourceReservationReclamationResponseSchema, type SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
 import { reclaimSourceReservation } from './reclaimSourceReservation.js'
+import { readSourceStorageCapacity } from './storageCapacity.js'
 
 export interface SourceOperationWorkerContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; bytes?: Uint8Array }
 export interface SourceOperationWorkerOptions {
@@ -61,13 +62,14 @@ function checkOwner(request: SourceFilesystemOperation, raw: SourceOperationOwne
     || root.registration.authorizationRevision !== binding.authorizationRevision || owner.attempt.keyRevision !== binding.keyRevision
     || owner.attempt.authorizationRevision !== binding.authorizationRevision || sourceOperationSelectionHash(root, owner.attempt, owner.identity.operationId) !== owner.attempt.placementHash
     || !isDeepStrictEqual(owner.source, root.source)) throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Source operation is not owned by the current exact authenticated main/device/attempt.')
-  if (request.operation === 'sources.prepare') {
+  if (request.operation === 'sources.prepare' || request.operation === 'sources.capacity') {
     if (!isDeepStrictEqual(request.root, root) || !isDeepStrictEqual(request.attempt, owner.attempt) || !isDeepStrictEqual(request.identity, owner.identity))
       throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Preparation cannot change the accepted original source/root/owner identity.')
-    if (!isDeepStrictEqual(request.worktree, owner.worktree)) {
+    if (request.operation === 'sources.prepare' && !isDeepStrictEqual(request.worktree, owner.worktree)) {
       throw new SourceError('SOURCE_OPERATION_AUTHORITY_CONFLICT', 'Preparation cannot change the accepted Agent branch request.')
     }
-    if (request.worktree && (owner.preparationKind !== 'workflow' || root.binding.accessMode !== 'exclusive-write')) {
+    if (request.operation === 'sources.prepare' && request.worktree
+      && (owner.preparationKind !== 'workflow' || root.binding.accessMode !== 'exclusive-write')) {
       throw new SourceError('SOURCE_READ_ONLY', 'Agent branches require a writable workflow source.')
     }
   } else if (request.operation === 'sources.reconcile-preparation') {
@@ -136,6 +138,11 @@ export class SourceOperationWorkerService {
         }
       }
       await verifyApprovedRootAllowlist(allowlist)
+      if (request.operation === 'sources.capacity') {
+        const capacity = await readSourceStorageCapacity(owner.root.binding.canonicalPath, owner.root.binding.filesystem)
+        await this.authority(request, context)
+        return SourceOperationResponseSchema.parse({ version: 1, operation: 'sources.capacity', capacity })
+      }
       const result = await reclaimSourceReservation(grant, {
         authorize: async () => {
           context.signal.throwIfAborted()

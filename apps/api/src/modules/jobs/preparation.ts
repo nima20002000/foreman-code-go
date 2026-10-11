@@ -316,7 +316,7 @@ export class JobQueuePreparation {
           if (ticket.state !== 'claimed' && !ticket.sourceCapacityWait) return
           if (error.status === 403) await this.finish(sql, ticket, 'authorization_revoked', [error.code])
           else if (error.code === 'JOB_PREPARATION_TIMEOUT') await this.finish(sql, ticket, 'timed_out', [error.code])
-          else if (error.code === 'SOURCE_CAPACITY' || error.code === 'SOURCE_DISK_CAPACITY') {
+          else if (['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY', 'SOURCE_CAPACITY_UNAVAILABLE'].includes(error.code)) {
             const attempts = (ticket.sourceCapacityWait?.attempts ?? 0) + 1
             const now = this.clock().getTime()
             const delayMs = Math.min(60_000, 5_000 * 2 ** Math.min(attempts - 1, 4))
@@ -336,7 +336,8 @@ export class JobQueuePreparation {
           }
         })
       }
-      if (error instanceof DomainError && ['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY'].includes(error.code)) return
+      if (error instanceof DomainError
+        && ['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY', 'SOURCE_CAPACITY_UNAVAILABLE'].includes(error.code)) return
       componentLogger('jobs').error({ err: error, ticketId: original.id }, 'Queued Job preparation or dispatch failed')
       throw error
     } finally {

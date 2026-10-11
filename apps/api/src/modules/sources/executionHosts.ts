@@ -17,6 +17,8 @@ import type { SourceExecutionHostPort } from './service.js'
 import type { SourceActiveNativeSession } from '@foreman-code/contracts/source-operations'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
+import type { SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
+import { readSourceStorageCapacity } from './storageCapacity.js'
 
 /** Installed lifetime capture only: never accepted from filesystem requests. */
 export interface SourceNativeSessionCapture {
@@ -45,6 +47,7 @@ export interface SourceAttemptAuthority {
   revalidateMaterialization(record: SourceMaterializationRecord): Promise<void>
 }
 export interface RemoteSourceMaterializationHost {
+  storageCapacity?(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceStorageCapacity>
   prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt,
     options?: { sharedWritableTree?: true; worktree?: SourceWorktreeRequest }): Promise<SourceMaterializationRecord['receipt']>
   verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
@@ -63,6 +66,16 @@ export class InstalledSourceExecutionHosts implements SourceExecutionHostPort {
       authorize(reconciliationId: string, owner: SourceOperationOwner): Promise<void>
       closed(owner: SourceOperationOwner): Promise<boolean>
     }, private readonly quotaPoolFor?: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<SourceQuotaPool | undefined>) {}
+  async storageCapacity(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceStorageCapacity> {
+    await this.authority.revalidate(root, attempt)
+    if (root.binding.deviceId !== null) {
+      if (!this.remote.storageCapacity) {
+        throw new DomainError('SOURCE_CAPACITY_UNAVAILABLE', 'The selected worker cannot measure source capacity.', 409)
+      }
+      return this.remote.storageCapacity(root, attempt)
+    }
+    return readSourceStorageCapacity(root.binding.canonicalPath, root.binding.filesystem)
+  }
   async reconcilePreparation(reconciliationId: string, owner: SourceOperationOwner) {
     if (owner.root.binding.mainId !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source cleanup belongs to another Main.', 403)
     if (owner.root.binding.deviceId !== null) {

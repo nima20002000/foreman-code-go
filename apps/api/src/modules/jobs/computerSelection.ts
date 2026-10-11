@@ -66,7 +66,7 @@ export function jobEligibilityReason(code: string): JobComputerEligibility['reas
     return 'authorization_revoked'
   }
   if (code === 'BUILD_COMPUTER_DISABLED') return 'disabled'
-  if (code === 'SOURCE_CAPACITY' || code === 'SOURCE_DISK_CAPACITY') return 'busy'
+  if (['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY', 'SOURCE_CAPACITY_UNAVAILABLE'].includes(code)) return 'busy'
   if (code === 'WORKER_EXECUTION_DISABLED') return 'remote_execution_disabled'
   if (code === 'JOB_ROOT_PIN_CONFLICT' || code === 'SOURCE_ROOT_NOT_FOUND') return 'root_changed'
   if (code === 'JOB_SOURCE_PIN_CONFLICT') return 'source_unavailable'

@@ -9,6 +9,9 @@ import { DomainError } from '../errors.js'
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { SourceOperationOwner, SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
 import { RetainedSourceFootprintSchema, type RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
+import { SourceStorageCapacitySchema, type SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
+import { SOURCE_AGGREGATE_LIMITS, sourceStorageLimits } from './storageCapacity.js'
+export { SOURCE_AGGREGATE_LIMITS } from './storageCapacity.js'
 
 export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number;
   preparation?: SourceOperationOwner; reclamation?: SourceReservationReclamation;
@@ -20,7 +23,6 @@ export async function requireUnreclaimedSourceOperation(sql: GraphSqlClient, ope
     throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original source reservation is being reclaimed.', 409)
   }
 }
-export const SOURCE_AGGREGATE_LIMITS = Object.freeze({ bytes: 1024 * 1024 * 1024, preparing: 4, materializations: 2 })
 export function verificationSourceStorageBytes(profile: JobVerificationProfile): number {
   const fingerprint = profile.measurement?.fingerprint
   const pool = fingerprint?.quotaPool
@@ -29,16 +31,16 @@ export function verificationSourceStorageBytes(profile: JobVerificationProfile):
     fingerprint.deviceLimits.diskBytes - fingerprint.quota.controlHardLimitBytes,
     fingerprint.quota.volumeCapacityBytes - fingerprint.quota.controlHardLimitBytes)
 }
-async function materializationCapacity(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>) {
-  const legacy = { verification: false, bytes: SOURCE_AGGREGATE_LIMITS.bytes,
-    materializations: SOURCE_AGGREGATE_LIMITS.materializations }
-  if (request.ownerKind !== 'materialization') return legacy
+async function materializationCapacity(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>,
+  limits: ReturnType<typeof sourceStorageLimits>) {
+  const ordinary = { verification: false, bytes: limits.bytes, materializations: limits.materializations }
+  if (request.ownerKind !== 'materialization') return ordinary
   const row = (await sql.query<{ workspace_id: string; spec: unknown }>(
     `select workspace_id,spec from job_computer_selections
       where operation_id=$1 and released_at is null`, [request.ownerId])).rows[0]
-  if (!row) return legacy
+  if (!row) return ordinary
   const spec = ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
-  if (!('verification' in spec)) return legacy
+  if (!('verification' in spec)) return ordinary
   const profile = await readJobRuntimeProfileVersion(sql, row.workspace_id,
     spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)
   if (profile.schemaVersion !== 2) throw new DomainError('SOURCE_QUOTA_MISSING', 'Verification source requires its saved verification profile.', 409)
@@ -52,9 +54,11 @@ async function materializationCapacity(sql: GraphSqlClient, request: Omit<Source
 }
 /** All main processes serialize reservations for one attested host/filesystem.
  * Staging and retained copies remain charged until physical reclamation proof.
- * Expiry/disconnect never frees an execution reservation or a pending capture.
+ * Execution closure and capture ownership reconciliation precede reclamation.
  */
 export class PostgresSourceReservations {
+  constructor(private readonly readCapacity?:
+    (request: Omit<SourceReservation, 'reservationId'>) => Promise<SourceStorageCapacity>) {}
   async retainClosedPreparation(sql: GraphSqlClient, reservation: SourceReservation,
     closure: SourcePreparationClosure, currentBytes: number): Promise<void> {
     if (reservation.ownerKind !== 'materialization' || reservation.ownerId !== closure.operationId) {
@@ -68,11 +72,11 @@ export class PostgresSourceReservations {
     const retainedBytes = closure.materializationId === null ? Math.min(currentBytes, 16 * 1024) : currentBytes
     await this.retain(sql, reservation, 'retained', retainedBytes)
   }
-  async reserve(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>): Promise<SourceReservation> {
+  async reserve(sql: GraphSqlClient, request: Omit<SourceReservation, 'reservationId'>,
+    options: { capacity?: SourceStorageCapacity } = {}): Promise<SourceReservation> {
     if (!Number.isSafeInteger(request.reservedBytes) || request.reservedBytes < 0 || request.reservedBytes > SOURCE_AGGREGATE_LIMITS.bytes)
       throw new DomainError('SOURCE_CAPACITY', 'Invalid source disk reservation.', 409)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${request.scopeId}`])
-    const capacity = await materializationCapacity(sql, request)
     const existing = (await sql.query<{ record: SourceReservation; state: string }>(
       'select record,state from source_storage_reservations where owner_kind=$1 and owner_id=$2 for update', [request.ownerKind, request.ownerId])).rows[0]
     if (existing) {
@@ -97,12 +101,23 @@ export class PostgresSourceReservations {
       }
       return existing.record
     }
+    if (!options.capacity && !this.readCapacity) {
+      throw new DomainError('SOURCE_CAPACITY_UNAVAILABLE', 'Source capacity requires a measurement from its host.', 409)
+    }
+    const measured = SourceStorageCapacitySchema.parse(options.capacity ?? await this.readCapacity!(request))
+    if (Date.now() - Date.parse(measured.observedAt) > 10_000 || Date.parse(measured.observedAt) > Date.now() + 1000) {
+      throw new DomainError('SOURCE_CAPACITY_UNAVAILABLE', 'Source capacity measurement is stale.', 409)
+    }
+    const limits = sourceStorageLimits(measured)
+    const capacity = await materializationCapacity(sql, request, limits)
     // Verification and other materializations (Agent worktrees) are separate pools for bytes and for count, so
     // running Agents never occupy the computer's CI slots.
-    const totals = (await sql.query<{ bytes: string; verification_bytes: string; preparing: string; materializations: string;
+    const totals = (await sql.query<{ bytes: string; verification_bytes: string; pending_bytes: string;
+      preparing: string; materializations: string;
       verification_materializations: string }>(`select
       coalesce(sum(reserved_bytes) filter(where not verification),0) as bytes,
       coalesce(sum(reserved_bytes) filter(where verification),0) as verification_bytes,
+      coalesce(sum(reserved_bytes) filter(where state in ('preparing','owned','uncertain')),0) as pending_bytes,
       count(*) filter(where state='preparing') as preparing,
       count(*) filter(where owner_kind='materialization' and state in ('preparing','owned','uncertain') and not verification) as materializations,
       count(*) filter(where owner_kind='materialization' and state in ('preparing','owned','uncertain') and verification)
@@ -112,7 +127,10 @@ export class PostgresSourceReservations {
         from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed') usage`, [request.scopeId])).rows[0]!
     const usedBytes = capacity.verification ? Number(totals.verification_bytes) : Number(totals.bytes)
     const activeMaterializations = Number(capacity.verification ? totals.verification_materializations : totals.materializations)
-    if (usedBytes + request.reservedBytes > capacity.bytes || Number(totals.preparing) >= SOURCE_AGGREGATE_LIMITS.preparing
+    // Free space already excludes retained files. Outstanding writers remain fully charged in both pools.
+    if (usedBytes + request.reservedBytes > capacity.bytes
+      || Number(totals.pending_bytes) + request.reservedBytes > limits.availableBytes
+      || Number(totals.preparing) >= limits.preparing
       || (request.ownerKind === 'materialization' && activeMaterializations >= capacity.materializations))
       throw new DomainError('SOURCE_CAPACITY', 'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409)
     const reservation = { ...request, reservationId: randomUUID() }

@@ -6,16 +6,28 @@ import { SourceHashSchema, MaterializationReceiptSchema, SourceWorktreeRequestSc
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema, SourcePinSchema, SourceCwdAttestationSchema, SourcePreparationClosureSchema } from './sourceAdmission.js'
 import { TransferIntentSchema } from './byteTransfer.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
-export const SOURCE_OPERATION_EXTENSION = { namespace: 'source-operations-v1', version: 1, maxJsonBytes: 1048576, maxBinaryBytes: 0, maxPending: 2 } as const
+// Capacity probes and closure requests share the channel with bounded source preparations.
+export const SOURCE_OPERATION_EXTENSION = { namespace: 'source-operations-v1', version: 1, maxJsonBytes: 1048576, maxBinaryBytes: 0, maxPending: 64 } as const
 export const SourceOperationAttemptSchema = z.object({ placementHash: SourceHashSchema, executionId: IdSchema, attemptId: IdSchema,
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable() }).strict()
 export const SourcePreparationIdentitySchema = z.object({ operationId: IdSchema, ownerPrincipalId: IdSchema, expiresAt: z.string().datetime() }).strict()
+export const SourceStorageCapacitySchema = z.object({
+  filesystem: RootFilesystemIdentitySchema,
+  totalBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  availableBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  cpuCount: z.number().int().positive(),
+  availableMemoryBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  observedAt: z.string().datetime(),
+}).strict().refine(value => value.availableBytes <= value.totalBytes, 'Free space cannot exceed the filesystem')
+export type SourceStorageCapacity = z.infer<typeof SourceStorageCapacitySchema>
 /** The approved snapshot's commit on GitHub; the computer fetches it there and verifies it against the exact pin. */
 export const SourceGitHubReferenceSchema = z.object({
   repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/),
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   executablePolicy: z.enum(['strip', 'preserve-approved']) }).strict()
 export const SourceFilesystemOperationSchema = z.discriminatedUnion('operation', [
+  z.object({ version: z.literal(1), operation: z.literal('sources.capacity'), identity: SourcePreparationIdentitySchema,
+    root: SourceRootRecordSchema, attempt: SourceOperationAttemptSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.prepare'), identity: SourcePreparationIdentitySchema,
     root: SourceRootRecordSchema, attempt: SourceOperationAttemptSchema, github: SourceGitHubReferenceSchema,
     worktree: SourceWorktreeRequestSchema.optional() }).strict(),
@@ -99,6 +111,7 @@ export const SourceReservationReclamationResponseSchema = z.object({ version: z.
 export const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),
   generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict()
 export const SourceOperationResponseSchema = z.discriminatedUnion('operation', [
+  z.object({ version: z.literal(1), operation: z.literal('sources.capacity'), capacity: SourceStorageCapacitySchema }).strict(),
   SourceReservationReclamationResponseSchema,
   z.object({ version: z.literal(1), operation: z.literal('sources.prepare'), receipt: MaterializationReceiptSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.verify'), workTree: z.string().startsWith('/'),

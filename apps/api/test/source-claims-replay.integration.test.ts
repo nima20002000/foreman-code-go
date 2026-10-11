@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
@@ -151,7 +152,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
       .toBe(String(reservation.reservedBytes))
     // Restore measured accounting before a subsequent admission.
     await recovered.confirmClosed(record)
-    await expect(new PostgresSourceReservations().reserve(pool, { scopeId: reservation.scopeId,
+    await expect(new PostgresSourceReservations(async () => sourceStorageCapacityFixture()).reserve(pool, { scopeId: reservation.scopeId,
       ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }))
       .resolves.toHaveProperty('reservationId')
   } finally {

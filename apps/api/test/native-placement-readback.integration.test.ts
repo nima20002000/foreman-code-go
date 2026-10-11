@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -114,7 +115,7 @@ it.skipIf(!postgresEnabled)('reads persisted native branch and CWD through authe
         await sql.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
           values($1,1,$2,$3,$4::jsonb)`,
         [root.binding.rootId, draft.run.workspaceId, manifest.snapshotId, JSON.stringify(root)])
-        const reservations = new PostgresSourceReservations()
+        const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture())
         const reservation = await reservations.reserve(sql, { scopeId: randomUUID(), ownerKind: 'materialization',
           ownerId: dispatch.operationId, reservedBytes: 16 * 1024 })
         const worktreeId = randomUUID()

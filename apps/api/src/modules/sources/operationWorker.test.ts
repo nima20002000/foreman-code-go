@@ -22,10 +22,11 @@ import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import type { SourceQuotaPool } from './materialization.js'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 const directories: string[] = []
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 async function fixture() {
-  const directory = await mkdtemp('/tmp/source-rpc-'); directories.push(directory)
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'source-rpc-')); directories.push(directory)
   const runtime = join(directory, 'runtime'), base = join(directory, 'projects'); await mkdir(runtime, { mode: 0o700 }); await mkdir(base, { mode: 0o700 })
   const binding: DeviceSessionBinding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionEpoch: randomUUID(), connectionGeneration: 1 }
   const roots = await qualifyApprovedRootAllowlist({ schemaVersion: 1, hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId }, applicationInstallationId: binding.workerInstallationId,
@@ -78,6 +79,46 @@ async function fixture() {
     readRoots, git, capture, origin, run, nativeOwnerFor, preparationNativeClosed, preparationTransfersClosed, preparationReconciled,
     currentReclamation, reclamationNativeClosed, quotaPoolFor }
 }
+
+it('measures only the authorized Worker filesystem without source writes or publication', async () => {
+  const f = await fixture()
+  const request = { version: 1, operation: 'sources.capacity', root: f.root,
+    attempt: f.owner.attempt, identity: f.owner.identity }
+  const response = await f.service.handle(request, f.context)
+  expect(response.operation).toBe('sources.capacity')
+  if (response.operation !== 'sources.capacity') throw new Error('Expected capacity measurement')
+  expect(response.capacity.filesystem).toEqual(f.root.binding.filesystem)
+  expect(response.capacity.totalBytes).toBeGreaterThan(0)
+  expect(response.capacity.availableBytes).toBeLessThanOrEqual(response.capacity.totalBytes)
+  expect(response.capacity.cpuCount).toBeGreaterThan(0)
+  expect(f.git).not.toHaveBeenCalled()
+  expect(f.owner.record).toBeNull()
+  await expect(f.service.handle({ ...request, root: { ...f.root,
+    binding: { ...f.root.binding, filesystem: { ...f.root.binding.filesystem, device: '999999' } } } },
+  f.context)).rejects.toMatchObject({ code: 'SOURCE_OPERATION_AUTHORITY_CONFLICT' })
+  f.currentOwner.mockRejectedValueOnce(new Error('Allocation denied'))
+  await expect(f.service.handle(request, f.context)).rejects.toThrow('Allocation denied')
+})
+
+it('allows concurrent host probes for several Agents without the former two-request bottleneck', async () => {
+  const f = await fixture()
+  let entered = 0
+  let release!: () => void
+  const ready = new Promise<void>(resolve => { release = resolve })
+  const roots = await f.readRoots()
+  f.readRoots.mockImplementation(async () => { entered++; await ready; return roots })
+  const request = { version: 1, operation: 'sources.capacity', root: f.root,
+    attempt: f.owner.attempt, identity: f.owner.identity }
+  const probes = Array.from({ length: 3 }, () => f.service.handle(request, f.context))
+  const settled = Promise.allSettled(probes)
+  try {
+    await vi.waitFor(() => expect(entered).toBe(3))
+  } finally { release() }
+  const results = await settled
+  expect(results.every(result => result.status === 'fulfilled'
+    && result.value.operation === 'sources.capacity')).toBe(true)
+  expect(f.git).not.toHaveBeenCalled()
+})
 
 async function installQuota(f: Awaited<ReturnType<typeof fixture>>) {
   const namespace = randomUUID()

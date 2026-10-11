@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { JobSql } from '../src/modules/jobs/repository.js'
@@ -450,8 +451,9 @@ describe.skipIf(!postgresEnabled)('automatic build computer admission and settin
       const sql = await database.pool.connect()
       try {
         await sql.query('begin')
-        await new PostgresSourceReservations().reserve(sql, { ...f.computers[0]!.candidate.sourceReservation,
-          ownerKind: 'materialization', ownerId: originalOperation! })
+        await new PostgresSourceReservations(async () => sourceStorageCapacityFixture()).reserve(sql,
+          { ...f.computers[0]!.candidate.sourceReservation,
+            ownerKind: 'materialization', ownerId: originalOperation! })
         await sql.query('commit')
       } finally { sql.release() }
       throw new DomainError('SOURCE_TRANSFER_PENDING', 'Transfer interrupted', 503)

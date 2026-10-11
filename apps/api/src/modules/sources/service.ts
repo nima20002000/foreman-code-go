@@ -1,4 +1,4 @@
-import type { RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
+import type { RetainedSourceFootprint, SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
 import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -37,8 +37,11 @@ import { QueuedSourcePreparationCleanup } from './queuedPreparationCleanup.js'
 import { releaseUnusedSourceSnapshots } from './snapshotRetention.js'
 import { readPlacement } from '../placement/binding.js'
 import { assertWorktreeReceipt, bindGeneratedWorktreeRun, generatedWorktreePrefix } from './worktreeRequest.js'
+import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
+import { readSourceStorageCapacity } from './storageCapacity.js'
 
 export interface SourceExecutionHostPort {
+  storageCapacity?(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceStorageCapacity>
   /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
    * owner and placement before source service can prepare a native directory. */
   authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
@@ -61,7 +64,15 @@ interface SourceLifecycle {
 }
 
 export class PostgresSourceService implements SourceAdmissionPort {
-  readonly reservations = new PostgresSourceReservations()
+  readonly reservations = new PostgresSourceReservations(async request => {
+    if (request.ownerKind === 'capture') return this.store.storageCapacity()
+    const owner = request.preparation
+    if (!owner) throw new DomainError('SOURCE_CAPACITY_UNAVAILABLE', 'Source capacity requires its preparation owner.', 409)
+    if (owner.root.binding.deviceId !== null) {
+      throw new DomainError('SOURCE_CAPACITY_UNAVAILABLE', 'The selected worker cannot measure source capacity.', 409)
+    }
+    return readSourceStorageCapacity(owner.root.binding.canonicalPath, owner.root.binding.filesystem)
+  })
   closeQueuedPreparation(ticket: JobQueueTicket): Promise<void> {
     return new QueuedSourcePreparationCleanup(this.pool, this.executions,
       this.lifecycle.preparationClosed).close(ticket)
@@ -100,7 +111,13 @@ export class PostgresSourceService implements SourceAdmissionPort {
     const filesystem = await this.store.storageIdentity()
     await releaseUnusedSourceSnapshots(this.pool, this.store, this.scope(null, null, filesystem), report, underPressure)
   }
+  async reconcileCaptures(report?: (error: unknown) => void): Promise<void> {
+    const filesystem = await this.store.storageIdentity()
+    await reconcileFailedCaptures(this.pool, this.store, report ?? (error => { throw error }),
+      this.scope(null, null, filesystem))
+  }
   private async captureTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
+    await this.reconcileCaptures()
     try {
       return await this.transaction(work)
     } catch (error) {
@@ -182,53 +199,55 @@ export class PostgresSourceService implements SourceAdmissionPort {
             input.commandId, commandInputHash(input), JSON.stringify(origin), JSON.stringify(input)])
           return { approved_source_id: approvedSourceId, snapshot_id: snapshotId, input_hash: commandInputHash(input), state: 'capturing', origin, request: input }
         })
-        let manifest: SourceManifest
-        try {
-          const approvedPaths = origin.origin.approvedPaths ?? input.approvedPaths
-          if (!approvedPaths) throw new DomainError('SOURCE_FACT_CONFLICT', 'The original tracked-tree approval inventory is missing.', 409)
-          // Recover a finalized-but-unadopted exact source, never a mutable head.
-          const committed = await this.store.manifest(origin.snapshot_id).catch((error: unknown) => {
-            if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
+        return this.store.withCaptureLock(origin.snapshot_id, async () => {
+          let manifest: SourceManifest
+          try {
+            const approvedPaths = origin.origin.approvedPaths ?? input.approvedPaths
+            if (!approvedPaths) throw new DomainError('SOURCE_FACT_CONFLICT', 'The original tracked-tree approval inventory is missing.', 409)
+            // Recover a finalized-but-unadopted exact source, never a mutable head.
+            const committed = await this.store.manifest(origin.snapshot_id).catch((error: unknown) => {
+              if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
+              throw error
+            })
+            manifest = committed ?? await captureGitSource({ root: origin.origin.location.rootPath, approvedSourceId: origin.approved_source_id,
+              snapshotId: origin.snapshot_id, commit: input.commit,
+              ...(origin.origin.repository ? { repository: origin.origin.repository } : {}),
+              approvedPaths, executablePolicy: input.executablePolicy, sink: this.store })
+            if (manifest.approvedSourceId !== origin.approved_source_id || manifest.git?.commit !== input.commit
+              || manifest.git.repository !== origin.origin.repository || manifest.executablePolicy !== input.executablePolicy
+              || !isDeepStrictEqual(manifest.entries.map(e => e.path).sort(), [...approvedPaths].sort())) throw new DomainError('SOURCE_FACT_CONFLICT', 'Recovered source bytes do not match the original approval.', 409)
+            if (!repository || repository.prepared) {
+              await this.locations.revalidateSnapshot(input.workspaceId, origin.origin.location, 'read-only')
+            }
+            const retainedBytes = await this.store.retainedCaptureBytes(origin.snapshot_id)
+            return await this.transaction(async sql => {
+              const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
+              await authorizeSource(sql, principal, 'sources:read', input.workspaceId); requireAuthorization(live.principal, 'workspace_locations:read', input)
+              await this.host(sql); await this.workspace(sql, input.workspaceId)
+              const location = await sql.query<{ location_revision: string }>('select location_revision from workspaces where id=$1 for share', [input.workspaceId])
+              if (Number(location.rows[0]?.location_revision) !== origin.origin.location.locationRevision || live.ownerId !== origin.origin.ownerId)
+                throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'Workspace location or root ownership changed during source capture.', 409)
+              const approved = ApprovedSourceSchema.parse({ version: 1, workspaceId: input.workspaceId, ownerPrincipalId: live.ownerId,
+                approvedByPrincipalId: principal.id, locationRevision: input.expectedLocationRevision, mainId: this.mainId,
+                originIdentityHash: origin.origin.location.identityHash, manifest, approvedAt: new Date().toISOString(), availability: 'retained' })
+              await sql.query(`insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record) values($1,$2,$3,$4,$5::jsonb)
+                on conflict(snapshot_id) do nothing`, [manifest.snapshotId, manifest.approvedSourceId, input.workspaceId, manifest.manifestDigest, JSON.stringify(approved)])
+              await sql.query(`update source_approvals set state='approved' where approved_source_id=$1`, [manifest.approvedSourceId])
+              await this.reservations.retain(sql, origin.origin.reservation, 'retained', retainedBytes + 16 * 1024)
+              const row = await this.resolveApprovedSource(sql, principal, input.workspaceId, manifest)
+              origin = { ...origin, state: 'approved' }; return row
+            })
+          } catch (error) {
+            await this.transaction(async sql => {
+              // An ambiguous adoption commit may already have published the source.
+              const failed = await sql.query(`update source_approvals set state='failed'
+                where approved_source_id=$1 and state='capturing' returning approved_source_id`,
+              [origin.approved_source_id])
+              if (failed.rowCount) await this.reservations.retain(sql, origin.origin.reservation, 'uncertain')
+            })
             throw error
-          })
-          manifest = committed ?? await captureGitSource({ root: origin.origin.location.rootPath, approvedSourceId: origin.approved_source_id,
-            snapshotId: origin.snapshot_id, commit: input.commit,
-            ...(origin.origin.repository ? { repository: origin.origin.repository } : {}),
-            approvedPaths, executablePolicy: input.executablePolicy, sink: this.store })
-          if (manifest.approvedSourceId !== origin.approved_source_id || manifest.git?.commit !== input.commit
-            || manifest.git.repository !== origin.origin.repository || manifest.executablePolicy !== input.executablePolicy
-            || !isDeepStrictEqual(manifest.entries.map(e => e.path).sort(), [...approvedPaths].sort())) throw new DomainError('SOURCE_FACT_CONFLICT', 'Recovered source bytes do not match the original approval.', 409)
-          if (!repository || repository.prepared) {
-            await this.locations.revalidateSnapshot(input.workspaceId, origin.origin.location, 'read-only')
           }
-          const retainedBytes = await this.store.retainedCaptureBytes(origin.snapshot_id)
-          return await this.transaction(async sql => {
-            const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
-            await authorizeSource(sql, principal, 'sources:read', input.workspaceId); requireAuthorization(live.principal, 'workspace_locations:read', input)
-            await this.host(sql); await this.workspace(sql, input.workspaceId)
-            const location = await sql.query<{ location_revision: string }>('select location_revision from workspaces where id=$1 for share', [input.workspaceId])
-            if (Number(location.rows[0]?.location_revision) !== origin.origin.location.locationRevision || live.ownerId !== origin.origin.ownerId)
-              throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'Workspace location or root ownership changed during source capture.', 409)
-            const approved = ApprovedSourceSchema.parse({ version: 1, workspaceId: input.workspaceId, ownerPrincipalId: live.ownerId,
-              approvedByPrincipalId: principal.id, locationRevision: input.expectedLocationRevision, mainId: this.mainId,
-              originIdentityHash: origin.origin.location.identityHash, manifest, approvedAt: new Date().toISOString(), availability: 'retained' })
-            await sql.query(`insert into source_snapshots(snapshot_id,approved_source_id,workspace_id,manifest_digest,record) values($1,$2,$3,$4,$5::jsonb)
-              on conflict(snapshot_id) do nothing`, [manifest.snapshotId, manifest.approvedSourceId, input.workspaceId, manifest.manifestDigest, JSON.stringify(approved)])
-            await sql.query(`update source_approvals set state='approved' where approved_source_id=$1`, [manifest.approvedSourceId])
-            await this.reservations.retain(sql, origin.origin.reservation, 'retained', retainedBytes + 16 * 1024)
-            const row = await this.resolveApprovedSource(sql, principal, input.workspaceId, manifest)
-            origin = { ...origin, state: 'approved' }; return row
-          })
-        } catch (error) {
-          await this.transaction(async sql => {
-            // An ambiguous adoption commit may already have published the source.
-            const failed = await sql.query(`update source_approvals set state='failed'
-              where approved_source_id=$1 and state='capturing' returning approved_source_id`,
-            [origin.approved_source_id])
-            if (failed.rowCount) await this.reservations.retain(sql, origin.origin.reservation, 'uncertain')
-          })
-          throw error
-        }
+        })
       } })
   }
   private async repositoryOrigin(sql: Sql, workspaceId: string, expectedLocationRevision: number, repository: { repository: string; clone: string; prepared?: true }) {
@@ -431,6 +450,19 @@ export class PostgresSourceService implements SourceAdmissionPort {
 
   async prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord> {
+    requireAuthorization(input.principal, 'sources:read', { workspaceId: input.workspaceId })
+    await this.reconcileCaptures()
+    await this.releaseUnusedSnapshots()
+    let capacity: SourceStorageCapacity | undefined
+    if (this.executions.storageCapacity) {
+      const root = await this.transaction(async sql => {
+        const root = await this.resolveRootBinding(sql, input.principal, input)
+        await this.executions.authorize(sql, input.principal, { ...input, root })
+        return root
+      })
+      // Worker authorization calls Main back; release allocation row locks before requesting its measurement.
+      capacity = await this.executions.storageCapacity(root, input.attempt)
+    }
     const state = await this.transaction(async sql => {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
       await requireUnreclaimedSourceOperation(sql, input.operationId)
@@ -466,7 +498,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
           expiresAt: input.principal.expiresAt }, root, attempt: input.attempt, source: root.source, record: null,
         physicalClosureConfirmed: false, ...(worktree ? { worktree } : {}),
         ...(workflow.rowCount === 1 ? { preparationKind: 'workflow' as const } : {}) },
-      })
+      }, capacity ? { capacity } : {})
       return { root, source, record: null, reservation, sharedWritableTree, worktree }
     })
     if (state.record) {

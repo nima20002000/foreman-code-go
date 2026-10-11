@@ -3,7 +3,9 @@ import { isDeepStrictEqual } from 'node:util'
 import { basename, dirname } from 'node:path'
 import { lstat, mkdir, open, readdir, rename, rmdir, unlink, type FileHandle } from 'node:fs/promises'
 import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@foreman-code/contracts/source-materialization'
-import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot,
+  withPrivateDirectoryLock } from './privateFilesystem.js'
+import { readSourceStorageCapacity } from './storageCapacity.js'
 import { SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import type { SourceSnapshotSink } from './capture.js'
@@ -48,6 +50,20 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
   }>()
 
   constructor(private readonly canonicalRoot: string) {}
+  async storageCapacity() {
+    await this.storageIdentity()
+    return readSourceStorageCapacity(this.canonicalRoot)
+  }
+  async withCaptureLock<T>(snapshotId: string, work: () => Promise<T>,
+    options: { nonBlocking?: boolean } = {}): Promise<T> {
+    const { root, snapshot } = await this.directory(snapshotId, true)
+    try {
+      return await withPrivateDirectoryLock(snapshot, work, options)
+    } finally {
+      await snapshot.close()
+      await root.close()
+    }
+  }
   private async directory(id: string, create: boolean): Promise<{ root: FileHandle; snapshot: FileHandle }> {
     SourceManifestSchema.shape.snapshotId.parse(id)
     const root = await openPrivateRoot(this.canonicalRoot)

@@ -1,3 +1,5 @@
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
+import { sourceStorageLimits } from '../src/modules/sources/storageCapacity.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
@@ -16,7 +18,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { JobRepository } from '../src/modules/jobs/repository.js'
 import { qualifiedGit } from '../src/modules/sources/capture.js'
 import type { RegisteredSourceRootPort } from '../src/modules/sources/admissionPorts.js'
-import { SOURCE_AGGREGATE_LIMITS, type SourceReservation } from '../src/modules/sources/reservations.js'
+import { type SourceReservation } from '../src/modules/sources/reservations.js'
 import { PostgresSourceService } from '../src/modules/sources/service.js'
 import { SOURCE_RETENTION_SECONDS } from '../src/modules/sources/snapshotRetention.js'
 import { reconcileFailedCaptures } from '../src/modules/sources/failedCaptureCleanup.js'
@@ -63,6 +65,8 @@ async function setup() {
   const commit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
   const notInvoked = async (): Promise<never> => { throw new Error('No native execution in this metadata fixture.') }
   const store = new PrivateSourceSnapshotStore(canonical)
+  vi.spyOn(store, 'storageCapacity').mockImplementation(async () =>
+    sourceStorageCapacityFixture({ filesystem: await store.storageIdentity() }))
   const sources = new PostgresSourceService(pool, commands, locations, store, mainId,
     { authorize: notInvoked, attest: notInvoked, fence: notInvoked } satisfies RegisteredSourceRootPort,
     { authorize: notInvoked, prepare: notInvoked, verify: notInvoked, verifyWorkingDirectory: notInvoked,
@@ -140,7 +144,7 @@ async function setup() {
       process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true },
       startedAt: execution.createdAt, finishedAt, updatedAt: finishedAt })
   }
-  return { pool, store, sources, client, access, owner, workspaceId, canonical, mainId,
+  return { pool, store, sources, client, access, owner, workspaceId, canonical, mainId, app,
     approve, approval, sourcePin, pin, reservation, read, seedJob, finishJob, connect,
     async close() {
       await Promise.allSettled(clients.map(value => value.close()))
@@ -155,7 +159,7 @@ it('reclaims older terminal snapshots before capture capacity fails and exposes 
     const f = fixture
     const approvals = []
     let chargedBytes = 0
-    while (chargedBytes <= SOURCE_AGGREGATE_LIMITS.bytes) {
+    while (chargedBytes <= sourceStorageLimits(sourceStorageCapacityFixture()).bytes) {
       const approved = await f.approve(SOURCE_RETENTION_SECONDS * 3)
       approvals.push(approved)
       await f.finishJob(await f.seedJob(approved.source))
@@ -207,7 +211,7 @@ it('releases recently finished snapshots when a new capture would exceed capacit
   let chargedBytes = held.record.reservedBytes
   const recent = []
   // Every finished Job is inside its retention window; before pressure release the next capture failed.
-  while (chargedBytes <= SOURCE_AGGREGATE_LIMITS.bytes) {
+  while (chargedBytes <= sourceStorageLimits(sourceStorageCapacityFixture()).bytes) {
     const approved = await f.approve(SOURCE_RETENTION_SECONDS * 3)
     recent.push(approved.source)
     await f.finishJob(await f.seedJob(approved.source), new Date().toISOString())
@@ -261,6 +265,80 @@ it('keeps active Jobs, recent terminal use, longer Job retention and a qualified
   expect((await f.reservation(active)).state).toBe('reclaimed')
   expect((await f.read(pinned)).availability).toBe('retained')
 }, 60_000)
+
+it.each(['startup', 'admission'] as const)('reconciles an interrupted partial capture on %s without touching a live writer',
+  async mode => {
+    fixture = await setup()
+    const f = fixture
+    const input = { ...f.approval, commandId: randomUUID() }
+    const connect = vi.spyOn(f.pool, 'connect')
+    const write = f.store.write.bind(f.store)
+    const interrupted = vi.spyOn(f.store, 'write').mockImplementationOnce(async (...args) => {
+      await write(...args)
+      connect.mockImplementation(() => { throw new Error('API interrupted during capture') })
+      throw new Error('Capture interrupted')
+    })
+    try {
+      expect((await f.client.callTool({ name: 'source_approve', arguments: input })).isError).toBe(true)
+    } finally {
+      connect.mockRestore()
+      interrupted.mockRestore()
+    }
+    const approval = (await f.pool.query<{ snapshot_id: string; state: string }>(
+      'select snapshot_id,state from source_approvals where command_id=$1', [input.commandId])).rows[0]!
+    expect(approval.state).toBe('capturing')
+    const snapshotId = approval.snapshot_id
+    const state = async () => (await f.pool.query<{ state: string; reserved_bytes: string }>(
+      'select state,reserved_bytes from source_storage_reservations where owner_id=$1', [snapshotId])).rows[0]!
+    expect((await state()).state).toBe('preparing')
+    let entered!: () => void
+    let release!: () => void
+    const locked = new Promise<void>(resolve => { entered = resolve })
+    const resume = new Promise<void>(resolve => { release = resolve })
+    const writer = f.store.withCaptureLock(snapshotId, async () => { entered(); await resume })
+    await locked
+    try {
+      await f.sources.reconcileCaptures()
+      expect((await state()).state).toBe('preparing')
+    } finally {
+      release()
+      await writer
+    }
+    if (mode === 'startup') await f.sources.reconcileCaptures()
+    const approved = await f.approve()
+    expect(await state()).toEqual({ state: 'retained',
+      reserved_bytes: String(await f.store.retainedCaptureBytes(snapshotId) + 16 * 1024) })
+    expect((await f.read(approved.source)).manifest).toEqual(approved.source.manifest)
+    const http = await f.app.inject({ method: 'POST',
+      url: `/api/management/workspaces/${f.workspaceId}/sources/approve`,
+      headers: { authorization: `Bearer ${f.owner.token}` },
+      payload: { ...f.approval, commandId: randomUUID() } })
+    expect(http.statusCode).toBe(200)
+    const httpSource = SourceApproveResultSchema.parse(http.json()).value
+    expect((await f.read(httpSource)).manifest).toEqual(httpSource.manifest)
+    const reader = await f.access.issue({ name: 'Capture reader', audience: 'operator',
+      grants: [{ actions: ['sources:read'], scope: { workspaceIds: [f.workspaceId] } }],
+      expiresAt: new Date(Date.now() + 120_000) })
+    const denied = await f.connect(reader.token)
+    const denial = await denied.callTool({ name: 'source_approve',
+      arguments: { ...f.approval, commandId: randomUUID() } })
+    expect(denial.isError).toBe(true)
+    expect(JSON.stringify(denial.content)).toContain('ACCESS_DENIED')
+    const retry = await f.client.callTool({ name: 'source_approve', arguments: input })
+    expect(retry.isError).toBe(true)
+    expect(JSON.stringify(retry.content)).toContain('SOURCE_CAPTURE_FAILED')
+    await f.pool.query("update source_approvals set created_at=clock_timestamp()-interval '2 hours' where snapshot_id=$1",
+      [snapshotId])
+    const remove = vi.spyOn(f.store, 'remove').mockRejectedValueOnce(new Error('Removal interrupted'))
+    await expect(f.sources.reconcileCaptures()).rejects.toThrow('Removal interrupted')
+    expect((await state()).state).toBe('retained')
+    expect(await f.store.retainedCaptureBytes(snapshotId)).toBeGreaterThan(0)
+    remove.mockRestore()
+    await f.sources.reconcileCaptures()
+    expect((await state()).state).toBe('reclaimed')
+    expect(await f.store.retainedCaptureBytes(snapshotId)).toBe(0)
+    expect((await f.read(approved.source)).availability).toBe('retained')
+  }, 60_000)
 
 it('skips a snapshot while admission holds its shared lock, then releases it after admission ends', async () => {
   fixture = await setup()
@@ -399,7 +477,7 @@ it.each([false, true])('recovers an unadopted capture after restart (expired cal
   await reconcileFailedCaptures(f.pool, new PrivateSourceSnapshotStore(f.canonical), report)
   const reservation = (await f.pool.query<{ state: string }>(
     "select state from source_storage_reservations where owner_kind='capture' and owner_id=$1", [snapshotId])).rows[0]!
-  expect(reservation.state).toBe(expired ? 'retained' : 'preparing')
+  expect(reservation.state).toBe('retained')
   expect(await f.store.manifest(snapshotId)).toEqual(manifest)
   if (!expired) {
     const writing = vi.spyOn(f.store, 'write')
