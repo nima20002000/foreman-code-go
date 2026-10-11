@@ -23,7 +23,7 @@ export interface CloudProvider {
   ready(): Promise<boolean>
   /** Starts a run; returns the service's run id when it is known at once. */
   dispatch(input: CloudDispatchInput): Promise<string | null>
-  /** The service's run id of a started run, once the service lists it. */
+  /** The service's run id once a workflow exists; a pipeline alone is not a started run. */
   find(run: CloudRun): Promise<string | null>
   status(run: CloudRun): Promise<CloudStatus>
   log(run: CloudRun): Promise<string>
@@ -80,9 +80,15 @@ export class GitHubActionsProvider implements CloudProvider {
 
   async find(run: CloudRun) {
     const listed = JSON.parse(await this.gh(['run', 'list', '-R', run.mirror, '--workflow', WORKFLOW, '--branch', 'main',
-      '--event', 'workflow_dispatch', '--limit', '200', '--json', 'databaseId,displayTitle'])) as
-      { databaseId: number; displayTitle: string }[]
-    const match = listed.find(value => value.displayTitle === `ci ${run.runId}`)
+      '--event', 'workflow_dispatch', '--limit', '200', '--json', 'databaseId,displayTitle,status'], 15_000)) as
+      { databaseId: number; displayTitle: string; status?: string }[]
+    const matches = listed.filter(value => value.displayTitle === `ci ${run.runId}`)
+      .sort((left, right) => left.databaseId - right.databaseId)
+    const match = matches.find(value => String(value.databaseId) === run.providerRunId) ?? matches[0]
+    for (const duplicate of matches) {
+      if (duplicate === match || duplicate.status === 'completed') continue
+      await this.cancel({ ...run, providerRunId: String(duplicate.databaseId) })
+    }
     return match ? String(match.databaseId) : null
   }
 
@@ -134,7 +140,12 @@ export class CircleCiProvider implements CloudProvider {
     return started.id
   }
 
-  async find(run: CloudRun) { return run.providerRunId }
+  async find(run: CloudRun) {
+    if (!run.providerRunId) return null
+    const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId, '--json'], 15_000)) as
+      { workflows?: unknown[] }
+    return view.workflows?.length ? run.providerRunId : null
+  }
 
   private async job(run: CloudRun) {
     const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as
@@ -166,5 +177,10 @@ export class CircleCiProvider implements CloudProvider {
     return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
   }
 
-  async cancel(run: CloudRun) { await this.circleci(['run', 'cancel', run.providerRunId!, '--force']) }
+  async cancel(run: CloudRun) {
+    const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as
+      { phase?: string; workflows?: unknown[] }
+    if (view.phase === 'ended' && !view.workflows?.length) return
+    await this.circleci(['run', 'cancel', run.providerRunId!, '--force'])
+  }
 }

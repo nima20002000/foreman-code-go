@@ -67,7 +67,7 @@ export const CiHostRequestSchema = z.discriminatedUnion('operation', [
 ])
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>
 
-export const CiHostRunStateSchema = z.enum(['starting', 'running', 'passed', 'failed', 'canceled', 'lost'])
+export const CiHostRunStateSchema = z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost'])
 export const CiHostRunSchema = z.object({
   runId: CiHostRunIdSchema, state: CiHostRunStateSchema, step: z.string().max(80).nullable(),
   exitCode: z.number().int().nullable(), startedAt: TimestampSchema, finishedAt: TimestampSchema.nullable(),
@@ -105,6 +105,8 @@ export const CiRunRecordSchema = z.object({
   initiator: z.object({ principalId: IdSchema, executionId: IdSchema.nullable() }).strict(),
   /** The computer a weighted partition was sized for; another free computer may still take it. */
   plannedHostKey: z.string().nullable().optional(),
+  /** Providers that accepted a dispatch but exhausted retries without creating work. */
+  unstartedProviders: z.array(z.enum(['github', 'circleci'])).max(2).optional(),
 }).strict().refine(validCiPart, 'The part and partition must belong to the requested suite.')
 export type CiRunRecord = z.infer<typeof CiRunRecordSchema>
 

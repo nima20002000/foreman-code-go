@@ -32,6 +32,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'install for install and run <suite> for the others, failing clearly when that script is missing. '
   + 'Cloud CI requires the mirror’s provider workflow (.github/workflows/ci.yml or .circleci/config.yml); '
   + 'without it build computers take the work. '
+  + 'A cloud dispatch must create a workflow within 75 seconds; Main retries twice, then queues the same ticket '
+  + 'on another provider or build computer. The ticket message records recovery and unstartedProviders lists excluded providers. '
   + 'Caller selections omit empty parts and shard only selected tests; runner selections keep queued parts and pass empty shards. '
   + 'Poll every ticket in partitions. Retrying commandId returns the '
   + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '

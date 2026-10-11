@@ -768,6 +768,97 @@ it('lists cloud CI slots beside build computers through MCP', async () => {
   } finally { await f.close() }
 })
 
+it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and runs it elsewhere through MCP', async provider => {
+  const readiness = { laptop: false, builder: false }
+  const f = await fixture({ github: readiness,
+    cloud: { github: provider === 'github' ? 2 : 0, circleci: provider === 'circleci' ? 2 : 0 } })
+  const pending = new Map<string, CiHostRun>()
+  const dispatches: string[] = []
+  let exhausted = false
+  const request = f.endpoint.request.bind(f.endpoint)
+  f.endpoint.request = async (computer, input) => {
+    if (computer.hostRef.kind !== 'cloud') return request(computer, input)
+    if (input.operation === 'status') return { operation: 'status', ready: true, reasons: [],
+      cpuCount: 4, memoryBytes: 16 * 2 ** 30, runs: [] }
+    if (input.operation === 'start') {
+      if (!pending.has(input.runId)) {
+        pending.set(input.runId, { runId: input.runId, state: 'starting', step: 'dispatch', exitCode: null,
+          startedAt: new Date().toISOString(), finishedAt: null, logBytes: 0, message: null })
+        dispatches.push(input.runId)
+      }
+      return { operation: 'start', run: pending.get(input.runId)! }
+    }
+    const run = pending.get(input.runId)!
+    if (input.operation === 'cancel') return { operation: 'cancel', run: { ...run, state: 'canceled' } }
+    return { operation: 'read', run: exhausted ? { ...run, state: 'queued', step: null,
+      message: 'Dispatch retries exhausted; queued for another computer.' } : run, text: '', nextOffset: 0 }
+  }
+  try {
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const input = { suite: 'integration', scope: 'full', commandId: 'cloud-recovery' }
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    await f.ci.dispatch()
+    expect((CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))).run)
+      .toMatchObject({ state: 'starting', step: 'dispatch', computer: { hostRef: { provider } } })
+    exhausted = true
+    const queued = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(queued.run).toMatchObject({ state: 'queued', computer: null, step: null, startedAt: null,
+      finishedAt: null, unstartedProviders: [provider], message: expect.stringContaining('queued for another computer') })
+    expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
+      .toMatchObject({ host_key: null, record: queued.run })
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
+    readiness.laptop = true
+    await f.ci.dispatch()
+    const running = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(running.run).toMatchObject({ id: started.ticketId, state: 'running', computer: { label: 'laptop' },
+      message: queued.run.message, unstartedProviders: [provider] })
+    f.finish(started.ticketId, 0, 'Completed on another computer.\n')
+    const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(finished.run).toMatchObject({ state: 'passed', exitCode: 0, message: queued.run.message })
+    expect((await f.pool.query('select record from ci_runs where id=$1', [started.ticketId])).rows[0].record)
+      .toEqual(finished.run)
+    expect(dispatches).toEqual([started.ticketId])
+    expect(f.started.filter(value => value.request.operation === 'start' && value.request.runId === started.ticketId))
+      .toHaveLength(1)
+  } finally { await f.close() }
+})
+
+it('preserves MCP cancellation when an in-flight refresh returns an unstarted ticket', async () => {
+  const f = await fixture({ github: { laptop: false, builder: false }, cloud: true })
+  let release!: () => void
+  let entered!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const reading = new Promise<void>(resolve => { entered = resolve })
+  try {
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', scope: 'full', commandId: 'cancel-unstarted',
+    }))
+    await f.ci.dispatch()
+    const request = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (computer, input) => {
+      const reply = await request(computer, input)
+      if (reply.operation !== 'read') return reply
+      entered()
+      await blocked
+      return { ...reply, run: { ...reply.run, state: 'queued', step: null,
+        message: 'Dispatch retries exhausted; queued for another computer.' } }
+    }
+    const dispatch = f.ci.dispatch()
+    await reading
+    expect(await f.value(f.operator, 'ci_cancel', { ticketId: started.ticketId }))
+      .toMatchObject({ run: { state: 'canceled' } })
+    release()
+    await dispatch
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run.state).toBe('canceled')
+    expect((await f.pool.query('select record from ci_runs where id=$1', [started.ticketId])).rows[0].record)
+      .toEqual(read.run)
+    expect(f.started).toHaveLength(1)
+  } finally { release(); await f.close() }
+})
+
 it('prefers build computers and CircleCI over higher-priority GitHub slots for integration', async () => {
   const f = await fixture({ cloud: { github: 2, circleci: 2 } })
   try {

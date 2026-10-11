@@ -3,20 +3,26 @@ import { homedir, hostname, userInfo } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, WorkspaceSchema, integrationPartition,
-  type CiDurations, type CiHostReply, type CiHostRun, type CiPartition, type CiSuite, type CiPart, type CiScope } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition, type CiSuite, type CiPart, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
-import { CircleCiProvider, GitHubActionsProvider, type CloudProvider } from './cloudProviders.js'
+import { CircleCiProvider, GitHubActionsProvider, type CloudDispatchInput, type CloudProvider } from './cloudProviders.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
+const START_TIMEOUT_MS = 75_000
+const MAX_DISPATCH_ATTEMPTS = 3
+const log = componentLogger('jobs')
 
 export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
   providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; durations?: CiDurations
   scope?: CiScope; files?: string[]; part?: CiPart
+  dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
+  workflowStarted?: boolean
 }
 type Mirrors = (repository: string) => Promise<string | null>
 
@@ -37,6 +43,7 @@ export function workspaceMirrors(pool: pg.Pool): Mirrors {
  * result, log and measured durations back. */
 export class CloudCi {
   private checked: { at: number; ready: boolean } | undefined
+  private readonly operations = new Map<string, Promise<unknown>>()
   private readonly published = new Map<string, Promise<{
     git: (args: string[]) => Promise<string>; branch: string; defaultBranch?: string
   }>>()
@@ -60,11 +67,26 @@ export class CloudCi {
       return CiHostReplySchema.parse({ operation: 'status', ready, reasons: ready ? [] : [this.provider.loginHint],
         cpuCount: this.provider.cpus, memoryBytes: this.provider.memoryBytes, runs: [] })
     }
+    const previous = this.operations.get(request.runId) ?? Promise.resolve()
+    // A previous failure belongs to its caller and must not block the next read or cancellation.
+    const operation = previous.then(() => this.handleRun(request), () => this.handleRun(request))
+    this.operations.set(request.runId, operation)
+    try {
+      return await operation
+    } finally {
+      if (this.operations.get(request.runId) === operation) this.operations.delete(request.runId)
+    }
+  }
+
+  private async handleRun(request: Exclude<CiHostRequest, { operation: 'status' }>) {
     if (request.operation === 'start') return CiHostReplySchema.parse({ operation: 'start', run: await this.start(request) })
     if (request.operation === 'cancel') {
-      const run = await this.refresh(request.runId)
+      let run = await this.read(request.runId)
+      if (!run.providerRunId && run.state === 'starting') {
+        run = { ...run, providerRunId: await this.provider.find(run) }
+      }
       if (run.providerRunId && ['starting', 'running'].includes(run.state)) await this.provider.cancel(run)
-      const canceled = ['starting', 'running'].includes(run.state)
+      const canceled = ['queued', 'starting', 'running'].includes(run.state)
         ? await this.save({ ...run, state: 'canceled', finishedAt: this.ports.now().toISOString(), message: 'Canceled.' }) : run
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
     }
@@ -98,7 +120,10 @@ export class CloudCi {
   }
 
   private view(run: CloudRun, logBytes: number): CiHostRun {
-    return { runId: run.runId, state: run.state, step: run.state === 'starting' ? 'dispatch' : run.part ?? run.suite,
+    let step: string | null = run.part ?? run.suite
+    if (run.state === 'starting') step = 'dispatch'
+    if (run.state === 'queued') step = null
+    return { runId: run.runId, state: run.state, step,
       exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes, message: run.message }
   }
 
@@ -133,13 +158,46 @@ export class CloudCi {
       suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
       scope, ...(request.files !== undefined ? { files: request.files } : {}),
       finishedAt: null, exitCode: null, message })
-    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.part ?? request.suite, slice,
+    const input: CloudDispatchInput = { mirror, branch, runId: request.runId, suite: request.part ?? request.suite, slice,
       scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
       ...(defaultBranch ? { defaultBranch } : {}),
       ...(selectOnRunner && request.partition ? { partition: JSON.stringify(request.partition) } : {}),
-      ...(selectOnRunner && request.durations ? { durations: JSON.stringify(request.durations) } : {}) })
-    if (providerRunId) run = await this.save({ ...run, providerRunId, state: 'running' })
+      ...(selectOnRunner && request.durations ? { durations: JSON.stringify(request.durations) } : {}) }
+    run = await this.trigger(run, input)
+    if (run.providerRunId) {
+      try {
+        if (await this.provider.find(run)) run = await this.save({ ...run, state: 'running', workflowStarted: true })
+      } catch (error) {
+        // The trigger was accepted, so a lookup failure must not dispatch the ticket to another computer.
+        log.warn({ err: error, runId: run.runId }, 'Cloud CI workflow lookup failed; dispatch remains pending')
+      }
+    }
     return this.view(run, 0)
+  }
+
+  private async trigger(run: CloudRun, input: CloudDispatchInput) {
+    const pending = await this.save({ ...run, state: 'starting', providerRunId: null,
+      dispatch: { input, attempts: (run.dispatch?.attempts ?? 0) + 1, at: this.ports.now().toISOString() } })
+    const providerRunId = await this.provider.dispatch(input)
+    return this.save({ ...pending, providerRunId })
+  }
+
+  private async recoverUnstarted(run: CloudRun) {
+    const dispatchedAt = run.dispatch?.at ?? run.startedAt
+    if (this.ports.now().getTime() - Date.parse(dispatchedAt) < START_TIMEOUT_MS) return run
+    // Retire the pipeline before retrying so it cannot acquire a workflow later.
+    if (run.providerRunId) {
+      await this.provider.cancel(run)
+      if (await this.provider.find(run)) return this.save({ ...run, state: 'running', workflowStarted: true })
+    }
+    const retry = run.dispatch && run.dispatch.attempts < MAX_DISPATCH_ATTEMPTS
+    const message = `${this.provider.label} created no workflow within 75 seconds. `
+      + (retry ? `Retrying dispatch (${run.dispatch!.attempts + 1}/${MAX_DISPATCH_ATTEMPTS}).`
+        : 'Dispatch retries exhausted; queued for another computer.')
+    await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
+    const next = await this.save({ ...run, message })
+    if (retry) return this.trigger(next, run.dispatch!.input)
+    return this.save({ ...next, state: 'queued', providerRunId: null, finishedAt: null, exitCode: null })
   }
 
   /** Puts the commit's files on the mirror once: every partition of a run starting together shares one push. */
@@ -301,20 +359,20 @@ export class CloudCi {
   private async refresh(runId: string): Promise<CloudRun> {
     let run = await this.read(runId)
     if (!['starting', 'running'].includes(run.state)) return run
-    if (!run.providerRunId) {
+    if (run.state === 'starting' || !run.providerRunId || !run.workflowStarted && this.provider.id === 'circleci') {
       const providerRunId = await this.provider.find(run)
       if (!providerRunId) {
-        // A provider lists a started run within seconds; one never listed was not accepted.
-        if (Date.now() - Date.parse(run.startedAt) < 10 * 60_000) return run
-        return this.save({ ...run, state: 'lost', finishedAt: this.ports.now().toISOString(),
-          message: `${this.provider.label} never started this run.` })
+        return this.recoverUnstarted(run)
       }
-      run = await this.save({ ...run, providerRunId, state: 'running' })
+      run = await this.save({ ...run, providerRunId, state: 'running', workflowStarted: true })
+    } else if (this.provider.id === 'github' && (run.dispatch?.attempts ?? 0) > 1) {
+      // A delayed workflow from an earlier dispatch can appear after its replacement.
+      await this.provider.find(run)
     }
     const status = await this.provider.status(run)
     if (!status.done) return run
     await writeFile(this.path(runId, 'log'), Buffer.from(await this.provider.log(run).catch(() => '')).subarray(-LOG_LIMIT),
-      { mode: 0o600 })
+      { flag: 'a', mode: 0o600 })
     let durations: CiDurations | undefined
     if (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web') {
       const parsed = CiDurationsSchema.safeParse(await this.provider.durations(run, join(this.root, 'runs', runId, 'artifact'))

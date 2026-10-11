@@ -262,13 +262,16 @@ export class HostCiService {
     return { text: reply.text, nextOffset: reply.nextOffset, logBytes: reply.run.logBytes }
   }
 
-  async cancel(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; ticketId: string }) {
+  async cancel(caller: ManagementPrincipal,
+    input: { workspaceId?: string | undefined; ticketId: string }): Promise<{ run: CiRunRecord }> {
     const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:cancel'])
     const run = await this.read(input.ticketId, scope.workspaceId)
     assertCiReadAccess(caller, scope.executionId, run)
     if (run.state === 'queued') {
       const canceled = { ...run, state: 'canceled' as const, finishedAt: new Date().toISOString(), message: 'Canceled.' }
-      await this.save(canceled, null)
+      const saved = await this.pool.query(`update ci_runs set state='canceled', host_key=null, record=$2::jsonb
+        where id=$1 and state='queued'`, [run.id, JSON.stringify(canceled)])
+      if (!saved.rowCount) return this.cancel(caller, input)
       return { run: canceled }
     }
     if (run.computer && ['starting', 'running'].includes(run.state)) {
@@ -276,7 +279,11 @@ export class HostCiService {
       const reply = await this.endpoint.request(computer, { operation: 'cancel', runId: run.id })
       if (reply.operation === 'cancel') await this.settle(run, computer, reply.run)
     }
-    return { run: await this.read(run.id, scope.workspaceId) }
+    const current = await this.read(run.id, scope.workspaceId)
+    const reassigned = ['starting', 'running'].includes(current.state)
+      && JSON.stringify(current.computer) !== JSON.stringify(run.computer)
+    if (current.state === 'queued' || reassigned) return this.cancel(caller, input)
+    return { run: current }
   }
 
   async computers(caller: ManagementPrincipal, input: { workspaceId?: string | undefined }) {
@@ -309,9 +316,22 @@ export class HostCiService {
 
   private async settle(run: CiRunRecord, computer: HostCiComputer, state: { state: string; step: string | null
     exitCode: number | null; startedAt: string; finishedAt: string | null; message: string | null }) {
+    const requeued = state.state === 'queued' && computer.hostRef.kind === 'cloud'
+    const unstartedProviders = new Set(run.unstartedProviders ?? [])
+    if (requeued && computer.hostRef.provider) unstartedProviders.add(computer.hostRef.provider)
+    const message = [...new Set([run.message, state.message].filter(Boolean))].join(' ') || null
     const next = CiRunRecordSchema.parse({ ...run, state: state.state, step: state.step, exitCode: state.exitCode,
-      startedAt: run.startedAt ?? state.startedAt, finishedAt: state.finishedAt, message: state.message })
-    await this.save(next, ['starting', 'running'].includes(next.state) ? computer.key : null)
+      computer: requeued ? null : { hostRef: computer.hostRef, label: computer.label },
+      startedAt: requeued ? null : run.startedAt ?? state.startedAt,
+      finishedAt: state.finishedAt, message,
+      ...(unstartedProviders.size ? { unstartedProviders: [...unstartedProviders] } : {}) })
+    const hostKey = ['starting', 'running'].includes(next.state) ? computer.key : null
+    const saved = await this.pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb
+      where id=$1 and state in ('queued','starting','running') and host_key is not distinct from $5`,
+      [run.id, next.state, hostKey, JSON.stringify(next), run.state === 'queued' ? null : computer.key])
+    if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message },
+      'CI dispatch created no work; ticket queued for another computer')
+    return Boolean(saved.rowCount)
   }
 
   /** One pass: refresh running runs, then give queued runs to idle computers in priority order. */
@@ -367,10 +387,14 @@ export class HostCiService {
         ? !isGitHubComputer(computer) : isGitHubComputer(computer))
       const order = computers.filter(computer => run.suite === 'integration'
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
+        .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
+          || !run.unstartedProviders?.includes(computer.hostRef.provider))
         .sort((left, right) => preferred(right) - preferred(left)
           || Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
           || right.priority - left.priority)
       for (const computer of order) {
+        if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider
+          && run.unstartedProviders?.includes(computer.hostRef.provider)) continue
         if (busy.has(computer.key)) continue
         const usesGitHubIntegration = run.suite === 'integration' && isGitHubComputer(computer)
         if (usesGitHubIntegration && integrationOnGitHub.size >= githubIntegrationLimit) continue
@@ -387,7 +411,21 @@ export class HostCiService {
             if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
             continue
           }
-          await this.settle({ ...run, computer: { hostRef: computer.hostRef, label: computer.label } }, computer, reply.run)
+          const saved = await this.settle(run, computer, reply.run)
+          if (!saved) {
+            if (['starting', 'running'].includes(reply.run.state)) {
+              await this.endpoint.request(computer, { operation: 'cancel', runId: run.id })
+                .catch(error => log.warn({ err: error, runId: run.id }, 'CI canceled during dispatch; remote stop failed'))
+            }
+            return
+          }
+          if (reply.run.state === 'queued') {
+            busy.delete(computer.key)
+            if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
+            run = await this.read(run.id, run.workspaceId)
+            if (run.state !== 'queued') return
+            continue
+          }
           return
         } catch (error) {
           // A busy or unready computer is skipped; the run stays queued for the next free one.
