@@ -216,19 +216,28 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     await mountBoard()
     await screen.findByRole('region', { name: 'Selected Run pinned topology' })
     const assertSelection = async (runId: string, name: string) => {
-      const node = await screen.findByRole('button', { name: `Inspect Run node ${name}` })
-      const pinned = screen.getByRole('region', { name: 'Selected Run pinned topology' })
+      // Run changes remount the canvas. Wait for its pins before retaining a query scope.
+      const pinned = await waitFor(() => {
+        const region = screen.getByRole('region', { name: 'Selected Run pinned topology' })
+        expect(region).toHaveTextContent(`Run ${runId} · version version-${runId.slice(4)}`)
+        return region
+      })
+      const graph = within(pinned)
+      // Whole-app button queries also compute names/styles for the retained editor.
+      const node = await graph.findByRole('button', { name: `Inspect Run node ${name}` })
       expect(node).toBeVisible()
       expect(node).toBeEnabled()
       expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Open Selected Run panel' })).not.toBeInTheDocument()
-      await user.click(screen.getByRole('button', { name: `Open ${name} chat` }))
+      await user.click(graph.getByRole('button', { name: `Open ${name} chat` }))
       const chat = await screen.findByRole('dialog', { name: `${name} chat` })
       expect(chat).toHaveTextContent('Selected Run')
       await waitFor(() => expect(chatReads.at(-1)?.searchParams.get('runId')).toBe(runId))
       expect(chatReads.at(-1)?.searchParams.get('workflowNodeId')).toBe(name === 'Y' ? 'node-y' : 'node-x')
       await user.keyboard('{Escape}')
-      await user.click(screen.getByRole('button', { name: 'Activities' }))
+      await waitFor(() => expect(chat).not.toBeInTheDocument())
+      const controls = screen.getByRole('group', { name: 'Workflow controls' })
+      await user.click(within(controls).getByRole('button', { name: 'Activities' }))
       const activities = await screen.findByRole('dialog', { name: 'Activities' })
       expect(await within(activities).findByText(`Saved run ${runId}`)).toBeVisible()
       await user.click(within(activities).getByRole('button', { name: 'Close runs' }))
