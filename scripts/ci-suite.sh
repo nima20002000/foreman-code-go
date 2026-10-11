@@ -81,8 +81,10 @@ case "$SUITE" in
     unit_slice unit-api apps/api ;;
   unit-web) pnpm --filter @foreman-code/contracts build
     unit_slice unit-web apps/web ;;
-  unit-web-heavy) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/web test:run-graph-smoke
-    (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run) ;;
+  # SLICE i/n splits the heavy phase across machines; the run-graph smoke runs once, in the first shard.
+  unit-web-heavy) pnpm --filter @foreman-code/contracts build
+    case "${SLICE:-1/1}" in 1/*) pnpm --filter @foreman-code/web test:run-graph-smoke ;; esac
+    (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE}) ;;
   unit-other) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
     && pnpm test:scripts ;;
   lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;

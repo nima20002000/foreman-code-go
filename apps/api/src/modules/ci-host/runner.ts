@@ -256,8 +256,11 @@ export class HostCiRunner {
           + ' || exit $?; fi', 'exit "$code"', ')'].join('\n')
     }
     const commands: Record<Exclude<CiPart, 'unit-api' | 'unit-web'>, string> = {
-      'unit-web-heavy': `${contracts} && corepack pnpm --filter @foreman-code/web test:run-graph-smoke`
-        + ' && (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy corepack pnpm exec vitest run)',
+      // The run-graph smoke runs once, in the first shard of the heavy phase.
+      'unit-web-heavy': `${contracts}`
+        + (!meta.partition || meta.partition.index === 0 ? ' && corepack pnpm --filter @foreman-code/web test:run-graph-smoke' : '')
+        + ' && (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy corepack pnpm exec vitest run'
+        + `${meta.partition ? ` --shard=${meta.partition.index + 1}/${meta.partition.count}` : ''})`,
       'unit-other': `${contracts} && corepack pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test`
         + ' && corepack pnpm test:scripts',
       'lint-api': `${contracts} && corepack pnpm --filter @foreman-code/api lint`,

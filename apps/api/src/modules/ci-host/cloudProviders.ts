@@ -109,7 +109,7 @@ export class GitHubActionsProvider implements CloudProvider {
 export class CircleCiProvider implements CloudProvider {
   readonly id = 'circleci' as const
   readonly label = 'CircleCI'
-  readonly slots = 24
+  readonly slots = 28
   readonly cpus = 4
   readonly memoryBytes = 15 * 2 ** 30
   readonly loginHint = 'Log in to CircleCI on Main (circleci auth login) and follow the CI mirror project to run CI there.'

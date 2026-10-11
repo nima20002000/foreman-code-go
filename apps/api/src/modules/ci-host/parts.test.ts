@@ -7,7 +7,9 @@ it('queues all full suite parts and defaults unit shard counts independently', (
     Array.from({ length: 5 }, (_, index) => ({ index, count: 5 })))
   expect(unit.filter(part => part.part === 'unit-web').map(part => part.partition)).toEqual(
     Array.from({ length: 3 }, (_, index) => ({ index, count: 3 })))
-  expect(unit.slice(-2).map(part => part.part)).toEqual(['unit-web-heavy', 'unit-other'])
+  expect(unit.filter(part => part.part === 'unit-web-heavy').map(part => part.partition)).toEqual(
+    [{ index: 0, count: 2 }, { index: 1, count: 2 }])
+  expect(unit.at(-1)?.part).toBe('unit-other')
   for (const suite of ['lint', 'typecheck', 'build'] as const) {
     expect(planCiParts({ suite, commandId: suite }, {}).map(part => part.part))
       .toEqual([`${suite}-api`, `${suite}-other`])

@@ -9,6 +9,8 @@ export interface CiUnitInventory {
 }
 interface PlannedPart { part: CiPart | null; partition: CiPartition | null; files: string[] }
 
+const HEAVY_WEB_SHARDS = 2
+
 /** Aim for two minutes of measured test time per unit shard; unknown repositories use the default counts. */
 function unitShardCount(part: 'unit-api' | 'unit-web', files: string[], durations: CiDurations) {
   const measured = files.map(file => durations[file]).filter((value): value is number => value !== undefined)
@@ -45,7 +47,8 @@ export function planCiParts(input: CiRunInput, durations: CiDurations, inventory
     const candidates = affected ? files : inventory?.files.filter(file => belongs(file, part)) ?? []
     const sharded = part === 'unit-api' || part === 'unit-web'
     if (!affected && inventory && sharded && !candidates.length) return []
-    const count = sharded ? unitShardCount(part, candidates, durations) : 1
+    // The heavy web phase is one long Vitest run; Vitest splits it evenly across a fixed number of machines.
+    const count = sharded ? unitShardCount(part, candidates, durations) : part === 'unit-web-heavy' && !affected ? HEAVY_WEB_SHARDS : 1
     return Array.from({ length: count }, (_, index) => {
       const partition = count > 1 ? { index, count } : null
       const slice = affected && partition ? integrationPartition(files, durations, partition) : files
