@@ -121,8 +121,8 @@ export class ProviderAccountsService implements ProviderAccountResolver {
   }
 
   async assertAuthenticationEligibility(operation: ProviderAccountAuthenticationOperation): Promise<void> {
-    const row = (await this.pool.query<{ principal_id: string; cancel_principal_id: string | null; record: unknown }>(
-      'select principal_id,cancel_principal_id,record from provider_account_authentication_operations where id=$1', [operation.id])).rows[0]
+    const row = (await this.pool.query<{ principal_id: string; record: unknown }>(
+      'select principal_id,record from provider_account_authentication_operations where id=$1', [operation.id])).rows[0]
     if (!row) throw new DomainError('PROVIDER_AUTHENTICATION_NOT_FOUND', 'The accepted operation is unavailable.', 404)
     const stored = ProviderAccountAuthenticationOperationSchema.parse(row.record)
     if (!isDeepStrictEqual(stored.binding, operation.binding) || stored.inputHash !== operation.inputHash
@@ -131,16 +131,16 @@ export class ProviderAccountsService implements ProviderAccountResolver {
       || stored.expiresAt !== operation.expiresAt) {
       throw new DomainError('PROVIDER_AUTHENTICATION_STALE', 'The accepted operation identity changed.', 409)
     }
-    const principal = await readLiveManagementPrincipal(this.pool,
-      stored.cancelRequested ? row.cancel_principal_id ?? row.principal_id : row.principal_id)
+    if (stored.nativeClosed || stored.cancelRequested || Date.parse(stored.expiresAt) <= Date.now()) {
+      throw new DomainError('PROVIDER_AUTHENTICATION_CLOSED', 'The original operation no longer permits authentication.', 409)
+    }
+    const principal = await readLiveManagementPrincipal(this.pool, row.principal_id)
     const remote = await this.remote(principal, stored.binding.target)
     if (remote) return remote.assertAuthenticationEligibility(operation)
     await this.authorize(this.pool, principal, 'provider_accounts:manage', operation.binding.accountId)
-    if (!stored.cancelRequested) {
-      const account = this.account(await this.repository.read(), operation.binding.accountId)
-      if (account.removedAt) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'This account was removed from selection.', 409)
-      await assertAccountUnused(this.pool, operation.binding.accountId)
-    }
+    const account = this.account(await this.repository.read(), operation.binding.accountId)
+    if (account.removedAt) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'This account was removed from selection.', 409)
+    await assertAccountUnused(this.pool, operation.binding.accountId)
   }
 
   private async authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
@@ -393,7 +393,8 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     }))
     await this.authorize(this.pool, principal, 'provider_accounts:manage', account.id)
     const current = await this.authentication.read(operation.id)
-    if (result.operationId !== current.id || current.nativeClosed || current.cancelRequested
+    if (result.operationId !== current.id || result.expiresAt !== current.expiresAt
+      || !current.humanActionRequired || current.nativeClosed || current.cancelRequested
       || Date.parse(current.expiresAt) <= Date.now()) throw new DomainError('PROVIDER_HANDOFF_UNAVAILABLE',
       'The original human authentication operation is no longer pending.', 409)
     return result
