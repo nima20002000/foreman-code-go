@@ -108,6 +108,8 @@ export class ReviewerDispatcher {
     if (job.provider === 'opencode') {
       throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     }
+    // job is reassigned as the review settles; the closures below keep its checked provider.
+    const provider = job.provider
     const guard = new LeaseGuard(this.leaseMs,
       () => this.coordination.assertReviewJobLease(job.id, jobToken),
       () => this.coordination.renewReviewJob(job.id, jobToken, this.leaseMs),
@@ -196,9 +198,9 @@ export class ReviewerDispatcher {
             ...(job.providerTurnOrMessageId ? { nativeTurnId: job.providerTurnOrMessageId } : {}) }
         : reviewPreflightIdentity(priorLane, workflowCorrelationId)
       const attached = await guard.wait(this.nativeRuntime.attachOwnedSession({
-        harness: job.provider, agentId: job.reviewerAgentId, ...ownerContext, purpose: 'reviewer',
+        harness: provider, agentId: job.reviewerAgentId, ...ownerContext, purpose: 'reviewer',
         ...identity, reviewJob: job,
-      }, { harness: job.provider, providerVersion, nativeSessionId: job.nativeSessionId }, guard.signal))
+      }, { harness: provider, providerVersion, nativeSessionId: job.nativeSessionId }, guard.signal))
       await guard.check()
       if (attached.session.harness !== job.provider || attached.session.nativeSessionId !== job.nativeSessionId
         || attached.session.providerVersion !== providerVersion) throw new Error('Reviewer attach changed its durable native identity.')
