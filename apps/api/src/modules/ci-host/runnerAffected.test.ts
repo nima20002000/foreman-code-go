@@ -19,8 +19,13 @@ it('runs only affected integration files and balances partitions within that sel
     await mkdir(join(origin, 'scripts'))
     await writeFile(join(origin, 'scripts/ci-suite.sh'),
       await readFile(new URL('../../../../../scripts/ci-suite.sh', import.meta.url), 'utf8'))
+    for (const file of ['ci-files.mjs', 'ci-affected-run.mjs']) {
+      await writeFile(join(origin, 'scripts', file),
+        await readFile(new URL(`../../../../../scripts/${file}`, import.meta.url), 'utf8'))
+    }
     await mkdir(bin)
     await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { 'test:integration': 'fixture' } }))
+    await writeFile(join(origin, 'pnpm-lock.yaml'), '')
     const files = ['a', 'b', 'c', 'd'].map(name => `apps/api/test/${name}.integration.test.ts`)
     for (const file of files) await writeFile(join(origin, file), '')
     await writeFile(join(origin, 'scripts/integration-durations.json'), JSON.stringify(Object.fromEntries(

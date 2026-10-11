@@ -68,6 +68,7 @@ it('honors persisted MCP build participation and priority while retaining assign
     }))
     const access = new PostgresAccessService(db.pool)
     ci = new HostCiService(db.pool, commands, new RunCiAuthority(db.pool), {
+      capabilities: async () => ({ parts: true, integrationPartitions: true, affected: true }),
       resolve: async () => 'a'.repeat(40),
     }, endpoint)
     app = buildApp({ logger: false,

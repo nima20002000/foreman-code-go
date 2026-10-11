@@ -8,7 +8,7 @@ import { test } from 'node:test'
 
 const script = fileURLToPath(new URL('./ci-suite.sh', import.meta.url))
 
-function runSuite(t, suite, failCommand = '', scope = 'full', action = '', installedClis = true) {
+function runSuite(t, suite, failCommand = '', scope = 'full', action = '', installedClis = true, hostRunner = false) {
   const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-suite-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const callsFile = join(directory, 'calls.jsonl')
@@ -44,6 +44,7 @@ if (args.at(-1) === process.env.FAIL_COMMAND) process.exit(9)
   const result = spawnSync('bash', [script, action], {
     encoding: 'utf8',
     env: { ...process.env, SUITE: suite, SCOPE: scope, SELECTED_FILES: 's:1', CI_STATE: join(directory, 'state'),
+      CI_HOST_RUNNER: hostRunner ? '1' : '0',
       PATH: installedClis ? `${directory}${delimiter}${process.env.PATH}` : directory,
       CALLS_FILE: callsFile, FAIL_COMMAND: failCommand },
   })
@@ -52,6 +53,13 @@ if (args.at(-1) === process.env.FAIL_COMMAND) process.exit(9)
 }
 
 const contractsBuild = ['--filter', '@foreman-code/contracts', 'build']
+test('a host CI part uses Corepack and the already delegated host service', t => {
+  const { result, calls } = runSuite(t, 'unit-api', '', 'full', '', true, true)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(calls[0], ['pnpm', ...contractsBuild])
+  assert.deepEqual(calls[1], ['scripts/ci-unit-files.mjs', 'select', 'unit-api', ''])
+  assert.deepEqual(calls[2].slice(0, 2), ['pnpm', 'test'])
+})
 test('host preparation installs missing harness CLIs with the cloud package age policy', t => {
   const { result, calls } = runSuite(t, 'unit-api', '', 'full', 'prepare', false)
   assert.equal(result.status, 0, result.stderr)

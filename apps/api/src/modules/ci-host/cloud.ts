@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, userInfo } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
@@ -155,12 +155,39 @@ export class CloudCi {
     }
     const base = `refs/foreman/mirror/${mirror}`
     await git(['fetch', '--quiet', '--no-tags', `https://github.com/${mirror}.git`, `+main:${base}`])
+    const workflow = this.provider.id === 'github' ? '.github/workflows/ci.yml' : '.circleci/config.yml'
+    const workflows = ['.github/workflows/ci.yml', '.circleci/config.yml']
+    const entries = (await git(['ls-tree', base, '--', ...workflows])).split('\n')
+      .filter(entry => /^100[0-7]{3} blob [a-f0-9]+\t/.test(entry))
+    if (!entries.some(entry => entry.endsWith(`\t${workflow}`))) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE',
+        `The CI mirror has no ${workflow} workflow for ${this.provider.label}. Use a build computer or configure the mirror.`, 409)
+    }
     await this.guard(clone, commit, signal)
+    let tree = `${commit}^{tree}`
+    const sourceWorkflows = new Set((await git(['ls-tree', commit, '--', ...workflows])).split('\n')
+      .map(entry => entry.split('\t')[1]))
+    const missing = entries.filter(entry => !sourceWorkflows.has(entry.split('\t')[1]))
+    if (missing.length) {
+      await mkdir(this.root, { recursive: true, mode: 0o700 })
+      const directory = await mkdtemp(join(this.root, 'snapshot-'))
+      try {
+        const env = { GIT_INDEX_FILE: join(directory, 'index') }
+        await git(['read-tree', commit], env)
+        for (const entry of missing) {
+          const [mode, , blob, path] = entry.split(/\s+/)
+          await git(['update-index', '--add', '--cacheinfo', `${mode},${blob},${path}`], env)
+        }
+        tree = await git(['write-tree'], env)
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    }
     // The same commit always yields the same snapshot, so every partition of a run shares one mirror branch.
     const date = await git(['show', '-s', '--format=%cI', commit])
     const author = { GIT_AUTHOR_NAME: mirror.split('/')[0]!, GIT_AUTHOR_EMAIL: `${mirror.split('/')[0]}@users.noreply.github.com`,
       GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }
-    const snapshot = await git(['commit-tree', `${commit}^{tree}`, '-p', base, '-m', `Snapshot ${commit.slice(0, 12)}`],
+    const snapshot = await git(['commit-tree', tree, '-p', base, '-m', `Snapshot ${commit.slice(0, 12)}`],
       { ...author, GIT_COMMITTER_NAME: author.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: author.GIT_AUTHOR_EMAIL })
     const branch = `ci/${commit}`
     // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.

@@ -9,6 +9,7 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { ciGroupState, planCiParts, type CiUnitInventory } from './parts.js'
+import type { CiRepositoryCapabilities } from './repository.js'
 
 type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
 export interface HostCiComputer { key: string; hostRef: HostRef; label: string; priority: number }
@@ -19,6 +20,7 @@ export interface HostCiEndpoint {
 }
 /** Resolves the commit to test and makes sure GitHub has it, so build computers can fetch it. */
 export interface CiCommits {
+  capabilities(repository: string, commit: string): Promise<CiRepositoryCapabilities>
   unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
     snapshot: { baseCommit: string; commit: string; bundle: Buffer } | null): Promise<string>
@@ -75,13 +77,19 @@ export class HostCiService {
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
         const commit = await this.commits.resolve(repository, workspace.repository.defaultBranch, input.commit, snapshot)
         const groupId = randomUUID(), now = new Date().toISOString()
-        const inventory = input.suite === 'unit' ? await this.commits.unitInventory?.(repository, commit) : undefined
+        const capabilities = await this.commits.capabilities(repository, commit)
+        const inventory = capabilities.parts && input.suite === 'unit'
+          ? await this.commits.unitInventory?.(repository, commit) : undefined
         const learned = ['unit', 'integration'].includes(input.suite) ? await this.learnedDurations(repository) : null
         const durations = input.suite === 'integration' ? learned : null
         const unitDurations = { ...inventory?.durations, ...learned }
-        const selectionScope = input.scope ?? 'full'
+        const supportsSelection = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.affected
+        const selectionScope = supportsSelection ? input.scope ?? 'full' : 'full'
+        const selection = { ...input, scope: selectionScope, files: selectionScope === 'affected' ? input.files : [] }
         const empty = selectionScope === 'affected' && !input.files?.length
-        const parts = planCiParts(input, unitDurations, inventory)
+        const split = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.parts
+        const parts = split ? planCiParts(selection, unitDurations, inventory)
+          : [{ part: null, partition: null, files: selection.files ?? [] }]
         const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,

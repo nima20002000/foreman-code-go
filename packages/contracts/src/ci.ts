@@ -6,11 +6,13 @@ import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
 const CiRunInputObjectSchema = z.object({
-  suite: CiSuiteSchema.describe('Unit, lint, typecheck and build automatically queue separate suite parts; install runs one job.'),
+  suite: CiSuiteSchema.describe('Repositories with the CI suite hook queue unit, lint, typecheck and build parts; '
+    + 'other repositories run their package script for the suite as one job. Install runs one job.'),
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
   commandId: IdSchema,
-  /** Split an integration run into this many duration-balanced runs on separate build computers. */
-  partitions: z.number().int().min(2).max(32).optional(),
+  /** Split integration when the repository supplies its CI hook and file selector. */
+  partitions: z.number().int().min(2).max(32).describe('Integration partitions for repositories with '
+    + 'scripts/ci-suite.sh and scripts/ci-files.mjs; other repositories run integration as one job.').optional(),
   scope: CiScopeSchema.optional(),
   files: CiSelectedFilesSchema.optional(),
 }).strict()

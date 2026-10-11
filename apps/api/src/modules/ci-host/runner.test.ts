@@ -33,6 +33,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   await mkdir(join(origin, 'apps/api/test'), { recursive: true })
   await writeFile(join(origin, 'package.json'), JSON.stringify({ name: 'fixture', scripts: {
     typecheck: 'tsc', lint: 'eslint', build: 'tsc -b', test: 'vitest', 'test:integration': 'node scripts/test-integration.mjs', 'db:up': 'node db.mjs' } }))
+  await writeFile(join(origin, 'pnpm-lock.yaml'), '')
   for (const name of ['a', 'b', 'c', 'd']) await writeFile(join(origin, `apps/api/test/${name}.integration.test.ts`), '')
   await mkdir(join(origin, 'scripts'))
   await writeFile(join(origin, 'scripts/integration-durations.json'), JSON.stringify({

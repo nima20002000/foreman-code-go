@@ -30,8 +30,11 @@ it('selects one heavy integration file per weighted build-computer partition', a
     await mkdir(bin)
     for (const file of files) await writeFile(join(origin, file), '')
     await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { 'test:integration': 'fixture' } }))
+    await writeFile(join(origin, 'pnpm-lock.yaml'), '')
     await writeFile(join(origin, 'scripts/integration-durations.json'), JSON.stringify(durations))
     await writeFile(join(origin, 'scripts/ci-suite.sh'), '#!/bin/bash\nexit 0\n')
+    await writeFile(join(origin, 'scripts/ci-files.mjs'),
+      await readFile(new URL('../../../../../scripts/ci-files.mjs', import.meta.url), 'utf8'))
     const git = (...args: string[]) => execFileSync('git', args, {
       cwd: origin, env: gitFixtureEnvironment(), encoding: 'utf8',
     }).trim()
