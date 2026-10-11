@@ -21,14 +21,14 @@ import { WorkspaceLocationService } from '../../src/modules/workspaces/location.
 import { WorkspaceManagementService } from '../../src/modules/workspaces/management.js'
 import { CurrentWorkflowAuthoring } from '../../src/modules/workflows/currentAuthoring.js'
 import { WorkflowManagementService } from '../../src/modules/workflows/management.js'
-import { currentDatabase } from './eng04CurrentDatabase.js'
+import { migratedDatabase } from './migratedDatabase.js'
 
 const configuration = {
   harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
 } as const
 
 export function skillConsumerFixture() {
-  let database: Awaited<ReturnType<typeof currentDatabase>>
+  let database: Awaited<ReturnType<typeof migratedDatabase>>
   let app: FastifyInstance
   let address: string
   let access: PostgresAccessService
@@ -54,7 +54,7 @@ export function skillConsumerFixture() {
   }
 
   beforeAll(async () => {
-    database = await currentDatabase()
+    database = await migratedDatabase()
     commands = new PostgresCommandCoordinator(database.pool)
     access = new PostgresAccessService(database.pool)
     const locations = new WorkspaceLocationService(database.pool, commands, undefined, 'runner-local', database.directory)

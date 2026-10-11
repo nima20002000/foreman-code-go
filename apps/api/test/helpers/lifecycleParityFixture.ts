@@ -1,13 +1,13 @@
 import { afterAll, afterEach, beforeAll } from 'vitest'
-import { agent3Database } from './wave25Agent3.js'
+import { migratedDatabase } from './migratedDatabase.js'
 
 export function lifecycleParityFixture() {
-  let database: Awaited<ReturnType<typeof agent3Database>> | undefined
+  let database: Awaited<ReturnType<typeof migratedDatabase>> | undefined
   const closes: Array<() => Promise<void>> = []
 
   // Each case seeds distinct workflow/run IDs; only migrations and the pool are shared.
   beforeAll(async () => {
-    database = await agent3Database()
+    database = await migratedDatabase()
   }, 60000)
 
   afterEach(async () => {

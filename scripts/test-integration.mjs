@@ -9,7 +9,9 @@ import { availableParallelism, freemem } from 'node:os'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
-  testAdminPool, testEnvironment } from './test-resources.mjs'
+  resetTestDatabase, testAdminPool, testEnvironment } from './test-resources.mjs'
+import { createTestDatabaseTemplate, dropTestDatabaseTemplate } from './test-database-template.mjs'
+import { readIntegrationStartup } from './integration-startup.mjs'
 import { adaptiveDeadlineMs, groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
@@ -152,6 +154,7 @@ export function autoRetestFiles(failedFiles, { interrupted }) {
 export function integrationVitestArguments(file, testNamePattern, json) {
   return ['run', file.replace('apps/api/', ''), '--no-file-parallelism', '--maxWorkers=1',
     '--maxConcurrency=1', '--reporter=verbose', ...(json ? ['--reporter=json', `--outputFile.json=${json}`] : []),
+    `--reporter=${join(root, 'scripts', 'integration-startup-reporter.mjs')}`,
     '--fsModuleCache',
     ...(testNamePattern ? ['--testNamePattern', testNamePattern] : [])]
 }
@@ -610,14 +613,17 @@ export async function runIntegration(argv = [], {
   let heartbeat
   let queueResult
   let finalResult
+  let template
   const reportProgress = () => {
     const counts = phase.startsWith('retest') ? retest : { passed, failed }
     console.log(integrationProgressLine({ phase, total: phaseTotal, ...counts, active, slotCount: shardCount,
       usableCount: slots.filter((slot) => !slot.unavailable).length }))
   }
   const resetSlotDatabase = async (slot) => {
-    await dropTestDatabase(admin, slot)
-    Object.assign(slot, await createTestDatabase(admin, slot))
+    const started = performance.now()
+    Object.assign(slot, await resetTestDatabase(admin, slot))
+    slot.used = false
+    slot.databaseSetupMs = performance.now() - started
     delete slot.resetError
   }
   const recordUnexecuted = (files, phase = 'first', reason = 'no usable integration slots') => {
@@ -640,11 +646,15 @@ export async function runIntegration(argv = [], {
     }
   }
   try {
+    template = await createTestDatabaseTemplate(admin, tempRoot)
+    console.log(`[integration] database template ${template.hash}; migration import ${Math.round(template.timings.importMs)} ms;`
+      + ` migrations ${Math.round(template.timings.migrationMs)} ms; setup ${Math.round(template.timings.setupMs)} ms.`)
     for (let index = 0; index < shardCount; index++) {
       if (interrupted) throw new Error(`Interrupted during database setup (${interrupted})`)
       const resource = createTestRoot(tempRoot.directory, `slot-${index + 1}-`)
-      const database = await createTestDatabase(admin, resource)
-      slots.push({ index: index + 1, ...database })
+      const started = performance.now()
+      const database = await createTestDatabase(admin, resource, { template })
+      slots.push({ index: index + 1, ...database, used: false, databaseSetupMs: performance.now() - started })
     }
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
     console.log(`[integration] chosen shards ${shardCount}, resource cap ${shardPlan.limit}: ${shardPlan.reason}.`)
@@ -662,6 +672,12 @@ export async function runIntegration(argv = [], {
       if (active.has(slot.index)) throw new Error(`Slot ${slot.index} still has an owned process group`)
       if (slot.unavailable) throw new Error(`Slot ${slot.index} is retired`)
       const started = Date.now()
+      if (slot.used) {
+        try { await resetSlotDatabase(slot) }
+        catch (error) { slot.resetError = error; throw error }
+      }
+      const databaseSetupMs = slot.databaseSetupMs
+      slot.used = true
       const label = isRetest ? 'RETEST ' : ''
       recordFileAttempt(isRetest ? retestReports : firstPass, file, { slot: slot.index,
         startedAt: new Date(started).toISOString(), code: null, complete: false, reason: 'no terminal file report' })
@@ -669,7 +685,8 @@ export async function runIntegration(argv = [], {
       mkdirSync(dirname(log), { recursive: true })
       const output = boundedLog(log, logBytes)
       const json = `${log}.json`
-      const vitest = vitestCommand(integrationEnvironment(env, slot), file, testNamePattern, json)
+      const environment = { ...integrationEnvironment(env, slot), FOREMAN_CODE_TEST_FILE_STARTED_AT: String(Date.now()) }
+      const vitest = vitestCommand(environment, file, testNamePattern, json)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
       const child = spawn(vitest.command, vitest.args,
         { cwd: vitest.cwd, env: vitest.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -788,6 +805,7 @@ export async function runIntegration(argv = [], {
         if (result.resetError) console.error(`[integration] ${result.resetError.message}`)
       }
       const record = { file, slot: slot.index, code, elapsedMs,
+        startup: { databaseSetupMs, phases: readIntegrationStartup(readFileSync(log, 'utf8')) },
         complete: Boolean(fileReport?.complete && !reportError && !ownedProcessActive), timedOut: result.timedOut,
         report: fileReport, reportError, log: retainedLog, metrics, reason: error?.message ?? reportError,
         ...(hangDetails ? { status: 'HUNG', hung: hangDetails } : {}) }
@@ -838,7 +856,10 @@ export async function runIntegration(argv = [], {
         delete slot.name
         delete slot.databaseUrl
         Object.assign(slot, resource)
-        Object.assign(slot, await createTestDatabase(admin, resource))
+        const started = performance.now()
+        Object.assign(slot, await createTestDatabase(admin, resource, { template }))
+        slot.databaseSetupMs = performance.now() - started
+        slot.used = false
         delete slot.resetError
       } catch (error) {
         slot.resetError = error
@@ -900,6 +921,10 @@ export async function runIntegration(argv = [], {
           try {
             await cleanupTestResources(slot)
           }
+          catch (error) { cleanupError ??= error }
+        }
+        if (template && !cleanupError) {
+          try { await dropTestDatabaseTemplate(admin, template) }
           catch (error) { cleanupError ??= error }
         }
       }

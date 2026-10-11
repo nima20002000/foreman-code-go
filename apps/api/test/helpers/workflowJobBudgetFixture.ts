@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { MemorySaver } from '@langchain/langgraph'
 import { afterAll, beforeAll, expect } from 'vitest'
 import { CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphSnapshotV3Schema } from '@foreman-code/contracts/wave25'
-import { currentDatabase } from './eng04CurrentDatabase.js'
+import { migratedDatabase } from './migratedDatabase.js'
 import { workflowJobFixture } from './workflowJobFixture.js'
 import { executeRepeatRuntime } from '../../src/modules/runs/repeatRuntime.js'
 import type { WorkflowJobDriver } from '../../src/modules/jobs/workflowRuntimePorts.js'
@@ -12,9 +12,9 @@ type Fixture = Awaited<ReturnType<typeof workflowJobFixture>>
 export const timeout = 120000
 export const success = { outcome: 'succeeded' as const, output: { latestDeliverable: {}, remainingFindings: [] } }
 export function useWorkflowJobBudgetFixture() {
-  let db: Awaited<ReturnType<typeof currentDatabase>> | undefined
+  let db: Awaited<ReturnType<typeof migratedDatabase>> | undefined
   beforeAll(async () => {
-    db = await currentDatabase()
+    db = await migratedDatabase()
   }, timeout)
   afterAll(async () => {
     await db?.close()

@@ -1,12 +1,12 @@
 import { afterAll, beforeAll } from 'vitest'
 import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
-import { agent3Database } from './wave25Agent3.js'
+import { migratedDatabase } from './migratedDatabase.js'
 
 export function setupWorkflowCreateIntegration() {
-  let database: Awaited<ReturnType<typeof agent3Database>> | undefined
+  let database: Awaited<ReturnType<typeof migratedDatabase>> | undefined
   beforeAll(async () => {
-    database = await agent3Database()
+    database = await migratedDatabase()
   }, 120_000)
   afterAll(async () => {
     await database?.close()

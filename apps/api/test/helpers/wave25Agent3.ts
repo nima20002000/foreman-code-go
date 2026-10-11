@@ -19,6 +19,7 @@ import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { LOCAL_RUNNER_ID } from '../../src/modules/workspaces/location.js'
 import { assertFixtureResourcesSettled } from '../../../../scripts/test-resources.mjs'
 import { writeNativeAcceptanceEvidence } from './nativeAcceptanceEvidence.js'
+import { recordIntegrationStartup } from '../../../../scripts/integration-startup.mjs'
 
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
@@ -45,6 +46,9 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
     await pool.end(); await dropFixtureSchema(admin, schema); await admin.end()
     await removeFixtureDirectory(directory); throw error
   }
+  recordIntegrationStartup('schema-fixture-ready', {
+    setupMs: beforeMigration - started, migrationMs: performance.now() - beforeMigration,
+  })
   if (process.env.FOREMAN_CODE_TEST_EVIDENCE_ARCHIVE) {
     await writeNativeAcceptanceEvidence(`fixture-setup-${randomUUID()}.json`, {
       kind: 'workflow-database-fixture', schema,

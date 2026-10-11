@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
-import { agent3Database } from './wave25Agent3.js'
+import { migratedDatabase } from './migratedDatabase.js'
 import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
 
 export function workflowConcurrencyFixture() {
-  let database: Awaited<ReturnType<typeof agent3Database>> | undefined
+  let database: Awaited<ReturnType<typeof migratedDatabase>> | undefined
 
   beforeAll(async () => {
-    database = await agent3Database()
+    database = await migratedDatabase()
   }, 60_000)
 
   afterAll(async () => {

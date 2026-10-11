@@ -1,14 +1,14 @@
 import { afterAll, afterEach, beforeAll, vi } from 'vitest'
-import { agent3Database } from './wave25Agent3.js'
+import { migratedDatabase } from './migratedDatabase.js'
 import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
 
 export function lifecycleFixtures() {
-  let database: Awaited<ReturnType<typeof agent3Database>>
+  let database: Awaited<ReturnType<typeof migratedDatabase>>
   const closes: Array<() => Promise<void>> = []
 
   // Runs and providers stay independent; only migrations and the pool are shared.
   beforeAll(async () => {
-    database = await agent3Database()
+    database = await migratedDatabase()
   }, 60000)
 
   afterEach(async () => {

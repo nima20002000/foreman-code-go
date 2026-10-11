@@ -58,5 +58,7 @@ function composeDatabase() {
   process.stdout.write(`${docker(args)}\n`)
 }
 
+const started = performance.now()
 if (process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1') reusePrivateDatabase()
 else composeDatabase()
+process.stdout.write(`[test-db] ${action} completed in ${Math.round(performance.now() - started)} ms\n`)
