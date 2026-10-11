@@ -74,9 +74,10 @@ export class HostCiService {
         if (!workspace.repository) throw new DomainError('SOURCE_REPOSITORY_REQUIRED',
           'CI runs on build computers from GitHub. Set the workspace GitHub repository (workspace_update).', 409)
         const repository = `${workspace.repository.owner}/${workspace.repository.name}`
+        const defaultBranch = workspace.repository.defaultBranch
         // An Agent's CI tests its current files; they are published to GitHub so build computers can fetch them.
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
-        const commit = await this.commits.resolve(repository, workspace.repository.defaultBranch, input.commit, snapshot)
+        const commit = await this.commits.resolve(repository, defaultBranch, input.commit, snapshot)
         const groupId = randomUUID(), now = new Date().toISOString()
         const capabilities = await this.commits.capabilities(repository, commit)
         const inventory = capabilities.parts && input.suite === 'unit'
@@ -95,7 +96,7 @@ export class HostCiService {
         const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,
-          ...(deriveFiles ? { deriveFiles, defaultBranch: workspace.repository.defaultBranch } : {}),
+          ...(deriveFiles ? { deriveFiles, defaultBranch } : {}),
           state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
           exitCode: empty ? 0 : null, message: empty ? 'No affected files for this suite.' : null,
           queuedAt: now, startedAt: empty ? now : null, finishedAt: empty ? now : null,

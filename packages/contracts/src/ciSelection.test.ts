@@ -13,13 +13,13 @@ it('accepts affected scope through Agent, Operator and host contracts', () => {
     .toMatchObject({ scope: 'affected', files: input.files })
 })
 
-it('accepts execution parts with their suite and permits shards only on API and fast web unit parts', () => {
+it('accepts execution parts with their suite and permits shards only on unit-api, unit-web and unit-web-heavy', () => {
   const start = { operation: 'start', runId: '00000000-0000-4000-8000-000000000001',
     repository: 'example/project', suite: 'unit', commit: 'a'.repeat(40), part: 'unit-api',
     partition: { index: 0, count: 5 } }
   expect(CiHostRequestSchema.parse(start)).toMatchObject({ part: 'unit-api', partition: { index: 0, count: 5 } })
-  for (const invalid of [{ ...start, suite: 'build' }, { ...start, part: 'unit-other' },
-    { ...start, part: 'unit-web-heavy' }, { ...start, part: undefined }]) {
+  expect(CiHostRequestSchema.safeParse({ ...start, part: 'unit-web-heavy', partition: { index: 1, count: 2 } }).success).toBe(true)
+  for (const invalid of [{ ...start, suite: 'build' }, { ...start, part: 'unit-other' }, { ...start, part: undefined }]) {
     expect(CiHostRequestSchema.safeParse(invalid).success).toBe(false)
   }
   expect(CiRunInputSchema.safeParse({ suite: 'unit-api', commandId: 'part' }).success).toBe(false)

@@ -238,7 +238,7 @@ export class CloudCi {
       throw new DomainError('CI_CLOUD_FAILED', 'Selected integration files are absent from the commit.', 409)
     }
     const candidates = selected ?? files
-    const slice = new Set(partition ? integrationPartition(candidates, { ...committed, ...learned }, partition) : candidates)
+    const slice = new Set<string>(partition ? integrationPartition(candidates, { ...committed, ...learned }, partition) : candidates)
     if (!slice.size) throw new DomainError('CI_CLOUD_FAILED', 'This partition has no integration files.', 409)
     return this.indexSpec(files, slice)
   }
