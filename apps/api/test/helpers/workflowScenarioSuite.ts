@@ -4,12 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GetInteractionResponseSchema, ListInteractionsResponseSchema, RespondToInteractionRequestSchema, RespondToInteractionResponseSchema } from '@foreman-code/contracts'
 import { ManagedInteractionPageSchema } from '@foreman-code/contracts/management'
 import { RepeatGraphSnapshotV3Schema, RunExecutionsPageSchema, RunRecordDetailSchema } from '@foreman-code/contracts/wave25'
-import { postgresEnabled } from './helpers/wave25Agent3.js'
-import { scenarioFixture, scenarioIds } from './helpers/eng07BScenarios.js'
-import { runPath, scenarioHarness, type Harness, type Started } from './helpers/eng07BHarness.js'
-import { assertScenarioEvidence } from './helpers/eng07BEvidence.js'
-
-afterEach(() => vi.restoreAllMocks())
+import { postgresEnabled } from './wave25Agent3.js'
+import { scenarioFixture, type ScenarioId } from './eng07BScenarios.js'
+import { runPath, scenarioHarness, type Harness, type Started, type Via } from './eng07BHarness.js'
+import { assertScenarioEvidence } from './eng07BEvidence.js'
 
 async function approveThroughHttp(f: Harness, started: Started) {
   const { workspaceId, workflowId, runId } = started.scope
@@ -119,8 +117,8 @@ async function approveThroughHttp(f: Harness, started: Started) {
 }
 
 async function settleRepeatWithRecovery(f: Harness, started: Started) {
-  // Production reconciles every five seconds. Resume only this publicly
-  // accepted Run's saved checkpoint; the fixture's preseeded Run stays queued.
+  // Poll recovery faster in tests while resuming only the publicly accepted Run.
+  // The fixture's preseeded Run stays queued.
   const recoveryCodes: string[] = []
   const recovery = setInterval(() => {
     void f.base.engine.start(started.scope.runId).catch((error: unknown) => {
@@ -128,7 +126,7 @@ async function settleRepeatWithRecovery(f: Harness, started: Started) {
         ? error.code : 'UNCLASSIFIED_RECOVERY_ERROR'
       if (code !== 'RUN_ALREADY_OWNED' && recoveryCodes.length < 10) recoveryCodes.push(code)
     })
-  }, 5000)
+  }, 250)
   recovery.unref()
   try {
     await f.settled(started.scope, 75000)
@@ -139,84 +137,87 @@ async function settleRepeatWithRecovery(f: Harness, started: Started) {
   } finally { clearInterval(recovery) }
 }
 
-describe.skipIf(!postgresEnabled)('ENG07-B S3-01..05 / real PostgreSQL + HTTP + authenticated Operator MCP', () => {
-  describe.each(['http', 'mcp'] as const)('%s admission with cross-transport replay', (via) => {
-    for (const id of scenarioIds) it(`${id} preserves exact routing, history, input/result and graph evidence`, async () => {
-      const scenario = scenarioFixture(id, randomUUID()), f = await scenarioHarness(scenario)
-      let primaryFailure: unknown, failed = false
-      try {
-        const { saved } = await f.save(via)
-        const releaseEntry = f.hold(scenario.nodes[0]!.id)
-        const releaseSlow = scenario.slowNodeId ? f.hold(scenario.slowNodeId) : undefined
-        const releaseFast = scenario.joinNodeId ? f.hold(scenario.nodes[1]!.id) : undefined
-        const releaseRouter = id === 'S3-03' ? f.hold(scenario.nodes[2]!.id) : undefined
-        const started = await f.start(via, saved)
-        await f.waitUntilParked(started.scope, scenario.nodes[0]!.id)
-        const initial = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
-        expect(initial.state.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
-        expect(f.base.provider.counts.starts).toBe(1)
-        releaseEntry()
-        if (releaseSlow) {
-          // Rendezvous at the fork before either sibling may complete. Holding
-          // only the slow branch would incorrectly let a serial engine pass.
-          await vi.waitFor(() => {
-            expect(f.parked.has(scenario.nodes[1]!.id)).toBe(true)
-            expect(f.parked.has(scenario.nodes[2]!.id)).toBe(true)
-          }, { timeout: 25000 })
-          for (const node of scenario.nodes.slice(1, 3)) expect(f.trace.some((event) =>
-            event.nodeId === node.id && event.phase === 'completed')).toBe(false)
-          releaseFast!(); releaseRouter?.()
-          await vi.waitFor(async () => {
-            expect(f.parked.has(scenario.slowNodeId!)).toBe(true)
-            const page = RunExecutionsPageSchema.parse(await f.http('GET', `${runPath(started.scope)}/executions?limit=100`))
-            expect(page.items.find((item) => item.workflowNodeId === scenario.nodes[1]!.id))
-              .toMatchObject({ state: 'completed', acceptedResultAvailable: true })
-          }, { timeout: 25000, interval: 50 })
-          // This gate proves overlapping branches, rather than merely observing
-          // an eventually-successful diamond that may have run serially.
-          expect(f.base.provider.startedNodes).toContain(scenario.nodes[1]!.id)
-          expect(f.base.provider.startedNodes).toContain(scenario.slowNodeId!)
-          expect(f.base.provider.startedNodes).not.toContain(scenario.joinNodeId!)
-          if (id === 'S3-03') expect(f.base.provider.startedNodes).not.toContain(scenario.nodes[4]!.id)
-          releaseSlow()
-        }
-        if (id === 'S3-04') await approveThroughHttp(f, started)
-        if (scenario.repeat) await settleRepeatWithRecovery(f, started)
-        else await f.settled(started.scope)
-        const view = await assertScenarioEvidence(f, started, initial)
-        if (id === 'S3-04') expect(view.events.some((event) => event.fact.type === 'worker.resumed'
-          && event.evidence.sourceKind === 'native_event')).toBe(true)
-        const expectedNodes = Array.from({ length: scenario.occurrences }, () => scenario.executedIndexes
-          .map((index) => scenario.nodes[index]!.id)).flat()
-        expect([...f.base.provider.startedNodes].sort()).toEqual([...expectedNodes].sort())
-        expect(new Set(f.base.provider.startedExecutions).size).toBe(expectedNodes.length)
-        expect(f.base.provider.counts).toMatchObject({ sessions: scenario.executedIndexes.length, starts: expectedNodes.length,
-          responses: id === 'S3-04' ? 1 : 0 })
-        if (id === 'S3-01' || id === 'S3-04' || scenario.repeat) expect(f.base.provider.startedNodes).toEqual(expectedNodes)
-        if (scenario.joinNodeId) {
-          const join = f.trace.findIndex((event) => event.nodeId === scenario.joinNodeId && event.phase === 'started')
-          for (const nodeId of [scenario.nodes[1]!.id, scenario.slowNodeId!]) {
-            const done = f.trace.findIndex((event) => event.nodeId === nodeId && event.phase === 'completed')
-            expect(done).toBeGreaterThanOrEqual(0); expect(join).toBeGreaterThan(done)
+export function defineScenarioTests(id: ScenarioId, via: Via) {
+  describe.skipIf(!postgresEnabled)(`${id} / real PostgreSQL + HTTP + authenticated Operator MCP`, () => {
+    afterEach(() => vi.restoreAllMocks())
+    describe(`${via} admission with cross-transport replay`, () => {
+      it(`${id} preserves exact routing, history, input/result and graph evidence`, async () => {
+        const scenario = scenarioFixture(id, randomUUID()), f = await scenarioHarness(scenario)
+        let primaryFailure: unknown, failed = false
+        try {
+          const { saved } = await f.save(via)
+          const releaseEntry = f.hold(scenario.nodes[0]!.id)
+          const releaseSlow = scenario.slowNodeId ? f.hold(scenario.slowNodeId) : undefined
+          const releaseFast = scenario.joinNodeId ? f.hold(scenario.nodes[1]!.id) : undefined
+          const releaseRouter = id === 'S3-03' ? f.hold(scenario.nodes[2]!.id) : undefined
+          const started = await f.start(via, saved)
+          await f.waitUntilParked(started.scope, scenario.nodes[0]!.id)
+          const initial = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
+          expect(initial.state.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
+          expect(f.base.provider.counts.starts).toBe(1)
+          releaseEntry()
+          if (releaseSlow) {
+            // Rendezvous at the fork before either sibling may complete. Holding
+            // only the slow branch would incorrectly let a serial engine pass.
+            await vi.waitFor(() => {
+              expect(f.parked.has(scenario.nodes[1]!.id)).toBe(true)
+              expect(f.parked.has(scenario.nodes[2]!.id)).toBe(true)
+            }, { timeout: 25000 })
+            for (const node of scenario.nodes.slice(1, 3)) expect(f.trace.some((event) =>
+              event.nodeId === node.id && event.phase === 'completed')).toBe(false)
+            releaseFast!(); releaseRouter?.()
+            await vi.waitFor(async () => {
+              expect(f.parked.has(scenario.slowNodeId!)).toBe(true)
+              const page = RunExecutionsPageSchema.parse(await f.http('GET', `${runPath(started.scope)}/executions?limit=100`))
+              expect(page.items.find((item) => item.workflowNodeId === scenario.nodes[1]!.id))
+                .toMatchObject({ state: 'completed', acceptedResultAvailable: true })
+            }, { timeout: 25000, interval: 50 })
+            // This gate proves overlapping branches, rather than merely observing
+            // an eventually-successful diamond that may have run serially.
+            expect(f.base.provider.startedNodes).toContain(scenario.nodes[1]!.id)
+            expect(f.base.provider.startedNodes).toContain(scenario.slowNodeId!)
+            expect(f.base.provider.startedNodes).not.toContain(scenario.joinNodeId!)
+            if (id === 'S3-03') expect(f.base.provider.startedNodes).not.toContain(scenario.nodes[4]!.id)
+            releaseSlow()
           }
+          if (id === 'S3-04') await approveThroughHttp(f, started)
+          if (scenario.repeat) await settleRepeatWithRecovery(f, started)
+          else await f.settled(started.scope)
+          const view = await assertScenarioEvidence(f, started, initial)
+          if (id === 'S3-04') expect(view.events.some((event) => event.fact.type === 'worker.resumed'
+            && event.evidence.sourceKind === 'native_event')).toBe(true)
+          const expectedNodes = Array.from({ length: scenario.occurrences }, () => scenario.executedIndexes
+            .map((index) => scenario.nodes[index]!.id)).flat()
+          expect([...f.base.provider.startedNodes].sort()).toEqual([...expectedNodes].sort())
+          expect(new Set(f.base.provider.startedExecutions).size).toBe(expectedNodes.length)
+          expect(f.base.provider.counts).toMatchObject({ sessions: scenario.executedIndexes.length, starts: expectedNodes.length,
+            responses: id === 'S3-04' ? 1 : 0 })
+          if (id === 'S3-01' || id === 'S3-04' || scenario.repeat) expect(f.base.provider.startedNodes).toEqual(expectedNodes)
+          if (scenario.joinNodeId) {
+            const join = f.trace.findIndex((event) => event.nodeId === scenario.joinNodeId && event.phase === 'started')
+            for (const nodeId of [scenario.nodes[1]!.id, scenario.slowNodeId!]) {
+              const done = f.trace.findIndex((event) => event.nodeId === nodeId && event.phase === 'completed')
+              expect(done).toBeGreaterThanOrEqual(0); expect(join).toBeGreaterThan(done)
+            }
+          }
+          if (id === 'S3-03') {
+            const router = view.snapshot.state.resolutions.find((item) => item.ref.nodeId === scenario.nodes[2]!.id)!
+            expect(router.value).toMatchObject({ resolution: 'succeeded', outcome: 'long',
+              selectedRelationshipIds: [scenario.edges[2]!.id], unselectedRelationshipIds: [scenario.edges[3]!.id] })
+            expect(view.snapshot.state.resolutions.find((item) => item.ref.nodeId === scenario.nodes[4]!.id)?.value)
+              .toMatchObject({ resolution: 'skipped', selectedRelationshipIds: [], unselectedRelationshipIds: [scenario.edges[6]!.id] })
+          }
+        } catch (error) {
+          primaryFailure = error
+          failed = true
         }
-        if (id === 'S3-03') {
-          const router = view.snapshot.state.resolutions.find((item) => item.ref.nodeId === scenario.nodes[2]!.id)!
-          expect(router.value).toMatchObject({ resolution: 'succeeded', outcome: 'long',
-            selectedRelationshipIds: [scenario.edges[2]!.id], unselectedRelationshipIds: [scenario.edges[3]!.id] })
-          expect(view.snapshot.state.resolutions.find((item) => item.ref.nodeId === scenario.nodes[4]!.id)?.value)
-            .toMatchObject({ resolution: 'skipped', selectedRelationshipIds: [], unselectedRelationshipIds: [scenario.edges[6]!.id] })
-        }
-      } catch (error) {
-        primaryFailure = error
-        failed = true
-      }
-      let closeFailure: unknown, closeFailed = false
-      try { await f.close() } catch (error) { closeFailure = error; closeFailed = true }
-      if (failed && closeFailed) throw new AggregateError([primaryFailure, closeFailure],
-        `ENG07 scenario failed before teardown: ${primaryFailure instanceof Error ? primaryFailure.message : 'unknown error'}`)
-      if (failed) throw primaryFailure
-      if (closeFailed) throw closeFailure
-    }, id.startsWith('S3-05') ? 130000 : 90000)
+        let closeFailure: unknown, closeFailed = false
+        try { await f.close() } catch (error) { closeFailure = error; closeFailed = true }
+        if (failed && closeFailed) throw new AggregateError([primaryFailure, closeFailure],
+          `ENG07 scenario failed before teardown: ${primaryFailure instanceof Error ? primaryFailure.message : 'unknown error'}`)
+        if (failed) throw primaryFailure
+        if (closeFailed) throw closeFailure
+      }, id.startsWith('S3-05') ? 130000 : 90000)
+    })
   })
-})
+}
