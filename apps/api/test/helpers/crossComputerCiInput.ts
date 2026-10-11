@@ -2,7 +2,14 @@ import { open } from 'node:fs/promises'
 import { z } from 'zod'
 import { HarnessHostReferenceSchema } from '@foreman-code/contracts/harness-registry'
 import { AcceptedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
-import { JobTargetSchema } from '@foreman-code/contracts/jobs'
+import { CiComputersOutputSchema } from '@foreman-code/contracts'
+
+export const CiComputerHostSchema = CiComputersOutputSchema.shape.computers.element.shape.hostRef
+  .refine(host => {
+    if (host.kind === 'cloud') return host.provider !== undefined && host.slot !== undefined && !host.deviceId
+    if (host.provider !== undefined || host.slot !== undefined) return false
+    return host.kind === 'device' ? !!host.deviceId : !host.deviceId
+  }, 'Supply the complete physical computer or cloud provider/slot identity.')
 
 const ComputerSchema = z.object({
   name: z.string().min(1).max(80),
@@ -14,9 +21,9 @@ const ComputerSchema = z.object({
 export const CrossComputerCiInputSchema = z.object({
   endpoint: z.url().refine(value => {
     const url = new URL(value)
-    return ['http:', 'https:'].includes(url.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-      && url.pathname === '/mcp' && !url.username && !url.password && !url.search && !url.hash
-  }, 'Use the local Main /mcp endpoint without embedded credentials.'),
+    return ['http:', 'https:'].includes(url.protocol) && url.pathname === '/mcp'
+      && !url.username && !url.password && !url.search && !url.hash
+  }, 'Use the production Main /mcp endpoint without embedded credentials.'),
   token: z.string().min(1),
   deniedToken: z.string().min(1),
   evidenceDirectory: z.string().startsWith('/').min(2),
@@ -24,10 +31,11 @@ export const CrossComputerCiInputSchema = z.object({
     workspaceId: z.string().min(1),
     project: z.enum(['graphql', 'demo']),
     computers: z.array(ComputerSchema).min(1).max(3),
+    ciComputers: z.array(CiComputerHostSchema).max(64).default([]),
   }).strict()).length(2),
   excludedComputers: z.array(z.object({
     workspaceId: z.string().min(1),
-    target: JobTargetSchema,
+    hostRef: CiComputerHostSchema,
     reason: z.enum(['offline', 'refusing']),
   }).strict()).max(10).default([]),
 }).strict().superRefine((value, context) => {
@@ -48,11 +56,23 @@ export const CrossComputerCiInputSchema = z.object({
     }
   }
   const mainIds = new Set(value.workspaces.flatMap(workspace => workspace.computers.map(computer => computer.hostRef.mainId)))
-  if (mainIds.size !== 1 || value.excludedComputers.some(computer => !mainIds.has(computer.target.hostRef.mainId))) {
+  const ciHosts = value.workspaces.flatMap(workspace => workspace.ciComputers)
+  if (mainIds.size !== 1 || [...ciHosts, ...value.excludedComputers.map(computer => computer.hostRef)]
+    .some(host => !mainIds.has(host.mainId))) {
     fail('All computers must belong to the same Main.')
   }
   if (value.excludedComputers.some(computer => !value.workspaces.some(workspace => workspace.workspaceId === computer.workspaceId))) {
     fail('Excluded candidates must belong to a scenario workspace.')
+  }
+  for (const workspace of value.workspaces) {
+    if (new Set(workspace.ciComputers.map(host => JSON.stringify(host))).size !== workspace.ciComputers.length) {
+      fail('CI computer identities must be distinct within a workspace.')
+    }
+    const readyHosts = [...workspace.computers.map(computer => computer.hostRef), ...workspace.ciComputers]
+    if (value.excludedComputers.some(excluded => excluded.workspaceId === workspace.workspaceId
+      && readyHosts.some(host => JSON.stringify(host) === JSON.stringify(excluded.hostRef)))) {
+      fail('An excluded computer cannot also be a required ready computer.')
+    }
   }
 })
 export type CrossComputerCiInput = z.infer<typeof CrossComputerCiInputSchema>

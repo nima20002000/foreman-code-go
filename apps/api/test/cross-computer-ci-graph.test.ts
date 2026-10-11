@@ -23,19 +23,18 @@ describe('cross-computer CI graph', () => {
     const assignments = [assignment(0, null), ...projectSuites[project].map((suite, index) => assignment(index + 1, suite))]
     const { graph, agents } = buildCrossComputerCiGraph(base, assignments)
     expect(graph.entryNodeId).toBe('node-0')
-    expect(graph.executionPolicy).toEqual({ maxParallelism: 3, maxNodeExecutions: 4 })
+    expect(graph.executionPolicy).toEqual({ maxParallelism: 3, maxNodeExecutions: 4,
+      agentActiveTimeoutMs: 4 * 60 * 60_000 })
     expect(graph.edges.map(edge => [edge.source, edge.target])).toEqual([
       ['node-0', 'node-1'], ['node-0', 'node-2'], ['node-0', 'node-3'],
     ])
     expect(graph.nodes.map(node => node.kind === 'job' ? null : node.agentId)).toEqual(agents.map(agent => agent.id))
     expect(graph).not.toHaveProperty('repeat')
-    expect(agents.every(agent => agent.harnessConfiguration?.harness === 'codex'
-      && agent.harnessConfiguration.sandbox === 'workspace-write')).toBe(true)
-    for (const [index, suite] of projectSuites[project].entries()) {
-      const node = graph.nodes[index + 1]!
-      if (node.kind === 'job') throw new Error('The CI scenario uses Agent nodes.')
-      expect(node.initialPrompt).toContain(`suite ${suite}`)
-      expect(node.initialPrompt).toContain('run.state is passed, failed, canceled or lost')
+    for (const agent of agents) {
+      expect(agent.harnessConfiguration).toMatchObject({ harness: 'codex', sandbox: 'workspace-write',
+        model: 'gpt-6-luna', reasoningEffort: 'medium' })
+      expect(agent.graphqlTools).toEqual(expect.arrayContaining(['context_get', 'ci_computers_list', 'ci_run',
+        'ci_get', 'ci_logs_read']))
     }
     expect(base.nodes).toEqual([])
   })

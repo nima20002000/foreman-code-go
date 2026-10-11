@@ -5,8 +5,8 @@ import { WorkflowDefinitionV3Schema, type WorkflowDefinitionV3 } from '@foreman-
 
 export const ciHarness = {
   harness: 'codex' as const,
-  model: 'gpt-6.1-sol',
-  reasoningEffort: 'xhigh' as const,
+  model: 'gpt-6-luna',
+  reasoningEffort: 'medium' as const,
   serviceTier: 'standard' as const,
   // Writable Agents receive their own product-managed git worktree and branch.
   sandbox: 'workspace-write' as const,
@@ -35,18 +35,27 @@ function agentPrompt(suite: ScenarioSuite | null): string {
   }
   return 'Use only Foreman Code MCP tools. Do not use shell, filesystem, network or browser tools. '
     + 'Read context_get and retain your own repository and branch. Read ci_computers_list. '
-    + `Call ci_run exactly once for suite ${suite}, with a fresh commandId, `
+    + `Call ci_run exactly once for suite ${suite}, scope full, with a fresh commandId, `
+    + (suite === 'integration' ? 'partitions 2, ' : '')
     + 'and no commit override; this must publish your current worktree files to GitHub. '
     + 'Retain that commandId for an uncertain response and retry only that same request. '
-    + 'Poll ci_get on your ticket until run.state is passed, failed, canceled or lost. '
-    + 'Keep polling while the run is queued, starting or running. '
-    + 'Read ci_logs_read; continue from nextOffset to read more log text. '
+    + 'Placement is automatic: do not supply a computer or placementOverride. '
+    + 'Retain every ticketId in the ci_run partitions array, or the single ticketId when it is absent. '
+    + 'Poll ci_get for EVERY ticket until ALL run.state values are passed, failed, canceled or lost. '
+    + 'The first ticket is only one part; group.state can fail before the other parts finish. '
+    + 'Record each ticket’s distinct observed states in order. Keep polling queued, starting or running tickets. '
+    + 'Once all are terminal, read ci_get again and ci_logs_read for EVERY ticket. '
+    + 'Choose one nonempty log line per ticket, reading additional pages from nextOffset if necessary. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
-    + '{"ticketId":"...","suite":"' + suite + '",'
-    + '"computer":{"kind":"main","mainId":"..."},'
-    + '"outcome":"passed","repository":"owner/repo","branch":"...",'
-    + '"logLine":"one nonempty actual log line"}. '
-    + 'Set computer to the actual run.computer.hostRef; for a Worker it has kind device and deviceId. '
+    + '{"ticketId":"the ci_run top-level ticketId","groupId":"run.groupId","suite":"' + suite + '",'
+    + '"outcome":"group.state","repository":"run.repository","branch":"your context_get worktree branch",'
+    + '"tickets":[{"ticketId":"run.id","part":null,"partition":null,"computer":{},'
+    + '"commit":"run.commit","outcome":"run.state","exitCode":0,"logLine":"actual log line",'
+    + '"observedStates":["queued","running","passed"]}]}. '
+    + 'Include every part/partition exactly once. Copy part, partition (including weights), exitCode and computer '
+    + 'from the terminal run; computer is run.computer.hostRef (not its label or plannedHostKey). '
+    + 'A cloud computer has kind cloud, mainId, provider and slot; a Worker has kind device, mainId and deviceId. '
+    + 'Repository is the owner/repository string from run.repository, and branch is your own worktree branch. '
     + 'If CI fails, report its actual outcome instead of claiming success. Do not edit or commit any files.'
 }
 
@@ -83,7 +92,8 @@ export function buildCrossComputerCiGraph(
     entryNodeId: coordinator.nodeId,
     requiredAgentCount: assignments.length,
     approval: { handler: 'user' },
-    executionPolicy: { maxParallelism: assignments.length - 1, maxNodeExecutions: assignments.length },
+    executionPolicy: { maxParallelism: assignments.length - 1, maxNodeExecutions: assignments.length,
+      agentActiveTimeoutMs: 4 * 60 * 60_000 },
     nodes: assignments.map((assignment, index) => ({
       id: assignment.nodeId,
       agentId: assignment.agentId,
