@@ -3,7 +3,8 @@
 #   scripts/ci-suite.sh start  — before `pnpm install`: starts PostgreSQL and the harness CLIs in the background
 #   scripts/ci-suite.sh        — after `pnpm install`: waits for them, then runs the suite
 # SUITE: install, typecheck, lint, unit, build or integration, or one part of a check so the parts run on separate
-# machines: unit-api, unit-web, unit-other, lint-api, lint-other. SLICE: an integration partition's file indexes
+# machines: unit-api, unit-web, unit-web-heavy, unit-other, lint-api, lint-other. For unit-api and unit-web, SLICE is
+# a Vitest shard such as 2/3. SLICE: an integration partition's file indexes
 # (scripts/ci-files.mjs); empty runs every file. DURATIONS_OUTPUT: where measured file durations go.
 set -euo pipefail
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
@@ -28,8 +29,11 @@ ready() {
 case "$SUITE" in
   install) ;;
   unit) ready db; pnpm test ;;
-  unit-api) ready db; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api test ;;
-  unit-web) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/web test ;;
+  unit-api) ready db; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api test ${SLICE:+--shard=$SLICE} ;;
+  unit-web) pnpm --filter @foreman-code/contracts build
+    (cd apps/web && FOREMAN_WEB_TEST_PHASE=fast pnpm exec vitest run ${SLICE:+--shard=$SLICE}) ;;
+  unit-web-heavy) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/web test:run-graph-smoke
+    (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run) ;;
   unit-other) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
     && pnpm test:scripts ;;
   lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;
