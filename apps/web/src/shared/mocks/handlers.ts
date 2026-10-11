@@ -256,6 +256,16 @@ export const handlers: RequestHandler[] = [
   ...agentChatHandlers,
   currentAuthoringHandler,
   http.get('/api/runtime/identity', () => HttpResponse.json(mockRuntimeIdentity)),
+  http.get('/api/provider-accounts/targets', () => HttpResponse.json({ targets: [{
+    target: { hostRef: { kind: 'main', mainId: mockRuntimeIdentity.installationId },
+      applicationInstallationId: mockRuntimeIdentity.installationId, keyRevision: null, authorizationRevision: null },
+    label: 'Main', generation: 1, connected: true, canRead: true, canManage: false,
+    providers: ['codex', 'claude'].map(provider => ({ provider, qualified: false, actions: [], reason: null })),
+  }] })),
+  http.get('/api/provider-accounts/page', ({ request }) => HttpResponse.json({
+    target: JSON.parse(new URL(request.url).searchParams.get('target')!),
+    revision: 1, accounts: [], defaults: [], nextCursor: null,
+  })),
   http.get('/api/management/harnesses/registry', () => readFailure() ?? HttpResponse.json({
     instances: [], installations: [], hostMetadata: {
       hostRef: { kind: 'main', mainId: mockRuntimeIdentity.installationId },

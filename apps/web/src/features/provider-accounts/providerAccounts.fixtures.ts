@@ -1,6 +1,7 @@
 import {
   ProviderAccountSchema, ProviderAccountAuthenticationOperationSchema,
   type ProviderAccountBinding, type ProviderAccountAuthenticationOperation,
+  type ProviderAccountTarget,
 } from '@foreman-code/contracts/provider-accounts'
 import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 
@@ -10,6 +11,16 @@ export const operationId = '30000000-0000-4000-8000-000000000003'
 export const observedAt = '2026-10-01T12:00:00.000Z'
 export const accountTarget = { hostRef: { kind: 'main' as const, mainId: mockRuntimeIdentity.installationId },
   applicationInstallationId: mockRuntimeIdentity.installationId, keyRevision: null, authorizationRevision: null }
+export const workerAccountTarget = { hostRef: { kind: 'device' as const, mainId: mockRuntimeIdentity.installationId,
+  deviceId: '40000000-0000-4000-8000-000000000001' },
+  applicationInstallationId: '40000000-0000-4000-8000-000000000002', keyRevision: 2, authorizationRevision: 3 }
+export function accountTargetInfo(target: ProviderAccountTarget['target'] = accountTarget): ProviderAccountTarget {
+  return { target, label: target.hostRef.kind === 'main' ? 'Main' : 'Worker', generation: 1,
+    connected: true, canRead: true, canManage: true, providers: (['codex', 'claude'] as const).map(provider => ({
+      provider, qualified: true, reason: null,
+      actions: ['create', 'register', 'status', 'models', 'sign-in', 'sign-out', 'cancel', 'human-handoff'],
+    })) }
+}
 export function accountBinding(id = accountId): ProviderAccountBinding {
   return { kind: 'slot', accountId: id, provider: 'codex', target: accountTarget,
     profileRef: id, bindingRevision: 1, subject: null }
