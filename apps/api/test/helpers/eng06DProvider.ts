@@ -123,6 +123,7 @@ export class RecoveryProvider {
         endpointMatches: true, credentialEnvironmentVariable: null, checkedAt: new Date().toISOString() } },
       async createSession(input) {
         if (!isWorkflowStart(input)) throw new Error('Only workflow requests belong to this provider fixture')
+        if (input.sessionContinuation) throw new Error('This provider requires ephemeral workflow sessions')
         const request = structuredClone(input.request), accepted = RunAcceptedInputValueSchema.parse(request.input)
         const occurrenceId = accepted.occurrence?.identity.occurrenceId ?? null
         const attempt = 1 + provider.submissions.filter((item) => item.request.runId === request.runId

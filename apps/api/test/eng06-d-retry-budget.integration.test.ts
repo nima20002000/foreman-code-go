@@ -18,6 +18,7 @@ function sameSlot(rows: Awaited<ReturnType<typeof executionRows>>) {
   expect(new Set(rows.map((row) => row.input_digest)).size).toBe(1)
   expect(new Set(rows.map((row) => row.execution.id)).size).toBe(rows.length)
   for (const row of rows) {
+    expect(row.execution.sessionContinuation).toBeUndefined()
     expect(row.execution.agentConfigurationVersionId).toBe(rows[0]!.execution.agentConfigurationVersionId)
     expect(row.execution.input).toEqual(rows[0]!.execution.input)
   }

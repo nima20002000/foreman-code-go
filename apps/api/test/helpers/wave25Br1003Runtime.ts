@@ -63,9 +63,11 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
     // Real request construction must ask the deterministic provider for an
     // approval. Keep the pinned sandbox/read-only configuration unchanged.
-    f.configurations = f.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
-      ...configuration, harness: structuredClone(approvalFixture().configurations[1]!.harness),
-    }))
+    f.configurations = f.configurations.map((configuration) => {
+      const harness = structuredClone(approvalFixture().configurations[1]!.harness)
+      harness.advanced!.sessionPersistence = configuration.harness.advanced?.sessionPersistence ?? 'persistent'
+      return AgentConfigurationVersionSchema.parse({ ...configuration, harness })
+    })
     if (branches === 2) {
       const original = f.configurations[1]!, existingNode = f.version.definition.nodes[1]!
       const configuration = AgentConfigurationVersionSchema.parse({ ...original, id: `${original.id}-parallel`, agentId: `${original.agentId}-parallel` })

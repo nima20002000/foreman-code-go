@@ -1,7 +1,9 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import {
+  AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION, HarnessExecutionSchema,
+} from '@foreman-code/contracts'
 import {
   RUN_INSPECTION_TOOLS, RunAcceptedInputValueSchema, RunExecutionDetailSchema,
   RunExecutionsPageSchema, RunRecordDetailSchema, RunStartV3InputSchema, WorkflowRunV3Schema,
@@ -139,6 +141,13 @@ async function openTransport(base: Base, runtime: Runtime, errors: unknown[]): P
 
 export async function recoveryFixture(form: Form, plan: (input: Submission) => Fault = () => 'success', budget = 12) {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), form)
+  // This provider models a separate native session for every execution attempt.
+  fixture.configurations = fixture.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
+    ...configuration,
+    harness: { ...configuration.harness, advanced: {
+      ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, sessionPersistence: 'ephemeral',
+    } },
+  }))
   fixture.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: budget }
   fixture.run.input = { instruction: 'Preserve the accepted input across attempts and recovery' }
   const base = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
