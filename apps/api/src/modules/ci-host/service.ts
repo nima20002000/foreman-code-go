@@ -79,12 +79,14 @@ export class HostCiService {
         const learned = ['unit', 'integration'].includes(input.suite) ? await this.learnedDurations(repository) : null
         const durations = input.suite === 'integration' ? learned : null
         const unitDurations = { ...inventory?.durations, ...learned }
-        const selectionScope = input.scope ?? 'full'
-        const empty = selectionScope === 'affected' && !input.files?.length
+        const selectionScope = input.scope ?? 'affected'
+        const deriveFiles = selectionScope === 'affected' && input.files === undefined
+        const empty = selectionScope === 'affected' && input.files?.length === 0
         const parts = planCiParts(input, unitDurations, inventory)
         const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,
+          ...(deriveFiles ? { deriveFiles, defaultBranch: workspace.repository.defaultBranch } : {}),
           state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
           exitCode: empty ? 0 : null, message: empty ? 'No affected files for this suite.' : null,
           queuedAt: now, startedAt: empty ? now : null, finishedAt: empty ? now : null,
@@ -361,7 +363,8 @@ export class HostCiService {
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
-            scope: run.scope, ...(run.scope === 'affected' ? { files: run.files } : {}),
+            scope: run.scope, ...(run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}),
+            ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
           if (reply.operation !== 'start') {
             busy.delete(computer.key)

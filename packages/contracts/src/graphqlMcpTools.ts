@@ -38,7 +38,16 @@ export const GRAPHQL_AGENT_TOOLS = {
     label: "Publish workflow output", description: "Publish this turn's sealed output under its saved permissions.",
     roles: ["orchestrator", "coder"],
   },
-  ci_run: { label: "Run CI", description: "Run install, typecheck, lint, unit, build or integration directly on a build computer. Tests the requested commit, the Agent's current files published to GitHub, or the default branch head. Retry the same commandId and payload. Integration supports 2–12 partitions on separate computers.", roles: ["operator", "orchestrator", "coder"] },
+  ci_run: {
+    label: "Run CI",
+    description: "Run install, typecheck, lint, unit, build or integration on a build computer. "
+      + "Tests the requested commit, the Agent's current files published to GitHub, or the default branch head. "
+      + "Scope defaults to affected. Omit files for runner selection against the workspace default branch merge-base; "
+      + "caller files remain supported with an explicit commit. Missing selectors, shared infrastructure changes and "
+      + "the default branch head run the full suite and report the reason. Scope full always runs everything. "
+      + "Retry the same commandId and payload. Integration supports 2–32 partitions on separate computers.",
+    roles: ["operator", "orchestrator", "coder"],
+  },
   ci_get: { label: "Read CI result", description: "Read CI run state, current step, computer, exit code and bounded log tail by ticketId.", roles: ["operator", "orchestrator", "coder"] },
   ci_computers_list: { label: "List CI computers", description: "Read authorized build computers with readiness, GitHub login, size and running CI runs.", roles: ["operator", "orchestrator", "coder"] },
   ci_cancel: { label: "Cancel CI", description: "Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Poll ci_get to confirm the outcome.", roles: ["operator", "orchestrator", "coder"] },

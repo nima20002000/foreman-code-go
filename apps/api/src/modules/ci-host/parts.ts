@@ -23,7 +23,7 @@ function unitShardCount(part: 'unit-api' | 'unit-web', files: string[], duration
 }
 
 export function planCiParts(input: CiRunInput, durations: CiDurations, inventory?: CiUnitInventory): PlannedPart[] {
-  const affected = input.scope === 'affected'
+  const affected = (input.scope ?? 'affected') === 'affected' && input.files !== undefined
   const selected = affected ? [...new Set(input.files)].sort() : []
   if (affected && !selected.length) return [{ part: null, partition: null, files: [] }]
   if (input.suite === 'install' || input.suite === 'integration') {

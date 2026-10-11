@@ -25,12 +25,26 @@ it('accepts execution parts with their suite and permits shards only on API and 
   expect(CiRunInputSchema.safeParse({ suite: 'unit-api', commandId: 'part' }).success).toBe(false)
 })
 
-it('rejects incomplete affected scope, traversal, unsupported suites and mixing full scope with selections', () => {
-  for (const invalid of [{ ...input, commit: undefined }, { ...input, files: undefined },
+it('accepts runner selection without caller files or a caller commit for every suite', () => {
+  for (const suite of ['unit', 'integration', 'lint', 'typecheck', 'install', 'build']) {
+    for (const scope of [undefined, 'affected', 'full']) {
+      const request = { suite, commandId: 'runner-selection', ...(scope ? { scope } : {}) }
+      expect(CiRunInputSchema.parse(request)).toEqual(request)
+      expect(OperatorCiRunInputSchema.parse({ ...request, workspaceId: 'workspace-ci' })).toMatchObject(request)
+      expect(CiHostRequestSchema.parse({ operation: 'start', runId: '00000000-0000-4000-8000-000000000001',
+        repository: 'example/project', commit: input.commit, defaultBranch: 'release/stable', suite,
+        ...(scope ? { scope } : {}) })).toMatchObject({ suite, defaultBranch: 'release/stable' })
+    }
+  }
+  expect(CiRunInputSchema.parse({ ...input, scope: undefined })).toMatchObject({ files: input.files })
+})
+
+it('rejects unpinned caller selections, traversal, unsupported selected suites and mixing full scope with selections', () => {
+  for (const invalid of [{ ...input, commit: undefined },
     { ...input, files: ['apps/api/../escape.test.ts'] }, { ...input, files: ['apps/api/src/feature.ts'] },
     { ...input, files: ['apps/api/test/feature.integration.test.ts'] }, { ...input, suite: 'build' },
     { ...input, scope: 'full' }]) expect(CiRunInputSchema.safeParse(invalid).success).toBe(false)
   expect(CiRunInputSchema.safeParse({ ...input, files: ['apps/web/src/feature.integration.test.tsx'] }).success).toBe(true)
   expect(CiRunInputSchema.safeParse({ ...input, files: [] }).success).toBe(true)
-  expect(CiRunInputSchema.safeParse({ suite: 'unit', commandId: 'full' }).success).toBe(true)
+  expect(CiRunInputSchema.safeParse({ suite: 'unit', scope: 'full', commandId: 'full' }).success).toBe(true)
 })

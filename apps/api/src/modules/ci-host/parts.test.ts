@@ -2,7 +2,7 @@ import { expect, it } from 'vitest'
 import { ciGroupState, planCiParts } from './parts.js'
 
 it('queues all full suite parts and defaults unit shard counts independently', () => {
-  const unit = planCiParts({ suite: 'unit', commandId: 'unit' }, {})
+  const unit = planCiParts({ suite: 'unit', scope: 'full', commandId: 'unit' }, {})
   expect(unit.filter(part => part.part === 'unit-api').map(part => part.partition)).toEqual(
     Array.from({ length: 5 }, (_, index) => ({ index, count: 5 })))
   expect(unit.filter(part => part.part === 'unit-web').map(part => part.partition)).toEqual(
@@ -13,6 +13,17 @@ it('queues all full suite parts and defaults unit shard counts independently', (
   for (const suite of ['lint', 'typecheck', 'build'] as const) {
     expect(planCiParts({ suite, commandId: suite }, {}).map(part => part.part))
       .toEqual([`${suite}-api`, `${suite}-other`])
+  }
+})
+
+it('queues runner-selected affected parts when files are omitted instead of completing an empty caller selection', () => {
+  for (const scope of [undefined, 'affected'] as const) {
+    const parts = planCiParts({ suite: 'unit', commandId: 'runner', ...(scope ? { scope } : {}) }, {})
+    expect(parts.map(part => part.part)).toEqual(planCiParts({ suite: 'unit', scope: 'full', commandId: 'full' }, {})
+      .map(part => part.part))
+    expect(parts.some(part => part.partition)).toBe(true)
+    expect(planCiParts({ suite: 'integration', commandId: 'integration', partitions: 2, ...(scope ? { scope } : {}) }, {}))
+      .toEqual([0, 1].map(index => ({ part: null, files: [], partition: { index, count: 2 } })))
   }
 })
 

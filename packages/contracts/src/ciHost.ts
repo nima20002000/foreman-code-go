@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
-import { exclusiveIntegrationFiles, requirements } from './integrationScheduling.mjs'
+export { integrationPartition } from './ciPartition.mjs'
+import { WorkspaceRepositorySchema } from './workspaceRepository.js'
 
 /** Host CI: a build computer runs a suite directly in a git worktree of the commit, like a self-hosted runner.
  * It fetches with its own GitHub CLI login and installs packages normally; a systemd unit caps CPU and memory. */
@@ -24,8 +25,9 @@ export const CiSelectedFilesSchema = z.array(z.string().min(1).max(300)
   .refine(file => !file.split('/').some(part => part === '..' || part === '.' || part === ''))).max(2000)
 
 export function validCiSelection(value: { suite: CiSuite; scope?: CiScope | undefined; files?: string[] | undefined }) {
-  if (value.scope !== 'affected') return !value.files?.length
-  if (!value.files || !['unit', 'integration', 'typecheck', 'lint'].includes(value.suite)) return false
+  if (value.scope === 'full') return !value.files?.length
+  if (value.files === undefined) return true
+  if (!['unit', 'integration', 'typecheck', 'lint'].includes(value.suite)) return false
   if (value.suite === 'integration') return value.files.every(file => /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file))
   if (value.suite === 'unit') return value.files.every(file => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)
     && !(file.startsWith('apps/api/') && /\.(?:integration|acceptance)\.test\.ts$/.test(file)))
@@ -52,7 +54,8 @@ export const CiHostStartSchema = z.object({
   operation: z.literal('start'), runId: CiHostRunIdSchema, repository: CiRepositorySchema, commit: CommitSchema,
   suite: CiSuiteSchema, part: CiPartSchema.optional(), partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
-}).strict().refine(validCiSelection, 'Affected scope requires selected files for a supported suite; full scope runs all files.')
+  defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
+}).strict().refine(validCiSelection, 'Selected files require affected scope and a supported suite; full scope runs all files.')
   .refine(validCiPart, 'The part and partition must belong to the requested suite.')
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
@@ -85,42 +88,12 @@ export const CiHostReplySchema = z.discriminatedUnion('operation', [
 ])
 export type CiHostReply = z.infer<typeof CiHostReplySchema>
 
-/** Spread capability-dependent and host-exclusive files before balancing the remaining durations by computer speed.
- * Files without a recorded duration count as the median. */
-export function integrationPartition(files: readonly string[], durations: Readonly<Record<string, number>>,
-  partition: CiPartition): string[] {
-  const valid = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0
-  const known = files.map(file => durations[file]).filter(valid).sort((a, b) => a - b)
-  const fallback = known.length ? known[Math.floor(known.length / 2)]! : 1
-  const weight = (file: string) => valid(durations[file]) ? durations[file] : fallback
-  const loads = Array<number>(partition.count).fill(0)
-  const speed = (index: number) => partition.weights?.[index] ?? 1
-  const owner = new Map<string, number>()
-  const heavy = new Set([...requirements.keys(), ...exclusiveIntegrationFiles])
-  const heavyCounts = Array<number>(partition.count).fill(0)
-  const ordered = [...files].sort((left, right) => Number(heavy.has(right)) - Number(heavy.has(left))
-    || weight(right) - weight(left) || (left < right ? -1 : 1))
-  for (const file of ordered) {
-    // Heavy files use each partition once per round before host speed breaks ties.
-    const isHeavy = heavy.has(file)
-    let lightest = 0
-    const finish = (index: number) => (loads[index]! + weight(file)) / speed(index)
-    for (let index = 1; index < loads.length; index++) {
-      const fewerHeavy = isHeavy && heavyCounts[index]! < heavyCounts[lightest]!
-      const sameHeavy = !isHeavy || heavyCounts[index] === heavyCounts[lightest]
-      if (fewerHeavy || (sameHeavy && finish(index) < finish(lightest))) lightest = index
-    }
-    if (isHeavy) heavyCounts[lightest]!++
-    loads[lightest]! += weight(file)
-    owner.set(file, lightest)
-  }
-  return files.filter(file => owner.get(file) === partition.index)
-}
-
 /** What an Agent or the Operator sees for one CI run. */
 export const CiRunRecordSchema = z.object({
   id: CiHostRunIdSchema, workspaceId: IdSchema, suite: CiSuiteSchema, commit: CommitSchema, repository: CiRepositorySchema,
   scope: CiScopeSchema.default('full'), files: CiSelectedFilesSchema.default([]),
+  /** An omitted caller selection is computed on the runner; an explicit empty list is already complete. */
+  deriveFiles: z.boolean().optional(), defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   partition: CiPartitionSchema.nullable(), groupId: CiHostRunIdSchema,
   part: CiPartSchema.nullable().default(null),
   state: z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost']),

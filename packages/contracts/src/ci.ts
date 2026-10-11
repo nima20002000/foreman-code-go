@@ -11,15 +11,15 @@ const CiRunInputObjectSchema = z.object({
   commandId: IdSchema,
   /** Split an integration run into this many duration-balanced runs on separate build computers. */
   partitions: z.number().int().min(2).max(32).optional(),
-  scope: CiScopeSchema.optional(),
-  files: CiSelectedFilesSchema.optional(),
+  scope: CiScopeSchema.optional().describe('Defaults to affected; full runs the complete suite.'),
+  files: CiSelectedFilesSchema.optional().describe('Optional affected selection with an explicit commit. Omit to select on the runner against the workspace default branch; an empty list runs no tests.'),
 }).strict()
 const partitionedSuite = (value: { suite: string; partitions?: number | undefined }) =>
   value.partitions === undefined || value.suite === 'integration'
 const partitionIssue = { message: 'Only the integration suite can be partitioned.', path: ['partitions'] }
-const selectionIssue = { message: 'Affected scope requires a commit and selected files for a supported suite.', path: ['scope'] }
+const selectionIssue = { message: 'Selected files require an explicit commit, affected scope and a supported suite.', path: ['scope'] }
 const selectedSuite = (value: z.infer<typeof CiRunInputObjectSchema>) => validCiSelection(value)
-  && (value.scope !== 'affected' || value.commit !== undefined)
+  && ((value.scope ?? 'affected') !== 'affected' || value.files === undefined || value.commit !== undefined)
 export const CiRunInputSchema = CiRunInputObjectSchema.refine(partitionedSuite, partitionIssue)
   .refine(selectedSuite, selectionIssue)
 export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspaceId: IdSchema }).strict()
