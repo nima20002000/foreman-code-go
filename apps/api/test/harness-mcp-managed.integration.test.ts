@@ -1,7 +1,7 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // eslint-disable-next-line no-restricted-imports -- A short observation window proves the held launcher prevents completion.
@@ -16,6 +16,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
 import { installManagedLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
+import { registerWorkerMcpInstallation } from '../src/modules/harnesses/workerMcpInstallation.js'
 import { withNativeMcpDelivery } from '../src/modules/harnesses/nativeMcpDelivery.js'
 import { applyMcpEdits, fingerprint, mcpEdits, type NativeMcpAdapter, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -151,20 +152,44 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       expect(Object.keys(snapshots[harness].user)).toEqual(['foreman-code'])
       expect((await listed(harness)).presets?.graphql).toBe('installed')
       const installed = snapshots[harness].user['foreman-code']
-      const oldEntry = { ...installed as Record<string, unknown>, enabled: false, disabled_tools: ['interaction_respond'] }
+      const workerHome = join(directory, 'worker')
+      const workerRoot = join(workerHome, '.local/lib/graphql-worker')
+      const stateDirectory = join(workerHome, '.local/state/graphql-worker')
+      const releaseDirectory = join(workerRoot, 'versions/release')
+      const workerLauncher = join(workerHome, '.local/share/graphql/mcp/launcher.mjs')
+      const previousNode = join(directory, 'previous-worker-node')
+      await copyFile(process.execPath, previousNode)
+      await mkdir(join(releaseDirectory, 'artifacts'), { recursive: true, mode: 0o700 })
+      await mkdir(join(workerHome, '.local/share/graphql/mcp'), { recursive: true, mode: 0o700 })
+      const bridge = await readFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url))
+      await writeFile(workerLauncher, bridge, { mode: 0o600 })
+      await writeFile(join(releaseDirectory, 'artifacts/graphql-mcp.mjs'), bridge, { mode: 0o600 })
+      await writeFile(join(workerRoot, 'graphql-worker.service.previous'),
+        `ExecStart=${previousNode} ${join(workerRoot, 'current/src/cli.mjs')} run --state ${stateDirectory}\n`,
+        { mode: 0o600 })
+      await registerWorkerMcpInstallation({ home: workerHome, stateDirectory, releaseDirectory })
+      vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', join(workerHome, '.local/share/graphql/mcp'))
+      const oldEntry = { ...installed as Record<string, unknown>, command: previousNode, args: [workerLauncher],
+        enabled: false, disabled_tools: ['interaction_respond'] }
       const oldUser = { graphql: oldEntry }
       snapshots[harness] = { ...snapshots[harness], user: oldUser, effective: structuredClone(oldUser),
         revision: fingerprint(oldUser), }
       await writeFile(file, JSON.stringify(oldUser))
       expect((await listed(harness)).presets?.graphql).toBe('disabled')
-      const rename = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
+      const repairArgs = {
         harness, preset: 'graphql', installed: true, expectedRevision: (await listed(harness)).revision, commandId: randomUUID(),
-      } }))))
+      }
+      expect((await denied.callTool({ name: 'harness_mcp_managed_request', arguments: repairArgs })).isError).toBe(true)
+      expect(snapshots[harness].user).toEqual(oldUser)
+      const rename = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({
+        name: 'harness_mcp_managed_request', arguments: repairArgs,
+      }))))
       expect(rename).toMatchObject({ status: 'applied', change: { name: 'foreman-code' } })
       const renamed = await listed(harness)
       expect(renamed.presets?.graphql).toBe('disabled')
       expect(renamed.servers.map(server => server.name)).toEqual(['foreman-code'])
-      expect(snapshots[harness].user['foreman-code']).toMatchObject({ enabled: false, disabled_tools: ['interaction_respond'] })
+      expect(snapshots[harness].user['foreman-code']).toMatchObject({ command: process.execPath,
+        args: [workerLauncher], enabled: false, disabled_tools: ['interaction_respond'] })
     }
     inspectionFails = true
     const now = Date.now()
@@ -222,6 +247,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     await held.release()
     expect(await readFile(held.launcher, 'utf8')).toBe('original launcher')
   } finally {
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
     const stopping = mcp.shutdown()
     await held?.close()

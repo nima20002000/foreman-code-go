@@ -19,6 +19,7 @@ import { WorkerUpdater, workerUpdateExtension } from './update.mjs';
 import { loadWorkerRsyncEntrypoint } from '../../../apps/api/src/modules/byte-transfer/installedEntrypoints.ts';
 import { ensurePairedManagedSetup } from './managedSetup.mjs';
 import { refreshWorkflowSelection } from './workflowSelection.mjs';
+import { registerWorkerMcpInstallation } from '../../../apps/api/src/modules/harnesses/workerMcpInstallation.ts';
 
 export { ensurePairedManagedSetup };
 export { refreshWorkflowSelection };
@@ -91,6 +92,9 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     if (failures.length) throw new AggregateError(failures, 'Worker shutdown remains incomplete.');
     if (rsyncEntrypoint?.kind === 'configured') await rsyncEntrypoint.close();
   }, createConnection: async ({ bootId, assertStateOwnership }) => {
+    assertStateOwnership();
+    await registerWorkerMcpInstallation({ home: process.env.HOME ?? '', stateDirectory,
+      releaseDirectory: fileURLToPath(new URL('../', import.meta.url)) });
     const pairing = await loadWorkerPairing(stateDirectory);
     managedSetup = executionDomains ? undefined
       : await ensurePairedManagedSetup({ stateDirectory, pairing, assertStateOwnership });

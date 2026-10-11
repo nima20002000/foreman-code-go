@@ -49,6 +49,14 @@ export async function setupCompanion({ home, node, artifact, approvedManifestSha
     await publish(icon, await readFile(join(release, 'artifacts/graphql.svg')), 0o644);
     await publish(desktop, `[Desktop Entry]\nType=Application\nName=Foreman Code Companion\nComment=Computer connection and diagnostics\nExec=${launcher} --desktop\nIcon=${icon}\nTerminal=false\nCategories=Utility;\n`, 0o600);
     const proposedService = join(root, 'graphql-worker.service');
+    try {
+      const previousService = await readFile(proposedService);
+      if (!previousService.equals(Buffer.from(unit))) {
+        await publish(`${proposedService}.previous`, previousService, 0o600);
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     await publish(proposedService, unit, 0o600);
     Object.assign(result, { root, state, launcher, appMcpLauncher, desktop, proposedService,
       serviceActivation: 'not-requested' });
