@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.69] - 2026-10-11
+
+### Performance
+
+- Main no longer rescans every native process record: observations are cached and confirmed retired records are pruned.
+- Idle filesystem identity walks, telemetry reads and executable probes are cached, freeing the API's main thread under load.
+
+### Fixed
+
+- Shutdown waits for unstarted guardians and drains retained reviewer operations before releasing runtime ownership.
+- Closing during a native start waits for it to settle instead of failing the restart closure.
+
 ## [0.0.68] - 2026-10-11
 
 ### Fixed
