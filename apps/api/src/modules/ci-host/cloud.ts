@@ -37,6 +37,7 @@ export function workspaceMirrors(pool: pg.Pool): Mirrors {
  * result, log and measured durations back. */
 export class CloudCi {
   private checked: { at: number; ready: boolean } | undefined
+  private readonly published = new Map<string, Promise<{ git: (args: string[]) => Promise<string>; branch: string }>>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
     private readonly root = join(homedir(), '.local/share/foreman-code/ci-cloud', provider.id),
@@ -108,26 +109,7 @@ export class CloudCi {
     if (!mirror || !await this.ready()) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE', `This workspace has no CI mirror, or Main is not logged in to ${this.provider.label}.`, 409)
     }
-    const signal = AbortSignal.timeout(600_000)
-    const clone = await ensureClone(this.git, request.repository, signal)
-    const git = async (args: string[], env?: Record<string, string>) => {
-      const result = await this.git.git(args, { cwd: clone, signal, ...(env ? { env } : {}) })
-      if (result.code !== 0) throw new DomainError('CI_CLOUD_FAILED', `git ${args[0]} failed for the CI mirror.`, 502)
-      return result.stdout.trim()
-    }
-    const base = `refs/foreman/mirror/${mirror}`
-    await git(['fetch', '--quiet', '--no-tags', `https://github.com/${mirror}.git`, `+main:${base}`])
-    await this.guard(clone, request.commit, signal)
-    // The same commit always yields the same snapshot, so every partition of a run shares one mirror branch.
-    const date = await git(['show', '-s', '--format=%cI', request.commit])
-    const author = { GIT_AUTHOR_NAME: mirror.split('/')[0]!, GIT_AUTHOR_EMAIL: `${mirror.split('/')[0]}@users.noreply.github.com`,
-      GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }
-    const snapshot = await git(['commit-tree', `${request.commit}^{tree}`, '-p', base, '-m', `Snapshot ${request.commit.slice(0, 12)}`],
-      { ...author, GIT_COMMITTER_NAME: author.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: author.GIT_AUTHOR_EMAIL })
-    const branch = `ci/${request.commit}`
-    // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.
-    await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
-      `${snapshot}:refs/heads/main`])
+    const { git, branch } = await this.publish(request.repository, mirror, request.commit)
     const slice = request.suite === 'integration' && (request.partition || request.scope === 'affected')
       ? await this.slice(git, request.commit, request.partition, request.durations ?? {}, request.files) : ''
     const files = request.scope === 'affected' && request.suite !== 'integration'
@@ -140,6 +122,44 @@ export class CloudCi {
       ...(request.scope === 'affected' ? { scope: request.scope } : {}), ...(files !== undefined ? { files } : {}) })
     if (providerRunId) run = await this.save({ ...run, providerRunId, state: 'running' })
     return this.view(run, 0)
+  }
+
+  /** Puts the commit's files on the mirror once: every partition of a run starting together shares one push. */
+  private publish(repository: string, mirror: string, commit: string) {
+    const key = `${mirror}\n${commit}`
+    let published = this.published.get(key)
+    if (!published) {
+      published = this.push(repository, mirror, commit)
+      this.published.set(key, published)
+      // A failed push is retried by the next start; a done one is kept for the run's later partitions.
+      published.catch(() => { this.published.delete(key) })
+      if (this.published.size > 50) this.published.delete(this.published.keys().next().value!)
+    }
+    return published
+  }
+
+  private async push(repository: string, mirror: string, commit: string) {
+    const signal = AbortSignal.timeout(600_000)
+    const clone = await ensureClone(this.git, repository, signal)
+    const git = async (args: string[], env?: Record<string, string>) => {
+      const result = await this.git.git(args, { cwd: clone, signal: AbortSignal.timeout(600_000), ...(env ? { env } : {}) })
+      if (result.code !== 0) throw new DomainError('CI_CLOUD_FAILED', `git ${args[0]} failed for the CI mirror.`, 502)
+      return result.stdout.trim()
+    }
+    const base = `refs/foreman/mirror/${mirror}`
+    await git(['fetch', '--quiet', '--no-tags', `https://github.com/${mirror}.git`, `+main:${base}`])
+    await this.guard(clone, commit, signal)
+    // The same commit always yields the same snapshot, so every partition of a run shares one mirror branch.
+    const date = await git(['show', '-s', '--format=%cI', commit])
+    const author = { GIT_AUTHOR_NAME: mirror.split('/')[0]!, GIT_AUTHOR_EMAIL: `${mirror.split('/')[0]}@users.noreply.github.com`,
+      GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }
+    const snapshot = await git(['commit-tree', `${commit}^{tree}`, '-p', base, '-m', `Snapshot ${commit.slice(0, 12)}`],
+      { ...author, GIT_COMMITTER_NAME: author.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: author.GIT_AUTHOR_EMAIL })
+    const branch = `ci/${commit}`
+    // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.
+    await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
+      `${snapshot}:refs/heads/main`])
+    return { git, branch }
   }
 
   /** The same duration-balanced slice a build computer would run, from the commit's own files and durations, as

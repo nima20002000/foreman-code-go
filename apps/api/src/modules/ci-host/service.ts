@@ -268,20 +268,21 @@ export class HostCiService {
     const computers = await this.endpoint.computers()
     const active = (await this.pool.query<{ record: unknown; host_key: string }>(
       `select record,host_key from ci_runs where state in ('starting','running')`)).rows
-    for (const row of active) {
+    // Every run is read at once: a cloud read waits on the service's API, and a run's parts finish together.
+    await Promise.all(active.map(async row => {
       const run = CiRunRecordSchema.parse(row.record)
       const computer = computers.find(value => value.key === row.host_key)
-      if (!computer) continue
+      if (!computer) return
       const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
         ...(run.suite === 'integration' ? { durations: true } : {}) }).catch(() => null)
-      if (reply?.operation !== 'read') continue
+      if (reply?.operation !== 'read') return
       await this.settle(run, computer, reply.run)
       // A run is read here until it finishes, so its measured durations are learned once.
       if (reply.durations && !['starting', 'running'].includes(reply.run.state)) {
         await this.learnDurations(run.repository, reply.durations)
           .catch(error => log.warn({ err: error, runId: run.id }, 'CI durations not recorded'))
       }
-    }
+    }))
     const busy = new Set((await this.pool.query<{ host_key: string }>(
       `select host_key from ci_runs where state in ('starting','running')`)).rows.map(row => row.host_key))
     const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
@@ -289,7 +290,8 @@ export class HostCiService {
     let queued = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
     const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
     queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
-    for (const run of queued) {
+    // Runs start at once, in queue order: each claims its computer before waiting, so none is given twice.
+    await Promise.all(queued.map(async run => {
       // Typecheck, lint, build and unit suites are CPU- and memory-hungry and need no host capabilities, so they go
       // to GitHub Actions first and leave the build computers to integration work.
       const cloudFirst = (computer: HostCiComputer) => Number(run.suite !== 'integration' && computer.hostRef.kind === 'cloud')
@@ -297,26 +299,24 @@ export class HostCiService {
         - Number(left.key === run.plannedHostKey) || cloudFirst(right) - cloudFirst(left) || right.priority - left.priority)
       for (const computer of order) {
         if (busy.has(computer.key)) continue
+        busy.add(computer.key)
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.partition ? { partition: run.partition } : {}),
             scope: run.scope, ...(run.scope === 'affected' ? { files: run.files } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
-          if (reply.operation !== 'start') continue
+          if (reply.operation !== 'start') { busy.delete(computer.key); continue }
           await this.settle({ ...run, computer: { hostRef: computer.hostRef, label: computer.label } }, computer, reply.run)
-          busy.add(computer.key)
-          break
+          return
         } catch (error) {
           // A busy or unready computer is skipped; the run stays queued for the next free one.
           const code = (error as { code?: unknown } | null)?.code
-          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE') {
-            if (code === 'CI_HOST_BUSY') busy.add(computer.key)
-            continue
-          }
+          if (code !== 'CI_HOST_BUSY') busy.delete(computer.key)
+          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE') continue
           log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')
         }
       }
-    }
+    }))
   }
 }
 
