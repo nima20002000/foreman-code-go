@@ -8,7 +8,7 @@ import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import {
-  boardSearchForInspection, boardSearchForRun, runInspectionKey,
+  boardSearchForInspection, boardSearchForRun, runInspectionKey, RepeatGraphCurrentV3Schema,
   type RepeatGraphScopeV3, type WorkspaceBoardInspection,
 } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../../app/router'
@@ -465,5 +465,97 @@ describe('Run inspection inside the one mounted Board', () => {
     await screen.findByRole('article', { name: `Execution ${expected.execution.executionId}` })
     expect(router.state.location.pathname).toBe(`/workspaces/${fixture.mock.workspaceId}`)
     expect(screen.getAllByTestId('unified-workflow-board')).toHaveLength(1)
+  })
+})
+
+describe('Live Run status on the Board', () => {
+  it('shows whose turn it is, Agent CI at the top and a pending decision that opens the existing inbox', async () => {
+    const { scope, version, run } = fixture.runs.after
+    const first = nativeNode(version.definition.nodes[0]!), added = nativeNode(version.definition.nodes[1]!)
+    const nameOf = (node: typeof first) => node.name ?? node.label ?? node.id
+    const execution = (node: typeof first, state: 'queued' | 'running' | 'completed') => ({
+      identity: { workflowNodeId: node.id, executionId: `exec-live-${node.id}`, agentId: node.agentId,
+        agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!, attempt: 1, occurrence: null },
+      inputDigest: `sha256:${'a'.repeat(64)}`, previousExecutionId: null, state,
+      resultOutcome: state === 'completed' ? 'succeeded' : null })
+    const base = fixture.mock.currents.get(run.id)!
+    const cut = (sequence: string, executionState: 'running' | 'waiting', executions: unknown[]) => fixture.mock.currents.set(run.id,
+      RepeatGraphCurrentV3Schema.parse({ ...base, asOfSequence: sequence, state: { ...base.state, executions,
+        run: { ...base.state.run, executionState, outcome: 'pending', pendingInteractionCount: executionState === 'waiting' ? 1 : 0 } } }))
+    cut('1', 'running', [execution(first, 'running'), execution(added, 'queued')])
+    const ticket = '00000000-0000-4000-8000-000000000011'
+    let ciState: 'running' | 'passed' | undefined
+    const ref = { kind: 'ci', workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
+      workflowVersionId: scope.workflowVersionId, executionId: `exec-live-${added.id}`, attemptKey: '1',
+      nodeId: added.id, agentId: added.agentId, ticketId: ticket }
+    const snapshotRoute = `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/${scope.runId}/snapshot`
+    let decision = false
+    const interaction = { kind: 'work_direction', id: `work-direction-${run.id}`, revision: 0, workspaceId: scope.workspaceId,
+      workflowId: scope.workflowId, runId: run.id, executionId: `exec-live-${added.id}`, requestingAgentId: added.agentId,
+      harness: 'codex', providerVersion: 'workflow', nativeSessionId: 'session-live', nativeRequestId: `work-direction-${run.id}`,
+      nativeRequestType: 'workflow/work_direction', graphThreadId: run.id, request: { message: 'Accept the remaining findings?' },
+      approval: { handler: 'user' }, responseOptions: [{ optionId: 'finish', semantic: 'approve_once', label: 'Finish Run',
+        persistence: 'request', affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
+      status: 'pending', deliveryState: 'not_started', createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }
+    server.use(
+      http.get('/api/management/interactions', () => HttpResponse.json({ items: decision ? [interaction] : [], nextCursor: null })),
+      http.get(snapshotRoute, () => {
+        const ci = ciState ? { id: ticket, groupId: '00000000-0000-4000-8000-000000000012', suite: 'build', part: 'build-api',
+          partition: null, state: ciState, exitCode: ciState === 'passed' ? 0 : null, queuedAt: '2026-10-01T00:00:00.000Z',
+          startedAt: '2026-10-01T00:00:01.000Z', finishedAt: ciState === 'passed' ? '2026-10-01T00:00:09.000Z' : null,
+          computer: { hostRef: { kind: 'cloud', mainId: 'main-1', provider: 'github', slot: 1 }, label: 'GitHub Actions 2' }, step: 'build-api' } : undefined
+        return HttpResponse.json({ snapshot: { workspaceId: scope.workspaceId, workflowId: scope.workflowId, runId: scope.runId,
+          workflowVersionId: scope.workflowVersionId, kind: 'available', capturedAt: '2026-10-01T00:00:00.000Z',
+          nodes: version.definition.nodes.map((node, index) => ({ id: node.id, agentId: nativeNode(node).agentId, name: nameOf(nativeNode(node)),
+            agentConfigurationVersionId: version.agentConfigurationVersionIds[nativeNode(node).agentId],
+            position: { x: index * 300, y: 0 }, size: { width: 212, height: 212 } })), edges: [] },
+        ...(ci ? { activitySnapshot: { schemaVersion: 1, scope: { kind: 'workflow_run', workspaceId: scope.workspaceId,
+          workflowId: scope.workflowId, runId: scope.runId, workflowVersionId: scope.workflowVersionId }, revision: '1',
+          active: ci.state === 'running' ? [{ ref, phase: 'active', evidence: 'confirmed', outcome: null, delivery: null,
+            startedAt: ci.startedAt, ci }] : [], queued: [], latest: ref, pendingInteractions: [], activities: [],
+          page: { before: null, nextCursor: null, hasMore: false } } } : {}) })
+      }),
+    )
+    const { cache } = await mount(href(scope))
+    const status = await screen.findByRole('region', { name: 'Run status' })
+    const agentNode = (node: typeof first) => within(pinnedCanvas()).getByRole('button', { name: `Inspect Run node ${nameOf(node)}` })
+      .closest<HTMLElement>('.n-agent')!
+    const nodeState = (node: typeof first) => agentNode(node).getAttribute('data-state')
+    const advance = async (next: () => void) => act(async () => {
+      next()
+      await cache.invalidateQueries({ queryKey: currentRunKey(scope), exact: true })
+      await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'board-activity'] })
+    })
+
+    // The first Agent's turn: it is visibly running, the next one is queued, not idle.
+    await waitFor(() => expect(within(status).getByRole('status')).toHaveTextContent(`Working now: ${nameOf(first)}`))
+    expect(within(within(status).getByRole('list', { name: 'Waiting Agents' })).getByText(nameOf(added)).closest('li')).toHaveTextContent('Queued')
+    await waitFor(() => expect(nodeState(first)).toBe('running'))
+    expect(nodeState(added)).toBe('queued')
+
+    // The turn passes; the second Agent runs CI on a cloud computer, shown at the top until it finishes.
+    ciState = 'running'
+    await advance(() => cut('2', 'running', [execution(first, 'completed'), execution(added, 'running')]))
+    const ciJobs = await within(status).findByRole('list', { name: 'CI jobs' })
+    expect(ciJobs).toHaveTextContent('CI running')
+    expect(ciJobs).toHaveTextContent('build · build-api')
+    expect(ciJobs).toHaveTextContent(`requested by ${nameOf(added)}`)
+    expect(ciJobs).toHaveTextContent('GitHub Actions 2')
+    expect(ciJobs).toHaveTextContent('step build-api')
+    await waitFor(() => expect(nodeState(added)).toBe('waiting'))
+    expect(within(agentNode(added)).getByText('Waiting for CI build-api · running')).toBeVisible()
+    expect(nodeState(first)).toBe('completed')
+
+    // CI finished and the Run now waits on the owner's decision: nobody is working, and the request is actionable.
+    ciState = 'passed'; decision = true
+    await advance(() => cut('3', 'waiting', [execution(first, 'completed'), execution(added, 'completed')]))
+    await waitFor(() => expect(within(status).queryByRole('list', { name: 'CI jobs' })).not.toBeInTheDocument())
+    await waitFor(() => expect(within(status).getByRole('status')).toHaveTextContent('No Agent is working right now'))
+    const waits = await within(status).findByRole('list', { name: 'Waiting Agents' })
+    await waitFor(() => expect(waits).toHaveTextContent('Waiting for your decision'))
+    expect(within(agentNode(added)).getByText('Waiting for your decision')).toBeVisible()
+    expect(nodeState(added)).toBe('waiting')
+    await userEvent.setup().click(within(waits).getByRole('button', { name: `Open decision for ${nameOf(added)}` }))
+    expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
   })
 })
