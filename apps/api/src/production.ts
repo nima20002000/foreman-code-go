@@ -2167,6 +2167,8 @@ export function buildProductionApp(
     })()
     await nativeDefaultsInitialization
   })
+  const SNAPSHOT_RELEASE_INTERVAL_MS = 10 * 60_000
+  let lastSnapshotRelease = 0
   const reconcile = (report: (error: unknown) => void): Promise<void> => {
     if (closing) return Promise.resolve()
     if (reconciliation) return reconciliation
@@ -2174,7 +2176,11 @@ export function buildProductionApp(
       if (jobRuntime) await jobRuntime.reconcileFailedCaptures(report)
       if (jobRuntime) await jobRuntime.reconcileMaterializationReservations(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
-      if (jobRuntime) await jobRuntime.sources.releaseUnusedSnapshots(report)
+      // Age-based release is not urgent; storage pressure still releases on demand during approval and preparation.
+      if (jobRuntime && Date.now() - lastSnapshotRelease >= SNAPSHOT_RELEASE_INTERVAL_MS) {
+        lastSnapshotRelease = Date.now()
+        await jobRuntime.sources.releaseUnusedSnapshots(report)
+      }
       await engine.reconcile(report)
       if (closing) return
       await runWorktrees.cleanup(report)
