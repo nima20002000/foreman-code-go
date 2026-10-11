@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.71] - 2026-10-11
+
+### Performance
+
+- The production API database pool has 40 connections instead of 10.
+
 ## [0.0.70] - 2026-10-11
 
 ### Performance
