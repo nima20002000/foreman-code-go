@@ -1,268 +1,123 @@
-import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
-import { createClaudeFileCallResolver } from '../../files/claude/callResolver.js'
-import { createClaudeFileMcpServer, type ClaudeFileSdk } from '../../files/claude/server.js'
-import type { AgentFileToolService } from '../../files/tools/service.js'
-import { productionClaudeFileAdmission } from './fileProduction.js'
-import type pg from 'pg'
-import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
-import type { NativeSessionReference } from '@foreman-code/contracts'
-import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
-import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
-import { appMcpServerName, isSupportedAppMcpServerName } from '../appMcpLauncher.js'
-import { DomainError } from '../../errors.js'
-import type { NativeHarnessFactories } from '../runtimeFactory.js'
-import type { NativeProcessRecovery } from '../recovery/processRegistry.js'
-import type { NativeSessionStart } from '../port.js'
-import type { ProductionHarnessRegistry } from '../productionRegistry.js'
-import type { AcceptedClaudeProfileAdmission, AcceptedProfileSelector } from '../instanceSettings/acceptedProfile.js'
-import { ClaudeInputNotDeliveredError, type ClaudeSdkClient } from './port.js'
-import { compileClaudeConfiguration } from './configuration.js'
-import { createPostgresClaudeInteractionBridge, type ClaudeDomainBinding } from './domainAuthority.js'
-import { createClaudeSdkCallbacks } from './sdkCallbacks.js'
-import { createClaudeSdkRunner } from './runner.js'
-import { loadOfficialClaudeSdk } from './official.js'
-import { acceptedClaudeAppTools } from './mcpPolicy.js'
-import type { ClaudeInteractionBridge } from './interactions.js'
-import { claudeProductionMcpInspector } from './productionMcpInspector.js'
-import type { ClaudeNativeSessionManager } from './sessionManager.js'
-import type { OperatorProfileObservation } from '../operatorProfileObservation.js'
-import type { ProviderAccountResolver } from '../../provider-accounts/service.js'
-import { assertRuntimeProviderAccountProfile, resolveRuntimeProviderAccount } from '../providerAccountRuntime.js'
-import { requireClaudeApiKey } from './productionCredentials.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import type { ResolvedProviderAccount } from '../provider-accounts/service.js'
+import { resolveRuntimeProviderAccount, managedProviderEnvironment, pinnedCodexAccountEnvironment,
+  assertRuntimeProviderAccountProfile } from './providerAccountRuntime.js'
 
-/** Private lifetime signal is never serialized into accepted configuration or provenance. */
-export type ClaudeProfileOwner = (ClaudeDomainBinding | OperatorProfileObservation | {
-  /** Read-only setup has no conversation, accepted input or SDK callbacks. */
-  kind: 'operator-inspection'; principalId: string; configurationVersionId: string; configurationHash: string
-}) & { admissionSignal?: AbortSignal; purpose?: 'reviewer' }
-
-/** The role's immutable configuration/placement supplies the selector; the
- * existing admission reads its exact profile and current native proof. */
-export function productionClaudeManager(input: {
-  pool: pg.Pool
-  factories: NativeHarnessFactories
-  registry: ProductionHarnessRegistry
-  profiles?: AcceptedClaudeProfileAdmission<ClaudeProfileOwner>
-  selector?: AcceptedProfileSelector
-  binding: ClaudeDomainBinding
-  role: 'workflow' | 'operator' | 'agent-chat'
-  configuration: ClaudeHarnessConfiguration
-  /** Privately provisioned for this accepted profile; never inherited from host authentication. */
-  apiKey?: string
-  accounts?: ProviderAccountResolver
-  workingDirectory: string
-  ownerAgentId: string
-  recovery: NativeProcessRecovery
-  accountSourceRecovery?: NativeProcessRecovery
-  accountBinding?: AcceptedProviderAccountBinding
-  appMcpAccess: 'scoped' | 'none'
-  inspectionStart(): Promise<NativeSessionStart>
-  mode: 'native' | 'replay'
-  files?: { service(): AgentFileToolService; sdk?: () => Promise<ClaudeFileSdk> }
-  loadClient?: (input: { profilePath: string; recovery: NativeProcessRecovery; binary: string }) => Promise<ClaudeSdkClient>
-}) {
-  if (input.role === 'workflow' && input.binding.kind !== 'workflow'
-    || input.role === 'operator' && input.binding.kind !== 'operator'
-    || input.role === 'agent-chat' && input.binding.kind !== 'agent') throw new DomainError('CLAUDE_OWNER_MISMATCH',
-    'The Claude runtime role must match its actual domain owner.', 409)
-  input = { ...input, configuration: structuredClone(input.configuration),
-    ...(input.accountBinding ? { accountBinding: structuredClone(input.accountBinding) } : {}),
-    ...(input.selector ? { selector: structuredClone(input.selector) } : {}) }
-  let actual: ClaudeNativeSessionManager | undefined
-  let inspectedStart: NativeSessionStart | undefined
-  const inspectionStart = async () => {
-    inspectedStart ??= structuredClone(await input.inspectionStart())
-    return structuredClone(inspectedStart)
-  }
-  let policyBridge: ClaudeInteractionBridge | undefined
-  let fileServer: ReturnType<typeof createClaudeFileMcpServer> | undefined
-  let allocated: ((manager: ClaudeNativeSessionManager) => void) | undefined
-  const result = input.factories.allocateAdmittedClaude(async signal => {
-    if (!input.configuration.accountId) requireClaudeApiKey(input.configuration, input.apiKey)
-    if (!input.profiles || !input.selector) throw new DomainError('HARNESS_PROFILE_UNAVAILABLE',
-      'Claude requires an explicit accepted profile and current native qualification authority.', 409)
-    if (input.mode === 'replay' && !input.loadClient) throw new DomainError('HARNESS_REPLAY_INCOMPLETE',
-      'Claude replay requires the SDK client port and cannot load a native SDK.', 500)
-    const profileOwner: ClaudeProfileOwner = { ...input.binding, admissionSignal: signal }
-    const account = await resolveRuntimeProviderAccount(input.accounts, 'claude', input.configuration.accountId,
-      input.recovery, input.accountSourceRecovery, input.accountBinding)
-    if (input.configuration.accountId && !account) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
-      'The selected managed provider account is unavailable.', 409)
-    if (account && (account.accountId !== input.configuration.accountId
-      || account.homePath !== input.configuration.configDirectory || account.authMode !== input.configuration.authMode)) {
-      throw new DomainError('PROVIDER_ACCOUNT_CONFIGURATION_CONFLICT',
-        'Save the selected account settings before starting this Claude session.', 409)
-    }
-    const apiKey = account?.apiKey ?? input.apiKey
-    requireClaudeApiKey(input.configuration, apiKey)
-    const accepted = await input.profiles.admit(profileOwner, input.selector)
-    assertRuntimeProviderAccountProfile(input.accountBinding, accepted.override.target)
-    signal.throwIfAborted()
-    const compiled = compileClaudeConfiguration(input.configuration, input.workingDirectory, accepted,
-      process.env, apiKey)
-    const installation = input.registry.pinOverride(accepted.override)
-    const binary = installation.installation.launcher.resolvedLauncher
-    if (!binary) throw new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'The accepted Claude launcher is unavailable.', 409)
-    // This application process executes only original-main allocations. Remote
-    // placement has its own authenticated host factory and cannot borrow it.
-    if (accepted.override.target.hostRef.kind !== 'main') throw new DomainError('HARNESS_HOST_MISMATCH',
-      'A registered-device profile must execute through its authenticated host.', 409)
-    const domain = createPostgresClaudeInteractionBridge({ database: input.pool, binding: input.binding,
-      configuration: compiled.configuration, manager: { nativeCallbackContext: (sessionId, toolUseId) => actual?.nativeCallbackContext(sessionId, toolUseId) } })
-    policyBridge = domain.bridge
-    let callbackAuthority = await domain.callbackAdmissionIfActive()
-    signal.throwIfAborted()
-    const scope = { deviceId: accepted.override.target.hostRef.mainId, profilePath: compiled.configuration.configDirectory,
-      configRevision: accepted.currentBinding.pin.configRevision, cwd: input.workingDirectory }
-    const runner = createClaudeSdkRunner({ loadClient: async () => {
-      await input.profiles!.revalidate({ ...input.binding, admissionSignal: signal }, accepted)
-      await input.factories.assertInstallationUnchanged(installation, signal)
-      signal.throwIfAborted()
-      return (input.loadClient ?? ((selected) => loadOfficialClaudeSdk(selected.profilePath, selected.recovery, selected.binary)))({
-        profilePath: scope.profilePath, recovery: input.recovery, binary,
-      })
-    } })
-    allocated = manager => {
-      actual = manager
-      let sessionStart: NativeSessionStart | undefined
-      domain.bridge.subscribePending(notification => manager.notifyPendingChanged(notification))
-      const readHistory = manager.history.bind(manager)
-      manager.history = async (session, effectSignal) => ({ ...await readHistory(session, effectSignal),
-        responseDeliveries: await domain.bridge.deliveryEvidence(session) })
-      const reconcile = manager.reconcile.bind(manager)
-      manager.reconcile = async (session, correlationId, effectSignal) => {
-        const history = await reconcile(session, correlationId, effectSignal)
-        return { ...history, responseDeliveries: await domain.bridge.deliveryEvidence(session) }
-      }
-      const initial = manager.startInitialTurn.bind(manager)
-      manager.startInitialTurn = async function* (start, message, effectSignal) {
-        if (input.appMcpAccess === 'none' && APP_MCP_TOKEN_NAMES.some((name) => start.environment?.variables[name])) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
-          'This Claude owner cannot inherit an application MCP credential.', 403)
-        callbackAuthority = await domain.callbackAdmission()
-        effectSignal?.throwIfAborted()
-        sessionStart = structuredClone(start)
-        yield* initial(start, { ...message, callbackAuthority }, effectSignal)
-      }
-      const attach = manager.attachSession.bind(manager)
-      manager.attachSession = async (session, start, effectSignal) => {
-        if (input.appMcpAccess === 'none' && APP_MCP_TOKEN_NAMES.some((name) => start.environment?.variables[name])) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID',
-          'This Claude owner cannot inherit an application MCP credential.', 403)
-        await domain.callbackAdmissionIfActive()
-        effectSignal?.throwIfAborted()
-        const attached = await attach(session, start, effectSignal)
-        sessionStart = structuredClone(start)
-        return attached
-      }
-      const turn = manager.startTurn.bind(manager)
-      manager.startTurn = async function* (session, message, effectSignal) {
-        let attached: NativeSessionReference
-        try {
-          callbackAuthority = await domain.callbackAdmission()
-          effectSignal?.throwIfAborted()
-          if (!sessionStart) throw new DomainError('CLAUDE_SESSION_CONTEXT_REQUIRED',
-            'The message requires its admitted native session context.', 409)
-          attached = await attach(session, sessionStart, effectSignal)
-        } catch (error) {
-          throw new ClaudeInputNotDeliveredError(error instanceof Error ? error.message : 'Claude could not prepare the next input.')
-        }
-        const acceptedMessage = { ...message, callbackAuthority }
-        yield* turn(attached, acceptedMessage, effectSignal)
-      }
-    }
-    if (input.files) {
-      if (input.binding.kind === 'workflow') throw new DomainError('CLAUDE_FILE_SCOPE_UNAVAILABLE', 'Workflow file authority must use its admitted execution file domain.', 409)
-      if (input.mode === 'replay' && !input.files.sdk) throw new DomainError('HARNESS_REPLAY_INCOMPLETE', 'Claude file replay requires its SDK server/tool port.', 500)
-      const sdk = await (input.files.sdk ? input.files.sdk() : import('@anthropic-ai/claude-agent-sdk'))
-      signal.throwIfAborted()
-      const allowMutation = compiled.configuration.sandbox !== 'read-only'
-      fileServer = createClaudeFileMcpServer({ sdk, service: input.files.service(), allowMutation,
-        calls: createClaudeFileCallResolver({ manager: () => actual, signal }),
-        admission: productionClaudeFileAdmission({ pool: input.pool, binding: input.binding, manager: () => actual, allowMutation }) })
-    }
-    domain.bridge.bindMcpTools(fileServer ? [fileServer.manifest] : [])
-    const callbacks = createClaudeSdkCallbacks({ manager: () => actual!, bridge: domain.bridge })
-    const serverName = appMcpServerName(compiled.mcpServers)
-    const appServer = compiled.mcpServers[serverName]
-    const options = { cwd: compiled.cwd, model: compiled.model, permissionMode: compiled.permissionMode,
-      ...(compiled.effort ? { effort: compiled.effort } : {}),
-      tools: compiled.tools, allowedTools: compiled.allowedTools, disallowedTools: compiled.disallowedTools,
-      strictMcpConfig: compiled.strictMcpConfig, settingSources: compiled.settingSources, systemPrompt: compiled.systemPrompt,
-      mcpServers: { ...(input.appMcpAccess === 'none' ? Object.fromEntries(Object.entries(compiled.mcpServers).filter(([name]) => !isSupportedAppMcpServerName(name))) : compiled.mcpServers),
-        ...(fileServer ? { 'graphql-files': fileServer.server } : {}) }, env: compiled.env, sandbox: compiled.sandbox, includePartialMessages: true, forwardSubagentText: true, ...callbacks }
-    return { harness: 'claude', role: input.role, workingDirectory: input.workingDirectory, ownerAgentId: input.ownerAgentId,
-      appMcpAccess: input.appMcpAccess, processRecovery: input.recovery, scope, runner, sdkOptions: options,
-      qualification: { sdkVersion: accepted.currentBinding.pin.sdkVersion, cliVersion: accepted.currentBinding.pin.cliVersion,
-        basicTurns: compiled.qualification.basicTurns, resume: compiled.qualification.resume, fork: compiled.qualification.fork,
-        history: compiled.qualification.history, interactions: compiled.qualification.policy.alwaysAppliedToolHook },
-      inspectionStart, expectedMcp: { serverName,
-        ...(appServer?.type === 'http' ? { url: appServer.url } : {}) },
-      interactionPort: domain.interactionPort, liveCallbacks: domain.bridge,
-      cancelPendingRequests: () => domain.bridge.cancelPendingRequests(),
-      pendingInteractions: session => domain.bridge.pendingInteractions(session),
-      responseDeliveries: session => domain.bridge.deliveryEvidence(session),
-      messageSubmitted: correlationId => domain.authority.messageSubmitted(correlationId),
-      ownerForStart: () => ({ ownerId: input.binding.kind === 'workflow' ? input.binding.runId : input.binding.conversationId,
-        attemptId: callbackAuthority?.attemptId ?? 'session-control',
-        generation: input.recovery.launchId ?? callbackAuthority?.attemptId ?? 'session-control' }),
-      // Filled by the common factory's construction callback below, before any SDK query.
-      inspector: claudeProductionMcpInspector({ manager: () => actual!, start: inspectionStart,
-        workingDirectory: input.workingDirectory, cliVersion: accepted.currentBinding.pin.cliVersion }),
-    }
-  }, result => allocated?.(result.manager))
-  result.manager.setSessionControlPrincipal = principalId => {
-    if (input.binding.kind === 'operator' || input.binding.kind === 'agent') input.binding.controlPrincipalId = principalId
-  }
-  // Factory initialization remains lazy; the admitted allocator's exact instance
-  // is captured in the construction callback rather than selected by harness ID.
-  const refresh = result.manager.refreshInspectionCredentials.bind(result.manager)
-  let refreshingMcp = false
-  result.manager.refreshInspectionCredentials = async (start, servers, signal) => {
-    if (refreshingMcp) throw new DomainError('CLAUDE_MCP_CONTROL_CONFLICT', 'An MCP credential refresh is already in progress.', 409)
-    refreshingMcp = true
-    try {
-      policyBridge?.bindMcpTools(fileServer ? [fileServer.manifest] : [])
-      if (input.appMcpAccess === 'none' && Object.keys(servers).some(isSupportedAppMcpServerName)) {
-        throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'This Claude owner cannot receive management MCP tools.', 403)
-      }
-      if (fileServer && servers['graphql-files'] !== undefined && servers['graphql-files'] !== fileServer.server) {
-        throw new DomainError('CLAUDE_MCP_SCOPE_CONFLICT', 'The local file server cannot be replaced during credential refresh.', 409)
-      }
-      const acceptedServers = { ...servers, ...(fileServer ? { 'graphql-files': fileServer.server } : {}) }
-      const snapshot = await refresh(start, acceptedServers, signal)
-      const manifests = input.appMcpAccess === 'none' ? [] : await acceptedClaudeAppTools({
-        configuration: input.configuration, servers: acceptedServers,
-        token: readProductEnvironment(start.environment?.variables ?? {}, 'MCP_TOKEN'),
-        ...(signal ? { signal } : {}),
-      })
-      policyBridge!.bindMcpTools([...manifests, ...(fileServer ? [fileServer.manifest] : [])])
-      inspectedStart = structuredClone(start)
-      return snapshot
-    } finally {
-      refreshingMcp = false
-    }
-  }
-  const dispose = result.manager.dispose!.bind(result.manager)
-  result.manager.dispose = async () => {
-    try { await dispose() } finally {
-      policyBridge?.close()
-      await fileServer?.close()
-      inspectedStart = undefined
-    }
-  }
-  return { ...result, inspectionStart }
+const roots: string[] = []
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+function bound(): ResolvedProviderAccount {
+  const accountId = randomUUID()
+  return { accountId, homePath: '/selected/profile', authMode: 'subscription',
+    binding: { kind: 'slot', accountId, provider: 'codex', bindingRevision: 1, profileRef: randomUUID(), subject: null,
+      target: { hostRef: { kind: 'main', mainId: randomUUID() }, applicationInstallationId: randomUUID(),
+        keyRevision: null, authorizationRevision: null } } }
+}
+async function scopes() {
+  const root = await mkdtemp(join(tmpdir(), 'account-runtime-'))
+  roots.push(root)
+  return { first: { root: join(root, 'processes'), owner: 'session:first' },
+    second: { root: join(root, 'processes'), owner: 'session:second' } }
 }
 
-
-it('retains a proven historical native slot when the legacy projection has no slot identity', async () => {
-  const original = bound()
-  const account = { accountId: original.accountId, homePath: original.homePath, authMode: original.authMode }
-  const resolve = vi.fn().mockResolvedValue(account)
-  const { first } = await scopes()
-  await resolveRuntimeProviderAccount({ resolve }, 'codex', account.accountId, first)
-  const legacy = { kind: 'legacy-profile' as const, provider: 'codex' as const, target: null, profileRef: null,
-    historicalSubject: 'unknown' as const }
-  expect(await resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first, undefined, legacy)).toEqual(account)
-  expect(resolve).toHaveBeenLastCalledWith('codex', account.accountId, { allowDefault: false,
-    acceptedBinding: { ...legacy, accountId: account.accountId } })
-  expect(resolve.mock.calls.every(call => call[1] === account.accountId)).toBe(true)
+describe('accepted provider account runtime', () => {
+  it('retains the complete accepted binding on cold recovery and never resolves a default', async () => {
+    const account = bound()
+    const resolve = vi.fn().mockResolvedValue(account)
+    const { first } = await scopes()
+    await resolveRuntimeProviderAccount({ resolve }, 'codex', account.accountId, first, undefined, account.binding)
+    resolve.mockClear()
+    expect(await resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first)).toEqual(account)
+    expect(resolve).toHaveBeenCalledWith('codex', account.accountId, { allowDefault: false, acceptedBinding: account.binding })
+  })
+  it('keeps missing historical sidecars on the original legacy context without a default lookup', async () => {
+    const resolve = vi.fn().mockResolvedValue(bound())
+    const { first } = await scopes()
+    expect(await resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first)).toBeNull()
+    expect(resolve).not.toHaveBeenCalled()
+  })
+  it('rejects explicit conflicts with stored and source bindings before a lookup', async () => {
+    const account = bound()
+    const resolve = vi.fn().mockResolvedValue(account)
+    const { first, second } = await scopes()
+    await resolveRuntimeProviderAccount({ resolve }, 'codex', account.accountId, first, undefined, account.binding)
+    resolve.mockClear()
+    await expect(resolveRuntimeProviderAccount({ resolve }, 'codex', randomUUID(), first))
+      .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_BINDING_CONFLICT' })
+    await expect(resolveRuntimeProviderAccount({ resolve }, 'codex', randomUUID(), second, first))
+      .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_BINDING_CONFLICT' })
+    expect(resolve).not.toHaveBeenCalled()
+  })
+  it.each(['profileRef', 'bindingRevision', 'target'] as const)('rejects changed %s on native readback', async field => {
+    const account = bound()
+    const accepted = structuredClone(account.binding!)
+    const resolve = vi.fn().mockResolvedValue(account)
+    const { first } = await scopes()
+    await resolveRuntimeProviderAccount({ resolve }, 'codex', account.accountId, first, undefined, accepted)
+    if (field === 'bindingRevision') account.binding!.bindingRevision++
+    else if (field === 'target') account.binding!.target.applicationInstallationId = randomUUID()
+    else account.binding!.profileRef = randomUUID()
+    await expect(resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first))
+      .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_BINDING_CONFLICT' })
+  })
+  it('fails unavailable or tombstoned A without selecting another account', async () => {
+    const account = bound()
+    const resolve = vi.fn().mockResolvedValue(account)
+    const { first } = await scopes()
+    await resolveRuntimeProviderAccount({ resolve }, 'codex', account.accountId, first, undefined, account.binding)
+    resolve.mockResolvedValue(null)
+    await expect(resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first))
+      .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_UNAVAILABLE' })
+  })
+  it('retains a proven legacy slot and keeps historical identity unknown', async () => {
+    const account = bound()
+    const legacy = { kind: 'legacy-profile' as const, provider: 'codex' as const,
+      target: account.binding!.target, profileRef: account.binding!.profileRef,
+      historicalSubject: 'unknown' as const, accountId: account.accountId }
+    const resolve = vi.fn().mockResolvedValue(account)
+    const { first } = await scopes()
+    await resolveRuntimeProviderAccount({ resolve }, 'codex', account.accountId, first, undefined, legacy)
+    expect(await resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first, undefined, legacy)).toEqual(account)
+    expect(resolve).toHaveBeenLastCalledWith('codex', account.accountId, { allowDefault: false, acceptedBinding: legacy })
+  })
+  it('retains native legacy slot readback when a historical projection lacks the slot ID', async () => {
+    const original = bound()
+    const account = { accountId: original.accountId, homePath: original.homePath, authMode: original.authMode }
+    const resolve = vi.fn().mockResolvedValue(account)
+    const { first } = await scopes()
+    await resolveRuntimeProviderAccount({ resolve }, 'codex', account.accountId, first)
+    const legacy = { kind: 'legacy-profile' as const, provider: 'codex' as const, target: null,
+      profileRef: null, historicalSubject: 'unknown' as const }
+    expect(await resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first, undefined, legacy)).toEqual(account)
+    expect(resolve).toHaveBeenLastCalledWith('codex', account.accountId, { allowDefault: false,
+      acceptedBinding: { ...legacy, accountId: account.accountId } })
+  })
+  it('rechecks the original slot before another launch and retains its accepted environment', async () => {
+    const account = bound()
+    const resolve = vi.fn().mockResolvedValue(account)
+    const pin = pinnedCodexAccountEnvironment({ resolve }, account.accountId, undefined, undefined, account.binding)
+    await pin.prepare()
+    const environment = pin.environment({ PATH: '/bin' })
+    resolve.mockResolvedValue(null)
+    await expect(pin.revalidate()).rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_UNAVAILABLE' })
+    expect(pin.environment({ PATH: '/bin' })).toEqual(environment)
+    expect(resolve.mock.calls.every(call => call[1] === account.accountId)).toBe(true)
+  })
+  it('matches the qualified host profile with the accepted installation', () => {
+    const account = bound()
+    const profile = { hostRef: account.binding!.target.hostRef,
+      applicationInstallationId: account.binding!.target.applicationInstallationId,
+      harnessInstallationId: 'accepted-installation', installationFingerprint: 'accepted-fingerprint' }
+    expect(() => assertRuntimeProviderAccountProfile(account.binding, profile)).not.toThrow()
+    expect(() => assertRuntimeProviderAccountProfile(account.binding, { ...profile, applicationInstallationId: randomUUID() }))
+      .toThrow('another account installation')
+  })
+  it('preserves Claude HOME and explicit API-key mode', () => {
+    const account = { ...bound(), authMode: 'api-key' as const, apiKey: 'local-test-key' }
+    expect(managedProviderEnvironment({ HOME: '/human-context', ANTHROPIC_AUTH_TOKEN: 'ambient' }, account, 'claude'))
+      .toEqual({ HOME: '/human-context', CLAUDE_CONFIG_DIR: account.homePath, ANTHROPIC_API_KEY: 'local-test-key' })
+  })
 })

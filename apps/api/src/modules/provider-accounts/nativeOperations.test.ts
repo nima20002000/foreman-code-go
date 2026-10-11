@@ -1,185 +1,199 @@
-import { createHash } from 'node:crypto'
-import { unlinkSync } from 'node:fs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isDeepStrictEqual } from 'node:util'
-import {
-  ProviderAccountBindingSchema, ProviderAccountObservationSchema, ProviderAccountAuthenticationOperationSchema, ProviderAccountNativeAuthenticationObservationSchema,
-  type ProviderAccountBinding, type ProviderAccountObservation, type ProviderAccountAuthenticationOperation, type ProviderAccountNativeAuthenticationObservation,
-} from '@foreman-code/contracts/provider-accounts'
-import { DomainError } from '../errors.js'
-import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from '../harnesses/recovery/storage.js'
+import type { ProviderAccount, ProviderAccountAuthenticationOperation } from '@foreman-code/contracts/provider-accounts'
+import { NativeProviderAccountCommands, type ProviderAccountNativeInput, type AccountCommandInvocation,
+  type AccountCommandResult } from './nativeCommands.js'
+import { NativeAccountJournal } from './nativeJournal.js'
+import { NativeProviderAccountOperations } from './nativeOperations.js'
 
-export interface NativeAccountRecord {
-  operation: ProviderAccountAuthenticationOperation
-  observation: ProviderAccountNativeAuthenticationObservation
-  owner: string
-  launchId?: string
-  dispatched: boolean
+const roots: string[] = []
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+function input() {
+  const id = randomUUID()
+  const account: ProviderAccount = { id, provider: 'codex', name: 'Test account', authMode: 'subscription',
+    isDefault: false, status: 'unavailable', identity: null, revision: 1,
+    binding: { kind: 'slot', accountId: id, provider: 'codex', profileRef: id, bindingRevision: 1, subject: null,
+      target: { hostRef: { kind: 'main', mainId: randomUUID() }, applicationInstallationId: randomUUID(),
+        keyRevision: null, authorizationRevision: null } } }
+  const operation: ProviderAccountAuthenticationOperation = { id: randomUUID(), commandId: randomUUID(),
+    inputHash: `sha256:${'a'.repeat(64)}`, binding: account.binding!, intent: 'sign-in', state: 'reserved',
+    revision: 1, generation: 1, nativeSequence: 0, cancelRequested: false, nativeClosed: false,
+    createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2099-01-01T00:00:00.000Z', humanActionRequired: true }
+  return { account, operation, homePath: `/slots/${id}/home`, userHome: `/slots/${id}` }
 }
-
-function operationIdentity(operation: ProviderAccountAuthenticationOperation): unknown {
-  return { id: operation.id, commandId: operation.commandId, inputHash: operation.inputHash,
-    binding: operation.binding, intent: operation.intent, generation: operation.generation,
-    createdAt: operation.createdAt, expiresAt: operation.expiresAt }
-}
-
-export class NativeAccountJournal {
-  private readonly root: string
-  constructor(root: string) { this.root = privateDirectory(root) }
-
-  owner(operation: Pick<ProviderAccountAuthenticationOperation, 'binding'>): string {
-    const key = createHash('sha256').update(JSON.stringify([
-      operation.binding.target, operation.binding.provider, operation.binding.accountId,
-    ])).digest('hex')
-    return `provider-account:${key}`
-  }
-
-  private operationPath(id: string): string {
-    ProviderAccountAuthenticationOperationSchema.shape.id.parse(id)
-    return join(this.root, `${id}.json`)
-  }
-
-  private slotPath(operation: Pick<ProviderAccountAuthenticationOperation, 'binding'>): string {
-    return join(this.root, `${this.owner(operation).replace(':', '-')}.json`)
-  }
-
-  nextObservationSequence(binding: ProviderAccountBinding): number {
-    const path = join(this.root, `${binding.provider}-${binding.accountId}-sequence.json`)
-    const previous = readRecord(path)
-    let sequence = Date.now()
-    const observed = readRecord(join(this.root, `${binding.provider}-${binding.accountId}-observation.json`))
-    if (observed !== undefined) {
-      const saved = recordObject(observed)
-      if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(saved.binding), binding)) throw new DomainError(
-        'PROVIDER_OBSERVATION_STALE', 'The saved observation belongs to another account binding.', 409)
-      sequence = Math.max(sequence, ProviderAccountObservationSchema.parse(saved.observation).sequence + 1)
-    }
-    if (previous !== undefined) {
-      const record = recordObject(previous)
-      if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(record.binding), binding)
-        || !Number.isSafeInteger(record.sequence) || Number(record.sequence) < 0) {
-        throw new DomainError('PROVIDER_OBSERVATION_STALE', 'The account observation sequence belongs to another binding.', 409)
-      }
-      sequence = Math.max(sequence, Number(record.sequence) + 1)
-    }
-    writeRecord(path, { binding, sequence })
-    return sequence
-  }
-
-  saveObservation(binding: ProviderAccountBinding, raw: ProviderAccountObservation): ProviderAccountObservation {
-    const observation = ProviderAccountObservationSchema.parse(raw)
-    if (binding.bindingRevision !== observation.bindingRevision) throw new DomainError(
-      'PROVIDER_OBSERVATION_STALE', 'The observation belongs to another account binding revision.', 409)
-    const path = join(this.root, `${binding.provider}-${binding.accountId}-observation.json`)
-    const previous = readRecord(path)
-    if (previous !== undefined) {
-      const record = recordObject(previous)
-      const old = ProviderAccountObservationSchema.parse(record.observation)
-      if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(record.binding), binding)
-        || observation.generation < old.generation) throw new DomainError(
-          'PROVIDER_OBSERVATION_STALE', 'The saved native observation uses another account or generation.', 409)
-      if (observation.generation === old.generation && observation.sequence <= old.sequence) return old
-    }
-    const next = observation
-    writeRecord(path, { binding, observation: next })
-    return next
-  }
-
-  accountOperation(binding: ProviderAccountBinding): NativeAccountRecord | undefined {
-    const holder = readRecord(this.slotPath({ binding }))
-    if (holder === undefined) return undefined
-    const record = this.read(String(recordObject(holder).operationId))
-    if (!record || !isDeepStrictEqual(record.operation.binding, binding)) {
-      throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'The local account operation uses another binding.', 409)
-    }
-    return record
-  }
-
-  read(id: string): NativeAccountRecord | undefined {
-    const raw = readRecord(this.operationPath(id))
-    if (raw === undefined) return undefined
-    const record = recordObject(raw)
-    const operation = ProviderAccountAuthenticationOperationSchema.parse(record.operation)
-    const observation = ProviderAccountNativeAuthenticationObservationSchema.parse(record.observation)
-    if (operation.id !== id || observation.operationId !== id || record.owner !== this.owner(operation)
-      || !isDeepStrictEqual(operation.binding, observation.binding) || operation.generation !== observation.generation
-      || typeof record.dispatched !== 'boolean'
-      || record.launchId !== undefined && !ProviderAccountAuthenticationOperationSchema.shape.id.safeParse(record.launchId).success) {
-      throw new DomainError('PROVIDER_OPERATION_INVALID', 'The saved native account operation is invalid.', 409)
-    }
-    return { operation, observation, owner: String(record.owner), dispatched: record.dispatched,
-      ...(record.launchId ? { launchId: String(record.launchId) } : {}) }
-  }
-
-  reserve(raw: ProviderAccountAuthenticationOperation): { record: NativeAccountRecord; created: boolean } {
-    const operation = ProviderAccountAuthenticationOperationSchema.parse(raw)
-    const identityPath = join(this.root, `${operation.binding.provider}-${operation.binding.accountId}-binding.json`)
-    const previousBinding = readRecord(identityPath)
-    if (previousBinding !== undefined) {
-      if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(previousBinding), operation.binding)) {
-        throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'The local slot belongs to another accepted installation or profile.', 409)
-      }
-    } else {
-      try { writeRecord(identityPath, operation.binding, true) } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-        if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(readRecord(identityPath)), operation.binding)) {
-          throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'Another installation owns this account slot.', 409)
-        }
-      }
-    }
-    const existing = this.read(operation.id)
-    if (existing) {
-      if (!isDeepStrictEqual(operationIdentity(existing.operation), operationIdentity(operation))) {
-        throw new DomainError('PROVIDER_OPERATION_CONFLICT', 'The original account operation input changed.', 409)
-      }
-      return { record: existing, created: false }
-    }
-    const slotPath = this.slotPath(operation)
-    const holder = readRecord(slotPath)
-    if (holder !== undefined) {
-      const previous = this.read(String(recordObject(holder).operationId))
-      if (!previous?.observation.nativeClosed || previous.observation.state === 'outcome-unknown') throw new DomainError('PROVIDER_LOGIN_PENDING',
-        'An earlier account operation still owns this slot.', 409)
-      unlinkSync(slotPath)
-      syncDirectory(this.root)
-    }
-    try { writeRecord(slotPath, { operationId: operation.id }, true) } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      throw new DomainError('PROVIDER_LOGIN_PENDING', 'Another account operation owns this slot.', 409)
-    }
-    const record: NativeAccountRecord = { operation, owner: this.owner(operation), dispatched: false,
-      observation: { operationId: operation.id, binding: operation.binding, generation: operation.generation,
-        sequence: 0, state: 'reserved', nativeClosed: false } }
-    writeRecord(this.operationPath(operation.id), record, true)
-    return { record, created: true }
-  }
-
-  write(record: NativeAccountRecord): void {
-    const existing = this.read(record.operation.id)
-    if (!existing || !isDeepStrictEqual(operationIdentity(existing.operation), operationIdentity(record.operation))) {
-      throw new DomainError('PROVIDER_OPERATION_CONFLICT', 'The saved account operation changed.', 409)
-    }
-    ProviderAccountNativeAuthenticationObservationSchema.parse(record.observation)
-    writeRecord(this.operationPath(record.operation.id), record)
-  }
-}
-
-
-it('publishes sanitized account evidence only after native completion and live authority checks', async () => {
-  const f = await fixture()
-  const value = input()
-  await f.native.prepareAuthentication(value)
-  f.finishes[0]!({ code: 0, stdout: 'provider-secret-output' })
-  await vi.waitFor(() => expect(f.invocations).toHaveLength(2))
-  f.finishes[1]!({ code: 0, stdout: 'Logged in using ChatGPT' })
-  let observed = await f.native.observeAuthentication(value)
-  await vi.waitFor(async () => {
-    observed = await f.native.observeAuthentication(value)
-    expect(observed.state).toBe('completed')
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), 'account-operations-'))
+  roots.push(root)
+  const calls: AccountCommandInvocation[] = []
+  const finishes: Array<(value: AccountCommandResult) => void> = []
+  const stops: Array<ReturnType<typeof vi.fn>> = []
+  const commands = new NativeProviderAccountCommands({ selected: async (value: ProviderAccountNativeInput) => ({
+    binding: value.account.binding!, binary: '/native/codex', profilePath: value.homePath,
+    qualificationId: 'qualified-native-interface', generation: 1, isolation: true, status: true, login: true, logout: true,
+  }) }, call => {
+    calls.push(call)
+    let finish!: (result: AccountCommandResult) => void
+    const completion = new Promise<AccountCommandResult>(resolve => { finish = resolve })
+    finishes.push(finish)
+    const stop = vi.fn(async () => { finish({ code: null, stdout: '' }); await completion })
+    stops.push(stop)
+    return { completion, stop }
   })
-  expect(observed).toMatchObject({ nativeClosed: true, account: { status: 'signed-in', subject: null } })
-  expect(JSON.stringify(observed)).not.toContain('provider-secret-output')
-  expect(f.eligibility.mock.calls.length).toBeGreaterThanOrEqual(3)
-  expect(f.invocations.map(invocation => invocation.args)).toEqual([['login'], ['login', 'status']])
-  await f.native.close()
+  const closeOwner = vi.fn(async (_owner: string) => true)
+  const registry = {
+    reserveLaunch: vi.fn((owner: string) => ({ root: join(root, 'processes'), owner, launchId: randomUUID() })),
+    scope: (owner: string) => ({ root: join(root, 'processes'), owner }), closeOwner,
+    closeRegistration: vi.fn(async (scope: { owner: string }, _id: string) => {
+      if (!await closeOwner(scope.owner)) throw new Error('Closure unavailable')
+    }),
+    abandonReservedLaunch: vi.fn(async () => false), closedRegistration: vi.fn().mockReturnValue(undefined),
+  }
+  const eligibility = vi.fn(async () => undefined)
+  const journal = new NativeAccountJournal(join(root, 'journal'))
+  const native = new NativeProviderAccountOperations(commands, journal, registry, eligibility)
+  const restart = () => new NativeProviderAccountOperations(commands, new NativeAccountJournal(join(root, 'journal')),
+    registry, eligibility)
+  return { native, restart, commands, journal, registry, calls, finishes, stops, eligibility }
+}
+
+describe('owned native authentication', () => {
+  it('joins the same operation and excludes a different same-slot command across restart', async () => {
+    const f = await fixture()
+    const value = input()
+    const results = await Promise.all([f.native.prepareAuthentication(value), f.native.prepareAuthentication(value)])
+    expect(results.map(result => result.operationId)).toEqual([value.operation.id, value.operation.id])
+    const other = { ...value, operation: { ...value.operation, id: randomUUID(), commandId: randomUUID() } }
+    await expect(f.restart().prepareAuthentication(other)).rejects.toMatchObject({ code: 'PROVIDER_LOGIN_PENDING' })
+    expect((await f.restart().observeAuthentication(value)).state).toBe('outcome-unknown')
+    expect(f.calls).toHaveLength(1)
+    await f.native.cancelAuthentication(value)
+  })
+  it('allows independent qualified slots under distinct native owners', async () => {
+    const f = await fixture()
+    const first = input()
+    const second = input()
+    await Promise.all([f.native.prepareAuthentication(first), f.native.prepareAuthentication(second)])
+    expect(f.calls.map(call => call.environment.CODEX_HOME)).toEqual([first.homePath, second.homePath])
+    expect(new Set(f.calls.map(call => call.recovery!.owner)).size).toBe(2)
+    await f.native.close()
+  })
+  it('keeps subscriber disappearance pending until explicit cancellation', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    expect((await f.native.observeAuthentication(value)).state).toBe('awaiting-human')
+    expect(f.stops[0]).not.toHaveBeenCalled()
+    const canceled = await f.native.cancelAuthentication(value)
+    expect(canceled).toMatchObject({ operationId: value.operation.id, state: 'canceled', nativeClosed: true })
+    expect(f.registry.closeRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: f.calls[0]!.recovery!.owner }), f.calls[0]!.recovery!.launchId)
+  })
+  it('cannot turn a late completion after cancel into success or retarget a later launch', async () => {
+    const f = await fixture()
+    const first = input()
+    await f.native.prepareAuthentication(first)
+    await f.native.cancelAuthentication(first)
+    f.finishes[0]!({ code: 0, stdout: 'late-secret-output' })
+    expect((await f.native.observeAuthentication(first)).state).toBe('canceled')
+    expect(JSON.stringify(f.journal.read(first.operation.id))).not.toContain('late-secret-output')
+    const second = { ...first, operation: { ...first.operation, id: randomUUID(), commandId: randomUUID() } }
+    await f.native.prepareAuthentication(second)
+    f.registry.closeRegistration.mockClear()
+    await f.native.cancelAuthentication(first)
+    expect(f.registry.closeRegistration).not.toHaveBeenCalled()
+    expect(f.stops[1]).not.toHaveBeenCalled()
+    await f.native.cancelAuthentication(second)
+  })
+  it('expires the same attempt without a new login', async () => {
+    const f = await fixture()
+    const value = input()
+    let now = Date.parse('2026-01-01T00:00:00Z')
+    const native = new NativeProviderAccountOperations(f.commands, f.journal, f.registry, f.eligibility, () => now)
+    await native.prepareAuthentication(value)
+    now = Date.parse('2100-01-01T00:00:00Z')
+    expect(await native.observeAuthentication(value)).toMatchObject({ state: 'expired', nativeClosed: true })
+    expect(f.calls).toHaveLength(1)
+  })
+  it('retains failed cleanup and never redispatches an unknown operation', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    f.registry.closeOwner.mockRejectedValue(new Error('Closure unavailable'))
+    expect(await f.native.cancelAuthentication(value)).toMatchObject({ state: 'outcome-unknown', nativeClosed: false })
+    expect((await f.restart().prepareAuthentication(value)).state).toBe('outcome-unknown')
+    expect(f.calls).toHaveLength(1)
+    f.registry.closeOwner.mockResolvedValue(true)
+    expect(await f.restart().cancelAuthentication(value)).toMatchObject({ state: 'canceled', nativeClosed: true })
+  })
+  it('rejects changed input and live eligibility denial before effects', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    await expect(f.native.prepareAuthentication({ ...value,
+      operation: { ...value.operation, inputHash: `sha256:${'b'.repeat(64)}` } }))
+      .rejects.toMatchObject({ code: 'PROVIDER_OPERATION_CONFLICT' })
+    f.eligibility.mockRejectedValue(new Error('Used account slot'))
+    await expect(f.native.prepareAuthentication(input())).rejects.toThrow('Used account slot')
+    expect(f.calls).toHaveLength(1)
+    f.eligibility.mockResolvedValue(undefined)
+    await f.native.cancelAuthentication(value)
+  })
+  it('keeps monotonic account observations across journal restart', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    const first = await f.native.observeAccount(value)
+    const second = await f.restart().observeAccount(value)
+    expect(second.sequence).toBeGreaterThan(first.sequence)
+    expect(second.status).toBe('login-pending')
+    await f.native.cancelAuthentication(value)
+  })
+  it('rejects reinstall adoption even when the slot path is identical', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    await f.native.cancelAuthentication(value)
+    const next = structuredClone(value)
+    next.account.binding!.target.applicationInstallationId = randomUUID()
+    next.operation.binding = next.account.binding!
+    next.operation.id = randomUUID()
+    next.operation.commandId = randomUUID()
+    await expect(f.restart().prepareAuthentication(next)).rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_BINDING_CONFLICT' })
+    expect(f.calls).toHaveLength(1)
+  })
+  it('does not publish an older status that finishes after a newer observation', async () => {
+    const f = await fixture()
+    const value = input()
+    const first = f.native.observeAccount(value)
+    const second = f.native.observeAccount(value)
+    await vi.waitFor(() => expect(f.calls).toHaveLength(2))
+    f.finishes[1]!({ code: 0, stdout: 'Logged in using ChatGPT' })
+    const newer = await second
+    f.finishes[0]!({ code: 1, stdout: 'Not logged in' })
+    expect(await first).toEqual(newer)
+    expect(newer.status).toBe('signed-in')
+    await f.native.close()
+  })
+  it('supplies sanitized account evidence after completion and live rechecks', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    f.finishes[0]!({ code: 0, stdout: 'secret-native-output' })
+    await vi.waitFor(() => expect(f.calls).toHaveLength(2))
+    f.finishes[1]!({ code: 0, stdout: 'Logged in using ChatGPT' })
+    let observed = await f.native.observeAuthentication(value)
+    await vi.waitFor(async () => {
+      observed = await f.native.observeAuthentication(value)
+      expect(observed.state).toBe('completed')
+    })
+    expect(observed).toMatchObject({ nativeClosed: true, account: { status: 'signed-in', subject: null } })
+    expect(JSON.stringify(observed)).not.toContain('secret-native-output')
+    expect(f.eligibility.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(f.calls.map(call => call.args)).toEqual([['login'], ['login', 'status']])
+    await f.native.close()
+  })
 })
