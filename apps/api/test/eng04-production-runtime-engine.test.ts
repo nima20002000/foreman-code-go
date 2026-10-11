@@ -65,7 +65,8 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   const terminal = () => { state.run = { ...state.run, executionState: 'completed', outcome: 'canceled',
     result: { outcome: 'canceled' }, finishedAt: f.createdAt } }
   lifecycleCalls.settle = () => { state.events.push('settle'); terminal() }
-  const native = { adoptRunOwner: vi.fn(),
+  const stopSharingOwner = vi.fn()
+  const native = { shareRunOwner: vi.fn(() => stopSharingOwner),
     cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
     finishRun: async () => { state.events.push('finish-native') },
     nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },
@@ -77,7 +78,7 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   } as unknown as Args[1], native as unknown as Args[2], {} as Args[3],
     '/synthetic/a1-engine', {} as Args[5], {} as Args[6], {} as Args[7],
     async () => { state.events.push('terminal-notification') }, { workerParallelism: 2 })
-  return { f, run, state, owner, native, runs, engine, factory, terminal }
+  return { f, run, state, owner, native, runs, engine, factory, terminal, stopSharingOwner }
 }
 
 for (const form of ['single', 'parallel', 'conditional', 'approval', 'repeat'] as const) test(`ENG04 A1 engine ${form}: the same owner/gate/composition entry`, async () => {
@@ -102,10 +103,25 @@ test('publishes the acquired Run owner to native managers before awaiting its sn
   const h = await fixture()
   const snapshot = h.runs.getRepeatSnapshot
   h.runs.getRepeatSnapshot = async () => {
-    assert.deepEqual(h.native.adoptRunOwner.mock.calls, [[h.owner]])
+    assert.deepEqual(h.native.shareRunOwner.mock.calls, [[h.owner]])
+    assert.equal(h.stopSharingOwner.mock.calls.length, 0)
     return snapshot()
   }
   await h.engine.start(h.run.id)
+  assert.equal(h.stopSharingOwner.mock.calls.length, 1)
+  assert.equal(h.state.released, 1)
+})
+
+test('stops sharing the engine owner before releasing a failed drive', async () => {
+  const h = await fixture()
+  const failure = new Error('Snapshot unavailable')
+  h.runs.getRepeatSnapshot = async () => { throw failure }
+  const release = h.owner.release.bind(h.owner)
+  vi.spyOn(h.owner, 'release').mockImplementation(async () => {
+    assert.equal(h.stopSharingOwner.mock.calls.length, 1)
+    await release()
+  })
+  await assert.rejects(h.engine.start(h.run.id), error => error === failure)
   assert.equal(h.state.released, 1)
 })
 

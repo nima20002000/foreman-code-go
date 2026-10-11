@@ -1,5 +1,5 @@
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
-import { timeRuntimeOperation, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
+import { runtimeTimingPoint, timeRuntimeOperation, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
 import { inspectNativeResponse } from '../harnesses/responseAvailability.js'
 import type { InteractionActivityEvidence } from './activityProjection.js'
 import type { ReviewNativeCapture, ReviewNativeCapturePort, ReviewOriginalNativeSource } from './reviewNativeCapture.js'
@@ -135,6 +135,7 @@ export class ApprovalExecutionCoordinator {
   private readonly pendingCleanupRuns = new Set<string>()
   private readonly cancellations = new Map<string, Promise<void>>()
   private readonly reviewerRecoveries = new Map<string, Promise<boolean>>()
+  private readonly sharedRunOwners = new Map<string, RunOwnership>()
   private closing = false
   private restartClosure: Promise<void> | undefined
 
@@ -1536,17 +1537,35 @@ export class ApprovalExecutionCoordinator {
   }
 
   private async retainRunOwner(execution: HarnessExecution, onLost: () => void) {
-    let owner = this.ownedSessions.get(execution.id)?.runOwner
+    let owner = this.sharedRunOwners.get(execution.runId) ?? this.ownedSessions.get(execution.id)?.runOwner
     try { owner?.assertOwned() }
     catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
       await owner?.release()
       owner = undefined
     }
-    if (owner) return { owner, release: owner.retain(onLost) }
+    if (owner) {
+      const release = owner.retain(onLost)
+      runtimeTimingPoint('engine', 'run.retain_owner', {
+        runId: execution.runId, executionId: execution.id, reused: true, success: true,
+      })
+      return { owner, release }
+    }
     const acquired = await this.runs.acquireOwnership(execution.runId, onLost)
+    runtimeTimingPoint('engine', 'run.retain_owner', {
+      runId: execution.runId, executionId: execution.id, reused: false, success: Boolean(acquired),
+    })
     if (!acquired) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still completing its current native operation.', 409)
     return { owner: acquired, release: () => acquired.release() }
+  }
+
+  shareRunOwner(owner: RunOwnership): () => void {
+    this.adoptRunOwner(owner)
+    // Cold review attachment can start before recovery registers any session.
+    this.sharedRunOwners.set(owner.runId, owner)
+    return () => {
+      if (this.sharedRunOwners.get(owner.runId) === owner) this.sharedRunOwners.delete(owner.runId)
+    }
   }
 
   adoptRunOwner(owner: RunOwnership): void {

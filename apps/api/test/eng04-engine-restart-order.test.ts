@@ -38,7 +38,7 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
       stopRequested: false, cleanupPending: false }),
   }
   const native = {
-    adoptRunOwner: () => {},
+    shareRunOwner: () => () => {},
     requestColdRunCleanup: vi.fn(async (actual: typeof owner) => {
       assert.equal(actual, owner)
       return false
@@ -121,7 +121,7 @@ test('restart retains the original owner when cleanup persistence fails and retr
       events.push('cleanup-intent')
     }),
   }
-  const native = { adoptRunOwner: () => {}, requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { events.push('close') }),
+  const native = { shareRunOwner: () => () => {}, requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { events.push('close') }),
     cancelRun: vi.fn(), finishRun: vi.fn() }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
   const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
@@ -166,7 +166,7 @@ for (const failFirst of [false, true]) test(`naturally completing drive holds it
       events.push('cleanup-intent')
     },
   }
-  const native = { adoptRunOwner: () => {}, requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { owner.assertOwned(); events.push('close') }) }
+  const native = { shareRunOwner: () => () => {}, requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { owner.assertOwned(); events.push('close') }) }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
   const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
     getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },

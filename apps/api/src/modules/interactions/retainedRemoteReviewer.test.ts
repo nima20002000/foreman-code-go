@@ -124,6 +124,7 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
     runId: f.execution.runId, assertOwned() {}, oneShotConnection: () => f.connection,
     retain: () => async () => {}, release: async () => {},
   } as unknown as RunOwnership
+  const acquireOwnership = vi.fn(async (): Promise<RunOwnership | undefined> => owner)
   const originalRequest = workflowExecutionRequest({ execution: f.execution, version: f.base.version,
     configuration: f.base.configurations[0]!, workspaceId: f.base.run.workspaceId,
     ...(options.handoff ? { executionContext: { parentRequest: null } } : {}) })
@@ -188,7 +189,7 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
       getRepeatVersion: async () => f.base.version,
       repeat: async () => ({ readWorkExecutionContext: async () => ({ parentRequest: null }) }),
       get: async () => ({ ...f.base.run, executionState: 'running', outcome: 'pending' }),
-      acquireOwnership: async () => owner,
+      acquireOwnership,
     } as unknown as Args[0], { coordination } as Args[1], {} as Args[2],
     { resolve: () => ({ manager, processState: 'resident', markResident: resident }) }, 60_000,
     credentials as unknown as Args[5], undefined, closures as unknown as Args[7],
@@ -200,10 +201,61 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
     workingDirectory: f.execution.workingDirectory!, purpose: 'reviewer',
     ...(job ? { reviewJob: job } : {}),
   }, f.session)
-  return { ...f, worker, coordination, requests, proxies, originalRequest, credentials, closures, resident, coordinator, attach }
+  return { ...f, worker, coordination, requests, proxies, originalRequest, credentials, closures, resident,
+    owner, acquireOwnership, coordinator, attach }
 }
 
 describe('atomic original remote reviewer retention', () => {
+  it('retains the engine Run owner before a cold reviewer has a resident session', async () => {
+    const f = await recoveryFixture()
+    const main = f.coordinator()
+    f.acquireOwnership.mockResolvedValue(undefined)
+    const releaseReviewOwner = vi.fn(async () => {})
+    const retain = vi.spyOn(f.owner, 'retain').mockReturnValue(releaseReviewOwner)
+    const release = vi.spyOn(f.owner, 'release')
+    const stopSharingOwner = main.shareRunOwner(f.owner)
+    try {
+      expect((await f.attach(main)).session).toEqual(f.session)
+      expect(f.acquireOwnership).not.toHaveBeenCalled()
+      expect(retain).toHaveBeenCalledTimes(1)
+      expect(releaseReviewOwner).not.toHaveBeenCalled()
+      stopSharingOwner()
+      await main.releaseReviewSession(f.execution.id)
+      expect(releaseReviewOwner).toHaveBeenCalledTimes(1)
+      expect(release).not.toHaveBeenCalled()
+      expect(f.credentials.recoverRemote).toHaveBeenCalledTimes(1)
+      expect(f.requests).toEqual(['reattach', 'get-application-access'])
+      await main.closeForRestart()
+    } finally {
+      stopSharingOwner()
+      await f.connection.close()
+    }
+  })
+
+  it.each(['finished', 'another Run', 'lost'] as const)(
+    'does not reuse a shared engine owner from %s for cold reviewer recovery', async scope => {
+      const f = await recoveryFixture()
+      const main = f.coordinator()
+      f.acquireOwnership.mockResolvedValue(undefined)
+      let owner = f.owner
+      if (scope === 'another Run') owner = { ...f.owner, runId: 'unrelated-run' } as RunOwnership
+      const stopSharingOwner = main.shareRunOwner(owner)
+      if (scope === 'finished') stopSharingOwner()
+      if (scope === 'lost') vi.spyOn(owner, 'assertOwned').mockImplementation(() => {
+        throw new DomainError('RUN_OWNERSHIP_LOST', 'The engine owner disconnected.', 409)
+      })
+      try {
+        await expect(f.attach(main)).rejects.toMatchObject({ code: 'SESSION_LANE_BUSY' })
+        expect(f.acquireOwnership).toHaveBeenCalledTimes(1)
+        expect(f.requests).toEqual([])
+        expect(f.credentials.recoverRemote).not.toHaveBeenCalled()
+      } finally {
+        stopSharingOwner()
+        await f.connection.close()
+      }
+    },
+  )
+
   it('commits finalized session and reviewer purpose together for the same Worker credential', async () => {
     const f = fixture()
     // Completed workflow-purpose credentials are ineligible until retention commits.

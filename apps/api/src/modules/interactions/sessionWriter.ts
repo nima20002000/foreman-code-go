@@ -285,13 +285,19 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   async acquire(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<SessionWriteLease> {
     signal?.throwIfAborted()
     if (this.closing) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
-    const finishTiming = beginRuntimeTiming('harness', 'lease.acquire', { nativeSessionId: session.nativeSessionId })
+    const finishTiming = beginRuntimeTiming('harness', 'lease.acquire', {
+      nativeSessionId: session.nativeSessionId, correlationId, ownerId: this.agentId,
+    })
     try {
       const previous = await this.ensure(session, 'uncertain')
       const token = `writer-${randomUUID()}`
       // Preserve the unresolved turn correlation through attach/control operations and failed preflight.
       const lane = await this.coordination.claimLane(previous.id, previous.revision, this.agentId, token,
         new Date(Date.now() + this.leaseMs).toISOString(), previous.correlationId ?? correlationId)
+      runtimeTimingPoint('harness', 'lease.claimed', {
+        laneId: lane.id, nativeSessionId: session.nativeSessionId, ownerId: this.agentId,
+        correlationId: previous.correlationId ?? correlationId,
+      })
       const guard = new LeaseGuard(this.leaseMs,
         () => this.coordination.assertLaneLease(lane.id, token),
         () => this.coordination.renewLane(lane.id, token, this.leaseMs), signal, lane.leaseExpiresAt)
@@ -320,7 +326,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   private async releaseSession(session: NativeSessionReference, lease: SessionWriteLease): Promise<void> {
     if (this.active.get(session.nativeSessionId) === lease) this.active.delete(session.nativeSessionId)
     const release = timeRuntimeOperation('harness', 'lease.release', () => this.release(lease),
-      { nativeSessionId: session.nativeSessionId })
+      { nativeSessionId: session.nativeSessionId, laneId: lease.fence.id,
+        correlationId: lease.correlationId, ownerId: this.agentId })
     // Removing the observer does not release its persisted lane. Restart close
     // must observe this exact release before attempting another fenced claim.
     this.releasing.set(session.nativeSessionId, release)

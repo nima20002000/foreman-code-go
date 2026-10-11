@@ -170,9 +170,10 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     this.activeOwners.set(runId, owner)
     let runtimeEntered = false
     let stopObservingInterrupts: (() => void) | undefined
+    let stopSharingOwner: (() => void) | undefined
     try {
       owner.assertOwned(); controller.signal.throwIfAborted()
-      this.nativeExecutions.adoptRunOwner(owner)
+      stopSharingOwner = this.nativeExecutions.shareRunOwner(owner)
       let snapshot = await this.runs.getRepeatSnapshot(runId, owner)
       if (snapshot.stopRequested || snapshot.cleanupPending || snapshot.run.executionState === 'completed') {
         await this.cleanupOwned(owner)
@@ -304,6 +305,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       if (this.restartClosure) await this.restartClosure
       // Drains in-flight G1 writes. Old captures cannot write after release.
       if (this.activeOwners.get(runId) === owner) this.activeOwners.delete(runId)
+      stopSharingOwner?.()
       await owner.release()
     }
   }

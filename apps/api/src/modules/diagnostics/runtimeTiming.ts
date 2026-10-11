@@ -7,6 +7,8 @@ export interface RuntimeTimingFields {
   executionId?: string
   nativeTurnId?: string
   nativeSessionId?: string
+  laneId?: string
+  correlationId?: string
   ownerId?: string
   operation?: string
   statementId?: string

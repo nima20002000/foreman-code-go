@@ -257,6 +257,9 @@ export async function remoteReviewProduction(options: {
               component: timing.component, phase: timing.phase, operation: timing.operation,
               startedAt: timing.startedAt, finishedAt: timing.finishedAt, durationMs: timing.durationMs,
               intervalMs: timing.intervalMs, reused: timing.reused, count: timing.count,
+              runId: timing.runId, executionId: timing.executionId, nativeSessionId: timing.nativeSessionId,
+              laneId: timing.laneId, correlationId: timing.correlationId, ownerId: timing.ownerId,
+              nativeTurnId: timing.nativeTurnId, eventType: timing.eventType, success: timing.success,
             })
           }
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
