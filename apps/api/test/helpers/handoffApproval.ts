@@ -1,27 +1,27 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { expect, vi } from 'vitest'
+import type { FastifyInstance } from 'fastify'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { WorkActivationInputSchema, makeCurrentWorkflowFixture, parseWorkHandoffResult } from '@foreman-code/contracts/wave25'
-import { buildApp } from '../src/app.js'
-import { DomainError } from '../src/modules/errors.js'
-import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
-import { assertOrchestratorGraphAuthority } from '../src/modules/interactions/graphAuthority.js'
-import { PostgresRepeatReviewerBindings } from '../src/modules/interactions/repeatReviewer.js'
-import { deliverApproval } from '../src/modules/interactions/wave25/service.js'
-import { object } from '../src/modules/harnesses/codexStdioTransport.js'
-import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
-import { ApprovalPostgresSaver } from '../src/infrastructure/approvalCheckpointSaver.js'
-import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
-import { approvalResponse } from './helpers/approvalResponse.js'
-import { br1002At } from './helpers/wave25Br1002Cuts.js'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
-import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
+import { buildApp } from '../../src/app.js'
+import { DomainError } from '../../src/modules/errors.js'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { PostgresAppInteractionService } from '../../src/modules/interactions/app.js'
+import { assertOrchestratorGraphAuthority } from '../../src/modules/interactions/graphAuthority.js'
+import { PostgresRepeatReviewerBindings } from '../../src/modules/interactions/repeatReviewer.js'
+import { deliverApproval } from '../../src/modules/interactions/wave25/service.js'
+import { object } from '../../src/modules/harnesses/codexStdioTransport.js'
+import { RepeatRunRepository } from '../../src/modules/runs/repeatPostgres.js'
+import { ApprovalPostgresSaver } from '../../src/infrastructure/approvalCheckpointSaver.js'
+import { codexApprovalRuntime } from './codexApprovalRuntime.js'
+import { approvalResponse } from './approvalResponse.js'
+import { br1002At } from './wave25Br1002Cuts.js'
+import { deferred } from './wave25Agent3.js'
+import { agentWorkflowNode } from './agentWorkflowFixture.js'
 
 type Fixture = Awaited<ReturnType<typeof codexApprovalRuntime>>
 type Runtime = ReturnType<Fixture['compose']>
-afterEach(() => vi.restoreAllMocks())
 
 async function fixture() {
   const definition = makeCurrentWorkflowFixture(randomUUID())
@@ -55,7 +55,7 @@ async function fixture() {
   return runtime
 }
 
-async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId?: string) {
+async function reviewThroughMcp(f: Fixture, runtime: Runtime, origin: string, previousReviewerId?: string) {
   const pending = await runtime.repository.list({ runId: f.f.run.id, status: 'pending', limit: 100 })
   expect(pending, await runtimeDetails(f, runtime)).toHaveLength(1)
   const interaction = pending[0]!
@@ -86,9 +86,6 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
   })
   const dispatch = runtime.native.reviewers.dispatchNext(reviewerId, `handoff-review-${interaction.id}`)
   const settledDispatch = Promise.allSettled([dispatch])
-  const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, runtime.repository,
-      new PostgresCommandCoordinator(f.db.pool), runtime.service) } })
   const clients: Client[] = []
   let completed = false
   let readOnlyPrincipalId: string | undefined
@@ -97,7 +94,6 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
     const issued = issuance.mock.results.at(-1)
     if (issued?.type !== 'return') throw new Error('Dispatcher did not issue its reviewer credential')
     const credential = await issued.value
-    const origin = await app.listen({ host: '127.0.0.1', port: 0 })
     async function connect(token: string) {
       const client = new Client({ name: 'handoff-approval-regression', version: '1.0.0' })
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
@@ -138,7 +134,6 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
     return binding.execution.id
   } finally {
     for (const client of clients) await client.close()
-    await app.close()
     if (!completed) await runtime.native.reviewers.shutdown()
     await settledDispatch
     if (readOnlyPrincipalId) await runtime.credentials.revoke({ principalId: readOnlyPrincipalId })
@@ -154,98 +149,108 @@ async function runtimeDetails(f: Fixture, runtime: Runtime): Promise<string> {
   return JSON.stringify({ run, executions })
 }
 
-describe.skipIf(!postgresEnabled)('handoff Worker approval through the designated Orchestrator', () => {
-  it.each([false, true])('resumes each business activation with persisted reviewer ownership (restart=%s)', async (restart) => {
-    const f = await fixture()
-    let runtime: Runtime = f
-    vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
-    const cut = deferred<string>()
-    const release = deferred<void>()
-    let stoppedAtCut = false
-    const route = RepeatRunRepository.prototype.admitWorkRequest
-    const pause = vi.spyOn(RepeatRunRepository.prototype, 'admitWorkRequest').mockImplementation(async function (
-      this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['admitWorkRequest']>
-    ) {
-      if (restart && !stoppedAtCut) {
-        stoppedAtCut = true
-        cut.resolve(args[0])
-        await release.promise
-        throw new DomainError('ENGINE_RESTART', 'Restart after terminal acceptance', 409)
-      }
-      return route.apply(this, args)
-    })
-    let start: Promise<unknown> | undefined
-    try {
-      if (restart) {
-        start = runtime.engine.start(f.f.run.id)
-        const settledStart = Promise.allSettled([start])
-        const executionId = await br1002At(cut.promise, start)
-        expect((await f.db.pool.query('select execution_id from run_work_results where run_id=$1', [f.f.run.id])).rows)
-          .toEqual([{ execution_id: executionId }])
-        expect((await f.db.pool.query('select request_id from run_work_requests where run_id=$1', [f.f.run.id])).rows)
-          .toEqual([])
-        const closing = deferred<void>()
-        const closeForRestart = runtime.native.closeForRestart.bind(runtime.native)
-        const close = vi.spyOn(runtime.native, 'closeForRestart').mockImplementation(() => {
-          const task = closeForRestart()
-          closing.resolve()
-          return task
-        })
-        const shutdown = runtime.engine.shutdown()
-        await closing.promise
-        release.resolve()
-        await shutdown
-        close.mockRestore()
-        await settledStart
-        pause.mockRestore()
-        runtime = f.compose(new ApprovalPostgresSaver(f.db.pool, undefined, { schema: f.db.schema }))
-        vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
-        await runtime.engine.resume(f.f.run.id)
-        expect(f.counts().sessions, await runtimeDetails(f, runtime)).toBe(2)
-      } else {
-        pause.mockRestore()
-        await runtime.engine.start(f.f.run.id)
-      }
-      const firstReviewerId = await reviewThroughMcp(f, runtime)
-      const secondReviewerId = await reviewThroughMcp(f, runtime, firstReviewerId)
-      expect(secondReviewerId).not.toBe(firstReviewerId)
-      expect((await runtime.runs.get(f.f.run.id))).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
-      const details = await runtime.runs.getDetails(f.f.run.workspaceId, f.f.run.id)
-      expect(details?.executions).toHaveLength(4)
-      const sessionIds = new Set<string>()
-      for (const node of f.f.version.definition.nodes) {
-        const executions = details!.executions.filter((execution) => execution.workflowNodeId === node.id)
-        expect(executions).toHaveLength(2)
-        const original = executions.find((execution) => !execution.sessionContinuation)!
-        const resumed = executions.find((execution) => execution.sessionContinuation)!
-        expect(original).toMatchObject({ state: 'completed', nativeSessionId: expect.any(String) })
-        expect(resumed).toMatchObject({
-          state: 'completed',
-          nativeSessionId: original.nativeSessionId,
-          sessionContinuation: {
-            previousExecutionId: original.id,
-            session: { nativeSessionId: original.nativeSessionId },
-          },
-        })
-        sessionIds.add(original.nativeSessionId!)
-      }
-      expect(sessionIds.size).toBe(2)
-      expect(f.counts()).toEqual({ sessions: 2, prompts: 6, responses: 2 })
-      const jobs = (await f.db.pool.query<{ execution_id: string; state: string }>(
-        `select j.execution_id,j.state from review_jobs j join durable_interactions i on i.id=j.interaction_id
-          where i.run_id=$1 order by j.execution_id`, [f.f.run.id])).rows
-      expect(jobs).toHaveLength(2)
-      expect(jobs.every((job) => job.state === 'completed')).toBe(true)
-      expect(jobs.map((job) => job.execution_id).sort()).toEqual([firstReviewerId, secondReviewerId].sort())
-      for (let attempt = 0; attempt < 2; attempt++) await runtime.engine.reconcile(() => {
-        throw new Error('Reconciliation failed after completed approvals')
+export async function runHandoffApproval({ restart }: { restart: boolean }): Promise<void> {
+  const f = await fixture()
+  let runtime: Runtime = f
+  vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
+  const cut = deferred<string>()
+  const release = deferred<void>()
+  let stoppedAtCut = false
+  const route = RepeatRunRepository.prototype.admitWorkRequest
+  const pause = vi.spyOn(RepeatRunRepository.prototype, 'admitWorkRequest').mockImplementation(async function (
+    this: RepeatRunRepository, ...args: Parameters<RepeatRunRepository['admitWorkRequest']>
+  ) {
+    if (restart && !stoppedAtCut) {
+      stoppedAtCut = true
+      cut.resolve(args[0])
+      await release.promise
+      throw new DomainError('ENGINE_RESTART', 'Restart after terminal acceptance', 409)
+    }
+    return route.apply(this, args)
+  })
+  let app: FastifyInstance | undefined
+  let start: Promise<unknown> | undefined
+  try {
+    if (restart) {
+      start = runtime.engine.start(f.f.run.id)
+      const settledStart = Promise.allSettled([start])
+      const executionId = await br1002At(cut.promise, start)
+      expect((await f.db.pool.query('select execution_id from run_work_results where run_id=$1', [f.f.run.id])).rows)
+        .toEqual([{ execution_id: executionId }])
+      expect((await f.db.pool.query('select request_id from run_work_requests where run_id=$1', [f.f.run.id])).rows)
+        .toEqual([])
+      const closing = deferred<void>()
+      const closeForRestart = runtime.native.closeForRestart.bind(runtime.native)
+      const close = vi.spyOn(runtime.native, 'closeForRestart').mockImplementation(() => {
+        const task = closeForRestart()
+        closing.resolve()
+        return task
       })
-      expect(f.counts()).toEqual({ sessions: 2, prompts: 6, responses: 2 })
-    } finally {
+      const shutdown = runtime.engine.shutdown()
+      await closing.promise
       release.resolve()
+      await shutdown
+      close.mockRestore()
+      await settledStart
       pause.mockRestore()
+      runtime = f.compose(new ApprovalPostgresSaver(f.db.pool, undefined, { schema: f.db.schema }))
+      vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
+      await runtime.engine.resume(f.f.run.id)
+      expect(f.counts().sessions, await runtimeDetails(f, runtime)).toBe(2)
+    } else {
+      pause.mockRestore()
+      await runtime.engine.start(f.f.run.id)
+    }
+    app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, runtime.repository,
+        new PostgresCommandCoordinator(f.db.pool), runtime.service) } })
+    const origin = await app.listen({ host: 'localhost', port: 0 })
+    const firstReviewerId = await reviewThroughMcp(f, runtime, origin)
+    const secondReviewerId = await reviewThroughMcp(f, runtime, origin, firstReviewerId)
+    expect(secondReviewerId).not.toBe(firstReviewerId)
+    expect((await runtime.runs.get(f.f.run.id))).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+    const details = await runtime.runs.getDetails(f.f.run.workspaceId, f.f.run.id)
+    expect(details?.executions).toHaveLength(4)
+    const sessionIds = new Set<string>()
+    for (const node of f.f.version.definition.nodes) {
+      const executions = details!.executions.filter((execution) => execution.workflowNodeId === node.id)
+      expect(executions).toHaveLength(2)
+      const original = executions.find((execution) => !execution.sessionContinuation)!
+      const resumed = executions.find((execution) => execution.sessionContinuation)!
+      expect(original).toMatchObject({ state: 'completed', nativeSessionId: expect.any(String) })
+      expect(resumed).toMatchObject({
+        state: 'completed',
+        nativeSessionId: original.nativeSessionId,
+        sessionContinuation: {
+          previousExecutionId: original.id,
+          session: { nativeSessionId: original.nativeSessionId },
+        },
+      })
+      sessionIds.add(original.nativeSessionId!)
+    }
+    expect(sessionIds.size).toBe(2)
+    expect(f.counts()).toEqual({ sessions: 2, prompts: 6, responses: 2 })
+    const jobs = (await f.db.pool.query<{ execution_id: string; state: string }>(
+      `select j.execution_id,j.state from review_jobs j join durable_interactions i on i.id=j.interaction_id
+        where i.run_id=$1 order by j.execution_id`, [f.f.run.id])).rows
+    expect(jobs).toHaveLength(2)
+    expect(jobs.every((job) => job.state === 'completed')).toBe(true)
+    expect(jobs.map((job) => job.execution_id).sort()).toEqual([firstReviewerId, secondReviewerId].sort())
+    for (let attempt = 0; attempt < 2; attempt++) await runtime.engine.reconcile(() => {
+      throw new Error('Reconciliation failed after completed approvals')
+    })
+    expect(f.counts()).toEqual({ sessions: 2, prompts: 6, responses: 2 })
+  } finally {
+    release.resolve()
+    pause.mockRestore()
+    try {
+      if (app) {
+        app.server.closeIdleConnections()
+        await app.close()
+      }
+    } finally {
       await f.close()
       if (start) await Promise.allSettled([start])
     }
-  }, 120000)
-})
+  }
+}
