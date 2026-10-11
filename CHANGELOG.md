@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.73] - 2026-10-11
+
+### Fixed
+
+- A paired Worker no longer stops admitting Agent work while an obsolete CI runtime refresh is pending; cross-filesystem quota relocation is skipped safely.
+- The Worker MCP installer builds on platforms without `process.getuid`.
+
 ## [0.0.72] - 2026-10-11
 
 ### Performance
