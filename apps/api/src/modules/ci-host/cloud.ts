@@ -106,6 +106,10 @@ export class CloudCi {
     const existing = await this.read(request.runId).catch(() => null)
     if (existing) return this.view(existing, 0)
     const mirror = await this.mirrors(request.repository)
+    // CircleCI's machine image has no podman, which the Worker and check suites use; it takes integration work only.
+    if (this.provider.id === 'circleci' && request.suite !== 'integration') {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE', `${this.provider.label} runs integration partitions only.`, 409)
+    }
     if (!mirror || !await this.ready()) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE', `This workspace has no CI mirror, or Main is not logged in to ${this.provider.label}.`, 409)
     }
