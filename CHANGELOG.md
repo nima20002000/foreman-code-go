@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.75] - 2026-10-11
+
+### Fixed
+
+- Remote workflow Agents register their Foreman Code MCP launcher route before the session starts, so their MCP tools load.
+- Workflow turns start only after Codex reports the Foreman Code MCP server connected with tools; the managed launcher entry sets MCP startup and tool timeouts.
+- Approved Git objects are imported in batches, so large repositories materialize; failures keep a safe diagnostic.
+- MCP schema conversions are shared by schema shape; aged snapshots are released every ten minutes; production statements get five seconds.
+
 ## [0.0.74] - 2026-10-11
 
 ### Fixed
