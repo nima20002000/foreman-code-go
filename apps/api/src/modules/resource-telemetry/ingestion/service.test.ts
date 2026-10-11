@@ -43,6 +43,31 @@ async function capture(s: ReturnType<typeof setup>, seq = '1', start = '1000000'
 async function ready() {
   const s = setup(); await s.service.handshake(s.context, 'collector-1', signal()); return s
 }
+describe('computer storage', () => {
+  it('publishes current free disk space and withholds it once the computer is offline or stale', async () => {
+    const s = await ready()
+    const c = (await s.service.challenge(s.context, signal()))!
+    const b = batch(c)
+    b.host!.storage = { totalBytes: 1000, availableBytes: 250 }
+    expect((await s.service.ingest(s.context, JSON.stringify(b), signal())).status).toBe('accepted')
+    const fresh = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryComputerFixture, signal()))
+    expect(fresh.kind === 'sample' && fresh.sample.storage).toEqual({ totalBytes: 1000, availableBytes: 250 })
+    s.presence('offline')
+    const offline = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryComputerFixture, signal()))
+    expect(offline.kind === 'sample' && offline.sample.storage).toBeNull()
+    s.presence('online'); s.advance(TELEMETRY_LIMITS.freshMs)
+    const stale = TelemetryReadResultSchema.parse(await s.service.read(principal, telemetryComputerFixture, signal()))
+    expect(stale.kind === 'sample' && stale.sample.storage).toBeNull()
+  })
+
+  it('rejects storage reported for an owned scope', async () => {
+    const s = await ready()
+    const c = (await s.service.challenge(s.context, signal()))!
+    const b = batch(c)
+    b.owned[0]!.storage = { totalBytes: 1000, availableBytes: 250 }
+    await expect(s.service.ingest(s.context, JSON.stringify(b), signal())).rejects.toThrow()
+  })
+})
 describe('fresh computer memory for Job admission', () => {
   it('uses current authenticated memory and refuses another boot or a stale sample', async () => {
     const s = await ready()

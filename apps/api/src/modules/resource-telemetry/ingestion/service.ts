@@ -176,7 +176,8 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
         cpu: cpu.kind === 'ok' ? { ...base, state: 'fresh', value: cpu.value, reason: null }
           : { ...base, state: cpu.state, value: null, reason: cpu.reason },
         memory: row.memory.state === 'ok' ? { ...base, state: 'fresh', value: row.memory.value, reason: null }
-          : { ...base, state: row.memory.state, value: null, reason: row.memory.reason } }
+          : { ...base, state: row.memory.state, value: null, reason: row.memory.reason },
+        ...(row.storage ? { storage: row.storage } : {}) }
       replacements.set(key, { latest: sample, lastKnown: sample.cpu.state === 'fresh' || sample.memory.state === 'fresh' ? structuredClone(sample) : previous?.lastKnown ?? null,
         sharedOwners, lastKnownSharedOwners: sample.cpu.state === 'fresh' || sample.memory.state === 'fresh' ? sharedOwners : previous?.lastKnownSharedOwners ?? null,
         issuedMonoMs: challenge.monoMs, storedMonoMs: commitMono,
@@ -190,7 +191,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
       replacements.set(key, { ...cached, latest: { ...cached.latest,
         coverage: { ...cached.latest.coverage, boundary: 'partial', reasons: ['source-failure'] },
         cpu: { state: 'unavailable', value: null, reason: 'source-failure', sampledAtUnixMs: null, freshUntilUnixMs: null },
-        memory: { state: 'unavailable', value: null, reason: 'source-failure', sampledAtUnixMs: null, freshUntilUnixMs: null } } })
+        memory: { state: 'unavailable', value: null, reason: 'source-failure', sampledAtUnixMs: null, freshUntilUnixMs: null }, storage: null } })
     }
     state.rows = replacements
     state.sequence = seq; state.digest = hash; state.receipt = receipt
@@ -390,6 +391,7 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
       const reason = presence === 'offline' ? 'offline' : lifecycle === 'ended' || lifecycle === 'closed' ? lifecycle : 'stale'
       current.cpu = { ...current.cpu, state: 'stale', value: null, reason }
       current.memory = { ...current.memory, state: 'stale', value: null, reason }
+      if (current.storage) current.storage = null
     }
     return { kind: 'sample', sample: current, lastKnown: lastKnownAllowed
       && this.ports.clock.monotonicMs() - cached.lastKnownMonoMs < TELEMETRY_LIMITS.lastKnownMs ? structuredClone(cached.lastKnown) : null }

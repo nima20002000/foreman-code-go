@@ -83,6 +83,7 @@ import { repeatRuntimeDirectory, type RepeatRepositoryServices } from './modules
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
 import { retainInstalledHarnessInventory } from './modules/harnesses/installedCodexInspection.js'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 import { createResourceTelemetryRuntime, type ResourceTelemetryRuntime } from './modules/resource-telemetry/runtime.js'
@@ -2009,7 +2010,8 @@ export function buildProductionApp(
             return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, generation:owned.generation, assertCurrent: owned.assertCurrent, nativeOwner: captured.owner }] : []
           }) })
         telemetry = await createResourceTelemetryRuntime({ localContext: mainTelemetryContext, registry, ...authorities,
-          wholeHostVisible: false, signal: telemetryLifetime.signal })
+          // A Main inside a container sees only its namespace, never the whole computer.
+          wholeHostVisible: !existsSync('/.dockerenv') && !existsSync('/run/.containerenv'), signal: telemetryLifetime.signal })
         runtimeServices.resourceTelemetry = { reads: telemetry.service, selectors: telemetry.selectors }
         const audit = { record: (principalId: string, source: 'http' | 'mcp', selectorKey: string) =>
           commands.recordDenied(principalId, source, 'resource_telemetry_read', selectorKey) }

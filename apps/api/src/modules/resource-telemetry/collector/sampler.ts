@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { TELEMETRY_LIMITS, telemetryCanonical, type TelemetryCollectedRow, type TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, telemetryCanonical, type TelemetryCollectedRow, type TelemetryIdentity, type TelemetryStorage } from '@foreman-code/contracts/resource-telemetry'
 import { cpuWindow, type CpuBaseline } from './cpu.js'
 import { disjointAccounting } from './linuxCgroup.js'
 import { counter as parseCounter, parseHostCpu, parseHostMemory, parseOnlineCpus, safeBytes, sourceFailure, type HostConstants } from './linuxProcfs.js'
@@ -21,6 +21,8 @@ export interface SamplerPorts {
   constants: HostConstants
   /** Trusted runtime qualification; container namespace cannot claim the whole host. */
   wholeHostVisible: boolean
+  /** Free space on the computer's home filesystem; omitted where the host cannot report it. */
+  storage?(signal: AbortSignal): Promise<TelemetryStorage>
   now(): bigint
 }
 interface ScopeBaseline { cpu?: CpuBaseline; processes?: Map<string, bigint>; retained: ProcessIdentity[] }
@@ -66,10 +68,12 @@ export class LinuxSampler {
     }
     let host: TelemetryCollectedRow
     if (p.wholeHostVisible) {
-      const [cpu, memory] = await Promise.allSettled([p.read('/proc/stat', signal).then(text => ({ ...parseHostCpu(text), monoNs: p.now() })), p.read('/proc/meminfo', signal).then(parseHostMemory)])
+      const [cpu, memory, storage] = await Promise.allSettled([p.read('/proc/stat', signal).then(text => ({ ...parseHostCpu(text), monoNs: p.now() })), p.read('/proc/meminfo', signal).then(parseHostMemory),
+        p.storage ? p.storage(signal) : Promise.resolve(null)])
       host = { selector: { schemaVersion: 1, scope: 'computer', ...identity }, coverage: { boundary: 'complete-boundary', shared: false, reasons: [] },
         cpu: cpu.status === 'fulfilled' ? cpuCapture('computer', cpu.value.active, cpu.value.total, 'host-active-ticks', cpu.value.monoNs) : failed(cpu.reason),
-        memory: memory.status === 'fulfilled' ? { state: 'ok', value: { kind: 'host-used-estimate', ...memory.value, sharedPagesMayDoubleCount: false } } : failed(memory.reason) }
+        memory: memory.status === 'fulfilled' ? { state: 'ok', value: { kind: 'host-used-estimate', ...memory.value, sharedPagesMayDoubleCount: false } } : failed(memory.reason),
+        storage: storage.status === 'fulfilled' ? storage.value : null }
       if (cpu.status === 'rejected') this.baselines.delete('computer')
     } else {
       this.baselines.delete('computer')

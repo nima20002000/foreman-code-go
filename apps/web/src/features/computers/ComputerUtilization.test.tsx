@@ -15,16 +15,20 @@ it('displays fresh zero CPU and memory as values instead of unavailable metrics'
   sample.sample.identity.host = selector.host
   sample.sample.selectorKey = telemetrySelectorKey(selector)
   sample.lastKnown = null
+  sample.sample.storage = { totalBytes: 500 * 1024 ** 3, availableBytes: 125 * 1024 ** 3 }
   computersFixture(<ComputerUtilization target={mainTarget} online />, [
     http.post('*/api/management/resource-telemetry/selector', () => HttpResponse.json({ kind: 'selector', selector })),
     http.post('*/api/management/resource-telemetry/read', () => HttpResponse.json(sample))])
   expect(await screen.findAllByText('0%')).toHaveLength(2)
   expect(screen.getByRole('meter', { name: 'CPU' })).toHaveAttribute('aria-valuenow', '0')
   expect(screen.getByRole('meter', { name: 'Memory' })).toHaveAttribute('aria-valuenow', '0')
+  expect(screen.getByText('125G free')).toBeVisible()
+  expect(screen.getByRole('meter', { name: 'Disk' })).toHaveAttribute('aria-valuenow', '75')
+  expect(screen.getByRole('meter', { name: 'Disk' })).toHaveAttribute('aria-valuetext', '125G free of 500G')
 })
 it('does not request or present retained utilization for an offline computer', async () => {
   computersFixture(<ComputerUtilization target={mainTarget} online={false} />)
-  expect(screen.getAllByText('—')).toHaveLength(2)
+  expect(screen.getAllByText('—')).toHaveLength(3)
   expect(screen.getByRole('meter', { name: 'CPU' })).toHaveAttribute('aria-valuetext', 'Unavailable')
   expect(screen.getByRole('meter', { name: 'CPU' })).not.toHaveAttribute('aria-valuenow')
 })
