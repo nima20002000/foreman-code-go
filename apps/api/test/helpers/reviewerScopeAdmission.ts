@@ -47,4 +47,3 @@ export async function rejected(f: SaveFixture, transport: Transport, tool: strin
     expect(JSON.stringify(value)).toContain(code)
   }
 }
-
