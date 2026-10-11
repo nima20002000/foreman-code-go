@@ -111,7 +111,12 @@ export function createRemoteAccountServices(input: {
     const unsupported = async (): Promise<never> => { throw new DomainError('PROVIDER_ACCOUNT_LOCAL_HUMAN_REQUIRED',
       'API-key provisioning must be performed by a human on the owning computer.', 403) }
     const credentials: ProviderAccountCredentials = {
-      paths: () => ({ homePath: '', userHome: '' }), create: async () => {}, assertAvailable: async () => {},
+      paths: () => ({ homePath: '', userHome: '' }),
+      create: async account => {
+        if (account.authMode !== 'subscription') throw new DomainError('PROVIDER_ACCOUNT_AUTH_MODE_UNSUPPORTED',
+          'Worker slots support qualified subscription profiles. API keys use the existing local human flow.', 409)
+      },
+      assertAvailable: async () => {},
       apiKey: unsupported, backup: unsupported, saveApiKey: unsupported, restore: unsupported,
       clearApiKey: unsupported, removeCreatedHome: async () => {},
     }

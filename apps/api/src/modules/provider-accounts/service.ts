@@ -329,6 +329,8 @@ export class ProviderAccountsService implements ProviderAccountResolver {
       try {
         if (account.removedAt || account.legacyProfile) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
           'This account is removed or has unproved historical ownership.', 409)
+        if (account.authMode === 'api-key') throw new DomainError('ACCOUNT_API_KEY_REQUIRED',
+          'Use the existing local API-key provisioning flow for this account.', 409)
         await assertAccountUnused(this.pool, account.id)
         const discovery = await this.native.discover?.(account.binding!.target, account.provider)
         if (discovery && !discovery.providers.some(value => value.provider === account.provider && value.actions.includes('sign-in'))) {

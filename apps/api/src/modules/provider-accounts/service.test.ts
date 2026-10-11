@@ -698,6 +698,15 @@ it('rejects forged original authentication intent or expiry before granting Work
     .rejects.toMatchObject({ code: 'PROVIDER_AUTHENTICATION_STALE' })
   expect((await f.createService().authenticationList(f.reader.principal, { accountId: account.id })).operations)
     .toEqual([prepared.value])
+  const client = await f.connect(f.owner.token)
+  const canceled = ProviderAccountAuthenticationResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_auth_cancel', arguments: { ...command(prepared.value.revision), operationId: prepared.value.id },
+  })))
+  expect(canceled.value).toMatchObject({ state: 'canceled', nativeClosed: true })
+  await expect(f.service.assertAuthenticationEligibility(prepared.value))
+    .rejects.toMatchObject({ code: 'PROVIDER_AUTHENTICATION_CLOSED' })
+  expect((await f.createService().authenticationList(f.reader.principal, { accountId: account.id })).operations)
+    .toEqual([canceled.value])
   expect(f.native.login).toHaveBeenCalledTimes(1)
 })
 
@@ -806,6 +815,13 @@ it('routes the complete authenticated MCP Worker lifecycle to its owning slot an
     { ...command(0), target, provider: 'codex', authMode: 'subscription', name: 'Remote slot' }))
   const account = created.value.accounts[0]!
   expect(slots.get(account.id)!.binding).toEqual(account.binding)
+  const unsupported = await client.callTool({ name: 'provider_account_create', arguments: {
+    ...command(1), target, provider: 'claude', authMode: 'api-key', name: 'Unsupported remote key',
+  } })
+  expect(unsupported.isError).toBe(true)
+  const unchanged = ProviderAccountPageSchema.parse(await call('provider_accounts_page', { target }))
+  expect(unchanged.revision).toBe(created.value.revision)
+  expect(unchanged.accounts.map(value => value.id)).toEqual([account.id])
   const access = new PostgresAccessService(pool)
   const accountReader = await access.issue({ name: 'Worker slot reader', audience: 'operator', expiresAt: new Date('2099-01-01'),
     grants: [{ actions: ['provider_accounts:read'], scope: { mainIds: [connection.mainId], deviceIds: [connection.deviceId],
