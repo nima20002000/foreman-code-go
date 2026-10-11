@@ -384,6 +384,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
 
   /** Bounded current recovery. Never reset an existing checkpoint to initial state. */
   private reconcileCursor = ''
+  private readonly reconciliationRetries = new Map<string, { delayMs: number; retryAt: number }>()
   reconcile(onError: (error: unknown) => void = (error) => componentLogger('engine').error({ err: error }, 'run reconciliation failed')): Promise<void> {
     runtimeTimingPoint('engine', 'reconcile.request', { reused: this.reconciliation !== undefined })
     if (this.reconciliation) return this.reconciliation
@@ -403,12 +404,18 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
           if (this.closing) break sweep
           if (wrapped && start !== '' && candidate.id > start) break sweep
           if (this.activeTasks.has(candidate.id) || this.resumeTasks.has(candidate.id) || this.cleanupTasks.has(candidate.id)) { after = candidate.id; continue }
+          const retry = this.reconciliationRetries.get(candidate.id)
+          if (retry && Date.now() < retry.retryAt) { after = candidate.id; continue }
           if (this.activeTasks.size >= this.maximumActiveRuns) { this.reconcileCursor = after; return }
           after = candidate.id
-          void this.start(candidate.id).catch(error => {
+          void this.start(candidate.id).then(() => {
+            this.reconciliationRetries.delete(candidate.id)
+          }).catch(error => {
             // A retained reviewer can own the Run between engine passes; retry on the next sweep.
             if (error instanceof DomainError && error.code === 'RUN_ALREADY_OWNED') return
             if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
+            const delayMs = Math.min((retry?.delayMs ?? 500) * 2, 60_000)
+            this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs })
             onError(error)
           })
         }

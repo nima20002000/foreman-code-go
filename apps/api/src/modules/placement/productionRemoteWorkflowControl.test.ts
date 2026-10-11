@@ -8,10 +8,14 @@ import type { InteractionDeliveryClaim } from '../interactions/delivery.js'
 import { withOriginalInteractionDeliveryClaim } from '../interactions/originalDeliveryClaim.js'
 const ports = vi.hoisted(() => ({ factory: vi.fn(), admission: vi.fn(),
   hostKind: 'device' as 'main' | 'device',
-  intent: { runId: 'run', nodeId: 'node', executionId: 'execution', operationId: 'operation', technicalAttempt: 1 } }))
+  materialization: { state: 'prepared', sourceBindingHash: 'a'.repeat(64) },
+  intent: { runId: 'run', nodeId: 'node', executionId: 'execution', operationId: 'operation', technicalAttempt: 1,
+    owner: { grantId: 'grant', epoch: '1' } } }))
 vi.mock('./persistence.js', () => ({ readDispatchIntent: async () => ports.intent, readAcceptedPlacement: async () => ({ hostRef: { kind: ports.hostKind } }), readNativePlacement: async () => ({ original: true }) }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: async () => ports.intent }))
-vi.mock('./executionBinding.js', () => ({ readNativeExecutionBinding: () => ({ workingTree: { canonicalCwd: '/original/source' } }) }))
+vi.mock('./executionBinding.js', () => ({ readNativeExecutionBinding: () => ({
+  workingTree: { canonicalCwd: '/original/source' }, materialization: ports.materialization,
+}) }))
 vi.mock('./workerCarrier.js', () => ({ remoteNativeManager: ports.factory }))
 vi.mock('../runs/remote/ownerControlAdmission.js', () => ({ admitRemoteOwnerControl: ports.admission }))
 import { createProductionRemoteWorkflow } from './productionRemoteWorkflow.js'
@@ -19,6 +23,50 @@ import type { RemoteNativeManagerOptions } from '../runs/remote/nativeManagerPro
 beforeEach(() => {
   vi.clearAllMocks()
   ports.hostKind = 'device'
+  ports.materialization = { state: 'prepared', sourceBindingHash: 'a'.repeat(64) }
+  ports.intent.owner = { grantId: 'grant', epoch: '1' }
+  ports.intent.operationId = 'operation'
+})
+
+it.each(['main', 'device'] as const)('keeps the %s placement across source lifecycle transitions', async hostKind => {
+  ports.hostKind = hostKind
+  const composition = createProductionRemoteWorkflow({
+    pool: {} as pg.Pool,
+    locations: {} as Parameters<typeof createProductionRemoteWorkflow>[0]['locations'],
+    endpoint: () => ({} as ReturnType<Parameters<typeof createProductionRemoteWorkflow>[0]['endpoint']>),
+    producer: () => undefined,
+    execution: async () => ({
+      id: 'execution', runId: 'run', workflowNodeId: 'node', attempt: 1,
+      workingDirectory: '/original/source',
+    } as HarnessExecution),
+  })
+  await composition.prepare('execution')
+  for (const state of ['running', 'uncertain', 'closed']) {
+    ports.materialization = { ...ports.materialization, state }
+    await expect(composition.prepare('execution')).resolves.toMatchObject({ executionPlacement: {
+      materialization: { state, sourceBindingHash: 'a'.repeat(64) },
+    } })
+  }
+  ports.materialization = { ...ports.materialization, sourceBindingHash: 'b'.repeat(64) }
+  await expect(composition.prepare('execution')).rejects.toMatchObject({ code: 'PLACEMENT_BINDING_CONFLICT' })
+})
+
+it('accepts a persisted owner renewal while retaining the original execution placement', async () => {
+  const composition = createProductionRemoteWorkflow({
+    pool: {} as pg.Pool,
+    locations: {} as Parameters<typeof createProductionRemoteWorkflow>[0]['locations'],
+    endpoint: () => ({} as ReturnType<Parameters<typeof createProductionRemoteWorkflow>[0]['endpoint']>),
+    producer: () => undefined,
+    execution: async () => ({
+      id: 'execution', runId: 'run', workflowNodeId: 'node', attempt: 1,
+      workingDirectory: '/original/source',
+    } as HarnessExecution),
+  })
+  await composition.prepare('execution')
+  ports.intent = { ...ports.intent, owner: { grantId: 'renewed-grant', epoch: '2' } }
+  await expect(composition.prepare('execution')).resolves.toMatchObject({ intent: { owner: ports.intent.owner } })
+  ports.intent = { ...ports.intent, operationId: 'another-operation' }
+  await expect(composition.prepare('execution')).rejects.toMatchObject({ code: 'PLACEMENT_BINDING_CONFLICT' })
 })
 async function fixture() {
   // Only common callback wiring is exercised. SQL metadata and admission are explicit port doubles.

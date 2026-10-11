@@ -1,0 +1,83 @@
+import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { expect, it } from 'vitest'
+import { SourcePreparationSchema } from '@foreman-code/contracts/source-admission'
+import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
+import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
+import { receipts, useRemoteReviewFixture, waitForRemoteReview } from './helpers/remoteReviewProductionCases.js'
+
+const withRemoteReviewFixture = useRemoteReviewFixture()
+
+it('closes an unbound attempt after owner restarts, records interruption, and admits a later Run', async () => {
+  await withRemoteReviewFixture(async fixture => {
+    await fixture.provider.blockRequesterSession()
+    const started = await fixture.start()
+    const blocked = await waitForRemoteReview(async () => {
+      const executions = await fixture.executions(started.run.id)
+      const requester = executions.find(execution => execution.workflowNodeId !== fixture.version.entryNodeId)
+      const calls = await fixture.provider.calls()
+      return { requester, calls }
+    }, value => !!value.requester && value.calls.some(call => 'requesterSessionBlocked' in call),
+    'native creation before Main session binding')
+    const requester = blocked.requester!
+    expect(requester.nativeSessionId).toBeUndefined()
+    const originalOwners = fixture.registry.snapshot().launches.filter(launch => launch.owner === `execution:${requester.id}`)
+    const activeOwner = originalOwners.find(launch => launch.lifecycle === 'active')
+    expect(activeOwner).toBeDefined()
+
+    const reader = await fixture.access.issue({ name: 'Run observer', audience: 'operator',
+      expiresAt: new Date(Date.now() + 300_000),
+      grants: [{ actions: ['runs:read'], scope: { runIds: [started.run.id] } }] })
+    const denied = await fixture.call('run_stop', { workspaceId: started.run.workspaceId,
+      runId: started.run.id, commandId: randomUUID() }, reader.token)
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    await fixture.reconcile()
+    expect((await fixture.executions(started.run.id)).find(execution => execution.id === requester.id)?.state)
+      .toBe('starting')
+    expect(fixture.registry.snapshot().launches.find(launch => launch.launchId === activeOwner!.launchId)?.lifecycle)
+      .not.toBe('closed')
+
+    await fixture.restartWorker()
+    await fixture.restartMain({ mode: 'crash' })
+    const detail = await waitForRemoteReview(async () => {
+      await fixture.reconcile()
+      return SavedRunDetailsSchema.parse(await fixture.value('run_get', {
+        workspaceId: started.run.workspaceId, runId: started.run.id, detail: 'full',
+      }))
+    }, value => value.run.executionState === 'completed', 'interrupted Run after native owner restarts')
+    expect(detail.run.outcome).toBe('failed')
+    expect(detail.executions.find(execution => execution.id === requester.id)).toMatchObject({
+      state: 'completed', result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: false } },
+    })
+    expect(detail.run.workflowVersionId).toBe(started.run.workflowVersionId)
+    expect(detail.run.input).toEqual(started.run.input)
+    const closed = (await receipts(fixture, started.run.id)).find(receipt => receipt.intent.executionId === requester.id)!
+    expect(hasPositiveRemoteEntryClosure(closed)).toBe(true)
+    expect(closed.native).toBeUndefined()
+    expect(closed.terminal?.result).toBeUndefined()
+    expect(originalOwners.every(original => fixture.registry.closedRegistration(original.owner, original.launchId))).toBe(true)
+    const preparation = await waitForRemoteReview(async () => {
+      await fixture.reconcile()
+      return SourcePreparationSchema.parse(await fixture.value('source_preparation_get', {
+        workspaceId: started.run.workspaceId, operationId: closed.intent.operationId,
+      }))
+    }, value => value.reservationState === 'reclaimed', 'source release after interrupted entry closure')
+    expect(preparation.reservationState).toBe('reclaimed')
+    await fixture.reconcile()
+    expect((await fixture.executions(started.run.id)).filter(execution => execution.workflowNodeId === requester.workflowNodeId))
+      .toHaveLength(1)
+    expect((await fixture.provider.calls()).filter(call => call.method === 'turn/start'
+      && call.correlationId === `execution:${requester.id}`)).toHaveLength(0)
+
+    await rm(join(fixture.provider.directory, 'block-requester-session'))
+    await fixture.provider.releaseReview()
+    const later = await fixture.start()
+    const launched = await waitForRemoteReview(() => fixture.executions(later.run.id), executions => executions.some(
+      execution => execution.workflowNodeId !== fixture.version.entryNodeId && !!execution.nativeSessionId),
+    'later Run native session')
+    expect(launched.some(execution => execution.nativeSessionId)).toBe(true)
+    await fixture.value('run_stop', { workspaceId: later.run.workspaceId, runId: later.run.id, commandId: randomUUID() })
+  })
+}, 240_000)

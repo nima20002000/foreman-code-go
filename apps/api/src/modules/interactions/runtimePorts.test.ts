@@ -13,6 +13,37 @@ const context = {
   configuration: { id: 'configuration' } as AgentConfigurationVersion,
 }
 
+it('keeps a failed manager owner available for cleanup without allowing another start', async () => {
+  const owner = { runId: 'run', assertOwned: vi.fn() } as unknown as RunOwnership
+  let getOwner!: () => RunOwnership | undefined
+  const close = vi.fn(async () => {
+    const current = getOwner()
+    if (!current) throw new Error('Original Run owner required')
+    current.assertOwned()
+  })
+  const resolver = new ExecutionScopedNativeSessionManagerResolver((_context, getter) => {
+    getOwner = getter
+    return { harness: 'codex', close } as unknown as NativeHarnessSessionManager
+  })
+  const resolved = resolver.resolve(context, owner)
+  resolved.beginStart?.()
+  resolved.markResident?.()
+  resolved.markFailed?.()
+
+  expect(() => resolver.resolve(context, owner)).toThrow('being released')
+  expect(() => resolved.beginStart?.()).toThrow('already starting')
+  expect(() => resolved.markResident?.()).toThrow('cannot become resident')
+  await resolved.manager.close({ harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session' })
+  expect(close).toHaveBeenCalledOnce()
+
+  vi.mocked(owner.assertOwned).mockImplementation(() => { throw new Error('Run ownership lost') })
+  await expect(resolved.manager.close({
+    harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'session',
+  })).rejects.toThrow('Run ownership lost')
+  resolver.release(context, resolved.manager)
+  expect(getOwner()).toBeUndefined()
+})
+
 it('retains the original Run owner during disposal and retries a failed receipt commit', async () => {
   const owner = { runId: 'run', assertOwned: vi.fn() } as unknown as RunOwnership
   let getOwner!: () => RunOwnership | undefined

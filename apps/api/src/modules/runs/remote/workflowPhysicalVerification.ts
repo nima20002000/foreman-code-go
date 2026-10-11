@@ -111,7 +111,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
   artifacts?: WorkflowPhysicalArtifactsPort
 }): RemoteNativePhysicalVerification & {
   passiveNativeOwner(original: VerifiedRemoteOriginalSource): PassiveRemoteNativeOwner | undefined
-  confirmedClosed(prepared: PreparedRemoteWorkflowPhysical, session: NativeSessionReference): boolean
+  confirmedClosed(prepared: PreparedRemoteWorkflowPhysical, session: NativeSessionReference | null): boolean
   prefetch(receipt: RemoteOperationReceipt, placement: AcceptedNodePlacement, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<PreparedRemoteWorkflowPhysical>
   bind(original: VerifiedRemoteOriginalSource, prepared: PreparedRemoteWorkflowPhysical, owner: RunOwnership, lifetime: RemoteWorkflowMainLifetime): void
   /** Caller invokes only after durable canonical publication, outside G1. */
@@ -131,7 +131,7 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       if (!captured) return unavailable('uncaptured_closure')
       captured.assertCurrent()
       const { readout } = captured
-      return same(readout.session, session) && readout.closure?.ownerClosed === true
+      return (session === null || same(readout.session, session)) && readout.closure?.ownerClosed === true
         && hasNativeClosure(readout.observation) && same(readout.closure.launch, readout.observation)
     },
     async prefetch(receipt, placement, source, signal) {
