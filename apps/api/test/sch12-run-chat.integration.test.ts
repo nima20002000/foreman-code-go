@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeSessionReferenceSchema, type HarnessExecution } from '@foreman-code/contracts'
+import {
+  AgentConfigurationVersionSchema, NativeSessionReferenceSchema, type HarnessExecution,
+} from '@foreman-code/contracts'
 import type { SelectedRunChatTarget } from '@foreman-code/contracts/selected-run-chat'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import {
@@ -9,7 +11,8 @@ import {
   readSelected, readSnapshot, runA, saveWithoutY, selectedPath, sendAndFinish, startSaved, targetFor,
   type HistoricalApi,
 } from './helpers/sch12HistoricalRuns.js'
-import { postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { approvalFixture } from './helpers/wave25ApprovalFixture.js'
 
 function chatTarget(api: HistoricalApi, execution: HarnessExecution): SelectedRunChatTarget {
   return { ...targetFor(api.f, execution.runId), workflowNodeId: execution.workflowNodeId }
@@ -270,14 +273,32 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run-scoped chat PostgreSQL 
     }, 120_000)
 
   it('routed workflow rejects an ephemeral Codex configuration before admission', async () => {
-    let f: Awaited<ReturnType<typeof historicalFixture>> | undefined
+    const db = await agent3Database()
     try {
-      const admission = async () => {
-        f = await historicalFixture('sequential', true)
+      const fixture = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
+      const harness = approvalFixture().configurations[1]!.harness
+      if (harness.harness !== 'codex') throw new Error('Routed approval fixture requires Codex')
+      fixture.configurations = fixture.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
+        ...configuration,
+        harness: { ...harness, advanced: { ...harness.advanced!, sessionPersistence: 'ephemeral' } },
+      }))
+      // Seed calls the production Save service without the runtime fixture's harness normalization.
+      await expect(seedAgent3(db.pool, db.directory, fixture)).rejects.toMatchObject({
+        code: 'WORKFLOW_HARNESS_APPROVAL_CONFLICT',
+        message: expect.stringContaining('Routed approval requires a resumable Codex session'),
+      })
+      for (const configuration of fixture.configurations) {
+        const stored = (await db.pool.query<{ record: unknown }>(
+          'select record from agent_configuration_versions where id=$1', [configuration.id])).rows[0]!
+        expect(AgentConfigurationVersionSchema.parse(stored.record).harness).toMatchObject({
+          harness: 'codex', advanced: { approvalPolicy: 'on-request', sessionPersistence: 'ephemeral' },
+        })
       }
-      await expect(admission()).rejects.toMatchObject({ code: 'WORKFLOW_HARNESS_APPROVAL_CONFLICT' })
+      expect((await db.pool.query('select id from workflow_versions')).rows).toEqual([])
+      expect((await db.pool.query('select id from runs')).rows).toEqual([])
+      expect((await db.pool.query('select id from harness_executions')).rows).toEqual([])
     } finally {
-      await f?.close()
+      await db.close()
     }
   }, 120_000)
 

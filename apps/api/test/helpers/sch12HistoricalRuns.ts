@@ -3,10 +3,7 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect } from 'vitest'
-import {
-  AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
-  type HarnessExecution, type NativeSessionReference,
-} from '@foreman-code/contracts'
+import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import {
   AgentChatHistoryPageSchema, AgentChatTurnPageSchema, SendAgentChatMessageResponseSchema,
 } from '@foreman-code/contracts/agent-chat'
@@ -39,25 +36,12 @@ export type RunTarget = Pick<SelectedRunChatTarget, 'workspaceId' | 'workflowId'
 
 /** Normal migrations, typed Save, common Run insertion and real engine; native ports
  * are the existing deterministic fixtures, not live harness qualification. */
-export async function historicalFixture(form: 'sequential' | 'repeat' = 'sequential', ephemeral = false) {
+export async function historicalFixture(form: 'sequential' | 'repeat' = 'sequential') {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), form)
   const x = fixture.version.definition.nodes[0]!, y = fixture.version.definition.nodes[1]!
   x.name = 'Agent X'; x.position = { x: -48.5, y: 120 }; x.width = 256; x.height = 144
   y.name = 'Agent Y'; y.position = { x: 415, y: 276.25 }; y.width = 312; y.height = 160
 
-  // The runtime preserves session persistence from the supplied configurations.
-  if (ephemeral) {
-    fixture.configurations = fixture.configurations.map((configuration) => {
-      if (configuration.harness.harness !== 'codex') throw new Error('Historical chat requires the Codex fixture')
-      return AgentConfigurationVersionSchema.parse({ ...configuration, harness: {
-        ...configuration.harness, advanced: {
-          ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
-          ...configuration.harness.advanced,
-          sessionPersistence: 'ephemeral',
-        },
-      } })
-    })
-  }
   const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [], outputFor: (nodeId) =>
     form === 'repeat' && nodeId === y.id
       ? { routing: { outcome: 'issues' }, data: { latestDeliverable: 'SCH-12 retained Run output', remainingFindings: ['repeat'] } }
