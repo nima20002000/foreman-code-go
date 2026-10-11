@@ -241,13 +241,23 @@ test('failed-log selection includes only discovered failures once', () => {
 
 test('isolates bounded resource checks and retains every requested file exactly once', () => {
   const files = ['apps/api/test/ordinary.integration.test.ts',
-    'apps/api/test/operator-chat.integration.test.ts',
+    'apps/api/test/operator-chat-controls.integration.test.ts',
+    'apps/api/test/operator-chat-preferences.integration.test.ts',
+    'apps/api/test/operator-chat-compaction.integration.test.ts',
+    'apps/api/test/operator-chat-handoffs.integration.test.ts',
+    'apps/api/test/operator-chat-delegated-access.integration.test.ts',
+    'apps/api/test/operator-chat-defaults.integration.test.ts',
+    'apps/api/test/operator-chat-history.integration.test.ts',
+    'apps/api/test/operator-chat-sessions.integration.test.ts',
+    'apps/api/test/operator-chat-terminal.integration.test.ts',
+    'apps/api/test/operator-chat-stop.integration.test.ts',
+    'apps/api/test/operator-chat-streams.integration.test.ts',
     'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
     'apps/api/test/production-lifecycle.integration.test.ts',
     'apps/api/test/dev-startup.integration.test.ts']
   const partition = partitionIntegrationFiles(files)
   assert.deepEqual(partition.parallel, [files[0]])
-  assert.deepEqual(partition.exclusive, [files[4], files[2], files[1], files[3]])
+  assert.deepEqual(partition.exclusive, [files[14], files[12], ...files.slice(1, 12), files[13]])
   assert.deepEqual([...partition.exclusive, ...partition.parallel].sort(), [...files].sort())
   assert.deepEqual(partitionIntegrationFiles([files[0]]), { exclusive: [], parallel: [files[0]] })
 })
