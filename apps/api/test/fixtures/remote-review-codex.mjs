@@ -30,6 +30,11 @@ startup({ nativeCommand: { pid: process.pid, command: args[0] ?? null, subcomman
 
 if (args[0] === '--version') {
   while (existsSync(join(root, 'block-versions'))) await new Promise(resolve => setTimeout(resolve, 20))
+  if (existsSync(join(root, 'invalid-versions'))) {
+    startup({ invalidVersion: true })
+    process.stdout.write('codex-cli 0.')
+    process.exit(0)
+  }
   process.stdout.write(`codex-cli ${cliVersion}\n`)
   process.exit(0)
 }
