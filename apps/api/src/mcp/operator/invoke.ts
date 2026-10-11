@@ -28,7 +28,8 @@ export async function invokeOperatorTool(
   name: OperatorToolName | RunInspectionToolName | FileReferenceToolName | WorkflowScheduleToolName | RunHistoryToolName,
   work: () => Promise<unknown>,
 ) {
-  try { return toolResult(await work()) } catch (error) {
+  try { return toolResult(await work()) } catch (caughtError) {
+    let error = caughtError
     logOperatorToolFailure(name, error)
     const action = OPERATOR_TOOL_ACTIONS.find(tool => tool.name === name)?.action
     if (action?.endsWith(':read')) error = databaseReadFailure(error)

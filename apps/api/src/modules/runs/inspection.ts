@@ -158,7 +158,8 @@ export class RunInspectionService {
     readAcceptedRun = readRecordedRepeatRunSnapshot): Promise<T> {
     try {
       return await withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:read', work, readAcceptedRun)
-    } catch (error) {
+    } catch (caughtError) {
+      let error = caughtError
       // Preserve inspection's error contract when the shared reader wraps a deadline.
       if (error instanceof DomainError && error.code === 'DATABASE_READ_TIMEOUT' && error.cause) {
         error = error.cause
