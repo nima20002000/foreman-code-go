@@ -67,7 +67,8 @@ async function fixture(code = 'SOURCE_CAPACITY') {
     cancel: () => { ticket.cancelRequestedAt = new Date(now).toISOString() } }
 }
 
-it.each(['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY'])('waits quietly with bounded backoff for %s', async code => {
+it.each(['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY', 'SOURCE_CAPACITY_UNAVAILABLE'])(
+  'waits quietly with bounded backoff for %s', async code => {
   const f = await fixture(code)
   const identity = f.ticket()
   await f.queue.waitForWork(await f.queue.scan())

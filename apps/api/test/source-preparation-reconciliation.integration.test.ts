@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import type { SourceQuotaPool } from '../src/modules/sources/materialization.js'
@@ -148,7 +149,9 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       request:async(_namespace,request)=>({payload:await worker.handle(SourceFilesystemOperationSchema.parse(request),{binding,signal:new AbortController().signal})})})},owners,{publish:unused})
     const commands = new PostgresCommandCoordinator(database.pool)
     sources = new PostgresSourceService(database.pool,commands,{} as never,snapshots,mainId,{} as never,
-      {authorize:async()=>{},authorizeFinal:async()=>{},prepare: async (manifest, root, attempt) => {
+      {authorize:async()=>{},authorizeFinal:async()=>{},
+        storageCapacity: (root, attempt) => remote.storageCapacity(root, attempt),
+        prepare: async (manifest, root, attempt) => {
           if (interruptSourceTransfer) throw new DomainError('SOURCE_TRANSFER_PENDING', 'Fixture source transfer interrupted', 503)
           const row = (await database.pool.query<{ spec: unknown }>(
             'select spec from job_computer_selections where execution_id=$1', [attempt.executionId])).rows[0]
@@ -240,7 +243,8 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     }
     const sql=await database.pool.connect()
     try {await sql.query('begin');const original=(await sql.query<{record:{scopeId:string}}>('select record from source_storage_reservations where owner_id=$1',[rows[0]!.operation_id])).rows[0]!.record
-      await expect(new PostgresSourceReservations().reserve(sql,{scopeId:original.scopeId,ownerKind:'materialization',ownerId:randomUUID(),reservedBytes:1000})).resolves.toHaveProperty('reservationId');await sql.query('rollback')
+      const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture())
+      await expect(reservations.reserve(sql,{scopeId:original.scopeId,ownerKind:'materialization',ownerId:randomUUID(),reservedBytes:1000})).resolves.toHaveProperty('reservationId');await sql.query('rollback')
     } finally {sql.release()}
     expect(Number((await database.pool.query('select count(*) from job_executions where workspace_id=$1',[workspaceId])).rows[0].count)).toBe(0)
     const old=await start(commandsToReconcile[0]!);expect(old.statusCode).toBe(409);expect(old.json().error.code).toBe('SOURCE_PREPARATION_RECONCILED')

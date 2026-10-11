@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { SOURCE_AGGREGATE_LIMITS, PostgresSourceReservations } from '../src/modules/sources/reservations.js'
@@ -66,7 +67,9 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: policy', () =>
     const firstSmall = await submit(f, smaller)
     const secondSmall = await submit(f, smaller)
     await f.jobs.wakeQueue()
-    const reservations = new PostgresSourceReservations()
+    const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture({
+      totalBytes: 256 * 2 ** 30, availableBytes: 256 * 2 ** 30,
+    }))
     const retained = await reservations.reserve(database.pool, { ownerKind: 'capture', ownerId: randomUUID(),
       scopeId: f.computers[0]!.candidate.sourceReservation.scopeId, reservedBytes: SOURCE_AGGREGATE_LIMITS.bytes / 2 })
     await reservations.retain(database.pool, retained, 'retained')

@@ -68,15 +68,16 @@ export class PostgresSourceOperationAuthority {
       return owner
     })
     return this.transaction(async sql => {
-      const receipt = request.operation === 'sources.prepare' ? null : request.record.receipt
-      const attempt = request.operation === 'sources.prepare' ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
+      const preparing = request.operation === 'sources.prepare' || request.operation === 'sources.capacity'
+      const receipt = preparing ? null : request.record.receipt
+      const attempt = preparing ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
         attemptId: receipt!.attemptId, keyRevision: receipt!.keyRevision, authorizationRevision: receipt!.authorizationRevision }
       const allocated = await this.allocation(sql, attempt)
       if (request.operation !== 'sources.release') await requireUnreclaimedSourceOperation(sql, allocated.operation_id)
       const cleanup = request.operation === 'sources.release'
       const principal = cleanup ? undefined : await readLiveManagementPrincipal(sql, allocated.principal_id)
       if (request.operation === 'sources.verify') await assertAcceptedSourceRelativeCwd(sql, attempt.executionId, request.relativeCwd)
-      const requestedBinding = request.operation === 'sources.prepare' ? request.root.binding : receipt!.binding
+      const requestedBinding = preparing ? request.root.binding : receipt!.binding
       if (request.operation !== 'sources.release' && (await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [allocated.operation_id])).rowCount)
         throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original preparation is fenced for reconciliation.', 409)
       const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share', [requestedBinding.rootId, requestedBinding.bindingRevision])).rows[0]
@@ -90,7 +91,7 @@ export class PostgresSourceOperationAuthority {
         [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
       if ((request.operation !== 'sources.release' || receipt?.quota) && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
       let record: SourceMaterializationRecord | null = null, physicalClosureConfirmed = false
-      if (request.operation !== 'sources.prepare') {
+      if (!preparing) {
         const lock = cleanup ? 'for update' : 'for share'
         const stored = (await sql.query<{ record: unknown; state: string }>(`select record,state from source_execution_materializations where materialization_id=$1 and execution_id=$2 and attempt_id=$3 and operation_id=$4 ${lock}`,
           [receipt!.materializationId, attempt.executionId, attempt.attemptId, allocated.operation_id])).rows[0]
@@ -124,7 +125,7 @@ export class PostgresSourceOperationAuthority {
           expiresAt: lease.expires_at.toISOString() }
       } else {
         const live = principal!
-        identity = request.operation === 'sources.prepare' ? request.identity
+        identity = preparing ? request.identity
           : { operationId: allocated.operation_id, ownerPrincipalId: live.id, expiresAt: live.expiresAt }
         if (identity.operationId !== allocated.operation_id || identity.ownerPrincipalId !== live.id
           || Date.parse(identity.expiresAt) > Date.parse(live.expiresAt) || Date.parse(identity.expiresAt) <= Date.now()) {

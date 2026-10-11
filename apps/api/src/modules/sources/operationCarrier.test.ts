@@ -6,6 +6,7 @@ import { SourceMaterializationRecordSchema, type SourceRootRecord } from '@forem
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { CarrierRemoteSourceMaterializationHost, createMainSourceOperationExtension } from './operationCarrier.js'
 import { DeviceApplicationError } from '../devices/deviceApplicationChannel.js'
+import { sourceStorageCapacityFixture } from '../../../test/helpers/sourceStorageCapacityFixture.js'
 
 function fixture() {
   const binding: DeviceSessionBinding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
@@ -61,6 +62,43 @@ describe('original Main committed source-status carrier', () => {
     await expect(missing.handle!(request, f.context)).rejects.toMatchObject({ code: 'SOURCE_TRANSFER_STATUS_UNAVAILABLE' })
   })
 })
+
+it('uses the accepted remote allocation for capacity and rejects another filesystem measurement', async () => {
+  const f = fixture()
+  const identity: DeviceConnectionIdentity & { connectionEpoch?: string } = { ...f.binding }
+  delete identity.connectionEpoch
+  const capacity = sourceStorageCapacityFixture({ filesystem: f.root.binding.filesystem })
+  const request = vi.fn(async () => ({ payload: { version: 1, operation: 'sources.capacity', capacity } }))
+  const owner = { operationId: f.intent.operationId, ownerPrincipalId: 'owner',
+    expiresAt: new Date(Date.now() + 60_000).toISOString() }
+  const publish = vi.fn(async (): Promise<never> => { throw new Error('No capacity publication') })
+  const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity, request }) },
+    { prepareIdentity: async () => owner, resolve: async () => { throw new Error('No materialization lookup') } },
+    { publish })
+  const attempt = { placementHash: f.intent.placementHash, executionId: f.intent.executionId,
+    attemptId: f.intent.attemptId, keyRevision: 1, authorizationRevision: 1 }
+  expect(await host.storageCapacity(f.root, attempt)).toEqual(capacity)
+  expect(publish).not.toHaveBeenCalled()
+  request.mockResolvedValueOnce({ payload: { version: 1, operation: 'sources.capacity',
+    capacity: { ...capacity, filesystem: { ...capacity.filesystem, inode: '99' } } } })
+  await expect(host.storageCapacity(f.root, attempt)).rejects.toMatchObject({ code: 'SOURCE_RESPONSE_INVALID' })
+})
+
+it.each(['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY'])('preserves %s from the Worker for bounded admission backoff',
+  async code => {
+    const f = fixture()
+    const identity: DeviceConnectionIdentity & { connectionEpoch?: string } = { ...f.binding }
+    delete identity.connectionEpoch
+    const host = new CarrierRemoteSourceMaterializationHost({ capture: () => ({ identity,
+      request: async () => { throw new DeviceApplicationError(code) } }) },
+    { prepareIdentity: async () => ({ operationId: f.intent.operationId, ownerPrincipalId: 'owner',
+      expiresAt: new Date(Date.now() + 60_000).toISOString() }),
+      resolve: async () => { throw new Error('No materialization lookup') } },
+    { publish: async () => { throw new Error('No publication') } })
+    const attempt = { placementHash: f.intent.placementHash, executionId: f.intent.executionId,
+      attemptId: f.intent.attemptId, keyRevision: 1, authorizationRevision: 1 }
+    await expect(host.storageCapacity(f.root, attempt)).rejects.toMatchObject({ code, status: 409 })
+  })
 
 it.each(['timeout', 'source-repository-timeout'])('maps %s from the exact repository request to a sanitized retryable domain error', async code => {
   const f = fixture(), request = vi.fn(async () => { throw new DeviceApplicationError(code) })

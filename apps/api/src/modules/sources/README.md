@@ -64,8 +64,39 @@ source/native producer processes. Live or uncertain ownership stays reserved.
 Closure archives only the original claim and retains source trees, private Git,
 transfer evidence and receipts. Main records closure and changes the reservation
 to `retained`, freeing active materialization/preparing slots. Retained evidence
-continues to count against the aggregate disk budget; no evidence is deleted and
-no limits are raised. Reconciled preparations cannot regain execution authority.
+continues to count against the aggregate disk budget. Reconciled preparations
+cannot regain execution authority.
+
+## Source storage capacity and capture retention
+
+Main measures its private capture filesystem before admission. Execution copies
+use the selected computer's pinned filesystem, CPU affinity and available memory;
+paired Workers return the same shared capacity contract over the authenticated
+source channel after checking the accepted allocation and approved namespace.
+Missing, stale or mismatched measurements fail closed.
+
+Ordinary storage is bounded by one quarter of filesystem capacity, up to 64 GiB.
+Admission leaves at least 1 GiB or 10% of available disk space free, whichever is
+larger. Every outstanding capture, ordinary execution and verification execution
+is charged against that free space under the shared filesystem reservation lock.
+Retained files already reduce measured free space and remain charged against the
+aggregate budget. Ordinary execution concurrency is the smaller of twice the
+available CPU count, available memory after its 1 GiB/25% reserve at 512 MiB per
+slot, and 64 slots. At most 32 preparations may be pending. Qualified verification
+pool byte and slot ceilings still apply independently.
+The Worker source handler bounds outstanding work at 64 operations, including
+capacity probes and cleanup alongside admitted preparations. The authenticated
+transport also applies its shared flow-control bounds.
+
+Startup and source admission reconcile interrupted captures under both their
+original command lock and a private snapshot directory lock. A finalized capture
+can still be replayed by its authorized caller during the retention window and
+is charged at its measured retained size. A partial capture without an owner is
+marked failed. Unadopted captures become reclaimable after the one-hour retention
+window only if no source snapshot references them. The failed approval fence is
+committed before deletion, and the reservation is released only after physical
+removal succeeds. Approved snapshots use the existing reference-aware retention
+policy, preserving active Runs, workflow source bindings and qualified profiles.
 
 Job preparation cleanup requires the original installed worker closure journal.
 Already-admitted Jobs use their original execution cancellation/reconciliation path.

@@ -62,6 +62,7 @@ describe('reviewed verification admission capacity', () => {
   it('reports held source storage as busy', () => {
     expect(jobEligibilityReason('SOURCE_CAPACITY')).toBe('busy')
     expect(jobEligibilityReason('SOURCE_DISK_CAPACITY')).toBe('busy')
+    expect(jobEligibilityReason('SOURCE_CAPACITY_UNAVAILABLE')).toBe('busy')
   })
   it('reports busy for a ready computer without adding setup reasons from its unused profiles', async () => {
     const profile = verificationCapacityFixture('device')
@@ -264,7 +265,8 @@ it.each([false, true])('checks only the requesting source pool during placement 
     { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) },
     { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
   const storage = { bytes: '0', verification_bytes: '0',
-    materializations: verification ? '2' : '0', verification_materializations: verification ? '0' : '2' }
+    materializations: verification ? String(SOURCE_AGGREGATE_LIMITS.materializations) : '0',
+    verification_materializations: verification ? '0' : '2' }
   const sql = { query: async (...args: [string, unknown[]?]) => {
     const rows = args[1]?.[0] === candidate.sourceReservation.scopeId ? [storage] : []
     return { rowCount: rows.length, rows }
@@ -272,7 +274,7 @@ it.each([false, true])('checks only the requesting source pool during placement 
   const validate = () => selection.validateRequest(sql, {} as ManagementPrincipal, profile.workspaceId, requested)
   expect(await validate()).toEqual({ valid: true, canQueue: true, reasons: [], sideEffects: false })
   if (verification) storage.verification_materializations = '2'
-  else storage.materializations = '2'
+  else storage.materializations = String(SOURCE_AGGREGATE_LIMITS.materializations)
   expect(await validate()).toMatchObject({ valid: false, canQueue: true, reasons: ['busy'] })
 })
 

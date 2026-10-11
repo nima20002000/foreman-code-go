@@ -43,7 +43,6 @@ import { isDeepStrictEqual } from 'node:util'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
-import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
 import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
 import { localWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
 import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
@@ -303,7 +302,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   })
   return { sources, policies, executions, snapshots, attempts, owners, transfers, lifecycle,
     reconcileMaterializationReservations: (report: (error: unknown) => void) => reclamations.reconcile(report),
-    reconcileFailedCaptures: (report: (error: unknown) => void) => reconcileFailedCaptures(input.pool, snapshots, report),
+    reconcileFailedCaptures: (report: (error: unknown) => void) => sources.reconcileCaptures(report),
     sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle, async (reservationId, reclamationId, context) => {
       const sql = await input.pool.connect()
       try {

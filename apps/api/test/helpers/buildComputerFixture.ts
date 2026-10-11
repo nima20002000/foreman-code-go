@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './sourceStorageCapacityFixture.js'
 import { randomUUID } from 'node:crypto'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { JobRuntimeProfileSchema, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
@@ -129,7 +130,9 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
     diagnosticCodes: [] })) }
   const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
   const placement = new JobComputerSelection(settings, inventory, workerExecution)
-  const reservations = new PostgresSourceReservations()
+  const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture({
+    totalBytes: 256 * 2 ** 30, availableBytes: 256 * 2 ** 30,
+  }))
   const accept = vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal, _workspace: string,
     spec: ResolvedJobDefinitionSpec, identity: { executionId: string; attemptId: string; operationId: string }) => {
     const computer = computers.find(computer => computer.candidate.spec.policy.isolationPolicyId === spec.policy.isolationPolicyId)!

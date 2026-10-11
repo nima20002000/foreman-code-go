@@ -34,6 +34,15 @@ export interface SourceGitHubPublication {
 export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMaterializationHost {
   constructor(private readonly carrier: MainWorkerCarrier, private readonly owners: Pick<PostgresSourceOperationAuthority, 'prepareIdentity' | 'resolve'>,
     private readonly github: SourceGitHubPublication) {}
+  async storageCapacity(root: SourceRootRecord, attempt: MaterializationAttempt) {
+    const identity = await this.owners.prepareIdentity(root, attempt)
+    const response = await this.call(root, { version: 1, operation: 'sources.capacity', root, attempt, identity })
+    if (response.operation !== 'sources.capacity'
+      || !isDeepStrictEqual(response.capacity.filesystem, root.binding.filesystem)) {
+      throw new DomainError('SOURCE_RESPONSE_INVALID', 'Source capacity belongs to another filesystem.', 409)
+    }
+    return response.capacity
+  }
   async reconcilePreparation(reconciliationId: string, owner: SourceOperationOwner) {
     const response = await this.call(owner.root, { version: 1, operation: 'sources.reconcile-preparation', reconciliationId })
     if (response.operation !== 'sources.reconcile-preparation') throw new DomainError('SOURCE_RESPONSE_INVALID', 'Expected original preparation closure proof.', 409)
@@ -55,6 +64,9 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     // midway and leaves its claim uncertain, so Main waits out that budget plus time for the Worker's reply.
     const timeoutMs = SOURCE_LIMITS.preparationMs + 30_000
     const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request, signal ? { signal, timeoutMs } : { timeoutMs }).catch((error: unknown) => {
+      if (error instanceof DeviceApplicationError && ['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY'].includes(error.code)) {
+        throw new DomainError(error.code, 'The selected computer is waiting for source storage capacity.', 409)
+      }
       if (request.operation === 'sources.reconcile-preparation' && error instanceof DeviceApplicationError)
         throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The worker did not positively confirm preparation closure. Retry the original reconciliation command.', 409)
       if (request.operation === 'sources.private-repository' && error instanceof DeviceApplicationError) {

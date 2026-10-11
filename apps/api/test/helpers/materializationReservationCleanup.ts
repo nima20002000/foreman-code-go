@@ -1,3 +1,4 @@
+import { sourceStorageCapacityFixture } from './sourceStorageCapacityFixture.js'
 import { PrivateSourceMaterializer } from '../../src/modules/sources/materialization.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -103,7 +104,9 @@ export async function setupMaterializationReservationCleanup() {
     return { closures: response.closures, ...(response.retained ? { retained: response.retained } : {}) }
   })
   const cleanup = new MaterializationReservationCleanup(pool, reclaim)
-  const reservations = new PostgresSourceReservations()
+  const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture({
+    totalBytes: 256 * 2 ** 30, availableBytes: 256 * 2 ** 30,
+  }))
   const materializer = new PrivateSourceMaterializer({ read: async () => bytes }, async () => {})
   function attempt(operationId: string) {
     const value = { executionId: randomUUID(), attemptId: randomUUID(), placementHash: '',

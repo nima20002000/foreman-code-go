@@ -4,7 +4,9 @@ import { JobDefinitionRecordSchema, ResolvedJobDefinitionSpecRecordSchema }
   from '@foreman-code/contracts/job-verification'
 import { JobVerificationProfileSchema } from '@foreman-code/contracts/job-verification-runtime'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { PostgresSourceReservations, SOURCE_AGGREGATE_LIMITS } from '../src/modules/sources/reservations.js'
+import { PostgresSourceReservations } from '../src/modules/sources/reservations.js'
+import { sourceStorageLimits } from '../src/modules/sources/storageCapacity.js'
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
 import { verificationCapacityFixture } from './helpers/verificationCapacityFixture.js'
 import { verificationFixture } from './helpers/jobVerificationFixture.js'
@@ -61,12 +63,15 @@ it.each([['main', 4], ['device', 2]] as const)(
     [definition.versionId, definition.id, profile.workspaceId, JSON.stringify(definition)])
     const scopeId = `${profile.root.binding.mainId}:${host}:source-capacity`
     const reservedBytes = 128 * 2 ** 20 * 3 + 4096 * 8192 + 2 ** 20
-    const sourceReservations = new PostgresSourceReservations()
+    const readCapacity = async () => sourceStorageCapacityFixture({ availableBytes: 100 * 2 ** 30,
+      totalBytes: 100 * 2 ** 30 })
+    const limits = sourceStorageLimits(await readCapacity())
+    const sourceReservations = new PostgresSourceReservations(readCapacity)
     const captures = await sourceReservations.reserve(pool, { scopeId, ownerKind: 'capture', ownerId: randomUUID(),
-      reservedBytes: SOURCE_AGGREGATE_LIMITS.bytes - 1 })
+      reservedBytes: limits.bytes - 1 })
     await sourceReservations.retain(pool, captures, 'retained')
     // Agent worktrees on the same computer fill their own pool; they never occupy its CI slots.
-    for (let index = 0; index < SOURCE_AGGREGATE_LIMITS.materializations; index++) {
+    for (let index = 0; index < limits.materializations; index++) {
       const agent = await sourceReservations.reserve(pool, { scopeId, ownerKind: 'materialization', ownerId: randomUUID(),
         reservedBytes: 0 })
       await sourceReservations.retain(pool, agent, 'owned')
