@@ -3,7 +3,8 @@
 #   scripts/ci-suite.sh start  — before `pnpm install`: starts PostgreSQL and the harness CLIs in the background
 #   scripts/ci-suite.sh        — after `pnpm install`: waits for them, then runs the suite
 # SUITE: install, typecheck, lint, unit, build or integration, or one part of a check so the parts run on separate
-# machines: unit-api, unit-web, unit-web-heavy, unit-other, lint-api, lint-other. For unit-api and unit-web, SLICE is
+# machines: unit-api, unit-web, unit-web-heavy, unit-other, lint-api, lint-other, typecheck-api, typecheck-other,
+# build-api, build-other. For unit-api and unit-web, SLICE is
 # a duration-balanced shard such as 2/3 (scripts/ci-unit-files.mjs). SLICE: an integration partition's file indexes
 # (scripts/ci-files.mjs); empty runs every file. DURATIONS_OUTPUT: where measured file durations go.
 set -euo pipefail
@@ -67,6 +68,11 @@ case "$SUITE" in
   lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;
   lint-other) pnpm --filter @foreman-code/contracts build \
     && pnpm -r --no-bail --filter '!@foreman-code/api' --if-present lint ;;
+  typecheck-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api typecheck ;;
+  typecheck-other) pnpm --filter @foreman-code/contracts build \
+    && pnpm -r --filter '!@foreman-code/api' --if-present typecheck ;;
+  build-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api build ;;
+  build-other) pnpm -r --filter '!@foreman-code/api' --if-present build ;;
   typecheck|lint|build) pnpm "$SUITE" ;;
   integration)
     ready db; ready clis
