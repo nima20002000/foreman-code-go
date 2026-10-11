@@ -27,7 +27,7 @@ function candidate(imageDigest: string, deviceId = builder) {
     sourceReservation: { scopeId: 'fixture', reservedBytes: 1024 } }
 }
 
-describe('CI resolves the runtime image at admission', () => {
+describe('Jobs resolve the runtime image at admission', () => {
   it('keeps the saved ticket requirements while accepting a newly qualified image', () => {
     const before = candidate(oldImage)
     const after = candidate(newImage)
@@ -45,10 +45,13 @@ describe('CI resolves the runtime image at admission', () => {
     const ci = ciFixture()
     const primary = candidate(oldImage, laptop)
     const local = candidate(newImage)
-    ci.templates.splice(0, ci.templates.length, primary.template, primary.template, local.template)
-    ci.agentExecution.id = 'active-agent'
-    await ci.services.ci!.run(ci.worker, { suite: 'unit', commandId: 'local-first' })
-    const definition = ci.definition()
+    const request = AutoVerificationJobSpecSchema.parse({ ...local.spec, target: { kind: 'auto' },
+      policy: local.profile.spec.policy, limits: local.profile.spec.resources.limits,
+      runtimeSelection: 'qualified-profile' })
+    const definition = await ci.jobs.saveDefinition(ci.operator, 'mcp', ci.workspaceId, {
+      commandId: 'save-preferred-computer', expectedRevision: null,
+      name: 'Preferred computer', spec: request,
+    })
     local.spec.source = definition.spec.source
     primary.spec.source = definition.spec.source
     expect(definition.spec.policy.imageDigest).toBe(newImage)
