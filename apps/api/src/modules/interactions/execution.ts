@@ -1115,7 +1115,7 @@ export class ApprovalExecutionCoordinator {
     const reason = new DomainError('ENGINE_RESTART', 'The native lifetime is detaching for application restart.', 409)
     for (const owned of sessions) owned.controller.abort(reason)
     const task = (async () => {
-      const results = await Promise.all(sessions.map(async (owned) => {
+      const closeSession = async (owned: OwnedNativeSession) => {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
         const failures: Error[] = []
         await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
@@ -1136,11 +1136,31 @@ export class ApprovalExecutionCoordinator {
             await owned.manager.dispose()
             return
           }
-          await this.closeWorkflowSession(owned, true)
+          await this.closeWorkflowSessionOwned(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)
+      }
+      const runs = new Map<string, OwnedNativeSession[]>()
+      for (const owned of sessions) {
+        const siblings = runs.get(owned.execution.runId) ?? []
+        siblings.push(owned)
+        runs.set(owned.execution.runId, siblings)
+      }
+      const results = await Promise.allSettled([...runs.values()].map(async siblings => {
+        const remote = siblings.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device')
+        const retained = remote && await this.retainRunOwner(remote.execution, () => {
+          for (const owned of siblings) owned.controller.abort()
+        })
+        try {
+          // Sibling closes share one Run lock until every remote receipt has committed.
+          if (retained) this.adoptRunOwner(retained.owner)
+          return (await Promise.all(siblings.map(closeSession))).flat()
+        } finally { if (retained) await retained.release() }
       }))
-      const failures = results.flat()
+      const safe = nativePersistenceRedactor(sessions.flatMap(owned =>
+        Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {})))
+      const failures = results.flatMap(result => result.status === 'fulfilled'
+        ? result.value : [safe.error(result.reason) as Error])
       if (failures.length) throw new AggregateError(failures, 'Native restart closure was incomplete.', { cause: failures[0] })
     })()
     this.restartClosure = task
