@@ -7,6 +7,20 @@ export const CI_HOST_NAMESPACE = 'ci-host-v1'
 
 export const CiSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build', 'integration'])
 export type CiSuite = z.infer<typeof CiSuiteSchema>
+export const CiScopeSchema = z.enum(['affected', 'full'])
+export type CiScope = z.infer<typeof CiScopeSchema>
+export const CiSelectedFilesSchema = z.array(z.string().min(1).max(300)
+  .regex(/^(?:apps\/(?:api|web|worker)|packages\/contracts|scripts)\/[A-Za-z0-9_.\/-]+$/)
+  .refine(file => !file.split('/').some(part => part === '..' || part === '.' || part === ''))).max(2000)
+
+export function validCiSelection(value: { suite: CiSuite; scope?: CiScope | undefined; files?: string[] | undefined }) {
+  if (value.scope !== 'affected') return !value.files?.length
+  if (!value.files || !['unit', 'integration', 'typecheck', 'lint'].includes(value.suite)) return false
+  if (value.suite === 'integration') return value.files.every(file => /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file))
+  if (value.suite === 'unit') return value.files.every(file => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)
+    && !(file.startsWith('apps/api/') && /\.(?:integration|acceptance)\.test\.ts$/.test(file)))
+  return value.files.every(file => /\.[cm]?[jt]sx?$/.test(file) && !file.startsWith('scripts/'))
+}
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 export const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/)
 /** `weights` gives each slice's relative speed (its computer's measured throughput), so slices finish together. */
@@ -27,7 +41,8 @@ export const CiHostRunIdSchema = z.uuid()
 export const CiHostStartSchema = z.object({
   operation: z.literal('start'), runId: CiHostRunIdSchema, repository: CiRepositorySchema, commit: CommitSchema,
   suite: CiSuiteSchema, partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
-}).strict()
+  scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
+}).strict().refine(validCiSelection, 'Affected scope requires selected files for a supported suite; full scope runs all files.')
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
   CiHostStartSchema,
@@ -84,6 +99,7 @@ export function integrationPartition(files: readonly string[], durations: Readon
 /** What an Agent or the Operator sees for one CI run. */
 export const CiRunRecordSchema = z.object({
   id: CiHostRunIdSchema, workspaceId: IdSchema, suite: CiSuiteSchema, commit: CommitSchema, repository: CiRepositorySchema,
+  scope: CiScopeSchema.default('full'), files: CiSelectedFilesSchema.default([]),
   partition: CiPartitionSchema.nullable(), groupId: CiHostRunIdSchema,
   state: z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost']),
   computer: z.object({ hostRef: z.object({ kind: z.enum(['main', 'device', 'cloud']), mainId: z.string(), deviceId: z.string().optional(),

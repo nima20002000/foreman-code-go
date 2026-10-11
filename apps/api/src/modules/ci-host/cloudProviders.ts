@@ -1,11 +1,15 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { CiSuite } from '@foreman-code/contracts'
+import type { CiSuite, CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
 import type { CloudRun } from './cloud.js'
 
 export type CloudStatus = { done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string }
+export interface CloudDispatchInput {
+  mirror: string; branch: string; runId: string; suite: CiSuite; slice: string
+  scope?: CiScope; files?: string
+}
 
 /** One cloud CI service: how Main starts a run of a mirror branch and reads it back, through the service's CLI login. */
 export interface CloudProvider {
@@ -18,7 +22,7 @@ export interface CloudProvider {
   readonly loginHint: string
   ready(): Promise<boolean>
   /** Starts a run; returns the service's run id when it is known at once. */
-  dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; slice: string }): Promise<string | null>
+  dispatch(input: CloudDispatchInput): Promise<string | null>
   /** The service's run id of a started run, once the service lists it. */
   find(run: CloudRun): Promise<string | null>
   status(run: CloudRun): Promise<CloudStatus>
@@ -63,10 +67,11 @@ export class GitHubActionsProvider implements CloudProvider {
     return (await this.ports.run('gh', ['auth', 'status', '--hostname', 'github.com'], { timeoutMs: 15_000 })).code === 0
   }
 
-  async dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; slice: string }) {
+  async dispatch(input: CloudDispatchInput) {
     // Runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await this.gh(['workflow', 'run', WORKFLOW, '-R', input.mirror, '--ref', 'main', '-f', `ref=${input.branch}`,
-      '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `slice=${input.slice}`])
+      '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `slice=${input.slice}`,
+      ...(input.scope ? ['-f', `scope=${input.scope}`] : []), ...(input.files !== undefined ? ['-f', `files=${input.files}`] : [])])
     return null
   }
 
@@ -115,10 +120,11 @@ export class CircleCiProvider implements CloudProvider {
 
   async ready() { return (await this.ports.run('circleci', ['auth', 'me'], { timeoutMs: 15_000 })).code === 0 }
 
-  async dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; slice: string }) {
+  async dispatch(input: CloudDispatchInput) {
     const started = JSON.parse(await this.circleci(['run', 'trigger', '--project', `gh/${input.mirror}`, '--branch', input.branch,
       '--parameter', `run_id=${input.runId}`, '--parameter', `suite=${input.suite}`,
-      '--parameter', `slice=${input.slice}`, '--json'])) as { id: string }
+      '--parameter', `slice=${input.slice}`, ...(input.scope ? ['--parameter', `scope=${input.scope}`] : []),
+      ...(input.files !== undefined ? ['--parameter', `files=${input.files}`] : []), '--json'])) as { id: string }
     return started.id
   }
 

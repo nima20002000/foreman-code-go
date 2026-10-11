@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CiRunRecordSchema, CiSuiteSchema } from './ciHost.js'
+import { CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema, validCiSelection } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { SourceRootRecordSchema } from './sourceAdmission.js'
@@ -11,13 +11,20 @@ const CiRunInputObjectSchema = z.object({
   commandId: IdSchema,
   /** Split an integration run into this many duration-balanced runs on separate build computers. */
   partitions: z.number().int().min(2).max(32).optional(),
+  scope: CiScopeSchema.optional(),
+  files: CiSelectedFilesSchema.optional(),
 }).strict()
 const partitionedSuite = (value: { suite: string; partitions?: number | undefined }) =>
   value.partitions === undefined || value.suite === 'integration'
 const partitionIssue = { message: 'Only the integration suite can be partitioned.', path: ['partitions'] }
+const selectionIssue = { message: 'Affected scope requires a commit and selected files for a supported suite.', path: ['scope'] }
+const selectedSuite = (value: z.infer<typeof CiRunInputObjectSchema>) => validCiSelection(value)
+  && (value.scope !== 'affected' || value.commit !== undefined)
 export const CiRunInputSchema = CiRunInputObjectSchema.refine(partitionedSuite, partitionIssue)
+  .refine(selectedSuite, selectionIssue)
 export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspaceId: IdSchema }).strict()
   .refine(partitionedSuite, partitionIssue)
+  .refine(selectedSuite, selectionIssue)
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every partition's ticket in order; the first is also `ticketId`. Poll each with ci_get. */
 export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(32).optional() }).strict()

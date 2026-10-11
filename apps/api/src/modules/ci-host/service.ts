@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CiHostReplySchema, CiRunRecordSchema, WorkspaceSchema,
-  type CiDurations, type CiHostRequest, type CiHostReply, type CiPartition, type CiRunRecord, type CiSuite } from '@foreman-code/contracts'
+  type CiDurations, type CiHostRequest, type CiHostReply, type CiPartition, type CiRunRecord, type CiRunInput } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
@@ -42,10 +42,14 @@ export class HostCiService {
 
   close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
 
-  async run(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; suite: CiSuite; commit?: string | undefined
-    commandId: string; partitions?: number | undefined }) {
-    const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
-    const outcome = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.run',
+  async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
+    const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS).catch(async error => {
+      if (source === 'http' && error instanceof DomainError && [401, 403, 404].includes(error.status)) {
+        await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
+      }
+      throw error
+    })
+    const outcome = await this.commands.execute({ principal: caller, source, operation: 'ci.run',
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input,
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
       perform: async () => {
@@ -60,18 +64,24 @@ export class HostCiService {
         const groupId = randomUUID(), now = new Date().toISOString()
         // Every partition of the run splits and times its files by the same snapshot of learned durations.
         const durations = input.suite === 'integration' ? await this.learnedDurations(repository) : null
-        const partitions: (CiPartition | null)[] = input.partitions
-          ? Array.from({ length: input.partitions }, (_, index) => ({ index, count: input.partitions! })) : [null]
+        const selectionScope = input.scope ?? 'full'
+        const files = selectionScope === 'affected' ? [...new Set(input.files)].sort() : []
+        const empty = selectionScope === 'affected' && !files.length
+        const count = selectionScope === 'affected' ? Math.min(input.partitions ?? 1, files.length) : input.partitions ?? 1
+        const partitions: (CiPartition | null)[] = count > 1
+          ? Array.from({ length: count }, (_, index) => ({ index, count })) : [null]
         const runs = partitions.map(partition => CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: scope.workspaceId,
-          suite: input.suite, commit, repository, partition, groupId, state: 'queued', computer: null, step: null,
-          exitCode: null, message: null, queuedAt: now, startedAt: null, finishedAt: null,
+          suite: input.suite, scope: selectionScope, files, commit, repository, partition, groupId,
+          state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
+          exitCode: empty ? 0 : null, message: empty ? 'No affected files for this suite.' : null,
+          queuedAt: now, startedAt: empty ? now : null, finishedAt: empty ? now : null,
           initiator: { principalId: caller.id, executionId: scope.executionId ?? null } }))
         for (const run of runs) {
           await this.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
-            values($1,$2,$3,'queued',$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, JSON.stringify(run),
-            durations ? JSON.stringify(durations) : null])
+            values($1,$2,$3,$6,$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, JSON.stringify(run),
+            durations ? JSON.stringify(durations) : null, run.state])
         }
-        return { ticketId: runs[0]!.id, ...(input.partitions ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
+        return { ticketId: runs[0]!.id, ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
       },
     })
     void this.dispatch()
@@ -140,7 +150,7 @@ export class HostCiService {
     const speed = new Map<string, number>()
     for (const run of rows) {
       const key = computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(run.computer?.hostRef))?.key
-      if (!key || speed.has(key) || !run.startedAt || !run.finishedAt || run.step !== 'integration') continue
+      if (!key || speed.has(key) || !run.startedAt || !run.finishedAt || run.step !== 'integration' || run.scope === 'affected') continue
       const seconds = (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000
       // Fail-fast runs say nothing about speed.
       if (seconds < 120) continue
@@ -290,6 +300,7 @@ export class HostCiService {
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.partition ? { partition: run.partition } : {}),
+            scope: run.scope, ...(run.scope === 'affected' ? { files: run.files } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
           if (reply.operation !== 'start') continue
           await this.settle({ ...run, computer: { hostRef: computer.hostRef, label: computer.label } }, computer, reply.run)

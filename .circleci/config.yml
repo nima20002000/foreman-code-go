@@ -12,6 +12,12 @@ parameters:
   slice:
     type: string
     default: ''
+  scope:
+    type: string
+    default: full
+  files:
+    type: string
+    default: ''
 
 jobs:
   ci:
@@ -24,6 +30,8 @@ jobs:
       FOREMAN_CODE_CI_DEDICATED: '1'
       SUITE: << pipeline.parameters.suite >>
       SLICE: << pipeline.parameters.slice >>
+      SCOPE: << pipeline.parameters.scope >>
+      SELECTED_FILES: << pipeline.parameters.files >>
       DURATIONS_OUTPUT: /tmp/ci-durations/durations.json
     steps:
       - checkout

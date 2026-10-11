@@ -4,7 +4,7 @@ import { mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/pro
 import { availableParallelism, homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, integrationPartition,
-  type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPartition } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 
 type Command = { code: number; stdout: string; stderr: string }
@@ -34,6 +34,7 @@ interface RunMeta {
   runId: string; repository: string; commit: string; suite: CiSuite; partition: CiPartition | null
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; cleaned: boolean; durations?: CiDurations
+  scope?: CiScope; files?: string[]
 }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
@@ -123,7 +124,7 @@ export class HostCiRunner {
   }
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
-    partition?: CiPartition | undefined; durations?: CiDurations | undefined }) {
+    partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined; files?: string[] | undefined }) {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
     const busy = await this.active()
@@ -134,6 +135,7 @@ export class HostCiRunner {
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
       suite: request.suite, partition: request.partition ?? null, startedAt: this.ports.now().toISOString(),
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
+      scope: request.scope ?? 'full', files: request.files ?? [],
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
     const preparing = this.launch(meta).catch(async error => {
@@ -185,6 +187,11 @@ export class HostCiRunner {
     const name = suiteScript[meta.suite]
     if (name && !scripts[name]) throw new Error(`The repository has no "${name}" script for the ${meta.suite} suite.`)
     let command = name ? `corepack pnpm ${name}` : ''
+    if (meta.scope === 'affected' && meta.suite !== 'integration') {
+      const selectedPath = join(this.runDirectory(meta.runId), 'selected-files.json')
+      await writeFile(selectedPath, JSON.stringify(meta.files ?? []), { mode: 0o600 })
+      command = `node scripts/ci-affected-run.mjs ${meta.suite} --files-from ${quote(selectedPath)}`
+    }
     const run = this.runDirectory(meta.runId)
     let integrationEnvironment = ''
     if (meta.suite === 'integration') {
@@ -196,13 +203,15 @@ export class HostCiRunner {
       // The repository's integration runner uses them for per-file hang deadlines and reports what it measured.
       integrationEnvironment = ` FOREMAN_CODE_INTEGRATION_DURATIONS=${quote(join(run, 'expected-durations.json'))}`
         + ` FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT=${quote(join(run, 'measured-durations.json'))}`
-      if (meta.partition) {
+      if (meta.partition || meta.scope === 'affected') {
         const tests = join(source, 'apps/api/test')
         const files = existsSync(tests) ? (await readdir(tests)).filter(file => file.endsWith('.integration.test.ts'))
           .map(file => `apps/api/test/${file}`).sort() : []
-        const slice = integrationPartition(files, durations, meta.partition)
-        if (!slice.length) throw new Error('This partition has no integration files.')
-        command += ` --files ${slice.map(quote).join(' ')}`
+        const selected = meta.scope === 'affected' ? meta.files ?? [] : files
+        if (selected.some(file => !files.includes(file))) throw new Error('Selected integration files are absent from the commit.')
+        const slice = meta.partition ? integrationPartition(selected, durations, meta.partition) : selected
+        if (!slice.length && meta.partition) throw new Error('This partition has no integration files.')
+        command = slice.length ? `${command} --files ${slice.map(quote).join(' ')}` : 'true'
       }
       if (scripts['db:up']) command = `corepack pnpm db:up && ${command}`
     }

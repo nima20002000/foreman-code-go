@@ -99,6 +99,24 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
 }
 
 describe('GitHub Actions CI on a public mirror', () => {
+  it('encodes affected integration files against the complete commit inventory before partitioning', async () => {
+    const f = await fixture()
+    const files = ['apps/api/test/b.integration.test.ts', 'apps/api/test/d.integration.test.ts']
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'affected', files, partition: { index: 0, count: 2 } })
+    expect(f.dispatched[0]).toContain('slice=s:1')
+    expect(f.dispatched[0]).toContain('scope=affected')
+  })
+
+  it.each(['github', 'circleci'] as const)('passes affected unit scope and compact file indexes through %s', async provider => {
+    const f = await fixture({ 'apps/api/test/feature.test.ts': 'export {}' }, { provider })
+    const files = ['apps/api/test/feature.test.ts']
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+      suite: 'unit', scope: 'affected', files })
+    const command = provider === 'github' ? f.dispatched[0]! : f.circle.triggered[0]!
+    expect(command).toContain('scope=affected')
+    expect(command).toContain('files=s:4')
+  })
   it('publishes only the commit files, then dispatches one run with its partition slice', async () => {
     const f = await fixture()
     const runId = randomUUID()

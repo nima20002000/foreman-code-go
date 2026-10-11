@@ -3,7 +3,7 @@ import { homedir, hostname, userInfo } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, WorkspaceSchema, integrationPartition,
-  type CiDurations, type CiHostReply, type CiHostRun, type CiPartition, type CiSuite } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRun, type CiPartition, type CiSuite, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { ensureClone, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
@@ -16,6 +16,7 @@ export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
   providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; durations?: CiDurations
+  scope?: CiScope; files?: string[]
 }
 type Mirrors = (repository: string) => Promise<string | null>
 
@@ -99,7 +100,8 @@ export class CloudCi {
   }
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
-    partition?: CiPartition | undefined; durations?: CiDurations | undefined }): Promise<CiHostRun> {
+    partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
+    files?: string[] | undefined }): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(() => null)
     if (existing) return this.view(existing, 0)
     const mirror = await this.mirrors(request.repository)
@@ -126,26 +128,47 @@ export class CloudCi {
     // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`])
-    const slice = request.suite === 'integration' && request.partition
-      ? await this.slice(git, request.commit, request.partition, request.durations ?? {}) : ''
+    const slice = request.suite === 'integration' && (request.partition || request.scope === 'affected')
+      ? await this.slice(git, request.commit, request.partition, request.durations ?? {}, request.files) : ''
+    const files = request.scope === 'affected' && request.suite !== 'integration'
+      ? await this.selectedIndexes(git, request.commit, request.files ?? []) : undefined
     let run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
       suite: request.suite, startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
+      scope: request.scope ?? 'full', files: request.files ?? [],
       finishedAt: null, exitCode: null, message: null })
-    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.suite, slice })
+    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.suite, slice,
+      ...(request.scope === 'affected' ? { scope: request.scope } : {}), ...(files !== undefined ? { files } : {}) })
     if (providerRunId) run = await this.save({ ...run, providerRunId, state: 'running' })
     return this.view(run, 0)
   }
 
   /** The same duration-balanced slice a build computer would run, from the commit's own files and durations, as
    * indexes into the commit's sorted integration files (scripts/ci-files.mjs), so it fits a short CI parameter. */
-  private async slice(git: (args: string[]) => Promise<string>, commit: string, partition: CiPartition, learned: CiDurations) {
+  private async slice(git: (args: string[]) => Promise<string>, commit: string, partition: CiPartition | undefined,
+    learned: CiDurations, selected?: string[]) {
     const files = (await git(['ls-tree', '--name-only', `${commit}:apps/api/test`])).split('\n')
       .filter(name => name.endsWith('.integration.test.ts')).map(name => `apps/api/test/${name}`).sort()
     const committed = await git(['show', `${commit}:scripts/integration-durations.json`])
       .then(text => JSON.parse(text) as Record<string, number>, () => ({}))
-    const slice = new Set(integrationPartition(files, { ...committed, ...learned }, partition))
+    if (selected?.some(file => !files.includes(file))) {
+      throw new DomainError('CI_CLOUD_FAILED', 'Selected integration files are absent from the commit.', 409)
+    }
+    const candidates = selected ?? files
+    const slice = new Set(partition ? integrationPartition(candidates, { ...committed, ...learned }, partition) : candidates)
     if (!slice.size) throw new DomainError('CI_CLOUD_FAILED', 'This partition has no integration files.', 409)
-    const indexes = files.flatMap((file, index) => slice.has(file) ? [index] : [])
+    return this.indexSpec(files, slice)
+  }
+
+  private async selectedIndexes(git: (args: string[]) => Promise<string>, commit: string, selected: string[]) {
+    const files = (await git(['ls-tree', '-r', '--name-only', commit])).split('\n').sort()
+    if (selected.some(file => !files.includes(file))) {
+      throw new DomainError('CI_CLOUD_FAILED', 'Selected files are absent from the commit.', 409)
+    }
+    return this.indexSpec(files, new Set(selected))
+  }
+
+  private indexSpec(files: string[], selected: Set<string>) {
+    const indexes = files.flatMap((file, index) => selected.has(file) ? [index] : [])
     const ranges: string[] = []
     for (let start = 0; start < indexes.length;) {
       let end = start

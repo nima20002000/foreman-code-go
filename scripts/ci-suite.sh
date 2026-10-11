@@ -54,6 +54,16 @@ unit_slice() {
   return "$code"
 }
 
+if [ "${SCOPE:-full}" = affected ] && [ "$SUITE" != integration ]; then
+  case "$SUITE" in
+    unit) ready db; ready clis; delegate_cgroup ;;
+    lint|typecheck) ;;
+    *) echo "Unsupported affected suite $SUITE"; exit 2 ;;
+  esac
+  node scripts/ci-affected-run.mjs "$SUITE" --indexes "${SELECTED_FILES:-}"
+  exit $?
+fi
+
 case "$SUITE" in
   install) ;;
   unit) ready db; ready clis; delegate_cgroup; pnpm test ;;

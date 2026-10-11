@@ -85,6 +85,8 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     operator: { access: runtime.access, services: { commands, ci } as unknown as OperatorServices } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const clients: Client[] = []
+  const credential = (actions: ManagementAction[]) => runtime.access.issue({ name: 'CI HTTP caller', audience: 'operator',
+    expiresAt: new Date(Date.now() + 600_000), grants: [{ actions, scope: { workspaceIds: [workspaceId] } }] })
   const connect = async (actions: ManagementAction[], scope: Record<string, unknown> = { workspaceIds: [workspaceId] }) => {
     const issued = await runtime.access.issue({ name: 'CI Operator', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{ actions, scope }] })
@@ -102,7 +104,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
     return decodeMcpToolResult(result)
   }
-  return { ...computers, ci, workspaceId, operator, connect, call, value, published, pool: runtime.db.pool,
+  return { ...computers, ci, app, credential, workspaceId, operator, connect, call, value, published, pool: runtime.db.pool,
     async close() {
       await Promise.all(clients.map(client => client.close()))
       await ci.close()
@@ -110,6 +112,79 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
       await runtime.close()
     } }
 }
+
+it('persists affected files through authenticated MCP, bounds partition count and rejects a denied caller', async () => {
+  const f = await fixture()
+  const files = ['apps/api/test/a.integration.test.ts', 'apps/api/test/c.integration.test.ts']
+  const input = { suite: 'integration', scope: 'affected', files, commit: 'a'.repeat(40), commandId: 'affected', partitions: 32 }
+  try {
+    const listed = await f.operator.listTools()
+    const tool = listed.tools.find(value => value.name === 'ci_run')!
+    expect(tool.inputSchema.properties).toHaveProperty('scope')
+    expect(tool.inputSchema.properties).toHaveProperty('files')
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    expect(started.partitions).toHaveLength(2)
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
+    await f.ci.dispatch()
+    expect(f.started).toHaveLength(2)
+    for (const item of f.started) expect(item.request).toMatchObject({ scope: 'affected', files, partition: { count: 2 } })
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run).toMatchObject({ scope: 'affected', files })
+    const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [started.ticketId])
+    expect(stored.rows[0]!.record).toMatchObject({ scope: 'affected', files })
+  } finally { await f.close() }
+})
+
+it('shares affected CI validation, grants and persisted readback between HTTP and MCP', async () => {
+  const f = await fixture()
+  try {
+    const url = `/api/management/workspaces/${f.workspaceId}/ci`
+    const writer = await f.credential([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
+    const headers = { authorization: `Bearer ${writer.token}` }
+    const input = { suite: 'unit', scope: 'affected', files: ['apps/api/src/feature.test.ts'],
+      commit: 'a'.repeat(40), commandId: 'http-affected' }
+    const reader = await f.credential(CI_GET_ACTIONS)
+    const denied = await f.app.inject({ method: 'POST', url, headers: { authorization: `Bearer ${reader.token}` }, payload: input })
+    expect(denied.statusCode).toBe(403)
+    const response = await f.app.inject({ method: 'POST', url, headers, payload: input })
+    expect(response.statusCode).toBe(200)
+    const started = CiRunOutputSchema.parse(response.json())
+    const replay = await f.app.inject({ method: 'POST', url, headers, payload: input })
+    expect(replay.json()).toEqual(started)
+    const read = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}`, headers })
+    expect(read.statusCode).toBe(200)
+    expect(CiGetOutputSchema.parse(read.json()).run).toMatchObject({ scope: 'affected', files: input.files })
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId })).run)
+      .toMatchObject({ scope: 'affected', files: input.files })
+    const audit = await f.pool.query<{ source: string; outcome: string }>(
+      'select source,outcome from management_audit where action=$1', ['ci.run'])
+    expect(audit.rows).toEqual(expect.arrayContaining([
+      { source: 'http', outcome: 'denied' }, { source: 'http', outcome: 'succeeded' },
+    ]))
+    for (const invalid of [{ ...input, files: ['../escape.test.ts'] }, { ...input, scope: 'full' },
+      { ...input, suite: 'integration' }]) {
+      const rejected = await f.app.inject({ method: 'POST', url, headers, payload: invalid })
+      expect(rejected.statusCode).toBe(400)
+    }
+  } finally { await f.close() }
+})
+
+it('records an empty affected selection as passed and defaults omitted scope to full', async () => {
+  const f = await fixture()
+  try {
+    const empty = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', scope: 'affected',
+      files: [], commit: 'a'.repeat(40), commandId: 'empty', partitions: 32 }))
+    expect(empty.partitions).toBeUndefined()
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: empty.ticketId }))
+    expect(read.run).toMatchObject({ state: 'passed', exitCode: 0, scope: 'affected', files: [], computer: null })
+    expect(f.started).toHaveLength(0)
+    const full = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'default-full' }))
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: full.ticketId })).run)
+      .toMatchObject({ scope: 'full', files: [] })
+  } finally { await f.close() }
+})
 
 it('splits integration over two build computers, reports progress and logs, and replays a retried command', async () => {
   const f = await fixture()

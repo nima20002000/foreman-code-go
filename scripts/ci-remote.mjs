@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { affectedSnapshot } from './ci-affected.mjs'
 
 const environment = process.env
 
@@ -63,7 +64,7 @@ async function mcpClient() {
 }
 
 async function remote(suite, args) {
-  if (args.length) console.error(`[ci] Running the whole ${suite} suite; arguments are for local runs only: ${args.join(' ')}`)
+  if (args.length) console.error('[ci] Selecting affected files from the snapshot; command arguments apply to local runs only.')
   const call = await mcpClient()
   const origin = git(['remote', 'get-url', 'origin']).replace(/\.git$/, '')
   const repository = /github\.com[:/]([^/]+\/[^/]+)$/.exec(origin)?.[1]
@@ -76,9 +77,19 @@ async function remote(suite, args) {
   }
   if (!workspaceId) throw new Error(`No Foreman Code workspace uses ${repository}.`)
   const commit = snapshot()
+  const selection = environment.FOREMAN_CODE_CI_SCOPE === 'full' || git(['branch', '--show-current']) === 'main'
+    ? { scope: 'full', files: [], reason: 'Full scope requested.' } : affectedSnapshot(commit, suite)
+  if (selection.files.length > 2000) {
+    selection.scope = 'full'
+    selection.files = []
+    selection.reason = 'Selection exceeds the CI request limit.'
+  }
+  console.error(`[ci] ${selection.scope}: ${selection.reason} ${selection.files.length} selected files.`)
   git(['push', '--quiet', 'origin', `${commit}:refs/heads/foreman/ci/${commit}`])
   const partitions = suite === 'integration' ? Number(environment.FOREMAN_CODE_CI_PARTITIONS ?? 32) : undefined
-  const started = await call('ci_run', { workspaceId, suite, commit, commandId: randomUUID(), ...(partitions ? { partitions } : {}) })
+  const started = await call('ci_run', { workspaceId, suite, commit, scope: selection.scope,
+    ...(selection.scope === 'affected' ? { files: selection.files } : {}),
+    commandId: randomUUID(), ...(partitions ? { partitions } : {}) })
   const tickets = (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId)
   console.error(`[ci] ${suite} of ${commit.slice(0, 12)} on ${tickets.length} CI ${tickets.length === 1 ? 'machine' : 'machines'}`)
   const startedAt = Date.now(), states = new Map()
