@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.68] - 2026-10-11
+
+### Fixed
+
+- Run readback (`run_get`, events, activities) reads an unlocked snapshot instead of waiting behind writers; a database timeout on a read returns a retryable error instead of an internal error.
+- Snapshot release deletes files after committing its fence, outside the storage lock, so concurrent Agent preparations no longer time out.
+- Main's automatic Codex qualification retries a transient unreadable version from an unchanged binary.
+- Restart closure drains a rejected native startup before disposing its manager.
+
+### Tests
+
+- Flake fixes for Claude approval composition and installed workflow receipt transfer fixtures.
+
 ## [0.0.67] - 2026-10-11
 
 ### Fixed
