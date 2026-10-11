@@ -318,8 +318,16 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         locationRevision: revision, locationValidation: { status: 'unavailable' },
       })
       const remaining = await choices()
-      expect(remaining.choices).toHaveLength(1)
-      expect(remaining.choices[0]!.placement.hostRef.kind).toBe('device')
+      expect(remaining.choices).toHaveLength(2)
+      const ready = remaining.choices.filter(choice => choice.availability === 'ready')
+      expect(ready).toHaveLength(1)
+      expect(ready[0]).toEqual(before.choices.find(choice => choice.placement.hostRef.kind === 'device'))
+      expect(remaining.choices.find(choice => choice.placement.hostRef.kind === 'main')).toMatchObject({
+        availability: 'unavailable', reason: expect.any(String),
+        placement: { hostRef: policy.hostRef, rootPolicyId: policy.rootPolicyId,
+          rootPolicyRevision: policy.rootPolicyRevision, source: f.placement.source,
+          rootBinding: f.placement.local.rootBinding },
+      })
       await expect(resolveLocalMainPlacement({
         sql: f.base.db.pool, principal: f.base.writer.principal, mainId: policy.hostRef.mainId,
         workspaceId: f.workspaceId, configuration: f.base.f.configurations[0]!,

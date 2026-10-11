@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ApprovedSourceSchema } from '@foreman-code/contracts/source-admission'
+import { ApprovedSourceSchema, SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { releaseUnusedSourceSnapshots } from '../src/modules/sources/snapshotRetention.js'
+import { createSourceManifest } from '../src/modules/sources/manifest.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './helpers/mixedComputerPlacement.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
@@ -46,7 +47,44 @@ async function fixture() {
     const read = () => placement.sources.get(base.writer.principal, 'http', {
       workspaceId: input.workspaceId, ...placement.source,
     })
-    return { base, placement, source, store, input, configured, repository, release, read,
+    const supersedeRootBindings = async () => {
+      const roots = await placement.sources.rootList(base.writer.principal, 'http', { workspaceId: input.workspaceId })
+      const replacement = ApprovedSourceSchema.parse({ ...source, manifest: createSourceManifest({
+        ...source.manifest, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
+      }) })
+      const manifest = replacement.manifest
+      const pin = { approvedSourceId: manifest.approvedSourceId,
+        snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
+      await store.write(manifest.snapshotId, manifest.entries[0]!, Buffer.from('export const approved = true\n'))
+      await store.commit(manifest)
+      const replacementReservation = await placement.sources.reservations.reserve(base.db.pool, {
+        scopeId, ownerKind: 'capture', ownerId: manifest.snapshotId, reservedBytes: 16 * 1024,
+      })
+      await placement.sources.reservations.retain(base.db.pool, replacementReservation, 'retained')
+      await base.db.pool.query(`insert into source_approvals(approved_source_id,snapshot_id,workspace_id,
+        owner_principal_id,requested_by,command_id,input_hash,state,origin,request)
+        select $1,$2,workspace_id,owner_principal_id,requested_by,$3,$4,state,origin,request
+        from source_approvals where snapshot_id=$5`,
+      [pin.approvedSourceId, pin.snapshotId, randomUUID(), pin.manifestDigest, source.manifest.snapshotId])
+      await base.db.pool.query(`insert into source_snapshots
+        (snapshot_id,approved_source_id,workspace_id,manifest_digest,record) values($1,$2,$3,$4,$5::jsonb)`,
+      [pin.snapshotId, pin.approvedSourceId, input.workspaceId, pin.manifestDigest, JSON.stringify(replacement)])
+      for (const root of roots.items) {
+        const bindingRevision = root.binding.bindingRevision + 1
+        const rebound = SourceRootRecordSchema.parse({ ...root, source: pin, binding: {
+          ...root.binding, bindingRevision, snapshotId: pin.snapshotId, manifestDigest: pin.manifestDigest,
+        } })
+        await base.db.pool.query(`insert into source_root_bindings
+          (root_id,binding_revision,workspace_id,snapshot_id,record) values($1,$2,$3,$4,$5::jsonb)`,
+        [root.binding.rootId, bindingRevision, input.workspaceId, pin.snapshotId, JSON.stringify(rebound)])
+        await base.db.pool.query('update source_root_catalog set current_binding_revision=$2 where root_id=$1',
+          [root.binding.rootId, bindingRevision])
+      }
+      const listed = await placement.sources.rootList(base.writer.principal, 'http', { workspaceId: input.workspaceId })
+      expect(listed.items).toHaveLength(roots.items.length)
+      expect(listed.items.every(root => root.source.snapshotId === pin.snapshotId)).toBe(true)
+    }
+    return { base, placement, source, store, input, configured, repository, release, read, supersedeRootBindings,
       async close() { await base.close(); await rm(directory, { recursive: true, force: true }) } }
   } catch (error) {
     await base.close()
@@ -63,6 +101,8 @@ describe.skipIf(!postgresEnabled)('current workspace and workflow source retenti
         f.input.graph.defaultWorktree = { rootBinding: f.placement.local.rootBinding! }
       } else agentWorkflowNode(f.input.graph.nodes[0]).placement = f.placement.local
       const saved = (await f.base.services.workflows.current.save(f.base.writer.principal, 'http', f.input)).value
+      // Keep the saved workflow's original pins while both catalog heads move to another snapshot.
+      await f.supersedeRootBindings()
       await f.release()
       expect((await f.read()).availability).toBe('retained')
       expect(await f.store.retainedCaptureBytes(f.source.manifest.snapshotId)).toBeGreaterThan(0)
@@ -91,6 +131,7 @@ describe.skipIf(!postgresEnabled)('current workspace and workflow source retenti
       [randomUUID(), f.base.writer.principal.id, f.input.workspaceId, randomUUID(), 'sha256:' + 'a'.repeat(64),
         JSON.stringify({ repository: f.repository }), JSON.stringify({ approvedSource: f.source,
           location: { locationRevision: f.placement.locationRevision }, rootBinding: f.placement.local.rootBinding })])
+      await f.supersedeRootBindings()
       await f.release()
       expect((await f.read()).availability).toBe('retained')
       expect(await f.store.retainedCaptureBytes(f.source.manifest.snapshotId)).toBeGreaterThan(0)
@@ -101,8 +142,10 @@ describe.skipIf(!postgresEnabled)('current workspace and workflow source retenti
       await f.release()
       await expect(f.read()).rejects.toMatchObject({ code: 'SOURCE_UNAVAILABLE' })
       const listed = await f.placement.sources.list(f.base.writer.principal, 'http', { workspaceId: f.input.workspaceId })
-      expect(ApprovedSourceSchema.parse(listed.items[0]).manifest).toEqual(f.source.manifest)
-      expect(ApprovedSourceSchema.parse(listed.items[0]).availability).toBe('unavailable')
+      const released = ApprovedSourceSchema.parse(listed.items.find(item =>
+        item.manifest.snapshotId === f.source.manifest.snapshotId))
+      expect(released.manifest).toEqual(f.source.manifest)
+      expect(released.availability).toBe('unavailable')
     } finally { await f.close() }
   }, 120_000)
 })
