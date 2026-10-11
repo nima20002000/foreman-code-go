@@ -7,6 +7,7 @@ import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-exe
 import { RunExecutionLocationV3Schema } from '@foreman-code/contracts/wave25'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { hasRetainedRemoteReviewerSource } from '../../src/modules/interactions/retainedRemoteReviewer.js'
+import { HostHarnessProfileEvidenceRepository } from '../../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { remoteReviewProduction, waitForRemoteReview as waitForProduction } from './remoteReviewProduction.js'
 import { buildRemoteReviewWorkerRelease } from './remoteReviewProvider.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
@@ -25,17 +26,22 @@ export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (va
 }
 
 let releaseDirectory: string | undefined
-let workerRelease: string
+let workerRelease: Promise<string>
 
 beforeAll(async () => {
   releaseDirectory = await privateFixtureDirectory('remote-review-release-')
   const started = performance.now()
   console.info('[remote-review] packaging Worker release')
-  workerRelease = await buildRemoteReviewWorkerRelease(releaseDirectory)
-  console.info(`[remote-review] Worker release: ${Math.round(performance.now() - started)} ms`)
+  workerRelease = buildRemoteReviewWorkerRelease(releaseDirectory).then(release => {
+    console.info(`[remote-review] Worker release: ${Math.round(performance.now() - started)} ms`)
+    return release
+  })
+  // Setup awaits this same promise; report an early failure while Main is starting.
+  void workerRelease.catch(error => console.error('Remote review Worker packaging failed', error))
 }, 60_000)
 
 afterAll(async () => {
+  await Promise.allSettled([workerRelease])
   if (releaseDirectory) await rm(releaseDirectory, { recursive: true, force: true })
 })
 
@@ -170,6 +176,8 @@ export async function readInteraction(fixture: Fixture, interactionId: string) {
 
 export async function deliveredReview(fixture: Fixture, interactionId: string) {
   const interaction = await waitForRemoteReview(async () => {
+    const failure = (await fixture.provider.calls()).find(call => call.providerFailure !== undefined)
+    if (failure) throw new Error(`Remote review provider failed: ${String(failure.providerFailure)}`)
     await fixture.reconcile()
     return readInteraction(fixture, interactionId)
   }, value => value.deliveryState === 'delivered', 'persisted native decision delivery')
@@ -217,6 +225,14 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
         where execution_id=$1 order by generation desc limit 1`, [active.reviewer.id])).rows[0]
       expect(lifetime).toEqual({ detached: true, closed: false })
       expect(await hasRetainedRemoteReviewerSource(fixture.db.pool, active.reviewer)).toBe(true)
+      const row = (await fixture.db.pool.query<{ record: unknown }>(
+        'select record from review_jobs where id=$1', [active.job.id])).rows[0]!
+      const retained = ReviewJobSchema.parse(row.record)
+      expect(retained.state).toBe('acknowledged')
+      expect(retained.nativeSessionId).toBe(active.job.nativeSessionId)
+      expect(retained.providerTurnOrMessageId).toBe(active.job.providerTurnOrMessageId)
+      expect(retained.leaseToken).toBeUndefined()
+      expect(retained.leaseExpiresAt).toBeUndefined()
     }
     if (recovery === 'expired-receipt') {
       const expired = new Date(Date.now() - 60_000).toISOString()
@@ -244,6 +260,16 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
   expect(inventory.installations[0]?.connectionGeneration)
     .not.toBe(beforeInventory.installations[0]?.connectionGeneration)
   expect(fixture.workerPid()).toBe(originalWorkerPid)
+  const profileEvidence = new HostHarnessProfileEvidenceRepository(fixture.db.pool)
+  // Inventory arrives before reconnect qualification; dispatching early incurs a retry backoff.
+  await waitForRemoteReview(() => Promise.all(fixture.profiles.map(profile =>
+    profileEvidence.latest(profile.instanceId, profile.revision))), proofs => proofs.every((proof, index) => {
+    const installation = inventory.installations.find(value =>
+      value.harnessInstallationId === fixture.profiles[index]!.target.harnessInstallationId)
+    return !!proof && !!installation && proof.qualified && proof.authenticated === true && proof.compatible === true
+      && proof.connectionGeneration === installation.connectionGeneration
+      && proof.environmentGeneration === installation.environmentGeneration
+  }), 'replacement Worker profile qualification')
   await fixture.reconcile()
   const currentReceipts = await receipts(fixture, active.run.id)
   expect(currentReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))

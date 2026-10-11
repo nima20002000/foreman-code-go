@@ -468,6 +468,16 @@ export class ReviewerDispatcher {
         await finalizeCapturedReview()
       } finally {
         if (executionId) await this.nativeRuntime.releaseReviewSession?.(executionId)
+        if (guard.signal.reason instanceof DomainError && guard.signal.reason.code === 'ENGINE_RESTART'
+          && job.leaseToken === jobToken) {
+          // Observation has drained; the replacement Main can claim the same retained turn immediately.
+          try {
+            await this.coordination.transitionReviewJob(job.id, jobToken, job.state, { releaseLease: true })
+          } catch (error) {
+            // An expired lease or a successor's fence already prevents this owner from writing.
+            if (!isLeaseLost(error)) throw error
+          }
+        }
       }
     }
   }

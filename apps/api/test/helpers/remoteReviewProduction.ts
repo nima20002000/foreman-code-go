@@ -87,7 +87,8 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
  * shipped installed domains in a separate process with its own native owners. */
 export async function remoteReviewProduction(options: {
   workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
-  claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean; workerRelease?: string
+  claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean
+  workerRelease?: string | Promise<string>
   installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
   reportPhase?: (phase: string, elapsedMs: number) => void
 } = {}) {
@@ -122,15 +123,18 @@ export async function remoteReviewProduction(options: {
       await installManagedLauncher(new URL('../../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
       return createRemoteReviewProvider(join(directory, 'provider'), launcher)
     }
-    const setupWorkerRelease = () => options.workerRelease ?? buildRemoteReviewWorkerRelease(directory)
+    const workerReleaseResult = Promise.allSettled([
+      options.workerRelease ?? buildRemoteReviewWorkerRelease(directory),
+    ] as const)
+    closes.push(async () => { await workerReleaseResult })
     const setupClaude = () => createRemoteReviewClaudeInventory(claudeDirectory)
     const setupTls = () => createRemoteReviewTls(join(directory, 'tls'))
     const setup = async () => {
       if (!options.parallelSetup) {
-        return [await setupDatabase(), await setupWorkerRelease(), await setupProvider(),
+        return [await setupDatabase(), await setupProvider(),
           await setupClaude(), await setupTls()] as const
       }
-      const tasks = [setupDatabase(), setupWorkerRelease(), setupProvider(), setupClaude(), setupTls()] as const
+      const tasks = [setupDatabase(), setupProvider(), setupClaude(), setupTls()] as const
       try {
         return await Promise.all(tasks)
       } catch (error) {
@@ -139,7 +143,7 @@ export async function remoteReviewProduction(options: {
         throw error
       }
     }
-    const [db, workerRelease, provider, claudeCommands, tls] = await setup()
+    const [db, provider, claudeCommands, tls] = await setup()
     beginPhase('source repository and workflow seed')
     const claudeInventory = options.claudeInventory ? claudeCommands : undefined
     if (options.modelCatalog) await provider.hideModels()
@@ -415,6 +419,10 @@ export async function remoteReviewProduction(options: {
       codexBinary: provider.binary, expectedVersion: 'codex-cli 0.154.0',
       appMcpLauncher: launcher, payloadPaths }), { mode: 0o600 })
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
+    beginPhase('Worker release readiness')
+    const [release] = await workerReleaseResult
+    if (release.status === 'rejected') throw release.reason
+    const workerRelease = release.value
     beginPhase('installed Worker initialization')
     await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
       env: logEnvironment,
