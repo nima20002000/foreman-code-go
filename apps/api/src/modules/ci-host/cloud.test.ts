@@ -8,6 +8,7 @@ import type { GitWorktreePorts } from '../sources/gitWorktree.js'
 import { CloudCi } from './cloud.js'
 import { CircleCiProvider, GitHubActionsProvider } from './cloudProviders.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
+import { selectByIndexes } from '../../../../../scripts/ci-files.mjs'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -99,6 +100,29 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
 }
 
 describe('GitHub Actions CI on a public mirror', () => {
+  it.each(['github', 'circleci'] as const)('spreads heavy integration files across every %s slice', async provider => {
+    const heavy = [
+      'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+      'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
+      'apps/api/test/local-human-native.integration.test.ts',
+      'apps/api/test/native-stream-lifecycle.integration.test.ts',
+    ]
+    const f = await fixture(Object.fromEntries(heavy.map(file => [file, ''])), { provider })
+    const inventory = [...['a', 'b', 'c', 'd'].map(name => `apps/api/test/${name}.integration.test.ts`), ...heavy].sort()
+    const durations = Object.fromEntries(heavy.map((file, index) => [file, 80 - index * 20]))
+    for (const index of [0, 1, 2, 3]) {
+      await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+        suite: 'integration', durations, partition: { index, count: 4, weights: [8, 1, 1, 1] } })
+    }
+    const commands = provider === 'github' ? f.dispatched : f.circle.triggered
+    const slices = commands.map(command => selectByIndexes(inventory,
+      command.find(value => value.startsWith('slice='))!.slice('slice='.length)))
+    expect(slices.flat().sort()).toEqual(inventory)
+    expect(slices.map(slice => slice.filter(file => heavy.includes(file)).length)).toEqual([1, 1, 1, 1])
+    expect(slices[0]).toContain(heavy[0])
+    expect(slices[1]).toContain(heavy[1])
+  })
+
   it.each(['github', 'circleci'] as const)('dispatches unit part names and one-based shards through %s', async provider => {
     const f = await fixture({}, { provider })
     await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,

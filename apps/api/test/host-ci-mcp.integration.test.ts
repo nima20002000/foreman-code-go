@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema,
-  type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
+  integrationPartition, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it } from 'vitest'
@@ -357,6 +357,46 @@ it('sizes each partition by the measured speed of the computer it is planned for
     expect(byComputer.laptop! / byComputer.builder!).toBeCloseTo(2, 1)
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run.partition?.weights).toEqual(weights)
+  } finally { await f.close() }
+})
+
+it('persists the heavy-file partition plan through authenticated MCP and denies a read-only caller', async () => {
+  const f = await fixture()
+  const heavy = [
+    'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+    'apps/api/test/local-human-native.integration.test.ts',
+  ]
+  const files = [...heavy, 'apps/api/test/first.integration.test.ts', 'apps/api/test/second.integration.test.ts']
+  const durations = { [heavy[0]!]: 168_000, [heavy[1]!]: 100_000,
+    [files[2]!]: 1_000_000, [files[3]!]: 200_000 }
+  try {
+    for (const [file, duration] of Object.entries(durations)) {
+      await f.pool.query('insert into ci_file_durations(repository,file,duration_ms) values($1,$2,$3)',
+        ['octo/site', file, duration])
+    }
+    const input = { suite: 'integration', scope: 'affected', files, commit: 'a'.repeat(40),
+      commandId: 'heavy-partitions', partitions: 2 }
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect(f.published).toHaveLength(0)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    await f.ci.dispatch()
+    expect(f.started).toHaveLength(2)
+    const slices = f.started.map(({ request }) => {
+      expect(request.operation).toBe('start')
+      if (request.operation !== 'start') throw new Error('Expected a start request')
+      expect(request.durations).toEqual(durations)
+      return integrationPartition(request.files!, request.durations!, request.partition!)
+    })
+    expect(slices.flat().sort()).toEqual([...files].sort())
+    expect(slices.map(slice => slice.filter(file => heavy.includes(file)).length)).toEqual([1, 1])
+    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.partitions).toHaveLength(2)
+    for (const run of read.partitions!) {
+      expect(run).toMatchObject({ scope: 'affected', files, partition: { count: 2, weights: [1, 1] } })
+      const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])
+      expect(stored.rows[0]!.record).toEqual(run)
+    }
   } finally { await f.close() }
 })
 

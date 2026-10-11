@@ -1,3 +1,4 @@
+import { exclusiveIntegrationFiles } from '../packages/contracts/src/integrationScheduling.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities } from './integration-capabilities.mjs'
 import { spawn, spawnSync } from 'node:child_process'
@@ -23,39 +24,11 @@ import { readProfiles, startProcessMetrics, writeProfiles } from './dense-resour
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
-// These files measure bounded startup/latency while exercising shared host resources.
-const exclusiveFiles = [startupFile,
-  'apps/api/test/test-startup-isolation-environment.integration.test.ts',
-  'apps/api/test/test-startup-isolation-native-storage.integration.test.ts',
-  'apps/api/test/test-startup-isolation-workspace-storage.integration.test.ts',
-  'apps/api/test/test-startup-isolation-smoke.integration.test.ts',
-  'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
-  'apps/api/test/operator-chat-controls.integration.test.ts',
-  'apps/api/test/operator-chat-preferences.integration.test.ts',
-  'apps/api/test/operator-chat-compaction.integration.test.ts',
-  'apps/api/test/operator-chat-handoffs.integration.test.ts',
-  'apps/api/test/operator-chat-delegated-access.integration.test.ts',
-  'apps/api/test/operator-chat-defaults.integration.test.ts',
-  'apps/api/test/operator-chat-history.integration.test.ts',
-  'apps/api/test/operator-chat-sessions.integration.test.ts',
-  'apps/api/test/operator-chat-terminal.integration.test.ts',
-  'apps/api/test/operator-chat-stop.integration.test.ts',
-  'apps/api/test/operator-chat-streams.integration.test.ts',
-  'apps/api/test/native-stream-lifecycle.integration.test.ts',
-  'apps/api/test/production-lifecycle-approvals.integration.test.ts',
-  'apps/api/test/production-lifecycle-continuations.integration.test.ts',
-  'apps/api/test/production-lifecycle-delivery.integration.test.ts',
-  'apps/api/test/local-production-deployment.integration.test.ts',
-  'apps/api/test/production-mcp-upgrade.integration.test.ts',
-  'apps/api/test/operator-file-delivery.integration.test.ts',
-  'apps/api/test/operator-management-file-authority.integration.test.ts',
-  'apps/api/test/r2-2-inherited-references.integration.test.ts',
-]
 
 export function partitionIntegrationFiles(files) {
   return {
-    exclusive: exclusiveFiles.filter(file => files.includes(file)),
-    parallel: files.filter(file => !exclusiveFiles.includes(file)),
+    exclusive: exclusiveIntegrationFiles.filter(file => files.includes(file)),
+    parallel: files.filter(file => !exclusiveIntegrationFiles.includes(file)),
   }
 }
 
@@ -392,7 +365,7 @@ export async function scheduleIntegrationQueue(files, slots, {
   pollIntervalMs, onProcessFailure = () => {},
 }) {
   const integrationItems = files.map((file) => ({ id: file, file, kind: 'integration',
-    exclusive: exclusiveFiles.includes(file) }))
+    exclusive: exclusiveIntegrationFiles.includes(file) }))
   const items = [...integrationItems, ...extraItems]
   const busy = new Set()
   let processFailure

@@ -1,3 +1,4 @@
+import { requirements } from '../packages/contracts/src/integrationScheduling.mjs'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { accessSync, constants, mkdirSync, readFileSync, rmdirSync, statfsSync } from 'node:fs'
@@ -6,42 +7,6 @@ import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { hostFacts } from '../apps/worker/src/diagnostics.mjs'
 import { readVerificationEnvironment } from '../packages/contracts/src/verificationEnvironment.mjs'
-
-const requirements = new Map([
-  ['apps/api/test/local-human-native.integration.test.ts', ['nativeCgroupDelegation']],
-  ['apps/api/test/operator-file-delivery.integration.test.ts', ['nativeCgroupDelegation']],
-  ['apps/api/test/operator-management-file-authority.integration.test.ts', ['nativeCgroupDelegation']],
-  ['apps/api/test/test-database-startup.integration.test.ts', ['testDatabaseStartup']],
-  ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-defaults.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-delivery.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-entry-recovery.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-main-crash.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-main-graceful.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-reserved-decision.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/remote-review-production-worker-crash.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/historical-chat-placement-fork.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/historical-chat-placement-recovery.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/historical-chat-placement-disabled-profile.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/worker-profile-requalification-main-restart.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/worker-profile-requalification-failed-check.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-discovery-main.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-discovery-worker.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-claude-inventory.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-unavailable-main.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-unavailable-worker.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-qualification-drain.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-rollback.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-profiles-main.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-profiles-worker.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update-failed-check.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/job-qualification-native-faults.integration.test.ts', ['nativeCgroupDelegation']],
-])
 
 const nativeUnitFiles = new Set([
   'apps/api/test/native-guardian-outcome.test.ts',
