@@ -1888,8 +1888,9 @@ export function buildProductionApp(
         runtimeServices.workspaces, runtimeServices.workspaceRoots, jobRuntime.policies, jobRuntime.sources,
         machine.installationId, projectRoot)
       registerWorkspaceRepositoryRoutes(app, runtimeServices.workspaceRepositories)
+      const clouds = cloudCis(machine.installationId, workspaceMirrors(database.pool))
       runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
-        id => deviceRuntime.presenceFor(id), commands)
+        id => deviceRuntime.presenceFor(id), commands, clouds)
       registerComputerActivityRoutes(app, runtimeServices.computerActivity)
       runtimeServices.computerAccounts = new ComputerAccountsService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
@@ -1962,7 +1963,7 @@ export function buildProductionApp(
       // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
       const hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),
         new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner(),
-          undefined, cloudCis(machine.installationId, workspaceMirrors(database.pool))),
+          undefined, clouds),
         agentSnapshots(database.pool, readAgentFiles))
       hostCi.start()
       app.addHook('onClose', async () => { await hostCi.close() })

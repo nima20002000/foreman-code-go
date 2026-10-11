@@ -1,4 +1,4 @@
-import { Monitor } from 'lucide-react'
+import { Cloud, Monitor, Server } from 'lucide-react'
 import type { ComputerActivity, ComputerActivityList } from '@foreman-code/contracts/computer-activity'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
@@ -16,8 +16,9 @@ export function SidebarComputers() {
   const open = useComputerUi(state => state.openActivity)
   const fresh = useComputerActivityFreshness(query.dataUpdatedAt, query.fetchStatus)
   const computers = query.isError ? [] : query.data?.computers ?? []
+  const clouds = query.isError ? [] : query.data?.cloud ?? []
   return <>
-    {computers.length > 0 && <ul className="sidebar-computers" aria-label="Computers">
+    {computers.length + clouds.length > 0 && <ul className="sidebar-computers" aria-label="Computers">
       {computers.map(computer => {
         // Without a fresh observation, presence and activity are last-known facts, not current state.
         const online = fresh && computer.online
@@ -32,6 +33,29 @@ export function SidebarComputers() {
             <span className="computer-presence-dot" data-online={online} aria-hidden="true" />
           </button>
           <ComputerUtilization target={computer.target} online={online} compact />
+        </li>
+      })}
+      {clouds.map(cloud => {
+        const ready = fresh && cloud.ready, running = fresh ? cloud.running : 0
+        const state = !fresh ? 'Status stale' : !cloud.ready ? 'Not logged in on Main'
+          : `${cloud.running} of ${cloud.slots} CI machines in use`
+        return <li key={cloud.provider} data-online={ready}>
+          <span className="sidebar-computer" title={`${cloud.name}: ${state}`}>
+            <span className="sidebar-computer-icon"><Cloud size={16} aria-hidden="true" />
+              {running > 0 && <span className="computer-activity-dot" data-testid="computer-busy" aria-hidden="true" />}</span>
+            <span className="sidebar-computer-name">{cloud.name}</span>
+            <span className="computer-presence-dot" data-online={ready} aria-hidden="true" />
+          </span>
+          <div className="computer-utilization" data-compact aria-label={`${cloud.name} CI machines`}>
+            <span className="computer-metric cloud-machines" title={`${cloud.name}: ${state}`}>
+              <span aria-hidden="true"><Server size={13} /></span>
+              <span className="computer-meter" role="meter" aria-label="CI machines in use" aria-valuemin={0}
+                aria-valuemax={cloud.slots} aria-valuenow={fresh ? running : undefined} aria-valuetext={state}>
+                <span style={{ width: `${Math.min(100, running / cloud.slots * 100)}%` }} />
+              </span>
+              <span className="computer-metric-value">{fresh ? `${running}/${cloud.slots}` : '—'}</span>
+            </span>
+          </div>
         </li>
       })}
     </ul>}

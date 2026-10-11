@@ -89,3 +89,19 @@ it('stops presenting sidebar presence and activity as current while the browser 
   expect(main).toHaveAttribute('title', 'Main PC: Status stale')
   expect(within(main).queryByTestId('computer-busy')).not.toBeInTheDocument()
 })
+it('shows cloud CI services with how many of their machines run CI', async () => {
+  const f = computersFixture(<SidebarComputers />)
+  f.activity.cloud.push({ provider: 'github', name: 'GitHub Actions', ready: true, slots: 16, running: 4 },
+    { provider: 'circleci', name: 'CircleCI', ready: false, slots: 24, running: 0 })
+  await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
+  const list = await screen.findByRole('list', { name: 'Computers' })
+  const github = (await within(list).findByText('GitHub Actions')).closest('li')!
+  expect(within(github).getByRole('meter', { name: 'CI machines in use' })).toHaveAttribute('aria-valuetext', '4 of 16 CI machines in use')
+  expect(within(github).getByText('4/16')).toBeVisible()
+  expect(within(github).getByTestId('computer-busy')).toBeInTheDocument()
+  const circle = within(list).getByText('CircleCI').closest('li')!
+  expect(circle).toHaveAttribute('data-online', 'false')
+  expect(within(circle).getByRole('meter', { name: 'CI machines in use' })).toHaveAttribute('aria-valuetext', 'Not logged in on Main')
+  // The cloud services are not computers: selecting them opens no computer activity.
+  expect(within(list).queryByRole('button', { name: /GitHub Actions/ })).not.toBeInTheDocument()
+})

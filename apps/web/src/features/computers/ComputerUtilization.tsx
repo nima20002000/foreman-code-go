@@ -33,7 +33,7 @@ export function ComputerUtilization({ target, online, compact = false }: {
 }
 const GIB = 1024 ** 3
 /** df-style binary sizes; short enough for the sidebar. */
-export function formatStorage(bytes: number) {
+function formatStorage(bytes: number) {
   return bytes >= 1024 * GIB ? `${(bytes / 1024 / GIB).toFixed(1)}T` : bytes >= 10 * GIB ? `${Math.round(bytes / GIB)}G`
     : `${(bytes / GIB).toFixed(1)}G`
 }

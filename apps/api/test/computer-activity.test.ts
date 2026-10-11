@@ -11,7 +11,7 @@ import type { DevicePresence } from '@foreman-code/contracts/device-connection'
 import { buildApp } from '../src/app.js'
 import { DomainError } from '../src/modules/errors.js'
 import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js'
-import { ComputerActivityService } from '../src/modules/computers/activity.js'
+import { ComputerActivityService, type CloudCiService } from '../src/modules/computers/activity.js'
 import { ComputerAccountsService } from '../src/modules/computers/accounts.js'
 import { GitHubLoginRunner } from '../src/modules/computers/githubLogin.js'
 import { ComputerGitHubService } from '../src/modules/computers/github.js'
@@ -45,6 +45,7 @@ async function fixture(options: {
   githubSetupFails?: boolean
   githubLocal?: Pick<GitHubLoginRunner, 'handle'>
   loseRemoteResponse?: boolean
+  clouds?: CloudCiService[]
 } = {}) {
   const pool = new pg.Pool()
   const jobs = [job('visible', 'allowed'), job('secret', 'private')]
@@ -57,6 +58,7 @@ async function fixture(options: {
   let preference = { target, revision: '0', build_enabled: false, build_priority: 50,
     build_allowance_percent: 100 }
   const receipts = new Map<string, { input_hash: unknown; target_key: unknown; result: unknown }>()
+  const cloudRunning = new Map<string, number>()
   const principals = new Map([owner, denied, scoped, settingsReader].map(principal => [principal.id, principal]))
   const query = vi.fn(async (text: string, values: unknown[] = []) => {
     if (text.includes('from management_principals')) {
@@ -80,13 +82,17 @@ async function fixture(options: {
     if (text.includes('from device_registrations')) return { rows: [{ record: registration }] }
     if (text.includes('from job_executions')) return { rows: jobs }
     if (text.includes('from harness_executions')) return { rows: agents }
+    if (text.includes('from ci_runs')) {
+      expect(values).toEqual([`${mainId}:cloud:%`])
+      return { rows: [...cloudRunning].map(([provider, running]) => ({ provider, running })) }
+    }
     return { rows: [] }
   })
   vi.spyOn(pool, 'connect').mockImplementation((async () => ({ query, release() {} })) as unknown as typeof pool.connect)
   const commands = new PostgresCommandCoordinator(pool)
   const audit = vi.spyOn(commands, 'recordDenied').mockResolvedValue(undefined)
   const audited = vi.spyOn(commands, 'recordAudit').mockResolvedValue(undefined)
-  const service = new ComputerActivityService(pool, mainId, () => observed, commands)
+  const service = new ComputerActivityService(pool, mainId, () => observed, commands, options.clouds)
   const access = new PostgresAccessService(pool)
   vi.spyOn(access, 'authenticate').mockImplementation(async token => {
     const principal = principals.get(token ?? '')
@@ -146,7 +152,7 @@ async function fixture(options: {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return client
   }
-  return { app, service, jobs, agents, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, setPresence(value: DevicePresence | null) { observed = value },
+  return { app, service, jobs, agents, cloudRunning, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, setPresence(value: DevicePresence | null) { observed = value },
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
 afterEach(() => vi.restoreAllMocks())
@@ -173,6 +179,28 @@ it('serves authenticated HTTP and MCP activity with persisted readback and permi
     const idle = await client.callTool({ name: 'computer_activity_list', arguments: {} })
     expect(ComputerActivityListSchema.parse(decodeMcpToolResult(idle)).computers[1]).toMatchObject({ jobs: [], agents: [] })
     expect((await f.app.inject({ url: '/api/management/computers/activity', headers: { authorization: 'Bearer unknown' } })).statusCode).toBe(401)
+  } finally { await f.close() }
+})
+it('lists the cloud CI services Main is logged in to or running CI on through HTTP and MCP', async () => {
+  const login = { github: true, circleci: false }
+  const cloud = (id: 'github' | 'circleci', label: string, slots: number): CloudCiService =>
+    ({ provider: { id, label, slots }, ready: async () => login[id] })
+  const f = await fixture({ clouds: [cloud('github', 'GitHub Actions', 16), cloud('circleci', 'CircleCI', 24)] })
+  try {
+    const client = await f.connect('owner')
+    const read = async () => {
+      const result = ComputerActivityListSchema.parse(decodeMcpToolResult(await client.callTool({ name: 'computer_activity_list', arguments: {} })))
+      const http = await f.app.inject({ url: '/api/management/computers/activity', headers: { authorization: 'Bearer owner' } })
+      expect(http.json()).toEqual(result)
+      return result.cloud
+    }
+    expect(await read()).toEqual([{ provider: 'github', name: 'GitHub Actions', ready: true, slots: 16, running: 0 }])
+    f.cloudRunning.set('github', 3)
+    f.cloudRunning.set('circleci', 2)
+    expect(await read()).toEqual([{ provider: 'github', name: 'GitHub Actions', ready: true, slots: 16, running: 3 },
+      { provider: 'circleci', name: 'CircleCI', ready: false, slots: 24, running: 2 }])
+    const denied = await f.connect('denied')
+    expect((await denied.callTool({ name: 'computer_activity_list', arguments: {} })).isError).toBe(true)
   } finally { await f.close() }
 })
 it('denies hidden MCP and HTTP calls and filters workspace activity without implying global idleness', async () => {

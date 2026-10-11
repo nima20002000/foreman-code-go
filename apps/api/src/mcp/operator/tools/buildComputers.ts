@@ -17,7 +17,8 @@ import { invokeOperatorTool } from '../invoke.js'
 export function registerBuildComputerTools(server: McpServer, context: OperatorRequestContext): void {
   if (context.services.computerActivity && operatorToolAvailable(context, 'computer_activity_list')) {
     server.registerTool('computer_activity_list', {
-      description: 'Read current computer presence, running CI Jobs and placed workflow agent executions. '
+      description: 'Read current computer presence, running CI Jobs and placed workflow agent executions, and the cloud '
+        + 'CI services Main is logged in to with how many of their machines run CI now. '
         + 'Requires global settings:read. Job and agent names are filtered by jobs:read and runs:read scopes. '
         + 'Read-only, at most 101 computers and 200 entries per activity kind; truncated and activityComplete '
         + 'describe coverage. No telemetry permissions are implied; use resource_telemetry tools for utilization.',

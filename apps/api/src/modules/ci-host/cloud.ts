@@ -72,7 +72,8 @@ export class CloudCi {
       ...(request.durations && run.durations ? { durations: run.durations } : {}) })
   }
 
-  private async ready() {
+  /** Main's login for the service works; checked at most once a minute. */
+  async ready() {
     if (this.checked && Date.now() - this.checked.at < 60_000) return this.checked.ready
     const ready = await this.provider.ready().catch(() => false)
     this.checked = { at: Date.now(), ready }
