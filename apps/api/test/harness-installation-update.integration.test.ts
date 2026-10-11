@@ -189,9 +189,14 @@ describe('installed harness updates', () => {
         const turn = await runningTurn(fixture)
         const pins = await pinnedPlacements(fixture, started.run.id)
         await fixture.provider.removePayload()
-        await waitForRemoteReview(() => fixture.inventory(), value => value.installations.some(installation =>
+        const unavailable = await waitForRemoteReview(() => fixture.inventory(), value => value.installations.some(installation =>
           installation.driverId === 'codex' && !installation.installed && installation.installationFingerprint === null),
         'unavailable intermediate inventory')
+        expect(unavailable.installations.find(installation => installation.driverId === 'codex')).toMatchObject({
+          harnessInstallationId: before.target.harnessInstallationId,
+          installed: false,
+          installationFingerprint: null,
+        })
         await waitForRemoteReview(() => profiles(fixture, reader), values => values.every(value =>
           value.qualification === 'unqualified' && value.qualificationFailure !== undefined), 'unavailable profile readback')
         await expect(fixture.start()).rejects.toThrow('HARNESS_INSTALLATION_INVALID')
