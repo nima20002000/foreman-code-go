@@ -289,19 +289,20 @@ export async function createInstalledWorkerDomains(input: {
         mainInstallationId: input.pairing.mainId, bootId: input.bootId } })
   }
   let qualification: ReturnType<typeof createWorkerQualificationExtension> | undefined
-  let telemetry: ReturnType<typeof createWorkerResourceTelemetryExtension> | undefined
+  // Computer telemetry belongs to the pairing (Main checks its metrics:report scope on every sample), not to the Job
+  // runtime: a computer that runs only CI or agents still reports CPU, memory and disk.
+  const telemetry = createWorkerResourceTelemetryExtension({ signal: lifetime.signal, currentBinding: current,
+    createCollector: (identity, signal) => createLinuxResourceCollector({ identity, signal,
+      // The installed Job controller already reads host MemAvailable at native entry.
+      wholeHostVisible: true,
+      // This mount supplies computer metrics; no logical owner attribution is inferred.
+      ownership: { async snapshot(signal) {
+        signal.throwIfAborted()
+        return { revision: jobRegistry.revision(), views: [] }
+      }, changes: (revision, signal) => jobRegistry.changes(revision, signal) },
+    }) })
+  extensions.push(telemetry.extension)
   if (input.jobConfiguration && approved) {
-    telemetry = createWorkerResourceTelemetryExtension({ signal: lifetime.signal, currentBinding: current,
-      createCollector: (identity, signal) => createLinuxResourceCollector({ identity, signal,
-        // The installed Job controller already reads host MemAvailable at native entry.
-        wholeHostVisible: true,
-        // This mount supplies computer metrics; no logical owner attribution is inferred.
-        ownership: { async snapshot(signal) {
-          signal.throwIfAborted()
-          return { revision: jobRegistry.revision(), views: [] }
-        }, changes: (revision, signal) => jobRegistry.changes(revision, signal) },
-      }) })
-    extensions.push(telemetry.extension)
     qualification = createWorkerQualificationExtension({ configuration: input.jobConfiguration, pairing: input.pairing, bootId: input.bootId,
       currentBinding: current, now: () => {
         const now = input.connection()?.mainNow()
@@ -570,7 +571,7 @@ export async function createInstalledWorkerDomains(input: {
       const failures: unknown[] = []
       try { await ciRuntime.close() } catch (error) { failures.push(error) }
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
-      try { await telemetry?.close() } catch (error) { failures.push(error) }
+      try { await telemetry.close() } catch (error) { failures.push(error) }
       try { if (rsync.kind === 'configured') await rsync.rsyncWriters.close() } catch (error) { failures.push(error) }
       try { if (jobOpening) await (await jobOpening).shutdown() } catch (error) { failures.push(error) }
       try { await jobInputs?.close() } catch (error) { failures.push(error) }
