@@ -57,7 +57,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     const ok = (stdout = '') => ({ code: 0, stdout, stderr: '' })
     if (file === 'tailscale') return ok(JSON.stringify({ MagicDNSSuffix: 'tail0000.ts.net',
       Self: { HostName: 'owner-desktop', TailscaleIPs: ['100.90.1.2', 'fd7a::1'] },
-      Peer: { a: { HostName: 'dexter-Aspire', TailscaleIPs: ['100.90.1.3'] } }, User: { 1: { LoginName: 'owner@example.org' } } }))
+      Peer: { a: { HostName: 'builder-Laptop', TailscaleIPs: ['100.90.1.3'] } }, User: { 1: { LoginName: 'owner@example.org' } } }))
     if (file !== 'gh') return system.run(file, args)
     if (args[0] === 'auth') return ok()
     if (args[0] === 'workflow') { dispatched.push([...args]); return ok() }
@@ -118,7 +118,7 @@ describe('GitHub Actions CI on a public mirror', () => {
 
   it.each([
     ['the home path', { 'notes.md': 'see /home/owner/projects\n' }],
-    ['a computer name', { 'docs.md': 'Run it on Dexter first.\n' }],
+    ['a computer name', { 'docs.md': 'Run it on Builder first.\n' }],
     ['a Tailscale address', { 'hosts.txt': 'ssh 100.90.1.3\n' }],
     ['the tailnet domain', { 'hosts.txt': 'owner-desktop.tail0000.ts.net\n' }],
   ])('refuses to publish files naming %s', async (_kind, files) => {
