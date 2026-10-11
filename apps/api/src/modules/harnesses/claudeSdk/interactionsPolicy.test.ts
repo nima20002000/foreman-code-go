@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import { EventEmitter, once } from 'node:events'
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { ClaudeInteractionBridge, type ClaudeCallbackIdentity } from './interactions.js'
@@ -19,15 +20,20 @@ const identity: ClaudeCallbackIdentity = {
   nativeRequestId: 'permission', nativeRequestType: 'can_use_tool', mcpServer: { name: 'graphql', source: 'dynamic' },
 }
 function fixture(accepted = configuration, callbackJournal = memoryClaudeCallbackJournal()) {
+  const pending = new EventEmitter()
   const validate = vi.fn(async () => {})
   const persisted = vi.fn(async () => false)
   const bridge: ClaudeInteractionBridge = new ClaudeInteractionBridge(accepted, {
-    validate, validateResponse: validate, request: value => bridge.waitForResponse(value), deliveryPersisted: persisted,
+    validate, validateResponse: validate, request: value => {
+      const response = bridge.waitForResponse(value)
+      pending.emit('offered')
+      return response
+    }, deliveryPersisted: persisted,
     callbackJournal,
   })
   bridge.bindMcpTools([{ serverName: 'graphql', source: { kind: 'http', url: configuration.mcpServers.graphql!.url },
     tools: ['workspace_list', 'workspace_create'] }])
-  return { bridge, validate, persisted, callbackJournal }
+  return { bridge, validate, persisted, callbackJournal, waitForPending: () => once(pending, 'offered', { signal: AbortSignal.timeout(1000) }) }
 }
 
 it.each(['read-only', 'workspace-write'] as const)('refuses %s before tool approval is created', sandbox => {
@@ -50,7 +56,8 @@ it.each(['allow', 'ask', 'deny'] as const)('enforces the saved MCP %s effect aft
     expect(preflight.permissionDecision).toBe(effect === 'allow' ? undefined : effect)
     const decision = f.bridge.canUseTool(identity, tool, {}, new AbortController().signal)
     if (effect === 'ask') {
-      await vi.waitFor(() => expect(f.bridge.pendingInteractions(session)).toHaveLength(1))
+      await f.waitForPending()
+      expect(f.bridge.pendingInteractions(session)).toHaveLength(1)
       await f.bridge.respond(session, identity.nativeRequestId!, f.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
     }
     expect((await decision).behavior).toBe(effect === 'deny' ? 'deny' : 'allow')
@@ -75,7 +82,8 @@ it.each([
   const f = fixture()
   try {
     const decision = f.bridge.canUseTool(identity, tool, {}, new AbortController().signal)
-    await vi.waitFor(() => expect(f.bridge.pendingInteractions(session)).toHaveLength(1))
+    await f.waitForPending()
+    expect(f.bridge.pendingInteractions(session)).toHaveLength(1)
     const option = f.bridge.pendingInteractions(session)[0]!.responseOptions.find(value => value.optionId === selected)!
     await f.bridge.respond(session, identity.nativeRequestId!, option)
     expect(await decision).toMatchObject(selected === 'cancel' ? { behavior: 'deny', interrupt: true } : { behavior: 'allow' })
@@ -100,7 +108,8 @@ it('retires persisted delivery records and still refuses old callbacks with chan
     for (let index = 0; index < 300; index++) {
       const callback = { ...identity, toolUseId: `tool-${index}`, nativeRequestId: `permission-${index}` }
       const decision = f.bridge.canUseTool(callback, tool, { index }, new AbortController().signal)
-      await vi.waitFor(() => expect(f.bridge.pendingInteractions(session)).toHaveLength(1))
+      await f.waitForPending()
+      expect(f.bridge.pendingInteractions(session)).toHaveLength(1)
       await f.bridge.respond(session, callback.nativeRequestId, f.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
       expect((await decision).behavior).toBe('allow')
       await f.bridge.observeToolResult(callback, tool, 'executed')
@@ -123,7 +132,8 @@ it.each(['submitted', 'uncertain'] as const)('recovers evicted %s callbacks from
       const callback = { ...identity, toolUseId: `uncertain-tool-${index}`, nativeRequestId: `uncertain-control-${index}` }
       const controller = new AbortController()
       const decision = f.bridge.canUseTool(callback, tool, { index }, controller.signal)
-      await vi.waitFor(() => expect(f.bridge.pendingInteractions(session)).toHaveLength(1))
+      await f.waitForPending()
+      expect(f.bridge.pendingInteractions(session)).toHaveLength(1)
       if (state === 'uncertain') controller.abort()
       else await f.bridge.respond(session, callback.nativeRequestId, f.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
       expect((await decision).behavior).toBe(state === 'uncertain' ? 'deny' : 'allow')
@@ -144,7 +154,8 @@ it.each(['submitted', 'uncertain'] as const)('recovers evicted %s callbacks from
       expect(restored.bridge.pendingInteractions(session)).toEqual([])
       const next = { ...identity, toolUseId: 'later-tool', nativeRequestId: 'later-control' }
       const decision = restored.bridge.canUseTool(next, tool, { index: 300 }, new AbortController().signal)
-      await vi.waitFor(() => expect(restored.bridge.pendingInteractions(session)).toHaveLength(1))
+      await restored.waitForPending()
+      expect(restored.bridge.pendingInteractions(session)).toHaveLength(1)
       await restored.bridge.respond(session, next.nativeRequestId, restored.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
       expect((await decision).behavior).toBe('allow')
     } finally { restored.bridge.close() }
@@ -155,7 +166,8 @@ it('retries acknowledgment storage without resending a completed native permissi
   const f = fixture()
   try {
     const decision = f.bridge.canUseTool(identity, tool, {}, new AbortController().signal)
-    await vi.waitFor(() => expect(f.bridge.pendingInteractions(session)).toHaveLength(1))
+    await f.waitForPending()
+    expect(f.bridge.pendingInteractions(session)).toHaveLength(1)
     await f.bridge.respond(session, identity.nativeRequestId!, f.bridge.pendingInteractions(session)[0]!.responseOptions[0]!)
     expect((await decision).behavior).toBe('allow')
     const failure = vi.spyOn(f.callbackJournal, 'write').mockRejectedValueOnce(new Error('Acknowledgment save lost'))
