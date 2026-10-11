@@ -10,11 +10,11 @@ describe('terminal physical recovery preserves all fences', () => {
     if (outcome === 'failed') t.state.execution.result = { outcome, error: { code: 'TRANSIENT', message: 'Original provider failure', retryable: true } }
     const original = structuredClone(t.state.execution), physical = vi.fn(async () => true)
     try {
-      await recoverWorkflowNativeClosure(t.owner, original, physical, new AbortController().signal, 'terminal')
+      await recoverWorkflowNativeClosure(t.owner, original, physical, new AbortController().signal, { purpose: 'terminal' })
       expect(t.state.fenced).toBe(false)
       expect(t.state.execution).toEqual(original)
       expect(await readWorkflowClosure(t.connection, original)).toBeDefined()
-      await recoverWorkflowNativeClosure(t.owner, original, physical, new AbortController().signal, 'terminal')
+      await recoverWorkflowNativeClosure(t.owner, original, physical, new AbortController().signal, { purpose: 'terminal' })
       expect(physical).toHaveBeenCalledTimes(1)
       expect(t.state.inserts).toBe(1)
     } finally { await t.owner.release() }
@@ -28,7 +28,8 @@ describe('terminal physical recovery preserves all fences', () => {
       if (cut === 'prior-generation') t.state.lifetime!.prior_unclosed = true
       const physical = vi.fn(async () => cut !== 'no-evidence')
       try {
-        await expect(recoverWorkflowNativeClosure(t.owner, t.state.execution, physical, new AbortController().signal, 'terminal')).rejects.toBeDefined()
+        await expect(recoverWorkflowNativeClosure(t.owner, t.state.execution, physical,
+          new AbortController().signal, { purpose: 'terminal' })).rejects.toBeDefined()
         expect(t.state.proof).toBeUndefined()
         if (cut !== 'no-evidence') expect(physical).not.toHaveBeenCalled()
       } finally { await t.owner.release() }
@@ -47,7 +48,7 @@ describe('terminal physical recovery preserves all fences', () => {
           if (change === 'session') t.state.session!.nativeSessionId = 'different-session'
           if (change === 'terminal') t.state.execution.result = { outcome: 'succeeded', output: 'different result' }
           return true
-        }, new AbortController().signal, 'terminal')).rejects.toBeDefined()
+        }, new AbortController().signal, { purpose: 'terminal' })).rejects.toBeDefined()
         expect(t.state.proof).toBeUndefined()
       } finally { t.state.lost = false; await t.owner.release() }
     })

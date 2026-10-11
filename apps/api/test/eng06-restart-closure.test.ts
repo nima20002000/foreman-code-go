@@ -6,6 +6,25 @@ import { recoveryDatabase } from './helpers/eng06Recovery.testSupport.js'
 const freshSignal = () => new AbortController().signal
 
 describe('ENG06-A exact restart closure evidence', () => {
+  it.each([false, true])('rejects a resident generation mismatch before native IO (already closed: %s)', async closed => {
+    const db = recoveryDatabase()
+    let calls = 0
+    const close = async () => {
+      calls += 1
+      return true
+    }
+    try {
+      if (closed) await recoverWorkflowNativeClosure(db.owner, db.state.execution, async () => true, freshSignal())
+      const previous = await readWorkflowClosure(db.connection, db.state.execution)
+      await assert.rejects(recoverWorkflowNativeClosure(db.owner, db.state.execution, close,
+        freshSignal(), { generation: '72' }), { code: 'NATIVE_WORKFLOW_CLOSURE_CONFLICT' })
+      assert.equal(calls, 0)
+      assert.deepEqual(await readWorkflowClosure(db.connection, db.state.execution), previous)
+    } finally {
+      await db.owner.release()
+    }
+  })
+
   it('keeps a terminal detached execution pending until its original process closure is confirmed', async () => {
     const db = recoveryDatabase({ detached: true })
     db.state.execution.state = 'completed'
