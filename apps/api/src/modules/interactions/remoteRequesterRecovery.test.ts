@@ -9,6 +9,7 @@ import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
+import { repeatDigest, repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { nativeLanes } from '../../../test/helpers/nativeLanes.js'
 import { ApprovalExecutionCoordinator } from './execution.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
@@ -64,8 +65,16 @@ async function recoverRequester(detached: boolean) {
   vi.mocked(readRemoteWorkflowContinuation).mockImplementation(async () => structuredClone(continuation))
   vi.mocked(openWorkflowLifecycleLocked).mockResolvedValue({} as Awaited<ReturnType<typeof openWorkflowLifecycleLocked>>)
   vi.mocked(assertSavedPendingApprovalOriginalLocked).mockResolvedValue({
+    proofId: 'original-approval-proof', scope: base.scope,
+    ref: { nodeId: execution.workflowNodeId, occurrence: null },
+    execution: repeatExecutionIdentity(execution), inputDigest: repeatDigest(execution.input),
+    commandId: `execution:${execution.id}`, session,
     original: { type: 'history', history },
-  } as Awaited<ReturnType<typeof assertSavedPendingApprovalOriginalLocked>>)
+    observedAt: base.createdAt, ownerId: 'original-owner', ownerFence: '1',
+    lifetimeGeneration: 1, closureGeneration: continuation.generation,
+    lane: { id: 'original-lane', token: 'original-lane-token', connectionGeneration: 1,
+      providerId: original.turn.nativeTurnId! },
+  })
   const releaseRetention = vi.fn(async () => {})
   const owner = {
     runId: base.run.id, assertOwned: vi.fn(), retain: vi.fn(() => releaseRetention), release: vi.fn(async () => {}),

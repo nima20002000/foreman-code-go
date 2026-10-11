@@ -111,11 +111,12 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
   const f = fixture()
   if (options.handoff) {
     f.base.version.definition.handoffs = { contractVersion: 1 }
-    f.execution.input = WorkActivationInputSchema.parse({ executionSemanticsVersion: 3, runInput: {},
+    const input = WorkActivationInputSchema.parse({ executionSemanticsVersion: 3, runInput: {},
       occurrence: null, entry: null, predecessors: [], work: { kind: 'entry', activation: {
         scope: f.base.scope, activationId: 'original-activation', workflowNodeId: f.execution.workflowNodeId,
         lineageId: 'original-lineage', cause: { kind: 'entry' },
       } } })
+    f.execution.input = HarnessExecutionSchema.shape.input.parse(input)
   }
   const coordination = nativeLanes()
   await coordination.bindWorkflowSession(f.execution.id, f.session)
@@ -128,9 +129,10 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
   const originalRequest = workflowExecutionRequest({ execution: f.execution, version: f.base.version,
     configuration: f.base.configurations[0]!, workspaceId: f.base.run.workspaceId,
     ...(options.handoff ? { executionContext: { parentRequest: null } } : {}) })
+  const beforeReattach: (signal?: AbortSignal) => Promise<void> = async () => {}
   const worker = { receipt: structuredClone(f.receipt), authenticated: true, session: f.session,
     principalId: f.principal.id, beforeApplicationAccess: () => {},
-    beforeReattach: async (_signal?: AbortSignal) => {} }
+    beforeReattach }
   const requests: string[] = []
   const proxies: RemoteNativeSessionManager[] = []
   const credentials = { bindReviewerJob: vi.fn(async (_executionId: string, _credential: unknown, job: ReviewJob) => {

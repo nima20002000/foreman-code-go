@@ -1673,7 +1673,7 @@ export function buildProductionApp(
           await managers.dispose()
           await deviceRuntime.drain()
         } catch (error) {
-          throw new AggregateError([error], 'Execution native manager disposal was incomplete.')
+          throw new AggregateError([error], 'Execution native manager disposal was incomplete.', { cause: error })
         }
       } },
       { name: 'remaining Operator native managers', run: async () => {
