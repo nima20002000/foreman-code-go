@@ -426,8 +426,19 @@ async function remoteReviewerFixture() {
     attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }),
     prepareReviewTurn: async (_executionId, reference, job) => manager.prepareReview(reference, job) }
   const dispatcher = new ReviewerDispatcher(coordination.asRepository(), runtime)
+  const dispatchers = new Set([dispatcher])
   return { state, coordination, dispatcher, get manager() { return manager }, get journal() { return journal },
     request, intent, placement, release,
+    async restartMain() {
+      await dispatcher.shutdown()
+      await manager.closeForRestart(session)
+      await manager.dispose()
+      manager = proxy()
+      await manager.attachSession(session, { request, correlationId: `execution:${intent.executionId}` })
+      const replacement = new ReviewerDispatcher(coordination.asRepository(), runtime)
+      dispatchers.add(replacement)
+      return replacement
+    },
     async restart() {
       await host.drain()
       await journal.close()
@@ -440,7 +451,7 @@ async function remoteReviewerFixture() {
     },
     async close() {
       release()
-      await dispatcher.shutdown()
+      await Promise.all([...dispatchers].map(current => current.shutdown()))
       await host.drain()
       await journal.close()
       await rm(root, { recursive: true, force: true })
@@ -462,6 +473,35 @@ test('remote workflow settlement retains its Orchestrator for an assigned review
     assert.equal(f.state.closed, true)
     const status = await f.journal.status(f.intent.operationId)
     assert.equal(status.status === 'known' && status.receipt.phase, 'confirmed_terminal')
+  } finally { await f.close() }
+})
+
+test('Main restart detaches observation while the original Worker review continues without resubmission', async () => {
+  const f = await remoteReviewerFixture()
+  try {
+    await f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
+    f.state.parked = true
+    const dispatch = f.dispatcher.dispatchNext('reviewer', 'original-observer')
+    const detached = assert.rejects(dispatch, { code: 'ENGINE_RESTART' })
+    await vi.waitFor(() => assert.equal(f.coordination.job?.state, 'acknowledged'))
+    const original = clone(f.coordination.job!)
+    const replacement = await f.restartMain()
+    await detached
+    assert.equal(f.coordination.job?.leaseToken, undefined)
+    assert.equal(f.coordination.lane.leaseToken, undefined)
+    assert.equal(f.coordination.job?.providerTurnOrMessageId, original.providerTurnOrMessageId)
+    assert.equal(f.coordination.lane.currentTurnOrMessageId, original.providerTurnOrMessageId)
+    assert.equal(f.state.closed, false)
+    assert.deepEqual([f.state.creates, f.state.workflows, f.state.reviews, f.state.decisions], [1, 1, 1, 0])
+    f.release()
+    const completed = await replacement.dispatchNext('reviewer', 'replacement-observer')
+    assert.equal(completed?.state, 'completed')
+    assert.equal(completed?.id, original.id)
+    assert.equal(completed?.nativeSessionId, original.nativeSessionId)
+    assert.equal(completed?.providerTurnOrMessageId, original.providerTurnOrMessageId)
+    assert.equal(f.coordination.delivered, true)
+    assert.deepEqual([f.state.creates, f.state.workflows, f.state.reviews, f.state.decisions], [1, 1, 1, 1])
+    assert.equal(f.state.closed, false)
   } finally { await f.close() }
 })
 

@@ -86,6 +86,63 @@ it('retries failed disposal on the same manager while keeping native writes clos
   }
 })
 
+it('drains a retained observer aborted during the restart ownership check before detaching', async () => {
+  const provider = silentProvider()
+  provider.manager.closeForRestart = vi.fn(async () => undefined)
+  const coordination = nativeLanes()
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  const controller = new AbortController()
+  const observing = deferred()
+  const checkEntered = deferred()
+  const checkFinished = deferred()
+  const releaseEntered = deferred()
+  const releaseFinished = deferred()
+  const observationFinished = deferred()
+  const observation = writer.withLane(session, 'review-turn', controller.signal, async (_manager, lease) => {
+    await coordination.bindLaneTurn(lease.fence, 'review-turn')
+    await coordination.acknowledgeLaneTurn(lease.fence, 'review-turn', 'provider-review-turn')
+    lease.providerId = 'provider-review-turn'
+    observing.resolve()
+    await observationFinished.promise
+  })
+  await observing.promise
+  const assertLease = coordination.assertLaneLease.bind(coordination)
+  vi.spyOn(coordination, 'assertLaneLease').mockImplementationOnce(async (...args) => {
+    checkEntered.resolve()
+    await checkFinished.promise
+    await assertLease(...args)
+  })
+  const releaseLane = coordination.releaseLane.bind(coordination)
+  vi.spyOn(coordination, 'releaseLane').mockImplementationOnce(async (...args) => {
+    releaseEntered.resolve()
+    await releaseFinished.promise
+    return releaseLane(...args)
+  })
+  const closing = writer.closeForRestart(session)
+  try {
+    await checkEntered.promise
+    controller.abort(new DomainError('ENGINE_RESTART', 'Main is restarting.', 409))
+    checkFinished.resolve()
+    observationFinished.resolve()
+    await releaseEntered.promise
+    expect(provider.manager.closeForRestart).not.toHaveBeenCalled()
+    releaseFinished.resolve()
+    await Promise.all([closing, observation])
+    expect(provider.manager.closeForRestart).toHaveBeenCalledExactlyOnceWith(session)
+    expect(provider.manager.cancel).not.toHaveBeenCalled()
+    expect(provider.manager.close).not.toHaveBeenCalled()
+    expect(await coordination.getLane('codex', session.nativeSessionId)).toMatchObject({
+      correlationId: 'review-turn', currentTurnOrMessageId: 'provider-review-turn', observedStatus: 'disconnected',
+    })
+    expect((await coordination.getLane('codex', session.nativeSessionId))?.leaseToken).toBeUndefined()
+  } finally {
+    checkFinished.resolve()
+    observationFinished.resolve()
+    releaseFinished.resolve()
+    await Promise.allSettled([closing, observation])
+  }
+})
+
 it('batches ready output independently of database lease-check latency', async () => {
   vi.useFakeTimers()
   const frames = Array.from({ length: 35 }, (_, sequence) => ({ ...frame, sequence }))

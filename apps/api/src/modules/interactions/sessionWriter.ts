@@ -635,7 +635,15 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       active = this.active.get(session.nativeSessionId)
     }
     if (active) {
-      await active.guard.check()
+      try {
+        await active.guard.check()
+      } catch (error) {
+        if (!restart || !active.guard.signal.aborted || isLeaseLost(error)
+          || error !== active.guard.signal.reason) throw error
+        // Restart can abort observation while its ownership check is awaiting SQL.
+        await active.finished
+        return this.closeOwned(session, restart)
+      }
       active.observedStatus = 'disconnected'
       return close(this.manager)
     }
