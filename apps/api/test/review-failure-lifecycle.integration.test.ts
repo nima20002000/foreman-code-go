@@ -25,6 +25,7 @@ describe.skipIf(!postgresEnabled)('current review failure ownership and cleanup'
     const fixtures: Fixture[] = []
     const clients: Client[] = []
     let app: ReturnType<typeof buildApp> | undefined
+    const errors: unknown[] = []
     try {
       // Separate schemas let the two fixtures migrate and start independently.
       const setup = await Promise.allSettled([routedApprovalFixture(), routedApprovalFixture()])
@@ -70,14 +71,21 @@ describe.skipIf(!postgresEnabled)('current review failure ownership and cleanup'
       const detail = await allowed.callTool({ name: 'interaction_get', arguments: { interactionId: f.interaction.id } })
       expect(detail.isError).not.toBe(true)
       expect(decodeMcpToolResult(detail)).toMatchObject({ review: { state: 'failed', reviewJobId: f.job.id, cleanupPending: true } })
-    } finally {
-      await Promise.allSettled(clients.map((c) => c.close()))
-      try { await app?.close() } finally {
-        const cleanup = await Promise.allSettled(fixtures.map((fixture) => fixture.close()))
-        const errors = cleanup.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
-        if (errors.length) throw new AggregateError(errors, 'Review failure fixture cleanup failed.')
-      }
+    } catch (error) {
+      errors.push(error)
     }
+    await Promise.allSettled(clients.map((c) => c.close()))
+    try {
+      await app?.close()
+    } catch (error) {
+      errors.push(error)
+    }
+    const cleanup = await Promise.allSettled(fixtures.map((fixture) => fixture.close()))
+    for (const result of cleanup) {
+      if (result.status === 'rejected') errors.push(result.reason)
+    }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'Review failure test and cleanup failed.')
   }, 60000)
 
   it.each(['REVIEW_NATIVE_CLOSURE_UNCONFIRMED', 'REVIEW_SUBMISSION_REJECTED'] as const)('%s remains pending across repeated recovery until actual Stop cleanup', async (code) => {

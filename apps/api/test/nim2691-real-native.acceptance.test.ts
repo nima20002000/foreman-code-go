@@ -438,6 +438,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         let approvalNativeLaunch: ReturnType<NativeProcessRegistry['snapshot']>['launches'][number] | undefined
         let state: string | undefined, outcome: string | undefined
         const runDeadline = Date.now() + (scenario.capLoop ? 420_000 : 180_000)
+        let nextReconciliationAt = 0
         while (Date.now() < runDeadline) {
           if (restartOnArtifacts && !restarted) {
             const terminal = (await pool.query<{ execution: unknown; closed: boolean; published: boolean }>(
@@ -526,7 +527,10 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             }
           }
           // server.ts runs this recovery every five seconds alongside native observation.
-          if (attempt % 5 === 0) await production.reconcile(recordFailure)
+          if (Date.now() >= nextReconciliationAt) {
+            await production.reconcile(recordFailure)
+            nextReconciliationAt = Date.now() + 5_000
+          }
           const row = (await pool.query<{ execution_state: string; record: { outcome?: string } }>(
             'select execution_state,record from runs where id=$1', [runId])).rows[0]
           state = row?.execution_state; outcome = row?.record.outcome

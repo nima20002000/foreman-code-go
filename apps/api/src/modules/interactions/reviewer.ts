@@ -124,7 +124,7 @@ export class ReviewerDispatcher {
     }
     const recovering = Boolean(job.submittedAt || job.acknowledgedAt || job.providerTurnOrMessageId
       || ['submitted', 'acknowledged', 'uncertain'].includes(available.state))
-    try {
+    const dispatch = async (): Promise<ReviewJob> => {
       const { providerVersion, ...ownerContext } = await guard.wait(this.coordination.getReviewJobContext(job.id))
       executionId = ownerContext.executionId
       await guard.check()
@@ -433,7 +433,8 @@ export class ReviewerDispatcher {
           })
         } finally { await maintenance?.stop() }
       })
-    } catch (rawError) {
+    }
+    const recoverDispatch = async (rawError: unknown): Promise<ReviewJob> => {
       const error = safe.error(rawError)
       if (isLeaseLost(rawError) || guard.signal.aborted) throw error
       await guard.check()
@@ -462,23 +463,37 @@ export class ReviewerDispatcher {
             retryAfter: new Date(Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempt, 4))).toISOString(),
           }),
         })
-    } finally {
-      try {
-        await guard.stop()
-        await finalizeCapturedReview()
-      } finally {
-        if (executionId) await this.nativeRuntime.releaseReviewSession?.(executionId)
-        if (guard.signal.reason instanceof DomainError && guard.signal.reason.code === 'ENGINE_RESTART'
-          && job.leaseToken === jobToken) {
-          // Observation has drained; the replacement Main can claim the same retained turn immediately.
-          try {
-            await this.coordination.transitionReviewJob(job.id, jobToken, job.state, { releaseLease: true })
-          } catch (error) {
-            // An expired lease or a successor's fence already prevents this owner from writing.
-            if (!isLeaseLost(error)) throw error
-          }
+    }
+    const errors: unknown[] = []
+    let result: ReviewJob | undefined
+    try {
+      result = await dispatch().catch(recoverDispatch)
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await guard.stop()
+      await finalizeCapturedReview()
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      if (executionId) await this.nativeRuntime.releaseReviewSession?.(executionId)
+      if (guard.signal.reason instanceof DomainError && guard.signal.reason.code === 'ENGINE_RESTART'
+        && job.leaseToken === jobToken) {
+        // Observation has drained; the replacement Main can claim the same retained turn immediately.
+        try {
+          await this.coordination.transitionReviewJob(job.id, jobToken, job.state, { releaseLease: true })
+        } catch (error) {
+          // An expired lease or a successor's fence already prevents this owner from writing.
+          if (!isLeaseLost(error)) throw error
         }
       }
+    } catch (error) {
+      errors.push(error)
     }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'Review dispatch and cleanup failed.')
+    return result
   }
 }

@@ -1005,6 +1005,54 @@ test('shutdown still reports an unexpected native capture failure', async () => 
   assert.equal(errors[0].message, 'Unexpected native capture failure')
 })
 
+for (const failure of ['dispatch', 'finalizer', 'release', 'dispatch-and-cleanup'] as const) {
+  test(`preserves ${failure} errors and attempts reviewer session release`, async () => {
+    const f = fixture()
+    await enqueue(f)
+    const steps: string[] = []
+    const dispatchError = new DomainError('REVIEW_JOB_LEASE_LOST', 'Dispatch lease lost.', 409)
+    const finalizerError = new Error('Review finalizer failed.')
+    const releaseError = new Error('Review session release failed.')
+    const dispatchFails = failure === 'dispatch' || failure === 'dispatch-and-cleanup'
+    const finalizerFails = failure === 'finalizer' || failure === 'dispatch-and-cleanup'
+    const releaseFails = failure === 'release' || failure === 'dispatch-and-cleanup'
+    if (dispatchFails) {
+      f.runtime.attachOwnedSession = async () => { throw dispatchError }
+    }
+    f.runtime.finishReview = async () => {
+      steps.push('finalize')
+      if (finalizerFails) throw finalizerError
+    }
+    f.runtime.releaseReviewSession = async () => {
+      steps.push('release')
+      if (releaseFails) throw releaseError
+    }
+    await assert.rejects(f.dispatcher.dispatchNext('reviewer', 'worker'), (error: unknown) => {
+      if (failure === 'dispatch-and-cleanup') {
+        assert.ok(error instanceof AggregateError)
+        assert.equal(error.errors.length, 3)
+        assert.ok(error.errors[0] instanceof DomainError)
+        assert.equal(error.errors[0].code, dispatchError.code)
+        assert.equal(error.errors[0].message, dispatchError.message)
+        assert.ok(error.errors[1] instanceof Error)
+        assert.equal(error.errors[1].message, finalizerError.message)
+        assert.equal(error.errors[2], releaseError)
+      } else if (dispatchFails) {
+        assert.ok(error instanceof DomainError)
+        assert.equal(error.code, dispatchError.code)
+        assert.equal(error.message, dispatchError.message)
+      } else if (finalizerFails) {
+        assert.ok(error instanceof Error)
+        assert.equal(error.message, finalizerError.message)
+      } else {
+        assert.equal(error, releaseError)
+      }
+      return true
+    })
+    assert.deepEqual(steps, ['finalize', 'release'])
+  })
+}
+
 test('reviewer and normal workflow turn share active lane; long turns renew both leases', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   let finish!: () => void
