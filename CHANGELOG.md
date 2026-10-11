@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.70] - 2026-10-11
+
+### Performance
+
+- MCP requests reuse tool JSON Schema conversions instead of rebuilding ~250 schemas per request.
+
+### Fixed
+
+- A transient database timeout on a native lane lease renewal is retried while the lease is still valid instead of cancelling the Agent.
+
 ## [0.0.69] - 2026-10-11
 
 ### Performance
