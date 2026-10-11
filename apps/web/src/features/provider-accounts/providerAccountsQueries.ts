@@ -50,17 +50,20 @@ function assertBinding(actual: ProviderAccountBinding | undefined, binding: Prov
 }
 function newerAccount(previous: ProviderAccount | undefined, next: ProviderAccount): ProviderAccount {
   if (!previous || previous.binding?.bindingRevision !== next.binding?.bindingRevision) return next
+  const metadata = previous.revision > next.revision ? previous : next
   const old = previous.observation
   const incoming = next.observation
   const oldIsNewer = old && (!incoming || old.generation > incoming.generation
-    || old.generation === incoming.generation && old.sequence > incoming.sequence)
-  if (!old || !oldIsNewer) return next
-  return { ...next, status: previous.status, identity: previous.identity, observation: old }
+    || old.generation === incoming.generation && old.sequence >= incoming.sequence)
+  const observation = oldIsNewer ? old : incoming
+  if (!observation) return metadata
+  return { ...metadata, status: observation.status, identity: observation.identity, observation }
 }
 function newerSnapshot(previous: ProviderAccountsSnapshot | undefined, next: ProviderAccountsSnapshot) {
-  if (previous && previous.revision > next.revision) return previous
-  return { ...next, accounts: next.accounts.map(account =>
-    newerAccount(previous?.accounts.find(item => item.id === account.id), account)) }
+  const metadata = previous && previous.revision > next.revision ? previous : next
+  return { ...metadata, accounts: metadata.accounts.map(account => newerAccount(
+    previous?.accounts.find(item => item.id === account.id),
+    next.accounts.find(item => item.id === account.id) ?? account)) }
 }
 function newerOperation(previous: ProviderAccountAuthenticationOperation | undefined,
   next: ProviderAccountAuthenticationOperation) {
@@ -88,6 +91,21 @@ export function useProviderAccounts(enabled = true, requestedScope: ProviderAcco
     },
     structuralSharing: (previous, incoming) =>
       newerSnapshot(previous as ProviderAccountsSnapshot | undefined, incoming as ProviderAccountsSnapshot),
+  })
+}
+export function useProviderAccountDetails(accountId: string | undefined, requestedScope: ProviderAccountScope = {}) {
+  const generation = useHarnessSessionEpoch()
+  const scope = useProviderAccountScope(requestedScope)
+  return useQuery({ queryKey: [...providerAccountsKey(scope), 'detail', accountId ?? null],
+    enabled: Boolean(accountId) && !sessionIsSwitching(), retry: false, refetchOnReconnect: 'always',
+    queryFn: async ({ signal }) => {
+      const account = await providerAccountsClient.get(accountId!, { signal })
+      assertSession(generation)
+      assertAccountScope(account, scope)
+      if (account.id !== accountId) throw new Error('Account readback belongs to another selection.')
+      return account
+    },
+    structuralSharing: (previous, incoming) => newerAccount(previous as ProviderAccount | undefined, incoming as ProviderAccount),
   })
 }
 export function useProviderAccount(binding?: ProviderAccountBinding) {

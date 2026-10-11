@@ -34,6 +34,16 @@ export function HarnessSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/harnesses' })
   const navigate = useNavigate({ from: '/settings/harnesses' })
   return <SettingsShell><HarnessDefaultsSettings selectedHarness={search.harness} section={search.section}
+    accountSelection={search.accountProvider && search.accountId ? {
+      provider: search.accountProvider, accountId: search.accountId,
+      ...(search.operationId ? { operationId: search.operationId } : {}),
+    } : undefined}
+    onAccountSelect={selection => void navigate({ search: {
+      ...(search.harness ? { harness: search.harness } : {}),
+      ...(search.section ? { section: search.section } : {}),
+      ...(selection ? { accountProvider: selection.provider, accountId: selection.accountId,
+        ...(selection.operationId ? { operationId: selection.operationId } : {}) } : {}),
+    } })}
     onOpen={(next) => void navigate({ search: next ?? {} })} /></SettingsShell>
 }
 export function SkillsSettingsRouteEntry() {

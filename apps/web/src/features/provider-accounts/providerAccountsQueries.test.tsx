@@ -107,3 +107,41 @@ it('ignores a reply begun under an old browser session', async () => {
   await act(async () => { next.resolve(); await next.promise })
   await waitFor(() => expect(view.result.current.data?.name).toBe('Current session account'))
 })
+
+it('isolates a late read when the Main and application installation change', async () => {
+  const late = held<void>()
+  const firstBinding = accountBinding()
+  const secondBinding = { ...firstBinding, target: { ...firstBinding.target,
+    hostRef: { kind: 'main' as const, mainId: '40000000-0000-4000-8000-000000000001' },
+    applicationInstallationId: '40000000-0000-4000-8000-000000000001' } }
+  let target = firstBinding
+  let started = false
+  server.use(http.get('/api/provider-accounts/:id', async () => {
+    const selected = target
+    if (selected === firstBinding) { started = true; await late.promise }
+    return HttpResponse.json({ ...observedAccount(), binding: selected,
+      name: selected === firstBinding ? 'First installation account' : 'Second installation account' })
+  }))
+  const view = renderHook(({ binding }) => useProviderAccount(binding), {
+    initialProps: { binding: firstBinding }, wrapper: wrapper(),
+  })
+  await waitFor(() => expect(started).toBe(true))
+  target = secondBinding
+  view.rerender({ binding: secondBinding })
+  await waitFor(() => expect(view.result.current.data?.name).toBe('Second installation account'))
+  await act(async () => { late.resolve(); await late.promise })
+  expect(view.result.current.data?.binding?.target).toEqual(secondBinding.target)
+  expect(view.result.current.data?.name).toBe('Second installation account')
+})
+
+it('keeps a newer label while accepting a newer native observation from an older metadata revision', async () => {
+  let account = { ...observedAccount(), name: 'Saved new label', revision: 2 }
+  server.use(http.get('/api/provider-accounts/:id', () => HttpResponse.json(account)))
+  const view = renderHook(() => useProviderAccount(accountBinding()), { wrapper: wrapper() })
+  await waitFor(() => expect(view.result.current.data?.name).toBe('Saved new label'))
+  account = { ...observedAccount(), name: 'Earlier label', revision: 1,
+    observation: { ...observedAccount().observation!, sequence: 2, identity: 'newer-display@example.test' } }
+  await act(async () => { await view.result.current.refetch() })
+  expect(view.result.current.data?.name).toBe('Saved new label')
+  expect(view.result.current.data?.observation?.identity).toBe('newer-display@example.test')
+})

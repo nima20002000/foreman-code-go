@@ -10,7 +10,7 @@ import { ClaudePluginSummary } from './ClaudePluginSummary'
 import { CodexPluginManager } from './CodexPluginManager'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { OperatorMcpStatus } from './OperatorMcpStatus'
-import { ProviderAccountsSettings } from '../provider-accounts/ProviderAccountsSettings'
+import { ProviderAccountsSettings, type ProviderAccountNavigation } from '../provider-accounts/ProviderAccountsSettings'
 
 /** Harnesses this app runs: Codex and Claude. */
 const HARNESSES = ['codex', 'claude'] as const
@@ -26,31 +26,36 @@ function useProviderDefaults() {
   return { incoming, query: catalogQuery }
 }
 
-function ProviderCard({ harness, value, revision, readiness, onOpen }: {
-  harness: Harness; value: HarnessDefaults; revision: number; readiness: string
+function ProviderCard({ harness, value, revision, readiness, onOpen, accountSelection, onAccountSelect }: {
+  harness: Harness; value?: HarnessDefaults | undefined; revision?: number | undefined; readiness: string
   onOpen(section: 'connections' | 'plugins'): void
+  accountSelection?: ProviderAccountNavigation | undefined
+  onAccountSelect?: ((selection: ProviderAccountNavigation | undefined) => void) | undefined
 }) {
   const name = harnessNames[harness]
-  const preset = value[harness]
+  const preset = value?.[harness]
   const summary = [...(preset ? harnessSummary(preset).filter((item) => item.label !== 'Harness') : [{ label: 'Preset', value: 'Not configured' }]),
     { label: 'Status', value: readiness }]
   return <SettingsChoice icon="settings" title={name} summary={summary}
     description={harness === 'codex' ? 'Native app-server' : 'Host-local Claude profile'}
     onSelect={() => askOperator(`Change the ${name} preset: `, { send: false })}
     footer={<>
-      <OperatorMcpStatus harness={harness} defaults={value} revision={revision} />
+      {value && revision !== undefined ? <OperatorMcpStatus harness={harness} defaults={value} revision={revision} /> : null}
       <span className="settings-choice-links">
         {harness === 'codex' ? <>
           <Button size="sm" variant="ghost" onClick={() => onOpen('connections')}>Connections</Button>
         </> : null}
         <Button size="sm" variant="ghost" onClick={() => onOpen('plugins')}>Plugins</Button>
       </span>
+      <ProviderAccountsSettings provider={harness} selection={accountSelection} onSelect={onAccountSelect} />
     </>} />
 }
 
 /** Harness presets and plugin changes are managed by the Operator. */
-export function HarnessDefaultsSettings({ selectedHarness, section, onOpen }: {
+export function HarnessDefaultsSettings({ selectedHarness, section, onOpen, accountSelection, onAccountSelect }: {
   selectedHarness?: AgentHarness | undefined; section?: HarnessSettingsSection | undefined
+  accountSelection?: ProviderAccountNavigation | undefined
+  onAccountSelect?: ((selection: ProviderAccountNavigation | undefined) => void) | undefined
   onOpen?(next: { harness: Harness; section: 'connections' | 'plugins' } | undefined): void
 }) {
   const { incoming, query } = useProviderDefaults()
@@ -71,18 +76,16 @@ export function HarnessDefaultsSettings({ selectedHarness, section, onOpen }: {
   } else if (!incoming) {
     overview = <LoadingState label="Loading harness defaults…" />
   } else {
-    overview = <>
-      {query.isError ? <Alert tone="warning" title="Harness defaults couldn't update"
-        action={<Button size="sm" onClick={() => void query.refetch()}>Retry defaults</Button>}>Showing the last saved presets.</Alert> : null}
-      <SettingsOverview title="Harnesses" description="Your harness presets. Ask the Operator to change one.">
-        {HARNESSES.map((harness) => <ProviderCard key={harness} harness={harness} value={incoming.value} revision={incoming.revision}
-          readiness={readiness(harness)} onOpen={(next) => onOpen?.({ harness, section: next })} />)}
-      </SettingsOverview>
-    </>
+    overview = query.isError ? <Alert tone="warning" title="Harness defaults couldn't update"
+      action={<Button size="sm" onClick={() => void query.refetch()}>Retry defaults</Button>}>Showing the last saved presets.</Alert> : null
   }
   return <>
     {overview}
-    <ProviderAccountsSettings />
+    <SettingsOverview title="Harnesses" description="Your harness presets. Ask the Operator to change one.">
+      {HARNESSES.map(harness => <ProviderCard key={harness} harness={harness} value={incoming?.value}
+        revision={incoming?.revision} readiness={readiness(harness)} accountSelection={accountSelection}
+        onAccountSelect={onAccountSelect} onOpen={next => onOpen?.({ harness, section: next })} />)}
+    </SettingsOverview>
     <Dialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) onOpen?.(undefined) }} size="lg"
       title={dialog === 'plugins' ? `${dialogName} plugins` : 'Codex connections'}
       description={dialog === 'plugins' ? `Plugins add skills, hooks and tools to ${dialogName}. Ask the Operator to manage them.`

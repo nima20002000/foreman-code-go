@@ -32,6 +32,7 @@ function mount() {
 function nativeReaders() {
   server.use(
     http.get('/api/provider-accounts', () => HttpResponse.json({ revision: 1, accounts: [] })),
+    http.get('/api/provider-accounts/page', () => HttpResponse.json({ revision: 1, accounts: [], defaults: [], nextCursor: null })),
     http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({
       harness: 'codex', revision, checkedAt, scope: 'native-user',
       servers: [{ name: 'private-tools', transport: 'stdio', label: 'tools', enabled: true,
@@ -55,7 +56,8 @@ it('opens native connections while the unrelated harness catalog is still loadin
   mount()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Add server' })).toBeEnabled())
   expect(screen.getByText('Loading harness defaults…')).toBeInTheDocument()
-  expect(await screen.findByText('Provider accounts')).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: 'Codex accounts' })).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Claude accounts' })).toBeVisible()
   expect(screen.getByRole('dialog', { name: 'Codex connections' })).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Add server' }))
   expect(screen.getByRole('textbox', { name: 'Server name' })).toBeVisible()

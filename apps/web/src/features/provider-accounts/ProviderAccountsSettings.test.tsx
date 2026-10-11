@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, operatorChatSettings, type HarnessConfiguration } from '@foreman-code/contracts'
 import {
   ProviderAccountCreateInputSchema, ProviderAccountRenameInputSchema, ProviderAccountCommandInputSchema,
-  ProviderAccountApiKeyInputSchema, ProviderAccountsSnapshotSchema, type ProviderAccount, type ProviderAccountsSnapshot,
+  ProviderAccountApiKeyInputSchema, ProviderAccountDefaultInputSchema, ProviderAccountsSnapshotSchema, type ProviderAccount, type ProviderAccountsSnapshot,
 } from '@foreman-code/contracts/provider-accounts'
 import { server } from '../../mocks/server'
 import { queryKeys } from '../../shared/api/query'
@@ -18,6 +18,7 @@ import { defaultAgentForHarness } from '../agents/agentSettings'
 import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { ProviderAccountsSettings } from './ProviderAccountsSettings'
 import { ProviderAccountSelect } from './ProviderAccountSelect'
+import { accountTarget, authenticationOperation } from './providerAccounts.fixtures'
 
 vi.mock('../../shared/api/harnessSettings', async importOriginal => ({
   ...await importOriginal<typeof import('../../shared/api/harnessSettings')>(),
@@ -50,6 +51,13 @@ function fixtures() {
     { id: claudeId, provider: 'claude', name: 'Claude subscription', authMode: 'subscription', isDefault: false,
       status: 'signed-in', identity: 'claude@example.test', revision: 1 },
   ] })
+  snapshot.accounts = snapshot.accounts.map(account => ({ ...account,
+    binding: { kind: 'slot', accountId: account.id, provider: account.provider, target: accountTarget,
+      profileRef: account.id, bindingRevision: 1, subject: null },
+    observation: { bindingRevision: 1, generation: 1, sequence: 1, observedAt: '2026-10-01T12:00:00.000Z',
+      status: account.status, identity: account.identity, subject: null,
+      readiness: account.status === 'signed-out' ? 'sign-in-required' : 'ready' },
+  }))
   const writes: unknown[] = []
   let reads = 0
   function updated() {
@@ -57,6 +65,25 @@ function fixtures() {
     return HttpResponse.json({ value: snapshot, replayed: false })
   }
   server.use(
+    http.get('/api/local-human', () => HttpResponse.json({ principal: { id: 'account-test-reader', name: 'Test browser',
+      expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['provider_accounts:read', 'provider_accounts:manage'], scope: {} }] } })),
+    http.get('/api/provider-accounts/:id/models', ({ params }) => {
+      const account = snapshot.accounts.find(value => value.id === params.id)!
+      return HttpResponse.json({ binding: account.binding, generation: 1, observedAt: '2026-10-01T12:00:00.000Z',
+        models: [{ id: account.provider === 'claude' ? savedClaudeConfiguration.model : DEFAULT_HARNESS_DEFAULTS.codex.model,
+          name: 'Original model' }, { id: 'other-model', name: 'Other model' }] })
+    }),
+    http.post('/api/provider-accounts/:id/authentication', async ({ params, request }) => {
+      const input = await request.json()
+      writes.push(input)
+      const selected = snapshot.accounts.find(value => value.id === params.id)!
+      snapshot.accounts = snapshot.accounts.map(value => value.id === selected.id ? { ...value, status: 'login-pending',
+        observation: { ...value.observation!, status: 'login-pending', sequence: 2 } } : value)
+      snapshot.revision++
+      return HttpResponse.json({ value: authenticationOperation({ binding: selected.binding!, state: 'awaiting-human' }), replayed: false })
+    }),
+    http.post('/api/provider-accounts/authentication/status', () => HttpResponse.json(
+      authenticationOperation({ binding: snapshot.accounts.find(value => value.id === workId)!.binding! }))),
     http.get('/api/provider-accounts', () => { reads += 1; return HttpResponse.json(snapshot) }),
     http.post('/api/provider-accounts', async ({ request }) => {
       const input = ProviderAccountCreateInputSchema.parse(await request.json())
@@ -75,7 +102,7 @@ function fixtures() {
     http.post('/api/provider-accounts/:id/:action', async ({ params, request }) => {
       const body = await request.json()
       const input = params.action === 'api-key' ? ProviderAccountApiKeyInputSchema.parse(body)
-        : ProviderAccountCommandInputSchema.parse(body)
+        : params.action === 'default' ? ProviderAccountDefaultInputSchema.parse(body) : ProviderAccountCommandInputSchema.parse(body)
       writes.push(input)
       const selected = snapshot.accounts.find(account => account.id === params.id)!
       snapshot.accounts = snapshot.accounts.map((account): ProviderAccount => {
@@ -85,7 +112,8 @@ function fixtures() {
         if (account.id !== selected.id) return account
         if (params.action === 'login') return { ...account, status: 'login-pending' }
         if (params.action === 'logout') return { ...account, status: 'signed-out', identity: null }
-        return { ...account, status: 'signed-in', identity: 'work@example.test' }
+        return { ...account, status: 'signed-in', identity: 'work@example.test',
+          observation: { ...account.observation!, status: 'signed-in', identity: 'work@example.test', sequence: 3, readiness: 'ready' } }
       })
       return updated()
     }),
@@ -112,9 +140,12 @@ it('creates a named account and reads back default, rename, login and refreshed 
   expect(within(personal).getByText('Signed in')).toBeVisible()
   const work = screen.getByRole('article', { name: 'Work account' })
   await user.click(within(work).getByRole('button', { name: 'Make default' }))
-  await waitFor(() => expect(within(work).getByText('Default')).toBeVisible())
-  expect(within(personal).queryByText('Default')).not.toBeInTheDocument()
-  await user.click(within(work).getByRole('button', { name: 'Sign in' }))
+  await waitFor(() => expect(within(work).getByText('Default for new work')).toBeVisible())
+  expect(within(personal).queryByText('Default for new work')).not.toBeInTheDocument()
+  await user.click(within(work).getByRole('button', { name: 'Authentication progress' }))
+  await user.click(screen.getByRole('button', { name: 'Prepare authentication' }))
+  expect(await screen.findByText('Waiting for human sign-in')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Hide progress' }))
   expect(await within(work).findByText('Sign-in pending')).toBeVisible()
   await user.click(within(work).getByRole('button', { name: 'Refresh status' }))
   expect(await within(work).findByText('work@example.test')).toBeVisible()
@@ -247,4 +278,81 @@ it.each(['codex', 'claude'] as const)('keeps the Operator’s %s account when it
   await user.click(screen.getByRole('button', { name: /Original model\s*Choose model/ }))
   await user.click(screen.getByRole('button', { name: /Other model\s*other-model/ }))
   expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue(selected)
+})
+
+
+it('removes only from selection and renders the persisted tombstone without choosing another default', async () => {
+  const data = fixtures()
+  server.use(http.post('/api/provider-accounts/:id/remove', async ({ params, request }) => {
+    const input = ProviderAccountCommandInputSchema.parse(await request.json())
+    data.writes.push(input)
+    const accounts = data.snapshot.accounts.map(account => account.id === params.id
+      ? { ...account, removedAt: '2026-10-01T13:00:00.000Z', isDefault: false } : account)
+    data.snapshot.accounts = accounts
+    return HttpResponse.json({ value: { ...data.snapshot, revision: 2 }, replayed: false })
+  }))
+  const { user } = mount()
+  const original = await screen.findByRole('article', { name: 'Personal account' })
+  await user.click(within(original).getByRole('button', { name: 'Remove from selection' }))
+  expect(screen.getByRole('dialog')).toHaveTextContent('Saved Runs, chats, local credentials and native history are preserved.')
+  await user.click(screen.getByRole('button', { name: 'Remove account' }))
+  expect(await within(original).findByText(/Removed from selection/)).toBeVisible()
+  expect(data.snapshot.accounts.find(account => account.id === workId)?.isDefault).toBe(false)
+})
+
+it('keeps a rename draft after a revision conflict and retries against persisted readback', async () => {
+  const data = fixtures()
+  let requests = 0
+  server.use(http.patch('/api/provider-accounts/:id', async ({ params, request }) => {
+    const input = ProviderAccountRenameInputSchema.parse(await request.json())
+    data.writes.push(input)
+    requests++
+    if (requests === 1) {
+      data.snapshot.revision = 2
+      return HttpResponse.json({ error: { code: 'REVISION_CONFLICT', message: 'Account changed. Refresh before saving.' } }, { status: 409 })
+    }
+    data.snapshot.accounts = data.snapshot.accounts.map(account => account.id === params.id ? { ...account, name: input.name } : account)
+    return HttpResponse.json({ value: { ...data.snapshot, revision: 3 }, replayed: false })
+  }))
+  const { user } = mount()
+  await user.click(within(await screen.findByRole('article', { name: 'Work account' })).getByRole('button', { name: 'Configure' }))
+  const field = screen.getByRole('textbox', { name: 'Account name' })
+  await user.type(field, ' updated')
+  await user.click(screen.getByRole('button', { name: 'Save name' }))
+  expect(await screen.findByText('Account changed. Refresh before saving.')).toBeVisible()
+  expect(field).toHaveValue('Work updated')
+  await user.click(screen.getByRole('button', { name: 'Save name' }))
+  expect(await screen.findByRole('article', { name: 'Work updated account' })).toBeVisible()
+  expect(data.writes.at(-1)).toMatchObject({ expectedRevision: 2 })
+})
+
+it('keeps status readable when management access is absent', async () => {
+  fixtures()
+  server.use(http.get('/api/local-human', () => HttpResponse.json({ principal: { id: 'reader', name: 'Read-only browser',
+    expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['provider_accounts:read'], scope: {} }] } })))
+  mount()
+  const row = await screen.findByRole('article', { name: 'Work account' })
+  expect(within(row).getByText('Signed out')).toBeVisible()
+  expect(within(row).getByRole('button', { name: 'Configure' })).toBeDisabled()
+  expect(within(row).getByRole('button', { name: 'Make default' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Add Codex account' })).toBeDisabled()
+})
+
+it('keeps inside clicks and inside-start drags open, then dismisses an unchanged editor from the backdrop', async () => {
+  fixtures()
+  const { user } = mount()
+  const trigger = await screen.findByRole('button', { name: 'Add Codex account' })
+  await waitFor(() => expect(trigger).toBeEnabled())
+  await user.click(trigger)
+  const dialog = screen.getByRole('dialog')
+  const field = screen.getByRole('textbox', { name: 'Account name' })
+  await user.click(field)
+  expect(dialog).toBeVisible()
+  fireEvent.pointerDown(field)
+  fireEvent.click(dialog)
+  expect(dialog).toBeVisible()
+  fireEvent.pointerDown(dialog)
+  fireEvent.click(dialog)
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(trigger).toHaveFocus()
 })
