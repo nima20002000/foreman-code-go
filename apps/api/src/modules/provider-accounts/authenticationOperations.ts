@@ -11,7 +11,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import type { ProviderAccountsRepository } from './repository.js'
-import type { LocalProviderCredentials } from './localCredentials.js'
+import type { ProviderAccountCredentials } from './service.js'
 import type { ProviderAccountOperationNativePort } from './service.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { sameDeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -45,7 +45,7 @@ export async function assertAccountUnused(sql: GraphSqlClient, accountId: string
 
 export class ProviderAccountAuthenticationOperations {
   constructor(private readonly pool: pg.Pool, private readonly repository: ProviderAccountsRepository,
-    private readonly credentials: LocalProviderCredentials, private readonly native: ProviderAccountOperationNativePort,
+    private readonly credentials: ProviderAccountCredentials, private readonly native: ProviderAccountOperationNativePort,
     private readonly commands: PostgresCommandCoordinator, private readonly authorize: Authorize) {}
 
   async read(id: string, sql: GraphSqlClient = this.pool): Promise<ProviderAccountAuthenticationOperation> {
@@ -265,8 +265,8 @@ export class ProviderAccountAuthenticationOperations {
         const newer = !previous || observed.generation > previous.generation
           || (observed.generation === previous.generation && observed.sequence > previous.sequence)
         if (newer) {
-          const changedSubject = account.observation?.subject && observed.subject
-            && account.observation.subject.subject !== observed.subject.subject
+          const changedSubject = account.observation?.subject
+            && account.observation.subject.subject !== observed.subject?.subject
           if (changedSubject) {
             await assertAccountUnused(sql, account.id)
           }

@@ -472,6 +472,9 @@ it('detects reliable same-scope duplicates without merging and protects a used p
     .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_PRINCIPAL_LOCKED' })
   await expect(f.service.prepareAuthentication(f.owner.principal, 'mcp', first.id,
     { ...command(6), intent: 'sign-in' })).rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_PRINCIPAL_LOCKED' })
+  expect(await f.service.get(f.reader.principal, { accountId: first.id }))
+    .toMatchObject({ status: 'unavailable', observation: { subject: null, readiness: 'unavailable' } })
+  subject = 'qualified-provider-subject'
   expect((await f.createService().get(f.reader.principal, { accountId: first.id })).observation!.subject!.subject)
     .toBe('qualified-provider-subject')
 })
@@ -481,7 +484,7 @@ it('returns distinct account-scoped models and rejects unqualified or mismatched
   const first = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
   const second = (await add(f.service, f.owner.principal, 'codex', 'subscription', 1)).value.accounts[1]!
   f.native.models = async input => ({ binding: input.account.binding!, generation: 1,
-    observedAt: new Date().toISOString(), models: input.account.id === first.id ? [{ id: 'model-a', name: 'Model A' }] : [] })
+    observedAt: new Date().toISOString(), models: input.account.id === first.id ? [{ id: 'model-a', name: 'Model A', reasoningEfforts: [], variants: [], serviceTiers: [] }] : [] })
   const client = await f.connect(f.reader.token)
   const { ProviderAccountModelsSchema } = await import('@foreman-code/contracts/provider-accounts')
   const models = ProviderAccountModelsSchema.parse(decodeMcpToolResult(await client.callTool({
@@ -534,4 +537,344 @@ it('does not adopt prior slot records after an application reinstall even when t
     .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_TARGET_CONFLICT' })
   await expect(recreated.resolve('codex', account.id)).rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_TARGET_CONFLICT' })
   expect((await f.createService().get(f.owner.principal, { accountId: account.id })).binding).toEqual(account.binding)
+})
+
+it('discovers qualified actions and profiles, fresh persisted observations and original operations over authenticated MCP', async () => {
+  const f = await fixture()
+  const account = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const target = account.binding!.target
+  let sequence = 0
+  f.native.discover = async () => ({ generation: 7,
+    providers: [{ provider: 'codex', qualified: true, actions: ['register', 'status', 'models', 'sign-in', 'cancel', 'human-handoff'], reason: null }],
+    profiles: [{ profileRef: 'qualified-existing', qualificationId: 'storage-proof', provider: 'codex',
+      authMode: 'subscription', label: 'Existing CLI profile' }] })
+  f.native.observeAccount = async () => ({ bindingRevision: 1, generation: 7, sequence: ++sequence,
+    observedAt: new Date().toISOString(), status: 'signed-in', identity: null, subject: null, readiness: 'unknown' })
+  const client = await f.connect(f.owner.token)
+  const contracts = await import('@foreman-code/contracts/provider-accounts')
+  const read = async (name: string, arguments_: Record<string, unknown>) =>
+    decodeMcpToolResult(await client.callTool({ name, arguments: arguments_ }))
+  const targets = contracts.ProviderAccountTargetsSchema.parse(await read('provider_account_targets', {}))
+  expect(targets.targets).toEqual([{ target, label: 'Main', generation: 7, connected: true,
+    canRead: true, canManage: true, providers: (await f.native.discover(target)).providers }])
+  const profiles = contracts.ProviderAccountProfilesSchema.parse(await read('provider_account_profiles', { target, provider: 'codex' }))
+  expect(profiles.profiles[0]).toEqual({ profileRef: 'qualified-existing', qualificationId: 'storage-proof',
+    provider: 'codex', authMode: 'subscription', label: 'Existing CLI profile' })
+  const page = contracts.ProviderAccountPageSchema.parse(await read('provider_accounts_page', { target }))
+  expect(page.target).toEqual(target)
+  expect(page.accounts[0]!.observation).toMatchObject({ generation: 7, sequence: 1, status: 'signed-in', readiness: 'unknown' })
+  const readback = await f.createService().get(f.reader.principal, { target, accountId: account.id })
+  expect(readback.observation!.sequence).toBe(2)
+  expect(readback.revision).toBe(account.revision)
+  const encoded = new URLSearchParams({ target: JSON.stringify(target), includeRemoved: 'false', limit: '1' })
+  const http = await f.app.inject({ method: 'GET', url: `/api/provider-accounts/page?${encoded}`,
+    headers: { authorization: `Bearer ${f.reader.token}` } })
+  expect(http.statusCode).toBe(200)
+  expect(contracts.ProviderAccountPageSchema.parse(http.json()).accounts[0]!.observation!.sequence).toBe(3)
+  const bad = await f.app.inject({ method: 'GET', url: '/api/provider-accounts/page?target=invalid',
+    headers: { authorization: `Bearer ${f.reader.token}` } })
+  expect(bad.statusCode).toBe(400)
+  const operation = contracts.ProviderAccountAuthenticationResultSchema.parse(await read('provider_account_auth_prepare',
+    { ...command(1), accountId: account.id, target, intent: 'sign-in' })).value
+  const operations = contracts.ProviderAccountAuthenticationPageSchema.parse(await read('provider_account_auth_list',
+    { accountId: account.id, target, limit: 1 }))
+  expect(operations.operations).toEqual([operation])
+  expect((await f.createService().authenticationList(f.reader.principal, { accountId: account.id, target })).operations)
+    .toEqual([operation])
+  const eligibility = contracts.ProviderAccountEligibilitySchema.parse(await read('provider_account_eligibility',
+    { accountId: account.id, target }))
+  expect(eligibility).toMatchObject({ canManage: true, canReauthenticate: false })
+  expect(f.native.login).toHaveBeenCalledTimes(1)
+
+  const access = new PostgresAccessService(pool)
+  const denied = await access.issue({ name: 'No account access', audience: 'operator', expiresAt: new Date('2099-01-01'),
+    grants: [{ actions: ['settings:read'], scope: {} }] })
+  const deniedClient = await f.connect(denied.token)
+  for (const [name, arguments_] of [
+    ['provider_account_targets', {}], ['provider_account_profiles', { target }],
+    ['provider_account_eligibility', { accountId: account.id, target }],
+    ['provider_account_auth_list', { accountId: account.id, target }],
+    ['provider_accounts_page', { target }], ['provider_account_get', { accountId: account.id, target }],
+  ] as const) {
+    expect((await deniedClient.callTool({ name, arguments: arguments_ })).isError).toBe(true)
+  }
+  expect((await f.createService().authenticationList(f.reader.principal, { accountId: account.id })).operations)
+    .toEqual([operation])
+})
+
+it('returns full selected-account model metadata through HTTP/MCP and limits no-store handoff to a local human', async () => {
+  const f = await fixture()
+  const account = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const model = { id: 'selected-model', name: 'Selected model', reasoningEfforts: ['low', 'high'],
+    variants: ['fast'], serviceTiers: ['standard', 'priority'], releasedAt: '2026-01-01', defaultPriority: 2 }
+  f.native.models = async value => ({ binding: value.account.binding!, generation: 1,
+    observedAt: '2026-01-01T00:00:00.000Z', models: [model], options: { harness: 'codex', providerVersion: 'installed-release',
+      authenticated: true, models: [model], nativeAgents: [], settings: [], restrictions: [], checkedAt: '2026-01-01T00:00:00.000Z' } })
+  f.native.humanHandoff = async value => ({ operationId: value.operation.id, kind: 'local-browser',
+    expiresAt: value.operation.expiresAt, message: 'Complete sign-in in the local provider browser.' })
+  const client = await f.connect(f.owner.token)
+  const contracts = await import('@foreman-code/contracts/provider-accounts')
+  const models = contracts.ProviderAccountModelsSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_models', arguments: { accountId: account.id },
+  })))
+  expect(models.models).toEqual([model])
+  expect(models.options!.models).toEqual([model])
+  const encoded = new URLSearchParams({ target: JSON.stringify(account.binding!.target) })
+  const http = await f.app.inject({ method: 'GET', url: `/api/provider-accounts/${account.id}/models?${encoded}`,
+    headers: { authorization: `Bearer ${f.reader.token}` } })
+  expect(http.statusCode).toBe(200)
+  expect(contracts.ProviderAccountModelsSchema.parse(http.json())).toEqual(models)
+  const operation = (await f.service.prepareAuthentication(f.owner.principal, 'http', account.id,
+    { ...command(1), intent: 'sign-in' })).value
+  const denied = await f.app.inject({ method: 'POST', url: '/api/provider-accounts/authentication/handoff',
+    headers: { authorization: `Bearer ${f.owner.token}` }, payload: { operationId: operation.id } })
+  expect(denied.statusCode).toBe(403)
+  expect(denied.headers['cache-control']).toBe('no-store, private')
+  const human = await f.app.inject({ method: 'POST', url: '/api/provider-accounts/authentication/handoff',
+    payload: { operationId: operation.id } })
+  expect(human.statusCode).toBe(200)
+  expect(human.headers['cache-control']).toBe('no-store, private')
+  expect(contracts.ProviderAccountHumanHandoffSchema.parse(human.json()).operationId).toBe(operation.id)
+  expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain('provider_account_handoff')
+  const persisted = await f.createService().authenticationList(f.reader.principal, { accountId: account.id })
+  expect(persisted.operations).toEqual([operation])
+  expect(JSON.stringify(persisted)).not.toContain('Complete sign-in')
+  const access = new PostgresAccessService(pool)
+  const deniedReader = await access.issue({ name: 'No model access', audience: 'operator', expiresAt: new Date('2099-01-01'),
+    grants: [{ actions: ['settings:read'], scope: {} }] })
+  const blocked = await f.connect(deniedReader.token)
+  expect((await blocked.callTool({ name: 'provider_account_models', arguments: { accountId: account.id } })).isError).toBe(true)
+})
+
+it('does not persist or publish a page observation after authority is revoked during the native read', async () => {
+  const f = await fixture()
+  const account = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  let entered!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  let finish!: () => void
+  const wait = new Promise<void>(resolve => { finish = resolve })
+  f.native.observeAccount = async () => {
+    entered()
+    await wait
+    return { bindingRevision: 1, generation: 1, sequence: 900, observedAt: new Date().toISOString(),
+      status: 'signed-in', readiness: 'unknown', identity: null, subject: null }
+  }
+  const client = await f.connect(f.owner.token)
+  const pending = client.callTool({ name: 'provider_accounts_page', arguments: {} })
+  await started
+  await pool.query('update management_principals set revoked_at=now() where id=$1', [f.owner.principal.id])
+  finish()
+  expect((await pending).isError).toBe(true)
+  f.native.observeAccount = async () => ({ bindingRevision: 1, generation: 1, sequence: 1,
+    observedAt: new Date().toISOString(), status: 'signed-out', readiness: 'sign-in-required', identity: null, subject: null })
+  const readback = await f.createService().get(f.reader.principal, { accountId: account.id })
+  expect(readback.observation!.sequence).toBe(1)
+  expect(readback.status).toBe('signed-out')
+})
+
+it('allows account-only grants to discover and persist accounts through authenticated MCP without settings access', async () => {
+  const f = await fixture()
+  const issued = await new PostgresAccessService(pool).issue({ name: 'Account manager', audience: 'operator',
+    expiresAt: new Date('2099-01-01'), grants: [{ actions: ['provider_accounts:read', 'provider_accounts:manage'], scope: {} }] })
+  const client = await f.connect(issued.token)
+  const created = ProviderAccountUpdateResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_create', arguments: { ...command(0), provider: 'codex', authMode: 'subscription', name: 'Managed slot' },
+  })))
+  const account = created.value.accounts[0]!
+  const response = await client.callTool({ name: 'provider_account_get', arguments: { accountId: account.id } })
+  expect(ProviderAccountSchema.parse(decodeMcpToolResult(response)).binding).toEqual(account.binding)
+  expect((await f.createService().get(issued.principal, { accountId: account.id })).name).toBe('Managed slot')
+})
+
+it('rejects forged original authentication intent or expiry before granting Worker native authority', async () => {
+  const f = await fixture()
+  const account = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const prepared = await f.service.prepareAuthentication(f.owner.principal, 'mcp', account.id,
+    { ...command(1), intent: 'sign-in' })
+  await f.service.assertAuthenticationEligibility(prepared.value)
+  await expect(f.service.assertAuthenticationEligibility({ ...prepared.value, intent: 'sign-out' }))
+    .rejects.toMatchObject({ code: 'PROVIDER_AUTHENTICATION_STALE' })
+  await expect(f.service.assertAuthenticationEligibility({ ...prepared.value, expiresAt: '2099-01-01T00:00:00.000Z' }))
+    .rejects.toMatchObject({ code: 'PROVIDER_AUTHENTICATION_STALE' })
+  expect((await f.createService().authenticationList(f.reader.principal, { accountId: account.id })).operations)
+    .toEqual([prepared.value])
+  expect(f.native.login).toHaveBeenCalledTimes(1)
+})
+
+it('clears current identity on failed observations without replacing persisted subject evidence', async () => {
+  const f = await fixture()
+  const account = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const { DomainError } = await import('../errors.js')
+  f.native.observeAccount = async () => ({ bindingRevision: 1, generation: 1, sequence: 1,
+    observedAt: '2026-01-01T00:00:00.000Z', status: 'signed-in', identity: 'account@example.invalid',
+    subject: { subject: 'native-subject', provenance: 'qualified-native', qualificationId: 'storage-proof',
+      observedAt: '2026-01-01T00:00:00.000Z' }, readiness: 'unknown' })
+  await f.service.get(f.reader.principal, { accountId: account.id })
+  f.native.observeAccount = async () => { throw new DomainError('PROVIDER_ACCOUNT_UNQUALIFIED', 'Isolation evidence expired.', 409) }
+  const client = await f.connect(f.reader.token)
+  const unavailable = ProviderAccountSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_get', arguments: { accountId: account.id },
+  })))
+  expect(unavailable).toMatchObject({ status: 'unavailable', identity: null,
+    observation: { subject: null, identity: null, readiness: 'qualification-required' } })
+  delete f.native.observeAccount
+  const readback = await f.createService().get(f.reader.principal, { accountId: account.id })
+  expect(readback.observation!.subject!.subject).toBe('native-subject')
+})
+
+it('returns the latest persisted observation when a slower native read follows a refresh', async () => {
+  const f = await fixture()
+  const account = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  let sequence = 20
+  f.native.observeAccount = async () => ({ bindingRevision: 1, generation: 1, sequence,
+    observedAt: '2026-01-01T00:00:00.000Z', status: 'signed-in', identity: null, subject: null, readiness: 'unknown' })
+  const client = await f.connect(f.owner.token)
+  const refreshed = ProviderAccountUpdateResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_refresh', arguments: { ...command(1), accountId: account.id },
+  })))
+  expect(refreshed.value.accounts[0]!.observation!.sequence).toBe(20)
+  sequence = 10
+  const readback = ProviderAccountSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_get', arguments: { accountId: account.id },
+  })))
+  expect(readback.observation!.sequence).toBe(20)
+  expect((await f.createService().get(f.reader.principal, { accountId: account.id })).observation!.sequence).toBe(20)
+})
+
+it('routes the complete authenticated MCP Worker lifecycle to its owning slot and preserves receipts across service recreation', async () => {
+  const f = await fixture()
+  const { createRemoteAccountServices } = await import('./remoteServices.js')
+  const { createProviderAccountWorkerExtension } = await import('./workerOperations.js')
+  const { ProviderAccountTargetsSchema, ProviderAccountModelsSchema, ProviderAccountAuthenticationPageSchema } =
+    await import('@foreman-code/contracts/provider-accounts')
+  const connection = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+    bootId: randomUUID(), connectionEpoch: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
+  await pool.query('insert into application_installation values(true,$1) on conflict(singleton) do update set id=excluded.id',
+    [connection.mainId])
+  const registration = { mainId: connection.mainId, deviceId: connection.deviceId,
+    workerInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+    publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] }
+  await pool.query('insert into device_registrations(id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,$4,$5::jsonb)',
+    [connection.deviceId, connection.mainId, connection.workerInstallationId, 'fixture-public-key', JSON.stringify(registration)])
+  const target = { hostRef: { kind: 'device' as const, mainId: connection.mainId, deviceId: connection.deviceId },
+    applicationInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1 }
+  const slots = new Map<string, import('@foreman-code/contracts/provider-accounts').ProviderAccount>()
+  let online = true
+  let current = connection
+  let launches = 0
+  let observationSequence = 0
+  const operation = async (value: { operation: import('@foreman-code/contracts/provider-accounts').ProviderAccountAuthenticationOperation }) => ({
+    operationId: value.operation.id, binding: value.operation.binding, generation: value.operation.generation,
+    sequence: value.operation.nativeSequence + 1, state: 'awaiting-human' as const, nativeClosed: false,
+  })
+  const extension = createProviderAccountWorkerExtension({ current: () => current, authorize: async () => {},
+    provision: async account => { slots.set(account.id, account); return account },
+    resolve: async binding => {
+      const account = slots.get(binding.accountId)
+      if (!account) throw new Error('The owning Worker slot is missing')
+      return { account, homePath: '/fixture/native-profile', userHome: '/fixture/native-context' }
+    },
+    native: { status: async () => ({ status: 'signed-out', identity: null }), login: async () => {}, logout: async () => {},
+      cancelLogin: async () => {}, close: async () => {},
+      discover: async () => ({ generation: current.connectionGeneration,
+        providers: [{ provider: 'codex', qualified: true, actions: ['create', 'register', 'status', 'models', 'sign-in', 'cancel'], reason: null }],
+        profiles: [{ profileRef: 'worker-existing-profile', qualificationId: 'worker-storage-proof', provider: 'codex',
+          authMode: 'subscription', label: 'Worker profile' }] }),
+      registerProfile: async value => ({ profileRef: value.profileRef }),
+      observeAccount: async () => ({ bindingRevision: 1, generation: current.connectionGeneration, sequence: ++observationSequence,
+        observedAt: new Date().toISOString(), status: 'signed-out', identity: null, subject: null, readiness: 'sign-in-required' }),
+      models: async value => ({ binding: value.account.binding!, generation: current.connectionGeneration,
+        observedAt: new Date().toISOString(), models: [{ id: 'worker-model', name: 'Worker model',
+          reasoningEfforts: ['high'], variants: [], serviceTiers: ['standard'] }] }),
+      prepareAuthentication: async value => { launches++; return operation(value) }, observeAuthentication: operation,
+      cancelAuthentication: async value => ({ ...await operation(value), state: 'canceled', nativeClosed: true }),
+    } })
+  const endpoint = { captureRequest: (id: string) => online && id === current.deviceId ? { binding: current,
+    request: (payload: unknown) => extension.handle!(payload, { binding: current, signal: new AbortController().signal }) } : undefined,
+    currentBinding: () => current, capabilities: () => [] }
+  const route = (service: ProviderAccountsService) => {
+    service.bindRouting(createRemoteAccountServices({ pool, commands: f.commands, local: service, endpoint: () => endpoint }))
+    return service
+  }
+  route(f.service)
+  const client = await f.connect(f.owner.token)
+  const call = async (name: string, arguments_: Record<string, unknown>) =>
+    decodeMcpToolResult(await client.callTool({ name, arguments: arguments_ }))
+  expect(ProviderAccountTargetsSchema.parse(await call('provider_account_targets', {})).targets)
+    .toContainEqual(expect.objectContaining({ target, connected: true, canManage: true }))
+  const created = ProviderAccountUpdateResultSchema.parse(await call('provider_account_create',
+    { ...command(0), target, provider: 'codex', authMode: 'subscription', name: 'Remote slot' }))
+  const account = created.value.accounts[0]!
+  expect(slots.get(account.id)!.binding).toEqual(account.binding)
+  const access = new PostgresAccessService(pool)
+  const accountReader = await access.issue({ name: 'Worker slot reader', audience: 'operator', expiresAt: new Date('2099-01-01'),
+    grants: [{ actions: ['provider_accounts:read'], scope: { mainIds: [connection.mainId], deviceIds: [connection.deviceId],
+      applicationInstallationIds: [connection.workerInstallationId], providerAccountIds: [account.id] } }] })
+  const scopedClient = await f.connect(accountReader.token)
+  expect(ProviderAccountSchema.parse(decodeMcpToolResult(await scopedClient.callTool({
+    name: 'provider_account_get', arguments: { accountId: account.id, target },
+  }))).binding).toEqual(account.binding)
+  const scopedHttp = await f.app.inject({ method: 'GET',
+    url: `/api/provider-accounts/${account.id}?${new URLSearchParams({ target: JSON.stringify(target) })}`,
+    headers: { authorization: `Bearer ${accountReader.token}` } })
+  expect(scopedHttp.statusCode).toBe(200)
+  expect(ProviderAccountSchema.parse(scopedHttp.json()).id).toBe(account.id)
+  const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
+  await expect(f.service.acceptedBindings.prepare({ ...DEFAULT_HARNESS_DEFAULTS.codex, accountId: account.id }))
+    .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_SIGN_IN_REQUIRED' })
+  expect(ProviderAccountPageSchema.parse(await call('provider_accounts_page', { target })).target).toEqual(target)
+  expect(ProviderAccountModelsSchema.parse(await call('provider_account_models', { accountId: account.id, target })).models[0]!)
+    .toEqual({ id: 'worker-model', name: 'Worker model', reasoningEfforts: ['high'], variants: [], serviceTiers: ['standard'] })
+  const prepared = ProviderAccountAuthenticationResultSchema.parse(await call('provider_account_auth_prepare',
+    { ...command(1), target, accountId: account.id, intent: 'sign-in' }))
+  const readback = route(f.createService())
+  expect((await readback.authenticationList(f.reader.principal, { target, accountId: account.id })).operations)
+    .toEqual([prepared.value])
+  online = false
+  expect(ProviderAccountAuthenticationPageSchema.parse(await call('provider_account_auth_list', { target, accountId: account.id })).operations)
+    .toEqual([prepared.value])
+  online = true
+  current = { ...current, connectionGeneration: 2, connectionEpoch: randomUUID(), bootId: randomUUID() }
+  const status = ProviderAccountAuthenticationOperationSchema.parse(await call('provider_account_auth_status',
+    { target, operationId: prepared.value.id }))
+  expect(status.id).toBe(prepared.value.id)
+  expect(status.generation).toBe(1)
+  expect(launches).toBe(1)
+  const denied = await f.connect(f.reader.token)
+  for (const [name, arguments_] of [
+    ['provider_account_create', { ...command(2), target, provider: 'codex', authMode: 'subscription', name: 'Denied remote slot' }],
+    ['provider_account_register', { ...command(2), target, provider: 'codex', authMode: 'subscription', name: 'Denied profile',
+      profileRef: 'worker-existing-profile', qualificationId: 'worker-storage-proof' }],
+    ['provider_account_auth_prepare', { ...command(2), accountId: account.id, target }],
+    ['provider_account_auth_cancel', { ...command(status.revision), target, operationId: status.id }],
+    ['provider_account_remove', { ...command(2), target, accountId: account.id }],
+  ] as const) expect((await denied.callTool({ name, arguments: arguments_ })).isError).toBe(true)
+  expect(launches).toBe(1)
+  const access = new PostgresAccessService(pool)
+  const excluded = await access.issue({ name: 'Other device account reader', audience: 'operator', expiresAt: new Date('2099-01-01'),
+    grants: [{ actions: ['provider_accounts:read'], scope: { deviceIds: [randomUUID()] } }] })
+  const excludedClient = await f.connect(excluded.token)
+  expect(ProviderAccountTargetsSchema.parse(decodeMcpToolResult(await excludedClient.callTool({
+    name: 'provider_account_targets', arguments: {},
+  }))).targets).toEqual([])
+  for (const name of ['provider_accounts_page', 'provider_account_get', 'provider_account_models', 'provider_account_auth_list']) {
+    const arguments_ = name === 'provider_accounts_page' ? { target } : { target, accountId: account.id }
+    expect((await excludedClient.callTool({ name, arguments: arguments_ })).isError).toBe(true)
+  }
+  const canceled = ProviderAccountAuthenticationResultSchema.parse(await call('provider_account_auth_cancel',
+    { ...command(status.revision), target, operationId: status.id }))
+  expect(canceled.value).toMatchObject({ id: status.id, nativeClosed: true, state: 'canceled' })
+  const registered = ProviderAccountUpdateResultSchema.parse(await call('provider_account_register', {
+    ...command(2), target, provider: 'codex', authMode: 'subscription', name: 'Existing remote profile',
+    profileRef: 'worker-existing-profile', qualificationId: 'worker-storage-proof',
+  }))
+  expect(slots.get(registered.value.accounts[1]!.id)!.binding!.profileRef).toBe('worker-existing-profile')
+  const removed = ProviderAccountUpdateResultSchema.parse(await call('provider_account_remove', { ...command(3), target, accountId: account.id }))
+  expect(removed.value.accounts[0]!.removedAt).not.toBeNull()
+  expect((await route(f.createService()).get(f.reader.principal, { target, accountId: account.id })).removedAt)
+    .toBe(removed.value.accounts[0]!.removedAt)
+  current = { ...current, workerInstallationId: randomUUID(), connectionGeneration: 3 }
+  expect((await client.callTool({ name: 'provider_account_models', arguments: { target, accountId: registered.value.accounts[1]!.id } })).isError)
+    .toBe(true)
+  expect(launches).toBe(1)
 })

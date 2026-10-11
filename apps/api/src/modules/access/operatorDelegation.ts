@@ -8,7 +8,8 @@ export function intersectGrants(issued: ManagementGrant[], current: ManagementGr
     if (!actions.length) continue
     const scope: ManagementGrant['scope'] = {}
     let empty = false
-    for (const key of ['workspaceIds', 'workflowIds', 'runIds'] as const) {
+    for (const key of ['workspaceIds', 'workflowIds', 'runIds', 'mainIds', 'deviceIds',
+      'applicationInstallationIds', 'providerAccountIds'] as const) {
       const a = left.scope[key]; const b = right.scope[key]
       const values = a && b ? a.filter((id) => b.includes(id)) : a ?? b
       if (values && !values.length) empty = true

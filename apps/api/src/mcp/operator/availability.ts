@@ -154,7 +154,7 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   const result: Requirement[] = [{action:entry.action,scope}]
   if (name.startsWith('provider_account')) {
     result[0]!.scope = 'global'
-    if (name !== 'provider_accounts_list') result.push({ action: 'settings:read', scope: 'global' })
+    if (entry.action === 'provider_accounts:manage') result.push({ action: 'provider_accounts:read', scope: 'global' })
   }
   if (name === 'interaction_respond') result.push({ action: 'interactions:read', scope: 'resource' })
   if (name === 'workspace_storage_folders_list' || name === 'workspace_storage_folder_delete') {

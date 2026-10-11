@@ -28,3 +28,11 @@ export const providerAccountsMigration = {
       on provider_account_authentication_operations(account_id, target_key) where not native_closed;
   `,
 } as const
+
+export const providerAccountObservationsMigration = {
+  version: 2026101103,
+  sql: `create table provider_account_observations (
+    target_key text not null, account_id uuid not null, record jsonb not null,
+    primary key (target_key, account_id)
+  );`,
+} as const
