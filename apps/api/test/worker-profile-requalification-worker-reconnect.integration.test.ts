@@ -7,21 +7,22 @@ import { latestEvidence, refreshedEvidence, startWhenReady, assertMcpReadback } 
 
 describe('automatic Worker profile qualification', () => {
   it('retries Start during a reconnect check and then starts with fresh evidence through authenticated MCP', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'sequential' })
+    const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true })
     let blocked = false
     try {
       const before = await latestEvidence(fixture)
       expect(before).toHaveLength(fixture.profiles.length)
       expect(before.every(proof => proof.qualified)).toBe(true)
-      const modelsBefore = (await fixture.provider.calls()).filter(call => call.method === 'model/list').length
-      await fixture.provider.blockModels()
+      const checksBefore = (await fixture.provider.calls()).filter(call => call.qualificationSuite).length
+      // Keep inventory discovery responsive while the native profile check is pending.
+      await fixture.provider.blockQualification()
       blocked = true
       await fixture.restartWorker()
       await waitForRemoteReview(() => fixture.provider.calls(), calls =>
-        calls.filter(call => call.method === 'model/list').length > modelsBefore, 'automatic native profile check')
+        calls.filter(call => call.qualificationSuite).length > checksBefore, 'automatic native profile check')
       await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_CHECK_PENDING')
       expect(await latestEvidence(fixture)).toEqual(before)
-      await fixture.provider.releaseModels()
+      await fixture.provider.releaseQualification()
       blocked = false
       const evidence = await refreshedEvidence(fixture, before[0]!.connectionGeneration)
       await assertMcpReadback(fixture, evidence)
@@ -48,7 +49,7 @@ describe('automatic Worker profile qualification', () => {
           hostRef: fixture.hostRef, applicationInstallationId: profile.target.applicationInstallationId,
         })))
     } finally {
-      if (blocked) await fixture.provider.releaseModels()
+      if (blocked) await fixture.provider.releaseQualification()
       await fixture.close()
     }
   }, 240_000)
