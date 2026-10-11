@@ -145,9 +145,12 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
   fixture.configurations = fixture.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
     ...configuration,
     harness: { ...configuration.harness, advanced: {
-      ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, sessionPersistence: 'ephemeral',
+      ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never', sessionPersistence: 'ephemeral',
     } },
   }))
+  fixture.version.approval = { handler: 'native' }
+  fixture.version.definition.approval = { handler: 'native' }
+  fixture.run.approval = { handler: 'native' }
   fixture.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: budget }
   fixture.run.input = { instruction: 'Preserve the accepted input across attempts and recovery' }
   const base = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })

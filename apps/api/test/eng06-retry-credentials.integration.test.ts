@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CodexHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { assertWave25WorkerBinding } from '../src/modules/interactions/wave25/credentialAuthority.js'
@@ -31,7 +32,10 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
       expect(retry.execution.nativeSessionId).not.toBe(first.execution.nativeSessionId)
       expect(retry.execution.sessionContinuation).toBeUndefined()
       const configuration = await f.runtime.runs.getExecutionConfiguration(retry.execution.agentConfigurationVersionId)
-      expect(configuration?.harness.advanced?.sessionPersistence).toBe('ephemeral')
+      const harness = CodexHarnessConfigurationSchema.parse(configuration?.harness)
+      expect(harness.sandbox).toBe('read-only')
+      expect(harness.advanced).toMatchObject({ approvalPolicy: 'never', sessionPersistence: 'ephemeral' })
+      expect((await readback(f)).record.run.approval).toEqual({ handler: 'native' })
       expect(retry.slot_id).toBe(first.slot_id)
       expect(retry.input_json).toBe(first.input_json); expect(retry.input_digest).toBe(first.input_digest)
       expect(retry.execution.agentConfigurationVersionId).toBe(first.execution.agentConfigurationVersionId)

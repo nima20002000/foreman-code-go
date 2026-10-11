@@ -61,13 +61,13 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
   const engines: LangGraphWorkflowEngine[] = []
   try {
     const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
-    // Real request construction must ask the deterministic provider for an
-    // approval. Keep the pinned sandbox/read-only configuration unchanged.
-    f.configurations = f.configurations.map((configuration) => {
-      const harness = structuredClone(approvalFixture().configurations[1]!.harness)
-      harness.advanced!.sessionPersistence = configuration.harness.advanced?.sessionPersistence ?? 'persistent'
-      return AgentConfigurationVersionSchema.parse({ ...configuration, harness })
-    })
+    // Routed approvals require persistent sessions. Native approval fixtures
+    // retain their explicitly configured policy and sandbox.
+    if (f.version.definition.approval?.handler !== 'native') {
+      f.configurations = f.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
+        ...configuration, harness: structuredClone(approvalFixture().configurations[1]!.harness),
+      }))
+    }
     if (branches === 2) {
       const original = f.configurations[1]!, existingNode = f.version.definition.nodes[1]!
       const configuration = AgentConfigurationVersionSchema.parse({ ...original, id: `${original.id}-parallel`, agentId: `${original.agentId}-parallel` })
