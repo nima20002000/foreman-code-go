@@ -34,7 +34,9 @@ export function useProviderAccountScope(scope: ProviderAccountScope = {}): Provi
   return { ...scope, target: mainTarget(installationId) }
 }
 function assertAccountScope(account: ProviderAccount, scope: ProviderAccountScope) {
-  if (scope.provider && account.provider !== scope.provider
+  const observationMismatch = account.binding && account.observation
+    && account.binding.bindingRevision !== account.observation.bindingRevision
+  if (observationMismatch || scope.provider && account.provider !== scope.provider
     || scope.target && account.binding && !sameDeviceProvisioningTarget(account.binding.target, scope.target)) {
     throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Account readback belongs to another computer or harness.' })
   }
@@ -129,6 +131,9 @@ export function useProviderAccountModels(binding?: ProviderAccountBinding, obser
       const result = await providerAccountsClient.models(binding!.accountId, { signal })
       assertSession(generation)
       assertBinding(result.binding, binding!)
+      if (observationGeneration !== undefined && result.generation !== observationGeneration) {
+        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'Model observation belongs to another computer connection.' })
+      }
       return result
     },
     structuralSharing: (previous, incoming) => {

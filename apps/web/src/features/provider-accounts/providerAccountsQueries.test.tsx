@@ -145,3 +145,14 @@ it('keeps a newer label while accepting a newer native observation from an older
   expect(view.result.current.data?.name).toBe('Saved new label')
   expect(view.result.current.data?.observation?.identity).toBe('newer-display@example.test')
 })
+
+it('rejects a model observation from an earlier computer connection', async () => {
+  server.use(http.get('/api/provider-accounts/:id/models', () => HttpResponse.json({
+    binding: accountBinding(), generation: 1, observedAt: '2026-10-01T12:00:00.000Z',
+    models: [{ id: 'earlier-model', name: 'Earlier connection model' }],
+  })))
+  const view = renderHook(() => useProviderAccountModels(accountBinding(), 2), { wrapper: wrapper() })
+  await waitFor(() => expect(view.result.current.isError).toBe(true))
+  expect(view.result.current.data).toBeUndefined()
+  expect(view.result.current.error?.message).toBe('Model observation belongs to another computer connection.')
+})

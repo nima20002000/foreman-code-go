@@ -10,14 +10,14 @@ import { authenticationOperation, observedAccount, operationId } from './provide
 
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear() })
-function mount(savedOperationId?: string) {
+function mount(savedOperationId?: string, canManage = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   clients.push(client)
   function Harness() {
     const [open, setOpen] = useState(true)
     const [selected, setSelected] = useState(savedOperationId)
     return <><button onClick={() => setOpen(true)}>Reopen progress</button>
-      <ProviderAccountAuthentication account={observedAccount()} revision={1} canManage open={open}
+      <ProviderAccountAuthentication account={observedAccount()} revision={1} canManage={canManage} open={open}
         {...(selected ? { operationId: selected } : {})} onOperation={setSelected} onClose={() => setOpen(false)} /></>
   }
   render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>)
@@ -121,4 +121,16 @@ it('does not treat late completion after cancel as a default change or a replace
   expect(screen.getByText(/Its default is unchanged/)).toBeVisible()
   expect(prepares).toBe(0)
   expect(defaults).toBe(0)
+})
+
+
+it('allows a read-only caller to recheck progress while disabling cancellation', async () => {
+  let cancels = 0
+  server.use(http.post('/api/provider-accounts/authentication/status', () => HttpResponse.json(authenticationOperation())),
+    http.post('/api/provider-accounts/authentication/cancel', () => { cancels++; return HttpResponse.error() }))
+  const { user } = mount(operationId, false)
+  expect(await screen.findByText('Waiting for human sign-in')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Cancel authentication' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: 'Recheck original operation' }))
+  expect(cancels).toBe(0)
 })
