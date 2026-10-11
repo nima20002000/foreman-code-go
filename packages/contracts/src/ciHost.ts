@@ -16,16 +16,24 @@ export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(
   .refine(value => !value.weights || value.weights.length === value.count, 'Give one weight per partition.')
 export type CiPartition = z.infer<typeof CiPartitionSchema>
 
+/** Integration file -> wall milliseconds. Bounded so a start request or read reply stays far below the device
+ * channel's 1 MiB message limit. */
+export const CiDurationsSchema = z.record(z.string().min(1).max(300), z.number().positive().finite().max(24 * 3_600_000))
+  .refine(value => Object.keys(value).length <= 1000, 'Give at most 1000 file durations.')
+export type CiDurations = z.infer<typeof CiDurationsSchema>
+
 export const CiHostRunIdSchema = z.uuid()
+/** `durations` are Main's learned integration file durations; the commit's committed durations fill the gaps. */
 export const CiHostStartSchema = z.object({
   operation: z.literal('start'), runId: CiHostRunIdSchema, repository: CiRepositorySchema, commit: CommitSchema,
-  suite: CiSuiteSchema, partition: CiPartitionSchema.optional(),
+  suite: CiSuiteSchema, partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
 }).strict()
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
   CiHostStartSchema,
+  // `durations: true` asks a finished integration run for the file durations it measured.
   z.object({ operation: z.literal('read'), runId: CiHostRunIdSchema, afterOffset: z.number().int().nonnegative(),
-    maxBytes: z.number().int().min(1).max(65_536) }).strict(),
+    maxBytes: z.number().int().min(1).max(65_536), durations: z.boolean().optional() }).strict(),
   z.object({ operation: z.literal('cancel'), runId: CiHostRunIdSchema }).strict(),
 ])
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>
@@ -45,7 +53,8 @@ export const CiHostStatusSchema = z.object({
 export const CiHostReplySchema = z.discriminatedUnion('operation', [
   CiHostStatusSchema,
   z.object({ operation: z.literal('start'), run: CiHostRunSchema }).strict(),
-  z.object({ operation: z.literal('read'), run: CiHostRunSchema, text: z.string(), nextOffset: z.number().int().nonnegative() }).strict(),
+  z.object({ operation: z.literal('read'), run: CiHostRunSchema, text: z.string(), nextOffset: z.number().int().nonnegative(),
+    durations: CiDurationsSchema.optional() }).strict(),
   z.object({ operation: z.literal('cancel'), run: CiHostRunSchema }).strict(),
 ])
 export type CiHostReply = z.infer<typeof CiHostReplySchema>

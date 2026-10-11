@@ -3,8 +3,8 @@ import { existsSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { availableParallelism, homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
-import { CiHostReplySchema, CiHostRequestSchema, integrationPartition,
-  type CiHostReply, type CiHostRun, type CiSuite, type CiPartition } from '@foreman-code/contracts'
+import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, integrationPartition,
+  type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPartition } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 
 type Command = { code: number; stdout: string; stderr: string }
@@ -33,7 +33,7 @@ export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env):
 interface RunMeta {
   runId: string; repository: string; commit: string; suite: CiSuite; partition: CiPartition | null
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
-  message: string | null; cleaned: boolean
+  message: string | null; cleaned: boolean; durations?: CiDurations
 }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
@@ -67,7 +67,12 @@ export class HostCiRunner {
         nextOffset = request.afterOffset + bytesRead
       } finally { await handle.close() }
     }
-    return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset })
+    // A finished integration run reports the file durations it measured, so Main can learn them.
+    const measured = request.durations && !['starting', 'running'].includes(run.state)
+      ? CiDurationsSchema.safeParse(await readFile(join(this.runDirectory(request.runId), 'measured-durations.json'), 'utf8')
+        .then(text => JSON.parse(text) as unknown).catch(() => null)) : null
+    return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
+      ...(measured?.success ? { durations: measured.data } : {}) })
   }
 
   private runDirectory(runId: string) { return join(this.root, 'runs', runId) }
@@ -117,7 +122,8 @@ export class HostCiRunner {
     return null
   }
 
-  private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite; partition?: CiPartition | undefined }) {
+  private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
+    partition?: CiPartition | undefined; durations?: CiDurations | undefined }) {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
     const busy = await this.active()
@@ -127,7 +133,8 @@ export class HostCiRunner {
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
       suite: request.suite, partition: request.partition ?? null, startedAt: this.ports.now().toISOString(),
-      state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false }
+      state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
+      ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
     const preparing = this.launch(meta).catch(async error => {
       await this.finish(meta.runId, 'failed', null, (error instanceof Error ? error.message : String(error)).slice(0, 2000))
@@ -178,23 +185,30 @@ export class HostCiRunner {
     const name = suiteScript[meta.suite]
     if (name && !scripts[name]) throw new Error(`The repository has no "${name}" script for the ${meta.suite} suite.`)
     let command = name ? `corepack pnpm ${name}` : ''
+    const run = this.runDirectory(meta.runId)
+    let integrationEnvironment = ''
     if (meta.suite === 'integration') {
+      // Main's learned durations, with the commit's committed ones for files it has not measured yet.
+      const durationsPath = join(source, 'scripts/integration-durations.json')
+      const committed = existsSync(durationsPath) ? JSON.parse(await readFile(durationsPath, 'utf8')) as Record<string, number> : {}
+      const durations = { ...committed, ...meta.durations }
+      await writeFile(join(run, 'expected-durations.json'), JSON.stringify(durations), { mode: 0o600 })
+      // The repository's integration runner uses them for per-file hang deadlines and reports what it measured.
+      integrationEnvironment = ` FOREMAN_CODE_INTEGRATION_DURATIONS=${quote(join(run, 'expected-durations.json'))}`
+        + ` FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT=${quote(join(run, 'measured-durations.json'))}`
       if (meta.partition) {
         const tests = join(source, 'apps/api/test')
         const files = existsSync(tests) ? (await readdir(tests)).filter(file => file.endsWith('.integration.test.ts'))
           .map(file => `apps/api/test/${file}`).sort() : []
-        const durationsPath = join(source, 'scripts/integration-durations.json')
-        const durations = existsSync(durationsPath) ? JSON.parse(await readFile(durationsPath, 'utf8')) as Record<string, number> : {}
         const slice = integrationPartition(files, durations, meta.partition)
         if (!slice.length) throw new Error('This partition has no integration files.')
         command += ` --files ${slice.map(quote).join(' ')}`
       }
       if (scripts['db:up']) command = `corepack pnpm db:up && ${command}`
     }
-    const run = this.runDirectory(meta.runId)
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       // The repository's own integration runner sizes its shards to this computer.
-      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true FOREMAN_CODE_CI_DEDICATED=1 NODE_OPTIONS=--max-old-space-size=6144`,
+      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true FOREMAN_CODE_CI_DEDICATED=1 NODE_OPTIONS=--max-old-space-size=6144${integrationEnvironment}`,
       'mkdir -p "$TMPDIR"',
       `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,

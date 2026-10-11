@@ -12,7 +12,8 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 
 /** A computer with a real git origin standing in for GitHub, gh and corepack shims, and a systemd-run that runs the
  * unit's script as a child process the way the user manager would. */
-async function computer(options: { github?: boolean; suiteExit?: number; pause?: boolean } = {}) {
+async function computer(options: { github?: boolean; suiteExit?: number; pause?: boolean
+  measured?: Record<string, number> } = {}) {
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? '/tmp', 'host-ci-'))
   roots.push(root)
   const environment = gitFixtureEnvironment()
@@ -30,8 +31,11 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   const commit = git('rev-parse', 'HEAD')
   const bin = join(root, 'bin')
   await mkdir(bin)
-  // corepack records its arguments; the suite command exits with the requested status.
-  await writeFile(join(bin, 'corepack'), `#!/bin/bash\necho "corepack $*"\nif [ "$2" != install ] && [ "$2" != db:up ]; then `
+  // corepack records its arguments; the suite command exits with the requested status. With `measured`, the
+  // integration suite prints the durations it was given and reports the ones it measured, like the repository's runner.
+  const integration = options.measured ? `if [ "$2" = test:integration ]; then echo "expected $(cat "$FOREMAN_CODE_INTEGRATION_DURATIONS")"; `
+    + `printf '%s' '${JSON.stringify(options.measured)}' > "$FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT"; fi\n` : ''
+  await writeFile(join(bin, 'corepack'), `#!/bin/bash\necho "corepack $*"\n${integration}if [ "$2" != install ] && [ "$2" != db:up ]; then `
     + `${options.pause ? 'sleep 30; ' : ''}exit ${options.suiteExit ?? 0}; fi\n`)
   await chmod(join(bin, 'corepack'), 0o755)
   const units = new Map<string, ReturnType<typeof spawn>>()
@@ -110,6 +114,30 @@ describe('host CI runner', () => {
     }
     expect(slices.flat().sort()).toEqual(['a', 'b', 'c', 'd'])
     expect(slices.map(slice => slice.sort())).toEqual([['a', 'd'], ['b', 'c']])
+  })
+
+  it('splits and times integration files by Main\'s learned durations and reports the durations it measured', async () => {
+    const measured = { 'apps/api/test/d.integration.test.ts': 870 }
+    const f = await computer({ measured })
+    // Learned: d became the slowest file and a the fastest; c keeps its committed duration.
+    const durations = { 'apps/api/test/a.integration.test.ts': 50, 'apps/api/test/b.integration.test.ts': 300,
+      'apps/api/test/d.integration.test.ts': 900 }
+    const slices: string[][] = []
+    for (const index of [0, 1]) {
+      const runId = randomUUID()
+      await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration',
+        partition: { index, count: 2 }, durations })
+      const done = await f.settle(runId)
+      expect(done.run.state).toBe('passed')
+      expect(done.durations).toBeUndefined()
+      const command = done.text.split('\n').find(line => line.startsWith('corepack pnpm test:integration'))!
+      slices.push([...command.matchAll(/apps\/api\/test\/(\w)\.integration/g)].map(match => match[1]!).sort())
+      const expected = JSON.parse(done.text.split('\n').find(line => line.startsWith('expected '))!.slice('expected '.length))
+      expect(expected).toEqual({ ...durations, 'apps/api/test/c.integration.test.ts': 200 })
+      expect(await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true }))
+        .toMatchObject({ operation: 'read', durations: measured })
+    }
+    expect(slices).toEqual([['d'], ['a', 'b', 'c']])
   })
 
   it('runs one suite at a time and stops a run on cancel', async () => {
