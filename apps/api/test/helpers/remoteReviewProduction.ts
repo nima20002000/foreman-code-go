@@ -263,6 +263,7 @@ export async function remoteReviewProduction(options: {
       }, value => value, 'production Main startup')
     }
     await startMain()
+    const clients = new Map<string, Promise<Client>>()
     let startupCatalog: ReturnType<typeof HarnessOptionsResultSchema.parse> | undefined
     if (options.modelCatalog) {
       await waitForRemoteReview(async () => (await db.pool.query<{ record: unknown }>(
@@ -273,13 +274,18 @@ export async function remoteReviewProduction(options: {
       await provider.showModels()
     }
     async function call(name: string, args: Record<string, unknown>, token = writer.token) {
-      const client = new Client({ name: 'Production remote review integration', version: '1' })
-      try {
-        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
+      let connected = clients.get(token)
+      if (!connected) {
+        // One SDK counter per credential keeps parallel calls distinct on the stateless endpoint.
+        const client = new Client({ name: 'Production remote review integration', version: '1' })
+        closes.push(() => client.close())
+        connected = client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
           authProvider: { token: async () => token },
-        }))
-        return await client.callTool({ name, arguments: args })
-      } finally { await client.close() }
+        })).then(() => client)
+        clients.set(token, connected)
+      }
+      const client = await connected
+      return client.callTool({ name, arguments: args })
     }
     async function value(name: string, args: Record<string, unknown>) {
       const response = await call(name, args)
