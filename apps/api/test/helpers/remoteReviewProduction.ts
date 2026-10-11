@@ -30,7 +30,6 @@ import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { installManagedLauncher } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
-import { systemGitWorktreePorts } from '../../src/modules/sources/gitWorktree.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { InstalledWorkflowRecovery } from '../../src/modules/runs/remote/installedWorkflowRecovery.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
@@ -41,6 +40,7 @@ import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemot
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
 import { gitFixtureEnvironment } from './gitFixture.js'
 import { remoteReviewEnvironment } from './remoteReviewEnvironment.js'
+import { configureRemoteReviewGitHub } from './remoteReviewGitHub.js'
 import { waitForChildReady } from './remoteReviewReadiness.js'
 import { measureIntegrationPhase, reportIntegrationPhase } from './integrationPhase.js'
 import { remoteReviewWorkerArtifacts } from './remoteReviewWorkerArtifacts.js'
@@ -162,12 +162,16 @@ export async function remoteReviewProduction(options: {
     const claudeProfile = join(directory, 'claude-profile')
     const logEnvironment = remoteReviewEnvironment(claudeDirectory, claudeProfile, launcher)
     if (options.reportPhase) logEnvironment.LOG_LEVEL = 'debug'
+    const workerEnvironment = remoteReviewEnvironment(join(directory, 'worker-home'), claudeProfile, launcher,
+      logEnvironment)
     for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime, claudeProfile]) {
       await mkdir(path, { recursive: true, mode: 0o700 })
     }
-    for (const key of ['CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
-      'XDG_STATE_HOME', 'XDG_RUNTIME_DIR']) {
-      await mkdir(logEnvironment[key]!, { recursive: true, mode: 0o700 })
+    for (const environment of [logEnvironment, workerEnvironment]) {
+      for (const key of ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+        'XDG_STATE_HOME', 'XDG_RUNTIME_DIR']) {
+        await mkdir(environment[key]!, { recursive: true, mode: 0o700 })
+      }
     }
     // The Codex fixture never chooses an ambient Claude model during startup.
     const claude = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'claude-haiku-4-5-20251001',
@@ -185,11 +189,8 @@ export async function remoteReviewProduction(options: {
     const repository = { provider: 'github', owner: 'remote-review-fixture',
       name: randomUUID(), defaultBranch: 'main' }
     const repositoryName = `${repository.owner}/${repository.name}`
-    // Prepopulate the production clone with a local Git remote instead of contacting GitHub.
-    const clone = systemGitWorktreePorts(logEnvironment).cloneDirectory(repositoryName)
-    closes.push(() => rm(clone, { recursive: true, force: true }))
-    await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
-    await execute('git', ['clone', '--quiet', '--no-checkout', '--template=', project, clone], gitOptions)
+    await configureRemoteReviewGitHub({ project, origin: join(directory, 'github.git'), repository: repositoryName,
+      homes: [logEnvironment.HOME!, workerEnvironment.HOME!] })
     const shape = options.workflow ?? 'approval'
     const seed = makeCurrentWorkflowFixture(randomUUID(), shape)
     seed.configurations = seed.configurations.map((configuration, index) => AgentConfigurationVersionSchema.parse({
@@ -219,6 +220,7 @@ export async function remoteReviewProduction(options: {
     const workerRelease = release.value
     logEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY = await measureIntegrationPhase(
       'Worker update artifacts', () => remoteReviewWorkerArtifacts(workerRelease))
+    workerEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY = logEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY
     let main: ChildProcess | undefined
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
@@ -365,6 +367,13 @@ export async function remoteReviewProduction(options: {
       }))
       await value('workspace_update', { workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
         expectedRevision: workspace.revision, repository })
+      const configured = ManagedWorkspaceSchema.parse(await value('workspace_get', {
+        workspaceId: saved.scope.workspaceId,
+      }))
+      const persistedRepository = configured.workspace.repository
+      if (!persistedRepository || `${persistedRepository.owner}/${persistedRepository.name}` !== repositoryName) {
+        throw new Error('Remote review workspace GitHub repository was not persisted.')
+      }
       const approved = SourceApproveResultSchema.parse(await value('source_approve', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
         expectedLocationRevision: mainLocation.locationRevision, commit,
@@ -455,7 +464,7 @@ export async function remoteReviewProduction(options: {
     beginPhase('Worker release readiness')
     beginPhase('installed Worker initialization')
     await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
-      env: logEnvironment,
+      env: workerEnvironment,
     })
     let worker: ChildProcess | undefined
     let ready = false
@@ -466,7 +475,7 @@ export async function remoteReviewProduction(options: {
       workerFailure = ''
       const started = spawn(process.execPath, [workerEntrypoint, stateDirectory, workerRelease], {
         cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
-        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: workerEnvironment,
       })
       worker = started
       collectFailures(started, 'Worker')
