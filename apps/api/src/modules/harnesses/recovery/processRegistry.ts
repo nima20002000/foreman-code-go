@@ -193,8 +193,11 @@ function retireRegistration(directory: string, launch: LaunchRecord): void {
   const ownerDirectory = dirname(directory)
   const observation = nativeRegistryProjection(dirname(ownerDirectory)).retirementObservation(directory)
   if (!observation || observation.lifecycle !== 'closed') throw new Error('Native closure observation is unavailable.')
-  if (launch.boot === bootIdentity()
-    && [observation.guardian, observation.provider].some(process => process && identityAlive(process))) {
+  const hasLiveProcess = launch.boot === bootIdentity()
+    && [observation.guardian, observation.provider].some(process => process && identityAlive(process))
+  // Qualified empty containment proves tree closure even if a process lookup still reports the guardian.
+  if (hasLiveProcess && (observation.closureEvidence !== 'cgroup_v2_empty'
+    || !observation.boundary || cgroupPopulated(observation.boundary))) {
     throw new Error('Native registration still has a live process; retirement is unconfirmed.')
   }
   publishRetirement(directory)

@@ -89,4 +89,22 @@ describe('combined native command outcome and cleanup', () => {
     expect(await f.registry.closeOwner(f.recovery.owner)).toBe(true)
   })
 
+  it('keeps retirement unconfirmed when containment becomes populated after closure observation', async () => {
+    const f = fixture(0)
+    seams.populated.mockReturnValueOnce(false).mockReturnValue(true)
+    await expect(runCommand('mock-codex', ['--version'], f.root, undefined, undefined, { recovery: f.recovery }))
+      .rejects.toThrow('live process')
+    expect(seams.retire).not.toHaveBeenCalled()
+    expect(f.registry.closedRegistration(f.recovery.owner, f.recovery.launchId!)).toBeUndefined()
+
+    seams.populated.mockReturnValue(false)
+    expect(await f.registry.closeOwner(f.recovery.owner)).toBe(true)
+    expect(seams.retire).toHaveBeenCalledOnce()
+    expect(f.registry.closedRegistration(f.recovery.owner, f.recovery.launchId!)).toMatchObject({
+      launchId: f.recovery.launchId,
+      lifecycle: 'closed',
+      closureEvidence: 'cgroup_v2_empty',
+    })
+  })
+
 })
