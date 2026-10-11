@@ -18,18 +18,24 @@ type SavedCiWorkflow = z.infer<typeof CurrentWorkflowReadResultSchema>
 
 export async function connectCiOperator(endpoint: string, token: string): Promise<Client> {
   const client = new Client({ name: 'Cross-computer CI acceptance', version: '1' })
-  await client.connect(new StreamableHTTPClientTransport(new URL(endpoint), {
-    authProvider: { token: async () => token },
-  }))
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(endpoint), {
+      requestInit: { headers: { authorization: `Bearer ${token}` } },
+    }))
+  } catch (error) {
+    await client.close()
+    throw error
+  }
   return client
 }
 
-function toolErrorCode(result: Awaited<ReturnType<Client['callTool']>>): string | null {
+export function toolErrorCode(result: Awaited<ReturnType<Client['callTool']>>): string | null {
   const content = result.content.find(item => item.type === 'text')
   if (content?.type !== 'text') return null
   let body: unknown
-  try { body = JSON.parse(content.text) }
-  catch (error) {
+  try {
+    body = JSON.parse(content.text)
+  } catch (error) {
     if (error instanceof SyntaxError) return null
     throw error
   }
@@ -52,7 +58,8 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
       attempt--
       continue
     }
-    expect(result.isError, `Public MCP operation ${name} failed${code ? ` (${code})` : ''}`).not.toBe(true)
+    const detail = result.isError ? JSON.stringify(result.structuredContent ?? result.content).slice(0, 2000) : ''
+    expect(result.isError, `Public MCP operation ${name} failed${code ? ` (${code})` : ''}: ${detail}`).not.toBe(true)
     return decodeMcpToolResult(result)
   }
   throw new Error('The activity read retry budget was exhausted.')
@@ -61,7 +68,7 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
 export async function expectCiDenied(client: Client, name: string, args: Record<string, unknown>) {
   const result = await client.callTool({ name, arguments: args }, { timeout: 30_000 })
   expect(result.isError, `${name} must reject the denied caller`).toBe(true)
-  expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
+  expect(toolErrorCode(result)).toBe('ACCESS_DENIED')
 }
 
 export async function qualifyCiProfile(client: Client, computer: ScenarioComputer): Promise<HarnessProfileSelection> {
@@ -130,14 +137,14 @@ export type PreparedCiWorkflow = {
 }
 
 export async function prepareCiWorkflow(client: Client, workspace: ScenarioWorkspace,
-  profiles: Map<string, HarnessProfileSelection>, round: number): Promise<PreparedCiWorkflow> {
+  profiles: Map<string, HarnessProfileSelection>, round: number, index: number): Promise<PreparedCiWorkflow> {
   const managed = ManagedWorkspaceSchema.parse(await callCiTool(client, 'workspace_get', { workspaceId: workspace.workspaceId }))
   expect(managed.locationValidation.status).toBe('ready')
   const repository = managed.workspace.repository
   if (!repository) throw new Error(`${workspace.project} workspace needs its GitHub repository configured.`)
   const created = SavedManagedWorkflowCommandResultSchema.parse(await callCiTool(client, 'workflow_create', {
     workspaceId: workspace.workspaceId, commandId: randomUUID(),
-    name: `Cross-computer CI ${workspace.project} round ${round}`, executionSemanticsVersion: 3,
+    name: `Cross-computer CI ${workspace.project} round ${round} workflow ${index}`, executionSemanticsVersion: 3,
   })).value
   const suites = [null, ...projectSuites[workspace.project]]
   const assignments: ScenarioAgent[] = suites.map((suite, index) => {
@@ -160,7 +167,12 @@ export async function prepareCiWorkflow(client: Client, workspace: ScenarioWorks
     const selected = choices.choices.find(choice => choice.availability === 'ready'
       && JSON.stringify(choice.placement.hostRef) === JSON.stringify(assignment.profile.target.hostRef)
       && choice.placement.instanceId === assignment.profile.instanceId)
-    if (!selected) throw new Error(`No approved ready source/root placement for ${assignment.name}.`)
+    if (!selected) {
+      throw new Error(`No approved ready source/root placement for ${assignment.name}: wanted `
+        + `${JSON.stringify({ hostRef: assignment.profile.target.hostRef, instanceId: assignment.profile.instanceId })}; `
+        + `choices ${JSON.stringify(choices.choices.map(choice => ({ availability: choice.availability, reason: choice.reason,
+          hostRef: choice.placement.hostRef, instanceId: choice.placement.instanceId })))}`)
+    }
     assignment.placement = selected.placement
   }
   // The placement edit builds on the definition the first save published, with its version stamp.
