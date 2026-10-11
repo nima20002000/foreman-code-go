@@ -116,7 +116,7 @@ describe('combined native command outcome and cleanup', () => {
         .rejects.toThrow('containment retirement unavailable')
       const changes = f.registry.changes('unobserved:0', controller.signal)[Symbol.asyncIterator]()
       const event = await changes.next()
-      expect(event.value?.launches.find(launch => launch.launchId === f.recovery.launchId)?.lifecycle)
+      expect(event.value?.launches.find((launch: { launchId: string; lifecycle: string }) => launch.launchId === f.recovery.launchId)?.lifecycle)
         .not.toBe('closed')
       controller.abort()
       await changes.return?.()
