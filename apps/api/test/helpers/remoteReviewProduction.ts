@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
-import { HarnessOptionsResultSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
+import { HarnessOptionsResultSchema, ManagedWorkspaceSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { DevicePairingGrantResultSchema, DevicePairingResultSchema, MainDeviceIdentityPublicSchema,
   WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
@@ -29,6 +29,7 @@ import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
+import { systemGitWorktreePorts } from '../../src/modules/sources/gitWorktree.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { InstalledWorkflowRecovery } from '../../src/modules/runs/remote/installedWorkflowRecovery.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
@@ -36,6 +37,7 @@ import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls,
   createRemoteReviewClaudeInventory } from './remoteReviewProvider.js'
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
+import { gitFixtureEnvironment } from './gitFixture.js'
 
 const execute = promisify(execFile)
 const tsxLoader = createRequire(import.meta.url).resolve('tsx')
@@ -122,11 +124,20 @@ export async function remoteReviewProduction(options: {
     await db.pool.query(`insert into application_settings(key,record,revision)
       values('harness-defaults',$1::jsonb,1)`, [JSON.stringify({ claude })])
     await writeFile(join(project, 'README.md'), '# Remote review fixture\n', { mode: 0o600 })
-    await execute('git', ['init', '--quiet', project])
-    await execute('git', ['-C', project, 'add', 'README.md'])
+    const gitOptions = { env: gitFixtureEnvironment() }
+    await execute('git', ['init', '--quiet', '--initial-branch=main', project], gitOptions)
+    await execute('git', ['-C', project, 'add', 'README.md'], gitOptions)
     await execute('git', ['-C', project, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-      'commit', '--quiet', '-m', 'Source fixture'])
-    const commit = (await execute('git', ['-C', project, 'rev-parse', 'HEAD'])).stdout.trim()
+      'commit', '--quiet', '-m', 'Source fixture'], gitOptions)
+    const commit = (await execute('git', ['-C', project, 'rev-parse', 'HEAD'], gitOptions)).stdout.trim()
+    const repository = { provider: 'github', owner: 'remote-review-fixture',
+      name: randomUUID(), defaultBranch: 'main' }
+    const repositoryName = `${repository.owner}/${repository.name}`
+    // Prepopulate the production clone with a local Git remote instead of contacting GitHub.
+    const clone = systemGitWorktreePorts().cloneDirectory(repositoryName)
+    closes.push(() => rm(clone, { recursive: true, force: true }))
+    await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
+    await execute('git', ['clone', '--quiet', '--no-checkout', '--template=', project, clone], gitOptions)
     const shape = options.workflow ?? 'approval'
     const seed = makeCurrentWorkflowFixture(randomUUID(), shape)
     seed.configurations = seed.configurations.map((configuration, index) => AgentConfigurationVersionSchema.parse({
@@ -279,6 +290,11 @@ export async function remoteReviewProduction(options: {
       allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: mainAllowlist.configurationRevision,
       relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
     })).value
+    const workspace = ManagedWorkspaceSchema.parse(await value('workspace_get', {
+      workspaceId: saved.scope.workspaceId,
+    }))
+    await value('workspace_update', { workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
+      expectedRevision: workspace.revision, repository })
     const approved = SourceApproveResultSchema.parse(await value('source_approve', {
       workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
       expectedLocationRevision: mainLocation.locationRevision, commit,
@@ -513,7 +529,8 @@ export async function remoteReviewProduction(options: {
     }
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
     closes.push(() => stopMain())
-    return { db, directory, stateDirectory, provider, claudeInventory, access, writer,
+    return { db, directory, stateDirectory, provider, claudeInventory, access, writer, repositoryName,
+      sourceManifest: approved.manifest,
       hostRef: executionHostRef, profiles, version, startupCatalog,
       start, call, value, details, reconcile, registry, close, origin: () => origin,
       failures: () => structuredClone(failures),

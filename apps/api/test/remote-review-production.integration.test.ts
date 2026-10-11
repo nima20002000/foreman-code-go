@@ -9,7 +9,7 @@ import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-ex
 import { SourcePreparationSchema } from '@foreman-code/contracts/source-admission'
 import { RunExecutionLocationV3Schema, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema, HarnessDefaultsUpdateResultSchema,
-  HarnessOptionsResultSchema, ManagementHarnessDefaultsSchema } from '@foreman-code/contracts/management'
+  HarnessOptionsResultSchema, ManagedWorkspaceSchema, ManagementHarnessDefaultsSchema } from '@foreman-code/contracts/management'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { hasRetainedRemoteReviewerSource } from '../src/modules/interactions/retainedRemoteReviewer.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
@@ -62,6 +62,14 @@ async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void
 }
 
 async function reviewInProgress(fixture: Fixture) {
+  const workspace = ManagedWorkspaceSchema.parse(await fixture.value('workspace_get', {
+    workspaceId: fixture.version.definition.workspaceId,
+  }))
+  expect(workspace.workspace.repository).toMatchObject({ provider: 'github', defaultBranch: 'main' })
+  expect(`${workspace.workspace.repository!.owner}/${workspace.workspace.repository!.name}`)
+    .toBe(fixture.repositoryName)
+  expect(fixture.sourceManifest.capturePolicy).toBe('git-tree-v1')
+  expect(fixture.sourceManifest.git?.repository).toBe(fixture.repositoryName)
   const requesterVersion = Object.entries(fixture.version.agentConfigurationVersionIds)
     .find(([agentId]) => agentId !== fixture.version.approval.designatedOrchestratorAgentId)?.[1]
   const row = (await fixture.db.pool.query<{ record: unknown }>(
