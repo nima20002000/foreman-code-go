@@ -43,11 +43,11 @@ async function fixture() {
     stops.push(stop)
     return { completion, stop }
   })
-  const closeOwner = vi.fn(async (_owner: string) => true)
+  const closeOwner = vi.fn<(owner: string) => Promise<boolean>>(async () => true)
   const registry = {
     reserveLaunch: vi.fn((owner: string) => ({ root: join(root, 'processes'), owner, launchId: randomUUID() })),
     scope: (owner: string) => ({ root: join(root, 'processes'), owner }), closeOwner,
-    closeRegistration: vi.fn(async (scope: { owner: string }, _id: string) => {
+    closeRegistration: vi.fn(async (scope: { owner: string }) => {
       if (!await closeOwner(scope.owner)) throw new Error('Closure unavailable')
     }),
     abandonReservedLaunch: vi.fn(async () => false), closedRegistration: vi.fn().mockReturnValue(undefined),

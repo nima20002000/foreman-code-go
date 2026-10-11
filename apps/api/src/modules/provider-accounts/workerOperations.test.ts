@@ -24,7 +24,8 @@ function fixture() {
     native: { observeAccount, status: async () => ({ status: 'unavailable', identity: null }),
       login: async () => undefined, cancelLogin: async () => undefined, logout: async () => undefined,
       close: async () => undefined } })
-  const { connectionEpoch: _epoch, ...identity } = connection
+  const identity = { ...connection }
+  delete (identity as Partial<DeviceSessionBinding>).connectionEpoch
   const request = { version: 1, target: binding.target, connection: identity, request: { kind: 'status', binding } }
   const context = { binding: connection, signal: new AbortController().signal }
   return { extension, request, context, observeAccount, resolve, authorize,
@@ -81,7 +82,8 @@ describe('qualified Worker account extension', () => {
     const f = fixture()
     const reinstalled = { ...f.connection, workerInstallationId: randomUUID(), bootId: randomUUID() }
     f.change(reinstalled)
-    const { connectionEpoch: _epoch, ...connection } = reinstalled
+    const connection = { ...reinstalled }
+    delete (connection as Partial<DeviceSessionBinding>).connectionEpoch
     await expect(f.extension.handle!({ ...f.request, connection }, { ...f.context, binding: reinstalled }))
       .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_WORKER_BINDING_CONFLICT' })
     expect(f.resolve).not.toHaveBeenCalled()

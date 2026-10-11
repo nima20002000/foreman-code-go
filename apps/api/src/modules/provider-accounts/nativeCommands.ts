@@ -117,8 +117,15 @@ export interface AccountNativeSelection {
     target: DeviceProvisioningTarget }): Promise<{ profileRef: string }>
 }
 
+function hasControlCharacters(value: string): boolean {
+  return Array.from(value).some(character => {
+    const code = character.charCodeAt(0)
+    return code < 32 || code === 127
+  })
+}
+
 function safeIdentity(value: unknown): string | null {
-  if (typeof value !== 'string' || value.length > 200 || /[\u0000-\u001f\u007f]/.test(value)
+  if (typeof value !== 'string' || value.length > 200 || hasControlCharacters(value)
     || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return null
   return value
 }
@@ -193,30 +200,34 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
 
   private async inspectStatus(input: ProviderAccountNativeInput): Promise<AccountLoginState> {
     let selected: QualifiedAccountInstallation
-    let result: AccountCommandResult
+    let result: AccountCommandResult | undefined
     try {
       selected = await this.selected(input)
       const recovery = this.processes?.reserveLaunch(`provider-account-status:${randomUUID()}`)
       let inspection: AccountCommandProcess | undefined
+      let inspectionFailure: unknown
       try {
         inspection = await this.dispatch(input, 'status', { ...(recovery ? { recovery } : {}), expected: selected })
         this.inspections.add(inspection)
         result = await inspection.completion
+      } catch (error) {
+        inspectionFailure = error
       } finally {
         if (inspection) this.inspections.delete(inspection)
-        if (recovery && this.processes) {
-          await this.processes.abandonReservedLaunch(recovery)
-          if (!await this.processes.closeOwner(recovery.owner)) {
-            throw new DomainError('PROVIDER_COMMAND_CLOSURE_UNKNOWN', 'Native account observation cleanup is unconfirmed.', 409)
-          }
+      }
+      if (recovery && this.processes) {
+        await this.processes.abandonReservedLaunch(recovery)
+        if (!await this.processes.closeOwner(recovery.owner)) {
+          throw new DomainError('PROVIDER_COMMAND_CLOSURE_UNKNOWN', 'Native account observation cleanup is unconfirmed.', 409)
         }
       }
+      if (inspectionFailure !== undefined) throw inspectionFailure
       if (!isDeepStrictEqual(selected, await this.selected(input))) return { status: 'unavailable', identity: null }
     } catch (error) {
       if (!(error instanceof DomainError)) throw error
       return { status: 'unavailable', identity: null }
     }
-    if (result.timedOut || result.code === null) return { status: 'unavailable', identity: null }
+    if (!result || result.timedOut || result.code === null) return { status: 'unavailable', identity: null }
     if (input.account.provider === 'codex') {
       if (result.code === 0 && /logged in using chatgpt/i.test(result.stdout)) return { status: 'signed-in', identity: null }
       if (/^\s*not logged in\s*$/i.test(result.stdout)) return { status: 'signed-out', identity: null }
@@ -234,7 +245,7 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     }
     let subject: z.infer<typeof ProviderAccountSubjectSchema> | null = null
     const nativeSubject = selected.subjectField ? observation[selected.subjectField] : undefined
-    if (typeof nativeSubject === 'string' && !/[\u0000-\u001f\u007f]/.test(nativeSubject)) {
+    if (typeof nativeSubject === 'string' && !hasControlCharacters(nativeSubject)) {
       const parsed = ProviderAccountSubjectSchema.safeParse({ subject: nativeSubject,
         provenance: 'qualified-native', qualificationId: selected.qualificationId, observedAt: new Date().toISOString() })
       if (parsed.success) subject = parsed.data
@@ -279,7 +290,7 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     target: DeviceProvisioningTarget }): Promise<{ profileRef: string }> {
     if (!this.selection.registerProfile) throw new DomainError('PROVIDER_PROFILE_UNQUALIFIED',
       'Select an existing qualified native profile on its owning computer.', 409)
-    if (/[\/\\]/.test(input.profileRef)) throw new DomainError('PROVIDER_PROFILE_UNQUALIFIED',
+    if (/[/\\]/.test(input.profileRef)) throw new DomainError('PROVIDER_PROFILE_UNQUALIFIED',
       'Choose a qualified profile reference rather than a filesystem path.', 409)
     return this.selection.registerProfile(input).then(result => {
       if (result.profileRef !== input.profileRef) throw new DomainError('PROVIDER_PROFILE_UNQUALIFIED',
@@ -306,13 +317,13 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     return { homePath: profile.homePath, userHome: profile.userHome }
   }
 
-  async login(_input: ProviderAccountNativeInput): Promise<void> {
+  login: ProviderAccountNativePort['login'] = async () => {
     throw new DomainError('PROVIDER_OPERATION_REQUIRED', 'Reserve and prepare the original account operation.', 409)
   }
-  async cancelLogin(_accountId: string): Promise<void> {
+  cancelLogin: ProviderAccountNativePort['cancelLogin'] = async () => {
     throw new DomainError('PROVIDER_OPERATION_REQUIRED', 'Cancel the persisted account operation by its original identity.', 409)
   }
-  async logout(_input: ProviderAccountNativeInput): Promise<void> {
+  logout: ProviderAccountNativePort['logout'] = async () => {
     throw new DomainError('PROVIDER_OPERATION_REQUIRED', 'Reserve and prepare the original account operation.', 409)
   }
   async close(): Promise<void> {

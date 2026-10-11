@@ -19,7 +19,7 @@ function fixture() {
     models: [{ id: account?.accountId ?? 'legacy-model', name: 'Selected model',
       reasoningEfforts: [], variants: [], serviceTiers: [] }] }))
   const disposeAuxiliary = vi.fn(async () => undefined)
-  const qualifyConfiguration = vi.fn(async (_value: HarnessConfiguration) => {
+  const qualifyConfiguration = vi.fn(async () => {
     throw new DomainError('HARNESS_MODEL_UNAVAILABLE', 'The model is unavailable for the selected account.', 409)
   })
   const factories = { qualifyConfiguration, cacheIdentity: vi.fn(async (_harness: 'codex', _directory: string, _configuration?: HarnessConfiguration,
