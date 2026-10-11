@@ -72,9 +72,8 @@ export const SavedRunPageSchema = z.object({ items: z.array(SavedWorkflowRunSche
 
 /** Loaded immutable snapshots only. No lookup of a moving workflow/Agent head.
  * The DB reader must additionally prove physical row identity and content hash. */
-export const SavedRunVersionSnapshotSchema = z.object({
-  run: SavedWorkflowRunSchema, version: SavedWorkflowVersionSchema,
-}).strict().superRefine(({ run, version }, context) => {
+export type SavedRunVersionSnapshot = { run: SavedWorkflowRun; version: SavedWorkflowVersion }
+function validateSavedRunVersionSnapshot({ run, version }: SavedRunVersionSnapshot, context: z.RefinementCtx): void {
   if (run.executionSemanticsVersion !== version.executionSemanticsVersion || run.workflowVersionId !== version.id
     || run.workspaceId !== version.workspaceId || run.workflowId !== version.workflowId
     || !sameWorkflowValue(run.agentConfigurationVersionIds, version.agentConfigurationVersionIds)
@@ -82,8 +81,17 @@ export const SavedRunVersionSnapshotSchema = z.object({
     || !sameWorkflowValue(run.executionCondition, version.definition.executionCondition)) {
     context.addIssue({ code: 'custom', message: 'RUN_VERSION_SNAPSHOT_PIN_MISMATCH' })
   }
-})
-export type SavedRunVersionSnapshot = z.infer<typeof SavedRunVersionSnapshotSchema>
+}
+export const SavedRunVersionSnapshotSchema = z.object({
+  run: SavedWorkflowRunSchema, version: SavedWorkflowVersionSchema,
+}).strict().superRefine(validateSavedRunVersionSnapshot)
+
+const savedRunVersionPinsSchema = z.custom<SavedRunVersionSnapshot>().superRefine(validateSavedRunVersionSnapshot)
+
+/** Checks the relationship after both records have been parsed at their input boundaries. */
+export function assertSavedRunVersionSnapshot(snapshot: SavedRunVersionSnapshot): void {
+  savedRunVersionPinsSchema.parse(snapshot)
+}
 
 export type RunDetailsV3 = z.infer<typeof RunDetailsV3Schema>
 export type SavedManagedWorkflowPage = z.infer<typeof SavedManagedWorkflowPageSchema>

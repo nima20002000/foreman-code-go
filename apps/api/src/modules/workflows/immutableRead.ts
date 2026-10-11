@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { AgentConfigurationVersionSchema, type AgentConfigurationVersion } from '@foreman-code/contracts'
 import { SavedWorkflowVersionSchema, SavedWorkflowDefinitionSchema, canonicalGraphJson, type SavedWorkflowVersion } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
@@ -23,13 +24,45 @@ export interface ImmutableAgentConfigurationRow {
 }
 export const IMMUTABLE_WORKFLOW_VERSION_COLUMNS = 'id,workspace_id,workflow_id,version,entry_node_id,execution_semantics_version,record'
 
+interface CachedWorkflowVersion { version: SavedWorkflowVersion; digest: string; bytes: number }
+const workflowVersions = new Map<string, CachedWorkflowVersion>()
+const workflowVersionCacheBytes = 8 * 1024 * 1024
+let retainedWorkflowVersionBytes = 0
+
+function parseWorkflowVersionRecord(record: unknown): SavedWorkflowVersion {
+  const parsed = SavedWorkflowVersionSchema.safeParse(record)
+  if (!parsed.success) {
+    throw new DomainError('WORKFLOW_VERSION_RECORD_INVALID', 'The immutable workflow version is invalid.', 409)
+  }
+  return parsed.data
+}
+
+function cacheWorkflowVersion(version: SavedWorkflowVersion, digest: string): void {
+  const bytes = Buffer.byteLength(JSON.stringify(version))
+  if (bytes > workflowVersionCacheBytes) return
+  const previous = workflowVersions.get(version.id)
+  if (previous) {
+    workflowVersions.delete(version.id)
+    retainedWorkflowVersionBytes -= previous.bytes
+  }
+  while (workflowVersions.size >= 128 || retainedWorkflowVersionBytes + bytes > workflowVersionCacheBytes) {
+    const oldest = workflowVersions.values().next().value!
+    workflowVersions.delete(oldest.version.id)
+    retainedWorkflowVersionBytes -= oldest.bytes
+  }
+  // Callers can mutate their returned records without changing the cached validation result.
+  workflowVersions.set(version.id, { version: structuredClone(version), digest, bytes })
+  retainedWorkflowVersionBytes += bytes
+}
+
 export function readImmutableWorkflowVersion(row: ImmutableWorkflowVersionRow,
   expected: { id?: string; workspaceId?: string; workflowId?: string } = {}): SavedWorkflowVersion {
   if (row.execution_semantics_version !== 3) throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED',
     'Only explicitly pinned current execution semantics 3 can be read.', 409)
-  const parsed = SavedWorkflowVersionSchema.safeParse(row.record)
-  if (!parsed.success) throw new DomainError('WORKFLOW_VERSION_RECORD_INVALID', 'The immutable workflow version is invalid.', 409)
-  const version = parsed.data
+  const previous = workflowVersions.get(row.id)
+  // Every field is compared with the newly read record before reusing validation or its digest.
+  const cached = previous && isDeepStrictEqual(row.record, previous.version) ? previous : undefined
+  const version = cached?.version ?? parseWorkflowVersionRecord(row.record)
   if (version.id !== row.id || version.workspaceId !== row.workspace_id || version.workflowId !== row.workflow_id
     || version.version !== row.version || version.entryNodeId !== row.entry_node_id || version.executionSemanticsVersion !== row.execution_semantics_version
     || expected.id !== undefined && version.id !== expected.id
@@ -39,11 +72,12 @@ export function readImmutableWorkflowVersion(row: ImmutableWorkflowVersionRow,
   }
   // Hash the actual current definition, including optional-repeat presence.
   // Reading never fills an omitted field or retags a saved record.
-  const digest = `sha256:${createHash('sha256').update(canonicalGraphJson({
+  const digest = cached?.digest ?? `sha256:${createHash('sha256').update(canonicalGraphJson({
     definition: version.definition, configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId,
   })).digest('hex')}`
   if (digest !== version.contentHash) throw new DomainError('WORKFLOW_VERSION_HASH_MISMATCH', 'The immutable workflow version content hash does not match.', 409)
-  return version
+  if (!cached) cacheWorkflowVersion(version, digest)
+  return cached ? structuredClone(version) : version
 }
 
 export function readImmutableAgentConfiguration(row: ImmutableAgentConfigurationRow,

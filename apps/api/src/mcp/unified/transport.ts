@@ -29,7 +29,7 @@ import { unavailableWorkflowScheduleToolCall } from '../operator/tools/workflowS
 import { unavailableRunHistoryToolCall } from '../operator/tools/runHistory.js'
 import type { OperatorServices } from '../operator/types.js'
 import type { McpRole } from './roles.js'
-import { createGraphqlMcpServer, roleDeniedToolCall } from './server.js'
+import { createGraphqlMcpServer, roleDeniedToolCall, type McpRequestRegistration } from './server.js'
 import { McpRequestCancellation } from '../shared/cancellation.js'
 
 export const GRAPHQL_MCP_PATH = '/mcp'
@@ -124,12 +124,13 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       ...(services.bugReports ? { bugReports: services.bugReports } : {}),
       ...(services.commands ? { commands: services.commands } : {}) }
     // Cover every other known tool hidden by grants before the SDK handles unknown names.
-    const denied = await roleDeniedToolCall(context, request.body)
+    const registration: McpRequestRegistration = {}
+    const denied = await roleDeniedToolCall(context, request.body, registration)
     if (denied) return reply.send(denied)
     const artifacts = principal.audience === 'worker' ? services.workerArtifacts?.() : undefined
     const artifactCall = await artifacts?.call(request, principal, request.body)
     if (artifactCall !== undefined) return reply.send(artifactCall)
-    const server = await createGraphqlMcpServer(context)
+    const server = await createGraphqlMcpServer(context, request.body, registration)
     await artifacts?.register(server, request, principal)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })

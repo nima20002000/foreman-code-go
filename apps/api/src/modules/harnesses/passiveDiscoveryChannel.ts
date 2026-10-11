@@ -1,7 +1,7 @@
 import { HARNESS_DISCOVERY_NAMESPACE, HarnessDiscoveryRequestSchema, HarnessRegistryReadbackSchema, type HarnessRegistryReadback } from '@foreman-code/contracts/harness-registry'
 import type { DeviceConnectionIdentity, CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
-import { discoverLauncher, type TargetEnvironment } from './hostDiscovery.js'
+import { discoverInventoryLauncher, type TargetEnvironment } from './hostDiscovery.js'
 
 export interface PassiveDriverInstallationDeclaration {
   readonly driverId: string
@@ -31,7 +31,8 @@ export function createPassiveHarnessDiscoveryExtension(options: {
         || binding.workerInstallationId !== target.applicationInstallationId) throw new Error('Passive discovery host binding mismatch.')
       const installations = []
       for (const declaration of target.installations) {
-        const launcher = await discoverLauncher(declaration.requestedLauncher, target.environment, declaration.payloadPaths ?? [], signal)
+        const launcher = await discoverInventoryLauncher(declaration.requestedLauncher, target.environment,
+          declaration.payloadPaths ?? [], signal)
         installations.push({ hostRef: target.hostRef, harnessInstallationId: declaration.harnessInstallationId,
           installationFingerprint: launcher.fingerprint, driverId: declaration.driverId, driverRevision: declaration.driverRevision,
           protocolRevision: declaration.protocolRevision, environmentGeneration: target.environment.generation,

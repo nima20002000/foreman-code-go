@@ -1,7 +1,7 @@
 import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import type { AgentConfigurationVersion } from '@foreman-code/contracts'
 import {
-  AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, SavedRunVersionSnapshotSchema,
+  AcceptedWorkflowRunV3Schema, assertExecutableWorkflow, assertSavedRunVersionSnapshot,
   type AcceptedWorkflowRunV3, type RepeatWorkflowVersionV1,
 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
@@ -81,9 +81,9 @@ function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
     if (!('executionSemanticsVersion' in version) || version.executionSemanticsVersion !== 3) {
       throw new DomainError('EXECUTION_SEMANTICS_UNSUPPORTED', 'A v3 Run cannot execute a legacy/one-shot version.', 409)
     }
-    SavedRunVersionSnapshotSchema.parse({ run, version })
+    assertSavedRunVersionSnapshot({ run, version })
     const configurations = readPinnedAgentConfigurations(version, related.configurations)
-    if (configurationPolicy === 'executable') ExecutableWorkflowV3Schema.parse({ version, configurations })
+    if (configurationPolicy === 'executable') assertExecutableWorkflow({ version, configurations })
     return { run, version, configurations, stopRequested: row.stopped, cleanupPending: row.cleanup_pending }
   }, { runId })
 }
