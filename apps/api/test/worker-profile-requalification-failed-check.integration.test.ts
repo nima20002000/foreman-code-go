@@ -18,19 +18,31 @@ describe('automatic Worker profile qualification', () => {
           proof.connectionGeneration !== before[0]!.connectionGeneration && !proof.qualified),
       'persisted failed automatic profile checks')
       expect(evidence.every(proof => proof.failure !== undefined)).toBe(true)
-      const profiles = await waitForRemoteReview(async () => HostHarnessOverrideListSchema.parse(
-        await fixture.value('harness_instances_list', { hostRef: fixture.hostRef,
-          applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId })),
-      value => value.overrides.every(profile => profile.qualification === 'unqualified'), 'unqualified MCP readback')
+      // Drain independent readbacks before fixture cleanup can stop the Worker.
+      const results = await Promise.allSettled([
+        waitForRemoteReview(async () => HostHarnessOverrideListSchema.parse(
+          await fixture.value('harness_instances_list', { hostRef: fixture.hostRef,
+            applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId })),
+        value => value.overrides.every(profile => profile.qualification === 'unqualified'), 'unqualified MCP readback'),
+        waitForRemoteReview(async () => {
+          try { await fixture.start() } catch (error) { return error }
+          throw new Error('A failed profile check admitted a Run.')
+        }, error => error instanceof Error && error.message.includes('HARNESS_PROFILE_UNAVAILABLE'),
+        'Run refusal after the failed automatic check'),
+        fixture.value('harness_qualifications_list', {}).then(result => HarnessQualificationListSchema.parse(result)),
+      ])
+      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      if (errors.length) throw new AggregateError(errors, 'Failed automatic profile check readback failed.')
+      const value = <T,>(result: PromiseSettledResult<T>): T => {
+        if (result.status === 'rejected') throw result.reason
+        return result.value
+      }
+      const profiles = value(results[0])
+      const refusal = value(results[1])
+      const qualifications = value(results[2])
       expect(profiles.overrides).toHaveLength(fixture.profiles.length)
-      const refusal = await waitForRemoteReview(async () => {
-        try { await fixture.start() } catch (error) { return error }
-        throw new Error('A failed profile check admitted a Run.')
-      }, error => error instanceof Error && error.message.includes('HARNESS_PROFILE_UNAVAILABLE'),
-      'Run refusal after the failed automatic check')
       expect(refusal).toBeInstanceOf(Error)
       expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
-      const qualifications = HarnessQualificationListSchema.parse(await fixture.value('harness_qualifications_list', {}))
       expect(qualifications.qualifications.some(record => record.status === 'failed'
         && evidence.some(proof => proof.checkedAt === record.checkedAt))).toBe(true)
     } finally { await fixture.close() }
