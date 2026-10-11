@@ -49,3 +49,36 @@ it('publication cleanup aborts and joins both producers', async () => {
   const iterator = reader.changes(snapshot.revision, abort.signal)[Symbol.asyncIterator](); expect((await iterator.next()).done).toBe(false)
   abort.abort(); await iterator.return?.(); expect(closed).toBe(2)
 })
+
+it('reuses owner lookup across samples and refreshes it when native launches change', async () => {
+  let traversals = 0
+  const launches = [launch(), ...Array.from({ length: 1000 }, (_, index) => ({
+    ...launch(`retired-${index}`), owner: `other-owner-${index}`, lifecycle: 'closed' as const,
+  }))]
+  const observed = new Proxy(launches, { get(target, property, receiver) {
+    if (property === Symbol.iterator) {
+      return function* () {
+        traversals++
+        yield* target
+      }
+    }
+    return Reflect.get(target, property, receiver)
+  } })
+  let snapshot = { revision: 'native-1', launches: observed }
+  const reg: PassiveNativeRegistry = {
+    revision: () => snapshot.revision,
+    snapshot: () => snapshot,
+    changes: async function* () {},
+  }
+  const reader = passiveRegistryOwnershipReader(reg, scopes())
+  const signal = new AbortController().signal
+  const first = await reader.snapshot(signal)
+  const second = await reader.snapshot(signal)
+  expect(second).toEqual(first)
+  expect(first.views[0]?.launchIds).toEqual(['launch-1'])
+  expect(traversals).toBe(1)
+  snapshot = { revision: 'native-2', launches: [launch(), launch('launch-2')] }
+  const changed = await reader.snapshot(signal)
+  expect(changed.views[0]?.launchIds).toEqual(['launch-1', 'launch-2'])
+  expect(changed.revision).not.toBe(first.revision)
+})

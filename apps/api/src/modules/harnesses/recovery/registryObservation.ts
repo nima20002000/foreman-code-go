@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstatSync, opendirSync } from 'node:fs'
-import { basename, dirname, join, parse, resolve, sep } from 'node:path'
+import { opendirSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { cgroupBoundary, type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { bootIdentity, identityAlive } from './linuxIdentity.js'
-import { readRecord, recordObject } from './storage.js'
+import { existingPrivateDirectory, readRecord, recordObject } from './storage.js'
+import { RegistryChanges } from './registryChanges.js'
 
 export interface NativeLaunchObservation {
   readonly owner: string; readonly launchId: string; readonly bootId: string
@@ -18,23 +19,6 @@ export interface NativeLaunchObservation {
 export interface NativeRegistrySnapshot { readonly revision: string; readonly launches: readonly NativeLaunchObservation[] }
 export interface NativeRegistryChange extends NativeRegistrySnapshot { readonly gap: boolean }
 
-/** Validate existing directories without mkdir, fsync, inventory, or recovery. */
-function directory(path: string): boolean {
-  const absolute = resolve(path)
-  let current = parse(absolute).root
-  for (const part of absolute.slice(current.length).split(sep).filter(Boolean)) {
-    current = join(current, part)
-    let stat
-    try { stat = lstatSync(current) } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-      throw error
-    }
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe native observation directory.')
-  }
-  const stat = lstatSync(absolute)
-  if ((stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) throw new Error('Nonprivate native observation directory.')
-  return true
-}
 function* entries(path: string): Iterable<string> {
   const handle = opendirSync(path)
   try {
@@ -56,7 +40,7 @@ function receipt(value: unknown, launch: NativeLaunchObservation): Record<string
 
 function readLaunch(root: string, ownerKey: string, id: string): NativeLaunchObservation | undefined {
   const path = join(root, ownerKey, id)
-  if (!directory(path)) return undefined
+  if (!existingPrivateDirectory(path)) return undefined
   const raw = readRecord(join(path, 'intent.json'))
   if (raw === undefined) return undefined // Concurrent retirement is not closure proof.
   const intent = recordObject(raw)
@@ -138,6 +122,9 @@ class Projection {
   private epoch = randomUUID()
   private sequence = 0
   private rows = new Map<string, NativeLaunchObservation>()
+  private active = new Map<string, NativeLaunchObservation>()
+  private initialized = false
+  private readonly storageChanges: RegistryChanges
   private readonly waiters = new Set<() => void>()
   private retiring: { rows: Map<string, NativeLaunchObservation>; closed: Set<string>; eviction: Iterator<string>; truncated: boolean } | undefined
 
@@ -151,33 +138,104 @@ class Projection {
     return readLaunch(this.root, ownerKey, launchId)
   }
   private current: NativeRegistrySnapshot = Object.freeze({ revision: `${this.epoch}:0`, launches: Object.freeze([]) })
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string) {
+    this.storageChanges = new RegistryChanges(root)
+  }
+  observeLaunch(path: string): void {
+    const absolute = resolve(path)
+    const ownerKey = basename(dirname(absolute))
+    const id = basename(absolute)
+    if (dirname(dirname(absolute)) !== this.root || !/^[0-9a-f]{64}$/.test(ownerKey)
+      || !/^[0-9a-f-]{36}$/.test(id)) throw new Error('Invalid native launch observation path.')
+    this.storageChanges.publishedLaunch(ownerKey, id)
+    this.snapshot()
+  }
   snapshot(): NativeRegistrySnapshot {
+    const changed = this.storageChanges.poll()
+    const refreshRoot = !this.initialized || changed.root
+    const boot = this.active.size ? bootIdentity() : undefined
+    const dead = [...this.active.values()].filter(row => row.bootId !== boot
+      || !row.guardian || !identityAlive(row.guardian))
+    if (!refreshRoot && !changed.owners.length && !changed.launches.length && !dead.length && !this.retiring) {
+      return this.current
+    }
     const next = new Map(this.retiring?.rows ?? this.rows)
     const seen = new Set<string>()
+    let remaining = 10_000
+    const present = existingPrivateDirectory(this.root)
+    if (present) this.storageChanges.start()
+    const owners = refreshRoot && present ? [...entries(this.root)] : changed.owners
+    for (const ownerKey of owners) {
+      remaining -= this.refreshOwner(ownerKey, next, seen, remaining)
+    }
+    for (const path of changed.launches) {
+      if (!owners.includes(dirname(path))) this.refreshLaunch(path, next)
+    }
+    // Missing registrations and vanished guardians never become closure evidence.
+    if (refreshRoot) for (const [id, row] of next) {
+      if (!seen.has(id) && row.lifecycle === 'active') {
+        next.set(id, Object.freeze({ ...row, lifecycle: 'closure-unconfirmed' }))
+      }
+    }
+    for (const row of dead) if (next.get(row.launchId)?.lifecycle === 'active') {
+      next.set(row.launchId, Object.freeze({ ...next.get(row.launchId)!, lifecycle: 'closure-unconfirmed' }))
+    }
+    try {
+      const snapshot = this.publish(next)
+      if (refreshRoot) this.storageChanges.scannedRoot()
+      this.initialized = true
+      return snapshot
+    } catch (error) {
+      this.storageChanges.rescan()
+      throw error
+    }
+  }
+  private refreshOwner(ownerKey: string, next: Map<string, NativeLaunchObservation>,
+    seen: Set<string>, remaining: number): number {
+    if (!/^[0-9a-f]{64}$/.test(ownerKey)) throw new Error('Unexpected native owner inventory entry.')
+    const ownerDirectory = join(this.root, ownerKey)
+    const ids: string[] = []
+    const ownerSeen = new Set<string>()
     let scanned = 0
-    if (directory(this.root)) for (const ownerKey of entries(this.root)) {
-      if (!/^[0-9a-f]{64}$/.test(ownerKey)) throw new Error('Unexpected native owner inventory entry.')
-      const ownerDirectory = join(this.root, ownerKey)
-      if (!directory(ownerDirectory)) continue
+    if (existingPrivateDirectory(ownerDirectory)) {
       const retired = retiredObservation(this.root, ownerKey)
       if (retired) {
         seen.add(retired.launchId)
+        ownerSeen.add(retired.launchId)
         next.set(retired.launchId, retired)
       }
       for (const id of entries(ownerDirectory)) {
-        // Compact retirement receipts and GC tombstones are not registrations.
         if (!/^[0-9a-f-]{36}$/.test(id)) continue
-        if (++scanned > 10_000) throw new Error('limit-exceeded')
+        if (++scanned > remaining) throw new Error('limit-exceeded')
         const launch = readLaunch(this.root, ownerKey, id)
         if (!launch) continue
+        if (launch.lifecycle !== 'closed') ids.push(id)
         seen.add(id)
+        ownerSeen.add(id)
         next.set(id, launch)
+        if (launch.lifecycle === 'closed') this.storageChanges.forgetLaunch(ownerKey, id)
+        else this.storageChanges.trackLaunch(ownerKey, id)
       }
     }
-    // Missing registrations never turn into closed rows. Preserve observed generations.
-    for (const [id, row] of next) if (!seen.has(id) && row.lifecycle === 'active') next.set(id, Object.freeze({ ...row, lifecycle: 'closure-unconfirmed' }))
-    return this.publish(next)
+    for (const row of this.active.values()) {
+      if (!ownerSeen.has(row.launchId) && next.get(row.launchId)?.lifecycle === 'active'
+        && createHash('sha256').update(row.owner).digest('hex') === ownerKey) {
+        next.set(row.launchId, Object.freeze({ ...row, lifecycle: 'closure-unconfirmed' }))
+      }
+    }
+    this.storageChanges.scannedOwner(ownerKey, ids)
+    return scanned
+  }
+  private refreshLaunch(path: string, next: Map<string, NativeLaunchObservation>): void {
+    const ownerKey = dirname(path)
+    const id = basename(path)
+    const launch = readLaunch(this.root, ownerKey, id)
+    if (launch) next.set(id, launch)
+    else if (next.get(id)?.lifecycle === 'active') {
+      next.set(id, Object.freeze({ ...next.get(id)!, lifecycle: 'closure-unconfirmed' }))
+    }
+    if (launch && launch.lifecycle !== 'closed') this.storageChanges.trackLaunch(ownerKey, id)
+    else this.storageChanges.forgetLaunch(ownerKey, id)
   }
   /** Capture each exact durable close before GC. Only the derived array/revision
    * is coalesced during synchronous inventory; ownership and receipts are not. */
@@ -198,11 +256,14 @@ class Projection {
     if (dirname(dirname(absolute)) !== this.root || !/^[0-9a-f]{64}$/.test(ownerKey) || !/^[0-9a-f-]{36}$/.test(id)) {
       throw new Error('Invalid native retirement observation path.')
     }
-    if (!directory(this.root) || !directory(dirname(absolute))) throw new Error('Native retirement observation directory is missing.')
+    if (!existingPrivateDirectory(this.root) || !existingPrivateDirectory(dirname(absolute))) {
+      throw new Error('Native retirement observation directory is missing.')
+    }
     const launch = readLaunch(this.root, ownerKey, id)
     if (launch?.lifecycle !== 'closed') throw new Error('Native retirement observation requires exact durable closure.')
     const batch = this.retiring
     batch.rows.set(id, launch); batch.closed.add(id)
+    this.storageChanges.forgetLaunch(ownerKey, id)
     // Preserve the existing bound and evict positive closures only. A persistent
     // iterator makes a large batch linear even when the cache starts full.
     while (batch.rows.size > 10_000) {
@@ -227,6 +288,7 @@ class Projection {
     const launches = Object.freeze([...next.values()].sort((a, b) => a.launchId.localeCompare(b.launchId)))
     if (truncated || JSON.stringify(launches) !== JSON.stringify(this.current.launches)) {
       this.rows = next
+      this.active = new Map([...next].filter(([, row]) => row.lifecycle === 'active'))
       this.current = Object.freeze({ revision: `${this.epoch}:${++this.sequence}`, launches })
       for (const wake of this.waiters) wake()
     }

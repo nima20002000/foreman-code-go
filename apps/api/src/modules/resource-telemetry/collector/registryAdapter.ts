@@ -1,5 +1,5 @@
 import { telemetryCanonical } from '@foreman-code/contracts/resource-telemetry'
-import type { NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
+import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 export type { NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
 import { accountingHandle } from './linuxCgroup.js'
 import { revisionedOwnershipReader, type OwnershipReader, type OwnershipView } from './ownership.js'
@@ -20,16 +20,31 @@ export interface TrustedNativeScopes {
 }
 export function passiveRegistryOwnershipReader(registry: PassiveNativeRegistry, scopes: TrustedNativeScopes): OwnershipReader {
   const revision = () => telemetryCanonical([registry.revision(), scopes.revision()])
+  let observedLaunches: readonly NativeLaunchObservation[] | undefined
+  let launchesByOwner = new Map<string, NativeLaunchObservation[]>()
   return revisionedOwnershipReader({ revision,
     async read(signal) {
       const native = registry.snapshot()
+      if (native.launches !== observedLaunches) {
+        launchesByOwner = new Map()
+        for (const launch of native.launches) {
+          let launches = launchesByOwner.get(launch.owner)
+          if (!launches) {
+            launches = []
+            launchesByOwner.set(launch.owner, launches)
+          }
+          launches.push(launch)
+        }
+        observedLaunches = native.launches
+      }
+      const indexedLaunches = launchesByOwner
       const owners = await scopes.snapshot(signal)
       signal.throwIfAborted()
       let remaining = 4096
       return owners.slice(0, 65).map(scope => {
         let captureTruncated = false
         let accountingIncomplete = scope.captured?.incomplete ?? false
-        const launches = native.launches.filter(launch => launch.owner === scope.nativeOwner)
+        const launches = indexedLaunches.get(scope.nativeOwner) ?? []
         const roots = new Map<string, OwnershipView['roots'][number]>()
         const handles: OwnershipView['accountingHandles'][number][] = []
         const certifiedRoots = scope.captured?.roots ?? []

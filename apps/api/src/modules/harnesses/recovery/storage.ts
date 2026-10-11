@@ -3,6 +3,49 @@ import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirS
 import { dirname, join, parse, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
+const recordListeners = new Map<string, Set<(path: string) => void>>()
+
+/** In-process invalidation follows the durable write, before its caller can read. */
+export function observeRecordWrites(root: string, listener: (path: string) => void): void {
+  const absolute = resolve(root)
+  let listeners = recordListeners.get(absolute)
+  if (!listeners) {
+    listeners = new Set()
+    recordListeners.set(absolute, listeners)
+  }
+  listeners.add(listener)
+}
+
+function recordWritten(path: string): void {
+  const absolute = resolve(path)
+  for (let directory = dirname(absolute);;) {
+    for (const listener of recordListeners.get(directory) ?? []) listener(absolute)
+    const parent = dirname(directory)
+    if (parent === directory) return
+    directory = parent
+  }
+}
+
+/** Validate existing storage without creating it or changing its permissions. */
+export function existingPrivateDirectory(path: string): boolean {
+  const absolute = resolve(path)
+  let current = parse(absolute).root
+  for (const part of absolute.slice(current.length).split(sep).filter(Boolean)) {
+    current = join(current, part)
+    let stat
+    try { stat = lstatSync(current) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw error
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe native observation directory.')
+  }
+  const stat = lstatSync(absolute)
+  if ((stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) {
+    throw new Error('Nonprivate native observation directory.')
+  }
+  return true
+}
+
 /** These records are backend state, never Agent workspace files or native tool inputs. */
 export function privateDirectory(path: string): string {
   const absolute = resolve(path)
@@ -59,6 +102,7 @@ export function writeRecord(path: string, value: unknown, immutable = false): vo
   }
   if (failure !== undefined) throw failure
   syncDirectory(directory)
+  recordWritten(path)
 }
 
 export function recordObject(value: unknown): Record<string, unknown> {

@@ -19,6 +19,7 @@ export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryCha
 import { nativeAgentEnvironment } from '../secrets.js'
 import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
 import { privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
+import { archivedClosure, prepareRegistryRetirement, pruneClosedObservation } from './registryRetirement.js'
 
 export interface NativeProcessRecovery {
   root: string
@@ -179,7 +180,7 @@ function retiredOwner(directory: string, owner: string, id?: string): boolean {
 }
 
 function closedObservation(directory: string, owner: string, id: string): NativeLaunchObservation | undefined {
-  const raw = readRecord(join(directory, `closed-${id}.json`))
+  const raw = readRecord(join(directory, `closed-${id}.json`)) ?? archivedClosure(directory, id)
   if (raw === undefined) return undefined
   const observation = NativeProcessObservationSchema.parse(raw)
   if (observation.owner !== owner || observation.launchId !== id || observation.lifecycle !== 'closed'
@@ -188,8 +189,15 @@ function closedObservation(directory: string, owner: string, id: string): Native
 }
 
 function retireRegistration(directory: string, launch: LaunchRecord): void {
-  publishRetirement(directory)
   if (!closedRecord(directory, launch)) throw new Error('Unconfirmed native registrations cannot be retired.')
+  const ownerDirectory = dirname(directory)
+  const observation = nativeRegistryProjection(dirname(ownerDirectory)).retirementObservation(directory)
+  if (!observation || observation.lifecycle !== 'closed') throw new Error('Native closure observation is unavailable.')
+  if (launch.boot === bootIdentity()
+    && [observation.guardian, observation.provider].some(process => process && identityAlive(process))) {
+    throw new Error('Native registration still has a live process; retirement is unconfirmed.')
+  }
+  publishRetirement(directory)
   const rawBirth = readRecord(join(directory, 'birth.json'))
   if (launch.boot === bootIdentity()) {
     let boundary = rawBirth === undefined ? undefined : birthRecord(rawBirth, launch).containment
@@ -207,10 +215,7 @@ function retireRegistration(directory: string, launch: LaunchRecord): void {
     }
     if (boundary) retireCgroup(boundary)
   }
-  const ownerDirectory = dirname(directory)
   // One compact receipt preserves "known closed" versus "no evidence" after GC.
-  const observation = nativeRegistryProjection(dirname(ownerDirectory)).retirementObservation(directory)
-  if (!observation || observation.lifecycle !== 'closed') throw new Error('Native closure observation is unavailable.')
   writeRecord(join(ownerDirectory, `closed-${launch.id}.json`), observation)
   writeRecord(join(ownerDirectory, 'retired.json'), {
     format: 2, owner: launch.owner, id: launch.id, observation,
@@ -236,7 +241,9 @@ function inventory(directory: string, owner: string): string[] {
     const ids: string[] = []
     for (const id of readdirSync(directory)) {
       if (id === 'retired.json') { retiredOwner(directory, owner); continue }
-      if (/^closed-[0-9a-f-]{36}\.json$/.test(id)) continue
+      const closed = /^closed-([0-9a-f-]{36})\.json$/.exec(id)
+      if (closed) { pruneClosedObservation(directory, closed[1]!); continue }
+      if (id === 'closed') { privateDirectory(join(directory, id)); continue }
       if (/^\.retired-[0-9a-f-]{36}$/.test(id)) {
         privateDirectory(join(directory, id))
         rmSync(join(directory, id), { recursive: true })
@@ -270,7 +277,19 @@ function inventory(directory: string, owner: string): string[] {
 
 /** Backend-owned registry. An empty registry is NOT evidence about pre-upgrade processes. */
 export class NativeProcessRegistry {
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string) {
+    if (process.platform === 'linux') prepareRegistryRetirement(resolve(root), directory => {
+      const launch = launchRecord(readRecord(join(directory, 'intent.json')))
+      if (launch.id !== basename(directory) || key(launch.owner) !== basename(dirname(directory))) {
+        throw new Error('Native owner inventory mismatch.')
+      }
+      if (!closedRecord(directory, launch)) return
+      const observation = nativeRegistryProjection(resolve(root)).retirementObservation(directory)
+      if (launch.boot === bootIdentity()
+        && [observation?.guardian, observation?.provider].some(process => process && identityAlive(process))) return
+      retireRegistration(directory, launch)
+    })
+  }
   snapshot(): NativeRegistrySnapshot { return nativeRegistryProjection(this.root).snapshot() }
   revision(): string { return nativeRegistryProjection(this.root).revision() }
   changes(afterRevision: string, signal: AbortSignal): AsyncIterable<NativeRegistryChange> {
@@ -526,7 +545,7 @@ function reserveProcess(scope: NativeProcessRecovery): LaunchRecord {
     }
     throw error
   }
-  publishObservation(scope.root)
+  publishObservation(directory)
   return launch
 }
 
@@ -575,9 +594,10 @@ export function spawnNativeProcess(binary: string, args: string[], options: {
 }
 
 const harnessLog = componentLogger('harness')
-function publishObservation(root: string): void {
+function publishObservation(directory: string): void {
   // Telemetry never changes dispatch or closure qualification on read failure.
-  try { nativeRegistryProjection(root).snapshot() } catch { harnessLog.warn('Native observation publication unavailable') }
+  try { nativeRegistryProjection(dirname(dirname(directory))).observeLaunch(directory) }
+  catch { harnessLog.warn('Native observation publication unavailable') }
 }
 function publishRetirement(directory: string): void {
   try { nativeRegistryProjection(dirname(dirname(directory))).observeRetirement(directory) }
@@ -625,7 +645,7 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
   owned.set(child, { scope, id, ...(options.restartDetachable ? { restartDetachable: true } : {}) })
   if (scope.launchId && !consumedLaunchScopes.has(scope)) consumedLaunchScopes.set(scope,
     { root: resolve(scope.root), owner: scope.owner, launchId: scope.launchId })
-  child.once('exit', () => publishObservation(scope.root))
+  child.once('exit', () => publishObservation(directory))
   let dispatchAttempted = false
   try {
     if (!child.pid) {
@@ -635,7 +655,7 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
     const guardian = processIdentity(child.pid)
     if (!guardian) throw new Error('Native guardian exited before registration.')
     writeRecord(join(directory, 'dispatched.json'), { format: 1, id, guardian }, true)
-    publishObservation(scope.root)
+    publishObservation(directory)
     // Only the guardian owns this IPC channel; native stdio never carries receipts.
     // Match the immutable launch and guardian generation before accepting an outcome.
     child.on('message', (message: unknown) => {
@@ -643,7 +663,7 @@ function spawnNativeProcessUnobserved(binary: string, args: string[], options: {
       try {
         const row = recordObject(message)
         if (row.operation === 'observation') {
-          if (row.id === id) publishObservation(scope.root)
+          if (row.id === id) publishObservation(directory)
           return
         }
         const source = recordObject(row.guardian)
