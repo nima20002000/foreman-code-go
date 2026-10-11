@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -69,6 +69,23 @@ test('lint checks changed files and typecheck checks packages reached by imports
   assert.deepEqual(affectedCommands('unit', [unit]), [['corepack', 'pnpm', '--dir', 'apps/api', 'exec', 'vitest', 'run', 'src/feature.test.ts']])
   assert.deepEqual(selectByIndexes(['a', 'b', 'c'], 's:0,2'), ['a', 'c'])
   assert.throws(() => selectByIndexes(['a', 'b', 'c'], '-1'), /Invalid/)
+})
+
+test('runs affected commands without leaking dispatch selections into nested commands', t => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'affected-command-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'apps/api/src'), { recursive: true })
+  writeFileSync(join(root, source), 'export {}')
+  const selection = join(root, 'selected.json')
+  writeFileSync(selection, JSON.stringify([source]))
+  writeFileSync(join(root, 'corepack'), `#!${process.execPath}\n`
+    + "if ('SCOPE' in process.env || 'SELECTED_FILES' in process.env || 'SLICE' in process.env) process.exit(9)\n"
+    + "console.log(process.argv.slice(2).join(' '))\n", { mode: 0o755 })
+  const run = spawnSync(process.execPath, [new URL('./ci-affected-run.mjs', import.meta.url).pathname,
+    'lint', '--files-from', selection], { cwd: root, encoding: 'utf8', env: { ...process.env,
+    PATH: `${root}:${process.env.PATH}`, SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: 's:0' } })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /pnpm --dir apps\/api exec eslint src\/feature\.ts --max-warnings 0/)
 })
 
 test('selects the snapshot tree against origin/main without reading later working tree edits', t => {

@@ -41,7 +41,12 @@ export function affectedCommands(suite, files) {
 }
 
 async function run(command) {
-  const child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: { ...process.env, CI: 'true' } })
+  const environment = { ...process.env, CI: 'true' }
+  // Nested CI commands in tests must not inherit this run's dispatch selection.
+  delete environment.SCOPE
+  delete environment.SELECTED_FILES
+  delete environment.SLICE
+  const child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment })
   return new Promise((resolve, reject) => {
     child.once('error', reject)
     child.once('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)))
