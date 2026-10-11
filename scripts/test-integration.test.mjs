@@ -66,10 +66,13 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/operator-file-delivery.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/operator-management-file-authority.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/test-database-startup.integration.test.ts', 'testDatabaseStartup'],
-    ['apps/api/test/computer-workflow-save.regression.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/computer-workflow-save.regression-reservation-cleanup.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/remote-review-production.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', 'installedWorkerHost'],
-    ['apps/api/test/worker-profile-requalification.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-profile-requalification-main-restart.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-profile-requalification-failed-check.integration.test.ts', 'installedWorkerHost'],
   ]
   for (const [file, capability] of requirements) {
     const environment = { schemaVersion: 1, runtime: 'host',
@@ -118,10 +121,13 @@ test('unsupported integration files remain required and prevent a complete or pa
 
 test('installed Worker suites remain unavailable and nonzero even when explicitly selected in a Job', async () => {
   const files = [
-    'apps/api/test/computer-workflow-save.regression.integration.test.ts',
+    'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
+    'apps/api/test/computer-workflow-save.regression-reservation-cleanup.integration.test.ts',
     'apps/api/test/remote-review-production.integration.test.ts',
     'apps/api/test/worker-chat-profile-qualification.integration.test.ts',
-    'apps/api/test/worker-profile-requalification.integration.test.ts',
+    'apps/api/test/worker-profile-requalification-main-restart.integration.test.ts',
+    'apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts',
+    'apps/api/test/worker-profile-requalification-failed-check.integration.test.ts',
   ]
   const environment = await integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1' })
   for (const requested of [files, ...files.map(file => [file])]) {
