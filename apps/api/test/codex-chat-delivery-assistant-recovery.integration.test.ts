@@ -10,7 +10,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   for (const kind of ['agent', 'operator'] as const) {
     it(`${kind} recovers every completed assistant item after startup persistence fails without resending`, async () => {
       const {
-        database, native, repository, messages, request, sendAgent, readAgent, createOperator, sendOperator,
+        database, native, repository, request, sendAgent, readAgent, createOperator, sendOperator,
         readOperator,
       } = fixture
       await native.flag('hold-turn-start-ack')

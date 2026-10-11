@@ -92,7 +92,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       await fixture.operatorChat.shutdown()
       fixture.operatorChat = new OperatorChatService(messages, new PostgresOperatorRepository(database.pool),
         resolver, native.directory, authority)
-      services.fixture.operatorChat = fixture.operatorChat
+      services.operatorChat = fixture.operatorChat
       await fixture.app.close()
       fixture.app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined },
         checkpoints: { ping: async () => undefined } }, operator: { access, services } })
