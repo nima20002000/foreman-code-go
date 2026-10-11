@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AgentConfigurationVersionSchema, DurableInteractionSchema, GetInteractionResponseSchema,
   ReviewJobSchema, withAdvancedDefaults } from '@foreman-code/contracts'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
@@ -13,12 +13,26 @@ import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema, HarnessDefaultsU
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { hasRetainedRemoteReviewerSource } from '../src/modules/interactions/retainedRemoteReviewer.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { buildRemoteReviewWorkerRelease } from './helpers/remoteReviewProvider.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
+let releaseDirectory: string | undefined
+let workerRelease: string
+
+beforeAll(async () => {
+  releaseDirectory = await privateFixtureDirectory('remote-review-release-')
+  workerRelease = await buildRemoteReviewWorkerRelease(releaseDirectory)
+}, 60_000)
+
+afterAll(async () => {
+  if (releaseDirectory) await rm(releaseDirectory, { recursive: true, force: true })
+})
+
 async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>,
   options: Parameters<typeof remoteReviewProduction>[0] = {}) {
-  const fixture = await remoteReviewProduction(options)
+  const fixture = await remoteReviewProduction({ ...options, workerRelease, parallelProfileChecks: true })
   try {
     await check(fixture)
   } catch (error) {
@@ -190,11 +204,16 @@ describe('production remote review and native recovery through authenticated MCP
       const unconfigured = HarnessCatalogEntrySchema.parse(await fixture.value('harness_get', { harness: 'claude' }))
       expect(unconfigured.capability).toBeNull()
       expect(unconfigured.discoveryError?.code).toBe('CLAUDE_PROFILE_SELECTION_REQUIRED')
+      const claudeResponse = await fetch(`${fixture.origin()}/api/management/harnesses/claude`, {
+        headers: { authorization: `Bearer ${fixture.writer.token}` },
+      })
+      expect(claudeResponse.status).toBe(200)
+      expect(HarnessCatalogEntrySchema.parse(await claudeResponse.json())).toEqual(unconfigured)
       const deniedSave = await fixture.call('harness_defaults_update', { ...input, commandId: randomUUID() }, reader.token)
         .then(result => ({ result }), (error: unknown) => ({ error }))
       if ('error' in deniedSave) expect(deniedSave.error).toMatchObject({ code: -32602 })
       else expect(deniedSave.result.isError).toBe(true)
-    }, { modelCatalog: 'empty-at-startup' })
+    }, { modelCatalog: 'empty-at-startup', claudeInventory: true })
   }, 240_000)
 
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {
