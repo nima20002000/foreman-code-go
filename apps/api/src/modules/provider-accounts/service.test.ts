@@ -65,7 +65,7 @@ async function fixture() {
     login: vi.fn(async ({ account }) => { statuses.set(account.id, 'login-pending') }),
     logout: vi.fn(async ({ account }) => { statuses.set(account.id, 'signed-out') }),
     cancelLogin: vi.fn(async accountId => { statuses.delete(accountId) }), close: vi.fn(async () => {}),
-    prepareAuthentication: vi.fn(async input => {
+    prepareAuthentication: vi.fn<NonNullable<ProviderAccountOperationNativePort['prepareAuthentication']>>(async input => {
       if (input.operation.intent === 'sign-in') await native.login(input)
       else await native.logout(input)
       return { operationId: input.operation.id, binding: input.operation.binding,
@@ -73,12 +73,14 @@ async function fixture() {
         state: input.operation.intent === 'sign-in' ? 'awaiting-human' : 'completed',
         nativeClosed: input.operation.intent === 'sign-out' }
     }),
-    observeAuthentication: vi.fn(async input => ({ operationId: input.operation.id,
+    observeAuthentication: vi.fn<NonNullable<ProviderAccountOperationNativePort['observeAuthentication']>>(async input => ({
+      operationId: input.operation.id,
       binding: input.operation.binding, generation: input.operation.generation,
       sequence: input.operation.nativeSequence + 1,
       state: statuses.get(input.account.id) === 'signed-in' ? 'completed' : 'awaiting-human',
       nativeClosed: statuses.get(input.account.id) === 'signed-in' })),
-    cancelAuthentication: vi.fn(async input => ({ operationId: input.operation.id,
+    cancelAuthentication: vi.fn<NonNullable<ProviderAccountOperationNativePort['cancelAuthentication']>>(async input => ({
+      operationId: input.operation.id,
       binding: input.operation.binding, generation: input.operation.generation,
       sequence: input.operation.nativeSequence + 1, state: 'canceled', nativeClosed: true })),
   }

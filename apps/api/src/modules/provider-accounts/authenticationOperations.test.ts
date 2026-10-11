@@ -46,7 +46,7 @@ async function fixture() {
     sequence: input.operation.nativeSequence + 1, state, nativeClosed: closed,
   })
   const native: ProviderAccountOperationNativePort = {
-    status: vi.fn(async () => ({ status: 'signed-out', identity: null })),
+    status: vi.fn<ProviderAccountOperationNativePort['status']>(async () => ({ status: 'signed-out', identity: null })),
     login: vi.fn(async () => {}), logout: vi.fn(async () => {}), cancelLogin: vi.fn(async () => {}),
     close: vi.fn(async () => {}), prepareAuthentication: vi.fn(observed), observeAuthentication: vi.fn(observed),
     cancelAuthentication: vi.fn(observed),

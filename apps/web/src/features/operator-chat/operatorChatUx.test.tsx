@@ -203,6 +203,17 @@ describe('Operator chat UX', () => {
         acceptedModel: { harness: 'claude', model: 'claude-opus-5-5' } }] })
     api.get.mockResolvedValue(pinned)
     server.use(
+      http.get('/api/management/harnesses/claude/options', () => HttpResponse.json({
+        harness: 'claude', providerVersion: 'mock', authenticated: true,
+        models: [
+          { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', reasoningEfforts: ['low', 'medium', 'high'],
+            serviceTiers: [], variants: [] },
+          { id: 'claude-opus-5-5', name: 'Opus 5.5', reasoningEfforts: ['low', 'medium', 'high'],
+            serviceTiers: [], variants: [] },
+          { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', reasoningEfforts: [], serviceTiers: [], variants: [] },
+        ],
+        nativeAgents: [], settings: [], restrictions: [], checkedAt: new Date().toISOString(),
+      })),
       http.get('/api/management/settings/agents', () => HttpResponse.json(saved)),
       http.put('/api/management/settings/agents', async ({ request }) => {
         const input = AgentDefaultsUpdateInputSchema.parse(await request.json())
