@@ -6,7 +6,6 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, type DeviceConnectionView, type DeviceHello, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 
-const blocked = new Set(['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame'])
 export class DeviceConnectionSupervisor {
   private state: DeviceConnectionView = { desired: false, phase: 'disconnected', generation: 0, failure: null }
   private task: Promise<void> | undefined
@@ -16,6 +15,10 @@ export class DeviceConnectionSupervisor {
   constructor(private readonly options: {
     identity: Omit<DeviceSessionBinding, 'connectionEpoch' | 'connectionGeneration'>; appVersion: string; mainPublicKeyFingerprint: string
     connect(signal: AbortSignal): Promise<DeviceSocket>
+    refresh?(signal: AbortSignal): Promise<{
+      identity: Omit<DeviceSessionBinding, 'connectionEpoch' | 'connectionGeneration'>
+      mainPublicKeyFingerprint: string
+    }>
     reconcile(binding: DeviceSessionBinding, signal: AbortSignal): Promise<void>
     onState?(view: DeviceConnectionView): void
     handshakeMs?: number; heartbeatMs?: number; random?: () => number; extensions?: DeviceExtensionRegistration[]
@@ -58,6 +61,9 @@ export class DeviceConnectionSupervisor {
       let socket: DeviceSocket | undefined
       try {
         this.update('connecting')
+        const registration = this.options.refresh
+          ? await withDeviceDeadline(this.options.refresh(attempt.signal), attempt.signal, this.options.handshakeMs ?? 10_000)
+          : this.options
         let timer: ReturnType<typeof setTimeout> | undefined
         try {
           socket = await Promise.race([
@@ -67,7 +73,7 @@ export class DeviceConnectionSupervisor {
         } finally { if (timer) clearTimeout(timer) }
         this.socket = socket
         this.update('authenticating')
-        const hello: DeviceHello = { ...this.options.identity, connectionEpoch: randomUUID(), type: 'hello', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, nonce: randomBytes(32).toString('base64url'), connectionGeneration: this.state.generation, extensions: extensionDescriptors(this.options.extensions ?? []) }
+        const hello: DeviceHello = { ...registration.identity, connectionEpoch: randomUUID(), type: 'hello', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, nonce: randomBytes(32).toString('base64url'), connectionGeneration: this.state.generation, extensions: extensionDescriptors(this.options.extensions ?? []) }
         hello.observedAt = new Date().toISOString()
         sendFrame(socket, hello); this.update('negotiating')
         const iterator = socket.messages[Symbol.asyncIterator]()
@@ -90,11 +96,11 @@ export class DeviceConnectionSupervisor {
         const dispatch = extensions.some((item) => ['execution-v1', 'job-v1'].includes(item.namespace) && item.mainCanRequest)
         const transfer = extensions.some((item) => item.namespace === 'byte-transfer-v1' && (item.mainCanRequest || item.workerCanRequest))
         if (capabilities.dispatch !== dispatch || capabilities.transfer !== transfer) throw new DeviceConnectionError('malformed-frame')
-        const expectedProof: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...this.options.identity, nonce: hello.nonce, connectionGeneration: hello.connectionGeneration, connectionEpoch: hello.connectionEpoch, mainConnectionEpoch: frame.connectionEpoch, protocolVersion: DEVICE_PROTOCOL_VERSION, workerApplicationVersion: hello.appVersion, negotiationHash: deviceNegotiationHash(extensions) }
-        if (!await withDeviceDeadline(verifyMainIdentityProof(frame.mainIdentityProof, expectedProof, this.options.mainPublicKeyFingerprint), attempt.signal, this.options.handshakeMs ?? 10_000)) throw new DeviceConnectionError('wrong-main')
+        const expectedProof: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...registration.identity, nonce: hello.nonce, connectionGeneration: hello.connectionGeneration, connectionEpoch: hello.connectionEpoch, mainConnectionEpoch: frame.connectionEpoch, protocolVersion: DEVICE_PROTOCOL_VERSION, workerApplicationVersion: hello.appVersion, negotiationHash: deviceNegotiationHash(extensions) }
+        if (!await withDeviceDeadline(verifyMainIdentityProof(frame.mainIdentityProof, expectedProof, registration.mainPublicKeyFingerprint), attempt.signal, this.options.handshakeMs ?? 10_000)) throw new DeviceConnectionError('wrong-main')
         if ((frame.mainIdentityProof as { mainApplicationVersion: string }).mainApplicationVersion !== frame.appVersion) throw new DeviceConnectionError('wrong-main')
         if (attempt.signal.aborted) break
-        const binding = { ...this.options.identity, connectionEpoch: frame.connectionEpoch, connectionGeneration: hello.connectionGeneration }
+        const binding = { ...registration.identity, connectionEpoch: frame.connectionEpoch, connectionGeneration: hello.connectionGeneration }
         this.update('synchronizing'); await withDeviceDeadline(this.options.reconcile(binding, attempt.signal), attempt.signal, this.options.handshakeMs ?? 10_000)
         if (attempt.signal.aborted) break
         sendFrame(socket, { type: 'ready', connectionEpoch: binding.connectionEpoch })
@@ -106,17 +112,19 @@ export class DeviceConnectionSupervisor {
       } catch (error) {
         if (signal.aborted) break
         const code = error instanceof DeviceConnectionError ? error.code : 'transport'
-        if (blocked.has(code)) { this.update('blocked', code); return }
+        if (code === 'revoked') { this.update('blocked', code); return }
         attempt.abort(); socket?.close(); this.socket = undefined
+        this.channel?.close(); this.channel = undefined
         this.update('backoff', code)
-        const delay = Math.min(30_000, 500 * 2 ** Math.min(failures++, 6)) * (0.75 + (this.options.random?.() ?? Math.random()) * 0.5)
+        const baseDelay = 500 * 2 ** Math.min(failures++, 6)
+        const delay = Math.min(30_000, baseDelay * (0.75 + (this.options.random?.() ?? Math.random()) * 0.5))
         await pause(delay, signal)
       } finally { attempt.abort(); signal.removeEventListener('abort', cancel); socket?.close(); this.socket = undefined; this.channel?.close(); this.channel = undefined }
     }
   }
 }
 function classifiedFailure(code: unknown): import('@foreman-code/contracts/device-connection').DeviceFailureCode {
-  return ['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
+  return ['authentication', 'revoked', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
 }
 function pause(ms: number, signal: AbortSignal) {
   if (signal.aborted) return Promise.resolve()

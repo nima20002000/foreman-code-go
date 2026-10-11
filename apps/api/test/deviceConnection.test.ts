@@ -25,7 +25,7 @@ import { deviceHttpHandler } from '../src/modules/devices/deviceHttp.js'
 import { DeviceEndpoint, type AuthenticatedDevice } from '../src/modules/devices/deviceEndpoint.js'
 import { DeviceConnectionSupervisor } from '../src/modules/devices/connectionSupervisor.js'
 import { deviceConnector, deviceUpgradeHandler } from '../src/modules/devices/deviceCarrier.js'
-import { adaptDeviceSocket, readFrame, sendFrame } from '../src/modules/devices/deviceWire.js'
+import { adaptDeviceSocket, DeviceConnectionError, readFrame, sendFrame } from '../src/modules/devices/deviceWire.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -34,6 +34,18 @@ class Socket extends EventEmitter {
   send(text: string) { this.sent.push(JSON.parse(text)) }
   close() { if (this.closed) return; this.closed = true; this.emit('close') }
   frame(value: unknown) { this.emit('message', JSON.stringify(value), false) }
+}
+class LinkedSocket extends Socket {
+  peer?: LinkedSocket
+  override send(text: string) {
+    super.send(text)
+    this.peer?.emit('message', text, false)
+  }
+  override close() {
+    if (this.closed) return
+    super.close()
+    this.peer?.close()
+  }
 }
 const identity = { mainId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222', workerInstallationId: '33333333-3333-4333-8333-333333333333', keyRevision: 1, authorizationRevision: 1, bootId: '44444444-4444-4444-8444-444444444444' }
 const mainKeys = generateKeyPairSync('ed25519')
@@ -74,10 +86,11 @@ describe('device-only carrier and lifecycle', () => {
     expect(socket.sent[0]).toEqual({ type: 'blocked', code: 'incompatible-protocol' }); expect(presence).not.toHaveBeenCalled()
   })
   it('blocks the wrong main and expired or revoked credentials', async () => {
-    for (const code of ['wrong_main', 'expired', 'revoked']) {
+    for (const code of ['wrong_main', 'expired', 'revoked'] as const) {
       const { endpoint, auth } = makeEndpoint(); auth.authenticateDevice.mockRejectedValueOnce({ code }); const socket = new Socket()
       await endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket))
-      expect(socket.sent[0]!.code).toBe(code === 'wrong_main' ? 'wrong-main' : 'authentication')
+      const expected = { wrong_main: 'wrong-main', expired: 'authentication', revoked: 'revoked' }[code]
+      expect(socket.sent[0]!.code).toBe(expected)
     }
   })
   it('replacement fences old presence and handlers', async () => {
@@ -101,7 +114,7 @@ describe('device-only carrier and lifecycle', () => {
     auth.authenticateDevice.mockReturnValueOnce(new Promise((done) => { resolve = done }))
     const socket = new Socket(); const task = endpoint.accept({ authorization: 'Bearer secret' }, adaptDeviceSocket(socket))
     endpoint.revoke(identity.deviceId, 2); resolve(principal); await task
-    expect(presence).not.toHaveBeenCalled(); expect(socket.sent[0]).toEqual({ type: 'blocked', code: 'authentication' })
+    expect(presence).not.toHaveBeenCalled(); expect(socket.sent[0]).toEqual({ type: 'blocked', code: 'revoked' })
   })
   it('retains a classified blocked failure when peer closes immediately after its frame', async () => {
     const raw = new Socket(), adapted = adaptDeviceSocket(raw)
@@ -181,11 +194,15 @@ describe('device-only carrier and lifecycle', () => {
     const slow = new Socket(); slow.bufferedAmount = 65_536
     expect(() => sendFrame(adaptDeviceSocket(slow), { type: 'ping', connectionEpoch: 'epoch' })).toThrow('backpressure'); slow.close()
   })
-  it('supervisor blocks wrong-main without retries and separates stopped state', async () => {
+  it('supervisor rejects wrong-main, backs off and separates stopped state', async () => {
+    vi.useFakeTimers()
     const socket = new Socket(); const connect = vi.fn(async () => adaptDeviceSocket(socket))
     const supervisor = new DeviceConnectionSupervisor({ identity, appVersion: 'build', mainPublicKeyFingerprint: fingerprint, connect, reconcile: async () => {} })
     supervisor.start(); await flush(); socket.frame({ ...welcome, mainId: 'different' }); await flush()
-    expect(supervisor.status()).toMatchObject({ desired: true, phase: 'blocked', failure: 'wrong-main' }); expect(connect).toHaveBeenCalledTimes(1)
+    expect(supervisor.status()).toMatchObject({ desired: true, phase: 'backoff', failure: 'wrong-main' })
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(socket.closed).toBe(true)
+    expect(supervisor.currentBinding()).toBeUndefined()
     await supervisor.stop(); expect(supervisor.status()).toMatchObject({ desired: false, phase: 'disconnected' })
   })
   it.each(['missing', 'nonce', 'boot', 'generation', 'epoch', 'auth', 'key', 'signature', 'fingerprint', 'negotiation', 'negotiation-removed'])('blocks tampered or absent selected-main proof: %s', async (field) => {
@@ -201,7 +218,10 @@ describe('device-only carrier and lifecycle', () => {
     else if (field === 'fingerprint') altered.mainIdentityProof!.mainPublicKeyFingerprint = 'a'.repeat(64)
     else { const key = { nonce: 'nonce', boot: 'bootId', generation: 'connectionGeneration', epoch: 'mainConnectionEpoch', auth: 'authorizationRevision', key: 'keyRevision' }[field]!; altered.mainIdentityProof!.request[key] = field === 'nonce' ? 'a'.repeat(43) : field === 'boot' || field === 'epoch' ? '99999999-9999-4999-8999-999999999999' : 99 }
     socket.frame(response); await flush()
-    expect(supervisor.status()).toMatchObject({ phase: 'blocked', failure: 'wrong-main' }); expect(reconcile).not.toHaveBeenCalled(); await supervisor.stop()
+    expect(supervisor.status()).toMatchObject({ phase: 'backoff', failure: 'wrong-main' })
+    expect(socket.closed).toBe(true)
+    expect(supervisor.currentBinding()).toBeUndefined()
+    expect(reconcile).not.toHaveBeenCalled(); await supervisor.stop()
   })
   it('cancellation during open closes late sockets and leaves no timers', async () => {
     vi.useFakeTimers(); let resolve!: (value: ReturnType<typeof adaptDeviceSocket>) => void
@@ -217,12 +237,107 @@ describe('device-only carrier and lifecycle', () => {
     expect(supervisor.status()).toMatchObject({ phase: 'ready', generation: 2 }); expect(reconcile).toHaveBeenCalledTimes(2)
     await supervisor.stop(); expect(vi.getTimerCount()).toBe(0)
   })
+  it('reconnects to restarted Main through authentication and TLS rejection without restarting Worker', async () => {
+    vi.useFakeTimers()
+    const extension: DeviceExtensionRegistration = { namespace: 'probe-v1', version: 1, role: 'server',
+      maxJsonBytes: 1024, maxBinaryBytes: 0, handle: async payload => ({ payload }) }
+    let main = makeEndpoint([extension], 10_000)
+    let registration = identity
+    let rejectTls = false
+    const refresh = vi.fn(async () => ({ identity: registration, mainPublicKeyFingerprint: fingerprint }))
+    const connect = vi.fn(async () => {
+      if (rejectTls) {
+        rejectTls = false
+        throw new DeviceConnectionError('wrong-main')
+      }
+      const workerSocket = new LinkedSocket()
+      const mainSocket = new LinkedSocket()
+      workerSocket.peer = mainSocket
+      mainSocket.peer = workerSocket
+      const workerTransport = adaptDeviceSocket(workerSocket)
+      void main.endpoint.accept({ authorization: 'Bearer device' }, adaptDeviceSocket(mainSocket))
+      return workerTransport
+    })
+    const worker = new DeviceConnectionSupervisor({ identity, appVersion: 'build',
+      mainPublicKeyFingerprint: fingerprint, refresh, connect, random: () => 0.5,
+      heartbeatMs: 100, reconcile: async () => {}, extensions: [{ ...extension, role: 'client' }] })
+    try {
+      worker.start()
+      await flush()
+      expect(worker.status().phase).toBe('ready')
+      expect(main.presence.mock.calls.at(-1)![0].phase).toBe('ready')
+      const before = worker.currentBinding()!
+      main.endpoint.close()
+      await main.endpoint.join()
+      await flush()
+      expect(worker.status()).toMatchObject({ phase: 'backoff', failure: 'transport' })
+      main = makeEndpoint([extension], 10_000)
+      registration = { ...identity, authorizationRevision: 2 }
+      main.auth.authenticateDevice.mockRejectedValueOnce({ code: 'unauthorized' })
+      main.auth.authenticateDevice.mockResolvedValue({ ...principal, ...registration })
+      await vi.advanceTimersByTimeAsync(500)
+      await flush()
+      expect(worker.status()).toMatchObject({ phase: 'backoff', failure: 'authentication' })
+      rejectTls = true
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(worker.status()).toMatchObject({ phase: 'backoff', failure: 'wrong-main' })
+      await vi.advanceTimersByTimeAsync(2000)
+      await flush()
+      expect(worker.status()).toMatchObject({ phase: 'ready', generation: 4 })
+      expect(refresh).toHaveBeenCalledTimes(4)
+      expect(worker.currentBinding()).toMatchObject({ bootId: before.bootId, authorizationRevision: 2 })
+      expect(worker.currentBinding()!.connectionEpoch).not.toBe(before.connectionEpoch)
+      expect(main.presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'ready',
+        binding: { authorizationRevision: 2, bootId: before.bootId } })
+      await expect(worker.request('probe-v1', { afterRestart: true }))
+        .resolves.toEqual({ payload: { afterRestart: true } })
+      main.endpoint.revoke(identity.deviceId, 3)
+      await flush()
+      expect(worker.status()).toMatchObject({ phase: 'blocked', failure: 'revoked' })
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(connect).toHaveBeenCalledTimes(4)
+    } finally {
+      await worker.stop()
+      main.endpoint.close()
+      await main.endpoint.join()
+    }
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it.each(['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame'] as const)(
+    'retries %s with bounded backoff and cancels retries on stop', async code => {
+      vi.useFakeTimers()
+      const connect = vi.fn(async () => { throw new DeviceConnectionError(code) })
+      const worker = new DeviceConnectionSupervisor({ identity, appVersion: 'build',
+        mainPublicKeyFingerprint: fingerprint, connect, reconcile: async () => {}, random: () => 0.5 })
+      try {
+        worker.start()
+        await flush()
+        for (const delay of [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+          const attempts = connect.mock.calls.length
+          expect(worker.status()).toMatchObject({ phase: 'backoff', failure: code })
+          expect(worker.currentBinding()).toBeUndefined()
+          await vi.advanceTimersByTimeAsync(delay - 1)
+          expect(connect).toHaveBeenCalledTimes(attempts)
+          await vi.advanceTimersByTimeAsync(1)
+          expect(connect).toHaveBeenCalledTimes(attempts + 1)
+        }
+      } finally { await worker.stop() }
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(connect).toHaveBeenCalledTimes(9)
+      expect(vi.getTimerCount()).toBe(0)
+    })
   it('requires verified WSS and disables compression', async () => {
     expect(() => deviceConnector({ url: 'ws://main/device/connect', credential: 'secret', create: () => new Socket() })).toThrow('wrong-main')
     const socket = new Socket(); const create = vi.fn(() => socket); const connect = deviceConnector({ url: 'wss://main/device/connect', credential: 'secret', create })
     const abort = new AbortController(); const task = connect(abort.signal); socket.emit('open'); const adapted = await task
     expect(create.mock.calls[0]).toEqual(['wss://main/device/connect', expect.objectContaining({ rejectUnauthorized: true, perMessageDeflate: false, maxPayload: 16384 })]); adapted.close()
     expect(socket.listenerCount('message')).toBe(0)
+    const rejectedSocket = new Socket()
+    create.mockReturnValueOnce(rejectedSocket)
+    const rejected = connect(new AbortController().signal)
+    rejectedSocket.emit('error', { code: 'CERT_NOT_YET_VALID' })
+    await expect(rejected).rejects.toThrow('wrong-main')
+    expect(rejectedSocket.closed).toBe(true)
   })
 })
 
@@ -294,14 +409,14 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       expect(mainHandler).toHaveBeenCalledOnce()
     } finally { await worker.stop(); endpoint.close(); await endpoint.join(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
-  it('maps pre-upgrade rejection into blocked auth without a retry storm', async () => {
+  it('maps definitive pre-upgrade revocation separately from authentication', async () => {
     const { endpoint, auth } = makeEndpoint(); auth.authenticateDevice.mockRejectedValue({ code: 'revoked' })
     const server = createServer(); const carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
     server.on('upgrade', deviceUpgradeHandler(endpoint, carrier)); server.listen(0, '127.0.0.1'); await once(server, 'listening')
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('missing address')
     // URL validation uses WSS; the injected constructor below uses disposable HTTP solely for this transport test.
     const connect = deviceConnector({ url: 'wss://main/device/connect', credential: 'revoked', create: (_url, options) => new WebSocket(`ws://127.0.0.1:${address.port}/device/connect`, options) })
-    try { await expect(connect(new AbortController().signal)).rejects.toThrow('authentication') }
+    try { await expect(connect(new AbortController().signal)).rejects.toThrow('revoked') }
     finally { endpoint.close(); carrier.close(); await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
 })

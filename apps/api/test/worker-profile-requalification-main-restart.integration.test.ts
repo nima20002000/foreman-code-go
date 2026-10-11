@@ -8,6 +8,8 @@ describe('automatic Worker profile qualification', () => {
       parallelSetup: true })
     try {
       const before = await latestEvidence(fixture)
+      const workerPid = fixture.workerPid()
+      const connectionBefore = (await fixture.inventory()).hostMetadata!.connection!.binding
       expect(fixture.profiles).toHaveLength(2)
       expect(new Set(fixture.profiles.map(profile => profile.instanceId)).size).toBe(2)
       expect(before).toHaveLength(fixture.profiles.length)
@@ -15,6 +17,18 @@ describe('automatic Worker profile qualification', () => {
       await fixture.restartMain()
       const evidence = await refreshedEvidence(fixture, before[0]!.connectionGeneration)
       await assertMcpReadback(fixture, evidence)
+      const connectionAfter = (await fixture.inventory()).hostMetadata!.connection!
+      expect(fixture.workerPid()).toBe(workerPid)
+      expect(connectionAfter.phase).toBe('ready')
+      expect(connectionAfter.binding.bootId).toBe(connectionBefore.bootId)
+      expect(connectionAfter.binding.connectionEpoch).not.toBe(connectionBefore.connectionEpoch)
+      expect(connectionAfter.binding.connectionGeneration).toBeGreaterThan(connectionBefore.connectionGeneration)
+      const deniedCaller = await fixture.access.issue({ name: 'Unprivileged operator', audience: 'operator',
+        grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date('2099-01-01T00:00:00Z') })
+      const denied = await fixture.call('harness_registry_get', fixture.hostRef, deniedCaller.token)
+        .then(result => ({ result }), (error: unknown) => ({ error }))
+      if ('error' in denied) expect(denied.error).toMatchObject({ code: -32602 })
+      else expect(denied.result.isError).toBe(true)
       const started = (await startWhenReady(fixture))!
       expect((await fixture.details(started.run.id)).run.id).toBe(started.run.id)
     } catch (error) {

@@ -20,7 +20,8 @@ export function deviceUpgradeHandler(endpoint: DeviceEndpoint, server: UpgradeSe
       server.handleUpgrade(request, socket, head, (raw) => { void endpoint.acceptAuthenticated(principal, adaptDeviceSocket(raw)).catch(() => raw.close()) })
     }).catch((error: unknown) => {
       const code = error instanceof DeviceConnectionError ? error.code : 'transport'
-      const status = code === 'authentication' ? 401 : code === 'permission' ? 403 : code === 'wrong-main' ? 409 : 503
+      const statuses: Record<string, number> = { authentication: 401, permission: 403, 'wrong-main': 409, revoked: 410 }
+      const status = statuses[code] ?? 503
       if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} Device connection rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
     })
   }
@@ -44,7 +45,10 @@ export function deviceConnector(options: {
       const cleanup = () => { raw.off('open', open); raw.off('error', fail); raw.off('close', fail); raw.off('unexpected-response', rejected); signal.removeEventListener('abort', fail) }
       const rejected = (_request: unknown, response: unknown) => {
         const status = (response as { statusCode?: number })?.statusCode
-        cleanup(); adapted.close(); reject(new DeviceConnectionError(status === 401 ? 'authentication' : status === 403 ? 'permission' : status === 409 ? 'wrong-main' : 'transport'))
+        const failures: Record<number, import('@foreman-code/contracts/device-connection').DeviceFailureCode> = {
+          401: 'authentication', 403: 'permission', 409: 'wrong-main', 410: 'revoked',
+        }
+        cleanup(); adapted.close(); reject(new DeviceConnectionError(failures[status ?? 0] ?? 'transport'))
       }
       const open = () => { cleanup(); resolve(adapted) }
       const fail = (error?: unknown) => {

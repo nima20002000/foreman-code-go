@@ -76,7 +76,8 @@ describe('W07 confirmed security and lifecycle regressions', () => {
       const request: MainIdentityProofRequest = { audience: 'graphql-worker-main-v1', ...identity, nonce: String(hello.nonce), connectionGeneration: Number(hello.connectionGeneration), connectionEpoch: String(hello.connectionEpoch), mainConnectionEpoch: epoch, negotiationHash: deviceNegotiationHash([]), protocolVersion: 1, workerApplicationVersion: 'build' }
       const response = await challenge(request)
       socket.frame({ ...identity, type: 'welcome', protocolVersion: 1, appVersion: 'build', connectionGeneration: hello.connectionGeneration, connectionEpoch: epoch, mainIdentityProof: response.body, capabilities: { heartbeat: true, dispatch: false, transfer: false, extensions: [] } }); await flush()
-      expect(supervisor.status()).toMatchObject({ phase: 'blocked', failure: 'wrong-main' })
+      expect(supervisor.status()).toMatchObject({ phase: 'backoff', failure: 'wrong-main' })
+      expect(socket.closed).toBe(true); expect(supervisor.currentBinding()).toBeUndefined()
       expect(response.status).toBe(400); expect(response.signProof).not.toHaveBeenCalled(); expect(response.pair).not.toHaveBeenCalled()
       expect(await verifyMainIdentityProof(response.body, request, main.publicKeyFingerprint)).toBe(false); expect(reconcile).not.toHaveBeenCalled()
     } finally { await supervisor.stop() }
@@ -96,7 +97,9 @@ describe('W07 confirmed security and lifecycle regressions', () => {
       const extraFields = await challenge({ ...enrollment, deviceId: identity.deviceId })
       expect(extraFields.status).toBe(400); expect(extraFields.signProof).not.toHaveBeenCalled()
       socket.frame({ ...identity, type: 'welcome', protocolVersion: 1, appVersion: 'build', connectionGeneration: hello.connectionGeneration, connectionEpoch: epoch, mainIdentityProof: response.body, capabilities: { heartbeat: true, dispatch: false, transfer: false, extensions: [] } }); await flush()
-      expect(supervisor.status()).toMatchObject({ phase: 'blocked', failure: 'wrong-main' }); expect(reconcile).not.toHaveBeenCalled()
+      expect(supervisor.status()).toMatchObject({ phase: 'backoff', failure: 'wrong-main' })
+      expect(socket.closed).toBe(true); expect(supervisor.currentBinding()).toBeUndefined()
+      expect(reconcile).not.toHaveBeenCalled()
     } finally { await supervisor.stop() }
   })
   it('actual authorization-storage outage backs off and recovers through actual admission', async () => {
@@ -112,15 +115,42 @@ describe('W07 confirmed security and lifecycle regressions', () => {
       expect(connect).toHaveBeenCalledTimes(2); expect(supervisor.status().phase).toBe('ready'); expect(sockets[0]!.closed).toBe(false)
     } finally { await supervisor.stop(); device.close(); await Promise.allSettled(tasks) }
   })
-  it('proven credential rejection remains permanent with no retry or fallback', async () => {
+  it('credential rejection retries admission without accepting rejected credentials or using fallback', async () => {
     vi.useFakeTimers()
     const query = vi.fn(async () => ({ rows: [] }))
     const service = new PostgresDeviceAccessService({ query } as unknown as pg.Pool, main.mainId), device = endpoint(service)
     const tasks: Promise<void>[] = [], connect = vi.fn(connectTo(device, tasks, []))
-    const supervisor = new DeviceConnectionSupervisor({ identity, appVersion: 'build', mainPublicKeyFingerprint: main.publicKeyFingerprint, connect, reconcile: async () => {} })
+    const reconcile = vi.fn(async () => {})
+    const supervisor = new DeviceConnectionSupervisor({ identity, appVersion: 'build',
+      mainPublicKeyFingerprint: main.publicKeyFingerprint, connect, reconcile, random: () => 0.5 })
     try {
-      supervisor.start(); await flush(); expect(supervisor.status()).toMatchObject({ phase: 'blocked', failure: 'authentication' })
-      await vi.advanceTimersByTimeAsync(30_001); expect(connect).toHaveBeenCalledOnce(); expect(query).toHaveBeenCalledOnce()
+      supervisor.start(); await flush()
+      expect(supervisor.status()).toMatchObject({ phase: 'backoff', failure: 'authentication' })
+      await vi.advanceTimersByTimeAsync(499)
+      expect(connect).toHaveBeenCalledOnce(); expect(query).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(connect).toHaveBeenCalledTimes(2); expect(query).toHaveBeenCalledTimes(2)
+      expect(supervisor.status()).toMatchObject({ phase: 'backoff', failure: 'authentication' })
+      expect(supervisor.currentBinding()).toBeUndefined(); expect(reconcile).not.toHaveBeenCalled()
+    } finally { await supervisor.stop(); device.close(); await Promise.allSettled(tasks) }
+  })
+  it('persisted definitive revocation stops retries and cannot admit a rejected credential', async () => {
+    vi.useFakeTimers()
+    const query = vi.fn(async () => ({ rows: [{ record: { ...registration, status: 'revoked' },
+      credential_expires_at: new Date(principal.expiresAt) }] }))
+    const service = new PostgresDeviceAccessService({ query } as unknown as pg.Pool, main.mainId)
+    const device = endpoint(service)
+    const tasks: Promise<void>[] = []
+    const connect = vi.fn(connectTo(device, tasks, []))
+    const reconcile = vi.fn(async () => {})
+    const supervisor = new DeviceConnectionSupervisor({ identity, appVersion: 'build',
+      mainPublicKeyFingerprint: main.publicKeyFingerprint, connect, reconcile })
+    try {
+      supervisor.start(); await flush()
+      expect(supervisor.status()).toMatchObject({ phase: 'blocked', failure: 'revoked' })
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(connect).toHaveBeenCalledOnce(); expect(query).toHaveBeenCalledTimes(2)
+      expect(supervisor.currentBinding()).toBeUndefined(); expect(reconcile).not.toHaveBeenCalled()
     } finally { await supervisor.stop(); device.close(); await Promise.allSettled(tasks) }
   })
   it('live authorization-storage outage reconnects instead of permanently blocking', async () => {
@@ -178,8 +208,8 @@ describe('W07 confirmed security and lifecycle regressions', () => {
       expect(port.query.mock.calls.filter(([sql]) => sql.includes('device_registrations'))).toHaveLength(0)
       expect(sockets[0]!.closed).toBe(true)
       const old = new Socket(); await device.acceptAuthenticated(ticket, adaptDeviceSocket(old))
-      expect(old.frames[0]).toEqual({ type: 'blocked', code: 'authentication' })
-      await expect(device.authenticate({ authorization: 'Bearer credential' })).rejects.toThrow('authentication')
+      expect(old.frames[0]).toEqual({ type: 'blocked', code: 'revoked' })
+      await expect(device.authenticate({ authorization: 'Bearer credential' })).rejects.toThrow('revoked')
     } finally { await supervisor.stop(); device.close(); await Promise.allSettled(tasks) }
   })
 })

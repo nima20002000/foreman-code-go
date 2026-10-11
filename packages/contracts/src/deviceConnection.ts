@@ -8,7 +8,7 @@ export const DEVICE_FRAME_BYTES = 16_384
 export const DEVICE_QUEUE_DEPTH = 32
 export const DEVICE_BUFFER_BYTES = 65_536
 export type DeviceConnectionPhase = 'disconnected' | 'offline' | 'connecting' | 'authenticating' | 'negotiating' | 'synchronizing' | 'ready' | 'backoff' | 'blocked'
-export type DeviceFailureCode = 'authentication' | 'permission' | 'wrong-main' | 'incompatible-protocol' | 'malformed-frame' | 'backpressure' | 'timeout' | 'transport'
+export type DeviceFailureCode = 'authentication' | 'revoked' | 'permission' | 'wrong-main' | 'incompatible-protocol' | 'malformed-frame' | 'backpressure' | 'timeout' | 'transport'
 export const DeviceSessionBindingSchema = DeviceConnectionIdentitySchema.extend({ connectionEpoch: z.uuid() }).strict()
 export type DeviceSessionBinding = z.infer<typeof DeviceSessionBindingSchema>
 /** Worker build/wire version and last frame receipt are observed on its authenticated connection. */

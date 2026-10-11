@@ -12,6 +12,15 @@ describe('device-only authentication', () => {
     await expect(service.authenticateDevice('owner-cookie', 'connect')).rejects.toMatchObject({ code: 'unauthorized' })
     expect(queries).toHaveLength(1)
   })
+  it('distinguishes persisted revocation from a transient authentication rejection', async () => {
+    const mainId = randomUUID()
+    const principal = { audience: 'graphql-worker' as const, mainId, deviceId: randomUUID(),
+      workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
+      expiresAt: '2099-01-01T00:00:00Z' }
+    const pool = { query: async () => ({ rows: [{ record: { status: 'revoked' } }] }) } as unknown as pg.Pool
+    const service = new PostgresDeviceAccessService(pool, mainId)
+    await expect(service.revalidateDevice(principal, 'heartbeat')).rejects.toMatchObject({ code: 'revoked' })
+  })
   it('rejects wrong main and forged fingerprints before DB grant access', async () => {
     const service = new PostgresDeviceAccessService({} as pg.Pool, randomUUID())
     const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ format: 'pem', type: 'spki' }).toString()
