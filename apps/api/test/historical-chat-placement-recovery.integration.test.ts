@@ -3,6 +3,7 @@ import { expect, it } from 'vitest'
 import { historicalChatPlacement, historicalChatSource, forkHistoricalChat } from './helpers/historicalChatPlacement.js'
 import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { measureIntegrationPhase } from './helpers/integrationPhase.js'
 
 it('recovers historical chat on its accepted Worker through Main restart and profile requalification', async () => {
   await historicalChatPlacement(async fixture => {
@@ -13,12 +14,14 @@ it('recovers historical chat on its accepted Worker through Main restart and pro
     let callsBefore = 0
     let modelsBlocked = false
     try {
-      await fixture.restartMain({ mode: 'graceful', afterShutdown: async () => {
-        // Hold only the reconnect check after the old Main has drained its work.
-        callsBefore = (await fixture.provider.calls()).length
-        await fixture.provider.blockModels({ workingDirectory: fixture.stateDirectory })
-        modelsBlocked = true
-      } })
+      await measureIntegrationPhase('historical chat Main restart', () => fixture.restartMain({
+        mode: 'graceful', afterShutdown: async () => {
+          // Hold only the reconnect check after the old Main has drained its work.
+          callsBefore = (await fixture.provider.calls()).length
+          await fixture.provider.blockModels({ workingDirectory: fixture.stateDirectory })
+          modelsBlocked = true
+        },
+      }))
       await waitForRemoteReview(() => fixture.provider.calls(), calls => calls.slice(callsBefore).some(call =>
         call.method === 'model/list' && typeof call.workingDirectory === 'string'
         && call.workingDirectory.startsWith(`${fixture.stateDirectory}/`)),
@@ -37,13 +40,16 @@ it('recovers historical chat on its accepted Worker through Main restart and pro
     } finally {
       if (modelsBlocked) await fixture.provider.releaseModels()
     }
-    await waitForRemoteReview(read, state => state.availability.canSend, 'requalified Worker chat profile')
-    await fixture.value('agent_chat_send', { workspaceId, selection, message: followUp })
-    const resumed = await waitForRemoteReview(read, state => {
-      const turn = state.turns.find(turn => turn.requestId === followUp.requestId)
-      expect(turn?.delivery, JSON.stringify(turn?.error)).not.toBe('failed')
-      return turn?.delivery === 'completed'
-    }, 'recovered Worker chat continuation')
+    await measureIntegrationPhase('historical chat profile requalification',
+      () => waitForRemoteReview(read, state => state.availability.canSend, 'requalified Worker chat profile'))
+    await measureIntegrationPhase('historical chat continuation send',
+      () => fixture.value('agent_chat_send', { workspaceId, selection, message: followUp }))
+    const resumed = await measureIntegrationPhase('historical chat continuation completion',
+      () => waitForRemoteReview(read, state => {
+        const turn = state.turns.find(turn => turn.requestId === followUp.requestId)
+        expect(turn?.delivery, JSON.stringify(turn?.error)).not.toBe('failed')
+        return turn?.delivery === 'completed'
+      }, 'recovered Worker chat continuation'))
     expect(resumed.turns.find(turn => turn.requestId === followUp.requestId)?.error).toBeUndefined()
     expect(resumed.conversation?.nativeSession).toEqual(completed.conversation?.nativeSession)
     expect(await fixture.details(started.run.id)).toEqual(before)

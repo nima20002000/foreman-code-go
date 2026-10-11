@@ -15,6 +15,7 @@ import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../
 import { CodexDiagnostics } from '../harnesses/codexDiagnostics.js'
 import { codexMcpInspectorAdapter } from '../harnesses/codexMcpInspectorAdapter.js'
 import { inspectInstalledCodex } from '../harnesses/installedCodexInspection.js'
+import { PayloadFingerprintCache } from '../harnesses/payloadFingerprintCache.js'
 import type { NativeHarnessSessionManager } from '../harnesses/port.js'
 import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import { createInstalledCodexDependencies } from '../harnesses/installedCodexDependencies.js'
@@ -52,6 +53,7 @@ export async function createInstalledWorkerConversations(input: {
 }) {
   const selected = await readInstalledWorkflowConfiguration(input.configuration)
   if (!selected) return null
+  const payloadFingerprints = new PayloadFingerprintCache()
   const conversationJournal = (await input.journal()).conversations
   const operations = new AsyncLocalStorage<WorkerConversationRpcRequest>()
   const source = () => {
@@ -75,7 +77,7 @@ export async function createInstalledWorkerConversations(input: {
     const reader = createInstalledConversationNativeReader({ binding, configuration, connection,
       current: input.current, signal: () => input.signal, suiteRevision: input.codexSuiteRevision,
       inspect: signal => inspectInstalledCodex({ binding: input.current(), configuration: input.configuration,
-        environment: process.env, cwd: input.stateDirectory, signal }),
+        environment: process.env, cwd: input.stateDirectory, signal, fingerprintCache: payloadFingerprints }),
       readFacts: signal => callbacks.profile(source(), signal),
     })
     const original = await reader.capture()

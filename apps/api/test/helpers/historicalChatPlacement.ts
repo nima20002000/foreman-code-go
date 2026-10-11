@@ -4,28 +4,35 @@ import { SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agen
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { remoteReviewProduction, waitForRemoteReview } from './remoteReviewProduction.js'
+import { measureIntegrationPhase } from './integrationPhase.js'
 
 export async function historicalChatPlacement(
   scenario: (fixture: Awaited<ReturnType<typeof remoteReviewProduction>>) => Promise<void>,
   options: { includeNodeRuntimePayload?: boolean } = {},
 ) {
-  const fixture = await remoteReviewProduction({ workflow: 'single', parallelSetup: true, ...options })
+  const fixture = await remoteReviewProduction({
+    workflow: 'single', parallelSetup: true,
+    // Reconnect discovery remains immediate; these cases do not change installed payloads.
+    installationRefreshIntervalMs: 60_000,
+    ...options,
+  })
   try {
-    await scenario(fixture)
+    await measureIntegrationPhase('historical chat scenario', () => scenario(fixture))
   } catch (error) {
     console.error('Historical Worker chat scenario failed', { failures: fixture.failures() })
     throw error
   } finally {
-    await fixture.close()
+    await measureIntegrationPhase('historical chat cleanup', () => fixture.close())
   }
 }
 
 export async function historicalChatSource(fixture: Awaited<ReturnType<typeof remoteReviewProduction>>) {
-  const started = await fixture.start()
-  const before = await waitForRemoteReview(async () => {
-    await fixture.reconcile()
-    return fixture.details(started.run.id)
-  }, value => value.run.executionState === 'completed', 'completed source Run')
+  const started = await measureIntegrationPhase('historical source Run start', () => fixture.start())
+  const before = await measureIntegrationPhase('historical source Run completion',
+    () => waitForRemoteReview(async () => {
+      await fixture.reconcile()
+      return fixture.details(started.run.id)
+    }, value => value.run.executionState === 'completed', 'completed source Run', fixture.subscribeNativeChanges))
   const execution = before.executions[0]!
   expect(execution.nativeSessionId).toBeTruthy()
   const workspaceId = fixture.version.workspaceId
@@ -46,11 +53,11 @@ export async function forkHistoricalChat(
   message = { requestId: randomUUID(), content: 'Continue the saved task.', expectedConversationId: null },
 ) {
   const { started, execution, workspaceId, selection, read } = source
-  const accepted = SendAgentChatMessageResponseSchema.parse(await fixture.value('agent_chat_send', {
-    workspaceId, selection, message,
-  }))
-  const completed = await waitForRemoteReview(read, state => state.turns.some(turn =>
-    turn.requestId === message.requestId && turn.delivery === 'completed'), 'Worker chat fork completion')
+  const accepted = SendAgentChatMessageResponseSchema.parse(await measureIntegrationPhase('historical chat fork send',
+    () => fixture.value('agent_chat_send', { workspaceId, selection, message })))
+  const completed = await measureIntegrationPhase('historical chat fork completion', () => waitForRemoteReview(read,
+    state => state.turns.some(turn => turn.requestId === message.requestId && turn.delivery === 'completed'),
+    'Worker chat fork completion'))
   expect(completed.conversation?.nativeSession?.nativeSessionId).not.toBe(execution.nativeSessionId)
   expect(completed.conversation?.origin).toEqual({ kind: 'run_execution', runId: started.run.id,
     executionId: execution.id, sourceNativeSessionId: execution.nativeSessionId })

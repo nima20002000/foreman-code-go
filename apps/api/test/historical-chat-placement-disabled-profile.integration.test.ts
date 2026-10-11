@@ -2,15 +2,18 @@ import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { historicalChatPlacement, historicalChatSource, forkHistoricalChat } from './helpers/historicalChatPlacement.js'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { measureIntegrationPhase } from './helpers/integrationPhase.js'
 
 it('keeps historical Worker chat readable and refuses host switching when its profile is disabled', async () => {
   await historicalChatPlacement(async fixture => {
     const source = await historicalChatSource(fixture)
     const { workspaceId, selection, read, completed, id, before, started } = await forkHistoricalChat(fixture, source)
     const followUp = { requestId: randomUUID(), content: 'Continue after recovery.', expectedConversationId: id }
-    await fixture.value('agent_chat_send', { workspaceId, selection, message: followUp })
-    const resumed = await waitForRemoteReview(read, state => state.turns.some(turn =>
-      turn.requestId === followUp.requestId && turn.delivery === 'completed'), 'Worker chat continuation')
+    await measureIntegrationPhase('historical chat continuation send',
+      () => fixture.value('agent_chat_send', { workspaceId, selection, message: followUp }))
+    const resumed = await measureIntegrationPhase('historical chat continuation completion',
+      () => waitForRemoteReview(read, state => state.turns.some(turn =>
+        turn.requestId === followUp.requestId && turn.delivery === 'completed'), 'Worker chat continuation'))
     expect(resumed.conversation?.nativeSession).toEqual(completed.conversation?.nativeSession)
     const profile = fixture.profiles[0]!
     await fixture.value('harness_instance_save', { commandId: randomUUID(), instanceId: profile.instanceId,

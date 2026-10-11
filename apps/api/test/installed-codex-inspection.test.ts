@@ -79,38 +79,40 @@ describe('passive installed worker Codex evidence producer', () => {
       expect(findInstalled).toHaveBeenCalledWith(target.target, target.binarySha256, 'actual-suite-v1')
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })
-  it('detects actual changed executable and payload bytes in the target fingerprint', async () => {
+  it.each([false, true])('detects changed executable and payload bytes with cached inspection=%s', async cached => {
     const f = await fixture()
     try {
+      const input = { ...f.input, ...(cached ? { fingerprintCache: new PayloadFingerprintCache() } : {}) }
       const payload = join(f.root, 'provider-payload')
       await writeFile(payload, 'payload-one')
       await writeFile(f.path, JSON.stringify({ schemaVersion: 1, codexBinary: f.binary, appMcpLauncher: '/installed/graphql-mcp-launcher', expectedVersion: '0.132.0', payloadPaths: [payload] }), { mode: 0o600 })
-      const before = await inspectInstalledCodex(f.input)
+      const before = await inspectInstalledCodex(input)
       await writeFile(payload, 'payload-two')
-      const afterPayload = await inspectInstalledCodex(f.input)
+      const afterPayload = await inspectInstalledCodex(input)
       expect(afterPayload.currentTarget?.target.installationFingerprint).not.toBe(before.currentTarget?.target.installationFingerprint)
       expect(afterPayload.currentTarget?.binarySha256).toBe(before.currentTarget?.binarySha256)
       await writeFile(f.binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('replacement-image')]))
-      const afterBinary = await inspectInstalledCodex(f.input)
+      const afterBinary = await inspectInstalledCodex(input)
       expect(afterBinary.currentTarget?.binarySha256).not.toBe(before.currentTarget?.binarySha256)
     } finally { await rm(f.root, { recursive: true, force: true }) }
   })
-  it('rejects an installation when its pinned tool host is missing', async () => {
+  it.each([false, true])('rejects a missing pinned tool host with cached inspection=%s', async cached => {
     const f = await fixture()
     try {
+      const input = { ...f.input, ...(cached ? { fingerprintCache: new PayloadFingerprintCache() } : {}) }
       const helper = join(f.root, 'codex-code-mode-host')
       await writeFile(f.path, JSON.stringify({ schemaVersion: 1, codexBinary: f.binary,
         appMcpLauncher: '/installed/graphql-mcp-launcher', expectedVersion: '0.132.0', payloadPaths: [helper] }), { mode: 0o600 })
-      const missing = await inspectInstalledCodex(f.input)
+      const missing = await inspectInstalledCodex(input)
       expect(missing.currentTarget).toBeNull()
       expect(missing.inventory.installations[0]).toMatchObject({ installed: false, qualified: false })
       await writeFile(helper, 'pinned tool host', { mode: 0o500 })
-      const installed = await inspectInstalledCodex(f.input)
+      const installed = await inspectInstalledCodex(input)
       expect(installed.currentTarget).not.toBeNull()
       expect(installed.inventory.installations[0]?.launcher.payloadFingerprints)
         .toEqual(expect.arrayContaining([expect.objectContaining({ path: helper })]))
       await rm(helper)
-      expect((await inspectInstalledCodex(f.input)).currentTarget).toBeNull()
+      expect((await inspectInstalledCodex(input)).currentTarget).toBeNull()
     } finally {
       await rm(f.root, { recursive: true, force: true })
     }
