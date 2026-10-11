@@ -9,12 +9,20 @@ import type { RepeatCanonicalPublication } from '../runs/repeatRepositoryHost.js
 import { repeatDigest, repeatId, repeatSlotId, repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { repeatLaunchClaim, type RepeatLaunchClaim, type RepeatNativeChange } from '../runs/repeatNativeRepository.js'
 import type { RunOwnership } from '../runs/ownership.js'
-import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from './connection.js'
+import {
+  assertGraphTransaction, beforeGraphCommit, isReadOnlyGraphTransaction, poisonGraphTransaction,
+  type GraphTransactionSql,
+} from './connection.js'
 import { assertRunGraphPublication, readRepeatRunSourceLocked, openRunGraphPublication, type RunGraphPublication } from './publication.js'
-import { requireRepeatCanonicalReceiptBeforeCommit, type RepeatCanonicalReceipt } from './repeatReceipts.js'
+import {
+  assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit, type RepeatCanonicalReceipt,
+} from './repeatReceipts.js'
 import { readRepeatGraphBindingsLocked, readRepeatGraphExecutionsLocked, readRepeatGraphPinsLocked, readRepeatRunStateLocked } from './repeatProjectionRows.js'
 import { publishRepeatExecutionStateLocked } from './repeatExecutionPublication.js'
 import { RunGraphError } from './errors.js'
+import { assertPublicProjectionCommittedLocked } from './publicProjectionReceipt.js'
+import { DomainError } from '../errors.js'
+import { workflowJobGraphSourceChangesLocked } from './workflowJobProjection.js'
 
 const same = (left: unknown, right: unknown) => canonicalGraphJson(left) === canonicalGraphJson(right)
 const fail = (): never => { throw new RunGraphError('GRAPH_INVARIANT_VIOLATION') }
@@ -155,6 +163,7 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
     const scope = RepeatGraphScopeV3Schema.parse(input)
     owner.assertOwned()
     if (owner.runId !== scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
+    if (isReadOnlyGraphTransaction(sql)) return await readRepeatCanonicalPublication(sql, scope, owner)
     const publication = existing ?? await openRunGraphPublication(sql, scope)
     if (publication.sql !== sql || !sameCanonicalGraphScope(publication.scope, scope)) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
     assertRunGraphPublication(sql, scope)
@@ -260,6 +269,35 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
       }),
     }
   } catch (error) { poisonGraphTransaction(sql); throw error }
+}
+
+/** Owner observations validate committed sources without opening a writer or staging finalization. */
+async function readRepeatCanonicalPublication(sql: GraphTransactionSql, scope: RepeatGraphScopeV3,
+  owner: RunOwnership): Promise<RepeatCanonicalPublication> {
+  const { version } = await readRepeatGraphPinsLocked(sql, scope)
+  const source = await readRepeatRunSourceLocked(sql, scope)
+  if (!source.replayed) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  await assertPublicProjectionCommittedLocked(sql, scope, source.head)
+  if (version.definition.nodes.some(node => node.kind === 'job')
+    && (await workflowJobGraphSourceChangesLocked(sql, scope)).length) {
+    throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  }
+  await owner.readOneShotFence(sql)
+  const unavailable = async (): Promise<never> => {
+    throw new DomainError('RUN_READ_ONLY', 'A Run observation cannot publish changes or authorize native entry.', 409)
+  }
+  return {
+    sql,
+    scope,
+    publishEffectLocked: unavailable,
+    publishNativeLocked: unavailable,
+    assertNativeReceiptLocked: unavailable,
+    assertLaunchReceiptLocked: unavailable,
+    assertEffectReceiptLocked: async (effect) => {
+      owner.assertOwned()
+      await assertRepeatCanonicalReceiptLocked(sql, canonicalRepeatEffectReceipt(scope, effect))
+    },
+  }
 }
 
 /** Call AFTER the excluded authorized owner-scoped lifecycle SQL writer, before

@@ -18,7 +18,10 @@ import {
 
 import { enterWorkflowNativeLocked, releaseWorkflowNativeEntryPermit, reserveWorkflowNativeEntryLocked, readWorkflowNativeEntryLocked,
   sealWorkflowNativeEntryLocked, workflowNativeReservation, type WorkflowNativeEntryPermit, type WorkflowNativeEntryRecord } from './workflowNativeEntry.js'
-import { assertGraphTransaction, beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'
+import {
+  assertGraphTransaction, beforeGraphCommit, isReadOnlyGraphTransaction,
+  type GraphSqlClient, type GraphTransactionSql,
+} from '../run-graph/connection.js'
 import type { RunOwnership } from './ownership.js'
 import type { AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { canonicalRepeatEffectReceipt } from '../run-graph/repeatPublication.js'
@@ -170,13 +173,14 @@ export class RepeatRunRepository {
     if (this.owner.oneShotConnection().unusable) return false
     return this.launchPermits.delete(executionId)
   }
-  private async transaction<T>(work: (context: Context) => Promise<T>): Promise<T> {
+  private async transaction<T>(work: (context: Context) => Promise<T>, options: { readOnly?: boolean } = {}): Promise<T> {
     return this.owner.oneShotConnection().transaction(async (sql) => {
       this.owner.assertOwned()
+      const lock = options.readOnly ? '' : 'for update of r'
       const found = await sql.query<{ run: unknown; version: unknown; stopped: boolean; cleanup: boolean; state: string; now: string }>(
         `select r.record as run,v.record as version,r.stop_requested_at is not null as stopped,
           r.execution_state as state,exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup,transaction_timestamp()::text as now
-         from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1 for update of r`, [this.owner.runId])
+         from runs r join workflow_versions v on v.id=r.workflow_version_id where r.id=$1 ${lock}`, [this.owner.runId])
       const row = found.rows[0]
       if (!row) return repeatConflict('RUN_NOT_FOUND')
       const version = WorkflowVersionV3Schema.parse(row.version)
@@ -197,7 +201,7 @@ export class RepeatRunRepository {
         if (!sameRepeatValue(fence, await this.owner.readOneShotFence(sql))) return repeatConflict('RUN_OWNERSHIP_LOST')
       })
       return result
-    })
+    }, options.readOnly)
   }
   private active(context: Context): void {
     if (context.stopped || context.cleanup) repeatConflict('GRAPH_STOP_CONFLICT')
@@ -798,14 +802,14 @@ export class RepeatRunRepository {
   }
 
   async readOccurrence(occurrenceId: string): Promise<RepeatOccurrenceV1> {
-    return this.transaction(async (context) => (await this.occurrence(context, occurrenceId)).occurrence)
+    return this.transaction(async (context) => (await this.occurrence(context, occurrenceId)).occurrence, { readOnly: true })
   }
   async readExecution(executionId: string): Promise<StoredRepeatExecution> {
     return this.transaction(async (context) => {
       const stored = await this.execution(context, executionId)
       await this.recordedEffect(context, 'input.bind', executionId)
       return stored
-    })
+    }, { readOnly: true })
   }
   async enterBlock(blockId: string): Promise<{ kind: 'inactive' } | { kind: 'active'; occurrence: RepeatOccurrenceV1 }> {
     return this.transaction(async (context) => {
@@ -1250,10 +1254,11 @@ const storedExecutionColumns = `e.record,e.accepted,x.identity,s.slot_id,s.occur
 
 async function readStoredRepeatExecution(sql: GraphTransactionSql, scope: RepeatScope,
   version: WorkflowVersionV3, executionId: string, lock: 'share' | 'update'): Promise<StoredRepeatExecution> {
+  const rowLock = isReadOnlyGraphTransaction(sql) ? '' : `for ${lock} of e`
   const rows = await sql.query<StoredExecutionRow>(
     `select ${storedExecutionColumns}
      from run_repeat_executions x join harness_executions e on e.id=x.execution_id
-     join run_repeat_slots s on s.slot_id=x.slot_id where x.execution_id=$1 and x.run_id=$2 for ${lock} of e`,
+     join run_repeat_slots s on s.slot_id=x.slot_id where x.execution_id=$1 and x.run_id=$2 ${rowLock}`,
     [executionId, scope.runId])
   return validateStoredExecutionRow(sql, scope, version, executionId, rows.rows[0])
 }
@@ -1309,17 +1314,19 @@ export function readRepeatExecutionLocked(sql: GraphTransactionSql, snapshot: Ac
   return timeRuntimeOperation('db', 'snapshot.read_execution', async () => {
     assertGraphTransaction(sql)
     const { run, version } = snapshot
+    const headLock = isReadOnlyGraphTransaction(sql) ? '' : 'for share'
+    const executionLock = isReadOnlyGraphTransaction(sql) ? '' : 'for share of e'
     const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
       workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
     const related = (await sql.query<{ heads: { protocol_version: number }[];
       executions: StoredExecutionRow[]; effects: { payload_digest: string }[] }>(
       `with pinned_head as materialized (
-        select protocol_version from run_graph_heads where run_id=$2 for share
+        select protocol_version from run_graph_heads where run_id=$2 ${headLock}
       ), pinned_execution as materialized (
         select ${storedExecutionColumns}
         from run_repeat_executions x join harness_executions e on e.id=x.execution_id
         join run_repeat_slots s on s.slot_id=x.slot_id where x.execution_id=$1 and x.run_id=$2
-          and exists(select 1 from pinned_head where protocol_version=1) for share of e
+          and exists(select 1 from pinned_head where protocol_version=1) ${executionLock}
       ), pinned_input as materialized (
         select payload_digest from run_repeat_effects where run_id=$2 and effect_kind='input.bind' and entity_id=$1
           and exists(select 1 from pinned_execution)

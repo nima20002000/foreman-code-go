@@ -9,7 +9,12 @@ export interface GraphSqlClient {
 }
 export interface GraphTransactionSql extends GraphSqlClient { readonly transaction: true }
 const adoptedClients = new WeakSet<pg.ClientBase>()
-const leases = new WeakMap<GraphSqlClient, { live: boolean; failed: boolean; committed: boolean; finalizers: (() => Promise<void>)[] }>()
+const leases = new WeakMap<GraphSqlClient, {
+  live: boolean; failed: boolean; committed: boolean; readOnly: boolean; finalizers: (() => Promise<void>)[]
+}>()
+export function isReadOnlyGraphTransaction(sql: GraphSqlClient): boolean {
+  return leases.get(sql)?.readOnly === true
+}
 export function didGraphTransactionCommit(sql: GraphTransactionSql): boolean {
   return leases.get(sql)?.committed === true
 }
@@ -119,7 +124,9 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   }
   transaction<T>(work: (sql: GraphTransactionSql) => Promise<T>, readOnly = false): Promise<T> {
     return this.enqueue(async () => {
-      const state = { live: true, failed: false, committed: false, finalizers: [] as (() => Promise<void>)[] }
+      const state = {
+        live: true, failed: false, committed: false, readOnly, finalizers: [] as (() => Promise<void>)[],
+      }
       let pending: Promise<unknown> | undefined
       const sql: GraphTransactionSql = {
         transaction: true,

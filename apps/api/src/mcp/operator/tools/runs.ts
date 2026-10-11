@@ -32,7 +32,8 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
       + 'Execution summaries include continuedFromExecutionId when a node resumes a closed native session in this Run. '
       + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT and WORK_RUN_EXECUTION_BUDGET_EXHAUSTED), '
       + 'failure messages, Stop causes and cleanup status. '
-      + 'A Run waiting for approval may still have progressing sibling executions.',
+      + 'A Run waiting for approval may still have progressing sibling executions. '
+      + 'Reads use a committed snapshot without waiting for Run writers; DATABASE_READ_TIMEOUT is retryable.',
     inputSchema: OperatorRunGetInputSchema,
     outputSchema: OperatorRunGetResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -41,7 +42,8 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     return input.detail === 'full' ? details : compactRunDetails(details)
   }))
   if (operatorToolAvailable(context, 'run_events_list')) server.registerTool('run_events_list', {
-    description: 'Read a bounded page of existing persisted run activity.', inputSchema: RunEventsListInputSchema,
+    description: 'Read a bounded page of existing persisted run activity from a committed snapshot. '
+      + 'DATABASE_READ_TIMEOUT is retryable.', inputSchema: RunEventsListInputSchema,
     outputSchema: RunEventsPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_events_list', () => context.services.runs.events(context.principal, input)))
@@ -60,7 +62,8 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
       + 'Pages may return fewer items than limit to fit the 128 KiB public-page budget; follow the returned cursors. '
       + 'Use run_get for execution and normalized activity snapshots. '
       + 'Use nextCursor for incremental catch-up and olderCursor for earlier retained history; '
-      + 'an expired cursor requires a fresh initial read. Pending approvals remain in the authorized inbox.',
+      + 'an expired cursor requires a fresh initial read. Pending approvals remain in the authorized inbox. '
+      + 'Reads use a committed snapshot; DATABASE_READ_TIMEOUT is retryable.',
     inputSchema: RunActivitiesInputSchema, outputSchema: RunActivitiesPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_activities_get_v1',

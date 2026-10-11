@@ -5,7 +5,7 @@ import {
   type AcceptedWorkflowRunV3, type RepeatWorkflowVersionV1,
 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
-import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
+import { assertGraphTransaction, isReadOnlyGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import {
   IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, readPinnedAgentConfigurations,
   type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow,
@@ -33,11 +33,6 @@ export function readAcceptedRepeatRunLocked(sql: GraphTransactionSql, runId: str
   return readAcceptedRepeatRun(sql, runId, 'for share of r', 'executable')
 }
 
-/** History validates the saved pins without applying today's execution policy to old configurations. */
-export function readRecordedRepeatRunLocked(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
-  return readAcceptedRepeatRun(sql, runId, 'for share of r', 'recorded')
-}
-
 /** The Run, physical columns and lifecycle flags share one committed SQL cut.
  * Remaining rows are immutable pins. This read grants no mutation authority. */
 export function readAcceptedRepeatRunSnapshot(sql: GraphTransactionSql, runId: string): Promise<AcceptedRepeatRunSnapshot> {
@@ -53,6 +48,7 @@ function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
   lock: '' | 'for share of r', configurationPolicy: 'executable' | 'recorded'): Promise<AcceptedRepeatRunSnapshot> {
   return timeRuntimeOperation('db', 'snapshot.read_run', async () => {
     assertGraphTransaction(sql)
+    if (isReadOnlyGraphTransaction(sql)) lock = ''
     const found = await sql.query<RunRow>(`select r.id,r.workspace_id,r.workflow_id,r.workflow_version_id,r.execution_state,
       r.runner_id,r.working_directory,r.location_revision::text,r.record,r.stop_requested_at is not null as stopped,
       exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup_pending
@@ -68,7 +64,7 @@ function readAcceptedRepeatRun(sql: GraphTransactionSql, runId: string,
       || typeof row.stopped !== 'boolean' || typeof row.cleanup_pending !== 'boolean') {
       throw new DomainError('RUN_PIN_CONFLICT', 'The accepted v3 Run differs from its physical scope/location/state.', 409)
     }
-    const pinLock = lock || configurationPolicy === 'executable' ? 'for share' : ''
+    const pinLock = !isReadOnlyGraphTransaction(sql) && (lock || configurationPolicy === 'executable') ? 'for share' : ''
     const related = (await sql.query<{ versions: ImmutableWorkflowVersionRow[]; configurations: ImmutableAgentConfigurationRow[] }>(
       `with pinned_version as materialized (
         select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS} from workflow_versions

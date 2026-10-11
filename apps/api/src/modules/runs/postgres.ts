@@ -15,7 +15,7 @@ import type { RepeatRepositoryActivation, RepositoryExecutionSemantics, Reposito
 import { runStartSemantics } from './repeatStartDispatch.js'
 import { RepeatRepositoryFactory } from './repeatRepositoryHost.js'
 import { readRepeatExecutionLocked, readRepeatAcceptedResultLocked } from './repeatPostgres.js'
-import { readAcceptedRepeatRunLocked, readAcceptedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
+import { readAcceptedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { captureRepeatNativeEvidence, type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeEvidence } from './repeatNativeRepository.js'
 import { sameRepeatValue, type RepeatNodeRef } from './repeatResolution.js'
 import { markRepeatRunRunning, requestRepeatRunStop, openWorkflowLifecycleLocked, type AuthorizeWorkflowStop } from './repeatLifecycle.js'
@@ -66,7 +66,7 @@ export class PostgresRunRepository implements RunRepository {
   }
   private async read<T>(runId: string, owner: RunOwnership | undefined,
     work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot) => Promise<T>,
-    readAcceptedRun = readAcceptedRepeatRunLocked): Promise<T> {
+    readAcceptedRun = readAcceptedRepeatRunSnapshot): Promise<T> {
     this.owned(runId, owner)
     const body = async (sql: GraphTransactionSql) => {
       const fence = owner && await owner.readOneShotFence(sql)
@@ -77,8 +77,8 @@ export class PostgresRunRepository implements RunRepository {
       })
       return value
     }
-    return owner ? owner.oneShotConnection().transaction(body)
-      : withExclusiveGraphConnection(this.pool, (connection) => connection.transaction(body))
+    return owner ? owner.oneShotConnection().transaction(body, true)
+      : withExclusiveGraphConnection(this.pool, (connection) => connection.transaction(body, true))
   }
   getRepeatSnapshot(runId: string, owner?: RunOwnership) {
     return this.read(runId, owner, async (_sql, snapshot) => snapshot, readAcceptedRepeatRunSnapshot)

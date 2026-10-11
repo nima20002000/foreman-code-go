@@ -4,10 +4,11 @@ import type { RunInspectionToolName } from '@foreman-code/contracts/wave25'
 import type { OperatorToolName } from '@foreman-code/contracts/management'
 import type { WorkflowScheduleToolName } from './tools/workflowSchedules.js'
 
-import { DomainError } from '../../modules/errors.js'
+import { DomainError, databaseReadFailure } from '../../modules/errors.js'
 import { componentLogger } from '../../infrastructure/logger.js'
 import { toolFailure, toolResult } from '../shared/results.js'
 import type { OperatorRequestContext } from './types.js'
+import { OPERATOR_TOOL_ACTIONS } from './catalog.js'
 
 export function logOperatorToolFailure(name: string, error: unknown): void {
   if (error instanceof DomainError) return
@@ -29,6 +30,8 @@ export async function invokeOperatorTool(
 ) {
   try { return toolResult(await work()) } catch (error) {
     logOperatorToolFailure(name, error)
+    const action = OPERATOR_TOOL_ACTIONS.find(tool => tool.name === name)?.action
+    if (action?.endsWith(':read')) error = databaseReadFailure(error)
     if (error instanceof DomainError && error.status === 403 && !error.denialAudited) {
       await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
     }

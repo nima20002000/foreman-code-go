@@ -6,7 +6,9 @@ import {
 import type pg from 'pg'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
 
-import { assertGraphTransaction, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
+import {
+  assertGraphTransaction, beforeGraphCommit, isReadOnlyGraphTransaction, type GraphTransactionSql,
+} from '../run-graph/connection.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
@@ -125,8 +127,7 @@ export class RepeatRepositoryFactory {
     CurrentRunVersionSnapshotSchema.parse({ run, version })
     if (run.id !== scope.runId || run.workspaceId !== scope.workspaceId || run.workflowId !== scope.workflowId
       || run.workflowVersionId !== scope.workflowVersionId || scope.executionSemanticsVersion !== 3) return repeatConflict('RUN_PIN_CONFLICT')
-    // The enclosing RepeatRunRepository has the Run lock already. No new pool,
-    // transaction, head initialization, owner or execution is acquired here.
+    // The repository supplies either a locked mutation or a read-only snapshot.
     const physical = (await sql.query<{ workspace_id: string; workflow_id: string; workflow_version_id: string;
       execution_state: string; execution_semantics_version: number }>(`select r.workspace_id,r.workflow_id,r.workflow_version_id,
         r.execution_state,v.execution_semantics_version from runs r join workflow_versions v on v.id=r.workflow_version_id
@@ -135,7 +136,8 @@ export class RepeatRepositoryFactory {
       || physical.workflow_version_id !== scope.workflowVersionId || physical.execution_semantics_version !== 3
       || physical.execution_state !== run.executionState) return repeatConflict('RUN_PIN_CONFLICT')
     const head = await sql.query<{ protocol_version: number }>(
-      'select protocol_version from run_graph_heads where run_id=$1 for update', [run.id])
+      `select protocol_version from run_graph_heads where run_id=$1${isReadOnlyGraphTransaction(sql) ? '' : ' for update'}`,
+      [run.id])
     if (!head.rows[0] || head.rows[0].protocol_version !== 1) return repeatConflict('GRAPH_NOT_INITIALIZED')
     const publication = await this.services.openPublicationLocked(sql, scope, owner)
     if (publication.sql !== sql || !sameRepeatValue(publication.scope, scope)
@@ -149,7 +151,10 @@ export class RepeatRepositoryFactory {
       if (transaction !== sql) return repeatConflict('REPEAT_PUBLICATION_CONFLICT')
       owner.assertOwned()
     }
+    let configurationsRead = false
     const configurations = async () => {
+      // Immutable pins remain share-locked until this mutation commits.
+      if (configurationsRead) return
       const rows = await sql.query<{ id: string; agent_id: string; workspace_id: string; record: unknown }>(
         'select id,agent_id,workspace_id,record from agent_configuration_versions where workspace_id=$1 and id=any($2::text[]) order by id for share',
         [scope.workspaceId, Object.values(version.agentConfigurationVersionIds)])
@@ -162,6 +167,7 @@ export class RepeatRepositoryFactory {
       ExecutableWorkflowV3Schema.parse({ version, configurations: parsed })
       for (const value of parsed) assertNativeWorkflowConfiguration(value.harness, run.approval,
         run.approval.handler === 'orchestrator' && value.agentId === run.approval.designatedOrchestratorAgentId)
+      configurationsRead = true
     }
     let authorityEnlisted = false
     const authority = async (transaction: GraphTransactionSql, atCommit = false) => {
