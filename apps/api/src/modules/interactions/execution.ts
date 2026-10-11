@@ -91,6 +91,7 @@ interface OwnedNativeSession {
   launchReserved?: boolean
   failed?: boolean
   session?: NativeSessionReference
+  starting?: Promise<void>
   opening?: Promise<NativeSessionReference>
   openingFailed?: boolean
   preparing?: Promise<IssuedWorkerCredential['environment'] | undefined>
@@ -1144,7 +1145,7 @@ export class ApprovalExecutionCoordinator {
           // Startup errors belong to their caller; shutdown still needs to drain
           // the captured manager and any cleanup started by the failed startup.
           await Promise.allSettled([
-            this.reviewerRecoveries.get(owned.execution.id), owned.preparing, owned.opening,
+            this.reviewerRecoveries.get(owned.execution.id), owned.starting, owned.preparing, owned.opening,
           ])
           await owned.cleanup
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
@@ -1160,9 +1161,9 @@ export class ApprovalExecutionCoordinator {
               owned.manager.attachSession(session, { request, ...identity }))
             this.assertSessionIdentity(session, attached)
           }
-          // A failed opening can still own a transport without an acknowledged
-          // session. Its captured manager must positively drain that transport.
-          if (!owned.session || owned.openingFailed || owned.generation === 0) {
+          // Creation can finish before the session binding commits. Dispose the
+          // captured manager when startup settles without a persisted binding.
+          if (!owned.session || owned.openingFailed || owned.generation === 0 || !owned.execution.nativeSessionId) {
             await owned.manager.dispose()
             return
           }
@@ -1763,6 +1764,7 @@ export class ApprovalExecutionCoordinator {
     let manager: SingleWriterSessionManager | undefined
     let resolved: (ResolvedNativeSessionManager & { manager: SingleWriterSessionManager }) | undefined
     let ownedSession: OwnedNativeSession | undefined
+    let finishStartup: (() => void) | undefined
     let session: NativeSessionReference | undefined
     let budgetTimer: ReturnType<typeof setTimeout> | undefined
     const knownSecrets: string[] = []
@@ -1868,6 +1870,9 @@ export class ApprovalExecutionCoordinator {
         ownedSession.restartAttachment = { session, request }
       }
       signal = AbortSignal.any([signal, ownedSession.controller.signal])
+      if (!execution.nativeSessionId) {
+        ownedSession.starting = new Promise<void>((resolve) => { finishStartup = resolve })
+      }
 
       const observePending = async (history: NativeHistory, sourceEvent?: NativeHarnessEvent,
         sourceLease?: WorkflowNativeLease): Promise<ApprovalExecutionObservation | undefined> => {
@@ -1928,6 +1933,7 @@ export class ApprovalExecutionCoordinator {
           signal.throwIfAborted()
           input.owner.assertOwned()
           await assertBoundary()
+          finishStartup?.()
         }
         const publishObservedSession = async (observed: NativeSessionReference) => {
           const active = manager!.capturedLease(observed)
@@ -2169,8 +2175,12 @@ export class ApprovalExecutionCoordinator {
       }
       throw error
     } finally {
-      await stopRenewal?.()
-      if (budgetTimer) clearTimeout(budgetTimer)
+      try {
+        await stopRenewal?.()
+      } finally {
+        if (budgetTimer) clearTimeout(budgetTimer)
+        finishStartup?.()
+      }
     }
   }
 }
