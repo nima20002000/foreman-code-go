@@ -1840,6 +1840,9 @@ export class ApprovalExecutionCoordinator {
       ownedSession = this.ownSession(execution, context, manager)
       ownedSession.runOwner = input.owner
       if (session && !ownedSession.session) ownedSession.session = session
+      if (session && context.acceptedPlacement?.hostRef.kind === 'device') {
+        ownedSession.restartAttachment = { session, request }
+      }
       signal = AbortSignal.any([signal, ownedSession.controller.signal])
       ownedSession.startupSignal = signal
 
