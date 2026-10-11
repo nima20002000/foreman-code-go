@@ -4,26 +4,26 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { expect, it, vi } from 'vitest'
+import { expect, vi } from 'vitest'
 import { HarnessMcpListResultSchema, HarnessMcpPlanSchema, HarnessMcpPlanResultSchema } from '@foreman-code/contracts/management'
-import { buildApp } from '../src/app.js'
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
-import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
-import { CodexMcpConnections } from '../src/modules/harnesses/codexMcpConnections.js'
-import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
-import { assertCodexUnchanged, qualifyCodex } from '../src/modules/harnesses/codexProtocol.js'
-import * as nativeProcess from '../src/modules/harnesses/process.js'
-import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
-import { withCodexNativeHome } from './helpers/codexNativeHome.js'
+import { buildApp } from '../../src/app.js'
+import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
+import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { HarnessMcpSettingsService } from '../../src/modules/harnesses/mcpSettings.js'
+import { CodexMcpConnections } from '../../src/modules/harnesses/codexMcpConnections.js'
+import { harnessBinaries } from '../../src/modules/harnesses/binaries.js'
+import { assertCodexUnchanged, qualifyCodex } from '../../src/modules/harnesses/codexProtocol.js'
+import * as nativeProcess from '../../src/modules/harnesses/process.js'
+import type { OperatorServices } from '../../src/mcp/operator/types.js'
+import { createFixtureSchema, dropFixtureSchema } from './testResources.js'
+import { withCodexNativeHome } from './codexNativeHome.js'
 
 const initial = '# Preserve this comment\nmodel = "saved-model"\n\n[mcp_servers.docs]\n'
   + 'url = "https://example.invalid/mcp"\nenabled = false\n'
 const external = initial.replace('saved-model', 'external-model')
-const faults = ['none', 'external-before-write', 'external-after-write',
-  'crash-before-write', 'crash-during-write', 'crash-after-write'] as const
+export type NativeConfigFault = 'none' | 'external-before-write' | 'external-after-write'
+  | 'crash-before-write' | 'crash-during-write' | 'crash-after-write'
 
 interface NativeEvent {
   kind: string
@@ -31,7 +31,7 @@ interface NativeEvent {
   succeeded?: boolean
 }
 
-it.each(faults)('preserves native configuration and reconciles %s through authenticated MCP', async fault => {
+export async function runNativeConfigFault(fault: NativeConfigFault): Promise<void> {
   await withCodexNativeHome(async home => {
     const binary = process.env.CODEX_BINARY ?? harnessBinaries(process.env).codexBinary
     const file = join(home, 'config.toml')
@@ -39,9 +39,9 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
     const eventsFile = join(home, 'events.jsonl')
     const proxy = join(home, 'codex-proxy.cjs')
     const authBinary = join(home, 'codex-auth.cjs')
-    const authSource = await readFile(new URL('./fixtures/codex-app-server.cjs', import.meta.url), 'utf8')
+    const authSource = await readFile(new URL('../fixtures/codex-app-server.cjs', import.meta.url), 'utf8')
     await writeFile(authBinary, `#!${process.execPath}\n${authSource}`, { mode: 0o700 })
-    const source = await readFile(new URL('./fixtures/codex-config-fault-proxy.cjs', import.meta.url), 'utf8')
+    const source = await readFile(new URL('../fixtures/codex-config-fault-proxy.cjs', import.meta.url), 'utf8')
     await writeFile(proxy, `#!${process.execPath}\n${source}`, { mode: 0o700 })
     await chmod(proxy, 0o700)
     await writeFile(file, initial, { mode: 0o600 })
@@ -197,4 +197,4 @@ it.each(faults)('preserves native configuration and reconciles %s through authen
     }
     if (scenarioFailure) throw scenarioFailure.error
   })
-}, 240_000)
+}
