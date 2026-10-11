@@ -7,12 +7,14 @@ import { DEFAULT_HARNESS_DEFAULTS, type HarnessConfiguration } from '@foreman-co
 import { HarnessBasicFields } from './HarnessBasicFields'
 import { savedClaudeConfiguration } from './claudeSettings.fixtures'
 
-vi.mock('../../shared/api/harnessSettings', async importOriginal => ({
-  ...await importOriginal<typeof import('../../shared/api/harnessSettings')>(),
-  useNativeHarnessOptions: (harness: 'codex' | 'claude') => ({ data: { models: [
+vi.mock('../provider-accounts/useProviderHarnessModels', () => ({
+  useProviderHarnessModels: (harness: 'codex' | 'claude') => ({ data: { models: [
     { id: { codex: DEFAULT_HARNESS_DEFAULTS.codex.model, claude: savedClaudeConfiguration.model }[harness], name: 'Current native model', reasoningEfforts: ['medium', 'high'], variants: [''], serviceTiers: ['standard', 'priority'] },
     { id: 'long-model', name: 'A long native model label that remains searchable and selectable', reasoningEfforts: ['medium'], variants: ['balanced'], serviceTiers: ['standard'] },
   ], nativeAgents: ['build', 'plan'] }, isSuccess: true, isPending: false, isError: false, error: null }),
+}))
+vi.mock('../../shared/api/harnessSettings', async importOriginal => ({
+  ...await importOriginal<typeof import('../../shared/api/harnessSettings')>(),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 

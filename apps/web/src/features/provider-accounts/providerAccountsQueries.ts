@@ -67,14 +67,14 @@ function newerOperation(previous: ProviderAccountAuthenticationOperation | undef
 export function useProviderAccounts(enabled = true, requestedScope: ProviderAccountScope = {}) {
   const generation = useHarnessSessionEpoch()
   const scope = useProviderAccountScope(requestedScope)
-  return useQuery({
+  return useQuery<ProviderAccountsSnapshot>({
     queryKey: providerAccountsKey(scope), retry: false, enabled: enabled && Boolean(scope.target) && !sessionIsSwitching(),
     placeholderData: (previous, query) => query?.queryKey[1] === generation
       && JSON.stringify(query.queryKey[2]) === JSON.stringify(scope.target)
       && query.queryKey[3] === (scope.provider ?? null) && query.queryKey[5] === (scope.includeRemoved ?? false)
       ? previous : undefined,
     refetchOnReconnect: 'always',
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ signal }): Promise<ProviderAccountsSnapshot> => {
       const page = await providerAccountsClient.page({ target: scope.target!, limit: 100,
         includeRemoved: scope.includeRemoved ?? false, ...(scope.provider ? { provider: scope.provider } : {}) }, { signal })
       if (page.nextCursor) throw new Error('The account list is incomplete. Refresh accounts before making changes.')

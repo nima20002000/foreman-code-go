@@ -27,7 +27,7 @@ vi.mock('../../shared/api/client', async (original) => ({ ...await original<type
   createOperatorConversation: api.create, getOperatorConversation: api.get, sendOperatorMessage: api.send }))
 vi.mock('../../shared/api/operatorChatSummaries', () => ({ listOperatorConversationSummaries: api.list, deleteOperatorConversation: api.remove, restoreOperatorConversation: api.restore }))
 vi.mock('../../shared/api/operatorChatStream', () => ({ subscribeOperatorChat: () => () => {} }))
-vi.mock('../../shared/api/harnessSettings', async (original) => ({ ...await original<typeof import('../../shared/api/harnessSettings')>(), useNativeHarnessOptions: () => ({ isSuccess: true, data: { models: [
+vi.mock('../provider-accounts/useProviderHarnessModels', () => ({ useProviderHarnessModels: () => ({ isSuccess: true, data: { models: [
   { id: 'model-a', name: 'Model A', reasoningEfforts: ['low', 'high'], serviceTiers: ['standard', 'priority'], variants: ['high'] },
   { id: 'model-b', name: 'Model B', reasoningEfforts: ['low'], serviceTiers: ['standard'], variants: [] },
   { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', reasoningEfforts: ['low', 'medium', 'high'], serviceTiers: [], variants: [] },

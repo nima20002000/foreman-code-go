@@ -7,9 +7,8 @@ import { queryKeys } from '../../shared/api/query'
 import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { OperatorComposerSettings } from './OperatorComposerSettings'
 
-vi.mock('../../shared/api/harnessSettings', async importOriginal => ({
-  ...await importOriginal<typeof import('../../shared/api/harnessSettings')>(),
-  useNativeHarnessOptions: () => ({
+vi.mock('../provider-accounts/useProviderHarnessModels', () => ({
+  useProviderHarnessModels: () => ({
   data: { models: [{ id: savedClaudeConfiguration.model, name: 'Saved Claude', variants: [], reasoningEfforts: [], serviceTiers: [] },
     { id: 'verified-claude-model', name: 'Verified Claude', variants: [], reasoningEfforts: [], serviceTiers: [] },
     { id: 'medium-claude-model', name: 'Medium Claude', variants: [], reasoningEfforts: ['low', 'medium', 'high'], serviceTiers: [] }] },

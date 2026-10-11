@@ -10,11 +10,16 @@ const state = vi.hoisted(() => ({ current: true, fetching: false, success: false
 const profileError = 'Check the saved Claude host profile before using this configuration.'
 vi.mock('../../shared/api/harnessSettings', async importOriginal => ({
   ...await importOriginal<typeof import('../../shared/api/harnessSettings')>(),
-  useNativeHarnessOptions: () => ({ data: { models: [{ id: 'claude-saved-model', name: 'Saved Claude model', reasoningEfforts: ['medium'] }] }, isPending: false }),
   useRefreshNativeHarness: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useAutomaticHarnessCheck: () => ({ current: state.current, result: {
     isFetching: state.fetching, isSuccess: state.success, isError: state.error, error: { message: profileError },
   } }),
+}))
+vi.mock('../provider-accounts/useProviderHarnessModels', () => ({
+  useProviderHarnessModels: () => ({
+    data: { models: [{ id: 'claude-saved-model', name: 'Saved Claude model', reasoningEfforts: ['medium'] }] },
+    isSuccess: true, isPending: false, isError: false, error: null,
+  }),
 }))
 const clients: QueryClient[] = []
 afterEach(() => {
