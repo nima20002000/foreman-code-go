@@ -5,6 +5,8 @@ import {
   ProviderAccountCreateInputSchema, ProviderAccountIdSchema, ProviderAccountRenameInputSchema,
   type AccountProvider, type ProviderAccount, type ProviderAccountAuthMode,
   type ProviderAccountsSnapshot,
+  type AcceptedProviderAccountBinding, type ProviderAccountBinding, type ProviderAccountAuthenticationOperation,
+  type ProviderAccountNativeAuthenticationObservation, type ProviderAccountObservation, type ProviderAccountModels,
 } from '@foreman-code/contracts/provider-accounts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
@@ -15,16 +17,36 @@ import { DomainError } from '../errors.js'
 import { LocalProviderCredentials } from './localCredentials.js'
 import type { ProviderAccountNativePort } from './nativeCommands.js'
 import { ProviderAccountsRepository } from './repository.js'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import type { ProviderAccountNativeInput } from './nativeCommands.js'
 
 export interface ResolvedProviderAccount {
   accountId: string
   homePath: string
   authMode: ProviderAccountAuthMode
   apiKey?: string
+  binding?: ProviderAccountBinding
 }
 export interface ProviderAccountResolver {
   resolve(provider: AccountProvider, accountId?: string,
-    options?: { sql: GraphSqlClient }): Promise<ResolvedProviderAccount | null>
+    options?: { sql?: GraphSqlClient; allowDefault?: boolean;
+      acceptedBinding?: AcceptedProviderAccountBinding }): Promise<ResolvedProviderAccount | null>
+}
+/** Native paths stay inside the owning host; only sanitized observations cross this port. */
+export interface ProviderAccountOperationNativePort extends ProviderAccountNativePort {
+  prepareAuthentication?(input: ProviderAccountNativeInput & {
+    operation: ProviderAccountAuthenticationOperation;
+  }): Promise<ProviderAccountNativeAuthenticationObservation>
+  observeAuthentication?(input: ProviderAccountNativeInput & {
+    operation: ProviderAccountAuthenticationOperation;
+  }): Promise<ProviderAccountNativeAuthenticationObservation>
+  cancelAuthentication?(input: ProviderAccountNativeInput & {
+    operation: ProviderAccountAuthenticationOperation;
+  }): Promise<ProviderAccountNativeAuthenticationObservation>
+  registerProfile?(input: { provider: AccountProvider; profileRef: string; qualificationId: string;
+    target: DeviceProvisioningTarget }): Promise<{ profileRef: string }>
+  observeAccount?(input: ProviderAccountNativeInput): Promise<ProviderAccountObservation>
+  models?(input: ProviderAccountNativeInput): Promise<ProviderAccountModels>
 }
 type CommandSource = 'http' | 'mcp'
 type Change = (snapshot: ProviderAccountsSnapshot) => Promise<void>
@@ -34,7 +56,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     private readonly pool: pg.Pool,
     private readonly repository: ProviderAccountsRepository,
     private readonly credentials: LocalProviderCredentials,
-    private readonly native: ProviderAccountNativePort,
+    private readonly native: ProviderAccountOperationNativePort,
     private readonly commands: PostgresCommandCoordinator,
   ) {}
 

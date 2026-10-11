@@ -1,9 +1,54 @@
 import { z } from 'zod'
+import { DeviceProvisioningTargetSchema } from './deviceResources.js'
+import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 
 export const AccountProviderSchema = z.enum(['codex', 'claude'])
 export const ProviderAccountAuthModeSchema = z.enum(['subscription', 'api-key'])
 export const ProviderAccountStatusSchema = z.enum(['signed-out', 'signed-in', 'login-pending', 'unavailable'])
 export const ProviderAccountIdSchema = z.string().uuid()
+const Revision = z.number().int().safe().nonnegative()
+const Reference = z.string().trim().min(1).max(200)
+export const ProviderAccountSubjectSchema = z.object({
+  subject: Reference,
+  provenance: z.literal('qualified-native'),
+  qualificationId: Reference,
+  observedAt: z.string().datetime(),
+}).strict()
+export const ProviderAccountBindingSchema = z.object({
+  kind: z.literal('slot'),
+  accountId: ProviderAccountIdSchema,
+  provider: AccountProviderSchema,
+  target: DeviceProvisioningTargetSchema,
+  profileRef: Reference,
+  bindingRevision: Revision.min(1),
+  subject: ProviderAccountSubjectSchema.nullable(),
+}).strict()
+export const ProviderAccountLegacyBindingSchema = z.object({
+  kind: z.literal('legacy-profile'),
+  provider: AccountProviderSchema,
+  target: DeviceProvisioningTargetSchema.nullable(),
+  profileRef: Reference.nullable(),
+  historicalSubject: z.literal('unknown'),
+}).strict()
+export const AcceptedProviderAccountBindingSchema = z.discriminatedUnion('kind', [
+  ProviderAccountBindingSchema, ProviderAccountLegacyBindingSchema,
+])
+export const ProviderAccountObservationSchema = z.object({
+  bindingRevision: Revision.min(1),
+  generation: Revision.min(1),
+  sequence: Revision,
+  observedAt: z.string().datetime(),
+  status: ProviderAccountStatusSchema,
+  identity: z.string().max(200).nullable(),
+  subject: ProviderAccountSubjectSchema.nullable(),
+  readiness: z.enum(['ready', 'sign-in-required', 'qualification-required', 'unavailable', 'unknown']),
+}).strict()
+export const ProviderAccountDefaultSchema = z.object({
+  target: DeviceProvisioningTargetSchema,
+  provider: AccountProviderSchema,
+  accountId: ProviderAccountIdSchema.nullable(),
+  revision: Revision,
+}).strict()
 export const ProviderAccountSchema = z.object({
   id: ProviderAccountIdSchema,
   provider: AccountProviderSchema,
@@ -13,10 +58,15 @@ export const ProviderAccountSchema = z.object({
   status: ProviderAccountStatusSchema,
   identity: z.string().max(200).nullable(),
   revision: z.number().int().nonnegative(),
+  binding: ProviderAccountBindingSchema.optional(),
+  observation: ProviderAccountObservationSchema.optional(),
+  removedAt: z.string().datetime().nullable().optional(),
+  possibleDuplicateAccountIds: z.array(ProviderAccountIdSchema).max(100).optional(),
 }).strict()
 export const ProviderAccountsSnapshotSchema = z.object({
   revision: z.number().int().nonnegative(),
   accounts: z.array(ProviderAccountSchema).max(100),
+  defaults: z.array(ProviderAccountDefaultSchema).max(200).optional(),
 }).strict().superRefine((value, context) => {
   if (new Set(value.accounts.map(account => account.id)).size !== value.accounts.length) {
     context.addIssue({ code: 'custom', path: ['accounts'], message: 'Account IDs must be unique.' })
@@ -30,6 +80,7 @@ export const ProviderAccountsSnapshotSchema = z.object({
 export const ProviderAccountCommandInputSchema = z.object({
   commandId: z.string().trim().min(8).max(200),
   expectedRevision: z.number().int().nonnegative(),
+  target: DeviceProvisioningTargetSchema.optional(),
 }).strict()
 export const ProviderAccountCreateInputSchema = ProviderAccountCommandInputSchema.extend({
   provider: AccountProviderSchema,
@@ -41,6 +92,92 @@ export const ProviderAccountCreateInputSchema = ProviderAccountCommandInputSchem
 export const ProviderAccountRenameInputSchema = ProviderAccountCommandInputSchema.extend({
   name: ProviderAccountSchema.shape.name,
 })
+export const ProviderAccountListInputSchema = z.object({
+  target: DeviceProvisioningTargetSchema.optional(),
+  provider: AccountProviderSchema.optional(),
+  cursor: ProviderAccountIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  includeRemoved: z.boolean().default(false),
+}).strict()
+export const ProviderAccountPageSchema = z.object({
+  revision: Revision,
+  accounts: z.array(ProviderAccountSchema).max(100),
+  defaults: z.array(ProviderAccountDefaultSchema).max(200),
+  nextCursor: ProviderAccountIdSchema.nullable(),
+}).strict()
+export const ProviderAccountGetInputSchema = z.object({
+  accountId: ProviderAccountIdSchema, target: DeviceProvisioningTargetSchema.optional(),
+}).strict()
+export const ProviderAccountRegisterInputSchema = ProviderAccountCommandInputSchema.extend({
+  provider: AccountProviderSchema,
+  name: ProviderAccountSchema.shape.name,
+  authMode: ProviderAccountAuthModeSchema,
+  profileRef: Reference,
+  qualificationId: Reference,
+}).strict()
+export const ProviderAccountDefaultInputSchema = ProviderAccountCommandInputSchema.extend({
+  expectedDefaultRevision: Revision.optional(),
+}).strict()
+export const ProviderAccountAuthenticationStateSchema = z.enum([
+  'reserved', 'awaiting-human', 'observing', 'completed', 'canceled', 'expired', 'failed', 'outcome-unknown',
+])
+export const ProviderAccountAuthenticationOperationSchema = z.object({
+  id: z.uuid(),
+  commandId: ProviderAccountCommandInputSchema.shape.commandId,
+  inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  binding: ProviderAccountBindingSchema,
+  intent: z.enum(['sign-in', 'sign-out']),
+  state: ProviderAccountAuthenticationStateSchema,
+  revision: Revision.min(1),
+  generation: Revision.min(1),
+  nativeSequence: Revision,
+  cancelRequested: z.boolean(),
+  nativeClosed: z.boolean(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  humanActionRequired: z.boolean(),
+}).strict().refine(value => value.state !== 'canceled' || value.nativeClosed, {
+  message: 'Canceled authentication requires native closure.',
+})
+export const ProviderAccountAuthenticationPrepareInputSchema = ProviderAccountCommandInputSchema.extend({
+  intent: z.enum(['sign-in', 'sign-out']).default('sign-in'),
+}).strict()
+export const ProviderAccountAuthenticationReadInputSchema = z.object({
+  operationId: z.uuid(), target: DeviceProvisioningTargetSchema.optional(),
+}).strict()
+export const ProviderAccountAuthenticationCancelInputSchema = ProviderAccountCommandInputSchema.extend({
+  operationId: z.uuid(),
+}).strict()
+export const ProviderAccountAuthenticationResultSchema = z.object({
+  value: ProviderAccountAuthenticationOperationSchema, replayed: z.boolean(),
+}).strict()
+export const ProviderAccountNativeAuthenticationObservationSchema = z.object({
+  operationId: z.uuid(), binding: ProviderAccountBindingSchema,
+  generation: Revision.min(1), sequence: Revision,
+  state: ProviderAccountAuthenticationStateSchema,
+  nativeClosed: z.boolean(),
+  account: ProviderAccountObservationSchema.optional(),
+}).strict()
+export const ProviderAccountModelsInputSchema = ProviderAccountGetInputSchema
+export const ProviderAccountModelsSchema = z.object({
+  binding: ProviderAccountBindingSchema,
+  generation: Revision.min(1), observedAt: z.string().datetime(),
+  models: z.array(z.object({ id: Reference, name: Reference }).strict()).max(500),
+}).strict()
+export const PROVIDER_ACCOUNT_WORKER_NAMESPACE = 'provider-accounts-v1'
+export const PROVIDER_ACCOUNT_WORKER_VERSION = 1
+export const ProviderAccountWorkerRequestSchema = z.object({
+  version: z.literal(1), target: DeviceProvisioningTargetSchema,
+  connection: DeviceConnectionIdentitySchema,
+  request: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('status'), binding: ProviderAccountBindingSchema }).strict(),
+    z.object({ kind: z.literal('models'), binding: ProviderAccountBindingSchema }).strict(),
+    z.object({ kind: z.literal('prepare'), operation: ProviderAccountAuthenticationOperationSchema }).strict(),
+    z.object({ kind: z.literal('observe'), operation: ProviderAccountAuthenticationOperationSchema }).strict(),
+    z.object({ kind: z.literal('cancel'), operation: ProviderAccountAuthenticationOperationSchema }).strict(),
+  ]),
+}).strict()
 /** This input belongs only to the local human HTTP endpoint; it is never an MCP tool input. */
 export const ProviderAccountApiKeyInputSchema = ProviderAccountCommandInputSchema.extend({
   apiKey: z.string().trim().min(20).max(4096).refine(value =>
@@ -59,6 +196,8 @@ export const ProviderAccountToolRenameSchema = ProviderAccountRenameInputSchema.
 export const PROVIDER_ACCOUNT_TOOLS = [
   'provider_accounts_list', 'provider_account_create', 'provider_account_rename',
   'provider_account_default_set', 'provider_account_login', 'provider_account_logout', 'provider_account_refresh',
+  'provider_accounts_page', 'provider_account_get', 'provider_account_register', 'provider_account_remove',
+  'provider_account_auth_prepare', 'provider_account_auth_status', 'provider_account_auth_cancel', 'provider_account_models',
 ] as const
 
 export type AccountProvider = z.infer<typeof AccountProviderSchema>
@@ -69,3 +208,10 @@ export type ProviderAccountCommandInput = z.infer<typeof ProviderAccountCommandI
 export type ProviderAccountCreateInput = z.infer<typeof ProviderAccountCreateInputSchema>
 export type ProviderAccountRenameInput = z.infer<typeof ProviderAccountRenameInputSchema>
 export type ProviderAccountApiKeyInput = z.infer<typeof ProviderAccountApiKeyInputSchema>
+export type ProviderAccountBinding = z.infer<typeof ProviderAccountBindingSchema>
+export type AcceptedProviderAccountBinding = z.infer<typeof AcceptedProviderAccountBindingSchema>
+export type ProviderAccountObservation = z.infer<typeof ProviderAccountObservationSchema>
+export type ProviderAccountAuthenticationOperation = z.infer<typeof ProviderAccountAuthenticationOperationSchema>
+export type ProviderAccountNativeAuthenticationObservation = z.infer<typeof ProviderAccountNativeAuthenticationObservationSchema>
+export type ProviderAccountModels = z.infer<typeof ProviderAccountModelsSchema>
+export type ProviderAccountWorkerRequest = z.infer<typeof ProviderAccountWorkerRequestSchema>

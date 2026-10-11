@@ -2,6 +2,48 @@ import { describe, expect, it } from 'vitest'
 import { ProviderAccountApiKeyInputSchema } from './providerAccounts.js'
 import { applyOperatorChatSettings, DEFAULT_HARNESS_DEFAULTS, operatorChatSettings } from './index.js'
 import { ClaudeHarnessConfigurationSchema } from './claude.js'
+import { AcceptedProviderAccountBindingSchema, ProviderAccountBindingSchema, ProviderAccountListInputSchema,
+  ProviderAccountAuthenticationOperationSchema, ProviderAccountNativeAuthenticationObservationSchema,
+  ProviderAccountSchema } from './providerAccounts.js'
+
+const binding = {
+  kind: 'slot' as const, accountId: '10000000-0000-4000-8000-000000000001', provider: 'codex' as const,
+  target: { hostRef: { kind: 'main' as const, mainId: '10000000-0000-4000-8000-000000000002' },
+    applicationInstallationId: '10000000-0000-4000-8000-000000000002',
+    keyRevision: null, authorizationRevision: null },
+  profileRef: 'isolated-native-profile', bindingRevision: 1, subject: null,
+}
+
+describe('accepted account contracts', () => {
+  it('requires a canonical slot binding and keeps historical identity unknown', () => {
+    expect(ProviderAccountBindingSchema.parse(binding)).toEqual(binding)
+    expect(ProviderAccountBindingSchema.safeParse({ ...binding, bindingRevision: 0 }).success).toBe(false)
+    expect(AcceptedProviderAccountBindingSchema.safeParse({ kind: 'legacy-profile', provider: 'codex',
+      target: null, profileRef: null, historicalSubject: 'unknown' }).success).toBe(true)
+    expect(AcceptedProviderAccountBindingSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('bounds pagination and rejects caller paths and secret native output', () => {
+    expect(ProviderAccountListInputSchema.parse({ limit: 10 }).limit).toBe(10)
+    for (const limit of [0, 101]) expect(ProviderAccountListInputSchema.safeParse({ limit }).success).toBe(false)
+    expect(ProviderAccountBindingSchema.safeParse({ ...binding, homePath: '/native/profile' }).success).toBe(false)
+    expect(ProviderAccountNativeAuthenticationObservationSchema.safeParse({ operationId: binding.accountId,
+      binding, generation: 1, sequence: 0, state: 'awaiting-human', nativeClosed: false,
+      deviceCode: 'secret-challenge' }).success).toBe(false)
+  })
+
+  it('reads old metadata while requiring positive closure for canceled authentication', () => {
+    expect(ProviderAccountSchema.safeParse({ id: binding.accountId, provider: 'codex', name: 'Account',
+      authMode: 'subscription', isDefault: false, status: 'signed-out', identity: null, revision: 0 }).success).toBe(true)
+    const operation = { id: binding.accountId, commandId: 'authentication-command',
+      inputHash: `sha256:${'a'.repeat(64)}`, binding, intent: 'sign-in', state: 'canceled', revision: 1,
+      generation: 1, nativeSequence: 0, cancelRequested: true, nativeClosed: false,
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      expiresAt: '2026-01-01T01:00:00.000Z', humanActionRequired: false }
+    expect(ProviderAccountAuthenticationOperationSchema.safeParse(operation).success).toBe(false)
+    expect(ProviderAccountAuthenticationOperationSchema.safeParse({ ...operation, nativeClosed: true }).success).toBe(true)
+  })
+})
 
 const input = { commandId: 'account-key-command', expectedRevision: 1 }
 const apiKey = 'sk-test-provider-account-key'
