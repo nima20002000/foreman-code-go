@@ -14,6 +14,7 @@ import { runCommand } from './process.js'
 import { CompatibilityCheckError } from './compatibility/errors.js'
 import { checkCodexSchema } from './compatibility/schema.js'
 import { passiveDriverPayloads } from './payloadDiscovery.js'
+import { PayloadFingerprintCache } from './payloadFingerprintCache.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { CodexMethodMap } from './codexMethodTypes.js'
 
@@ -66,24 +67,39 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
   throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'The configured Codex executable is unavailable.')
 }
 
-export async function codexExecutableIdentity(binary: string): Promise<string> {
+const executableFingerprints = new PayloadFingerprintCache()
+export async function codexExecutableIdentity(binary: string, options: { fresh?: boolean } = {}): Promise<string> {
   const path = await realpath(binary)
   const value = await stat(path)
   if (!value.isFile()) throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'Codex must be a regular executable file.')
   // pnpm creates hardlinks across worktrees, changing ctime without replacing executable content.
-  const hash = createHash('sha256')
-  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
-  return canonical([path, value.dev, value.ino, value.size, value.mode, value.mtimeMs, hash.digest('hex')])
+  let fingerprint: string
+  if (options.fresh) {
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
+    fingerprint = hash.digest('hex')
+  } else {
+    fingerprint = await executableFingerprints.fingerprint(path)
+  }
+  const after = await stat(path)
+  if (canonical([value.dev, value.ino, value.size, value.mode, value.mtimeMs, value.ctimeMs])
+    !== canonical([after.dev, after.ino, after.size, after.mode, after.mtimeMs, after.ctimeMs])
+    || await realpath(binary) !== path) {
+    throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed while reading its executable identity.')
+  }
+  return canonical([path, value.dev, value.ino, value.size, value.mode, value.mtimeMs, fingerprint])
 }
 
-export async function codexBinaryIdentity(binary: string): Promise<string> {
-  const payload = await passiveDriverPayloads('codex', binary)
+export async function codexBinaryIdentity(binary: string, options: { fresh?: boolean } = {}): Promise<string> {
+  const payload = await passiveDriverPayloads('codex', binary, process.platform, process.arch,
+    options.fresh ? undefined : executableFingerprints)
   const paths = [...new Set([await realpath(binary), ...payload.paths])].sort()
-  return canonical(await Promise.all(paths.map(codexExecutableIdentity)))
+  return canonical(await Promise.all(paths.map(path => codexExecutableIdentity(path, options))))
 }
 
-export async function assertCodexUnchanged(qualified: Pick<QualifiedCodex, 'binary' | 'identity'>): Promise<void> {
-  if (await codexBinaryIdentity(qualified.binary) !== qualified.identity) {
+export async function assertCodexUnchanged(qualified: Pick<QualifiedCodex, 'binary' | 'identity'>,
+  options: { fresh?: boolean } = { fresh: true }): Promise<void> {
+  if (await codexBinaryIdentity(qualified.binary, options) !== qualified.identity) {
     throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed during qualification; qualify the replacement before launch.')
   }
 }
@@ -327,21 +343,32 @@ async function manifest(directory: string): Promise<string> {
 }
 
 const verifiedProtocols = new Map<string, QualifiedCodex>()
+const executableVersions = new Map<string, string>()
 
 /** Authentication and installation identity are checked even when the protocol is cached. */
 export async function qualifyCodex(
   binary: string, cwd: string, environment: NodeJS.ProcessEnv,
   requireAuthentication: boolean, signal?: AbortSignal, recovery?: NativeProcessRecovery,
 ): Promise<QualifiedCodex> {
+  signal?.throwIfAborted()
   const resolved = await executable(binary, cwd, environment)
   const fingerprint = await codexBinaryIdentity(resolved)
+  signal?.throwIfAborted()
   const command = (args: string[]) => runCommand(resolved, args, cwd, signal, environment, recovery ? { recovery } : {})
-  const version = await command(['--version'])
-  const output = (version.stdout || version.stderr).trim()
-  const actual = /^codex-cli \d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(output) ? output : 'unknown version'
+  let actual = executableVersions.get(fingerprint)
+  if (!actual) {
+    const version = await command(['--version'])
+    const output = (version.stdout || version.stderr).trim()
+    actual = /^codex-cli \d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(output) ? output : 'unknown version'
+    if (version.exitCode !== 0) actual = 'unknown version'
+    if (actual !== 'unknown version') {
+      if (executableVersions.size >= 64) executableVersions.delete(executableVersions.keys().next().value!)
+      executableVersions.set(fingerprint, actual)
+    }
+  }
   const incompatible = (contract: string) => new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED',
     `Codex ${actual || 'unknown version'} does not satisfy ${contract}.`)
-  if (version.exitCode !== 0 || actual === 'unknown version') {
+  if (actual === 'unknown version') {
     throw incompatible('--version response')
   }
   if (requireAuthentication) {
@@ -380,7 +407,8 @@ export async function qualifyCodex(
       await rm(directory, { recursive: true, force: true })
     }
   }
-  await assertCodexUnchanged(result)
+  await assertCodexUnchanged(result, { fresh: false })
+  signal?.throwIfAborted()
   await requireHarnessQualification('codex', actual, resolved)
   rememberQualifiedProfile('codex', actual, QUALIFICATION_TARGET_PROFILE.codex)
   return result

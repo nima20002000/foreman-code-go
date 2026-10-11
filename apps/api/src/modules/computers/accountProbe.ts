@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { execFile } from 'node:child_process'
-import { access, readFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { access, readFile, realpath, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
@@ -11,6 +12,7 @@ export interface AccountProbePorts {
   find(name: string): Promise<string | null>
   run(binary: string, args: string[], signal: AbortSignal): Promise<{ code: number | null; stdout: string; stderr: string }>
   readText(path: string): Promise<string | null>
+  probeIdentity?(tool: 'claude' | 'github', binary: string): Promise<string>
   environment: NodeJS.ProcessEnv
 }
 
@@ -18,16 +20,59 @@ const ansi = new RegExp(String.raw`\u001b\[[0-9;]*m`, 'g')
 const plain = (value: string) => value.replace(ansi, '')
 
 /** Passive sign-in facts for this computer. Reads identity only; tokens never leave the probe. */
-export async function probeComputerAccounts(ports: AccountProbePorts = systemPorts(), signal = AbortSignal.timeout(20_000)): Promise<ComputerAccounts> {
-  const accounts = await Promise.all([codex(ports), claude(ports, signal), probeGitHubAccount(ports, signal)]
+export async function probeComputerAccounts(ports: AccountProbePorts = systemPorts(), signal = AbortSignal.timeout(20_000),
+  options: { refresh?: boolean } = {}): Promise<ComputerAccounts> {
+  const accounts = await Promise.all([codex(ports).then(account => ({ account, observedAt: Date.now() })),
+    cachedAccount(ports, 'claude', signal, options),
+    cachedAccount(ports, 'github', signal, options)]
     .map(probe => probe.catch((): null => null)))
   const tools = ['codex', 'claude', 'github'] as const
-  return ComputerAccountsSchema.parse({ observedAt: new Date().toISOString(),
-    accounts: accounts.map((value, index) => value ?? unknown(tools[index]!)) })
+  const observedAt = Math.min(Date.now(), ...accounts.flatMap(value => value ? [value.observedAt] : []))
+  return ComputerAccountsSchema.parse({ observedAt: new Date(observedAt).toISOString(),
+    accounts: accounts.map((value, index) => value?.account ?? unknown(tools[index]!)) })
 }
 
 const unknown = (tool: ComputerAccount['tool']): ComputerAccount => ({ tool, installed: true, signedIn: null, account: null, details: [] })
 const missing = (tool: ComputerAccount['tool']): ComputerAccount => ({ tool, installed: false, signedIn: null, account: null, details: [] })
+
+interface AccountObservation { account: ComputerAccount; observedAt: number }
+const accountProbes = new Map<string, { at: number; value: Promise<AccountObservation> }>()
+async function cachedAccount(ports: AccountProbePorts, tool: 'claude' | 'github', signal: AbortSignal,
+  options: { refresh?: boolean }): Promise<AccountObservation> {
+  signal.throwIfAborted()
+  const read = async () => {
+    const account = await (tool === 'claude' ? claude(ports, signal) : probeGitHubAccount(ports, signal))
+    return { account, observedAt: Date.now() }
+  }
+  if (!ports.probeIdentity) return read()
+  const binary = await ports.find(tool === 'github' ? 'gh' : tool)
+  if (!binary) return { account: missing(tool), observedAt: Date.now() }
+  const identity = await ports.probeIdentity(tool, binary)
+  const key = `${tool}:${identity}`
+  const cached = accountProbes.get(key)
+  const now = Date.now()
+  if (!options.refresh && cached && now >= cached.at && now - cached.at < 30_000) {
+    const account = await cached.value
+    signal.throwIfAborted()
+    return structuredClone(account)
+  }
+  const value = read()
+  const entry = { at: now, value }
+  if (accountProbes.size >= 64) accountProbes.delete(accountProbes.keys().next().value!)
+  accountProbes.set(key, entry)
+  try {
+    const account = await value
+    signal.throwIfAborted()
+    // Keyring-backed sign-ins can change without a file, so keep a bounded lifetime.
+    if (await ports.probeIdentity(tool, binary) !== identity && accountProbes.get(key) === entry) {
+      accountProbes.delete(key)
+    }
+    return structuredClone(account)
+  } catch (error) {
+    if (accountProbes.get(key) === entry) accountProbes.delete(key)
+    throw error
+  }
+}
 
 async function codex(ports: AccountProbePorts): Promise<ComputerAccount> {
   if (!await ports.find('codex')) return missing('codex')
@@ -123,6 +168,28 @@ export function systemPorts(environment: NodeJS.ProcessEnv = process.env,
     .filter((value, index, all) => value.startsWith('/') && all.indexOf(value) === index)
   return {
     environment,
+    async probeIdentity(tool, binary) {
+      const selected = await realpath(binary)
+      const executable = await stat(selected, { bigint: true })
+      const config = environment.XDG_CONFIG_HOME ?? join(home, '.config')
+      const files = tool === 'claude'
+        ? [join(environment.CLAUDE_CONFIG_DIR ?? join(home, '.claude'), '.credentials.json'), join(home, '.claude.json')]
+        : ['hosts.yml', 'config.yml'].map(name => join(environment.GH_CONFIG_DIR ?? join(config, 'gh'), name))
+      const metadata = await Promise.all(files.map(async path => {
+        try {
+          const value = await stat(path, { bigint: true })
+          return [path, value.dev, value.ino, value.size, value.mode, value.mtimeNs, value.ctimeNs].join(':')
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return `${path}:missing`
+          throw error
+        }
+      }))
+      const hash = createHash('sha256')
+      hash.update(JSON.stringify(Object.entries(environment).sort(([a], [b]) => a.localeCompare(b))))
+      hash.update([selected, executable.dev, executable.ino, executable.size, executable.mode,
+        executable.mtimeNs, executable.ctimeNs, ...metadata].join(':'))
+      return hash.digest('hex')
+    },
     async find(name) {
       const selected = binaries[name]
       if (selected) {

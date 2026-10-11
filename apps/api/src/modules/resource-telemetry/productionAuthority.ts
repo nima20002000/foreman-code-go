@@ -214,7 +214,9 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
       nativeOwner: capture.nativeOwner, state, sharedOwners: [] }
   }
   const load = async (sql: pg.PoolClient, signal: AbortSignal, executionId?: string): Promise<ScopeFacts[]> => {
-    const source = captures(), observed = input.registry.snapshot().launches
+    const source = captures()
+    if (!source.length || executionId && !source.some(capture => capture.execution.id === executionId)) return []
+    const observed = input.registry.snapshot().launches
     const roots = new Map(source.map(capture => [capture, new Set(observed.filter(value => !('binding' in capture) && value.owner === capture.nativeOwner && value.bootId === captureHost(capture)?.bootId)
       .flatMap(value => [value.guardian, value.provider].flatMap(process => process ? [`${value.bootId}:${process.pid}:${process.startTicks}`] : [])
         .concat(value.boundary ? [`boundary:${value.bootId}:${value.boundary.device}:${value.boundary.inode}`] : [])))]))
@@ -315,11 +317,17 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
   }
   const nativeScopes = (identity: TelemetryIdentity): TrustedNativeScopes => {
     let projection = signature([])
+    let snapshotVersion = 0
     const revision = () => signature({ owners: captures().map(captureKey), context: input.mainContext(), active: input.mainActive(), projection })
-    const snapshot = async (signal: AbortSignal): Promise<readonly TrustedNativeScope[]> => {
+    const readSnapshot = async (signal: AbortSignal): Promise<readonly TrustedNativeScope[]> => {
+      signal.throwIfAborted()
       const expected = localHost()
       if (!expected || telemetryCanonical(expected) !== telemetryCanonical(withoutGeneration(identity.host)) || identity.mainId !== expected.hostRef.mainId) {
         projection = signature([]); return []
+      }
+      if (!captures().length) {
+        projection = signature([])
+        return []
       }
       const scopes = await withSql(signal, sql => load(sql, signal))
       projection = signature(scopes)
@@ -328,10 +336,19 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
         leaseId: scope.leaseId, nativeOwner: scope.nativeOwner, observedDeviceId: identity.host.deviceId,
         observedInstallationId: identity.host.applicationInstallationId, shared: scope.sharedOwners.length > 0, lifecycle: scope.state }))
     }
+    const snapshot = async (signal: AbortSignal) => {
+      const scopes = await readSnapshot(signal)
+      snapshotVersion++
+      return scopes
+    }
     return { revision, snapshot, async *changes(afterRevision, signal) {
       let previous = afterRevision
+      let observedSnapshot = -1
       while (!signal.aborted) {
-        await snapshot(signal)
+        // Reuse this interval's sampler refresh. A standalone watcher still
+        // reloads persisted facts, including grants and lease expiry.
+        if (observedSnapshot === snapshotVersion || observedSnapshot === -1) await snapshot(signal)
+        observedSnapshot = snapshotVersion
         const current = revision()
         if (current !== previous) { previous = current; yield { revision: current, gap: true } }
         await new Promise<void>(resolve => {

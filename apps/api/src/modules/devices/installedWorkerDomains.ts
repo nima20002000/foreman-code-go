@@ -386,7 +386,7 @@ export async function createInstalledWorkerDomains(input: {
   })
   extensions.push({ namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 65_536, maxBinaryBytes: 0,
     async handle(payload, context) {
-      ComputerAccountsRequestSchema.parse(payload)
+      const request = ComputerAccountsRequestSchema.parse(payload)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_ACCOUNTS_STALE', 'Account facts require the actual authenticated worker channel.', 409)
       }
@@ -394,7 +394,8 @@ export async function createInstalledWorkerDomains(input: {
       const binaries = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
         ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
       return { payload: await probeComputerAccounts(systemPorts(process.env, binaries),
-        AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)])) }
+        AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(20_000)]),
+        { refresh: request.refresh === true }) }
     },
   })
   // One maintenance owner per worker process keeps task history across requests.

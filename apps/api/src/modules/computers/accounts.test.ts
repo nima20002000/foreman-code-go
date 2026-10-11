@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import { COMPUTER_ACCOUNTS_NAMESPACE, ComputerAccountsRequestSchema } from '@foreman-code/contracts/computer-accounts'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { ComputerAccountsService } from './accounts.js'
 
@@ -31,4 +32,36 @@ it('pages every paired computer without silently dropping the 101st worker', asy
   expect(second.nextCursor).toBeNull()
   expect([...first.computers, ...second.computers].map(value => value.target.hostRef))
     .toEqual([{ kind: 'main', mainId }, ...registrations.map(value => ({ kind: 'device', mainId, deviceId: value.deviceId }))])
+})
+
+it('forwards explicit refresh and sign-in invalidation to both main and worker probes', async () => {
+  const mainId = randomUUID()
+  const registration = { mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(),
+    keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect'], publicKeyFingerprint: 'a'.repeat(64) }
+  const principal: ManagementPrincipal = { id: 'reader', name: 'Reader', audience: 'operator',
+    expiresAt: '2099-01-01T00:00:00Z', revokedAt: null, grants: [{ actions: ['settings:read'], scope: {} }] }
+  const query = async (text: string) => ({ rows: text.includes('from management_principals')
+    ? [{ ...principal, expires_at: new Date(principal.expiresAt), revoked_at: null }]
+    : [{ record: registration }] })
+  const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
+  const observation = { accounts: [], observedAt: new Date().toISOString() }
+  const main = vi.fn(async (_refresh?: boolean) => observation)
+  const requests: Array<{ refresh?: boolean }> = []
+  const endpoint = {
+    capabilities: () => [{ namespace: COMPUTER_ACCOUNTS_NAMESPACE, mainCanRequest: true }],
+    request: async (_deviceId: string, _namespace: string, payload: unknown) => {
+      requests.push(ComputerAccountsRequestSchema.parse(payload))
+      return { payload: observation }
+    },
+  }
+  const service = new ComputerAccountsService(pool, mainId, () => endpoint,
+    {} as PostgresCommandCoordinator, main)
+  const first = await service.list(principal)
+  await service.list(principal, 'mcp', true)
+  expect(main.mock.calls.map(call => call[0])).toEqual([false, true])
+  expect(requests.map(request => request.refresh)).toEqual([undefined, true])
+  first.computers.forEach(computer => service.invalidate(computer.target))
+  await service.list(principal)
+  expect(main).toHaveBeenLastCalledWith(true)
+  expect(requests.at(-1)?.refresh).toBe(true)
 })

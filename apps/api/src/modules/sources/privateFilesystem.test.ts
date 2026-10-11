@@ -1,8 +1,13 @@
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
-import { chmod, mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, open, rename, rm, symlink } from 'node:fs/promises'
 import { join, relative } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>()
+  return { ...actual, open: vi.fn(actual.open) }
+})
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -70,4 +75,51 @@ it.each(['leaf.bin', 'nested/leaf.bin'])('retains the caller root when returning
     await expect(entryParent(handle, 'missing/leaf.bin', false)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(await identity(handle)).toEqual(before)
   } finally { await handle.close() }
+})
+
+it('reopens an unchanged qualified root without reopening its ancestors', async () => {
+  const root = await fixture()
+  const first = await openPrivateRoot(root)
+  const expected = await identity(first)
+  await first.close()
+  vi.mocked(open).mockClear()
+  const second = await openPrivateRoot(root)
+  try {
+    expect(await identity(second)).toEqual(expected)
+    expect(open).toHaveBeenCalledTimes(1)
+  } finally { await second.close() }
+})
+
+it('invalidates root qualification when an ancestor becomes writable', async () => {
+  const ancestor = await fixture()
+  const root = join(ancestor, 'private')
+  await mkdir(root, { mode: 0o700 })
+  await (await openPrivateRoot(root)).close()
+  await chmod(ancestor, 0o777)
+  try {
+    await expect(openPrivateRoot(root)).rejects.toMatchObject({ code: 'SOURCE_FILESYSTEM_UNSUPPORTED' })
+  } finally { await chmod(ancestor, 0o700) }
+  const recovered = await openPrivateRoot(root)
+  await recovered.close()
+})
+
+it('rejects a symlinked ancestor after qualifying the original root', async () => {
+  const directory = await fixture()
+  const ancestor = join(directory, 'ancestor')
+  const root = join(ancestor, 'private')
+  await mkdir(root, { recursive: true, mode: 0o700 })
+  await (await openPrivateRoot(root)).close()
+  const retained = join(directory, 'retained')
+  await rename(ancestor, retained)
+  await symlink(retained, ancestor)
+  await expect(openPrivateRoot(root)).rejects.toMatchObject({ code: 'SOURCE_FILESYSTEM_UNSUPPORTED' })
+})
+
+it('keeps public-base qualification separate from private-root qualification', async () => {
+  const root = await fixture()
+  await chmod(root, 0o755)
+  await (await openPrivateRoot(root, false)).close()
+  await expect(openPrivateRoot(root)).rejects.toMatchObject({ code: 'SOURCE_ROOT_NOT_PRIVATE' })
+  await chmod(root, 0o700)
+  await (await openPrivateRoot(root)).close()
 })

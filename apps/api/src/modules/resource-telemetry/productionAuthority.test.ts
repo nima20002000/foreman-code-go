@@ -11,7 +11,7 @@ import type { DevicePresence, DeviceSessionBinding } from '@foreman-code/contrac
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { DeviceNegotiatedExtension } from '@foreman-code/contracts/device-application'
-import { TelemetrySelectorResultSchema, TelemetryReadResultSchema, type TelemetryCollectedBatch, type TelemetryIdentity, type TelemetrySelectorTarget, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, TelemetrySelectorResultSchema, TelemetryReadResultSchema, type TelemetryCollectedBatch, type TelemetryIdentity, type TelemetrySelectorTarget, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 import { freezePlacement, deriveDispatch } from '../placement/binding.js'
 import { ResourceTelemetryService } from './ingestion/service.js'
 import { ResourceTelemetrySelectors, RESOURCE_TELEMETRY_SELECTOR_ROUTE, RESOURCE_TELEMETRY_SELECTOR_TOOL } from './readback/selector.js'
@@ -112,10 +112,12 @@ function setup() {
     return { rows, rowCount: rows.length }
   })
   const release = vi.fn(), pool = { connect: async () => ({ query, release }) } as unknown as pg.Pool
+  const registry = { revision: () => 'registry-real-1',
+    snapshot: vi.fn(() => ({ revision: 'registry-real-1', launches })), changes: async function* () {} }
   const authorities = createPassiveTelemetryAuthorities({ pool, getNativeOwners, getRemoteNativeOwners: () => remoteOwner ? [remoteOwner] : [], mainContext: () => mainContext, mainActive: () => active,
     deviceBinding: () => binding, presence: () => presence, deviceCapabilities: () => capabilities,
-    registry: { revision: () => 'registry-real-1', snapshot: () => ({ revision: 'registry-real-1', launches }), changes: async function* () {} } })
-  return { sources, launches,
+    registry })
+  return { sources, launches, registry,
     remoteOriginal(value: CapturedRemoteTelemetryNativeOwner, originalReceipt: RemoteOperationReceipt) { remoteOwner = value; receipt = originalReceipt }, authorities, query, release, getNativeOwners,
     live(value: ManagementPrincipal) { live = value }, revoked(value: boolean) { revoked = value }, active(value: boolean) { active = value },
     main(value: typeof context | null) { mainContext = value }, afterLane(work: () => void) { afterLaneRead = work }, afterExecution(work: () => void) { afterExecutionRead = work },
@@ -150,6 +152,52 @@ function remoteSetup() {
   return { ...s, capture, receipt, original }
 }
 describe('genuine passive telemetry production authorities', () => {
+  it('does no SQL or registry scan for empty ownership and immediately loads new owners', async () => {
+    const s = setup()
+    const original = s.sources.pop()!
+    const service = new ResourceTelemetryService({ ...s.authorities, clock: { monotonicMs: () => 0, unixMs: Date.now } })
+    try {
+      const identity = await service.handshake(context, 'collector', signal())
+      const reader = s.authorities.nativeScopes(identity)
+      expect(await reader.snapshot(signal())).toEqual([])
+      expect(await reader.snapshot(signal())).toEqual([])
+      expect(s.query).not.toHaveBeenCalled()
+      expect(s.registry.snapshot).not.toHaveBeenCalled()
+      s.sources.push(original)
+      expect(await reader.snapshot(signal())).toHaveLength(1)
+      original.grantLive = false
+      expect(await reader.snapshot(signal())).toEqual([])
+      original.grantLive = true
+      expect(await reader.snapshot(signal())).toHaveLength(1)
+      original.lane.leaseExpiresAt = new Date(0).toISOString()
+      expect(await reader.snapshot(signal())).toEqual([])
+    } finally { await service.close() }
+  })
+  it('reuses a sampler refresh in the polling watcher and closes its timer', async () => {
+    vi.useFakeTimers()
+    const s = setup()
+    const service = new ResourceTelemetryService({ ...s.authorities, clock: { monotonicMs: () => 0, unixMs: Date.now } })
+    const controller = new AbortController()
+    try {
+      const identity = await service.handshake(context, 'collector', signal())
+      const reader = s.authorities.nativeScopes(identity)
+      const iterator = reader.changes('before-first-snapshot', controller.signal)[Symbol.asyncIterator]()
+      expect((await iterator.next()).value?.gap).toBe(true)
+      await reader.snapshot(signal())
+      const queries = s.query.mock.calls.length
+      const pending = iterator.next()
+      await vi.advanceTimersByTimeAsync(TELEMETRY_LIMITS.intervalMs)
+      expect(s.query).toHaveBeenCalledTimes(queries)
+      controller.abort()
+      expect((await pending).done).toBe(true)
+      await iterator.return?.()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      controller.abort()
+      await service.close()
+      vi.useRealTimers()
+    }
+  })
   it('joins captured writer/recovery facts with actual W08 records and resolves a complete first selector', async () => {
     const s = setup(), service = new ResourceTelemetryService({ ...s.authorities, clock: { monotonicMs: () => 0, unixMs: Date.now } })
     const identity = await service.handshake(context, 'actual-collector-generation', signal())
