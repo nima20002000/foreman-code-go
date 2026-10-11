@@ -53,24 +53,9 @@ jobs:
           key: ci-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ inputs.ref }}
           restore-keys: ci-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Suite
-        run: |
-          case "$SUITE" in
-            install) ;;
-            unit) pnpm db:up && pnpm test ;;
-            typecheck|lint|build) pnpm "$SUITE" ;;
-            integration)
-              # Harness tests check the installed Codex and Claude CLIs, as on our build computers.
-              npm install --global --silent @openai/codex @anthropic-ai/claude-code &
-              pnpm db:up
-              wait
-              export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$RUNNER_TEMP/durations.json"
-              # Native process tests need a delegated cgroup, as a systemd user service gets on our build computers.
-              cgroup=/sys/fs/cgroup/foreman-ci
-              sudo mkdir -p "$cgroup" && sudo chown -R "$(id -u):$(id -g)" "$cgroup"
-              echo $$ | sudo tee "$cgroup/cgroup.procs" >/dev/null
-              pnpm test:integration ${FILES:+--files $FILES} ;;
-            *) echo "Unknown suite $SUITE"; exit 2 ;;
-          esac
+        run: scripts/ci-suite.sh
+        env:
+          DURATIONS_OUTPUT: ${{ runner.temp }}/durations.json
       - if: always() && inputs.suite == 'integration'
         uses: actions/upload-artifact@v4
         with:
