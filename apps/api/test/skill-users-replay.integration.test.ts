@@ -36,7 +36,6 @@ describe.skipIf(!postgresEnabled)('Skill consumer update plans over authenticate
   let commands: PostgresCommandCoordinator
   let agents: OperatorAgentMutationService
   let authoring: CurrentWorkflowAuthoring
-  let principal: c.ManagementPrincipal
   let client: Client
   const clients: Client[] = []
 
@@ -80,7 +79,6 @@ describe.skipIf(!postgresEnabled)('Skill consumer update plans over authenticate
     const owner = await access.issue({ name: 'Consumer owner', audience: 'operator',
       grants: [{ actions: [...c.ManagementActionSchema.options], scope: {} }],
       expiresAt: new Date(Date.now() + 3_600_000) })
-    principal = owner.principal
     client = await connect(owner.token)
   }, 60_000)
 

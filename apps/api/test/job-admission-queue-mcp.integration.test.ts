@@ -79,7 +79,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: mcp', () => {
     expect(JobQueueTicketSchema.parse((decodeMcpToolResult(acceptedRead) as { ticket: unknown }).ticket)).toEqual(accepted)
   })
   it('persists Agent CI origin separately from graph membership and reads it through authenticated MCP', async () => {
-    const { access, writer, reader } = queue
+    const { access, writer } = queue
     const f = await fixture()
     const scopedReader = await access.issue({ name: 'CI origin reader', audience: 'operator',
       expiresAt: new Date(Date.now() + 300000), grants: [{

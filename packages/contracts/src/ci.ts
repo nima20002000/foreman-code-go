@@ -1,10 +1,8 @@
 import { z } from 'zod'
 import { CiRunRecordSchema, CiSuiteSchema } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
-import { JobOrdinaryVerificationSuiteSchema, JobVerificationReportReadSchema } from './jobVerification.js'
-import { JobPlacementIntentSchema, JobQueueCancelSchema, JobQueueTicketSchema } from './jobAdmission.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
-import { JobArtifactSchema, JobArtifactReadInputSchema, JobArtifactReadOutputSchema, JobLogPageSchema, JobExecutionSchema } from './jobs.js'
+import { JobLogPageSchema, JobExecutionSchema } from './jobs.js'
 import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { approvalResponse } from './helpers/approvalResponse.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { reduceRepeatGraphPageV3 } from '@foreman-code/contracts/wave25'
 import { readRepeatGraphPage, readRepeatGraphSnapshot } from '../src/modules/run-graph/repeatReader.js'
