@@ -166,7 +166,12 @@ export async function prepareCiWorkflow(client: Client, workspace: ScenarioWorks
     const selected = choices.choices.find(choice => choice.availability === 'ready'
       && JSON.stringify(choice.placement.hostRef) === JSON.stringify(assignment.profile.target.hostRef)
       && choice.placement.instanceId === assignment.profile.instanceId)
-    if (!selected) throw new Error(`No approved ready source/root placement for ${assignment.name}.`)
+    if (!selected) {
+      throw new Error(`No approved ready source/root placement for ${assignment.name}: wanted `
+        + `${JSON.stringify({ hostRef: assignment.profile.target.hostRef, instanceId: assignment.profile.instanceId })}; `
+        + `choices ${JSON.stringify(choices.choices.map(choice => ({ availability: choice.availability, reason: choice.reason,
+          hostRef: choice.placement.hostRef, instanceId: choice.placement.instanceId })))}`)
+    }
     assignment.placement = selected.placement
   }
   // The placement edit builds on the definition the first save published, with its version stamp.
