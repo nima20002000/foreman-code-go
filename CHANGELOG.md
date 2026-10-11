@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.64] - 2026-10-11
+
+### CI
+
+- Integration partitions prefer CircleCI and build computers; GitHub Actions slots stay free for check and unit parts while they wait.
+
 ## [0.0.63] - 2026-10-11
 
 ### CI
