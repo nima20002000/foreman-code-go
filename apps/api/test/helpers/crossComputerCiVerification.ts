@@ -93,7 +93,7 @@ function verifyWorkflowActivity(workflow: RunningCiWorkflow, observation: Scenar
       expect(ticketIds.has(item.refs.jobExecutionId), 'Run activity contains only its own CI tickets').toBe(true)
       const ticket = observation.tickets.get(item.refs.jobExecutionId)!
       expect(item.refs.executionId).toBe(ticket.initiatingExecutionId)
-      expect(item.actor?.agentId).toBe(ticket.agentId)
+      expect(item.actor && 'agentId' in item.actor ? item.actor.agentId : undefined).toBe(ticket.agentId)
     }
   }
   for (const foreign of observation.tickets.values()) {
