@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { referenceTestAuthenticationFile } from '../../../scripts/test-resources.mjs'
@@ -61,6 +62,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
       const previousEnvironment = Object.fromEntries(environmentNames.map(name => [name, process.env[name]]))
       let f: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
       const nativeEvents: NativeHarnessEvent[] = []
+      let chatEvents: OperatorChatService['events'] | undefined
       const inspections: NativeMcpInspectionEvidence[] = []
       let state: ReturnType<typeof GetOperatorConversationResponseSchema.parse> | undefined
       const evidenceDirectory = process.env.OPERATOR_NATIVE_EVIDENCE_DIR
@@ -129,6 +131,7 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
           const chat = new OperatorChatService(new PostgresOperatorConversationRepository(pool),
             operators, recordingResolver, directory, authority)
           services.operatorChat = chat
+          chatEvents = chat.events
           services.workflows = new WorkflowManagementService(pool, commands)
           registerProductionFileStorage(app, pool, config)
           app.addHook('preClose', () => chat.shutdown())
@@ -175,13 +178,10 @@ describe.skipIf(!enabled)('installed native Operator management MCP', () => {
         const accepted = await callWorkspaceTool(caller.client, 'operator_chat_send', SendOperatorMessageResponseSchema,
           { conversationId: conversation.id, request })
         expect(accepted.replayed).toBe(false)
-        const signal = AbortSignal.timeout(180000)
-        do {
-          signal.throwIfAborted()
-          await new Promise(done => setTimeout(done, 500))
-          state = await callWorkspaceTool(caller.client, 'operator_chat_get', GetOperatorConversationResponseSchema,
-            { conversationId: conversation.id })
-        } while (state.activeRequestId)
+        state = await readUntil(() => callWorkspaceTool(caller.client, 'operator_chat_get',
+          GetOperatorConversationResponseSchema, { conversationId: conversation.id }),
+        value => !value.activeRequestId, { timeoutMs: 180000, description: 'native Operator completion',
+          subscribe: changed => chatEvents!.subscribe(conversation.id, changed) })
         expect(state.lastResult, JSON.stringify(state.lastResult)).toMatchObject({ outcome: 'succeeded' })
         expect(inspections.length).toBeGreaterThan(0)
         expect(inspections.every(item => item.entry?.name === APP_MCP_SERVER_NAME

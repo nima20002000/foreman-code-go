@@ -1,5 +1,5 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { execFile } from 'node:child_process'
-import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -33,16 +33,12 @@ it.skipIf(!postgresEnabled)('migrates under DDL contention without changing the 
     command = promisify(execFile)(process.execPath, [join(compiledApi, 'cli/migrate.js')], {
       env: environment, timeout: 15_000, maxBuffer: 1024 * 1024,
     }).then(() => ({ success: true as const }), (error: Error) => ({ success: false as const, error }))
-    const deadline = Date.now() + 5_000
-    let blocked = false
-    while (!blocked && Date.now() < deadline) {
-      blocked = (await fixture.pool.query<{ blocked: boolean }>(
-        'select exists(select 1 from pg_stat_activity where $1 = any(pg_blocking_pids(pid))) as blocked', [pid],
-      )).rows[0]!.blocked
-      if (!blocked) await delay(10)
-    }
+    const blocked = await readUntil(async () => (await fixture.pool.query<{ blocked: boolean }>(
+      'select exists(select 1 from pg_stat_activity where $1 = any(pg_blocking_pids(pid))) as blocked', [pid],
+    )).rows[0]!.blocked, value => value, { timeoutMs: 5000, description: 'the migration DDL lock' })
     expect(blocked).toBe(true)
-    await delay(300)
+    // Hold contention past the 100ms request deadline to prove migration uses its own deadline.
+    await new Promise(resolve => setTimeout(resolve, options.queryTimeoutMs + 1))
     await holder.query('rollback')
     const result = await command
     expect(result.success, result.success ? undefined : result.error.message).toBe(true)

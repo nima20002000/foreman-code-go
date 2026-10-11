@@ -185,7 +185,7 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
       runtime = composeRuntime(base, provider, errors, activeStarts); runtimes.push(runtime)
       transport = await openTransport(base, runtime, errors)
     },
-    async settled(runId = base.f.run.id) {
+    async settled(runId = base.f.run.id, options: { pollIntervalMs?: number } = {}) {
       try {
         await waitForEng06Settlement(async () => {
           await runtime.engine.reconcile((error) => errors.push(error))
@@ -194,7 +194,7 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
             "select id,record->>'state' as state,accepted from harness_executions where run_id=$1 order by id", [runId])).rows
           return { state: snapshot.run.executionState, cleanupPending: snapshot.cleanupPending,
             activeStarts: activeStarts.size, executions }
-        })
+        }, options)
       } catch (error) {
         // Preserve the real error behind HTTP INTERNAL_ERROR / a generic timeout.
         // No catch converts a failed convergence assertion into a passing test.

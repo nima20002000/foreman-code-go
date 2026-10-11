@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { encodeWorkerIdentityRequest, type DeviceSetupApproveInput } from '@foreman-code/contracts/device-setup'
 import { server } from '../../mocks/server'
@@ -17,7 +17,7 @@ const registration: DeviceRegistration = { mainId, deviceId, workerInstallationI
 const requestCode = encodeWorkerIdentityRequest({ version: 1, kind: 'identity-request',
   workerInstallationId: deviceId, publicKey: 'public-key', publicKeyFingerprint: 'a'.repeat(64) })
 const clients: QueryClient[] = []
-afterEach(() => { for (const client of clients.splice(0)) client.clear() })
+afterEach(() => { for (const client of clients.splice(0)) client.clear(); vi.useRealTimers() })
 
 async function mount(devices: DeviceRegistration[] = []) {
   const state = { devices, available: true }
@@ -112,15 +112,17 @@ it.each(['pending', 'paired'] as const)('uses revoked readback after a %s approv
 })
 
 it('keeps confirmed pairing visible after the enrollment secret expires', async () => {
-  const { user, state } = await mount()
+  const { state } = await mount()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
   server.use(http.post('*/api/devices/setup-codes', () => {
     state.devices = [{ ...registration, status: 'paired' }]
     return HttpResponse.json({ registration: { ...registration, status: 'pending' },
       enrollmentCode: 'GQLWE1.secret', expiresAt: new Date(Date.now() + 300).toISOString() })
   }))
   await user.click(screen.getByRole('button', { name: 'Approve this computer' }))
-  await screen.findByText('Computer paired.')
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)) })
+  await vi.waitFor(() => expect(screen.getByText('Computer paired.')).toBeVisible())
+  await act(async () => { await vi.advanceTimersByTimeAsync(350) })
   expect(screen.getByText('Computer paired.')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Done' })).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Approve this computer' })).not.toBeInTheDocument()

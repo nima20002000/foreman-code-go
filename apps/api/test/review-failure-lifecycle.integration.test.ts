@@ -22,13 +22,23 @@ async function fail(f: Fixture, code: string) {
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('current review failure ownership and cleanup', () => {
   it('resolves failure ownership from the exact job, preserves its cause and authenticates persisted readback', async () => {
-    const f = await routedApprovalFixture(), other = await routedApprovalFixture()
+    const fixtures: Fixture[] = []
     const clients: Client[] = []
-    const commands = new PostgresCommandCoordinator(f.db.pool)
-    const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-      operator: { access: f.access, services: { commands, interactions: new OperatorInteractionService(f.service),
-        runs: new RunManagementService(f.db.pool, commands, f.runs, f.engine, new WorkspaceLocationService(f.db.pool, commands)) } as never } })
+    let app: ReturnType<typeof buildApp> | undefined
     try {
+      // Separate schemas let the two fixtures migrate and start independently.
+      const setup = await Promise.allSettled([routedApprovalFixture(), routedApprovalFixture()])
+      const setupErrors: unknown[] = []
+      for (const result of setup) {
+        if (result.status === 'fulfilled') fixtures.push(result.value)
+        else setupErrors.push(result.reason)
+      }
+      if (setupErrors.length) throw new AggregateError(setupErrors, 'Review failure fixture setup failed.')
+      const [f, other] = fixtures as [Fixture, Fixture]
+      const commands = new PostgresCommandCoordinator(f.db.pool)
+      app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+        operator: { access: f.access, services: { commands, interactions: new OperatorInteractionService(f.service),
+          runs: new RunManagementService(f.db.pool, commands, f.runs, f.engine, new WorkspaceLocationService(f.db.pool, commands)) } as never } })
       await fail(f, 'REVIEW_NO_DECISION')
       expect(await requestReviewFailureStop(f.db.pool, { reviewJobId: f.job.id })).toBe(f.run.id)
       const before = await f.runs.get(f.run.id)
@@ -60,7 +70,14 @@ describe.skipIf(!postgresEnabled)('current review failure ownership and cleanup'
       const detail = await allowed.callTool({ name: 'interaction_get', arguments: { interactionId: f.interaction.id } })
       expect(detail.isError).not.toBe(true)
       expect(decodeMcpToolResult(detail)).toMatchObject({ review: { state: 'failed', reviewJobId: f.job.id, cleanupPending: true } })
-    } finally { await Promise.allSettled(clients.map((c) => c.close())); await app.close(); await f.close(); await other.close() }
+    } finally {
+      await Promise.allSettled(clients.map((c) => c.close()))
+      try { await app?.close() } finally {
+        const cleanup = await Promise.allSettled(fixtures.map((fixture) => fixture.close()))
+        const errors = cleanup.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+        if (errors.length) throw new AggregateError(errors, 'Review failure fixture cleanup failed.')
+      }
+    }
   }, 60000)
 
   it.each(['REVIEW_NATIVE_CLOSURE_UNCONFIRMED', 'REVIEW_SUBMISSION_REJECTED'] as const)('%s remains pending across repeated recovery until actual Stop cleanup', async (code) => {

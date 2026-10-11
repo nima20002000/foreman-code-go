@@ -117,24 +117,40 @@ async function approveThroughHttp(f: Harness, started: Started) {
 }
 
 async function settleRepeatWithRecovery(f: Harness, started: Started) {
-  // Poll recovery faster in tests while resuming only the publicly accepted Run.
-  // The fixture's preseeded Run stays queued.
+  // Join each drive before retrying the same accepted Run's saved checkpoint.
   const recoveryCodes: string[] = []
-  const recovery = setInterval(() => {
-    void f.base.engine.start(started.scope.runId).catch((error: unknown) => {
-      const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-        ? error.code : 'UNCLASSIFIED_RECOVERY_ERROR'
-      if (code !== 'RUN_ALREADY_OWNED' && recoveryCodes.length < 10) recoveryCodes.push(code)
-    })
-  }, 250)
-  recovery.unref()
+  function recordRecoveryError(error: unknown) {
+    const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code : 'UNCLASSIFIED_RECOVERY_ERROR'
+    if (code !== 'RUN_ALREADY_OWNED' && recoveryCodes.length < 10) recoveryCodes.push(code)
+  }
+  let stopping = false
+  const recovery = (async () => {
+    while (!stopping) {
+      await f.base.engine.start(started.scope.runId).catch(recordRecoveryError)
+      const run = await f.base.runs.get(started.scope.runId)
+      if (run?.executionState === 'completed') return
+    }
+  })().catch(recordRecoveryError)
+  let settled = false
   try {
     await f.settled(started.scope, 75000)
+    settled = true
+    stopping = true
+    await recovery
     expect(recoveryCodes).toEqual([])
   } catch (error) {
     throw new Error(`ENG07 repeat recovery did not settle: ${JSON.stringify({
       runId: started.scope.runId, recoveryCodes })}`, { cause: error })
-  } finally { clearInterval(recovery) }
+  } finally {
+    stopping = true
+    // Stop a stalled drive before draining it so the settlement deadline can reach fixture cleanup.
+    try {
+      if (!settled) await f.base.engine.shutdown()
+    } finally {
+      await recovery
+    }
+  }
 }
 
 export function defineScenarioTests(id: ScenarioId, via: Via) {
@@ -159,10 +175,9 @@ export function defineScenarioTests(id: ScenarioId, via: Via) {
           if (releaseSlow) {
             // Rendezvous at the fork before either sibling may complete. Holding
             // only the slow branch would incorrectly let a serial engine pass.
-            await vi.waitFor(() => {
-              expect(f.parked.has(scenario.nodes[1]!.id)).toBe(true)
-              expect(f.parked.has(scenario.nodes[2]!.id)).toBe(true)
-            }, { timeout: 25000 })
+            await Promise.all(scenario.nodes.slice(1, 3).map(node => f.waitUntilParked(started.scope, node.id)))
+            expect(f.parked.has(scenario.nodes[1]!.id)).toBe(true)
+            expect(f.parked.has(scenario.nodes[2]!.id)).toBe(true)
             for (const node of scenario.nodes.slice(1, 3)) expect(f.trace.some((event) =>
               event.nodeId === node.id && event.phase === 'completed')).toBe(false)
             releaseFast!(); releaseRouter?.()

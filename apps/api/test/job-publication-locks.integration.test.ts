@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
@@ -39,18 +40,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Concurrent Job publication auth
       await pool.query('insert into job_dispatch_intents values($1,$2)', [execution.id, JSON.stringify(intent)])
       await pool.query("insert into management_principals values('owner','Owner','operator',$1,'2099-01-01',null,null)",
         [JSON.stringify([{ actions: ['jobs:start'], scope: { workspaceIds: [execution.workspaceId] } }])])
-      // Accepted-source closure validation retains a shared execution lock in the transaction.
-      // Delay that read to exercise overlapping requests through independent PostgreSQL sessions.
+      const publicationSessions = new Set<pg.PoolClient>()
+      let releasePublications!: () => void
+      const overlapping = new Promise<void>(resolve => { releasePublications = resolve })
+      // Each publisher holds its shared lock until all twelve sessions reach this boundary.
       const requireAcceptedSource = async (sql: pg.PoolClient) => {
         await sql.query('select record from job_executions where id=$1 for share', [execution.id])
-        await new Promise(resolve => setTimeout(resolve, 25))
+        publicationSessions.add(sql)
+        await overlapping
       }
       const dispatch = { require: requireAcceptedSource, requireLaunch: requireAcceptedSource,
         requireControl: requireAcceptedSource, requireEvidence: requireAcceptedSource, observeReceipt: async () => {} }
       const authority = new JobPublicationAuthority(dispatch, { revalidateAccepted: async () => {} })
       const bridge = new JobApplicationBridge(pool, dispatch, { appendLog: async () => { throw new Error('Unexpected log') } }, authority)
       const frame = { method: 'job-authorize', intent, action: 'publish' }
-      const results = await Promise.allSettled(Array.from({ length: 12 }, () => bridge.handle(frame, binding)))
+      const publications = Promise.allSettled(Array.from({ length: 12 }, () => bridge.handle(frame, binding)))
+      try {
+        await readUntil(async () => publicationSessions.size, count => count === 12,
+          { timeoutMs: 1000, description: 'all publication sessions to hold shared locks' })
+      } finally {
+        releasePublications()
+        await publications
+      }
+      const results = await publications
       expect(results.map(result => result.status === 'fulfilled' ? result.value : String(result.reason)))
         .toEqual(Array.from({ length: 12 }, () => ({ authorized: true, operationId: intent.operationId,
           attemptId: intent.attemptId, bindingHash: intent.bindingHash, owner: intent.owner })))

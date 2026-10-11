@@ -437,7 +437,8 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         let restarted = false
         let approvalNativeLaunch: ReturnType<NativeProcessRegistry['snapshot']>['launches'][number] | undefined
         let state: string | undefined, outcome: string | undefined
-        for (let attempt = 0; attempt < (scenario.capLoop ? 420 : 180); attempt++) {
+        const runDeadline = Date.now() + (scenario.capLoop ? 420_000 : 180_000)
+        while (Date.now() < runDeadline) {
           if (restartOnArtifacts && !restarted) {
             const terminal = (await pool.query<{ execution: unknown; closed: boolean; published: boolean }>(
               `select e.record as execution,
@@ -531,7 +532,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           state = row?.execution_state; outcome = row?.record.outcome
           if (state === 'completed' || noRoute && state === 'waiting'
             && (await pool.query('select 1 from run_work_direction_waits where run_id=$1', [runId])).rowCount === 1) break
-          await new Promise((resolve) => setTimeout(resolve, 1000))
+          await new Promise((resolve) => setTimeout(resolve, 100))
         }
         const redact = nativePersistenceRedactor([...secrets])
         const runError = (await pool.query<{ code: string | null }>(
@@ -774,11 +775,12 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
             url: `/api/management/workspaces/${workspace.id}/runs/${runId}/stop`,
             payload: { workspaceId: workspace.id, runId, commandId: randomUUID() } })
           expect(stop.statusCode, stop.body).toBe(200)
-          for (let attempt = 0; attempt < 60; attempt++) {
+          const stopDeadline = Date.now() + 30_000
+          while (Date.now() < stopDeadline) {
             const row = (await pool.query<{ execution_state: string }>(
               'select execution_state from runs where id=$1', [runId])).rows[0]
             if (row?.execution_state === 'completed') break
-            await new Promise((resolve) => setTimeout(resolve, 500))
+            await new Promise((resolve) => setTimeout(resolve, 50))
           }
           expect((await pool.query<{ execution_state: string; outcome: string }>(
             `select execution_state,record->>'outcome' as outcome from runs where id=$1`,
@@ -797,11 +799,12 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           expect(stopPage.items.some((item) => item.kind === 'recovery')).toBe(true)
         }
         let cleanupPending = true
-        for (let attempt = 0; attempt < 30; attempt++) {
+        const cleanupDeadline = Date.now() + 15_000
+        while (Date.now() < cleanupDeadline) {
           cleanupPending = (await pool.query<{ pending: boolean }>(
             'select pending from run_cleanup_intents where run_id=$1', [runId])).rows[0]?.pending ?? true
           if (!cleanupPending) break
-          await new Promise((resolve) => setTimeout(resolve, 500))
+          await new Promise((resolve) => setTimeout(resolve, 50))
         }
         expect(cleanupPending).toBe(false)
         const liveCredentials = (await pool.query<{ count: string }>(`select count(*)::text as count

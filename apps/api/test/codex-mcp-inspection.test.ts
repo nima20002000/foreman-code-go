@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CodexAppServerSessionManager, type CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
@@ -7,7 +8,7 @@ import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 import { codexMcpInspectorAdapter } from '../src/modules/harnesses/codexMcpInspectorAdapter.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { RECORDED_CODEX_VERSION } from './fixtures/codex-version.js'
-import { fixtureProtocol } from './fixtures/codex-test-helpers.js'
+import { fixtureProtocol, until } from './fixtures/codex-test-helpers.js'
 
 function fixture(entries: Record<string, { enabled: boolean }>,
   options: {
@@ -116,25 +117,43 @@ if (process.argv[4] === 'graphql') {
   process.stderr.write("Error: No MCP server named 'graphql' found.")
   process.exit(1)
 }
-setTimeout(() => process.stdout.write(JSON.stringify({ name: 'foreman-code', enabled: true,
+const fs = require('node:fs')
+const ready = require('node:path').join(__dirname, 'command-ready')
+const release = require('node:path').join(__dirname, 'command-release')
+let released = false
+const watcher = fs.watch(__dirname, () => {
+  if (released || !fs.existsSync(release)) return
+  released = true
+  watcher.close()
+  process.stdout.write(JSON.stringify({ name: 'foreman-code', enabled: true,
   transport: { type: 'streamable_http', url: 'http://127.0.0.1:3040/mcp',
-    bearer_token_env_var: 'FOREMAN_CODE_MCP_TOKEN' } })), 4500)
+    bearer_token_env_var: 'FOREMAN_CODE_MCP_TOKEN' } }))
+})
+fs.writeFileSync(ready, '')
 `)
   await chmod(binary, 0o755)
   const f = fixture({}, { requestedName: 'foreman-code',
     command: (_binary, args, _cwd, signal) => runCommand(binary, args, directory, signal) })
+  const controller = new AbortController()
+  const commands: Promise<unknown>[] = []
   try {
-    expect((await f.manager.inspectMcpConfiguration(directory)).configured.enabled).toBe(true)
-    const controller = new AbortController()
+    const ready = join(directory, 'command-ready')
+    const release = join(directory, 'command-release')
+    const inspection = f.manager.inspectMcpConfiguration(directory, controller.signal)
+    commands.push(Promise.allSettled([inspection]))
+    await until(async () => existsSync(ready))
+    await writeFile(release, '')
+    expect((await inspection).configured.enabled).toBe(true)
+    await Promise.all([rm(ready), rm(release)])
     const pending = f.manager.inspectMcpConfiguration(directory, controller.signal)
+    commands.push(Promise.allSettled([pending]))
     const assertion = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-    const timer = setTimeout(() => controller.abort(), 100)
-    try {
-      await assertion
-    } finally {
-      clearTimeout(timer)
-    }
+    await until(async () => existsSync(ready))
+    controller.abort()
+    await assertion
   } finally {
+    controller.abort()
+    await Promise.all(commands)
     await rm(directory, { recursive: true, force: true })
   }
 }, 20_000)

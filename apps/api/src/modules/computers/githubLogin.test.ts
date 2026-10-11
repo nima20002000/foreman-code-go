@@ -68,7 +68,7 @@ function fixture(installed = true, options: {
 it('returns the device code, follows the CLI to signed-in and lets git use the account', async () => {
   const f = fixture()
   const started = f.runner.handle({ operation: 'login-start' })
-  await vi.waitFor(() => expect(f.children).toHaveLength(1))
+  await vi.waitFor(() => expect(f.children).toHaveLength(1), { interval: 1 })
   f.children[0]!.stderr.write('! First copy your one-time code: AB12-CD34\nOpen this URL to continue in your web browser: https://github.com/login/device\n')
   const waiting = await started
   expect(waiting).toMatchObject({ state: 'waiting', code: 'AB12-CD34', verificationUrl: 'https://github.com/login/device' })
@@ -77,7 +77,7 @@ it('returns the device code, follows the CLI to signed-in and lets git use the a
   f.signIn('octo-owner')
   f.children[0]!.emitter.emit('exit', 0)
   await vi.waitFor(async () => expect(await f.runner.handle({ operation: 'login-status', loginId: waiting.loginId! }))
-    .toMatchObject({ state: 'signed-in', account: 'octo-owner', code: null }))
+    .toMatchObject({ state: 'signed-in', account: 'octo-owner', code: null }), { interval: 1 })
   expect(f.runs).toContain('auth setup-git --hostname github.com')
   expect(await f.runner.handle({ operation: 'logout', expectedAccount: 'octo-owner' })).toMatchObject({ state: 'signed-out', account: null })
   expect(f.runs).toContain('auth logout --hostname github.com --user octo-owner')
@@ -86,18 +86,18 @@ it('returns the device code, follows the CLI to signed-in and lets git use the a
 it('reports a failed sign-in, replaces an earlier one and refuses without the GitHub CLI', async () => {
   const f = fixture()
   const first = f.runner.handle({ operation: 'login-start' })
-  await vi.waitFor(() => expect(f.children).toHaveLength(1))
+  await vi.waitFor(() => expect(f.children).toHaveLength(1), { interval: 1 })
   f.children[0]!.stdout.write('one-time code: AAAA-1111\n')
   const one = await first
   const second = f.runner.handle({ operation: 'login-start' })
-  await vi.waitFor(() => expect(f.children).toHaveLength(2))
+  await vi.waitFor(() => expect(f.children).toHaveLength(2), { interval: 1 })
   expect(f.children[0]!.kill).toHaveBeenCalled()
   f.children[1]!.stdout.write('one-time code: BBBB-2222\n')
   const two = await second
   await expect(f.runner.handle({ operation: 'login-status', loginId: one.loginId! })).rejects.toMatchObject({ code: 'GITHUB_LOGIN_NOT_FOUND' })
   f.children[1]!.emitter.emit('exit', 1)
   await vi.waitFor(async () => expect(await f.runner.handle({ operation: 'login-status', loginId: two.loginId! }))
-    .toMatchObject({ state: 'failed' }))
+    .toMatchObject({ state: 'failed' }), { interval: 1 })
   await expect(fixture(false).runner.handle({ operation: 'login-start' })).rejects.toMatchObject({ code: 'GITHUB_CLI_MISSING' })
 })
 
@@ -127,9 +127,9 @@ it('keeps a newer login when the replaced request fails before offering its code
   const f = fixture()
   const first = f.runner.handle({ operation: 'login-start' })
   const failed = expect(first).rejects.toMatchObject({ code: 'GITHUB_LOGIN_FAILED' })
-  await vi.waitFor(() => expect(f.children).toHaveLength(1))
+  await vi.waitFor(() => expect(f.children).toHaveLength(1), { interval: 1 })
   const second = f.runner.handle({ operation: 'login-start' })
-  await vi.waitFor(() => expect(f.children).toHaveLength(2))
+  await vi.waitFor(() => expect(f.children).toHaveLength(2), { interval: 1 })
   f.children[1]!.stdout.write('one-time code: BBBB-2222\n')
   const waiting = await second
   await failed
@@ -140,13 +140,13 @@ it('keeps a newer login when the replaced request fails before offering its code
 it('reports Git setup failure separately after successful sign-in', async () => {
   const f = fixture(true, { setupFails: true })
   const started = f.runner.handle({ operation: 'login-start' })
-  await vi.waitFor(() => expect(f.children).toHaveLength(1))
+  await vi.waitFor(() => expect(f.children).toHaveLength(1), { interval: 1 })
   f.children[0]!.stdout.write('one-time code: AAAA-1111\n')
   const waiting = await started
   f.signIn('owner')
   f.children[0]!.emitter.emit('exit', 0)
   await vi.waitFor(async () => expect(await f.runner.handle({ operation: 'login-status', loginId: waiting.loginId! }))
-    .toMatchObject({ state: 'git-setup-failed', account: 'owner' }))
+    .toMatchObject({ state: 'git-setup-failed', account: 'owner' }), { interval: 1 })
   f.options.setupFails = false
   expect(await f.runner.handle({ operation: 'setup-git', loginId: waiting.loginId! })).toMatchObject({ state: 'signed-in', account: 'owner' })
   expect(f.children).toHaveLength(1)
@@ -176,9 +176,10 @@ it('starts a requested account switch only after pending logout has checked the 
   const f = fixture(true, { logoutWait })
   f.signIn('owner')
   const logout = f.runner.handle({ operation: 'logout', expectedAccount: 'owner' })
-  await vi.waitFor(() => expect(f.runs).toContain('auth logout --hostname github.com --user owner'))
+  await vi.waitFor(() => expect(f.runs).toContain('auth logout --hostname github.com --user owner'), { interval: 1 })
   const start = f.runner.handle({ operation: 'login-start' })
-  await new Promise(resolve => setTimeout(resolve, 10))
+  // Drain queued continuations while logout remains explicitly blocked.
+  await new Promise<void>(resolve => setImmediate(resolve))
   try {
     expect(f.children).toHaveLength(0)
   } finally {
@@ -189,13 +190,13 @@ it('starts a requested account switch only after pending logout has checked the 
     }
   }
   expect(await logout).toMatchObject({ state: 'signed-out' })
-  await vi.waitFor(() => expect(f.children).toHaveLength(1))
+  await vi.waitFor(() => expect(f.children).toHaveLength(1), { interval: 1 })
   f.children[0]!.stdout.write('one-time code: BBBB-2222\n')
   const waiting = await start
   f.signIn('switched-owner')
   f.children[0]!.emitter.emit('exit', 0)
   await vi.waitFor(async () => expect(await f.runner.handle({ operation: 'login-status', loginId: waiting.loginId! }))
-    .toMatchObject({ state: 'signed-in', account: 'switched-owner' }))
+    .toMatchObject({ state: 'signed-in', account: 'switched-owner' }), { interval: 1 })
 })
 
 

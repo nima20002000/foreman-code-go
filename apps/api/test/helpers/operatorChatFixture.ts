@@ -1,3 +1,4 @@
+import { readUntil } from './observableCondition.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { type ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
@@ -128,8 +129,7 @@ export class ChatManager implements NativeHarnessSessionManager {
 }
 
 export async function waitFor(check: () => Promise<boolean>) {
-  for (let i = 0; i < 200; i++) { if (await check()) return; await new Promise((resolve) => setTimeout(resolve, 10)) }
-  throw new Error('Condition was not reached.')
+  await readUntil(check, ready => ready, { timeoutMs: 2000, description: 'the conversation condition' })
 }
 
 export interface OperatorChatFixture {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, it } from 'vitest'
+import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { AgentConfigurationVersion, ExecutionResult, NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
 import type { AgentChatTurn } from '@foreman-code/contracts/agent-chat'
@@ -134,7 +134,14 @@ class NativeFixture implements NativeHarnessSessionManager {
   async dispose() { this.disposed++ }
 }
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
+beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }) })
+afterEach(async () => {
+  try {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
+  } finally {
+    vi.useRealTimers()
+  }
+})
 async function makeService(repository = new MemoryRepository(), native = new NativeFixture()) {
   const root = await mkdtemp(join(tmpdir(), 'agent-chat-f2-'))
   const configuration = { id: 'configuration', harness: { harness: native.harness }, prompt: { system: 'SYSTEM' }, assignedSkills: [], resolvedSkills: [] } as unknown as AgentConfigurationVersion
@@ -152,7 +159,8 @@ async function eventually(predicate: () => boolean) {
   const deadline = Date.now() + 4_000
   while (!predicate()) {
     assert.ok(Date.now() < deadline, 'reconciliation did not make progress')
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    await vi.advanceTimersByTimeAsync(1_000)
+    await new Promise<void>((resolve) => setImmediate(resolve))
   }
 }
 function terminal(nativeTurnId = 'native-first'): NativeHistory {

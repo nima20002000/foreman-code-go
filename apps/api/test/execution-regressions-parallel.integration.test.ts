@@ -5,6 +5,7 @@ import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { graphHarness } from './helpers/eng04A1GraphHarness.js'
 import { regressionAuthoringFixture } from './helpers/executionRegressions.js'
+import { deferred } from './helpers/agentChatF1.js'
 
 describe.skipIf(!postgresEnabled)('current execution parallel regressions', () => {
   const authoring = regressionAuthoringFixture()
@@ -27,9 +28,18 @@ describe.skipIf(!postgresEnabled)('current execution parallel regressions', () =
     f.f.run.workflowVersionId = saved.value.currentVersionId
     ExecutableWorkflowV3Schema.parse({ version: f.f.version, configurations: f.f.configurations })
     let active = 0, peak = 0
-    const graph = graphHarness(f.f, { beforeObserve: async () => {
+    const overlap = deferred()
+    const parallelNodes = f.f.version.definition.nodes.slice(1, 3).map(node => node.id)
+    let enteredParallel = 0
+    const graph = graphHarness(f.f, { beforeObserve: async execution => {
       active++; peak = Math.max(peak, active)
-      await new Promise((resolve) => setTimeout(resolve, 20)); active--
+      if (maximum === 2 && parallelNodes.includes(execution.workflowNodeId)) {
+        if (++enteredParallel === 2) overlap.resolve()
+        await overlap.promise
+      } else {
+        await new Promise<void>(resolve => setImmediate(resolve))
+      }
+      active--
     } })
     await graph.run()
     expect(peak).toBe(maximum)

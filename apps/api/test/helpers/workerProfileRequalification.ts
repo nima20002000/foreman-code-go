@@ -35,14 +35,25 @@ export async function startWhenReady(fixture: Fixture) {
 }
 
 export async function assertMcpReadback(fixture: Fixture, evidence: Awaited<ReturnType<typeof latestEvidence>>) {
-  const profiles = HostHarnessOverrideListSchema.parse(await fixture.value('harness_instances_list', {
-    hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
-  }))
+  const reads = await Promise.allSettled([
+    fixture.value('harness_instances_list', {
+      hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
+    }),
+    fixture.value('harness_qualifications_list', {}),
+    fixture.inventory(),
+  ])
+  const [profilesRead, qualificationsRead, inventoryRead] = reads
+  if (profilesRead.status === 'rejected' || qualificationsRead.status === 'rejected'
+    || inventoryRead.status === 'rejected') {
+    const errors = reads.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    throw new AggregateError(errors, 'Worker profile readback failed.')
+  }
+  const profiles = HostHarnessOverrideListSchema.parse(profilesRead.value)
   expect(profiles.overrides).toHaveLength(fixture.profiles.length)
   expect(profiles.overrides.every(profile => profile.qualification === 'qualified')).toBe(true)
-  const qualifications = HarnessQualificationListSchema.parse(await fixture.value('harness_qualifications_list', {}))
+  const qualifications = HarnessQualificationListSchema.parse(qualificationsRead.value)
   expect(qualifications.qualifications).toContainEqual(evidence.at(-1)!.completedNativeQualification!.record)
-  const inventory = await fixture.inventory()
+  const inventory = inventoryRead.value
   const generation = inventory.installations.find(installation => installation.driverId === 'codex')!.connectionGeneration
   expect(evidence.every(proof => proof.connectionGeneration === generation)).toBe(true)
 }

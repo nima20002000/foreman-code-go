@@ -51,7 +51,6 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
     let child: ReturnType<typeof fork> | undefined
     let exited: Promise<void> | undefined
     let running: Promise<void> | undefined
-    let streamFailure: unknown
     let app: ReturnType<typeof buildApp> | undefined
     let chat: OperatorChatService | undefined
     const signal = AbortSignal.timeout(180_000)
@@ -61,6 +60,12 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
         workingDirectory: directory, environment: { agentId: configuration.operatorId,
           variables: { FOREMAN_CODE_MCP_TOKEN: 'operator-cleanup-disabled' } } }, signal)
       await repository.bind(conversation.id, requestId, session.providerVersion, session.nativeSessionId)
+      let reportPending!: (pending: PendingNativeInteraction) => void
+      let rejectPending!: (error: unknown) => void
+      const pendingObserved = new Promise<PendingNativeInteraction>((resolve, reject) => {
+        reportPending = resolve
+        rejectPending = reject
+      })
       running = (async () => {
         for await (const event of manager.startTurn(session, {
           prompt: `Run the native shell command: printf approved > ${JSON.stringify(join(directory, 'approval-marker'))}.
@@ -70,16 +75,15 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
             await repository.submitted(conversation.id, requestId, nativeTurnId,
               { nativeSessionId: session.nativeSessionId, principalId: owner.principal.id })
           },
-        }, signal)) void event
+        }, signal)) {
+          void event
+          const pending = await manager.pending(session)
+          if (pending) reportPending(pending)
+        }
+        rejectPending(new Error('The native turn ended without requesting approval.'))
       })()
-      void running.catch(error => { streamFailure = error })
-      let pending: PendingNativeInteraction | undefined
-      while (!pending) {
-        signal.throwIfAborted()
-        if (streamFailure) throw streamFailure
-        pending = await manager.pending(session)
-        if (!pending) await new Promise<void>(resolve => setTimeout(resolve, 100))
-      }
+      void running.catch(rejectPending)
+      const pending = await pendingObserved
       await repository.pending(conversation.id, requestId, pending)
       expect(await manager.inspectResponseAvailability(session, pendingResponseQuery(pending)!, signal))
         .toMatchObject({ state: 'available', path: 'live_callback', qualified: true })

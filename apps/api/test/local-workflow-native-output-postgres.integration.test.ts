@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -30,13 +31,9 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('PostgreSQL local workflow
       await reader.query('begin')
       read = authority.execution(reader, accepted[0]!.id)
       const result = Promise.allSettled([read])
-      let waiting = false
-      for (let attempt = 0; attempt < 100; attempt++) {
-        waiting = (await f.db.pool.query<{ waiting: boolean }>(
-          "select wait_event_type='Lock' as waiting from pg_stat_activity where pid=$1", [pid])).rows[0]?.waiting === true
-        if (waiting) break
-        await new Promise(resolve => setTimeout(resolve, 20))
-      }
+      const waiting = await readUntil(async () => (await f.db.pool.query<{ waiting: boolean }>(
+        "select wait_event_type='Lock' as waiting from pg_stat_activity where pid=$1", [pid])).rows[0]?.waiting === true,
+      value => value, { timeoutMs: 2000, description: 'the artifact read to block on the Run lock' })
       expect(waiting).toBe(true)
       expect((await writer.query('select id from harness_executions where id=$1 for update',
         [accepted[0]!.id])).rowCount).toBe(1)

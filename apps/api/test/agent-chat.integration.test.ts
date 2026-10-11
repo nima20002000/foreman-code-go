@@ -1076,6 +1076,8 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
           expect(read.isError === true).toBe(!matching)
           if (matching) expect(AgentChatStateSchema.parse(decodeMcpToolResult(read)).conversation?.id).toBe(id)
           const controller = new AbortController()
+          // Advance only the heartbeat interval; network I/O and credential clocks stay real.
+          vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
           try {
             const stream = await fetch(`${f.address}${path}/conversations/${id}/events`, { headers,
               signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]) })
@@ -1084,6 +1086,7 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
               const reader = stream.body!.getReader()
               try {
                 let frames = ''
+                await vi.advanceTimersByTimeAsync(5_000)
                 while (!frames.includes(': heartbeat')) {
                   const chunk = await reader.read()
                   if (chunk.done) throw new Error('Scoped stream closed before its reauthorized heartbeat.')
@@ -1092,7 +1095,10 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
                 expect(frames).toContain('event: snapshot')
               } finally { await reader.cancel() }
             } else { await stream.text() }
-          } finally { controller.abort() }
+          } finally {
+            controller.abort()
+            vi.useRealTimers()
+          }
           expect(await f4Rows(id)).toEqual(before)
         }
       } finally { await f.close() }

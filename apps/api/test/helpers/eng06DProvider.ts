@@ -1,4 +1,5 @@
 import { isWorkflowStart } from '../../src/modules/harnesses/sessionStart.js'
+import { EventEmitter } from 'node:events'
 import {
   ExecutionResultSchema, NativeHarnessEventSchema,
   type ExecutionResult, type HarnessExecutionRequest, type NativeHarnessEvent, type NativeSessionReference,
@@ -33,6 +34,7 @@ interface Session {
  * without a durable result refuses attachment/history and never invents an ACK.
  */
 export class RecoveryProvider {
+  readonly events = new EventEmitter()
   readonly submissions: Submission[] = []
   readonly counts = { sessions: 0, starts: 0, attaches: 0, cancels: 0, closes: 0 }
   private readonly sessions = new Map<string, Session>()
@@ -156,6 +158,7 @@ export class RecoveryProvider {
           // The DB becomes running BEFORE the stream reaches this point. Tests
           // must await this provider-side barrier before restarting the API.
           session.parked = true
+          provider.events.emit('parked', session.submission)
           await new Promise<void>((resolve) => {
             const done = () => { signal?.removeEventListener('abort', done); delete session.wake; resolve() }
             if (!session.alive || signal?.aborted) return done()

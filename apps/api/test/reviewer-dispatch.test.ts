@@ -4,9 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { setTimeout as delay } from 'node:timers/promises'
 
-import { test, vi } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, HarnessExecutionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type NativeHarnessEvent, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../src/modules/placement/binding.js'
@@ -26,6 +25,8 @@ import type { RepeatReviewerBindings } from '../src/modules/interactions/repeatR
 import { normalizeNativeProducerEvent } from '../src/modules/run-graph/nativeProducerNormalization.js'
 import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
+
+afterEach(() => vi.useRealTimers())
 
 const session = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-native' } satisfies NativeSessionReference
 const interaction: DurableInteraction = {
@@ -1005,25 +1006,39 @@ test('shutdown still reports an unexpected native capture failure', async () => 
 })
 
 test('reviewer and normal workflow turn share active lane; long turns renew both leases', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+  let finish!: () => void
+  const turnFinished = new Promise<void>(resolve => { finish = resolve })
   const f = fixture(150); await enqueue(f)
   let started!: () => void
   const began = new Promise<void>((resolve) => { started = resolve })
   f.manager.startTurn = async function* (_session, input) {
     yield startEvent(input.clientCorrelationId); started()
-    await delay(400); f.coordination.pending = false; yield endEvent()
+    await turnFinished; f.coordination.pending = false; yield endEvent()
   }
   const task = f.dispatcher.dispatchNext('reviewer', 'worker')
   await began
-  const ordinary = new SingleWriterSessionManager(f.manager, f.coordination.asRepository(), 'reviewer', 150)
-  await assert.rejects(async () => { for await (const _event of ordinary.startTurn(session, { clientCorrelationId: 'normal', prompt: 'normal' })) { void _event } }, { code: 'SESSION_LANE_BUSY' })
-  assert.equal(f.coordination.lane.observedStatus, 'busy')
-  assert.equal((await task)?.state, 'completed')
-  assert.ok(f.coordination.renewJobs >= 2)
-  assert.ok(f.coordination.renewLanes >= 2)
+  try {
+    const ordinary = new SingleWriterSessionManager(f.manager, f.coordination.asRepository(), 'reviewer', 150)
+    await assert.rejects(async () => { for await (const _event of ordinary.startTurn(session, { clientCorrelationId: 'normal', prompt: 'normal' })) { void _event } }, { code: 'SESSION_LANE_BUSY' })
+    assert.equal(f.coordination.lane.observedStatus, 'busy')
+    await vi.waitFor(() => {
+      assert.ok(f.coordination.renewJobs >= 2)
+      assert.ok(f.coordination.renewLanes >= 2)
+    }, { interval: 10, timeout: 400 })
+    finish()
+    assert.equal((await task)?.state, 'completed')
+    assert.ok(f.coordination.renewJobs >= 2)
+    assert.ok(f.coordination.renewLanes >= 2)
+  } finally {
+    finish()
+    await f.dispatcher.shutdown()
+  }
 })
 
 for (const lost of ['job', 'lane'] as const) {
   test(`${lost} lease loss fences subsequent reviewer transitions and ends uncooperative iterator`, async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
     const f = fixture(120); await enqueue(f)
     let nextCalls = 0
     f.manager.startTurn = (_session, input) => ({
@@ -1037,22 +1052,28 @@ for (const lost of ['job', 'lane'] as const) {
         return new Promise<IteratorResult<NativeHarnessEvent>>(() => undefined)
       } }),
     })
-    // Keep the process alive while unref'ed lease timers are the only active handles.
-    const keepAlive = delay(220)
-    await assert.rejects(f.dispatcher.dispatchNext('reviewer', 'worker'), { code: lost === 'job' ? 'REVIEW_JOB_LEASE_LOST' : 'SESSION_LANE_LEASE_LOST' })
+    const rejected = assert.rejects(f.dispatcher.dispatchNext('reviewer', 'worker'), {
+      code: lost === 'job' ? 'REVIEW_JOB_LEASE_LOST' : 'SESSION_LANE_LEASE_LOST',
+    })
+    await vi.waitFor(() => assert.equal(nextCalls, 2), { interval: 1, timeout: 100 })
+    await vi.advanceTimersByTimeAsync(120)
+    await rejected
     assert.deepEqual(f.coordination.transitions, ['submitted', 'acknowledged'])
     assert.equal(nextCalls, 2)
     assert.ok(f.coordination.lane.leaseToken)
-    await keepAlive
   })
 }
 
 test('hung renewal expires the local writer even when native iterator ignores abort', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   const guard = new LeaseGuard(90, async () => undefined, () => new Promise<string>(() => undefined))
-  const keepAlive = delay(150)
   const stream = { [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<NativeHarnessEvent>>(() => undefined) }) }
-  await assert.rejects(async () => { for await (const _event of ownedEvents(stream, guard)) { void _event } }, { code: 'SESSION_LANE_LEASE_LOST' })
-  await guard.stop(); await keepAlive
+  const rejected = assert.rejects(async () => {
+    for await (const _event of ownedEvents(stream, guard)) { void _event }
+  }, { code: 'SESSION_LANE_LEASE_LOST' })
+  await vi.advanceTimersByTimeAsync(90)
+  await rejected
+  await guard.stop()
 })
 
 test('normal turn fences new turns and attach while allowing owned approval control', async () => {

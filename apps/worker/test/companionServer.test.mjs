@@ -129,11 +129,16 @@ test('service enable is separate from pairing, requires explicit confirmation an
 });
 
 test('GUI sessions expire and separate launches get different credentials', async (t) => {
-  const first = await fixture(t, { lifetimeMs: 50 }), second = await fixture(t);
-  assert.notEqual(first.gui.session, second.gui.session);
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  await assert.rejects(fetch(first.gui.origin));
-  assert.equal((await second.post('/api/status')).status, 200);
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  try {
+    const first = await fixture(t, { lifetimeMs: 50 }), second = await fixture(t);
+    assert.notEqual(first.gui.session, second.gui.session);
+    t.mock.timers.tick(50);
+    await assert.rejects(fetch(first.gui.origin));
+    assert.equal((await second.post('/api/status')).status, 200);
+  } finally {
+    t.mock.timers.reset();
+  }
 });
 
 test('read-only preview cannot create identity, pair or change a service', async (t) => {

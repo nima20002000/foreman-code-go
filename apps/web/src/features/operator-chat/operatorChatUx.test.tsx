@@ -69,7 +69,8 @@ describe('Operator chat UX', () => {
       await waitFor(() => expect(api.send).toHaveBeenCalledWith('new-chat', expect.objectContaining({ content: 'Install Codex on Computer 1234abcd.' })))
       expect(useOperatorChatStore.getState()).toMatchObject({ open: true, selectedConversationId: 'new-chat' })
       expect(api.create).toHaveBeenCalledTimes(1)
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      await waitFor(() => expect(client.isMutating()).toBe(0))
+      await waitFor(() => expect(client.isFetching()).toBe(0))
       expect(api.send).toHaveBeenCalledTimes(1)
     } finally {
       if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks)

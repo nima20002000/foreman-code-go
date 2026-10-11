@@ -87,7 +87,7 @@ it('keeps a failed app request and resumes its instruction on explicit retry', a
   expect(await screen.findByText('Conversation could not be created')).toBeVisible()
   expect(useOperatorChatStore.getState().request?.content).toBe('Install the selected computer harness')
   expect(screen.getByText('Install the selected computer harness')).toBeVisible()
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+  await waitFor(() => expect(client.isMutating()).toBe(0))
   expect(api.create).toHaveBeenCalledTimes(1)
   fireEvent.click(screen.getByRole('button', { name: 'Retry requested chat' }))
   await waitFor(() => expect(useOperatorChatStore.getState().selectedConversationId).toBe('new-chat'))

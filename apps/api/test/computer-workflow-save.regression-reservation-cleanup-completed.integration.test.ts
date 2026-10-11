@@ -6,7 +6,9 @@ import type { SourceReservation } from '../src/modules/sources/reservations.js'
 
 it('defers reservation cleanup without waiting on a locked completed Run', async () => {
   // Payloads stay unchanged here; startup discovery and profile qualification still run.
-  const fixture = await remoteReviewProduction({ workflow: 'single', installationRefreshIntervalMs: 60_000 })
+  const fixture = await remoteReviewProduction({
+    workflow: 'single', installationRefreshIntervalMs: 60_000, parallelSetup: true,
+  })
   try {
     const started = await fixture.start()
     const runId = started.run.id

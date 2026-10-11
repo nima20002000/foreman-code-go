@@ -6,7 +6,9 @@ import { latestEvidence } from './helpers/workerProfileRequalification.js'
 
 describe('automatic Worker profile qualification', () => {
   it('persists a failed automatic check and refuses Start without borrowing the previous generation', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true })
+    const fixture = await remoteReviewProduction({
+      workflow: 'sequential', parallelProfileChecks: true, parallelSetup: true,
+    })
     try {
       const before = await latestEvidence(fixture)
       expect(before).toHaveLength(fixture.profiles.length)

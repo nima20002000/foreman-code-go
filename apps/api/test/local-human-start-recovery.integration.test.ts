@@ -13,7 +13,7 @@ import { browserOwnerUpgrade } from './helpers/browserOwnerUpgrade.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_000 }, () => {
-  it.each(['mapped owner', 'default development browser'] as const)(
+  it.concurrent.each(['mapped owner', 'default development browser'] as const)(
     'reconciles a lost Start response for %s after upgrade and restart without another native execution', async identity => {
     const fixture = await currentOperatorIntegration({
       fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [],
@@ -66,11 +66,19 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
         [fixture.writer.principal.id, input.commandId],
       )).rows[0]!.result
       const original = await readReceipt()
-      const deadline = Date.now() + 20_000
-      while ((await fixture.runs.get(original.id))?.executionState !== 'completed') {
-        if (Date.now() >= deadline) throw new Error('The original Run did not settle.')
-        await new Promise<void>(resolve => setImmediate(resolve))
+      // Start reuses the active task for this Run, including its cleanup and owner release.
+      let settleTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          fixture.engine.start(original.id),
+          new Promise<never>((_resolve, reject) => {
+            settleTimer = setTimeout(() => reject(new Error('The original Run did not settle.')), 20_000)
+          }),
+        ])
+      } finally {
+        clearTimeout(settleTimer)
       }
+      expect((await fixture.runs.get(original.id))?.executionState).toBe('completed')
       await fixture.app.close()
       await fixture.engine.shutdown()
       const starts = fixture.provider.counts.starts

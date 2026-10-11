@@ -13,6 +13,17 @@ afterEach(async () => {
   try { while (closes.length) await closes.pop()!() } finally { vi.restoreAllMocks() }
 })
 
+async function waitForCompletion(completion: Promise<void>, timeoutMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([completion, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Native operation did not complete in time')), timeoutMs)
+    })])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 // Only the external transport is deterministic; capture, PostgreSQL and graph writers are real.
 describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
   it('rolls back every frame when a batch contains bytes that differ from its original capture', async () => {
@@ -126,13 +137,10 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     })
     const cancel = vi.spyOn(f.provider, 'cancel')
     let observed: unknown
-    let settled = false
     const task = f.engine.start(f.f.run.id).catch((error: unknown) => { observed = error })
-      .finally(() => { settled = true })
     try {
       await reading.promise
-      await expect.poll(() => settled, { timeout: 2_000 }).toBe(true)
-      await task
+      await waitForCompletion(task, 2_000)
       expect(observed).toMatchObject({ code: failure.code })
       const lane = await f.repository.coordination.getLane('codex', failedSessionId!)
       expect(lane?.leaseToken).toBeUndefined()
@@ -279,6 +287,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     closes.push(f.close)
     const closing = deferred()
     const release = deferred()
+    const closed = deferred()
     const originalClose = f.provider.close.bind(f.provider)
     let siblingSessionId: string | undefined
     vi.spyOn(f.provider, 'close').mockImplementation(async (session) => {
@@ -289,15 +298,13 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
         await release.promise
       }
       await originalClose(session)
+      if (session.nativeSessionId === siblingSessionId) closed.resolve()
     })
-    let settled = false
     let startError: unknown
     const task = f.engine.start(f.f.run.id).catch((error: unknown) => { startError = error })
-      .finally(() => { settled = true })
     try {
       await closing.promise
-      await expect.poll(() => settled, { timeout: 10_000 }).toBe(true)
-      await task
+      await waitForCompletion(task, 10_000)
       expect(startError).toBeUndefined()
       const [interaction] = await f.pending()
       expect(interaction?.graphInterruptId).toBeTruthy()
@@ -312,7 +319,8 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       expect(native.rows[0]?.finalized).toBe(false)
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 0 })
       release.resolve()
-      await expect.poll(() => f.provider.closedSessions.has(siblingSessionId!), { timeout: 5_000 }).toBe(true)
+      await waitForCompletion(closed.promise, 5_000)
+      expect(f.provider.closedSessions.has(siblingSessionId!)).toBe(true)
       await f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(interaction!))
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3, responses: 1, attaches: 0 })

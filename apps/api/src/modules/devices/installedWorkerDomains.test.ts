@@ -115,11 +115,19 @@ describe('actual installed worker mount availability, no physical acceptance', (
     let finishJob!: () => void
     const job = new Promise<void>(resolve => { finishJob = resolve })
     let agentOpen = true
+    let observeQuiescence!: () => void
+    const quiescence = new Promise<void>(resolve => { observeQuiescence = resolve })
+    let finishAgent!: () => void
+    const agentClosed = new Promise<void>(resolve => { finishAgent = resolve })
     let jobOutcome = 'running'
     let scheduled = false
     const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal, active: () => [],
       drainJobs: async () => { await job; jobOutcome = 'succeeded' },
-      drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => !agentOpen })
+      drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => {
+        observeQuiescence()
+        await agentClosed
+        return !agentOpen
+      } })
     const refresh = drain.run().then(() => { scheduled = true })
     expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).toThrow('waiting for active work')
     expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.open' })).toThrow()
@@ -131,10 +139,12 @@ describe('actual installed worker mount availability, no physical acceptance', (
     expect(scheduled).toBe(false)
     expect(jobOutcome).toBe('running')
     finishJob()
-    await new Promise(resolve => setTimeout(resolve, 10))
+    await quiescence
+    await new Promise<void>(resolve => setImmediate(resolve))
     expect(jobOutcome).toBe('succeeded')
     expect(scheduled).toBe(false)
     agentOpen = false
+    finishAgent()
     await refresh
     expect(scheduled).toBe(true)
     expect(jobOutcome).toBe('succeeded')

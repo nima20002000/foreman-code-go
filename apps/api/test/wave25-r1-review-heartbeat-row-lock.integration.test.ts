@@ -24,7 +24,6 @@ describe.skipIf(!postgresEnabled)('production review heartbeat: row-lock', { tim
           where $1=any(pg_blocking_pids(pid)) and query like 'update review_jobs%') as waiting`, [pid])).rows[0]!
         if (row.waiting) break
         if (Date.now() >= deadline) throw new Error('Renewal did not reach the independent row lock')
-        await new Promise((resolve) => setTimeout(resolve, 10))
       }
       await locker.query('commit')
       expect(await observed).toEqual({ renewed: false, code: 'REVIEW_JOB_LEASE_LOST' })

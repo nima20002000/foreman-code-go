@@ -43,7 +43,7 @@ async function eventually(check: () => boolean | Promise<boolean>) {
   const end = Date.now() + 30_000
   while (!await check()) {
     assert.ok(Date.now() < end, 'The H1 persisted transition did not occur.')
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    await new Promise<void>(resolve => setImmediate(resolve))
   }
 }
 type Mode = 'reject' | 'success' | 'uncertain' | 'cleanup-failure' | 'activation-failure'

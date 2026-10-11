@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { HttpResponse, delay, http } from 'msw'
+import { HttpResponse, http } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AssignedSkill } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
@@ -13,6 +13,7 @@ import { SkillEditor, type SavedSkill } from './SkillEditor'
 import { SkillDetailPage } from './SkillPages'
 import { AgentSkillsField } from './AgentSkillsField'
 import { readSkillFile } from './skillImport'
+import { deferred } from '../runs-selector/testFixtures'
 
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children, className, params }: {
   children: ReactNode; className?: string; params?: { workspaceId: string; skillId: string }
@@ -65,10 +66,15 @@ describe('Settings → Skills library', () => {
 
   it('shows loading, then one row per logical skill; never a false empty list while loading', async () => {
     seedSkill('workspace-1', 'Reviewer', 'Review carefully.', { description: 'Checks diffs' })
-    server.use(http.get('/api/management/skills', async () => { await delay(50); return undefined }, { once: true }))
+    const response = deferred<void>()
+    server.use(http.get('/api/management/skills', async () => {
+      await response.promise
+      return undefined
+    }, { once: true }))
     wrap(<Library />)
     expect(screen.getByText('Loading skills…')).toBeInTheDocument()
     expect(screen.queryByText('No skills yet')).not.toBeInTheDocument()
+    await act(async () => { response.resolve(undefined) })
     expect(await screen.findByText('Reviewer')).toBeVisible()
     expect(screen.getByText('Checks diffs')).toBeVisible()
     expect(screen.getByText('Version 1')).toBeVisible()
@@ -102,9 +108,14 @@ describe('Settings → Skills library', () => {
     ], pageInfo: { nextCursor: null } })))
     wrap(<Library initial={{ workspace: 'workspace-a' }} />)
     expect(await screen.findByText('Alpha only')).toBeVisible()
-    server.use(http.get('/api/management/skills', async () => { await delay(100); return undefined }, { once: true }))
+    const response = deferred<void>()
+    server.use(http.get('/api/management/skills', async () => {
+      await response.promise
+      return undefined
+    }, { once: true }))
     await user.selectOptions(await screen.findByRole('combobox', { name: 'Workspace' }), 'workspace-b')
     expect(screen.queryByText('Alpha only')).not.toBeInTheDocument()
+    await act(async () => { response.resolve(undefined) })
     expect(await screen.findByText('Beta only')).toBeVisible()
   })
 
@@ -140,12 +151,18 @@ describe('Skill editor', () => {
     const user = userEvent.setup()
     const onSaved = vi.fn()
     const posts = requests('POST', '/skills')
-    server.use(http.post('/api/management/workspaces/:workspaceId/skills', async () => { await delay(30); return undefined }))
+    const response = deferred<void>()
+    server.use(http.post('/api/management/workspaces/:workspaceId/skills', async () => {
+      await response.promise
+      return undefined
+    }))
     wrap(<SkillEditor workspaceOptions={workspaces} initialWorkspace="workspace-b" onSaved={onSaved} onCancel={vi.fn()} />)
     await user.type(screen.getByRole('textbox', { name: /^Name/ }), 'Écrivain ✓')
     await user.type(screen.getByRole('textbox', { name: /^Instructions/ }), '  # Title{Enter}{Enter}- keep  ')
     const save = screen.getByRole('button', { name: 'Create skill' })
     await user.dblClick(save)
+    expect(save).toBeDisabled()
+    await act(async () => { response.resolve(undefined) })
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
     expect(posts).toHaveLength(1)
     const body = await posts[0]!.json() as { workspaceId: string; instructions: string }

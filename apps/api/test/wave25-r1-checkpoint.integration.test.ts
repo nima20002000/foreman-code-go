@@ -1,16 +1,18 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import type { DurableInteraction } from '@foreman-code/contracts'
 
 const closes: Array<() => Promise<void>> = []
+let database: Awaited<ReturnType<typeof agent3Database>>
 afterEach(async () => {
   try { while (closes.length) await closes.pop()!() } finally { vi.restoreAllMocks() }
 }, 60_000)
 async function fixture() {
-  const f = await checkpointRuntimeFixture(); closes.push(f.close)
+  const f = await checkpointRuntimeFixture(1, 1, { database })
+  closes.push(f.close)
   await f.engine.start(f.f.run.id)
   const [interaction] = await f.pending()
   if (!interaction) throw new Error('Expected original native request and persisted checkpoint')
@@ -29,6 +31,9 @@ async function expireAbandonedClaims(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe.skipIf(!postgresEnabled)('BR1-003: actual current checkpoint and Run-owner receipt transaction', () => {
+  beforeAll(async () => { database = await agent3Database() }, 60_000)
+  afterAll(async () => { await database?.close() }, 60_000)
+
   it('rolls back task-local writes and graph.resume together before commit', async () => {
     const f = await fixture(), before = await f.writes()
     let wrote = false

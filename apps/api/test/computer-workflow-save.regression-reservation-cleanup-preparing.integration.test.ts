@@ -1,13 +1,13 @@
 import { expect, it, vi } from 'vitest'
 import { join } from 'node:path'
-import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
-import { reservationCleanupWorkflow, completeReservationCleanupWorkflow } from './helpers/reservationCleanupWorkflow.js'
+import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { completeReservationCleanupWorkflow } from './helpers/reservationCleanupWorkflow.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { MaterializationReservationCleanup } from '../src/modules/sources/materializationReservationCleanup.js'
 import type { SourceReservation } from '../src/modules/sources/reservations.js'
 
 it('defers reservation cleanup without waiting on a Run that is preparing native execution', async () => {
-  const fixture = await reservationCleanupWorkflow()
+  const fixture = await remoteReviewProduction({ workflow: 'single', parallelSetup: true })
   try {
     const workingDirectory = join(fixture.directory, 'worker-runtime')
     // Hold native preparation without blocking background inventory and profile checks.

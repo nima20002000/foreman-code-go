@@ -275,7 +275,7 @@ export async function approvalFaultFixture(form: FaultForm, options: { approvals
         if (run?.executionState === 'completed') return
         expect(run?.executionState).toBe('waiting')
         expect(await currentPending()).toHaveLength(1)
-      }, { timeout: 30000, interval: 50 })
+      }, { timeout: 30000, interval: 10 })
       if ((await runtime.runs.get(runId))?.executionState === 'completed') {
         await settled('succeeded'); await assertShape(form === 'repeat' ? 2 : 0)
         return

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -9,22 +9,30 @@ import { adaptiveDeadlineMs, groupUsed, integrationProcessProgress, stopGroup, s
 import { boundedLog } from './verification-reports.mjs'
 import { fullRunExitCode, scheduleFiles } from './test-integration.mjs'
 
-function loggedChild(log, script) {
+function loggedChild(log, script, { ipc = false } = {}) {
   const fd = openSync(log, 'w', 0o600)
   try {
-    return spawn(process.execPath, ['-e', script], { detached: true, stdio: ['ignore', fd, fd] })
+    return spawn(process.execPath, ['-e', script], { detached: true, stdio: ['ignore', fd, fd, ...(ipc ? ['ipc'] : [])] })
   } finally {
     closeSync(fd)
   }
 }
 
 async function waitForLog(log, text) {
-  const deadline = Date.now() + 3000
-  while (Date.now() < deadline) {
-    if (readFileSync(log, 'utf8').includes(text)) return
-    await new Promise((done) => setTimeout(done, 20))
+  let timer
+  let watcher
+  try {
+    await new Promise((resolve, reject) => {
+      const check = () => { if (readFileSync(log, 'utf8').includes(text)) resolve() }
+      watcher = watch(log, check)
+      watcher.on('error', reject)
+      timer = setTimeout(() => reject(new Error(`Child did not write ${text}`)), 3000)
+      check()
+    })
+  } finally {
+    watcher?.close()
+    clearTimeout(timer)
   }
-  throw new Error(`Child did not write ${text}`)
 }
 
 test('an idle owned group fails, retains its log, and frees the slot for the next file', async () => {
@@ -58,7 +66,7 @@ test('an idle owned group fails, retains its log, and frees the slot for the nex
         onTimeout: (error) => timeouts.push(error.message),
         resetAfterTimeout: async () => {
           assert.equal(groupUsed(child.pid), false, 'no database callers may survive before reset')
-          await new Promise((done) => setTimeout(done, 20))
+          await Promise.resolve()
           resets.push(slot.index)
         },
       })
@@ -92,6 +100,7 @@ test('a failed timeout reset retires its slot while the healthy worker executes 
   const slots = [{ index: 1 }, { index: 2 }]
   const files = ['hang', 'healthy', 'remaining-one', 'remaining-two']
   const resetError = new Error('owned database reset rejected')
+  let healthyChild
   try {
     const result = await scheduleFiles(files, slots, async (slot, file) => {
       if (slot.resetError) throw slot.resetError
@@ -101,9 +110,10 @@ test('a failed timeout reset retires its slot while the healthy worker executes 
       if (file === 'hang') script = "console.log('ready'); setInterval(() => {}, 1000)"
       if (file === 'healthy') {
         script = "console.log('ready'); const timer = setInterval(() => console.log('working'), 50);"
-          + "setTimeout(() => { clearInterval(timer); console.log('completed') }, 650)"
+          + "process.once('message', () => { clearInterval(timer); console.log('completed'); process.disconnect() })"
       }
-      const child = loggedChild(log, script)
+      const child = loggedChild(log, script, { ipc: file === 'healthy' })
+      if (file === 'healthy') healthyChild = child
       children.push(child)
       if (file === 'hang' || file === 'healthy') await waitForLog(log, 'ready')
       const outcome = await superviseIntegrationProcess(child, { log, idleTimeoutMs: 200,
@@ -111,6 +121,7 @@ test('a failed timeout reset retires its slot while the healthy worker executes 
         resetAfterTimeout: async () => {
           assert.equal(groupUsed(child.pid), false)
           slot.resetError = resetError
+          healthyChild.send('finish')
           throw resetError
         },
       })
@@ -186,33 +197,44 @@ test('continuous log noise cannot defeat the absolute file deadline', async () =
   }
 })
 
-test('a long progressing file survives the idle deadline and its monitor is cleared on exit', async () => {
+test('a long progressing file survives the idle deadline and its monitor is cleared on exit', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-progress-'))
   const log = join(directory, 'progress.log')
   const script = `
     console.log('ready')
-    const timer = setInterval(() => console.log('case completed'), 20)
-    setTimeout(() => { clearInterval(timer); console.log('finished') }, 400)
+    process.on('message', message => {
+      if (message === 'finish') { console.log('finished'); process.disconnect() }
+      else console.log('case completed ' + message)
+    })
   `
-  const child = loggedChild(log, script)
+  const child = loggedChild(log, script, { ipc: true })
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'] })
   try {
     await waitForLog(log, 'ready')
     const progress = integrationProcessProgress()
-    const outcome = await waitForIntegrationProcess(child, { log, progress, idleTimeoutMs: 100,
+    const pending = waitForIntegrationProcess(child, { log, progress, idleTimeoutMs: 100,
       fileTimeoutMs: 3000, pollIntervalMs: 20, graceMs: 100 })
+    for (const step of [1, 2, 3]) {
+      child.send(step)
+      await waitForLog(log, `case completed ${step}`)
+      t.mock.timers.tick(60)
+    }
+    child.send('finish')
+    const outcome = await pending
     assert.equal(outcome.code, 0)
     assert.equal(outcome.timedOut, false)
     assert.ok(progress.bytes > 0)
     const lastOutputAt = progress.lastOutputAt
     const bytes = progress.bytes
     appendFileSync(log, 'output after monitor finished\n')
-    await new Promise((done) => setTimeout(done, 150))
+    t.mock.timers.tick(150)
     assert.equal(progress.lastOutputAt, lastOutputAt)
     assert.equal(progress.bytes, bytes)
     assert.match(readFileSync(log, 'utf8'), /finished/)
     assert.equal(child.listenerCount('error'), 0)
     assert.equal(child.listenerCount('exit'), 0)
   } finally {
+    t.mock.timers.reset()
     await stopGroup(child.pid, { graceMs: 100 })
     rmSync(directory, { recursive: true, force: true })
   }
@@ -265,6 +287,7 @@ test('bounded log retention does not mistake continuing output for an idle proce
   const log = join(directory, 'bounded.log')
   const output = boundedLog(log, 10)
   const progress = integrationProcessProgress()
+  // Eight 40ms heartbeats span the 200ms idle budget while the log stays capped.
   const child = spawn(process.execPath, ['-e',
     "let count = 0; const timer = setInterval(() => { console.log('still running'); if (++count === 8) { clearInterval(timer); } }, 40)"],
   { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -338,7 +361,7 @@ test('the idle watchdog still stops a silent file before its adaptive deadline, 
 test('a file within its adaptive deadline finishes normally', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-on-time-'))
   const log = join(directory, 'on-time.log')
-  const child = loggedChild(log, "console.log('ready'); setTimeout(() => console.log('done'), 100)")
+  const child = loggedChild(log, "console.log('ready'); console.log('done')")
   try {
     const outcome = await waitForIntegrationProcess(child, { log, idleTimeoutMs: 2000,
       fileTimeoutMs: 3000, deadlineMs: 2000, pollIntervalMs: 20, graceMs: 100 })

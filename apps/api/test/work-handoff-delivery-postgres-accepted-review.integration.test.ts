@@ -1,5 +1,4 @@
 import pg from 'pg'
-import { setTimeout as delay } from 'node:timers/promises'
 import { WorkReturnSchema, type WorkHandoffResult } from '@foreman-code/contracts/wave25'
 import { describe, expect, it } from 'vitest'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -36,10 +35,21 @@ postgresDescribe('handoff delivery accepted review', () => {
         await caller.connect()
         await caller.query('select 1')
         const connected = caller
-        closing = delay(200).then(() => connected.end()).then(
-          () => { closed = true },
-          error => { closeError = error },
-        )
+        // Close the independent caller when teardown removes an owned pool connection.
+        closing = new Promise<void>((resolve) => {
+          pool.once('remove', () => {
+            void connected.end().then(
+              () => {
+                closed = true
+                resolve()
+              },
+              error => {
+                closeError = error
+                resolve()
+              },
+            )
+          })
+        })
         if (failed) throw failure
         return 'delivery verified'
       })

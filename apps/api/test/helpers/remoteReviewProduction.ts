@@ -1,3 +1,4 @@
+import { readUntil } from './observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID, sign, X509Certificate } from 'node:crypto'
@@ -39,19 +40,14 @@ import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemot
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
 import { gitFixtureEnvironment } from './gitFixture.js'
 import { remoteReviewEnvironment } from './remoteReviewEnvironment.js'
+import { waitForChildReady } from './remoteReviewReadiness.js'
 
 const execute = promisify(execFile)
 const tsxLoader = createRequire(import.meta.url).resolve('tsx')
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
   description: string): Promise<T> {
-  const deadline = Date.now() + 90_000
-  for (;;) {
-    const value = await read()
-    if (accept(value)) return value
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}.`)
-    await new Promise(resolve => setTimeout(resolve, 25))
-  }
+  return readUntil(read, accept, { timeoutMs: 90_000, description })
 }
 
 async function freePort() {
@@ -290,12 +286,8 @@ export async function remoteReviewProduction(options: {
           ready = true
         }
       })
-      await waitForRemoteReview(async () => {
-        if (started.exitCode !== null || started.signalCode !== null) {
-          throw new Error(`Production Main exited: ${mainFailure}`)
-        }
-        return ready
-      }, value => value, 'production Main startup')
+      await waitForChildReady(started, () => ready, 'production Main startup',
+        () => `Production Main exited: ${mainFailure}`)
     }
     beginPhase('Main startup')
     await startMain()
@@ -448,12 +440,8 @@ export async function remoteReviewProduction(options: {
           if (!ready) workerStateRevision++
         }
       })
-      await waitForRemoteReview(async () => {
-        if (started.exitCode !== null || started.signalCode !== null) {
-          throw new Error(`Installed Worker exited: ${workerFailure}`)
-        }
-        return ready
-      }, value => value, 'authenticated installed Worker connection')
+      await waitForChildReady(started, () => ready, 'authenticated installed Worker connection',
+        () => `Installed Worker exited: ${workerFailure}`)
     }
     const stopWorker = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (!worker || worker.exitCode !== null || worker.signalCode !== null) return

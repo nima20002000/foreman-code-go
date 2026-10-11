@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -222,9 +223,9 @@ describe('installed ordinary verification qualification through authenticated MC
       else if (admission.kind === 'accepted') executionId = admission.executionId
       else executionId = admission.execution.id
       const waitForExecution = async (id: string, ready: (value: ReturnType<typeof JobExecutionRecordSchema.parse>) => boolean) => {
-        const deadline = Date.now() + template.policy.preparationTimeoutMs + template.policy.executionTimeoutMs
+        const timeoutMs = template.policy.preparationTimeoutMs + template.policy.executionTimeoutMs
           + template.policy.publicationTimeoutMs + template.policy.cleanupTimeoutMs
-        while (Date.now() < deadline) {
+        return readUntil(async () => {
           await runtime!.jobs.wakeQueue()
           const row = (await db.pool.query('select record from job_executions where id=$1', [id])).rows[0]
           if (row) {
@@ -232,11 +233,11 @@ describe('installed ordinary verification qualification through authenticated MC
             const read = await operator.callTool({ name: 'job_get', arguments: { workspaceId, executionId: id } })
             expect(read.isError, JSON.stringify(read.content)).not.toBe(true)
             const value = JobExecutionRecordSchema.parse((decodeMcpToolResult(read) as { execution: unknown }).execution)
-            if (ready(value)) return value
+            return value
           }
-          await new Promise(resolve => setTimeout(resolve, 1000))
-        }
-        throw new Error('Real verification Job did not reach its expected state within the saved deadline.')
+          return undefined
+        }, value => value !== undefined && ready(value),
+        { timeoutMs, description: 'the verification Job state within the saved deadline' }).then(value => value!)
       }
       const settled = (value: ReturnType<typeof JobExecutionRecordSchema.parse>) =>
         value.process.phase === 'terminal' && !['pending', 'collecting'].includes(value.publication)

@@ -31,7 +31,9 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
   it.each(forms)('%s: rebuilt HTTP/MCP reads retain live grants, redaction, denied-scope audits and read-only behavior', async (form) => {
     const f = await recoveryFixture(form)
     try {
-      f.launch(); await f.settled(); await f.restart()
+      f.launch()
+      await f.settled(f.base.f.run.id, { pollIntervalMs: 25 })
+      await f.restart()
       const expected = await readback(f), executionId = expected.details[0]!.execution.executionId
       const allowed = await f.base.access.issue({ name: 'ENG06 restarted runs-only reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'], scope: { runIds: [f.base.f.run.id] } }] })

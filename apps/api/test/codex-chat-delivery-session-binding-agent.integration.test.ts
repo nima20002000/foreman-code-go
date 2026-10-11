@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'vitest'
+import { describe, it, vi } from 'vitest'
+import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { calls, until } from './fixtures/codex-test-helpers.js'
 import { useCodexChatDelivery } from './codex-chat-delivery.helpers.js'
 
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
-  const fixture = useCodexChatDelivery()
+  const fixture = useCodexChatDelivery({ manualLateReplies: true })
 
   it('Agent idle-exit failure is retryable and resumes the stored session without another creation', async () => {
     const { native, repository, request, sendAgent, readAgent } = fixture
@@ -29,17 +31,43 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
 
   it('a changed Agent creation marker refuses a late session binding and preserves the original prompt fence', async () => {
     const { database, native, repository, request, sendAgent } = fixture
-    await native.flag('late-thread-start')
-    const admitted = await sendAgent(request('late', null))
-    const id = admitted.state.conversation!.id
-    await until(async () => (await repository.turn(id, 'late'))?.delivery === 'unknown' || undefined)
-    await database.pool.query(`update operator_conversations set record=jsonb_set(record,'{sessionCreation,requestId}',to_jsonb($2::text)) where id=$1`,
-      [id, 'another-owner'])
-    await new Promise((resolve) => setTimeout(resolve, 850))
-    await fixture.agentChat.recover()
-    assert.equal((await repository.get(id))!.native_session_id, null)
-    assert.equal((await repository.turn(id, 'late'))?.delivery, 'unknown')
-    assert.equal((await native.wire('turn/start')).length, 0)
+    let creation: {
+      manager: CodexAppServerSessionManager
+      input: Parameters<CodexAppServerSessionManager['createSession']>[0]
+    } | undefined
+    const create = CodexAppServerSessionManager.prototype.createSession
+    const observed = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+      .mockImplementation(function (this: CodexAppServerSessionManager, ...args) {
+        creation = { manager: this, input: args[0] }
+        return create.call(this, ...args)
+      })
+    try {
+      await native.flag('late-thread-start')
+      const admitted = await sendAgent(request('late', null))
+      const id = admitted.state.conversation!.id
+      await until(async () => (await repository.turn(id, 'late'))?.delivery === 'unknown' || undefined)
+      await database.pool.query(`update operator_conversations set record=jsonb_set(record,'{sessionCreation,requestId}',to_jsonb($2::text)) where id=$1`,
+        [id, 'another-owner'])
+      assert(creation)
+      const { manager, input } = creation
+      await native.flag('release-late-creation')
+      await until(async () => {
+        try {
+          return await manager.reconcileSessionCreation(input)
+        } catch (error) {
+          if (error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_SESSION_CREATION_UNCERTAIN') {
+            return undefined
+          }
+          throw error
+        }
+      })
+      await fixture.agentChat.recover()
+      assert.equal((await repository.get(id))!.native_session_id, null)
+      assert.equal((await repository.turn(id, 'late'))?.delivery, 'unknown')
+      assert.equal((await native.wire('turn/start')).length, 0)
+    } finally {
+      observed.mockRestore()
+    }
   })
 
   it('Agent creation binding rejects a different request, configuration, harness or prior turn', async () => {

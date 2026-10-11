@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
 import { recoverPersistedClaudeCompaction } from '../src/modules/harnesses/claudeSdk/recoverCompaction.js'
 import assert from 'node:assert/strict'
@@ -94,8 +95,17 @@ describe('exact native outcome through guardian cleanup', () => {
   it('cancellation still rejects after confirmed tree cleanup', async () => {
     const f = fixture()
     try {
-      await assert.rejects(runCommand(process.execPath, ['-e', 'setInterval(()=>{},1000)'], f.root,
-        AbortSignal.timeout(250), undefined, { recovery: f.recovery }), { name: 'TimeoutError' })
+      const controller = new AbortController()
+      const command = assert.rejects(runCommand(process.execPath, ['-e',
+        "require('node:fs').writeFileSync('ready','');setInterval(()=>{},1000)"], f.root,
+      controller.signal, undefined, { recovery: f.recovery }), { name: 'TimeoutError' })
+      try {
+        await readUntil(async () => existsSync(join(f.root, 'ready')), ready => ready,
+          { timeoutMs: 2000, description: 'the native child to start' })
+      } finally {
+        controller.abort(new DOMException('Fixture cancellation', 'TimeoutError'))
+        await command
+      }
       assert.equal(await f.registry.closeOwner(f.owner), true)
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
@@ -146,13 +156,13 @@ for (const outcome of ['no-op', 'failed'] as const) it(
       console.log(JSON.stringify({type:'system',subtype:'init',session_id:sessionId}));
       readline.createInterface({input:process.stdin}).on('line',line=>{
         const message=JSON.parse(line);
-        fs.appendFileSync('native-inputs.jsonl',line+'\\n');
-        const timer=setInterval(()=>{
+        const watcher=fs.watch('.',()=>{
           if(!fs.existsSync('finish'))return;
-          clearInterval(timer);
+          watcher.close();
           console.log(JSON.stringify({type:'result',session_id:sessionId,user_message_uuid:message.uuid,
             is_error:failed,subtype:failed?'error_during_execution':'success',result:'Nothing to compact'}));
-        },10);
+        });
+        fs.appendFileSync('native-inputs.jsonl',line+'\\n');
       });
     `, nativeSessionId, outcome], { cwd: f.root, env: {}, recovery: f.recovery, claudeSessionScope: scope })
     child.stdout.resume()
@@ -161,11 +171,8 @@ for (const outcome of ['no-op', 'failed'] as const) it(
       claudeSession: scope, status: 'uncertain' as const, message: 'API response lost', beforeTokens: 100,
       observedAt: new Date().toISOString() }
     const wait = async (condition: () => Promise<boolean> | boolean) => {
-      const deadline = Date.now() + 10000
-      while (!await condition()) {
-        assert(Date.now() < deadline, 'Native owner did not reach the expected state')
-        await new Promise(resolve => setTimeout(resolve, 10))
-      }
+      await readUntil(async () => condition(), ready => ready,
+        { timeoutMs: 10000, description: 'the native owner state' })
     }
     try {
       child.stdin.write(JSON.stringify({ type: 'user', uuid: promptUuid, message: { content: '/compact' } }) + '\n')

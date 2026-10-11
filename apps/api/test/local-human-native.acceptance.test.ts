@@ -57,7 +57,7 @@ describe.skipIf(!enabled)('installed harness local-human isolation', { timeout: 
           if (child.exitCode !== null || child.signalCode !== null) {
             throw new Error(`Independent ${harness} exited before its MCP probe: ${diagnostics}`)
           }
-          await new Promise<void>(resolve => setTimeout(resolve, 100))
+          await new Promise<void>(resolve => setTimeout(resolve, 10))
         }
         throw new Error(`Independent ${harness} did not initialize its MCP client.`)
       } finally {
@@ -121,13 +121,14 @@ async function installProbe(input: NativeHttpIsolationInput) {
   await writeFile(script, `
     const fs = require('node:fs');
     const readline = require('node:readline');
-    let complete = false;
+    let finishProbe;
+    const probeComplete = new Promise(resolve => { finishProbe = resolve; });
     console.log = value => {
       const observed = JSON.parse(value);
       observed.placementMarker = fs.readFileSync('native-probe-marker', 'utf8');
       fs.writeFileSync(${JSON.stringify(`${report}.tmp`)}, JSON.stringify(observed), {mode:0o600});
       fs.renameSync(${JSON.stringify(`${report}.tmp`)}, ${JSON.stringify(report)});
-      complete = true;
+      finishProbe();
     };
     ${probe}
     readline.createInterface({input:process.stdin}).on('line', line => {
@@ -135,7 +136,7 @@ async function installProbe(input: NativeHttpIsolationInput) {
         const message = JSON.parse(line);
         if (message.id === undefined) return;
         if (message.method === 'initialize') {
-          while (!complete) await new Promise(resolve => setTimeout(resolve, 20));
+          await probeComplete;
         }
         const result = message.method === 'initialize'
           ? {protocolVersion:message.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'isolation',version:'1'}}

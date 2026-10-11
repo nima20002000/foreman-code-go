@@ -1,4 +1,5 @@
 import { JobVerificationPolicyRequirementsSchema } from '@foreman-code/contracts/job-verification-policy'
+import { setImmediate } from 'node:timers/promises'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
@@ -60,7 +61,11 @@ describe('mixed runtime metadata recovery', () => {
     const host = { currentMetadata: async () => null, capture } as unknown as InstalledJobRuntimeHost
     const pool = { query: async () => ({ rows: [{ record: saved }] }) } as unknown as pg.Pool
     const recovery = new JobRuntimeMetadataRecovery(pool, host, vi.fn(), () => now)
-    const scan = async () => { recovery.request(); await new Promise(resolve => setTimeout(resolve, 10)) }
+    const scan = async () => {
+      recovery.request()
+      // All fixture ports resolve immediately; a turn drains their promise chains.
+      await setImmediate()
+    }
     await scan()
     await scan()
     expect(capture).toHaveBeenCalledTimes(1)
@@ -79,7 +84,11 @@ describe('mixed runtime metadata recovery', () => {
     const host = { currentMetadata: async () => null, capture } as unknown as InstalledJobRuntimeHost
     const pool = { query: async () => ({ rows: [{ record: saved }] }) } as unknown as pg.Pool
     const recovery = new JobRuntimeMetadataRecovery(pool, host, vi.fn(), () => 1_000_000)
-    const scan = async () => { recovery.request(); await new Promise(resolve => setTimeout(resolve, 10)) }
+    const scan = async () => {
+      recovery.request()
+      // All fixture ports resolve immediately; a turn drains their promise chains.
+      await setImmediate()
+    }
     await scan()
     capture.mockImplementationOnce(async () => saved.measurement!.fingerprint)
     await scan()

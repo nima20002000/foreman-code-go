@@ -5,7 +5,10 @@ import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 import { jobCleanupOptions, jobLifecycleSignal } from './lifecycle.js'
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 function execution(createdAt: string) {
   const { spec } = verificationRuntimeFixture()
@@ -26,11 +29,18 @@ it('keeps the remaining cleanup budget before the original deadline', () => {
 })
 
 it('bounds each recovery attempt and permits another attempt after interruption', async () => {
+  vi.useFakeTimers()
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), milliseconds)
+    return controller.signal
+  })
   const record = execution(new Date(0).toISOString())
   const first = jobCleanupOptions(record)
   expect(first.signal.aborted).toBe(false)
   const aborted = new Promise<void>(resolve => first.signal.addEventListener('abort', () => resolve(), { once: true }))
-  await Promise.all([aborted, new Promise(resolve => setTimeout(resolve, 50))])
+  await vi.advanceTimersByTimeAsync(record.acceptedSpec.policy.cleanupTimeoutMs)
+  await aborted
   expect(first.signal.aborted).toBe(true)
   const retry = jobCleanupOptions(record)
   expect(retry.signal.aborted).toBe(false)

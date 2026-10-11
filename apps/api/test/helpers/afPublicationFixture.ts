@@ -1,3 +1,4 @@
+import { readUntil } from './observableCondition.js'
 import { removeFixtureDirectory } from './testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp } from 'node:fs/promises'
@@ -39,11 +40,7 @@ import { agent3Database, candidateFor, deferred, seedAgent3 } from './wave25Agen
 
 export const pin = (value: FileWithRevision): MessageAttachmentRef => ({ fileId: value.file.fileId, revisionId: value.revision.revisionId })
 export async function waitFor(check: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 500; attempt++) {
-    if (await check()) return
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  throw new Error('AF chat did not reach the expected state')
+  await readUntil(check, ready => ready, { timeoutMs: 5000, description: 'the agent chat condition' })
 }
 
 /** Only native I/O/host materialization are synthetic. The production bridge,
@@ -165,8 +162,10 @@ export async function afPublicationFixture({ selectedRun = false }: { selectedRu
     : chat.send(owner.principal, workspaceId, input)
   const created = await send(request(null))
   const conversationId = created.state.conversation!.id
-  const settle = () => waitFor(async () => !(await repository.get(conversationId))?.active_request_id
-    && !(await repository.state(conversationId))?.turns.some((turn) => ['queued', 'submitting', 'accepted'].includes(turn.delivery)))
+  const settle = () => readUntil(async () => !(await repository.get(conversationId))?.active_request_id
+    && !(await repository.state(conversationId))?.turns.some((turn) => ['queued', 'submitting', 'accepted'].includes(turn.delivery)),
+  ready => ready, { timeoutMs: 5000, description: 'agent chat settlement',
+    subscribe: changed => chat.events.subscribe(conversationId, changed) })
   await settle()
   const native = natives.get(conversationId)!
   const target = { kind: 'agent' as const, workspaceId, conversationId }
@@ -188,7 +187,9 @@ export async function afPublicationFixture({ selectedRun = false }: { selectedRu
     native.holdNext = true
     const input = request(conversationId, { attachments })
     await send(input)
-    await waitFor(async () => !!(await repository.turn(conversationId, input.requestId))?.nativeTurnId)
+    await readUntil(async () => (await repository.turn(conversationId, input.requestId))?.nativeTurnId,
+      id => !!id, { timeoutMs: 5000, description: 'native turn submission',
+        subscribe: changed => chat.events.subscribe(conversationId, changed) })
     const turn = (await repository.turn(conversationId, input.requestId))!
     const row = (await repository.get(conversationId))!
     const session: NativeSessionReference = { harness: 'codex', providerVersion: row.provider_version!, nativeSessionId: row.native_session_id! }

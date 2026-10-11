@@ -1,3 +1,4 @@
+import { readUntil } from './observableCondition.js'
 import Fastify from 'fastify'
 import type pg from 'pg'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
@@ -314,13 +315,10 @@ export async function ciPreparationFixture(options: {
     }
   }
   const settle = async (profileId: string, provisioner = ciRuntime) => {
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const status = BuildComputerPrepareStatusSchema.parse(await provisioner.get(data.operator, { workspaceId, profileId }))
-      if (['qualified', 'failed'].includes(status.state)) return status
-      if (options.source) await new Promise(resolve => setTimeout(resolve, 10))
-      else await new Promise(resolve => setImmediate(resolve))
-    }
-    throw new Error('Preparation did not settle.')
+    return readUntil(async () => BuildComputerPrepareStatusSchema.parse(
+      await provisioner.get(data.operator, { workspaceId, profileId })),
+    status => ['qualified', 'failed'].includes(status.state),
+    { timeoutMs: 5000, description: 'CI preparation to settle' })
   }
   return { ...data, app, call, settle, calls, profiles, sources, profileService, pool, ciRuntime,
     createProvisioner, memory, principals, commands, endpoint, main, disable: () => { disabled = true },

@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema } from '@foreman-code/contracts/management'
@@ -128,9 +129,23 @@ describe.skipIf(!postgresEnabled)('Agent 3 atomic Run admission and live authori
       const queued = store.admit({ nodeId: f.version.entryNodeId, occurrence: null }, () => candidateFor(f))
       await entered.promise
       let revoked = false
-      const revocation = db.pool.query('update management_principals set revoked_at=clock_timestamp() where id=$1', [issued.principal.id]).then(() => { revoked = true })
-      await new Promise((resolve) => setTimeout(resolve, 20)); expect(revoked).toBe(false)
-      release.resolve(); const row = await queued; await revocation
+      const revoker = await db.pool.connect()
+      const pid = (await revoker.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      const revocation = revoker.query(
+        'update management_principals set revoked_at=clock_timestamp() where id=$1', [issued.principal.id],
+      ).then(() => { revoked = true }).finally(() => revoker.release())
+      const transactions = Promise.allSettled([queued, revocation])
+      try {
+        await readUntil(async () => (await db.pool.query<{ blocked: boolean }>(
+          'select cardinality(pg_blocking_pids($1)) > 0 as blocked', [pid])).rows[0]!.blocked,
+        blocked => blocked, { timeoutMs: 2000, description: 'revocation to block on the effect transaction' })
+        expect(revoked).toBe(false)
+      } finally {
+        release.resolve()
+        await transactions
+      }
+      const row = await queued
+      await revocation
       if (row.kind !== 'admitted') throw new Error('Expected admitted execution')
       await expect(store.claimLaunch(row.execution.id, { workingDirectory: db.directory, runtimeDirectory: `${db.directory}/never-created` })).rejects.toThrow()
       expect((await db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='execution.launch'", [accepted.value.id])).rowCount).toBe(0)

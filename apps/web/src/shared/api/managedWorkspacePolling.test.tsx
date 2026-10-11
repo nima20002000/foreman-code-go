@@ -11,20 +11,22 @@ function wrapper() {
   clients.push(client)
   return ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
 }
-afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 it('stops polling a workspace the server reports as missing', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
   const request = vi.spyOn(apiClient, 'request').mockRejectedValue(new ApiError({ code: 'WORKSPACE_NOT_FOUND', message: 'Workspace not found.' }, 404))
   const query = renderHook(() => useManagedWorkspaceQuery('missing-workspace'), { wrapper: wrapper() })
   await waitFor(() => expect(query.result.current.isError).toBe(true))
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 3100)) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(3100) })
   expect(request).toHaveBeenCalledOnce()
 })
 
 it('keeps polling after a transient workspace read failure', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
   const request = vi.spyOn(apiClient, 'request').mockRejectedValue(new ApiError({ code: 'UNAVAILABLE', message: 'Try again.' }, 503))
   const query = renderHook(() => useManagedWorkspaceQuery('workspace-a'), { wrapper: wrapper() })
   await waitFor(() => expect(query.result.current.isError).toBe(true))
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 3100)) })
-  expect(request).toHaveBeenCalledTimes(2)
+  await act(async () => { await vi.advanceTimersByTimeAsync(3100) })
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
 })

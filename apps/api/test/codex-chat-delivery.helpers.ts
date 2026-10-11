@@ -28,7 +28,7 @@ import { deliveryFixture } from './fixtures/codex-delivery.js'
 import { until } from './fixtures/codex-test-helpers.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 
-export function useCodexChatDelivery() {
+export function useCodexChatDelivery(options: { manualLateReplies?: boolean } = {}) {
   let database: Awaited<ReturnType<typeof agent3Database>>
   let native: Awaited<ReturnType<typeof deliveryFixture>>
   let agentChat: AgentChatService
@@ -96,7 +96,7 @@ export function useCodexChatDelivery() {
               })])
             } catch (error) {
               // The reply follows uncertainty, regardless of scheduler or database load.
-              await native.flag(`release-${fault}`)
+              if (!options.manualLateReplies) await native.flag(`release-${fault}`)
               throw error
             } finally {
               controller.abort()

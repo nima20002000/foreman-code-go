@@ -3,6 +3,7 @@ import { assertOwnedExecutionDestinations, assertOwnedTestApi,
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
+import { until } from './fixtures/codex-test-helpers.js'
 import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { AgentChatContextSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
@@ -80,13 +81,12 @@ describe.skipIf(!enabled)('F4 A-R21 actual terminal-Run to Agent-chat immutabili
     }
     const read = async () => AgentChatStateSchema.parse(await request(`${root}?${params}`))
     const settled = async (requestId: string): Promise<AgentChatState> => {
-      for (let attempt = 0; attempt < 240; attempt++) {
+      return until(async () => {
         const state = await read(), receipt = state.turns.find((turn) => turn.requestId === requestId)
         if (receipt && ['failed', 'canceled', 'unknown'].includes(receipt.delivery)) throw new Error(`Native acceptance ended ${receipt.delivery}; no resend.`)
         if (receipt?.delivery === 'completed' && !state.activeTurn) return state
-        await new Promise((resolve) => setTimeout(resolve, 500))
-      }
-      throw new Error('Native chat did not settle; no resend or replacement session was attempted.')
+        return undefined
+      }, 120_000)
     }
     try {
       await assertOwnedTestApi(api, pool)

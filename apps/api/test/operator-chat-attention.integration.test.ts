@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import pg from 'pg'
@@ -103,12 +104,9 @@ afterEach(async () => {
   }
 }, 60_000)
 
-async function waitFor(check: () => Promise<boolean>) {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    if (await check()) return
-    await new Promise(resolve => setTimeout(resolve, 10))
-  }
-  throw new Error('The native turn did not finish.')
+async function waitFor(id: string, check: () => Promise<boolean>) {
+  await readUntil(check, ready => ready, { timeoutMs: 2000, description: 'the native turn to finish',
+    subscribe: changed => chat.events.subscribe(id, changed) })
 }
 
 describe.skipIf(!connectionString)('Operator conversation attention', () => {
@@ -119,7 +117,7 @@ describe.skipIf(!connectionString)('Operator conversation attention', () => {
       expiresAt: new Date(Date.now() + 600_000) })
     const conversation = await chat.create(issued.principal)
     await chat.send(conversation.id, { requestId: randomUUID(), content: 'Finish a turn' }, issued.principal)
-    await waitFor(async () => (await chat.get(conversation.id, issued.principal)).turnState === 'idle')
+    await waitFor(conversation.id, async () => (await chat.get(conversation.id, issued.principal)).turnState === 'idle')
     Object.assign(manager, {
       sessionControlCapabilities: async () => ({ ...unavailableSessionControls('fixture'), model: 'fixture',
         plan: { supported: true, reason: null } }),

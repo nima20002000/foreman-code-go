@@ -7,8 +7,9 @@ import { remoteReviewProduction, waitForRemoteReview } from './remoteReviewProdu
 
 export async function historicalChatPlacement(
   scenario: (fixture: Awaited<ReturnType<typeof remoteReviewProduction>>) => Promise<void>,
+  options: { includeNodeRuntimePayload?: boolean } = {},
 ) {
-  const fixture = await remoteReviewProduction({ workflow: 'single', parallelSetup: true })
+  const fixture = await remoteReviewProduction({ workflow: 'single', parallelSetup: true, ...options })
   try {
     await scenario(fixture)
   } catch (error) {

@@ -2,7 +2,7 @@ import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
+import { deferred } from '../../../test/helpers/agentChatF1.js'
 import { afterEach, expect, it } from 'vitest'
 import { captureGitSource, qualifiedGit, type SourceSnapshotSink } from './capture.js'
 import { sourceSha256 } from './manifest.js'
@@ -23,10 +23,23 @@ async function repository(bytes: Buffer) {
 it('captures maximum-size blobs through a slow sink without exceeding the existing byte buffer budget', async () => {
   const bytes = Buffer.alloc(16 * 1024 * 1024, 42), digest = sourceSha256(bytes), source = await repository(bytes)
   let liveBytes = 0, peakBytes = 0, written = 0, committed = false
+  let batch = deferred()
+  let entered = 0
   const sink: SourceSnapshotSink = {
     async write(_id, entry, content) {
       liveBytes += content.length; peakBytes = Math.max(peakBytes, liveBytes)
-      try { expect(sourceSha256(content)).toBe(digest); expect(entry.byteSize).toBe(bytes.length); await delay(250); written++ }
+      try {
+        expect(sourceSha256(content)).toBe(digest)
+        expect(entry.byteSize).toBe(bytes.length)
+        const ready = batch
+        // Four maximum-size writes fill the existing byte budget before draining.
+        if (++entered % 4 === 0) {
+          batch = deferred()
+          ready.resolve()
+        }
+        await ready.promise
+        written++
+      }
       finally { liveBytes -= content.length }
     },
     async commit(manifest) { expect(liveBytes).toBe(0); expect(manifest.totalBytes).toBe(128 * 1024 * 1024); committed = true },
@@ -39,15 +52,34 @@ it('captures maximum-size blobs through a slow sink without exceeding the existi
 it('drains other private writes before aborting a failed capture and never commits it', async () => {
   const source = await repository(Buffer.from('exact immutable source bytes')), failed = new Error('private write failed')
   let active = 0, peak = 0, aborted = false, committed = false
+  const overlap = deferred()
+  const failedWrite = deferred()
+  const drainWrites = deferred()
   const sink: SourceSnapshotSink = {
     async write(_id, entry) {
       active++; peak = Math.max(peak, active)
-      try { await delay(entry.path === 'file-0.bin' ? 30 : 100); if (entry.path === 'file-0.bin') throw failed }
+      try {
+        if (entry.path === 'file-0.bin') {
+          await overlap.promise
+          failedWrite.resolve()
+          throw failed
+        }
+        overlap.resolve()
+        await drainWrites.promise
+      }
       finally { active-- }
     },
     async commit() { committed = true },
     async abort() { expect(active).toBe(0); aborted = true },
   }
-  await expect(captureGitSource({ ...source, sink })).rejects.toBe(failed)
+  const capture = expect(captureGitSource({ ...source, sink })).rejects.toBe(failed)
+  try {
+    await failedWrite.promise
+    expect(active).toBeGreaterThan(0)
+    expect(aborted).toBe(false)
+  } finally {
+    drainWrites.resolve()
+    await capture
+  }
   expect(peak).toBeGreaterThan(1); expect(aborted).toBe(true); expect(committed).toBe(false)
 })

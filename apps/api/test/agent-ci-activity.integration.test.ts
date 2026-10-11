@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { RunActivitiesPageSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -116,7 +117,7 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
       while (!blocked && Date.now() < deadline) {
         blocked = (await f.database.pool.query<{ blocked: boolean }>(
           'select $2::integer=any(pg_blocking_pids($1::integer)) as blocked', [waiter, holder])).rows[0]!.blocked
-        if (!blocked) await new Promise<void>(resolve => setTimeout(resolve, 10))
+        if (!blocked) await setImmediate()
       }
       expect(blocked).toBe(true)
       const during = await f.activity({ cursor: initial.nextCursor })

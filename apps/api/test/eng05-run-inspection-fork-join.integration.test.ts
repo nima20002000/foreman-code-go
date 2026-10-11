@@ -10,6 +10,13 @@ import {
   requestScope, reader, allExecutions, parity, path, value, terminal, resaveChangingRepeat, denied,
 } from './helpers/runInspection.js'
 
+async function checkInParallel<T>(items: readonly T[], check: (item: T) => Promise<void>) {
+  // Drain every read before fixture cleanup can close the MCP clients or pool.
+  const results = await Promise.allSettled(items.map(check))
+  const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+  if (errors.length) throw new AggregateError(errors, 'Run inspection checks failed.')
+}
+
 describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: fork-join', () => {
   it('reads ordinary fork/join history, exact inputs/results, denied scopes and replayed pages; keeps its old pin after adding repeat', async () => {
     const f = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'parallel'), approvalNodeIds: [] })
@@ -17,7 +24,7 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: fork
       await f.engine.start(f.f.run.id); await terminal(f)
       const r = await reader(f), args = requestScope(f)
       const discovery = (await r.client.listTools()).tools
-      for (const name of Object.values(RUN_INSPECTION_TOOLS)) {
+      await checkInParallel(Object.values(RUN_INSPECTION_TOOLS), async name => {
         const tool = discovery.find((item) => item.name === name)
         expect(tool?.name).toBe(name)
         expect(tool?.inputSchema.type).toBe('object')
@@ -30,7 +37,7 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: fork
         expect(schema.outputSchema?.type).toBe('object')
         expect(tool?.annotations?.readOnlyHint).toBe(true)
         expect(tool?.description).toBeTruthy()
-      }
+      })
       expect(discovery.map((item) => item.name)).not.toContain('run_start')
       const capabilities = value(await r.client.callTool({ name: 'operator_get_capabilities', arguments: { detail: 'full' } })) as {
         tools: string[]; requirements: Array<{ name: string; actions: string[] }> }
@@ -85,11 +92,12 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: fork
       await denied(f, f.client, f.writer.token, RUN_INSPECTION_TOOLS.execution, { ...detailArgs, executionId: 'wrong-execution' }, 404, 'RUN_EXECUTION_NOT_FOUND')
 
       const d = await reader(f, [{ actions: ['capabilities:read'], scope: {} }])
-      for (const name of Object.values(RUN_INSPECTION_TOOLS)) {
-        expect((await d.client.listTools()).tools.map((tool) => tool.name)).not.toContain(name)
+      const deniedDiscovery = (await d.client.listTools()).tools.map(tool => tool.name)
+      await checkInParallel(Object.values(RUN_INSPECTION_TOOLS), async name => {
+        expect(deniedDiscovery).not.toContain(name)
         await denied(f, d.client, d.token, name,
           name === RUN_INSPECTION_TOOLS.execution || name === RUN_INSPECTION_TOOLS.bindings ? detailArgs : args, 403, 'ACCESS_DENIED')
-      }
+      })
       const audit = (await f.db.pool.query<{ source: string }>('select source from management_audit where principal_id=$1', [d.principal.id])).rows
       expect(audit.map((row) => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
       const wrongGrant = await reader(f, [{ actions: ['runs:read'], scope: { workspaceIds: ['other-workspace'] } }])

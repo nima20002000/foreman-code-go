@@ -8,16 +8,15 @@ it('saves a completed computer workflow using each accepted native directory and
   // Directory validation needs two native executions, but only one identical harness profile.
   const fixture = await remoteReviewProduction({
     workflow: 'sequential', parallelProfileChecks: true, reuseMatchingProfiles: true, parallelSetup: true,
+    includeNodeRuntimePayload: false,
   })
   try {
     const started = await fixture.start()
-    let nextReconcileAt = 0
     const details = await waitForRemoteReview(async () => {
       const current = await fixture.details(started.run.id)
       if (current.run.executionState === 'completed' && !current.cleanupPending) return current
-      if (Date.now() >= nextReconcileAt) {
+      if (current.run.executionState === 'completed' && current.cleanupPending) {
         await fixture.reconcile()
-        nextReconcileAt = Date.now() + 250
         return fixture.details(started.run.id)
       }
       return current

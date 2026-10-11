@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
+import { deferred } from '../../../test/helpers/agentChatF1.js'
 import type { ByteTransferPort, TransferContext, TransferIntent, TransferProgress, VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferSender } from './sender.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
@@ -45,6 +46,8 @@ it('cancels and joins a pending range before reporting deadline failure', async 
   const progress: TransferProgress = { version: 1, transferId: intent.transferId, state: 'transferring',
     durableOffset: 0, verifiedBytes: 0, receivedInMemoryBytes: 0, updatedAt: new Date().toISOString() }
   let closed = false
+  const cleaningUp = deferred()
+  const finishCleanup = deferred()
   let entered!: () => void
   const started = new Promise<void>(resolve => { entered = resolve })
   const receiver: ByteTransferPort = {
@@ -53,7 +56,8 @@ it('cancels and joins a pending range before reporting deadline failure', async 
       if (!signal) throw new Error('Bounded range signal required')
       entered()
       await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
-      await new Promise(resolve => setTimeout(resolve, 10))
+      cleaningUp.resolve()
+      await finishCleanup.promise
       closed = true
       signal.throwIfAborted()
       return progress
@@ -65,7 +69,17 @@ it('cancels and joins a pending range before reporting deadline failure', async 
   const controller = new AbortController()
   const pending = sender.send(intent, controller.signal)
   await started
+  const rejected = expect(pending).rejects.toThrow('Original publication deadline')
+  let settled = false
+  void pending.then(() => { settled = true }, () => { settled = true })
   controller.abort(new Error('Original publication deadline'))
-  await expect(pending).rejects.toThrow('Original publication deadline')
+  try {
+    await cleaningUp.promise
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(settled).toBe(false)
+  } finally {
+    finishCleanup.resolve()
+    await rejected
+  }
   expect(closed).toBe(true)
 })

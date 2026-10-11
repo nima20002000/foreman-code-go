@@ -4,7 +4,7 @@ import { describe, it, onTestFailed } from 'vitest'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { codexResponseSurfaceFixtures } from './fixtures/codex-response-surfaces.js'
-import { collect, emit, finish, processesForRequests, state, until } from './fixtures/codex-test-helpers.js'
+import { agentMessage, collect, emit, finish, processesForRequests, state, until } from './fixtures/codex-test-helpers.js'
 import {
   CodexAppServerSessionManager,
   managers,
@@ -37,7 +37,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await inject(session, 'item/commandExecution/requestApproval', {
       itemId: 'command-901', command: 'printf harmless', cwd: f.directory, availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
     }, 901)
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await inject(session, 'item/started', {
+      item: agentMessage('after-duplicate', '', 'commentary'),
+    })
+    await until(async () => (await manager.history(session)).events.some((event) =>
+      event.type === 'item.started' && isObject(event.payload.item) && event.payload.item.id === 'after-duplicate'))
     assert.equal(await manager.pending(session), undefined)
     assert.equal((await wire()).filter((message) => message.id === 901 && message.error).length, 0)
     await emit(f.directory, { method: 'turn/completed', params: { threadId: session.nativeSessionId, turn: { ...original, status: 'completed' } } })

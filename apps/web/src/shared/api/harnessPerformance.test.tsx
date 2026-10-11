@@ -20,9 +20,10 @@ function wrapper() {
   clients.push(client)
   return { client, Wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> }
 }
-afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 it('shares one catalog request and each three-second poll while retaining optional Claude defaults and raw revisions', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
   const request = vi.spyOn(apiClient, 'request').mockResolvedValue(catalog)
   const { client, Wrapper } = wrapper()
   const queries = renderHook(() => ({ catalog: useManagedHarnessCatalogQuery(), first: useHarnessDefaultsQuery(), second: useHarnessDefaultsQuery() }), { wrapper: Wrapper })
@@ -31,8 +32,8 @@ it('shares one catalog request and each three-second poll while retaining option
   expect(queries.result.current.first.data?.defaults.claude).toEqual(savedClaudeConfiguration)
   expect(queries.result.current.second.data).toEqual(queries.result.current.first.data)
   expect(client.getQueryData(queryKeys.managedHarnessCatalog)).toEqual(catalog)
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 3100)) })
-  expect(request).toHaveBeenCalledTimes(2)
+  await act(async () => { await vi.advanceTimersByTimeAsync(3100) })
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
 })
 
 it('does not read the catalog when its only defaults observer is disabled', async () => {

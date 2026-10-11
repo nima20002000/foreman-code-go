@@ -8,14 +8,15 @@ export function reviewHeartbeatFixtures() {
     while (closes.length) await closes.pop()!()
   })
 
-  async function fixture() {
+  async function fixture(registerCleanup?: (close: () => Promise<void>) => void) {
     const url = new URL(process.env.TEST_DATABASE_URL ?? '')
     if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
       || !url.pathname.toLowerCase().includes('test')) {
       throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
     }
     const f = await approvalDatabase()
-    closes.push(f.close)
+    if (registerCleanup) registerCleanup(f.close)
+    else closes.push(f.close)
     return f
   }
 

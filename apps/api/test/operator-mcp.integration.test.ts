@@ -80,9 +80,11 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
         grants: [{ actions: ManagementActionSchema.options, scope: { workspaceIds: ['wrong'] } }] })
       expect((await (await f.connect(wrong.token)).callTool({ name: 'workflow_get', arguments: { workspaceId: input.workspaceId, workflowId: input.workflowId } })).isError).toBe(true)
       async function post(token?: string, origin?: string) {
-        return fetch(new URL('/mcp', f.address), { method: 'POST', headers: { 'content-type': 'application/json',
+        const response = await fetch(new URL('/mcp', f.address), { method: 'POST', headers: { 'content-type': 'application/json',
           ...(token ? { authorization: `Bearer ${token}` } : {}), ...(origin ? { origin } : {}) },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) })
+        await response.arrayBuffer()
+        return response
       }
       expect((await post()).status).toBe(401)
       const worker = await f.access.issue({ name: 'Worker', audience: 'worker', agentId: f.f.configurations[0]!.agentId,
@@ -147,7 +149,8 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       const started = value(await f.client.callTool({ name: 'run_start', arguments: start }))
       const run = started.run as { id: string }
       expect(value(await f.client.callTool({ name: 'run_start', arguments: start }))).toMatchObject({ run: { id: run.id }, replayed: true })
-      await expect.poll(async () => (await f.runs.get(run.id))?.executionState, { timeout: 45000 }).toBe('waiting')
+      await expect.poll(async () => (await f.runs.get(run.id))?.executionState,
+        { timeout: 45000, interval: 10 }).toBe('waiting')
       expect(f.provider.counts).toMatchObject({ starts: 2, sessions: 2 })
       const persisted = value(await f.client.callTool({ name: 'run_get', arguments: { workspaceId: input.workspaceId, runId: run.id } }))
       expect(persisted.run).toMatchObject({ workflowVersionId: saved.value.currentVersionId, executionSemanticsVersion: 3 })
@@ -157,7 +160,8 @@ describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration',
       const stop = { workspaceId: input.workspaceId, runId: run.id, commandId: randomUUID() }
       expect(value(await f.client.callTool({ name: 'run_stop', arguments: stop }))).toMatchObject({ runId: run.id, processStopped: false })
       expect(value(await f.client.callTool({ name: 'run_stop', arguments: stop }))).toMatchObject({ runId: run.id, replayed: true })
-      await expect.poll(async () => (await f.runs.get(run.id))?.outcome, { timeout: 20000 }).toBe('canceled')
+      await expect.poll(async () => (await f.runs.get(run.id))?.outcome,
+        { timeout: 20000, interval: 10 }).toBe('canceled')
       const archived = value(await f.client.callTool({ name: 'workflow_archive', arguments: { workspaceId: input.workspaceId, workflowId: input.workflowId,
         expectedRevision: saved.value.revision, commandId: randomUUID() } }))
       expect(archived.value).toMatchObject({ archivedAt: expect.any(String) })

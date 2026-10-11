@@ -9,7 +9,8 @@ const cases = (['principal', 'parent'] as const).map((revocation) => ({
 }))
 
 describe.skipIf(!postgresEnabled)('RH-01 selected-Run authority is atomic with message admission', () => {
-  it.each(cases)(
+  // Each contention case owns a database and its blocker/revoker connections.
+  it.concurrent.each(cases)(
     '$transport rejects $revocation revocation committed during $boundary contention',
     assertRevocationRejected,
     90000,

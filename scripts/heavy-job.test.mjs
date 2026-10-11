@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -21,13 +21,16 @@ const jobEnv = (cwd) => {
   delete env.FOREMAN_CODE_HEAVY_BASE_TMPDIR
   return env
 }
-const run = (cwd, args, { signal } = {}) => new Promise((resolve) => {
+const run = (cwd, args, { signal, onQueued } = {}) => new Promise((resolve) => {
   const env = jobEnv(cwd)
   const child = spawn(process.execPath, ['scripts/heavy-job.mjs', ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
   const abort = () => child.kill('SIGTERM')
   signal?.addEventListener('abort', abort, { once: true })
   let output = ''
-  child.stdout.on('data', (data) => { output += data })
+  child.stdout.on('data', (data) => {
+    output += data
+    if (/\[heavy-job\] queued/.test(output)) onQueued?.()
+  })
   child.stderr.on('data', (data) => { output += data })
   child.once('exit', (code) => {
     signal?.removeEventListener('abort', abort)
@@ -99,12 +102,33 @@ function mockProc(f, declarations) {
   writeFileSync(path, `${script}\n${declarations}\n`)
 }
 const waitFile = async (path) => {
-  for (let i = 0; i < 100; i++) {
-    if (existsSync(path)) return
-    await new Promise((resolve) => setTimeout(resolve, 50))
+  if (existsSync(path)) return
+  let timer
+  let watcher
+  try {
+    await new Promise((resolve, reject) => {
+      const check = () => { if (existsSync(path)) resolve() }
+      watcher = watch(dirname(path), check)
+      watcher.on('error', reject)
+      timer = setTimeout(() => reject(new Error(`Timed out waiting for ${path}`)), 5000)
+      check()
+    })
+  } finally {
+    watcher?.close()
+    clearTimeout(timer)
   }
-  throw new Error(`Timed out waiting for ${path}`)
 }
+async function waitQueued(queued, exited) {
+  let timer
+  try {
+    await Promise.race([
+      queued,
+      exited.then(() => assert.fail('The job exited before queuing')),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('The job did not queue')), 5000) }),
+    ])
+  } finally { clearTimeout(timer) }
+}
+
 const pidRunning = (pid) => {
   try { const text = readFileSync(`/proc/${pid}/stat`, 'utf8'); return text.split(') ')[1][0] !== 'Z' } catch { return false }
 }
@@ -376,7 +400,7 @@ test('one stable token owns ticket, active slot, and temp; release preserves rep
   const f = fixture()
   const started = join(f.home, 'started')
   const released = join(f.home, 'released')
-  const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'yes');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(released)})) clearInterval(timer)},20)`], { cwd: f.first, env: jobEnv(f.first), stdio: 'pipe' })
+  const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `const fs=require('fs');const watcher=fs.watch(${JSON.stringify(f.home)},()=>{if(fs.existsSync(${JSON.stringify(released)})) watcher.close()});fs.writeFileSync(${JSON.stringify(started)},'yes')`], { cwd: f.first, env: jobEnv(f.first), stdio: 'pipe' })
   const exited = new Promise((resolve) => child.once('exit', resolve))
   try {
     await waitFile(started)
@@ -420,10 +444,11 @@ test('linked worktrees take one visible slot in ticket order', async () => {
     const started = join(f.home, 'started')
     const released = join(f.home, 'released')
     const secondRan = join(f.home, 'second-ran')
-    const first = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(started)},'yes'); while(!require('fs').existsSync(${JSON.stringify(released)})) require('child_process').spawnSync('sleep',['0.05'])`], { cwd: f.first, env: jobEnv(f.first), stdio: 'pipe' })
+    const first = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', `const fs=require('fs');const watcher=fs.watch(${JSON.stringify(f.home)},()=>{if(fs.existsSync(${JSON.stringify(released)})) watcher.close()});fs.writeFileSync(${JSON.stringify(started)},'yes')`], { cwd: f.first, env: jobEnv(f.first), stdio: 'pipe' })
     await waitFile(started)
-    const second = run(f.second, ['--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(secondRan)},'yes')`])
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    const queued = Promise.withResolvers()
+    const second = run(f.second, ['--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(secondRan)},'yes')`], { onQueued: queued.resolve })
+    await waitQueued(queued.promise, second)
     assert.equal(existsSync(secondRan), false)
     const pending = readdirSync(join(f.state, 'queue')).sort().at(-1)
     assert.equal(JSON.parse(readFileSync(join(f.state, 'queue', pending), 'utf8')).phase, 'queued')
@@ -518,8 +543,9 @@ test('Vitest coordinator hook admits once and releases after teardown', async ()
     assert.equal(typeof teardown, 'function')
     assert.equal(typeof process.env.GRAPHQL_HEAVY_JOB_TOKEN, 'string')
     const ran = join(f.home, 'hook-second-ran')
-    const second = run(f.second, ['--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(ran)},'yes')`])
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    const queued = Promise.withResolvers()
+    const second = run(f.second, ['--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(ran)},'yes')`], { onQueued: queued.resolve })
+    await waitQueued(queued.promise, second)
     assert.equal(existsSync(ran), false)
     await teardown()
     teardown = null
@@ -533,22 +559,28 @@ test('Vitest coordinator hook admits once and releases after teardown', async ()
 })
 
 const waitFor = async (check) => {
-  for (let i = 0; i < 120; i++) {
+  const deadline = Date.now() + 6000
+  while (Date.now() < deadline) {
     if (check()) return
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error('Timed out waiting for scheduler state')
 }
 function heldJob(f, label, cwd = f.first) {
   const started = join(f.home, `${label}-started`)
   const released = join(f.home, `${label}-released`)
-  const script = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'yes');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(released)})) clearInterval(timer)},20)`
+  const script = `const fs=require('fs');const watcher=fs.watch(${JSON.stringify(f.home)},()=>{if(fs.existsSync(${JSON.stringify(released)})) watcher.close()});fs.writeFileSync(${JSON.stringify(started)},'yes')`
   const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', script], { cwd, env: jobEnv(cwd), stdio: ['ignore', 'pipe', 'pipe'] })
   let output = ''
-  child.stdout.on('data', (data) => { output += data })
+  const queued = Promise.withResolvers()
+  child.stdout.on('data', (data) => {
+    output += data
+    if (/\[heavy-job\] queued/.test(output)) queued.resolve()
+  })
   child.stderr.on('data', (data) => { output += data })
   const exited = new Promise((resolve) => child.once('exit', (code) => resolve({ code, output })))
-  return { child, started, exited, release: () => writeFileSync(released, 'yes') }
+  return { child, started, exited, queued: () => waitQueued(queued.promise, exited),
+    release: () => writeFileSync(released, 'yes') }
 }
 async function stopJobs(jobs) {
   for (const job of jobs) if (job.child.exitCode === null && job.child.signalCode === null) job.child.kill('SIGTERM')
@@ -567,7 +599,7 @@ for (const setting of ['1', '0', '9', 'garbage']) test(`slot setting ${setting} 
     await waitFile(first.started)
     const second = heldJob(f, 'second', f.second); jobs.push(second)
     await waitFor(() => readdirSync(join(f.state, 'queue')).length === 2)
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await second.queued()
     assert.equal(existsSync(second.started), false)
     first.release()
     assert.equal((await first.exited).code, 0)
@@ -631,7 +663,9 @@ test('a live legacy owner consumes one slot; legacy release cannot erase new res
     // A waiting old ticket remains ahead of new tickets even with capacity free.
     const nextNew = heldJob(f, 'next-new'); jobs.push(nextNew)
     await waitFor(() => readdirSync(join(f.state, 'queue')).length === 4)
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    await nextNew.queued()
+    // Allow one legacy retry (300 ms) after the original owner exits.
+    await new Promise((resolve) => setTimeout(resolve, 310))
     assert.equal(existsSync(nextOld.started), false)
     assert.equal(existsSync(nextNew.started), false)
     for (const job of jobs.slice(1, 3)) job.release()
@@ -658,7 +692,7 @@ test('old callers wait for all new jobs to drain and old cleanup preserves a liv
     utimesSync(join(f.state, 'active'), new Date(0), new Date(0))
     const old = heldJob(f, 'old', f.second); jobs.push(old)
     await waitFor(() => readdirSync(join(f.state, 'queue')).length === 3)
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await old.queued()
     assert.equal(existsSync(old.started), false)
     assert.equal(existsSync(join(f.state, 'active')), true)
     for (const job of jobs.slice(1, 3)) job.release()
@@ -720,7 +754,7 @@ test('a crashed wrapper retains its slot while token-bearing descendants are liv
     const next = heldJob(f, 'next'); jobs.push(next)
     writeFileSync(visible, JSON.stringify([crashed.child.pid, crashedOwner.pgid, next.child.pid].map(String)))
     await waitFor(() => readdirSync(join(f.state, 'queue')).length === 2)
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await next.queued()
     assert.equal(existsSync(next.started), false)
     crashed.release()
     await waitFile(next.started)
@@ -762,7 +796,7 @@ test('queued callers reread a changed shared slot count without restarting', { t
       jobs.push(heldJob(f, `queued-${i}`))
       await waitFor(() => readdirSync(join(f.state, 'queue')).length === i + 1)
     }
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await Promise.all(jobs.slice(1).map(job => job.queued()))
     assert.equal(existsSync(jobs[1].started), false)
     configureSlots(f, 3)
     for (const job of jobs.slice(1)) await waitFile(job.started)

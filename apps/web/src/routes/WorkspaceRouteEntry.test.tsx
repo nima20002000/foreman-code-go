@@ -103,6 +103,7 @@ describe('WorkspaceRouteEntry integration', () => {
     setMockScenario('normal')
     sessionStorage.clear()
     vi.unstubAllEnvs()
+    vi.useRealTimers()
   })
 
   it('renders the saved workflow and keeps a valid agent selection in the URL', async () => {
@@ -260,6 +261,7 @@ describe('WorkspaceRouteEntry integration', () => {
   })
 
   it.each([403, 404])('stops automatic polling after a terminal %s while keeping manual retry', async (status) => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     let requests = 0
     server.use(http.get('/api/workspaces/stale-workspace', () => {
       requests += 1
@@ -275,9 +277,11 @@ describe('WorkspaceRouteEntry integration', () => {
     const retry = await screen.findByRole('button', { name: 'Retry workspace request' })
     expect(requests).toBe(1)
 
-    await new Promise((resolve) => setTimeout(resolve, 1_200))
+    // Advance the polling window to prove terminal errors suppress automatic requests.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_200) })
     expect(requests).toBe(1)
 
+    vi.useRealTimers()
     fireEvent.click(retry)
     await waitFor(() => expect(requests).toBe(2))
     stale.unmount()

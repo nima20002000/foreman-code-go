@@ -24,7 +24,10 @@ it.each(['/workspaces/workspace-1/workflows', '/workspaces/workspace-1/agents', 
     observer.observe(document.body, { childList: true, subtree: true })
     await act(async () => { history.push(destination) })
     await waitFor(() => expect(router.state.location.pathname).toBe(destination))
-    await act(() => new Promise(resolve => setTimeout(resolve, 100)))
+    await waitFor(() => {
+      expect(router.state.status).toBe('idle')
+      expect(screen.queryByTestId('unified-workflow-board')).not.toBeInTheDocument()
+    })
     observer.disconnect()
     expect(flashes).toEqual([])
     client.clear()

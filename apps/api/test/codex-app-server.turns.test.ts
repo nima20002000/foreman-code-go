@@ -458,7 +458,8 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
       if (!next.done) current = next.value.sequence
     }
     const pending = iterator.next()
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Let next() enter its pending read before closing the subscriber.
+    await new Promise<void>((resolve) => setImmediate(resolve))
     await iterator.return?.()
     assert.equal((await pending).done, true)
     assert.equal((await wire('turn/interrupt')).length, 0)

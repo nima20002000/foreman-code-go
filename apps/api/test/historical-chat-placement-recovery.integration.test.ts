@@ -58,5 +58,5 @@ it('recovers historical chat on its accepted Worker through Main restart and pro
     expect(forks).toHaveLength(1)
     expect(forks[0]?.forkedSession).toMatchObject({ source: execution.nativeSessionId,
       child: completed.conversation!.nativeSession!.nativeSessionId })
-  })
+  }, { includeNodeRuntimePayload: false })
 }, 240_000)

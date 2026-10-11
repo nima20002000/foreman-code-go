@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { operatorChatSettings, type OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { buildApp } from '../src/app.js'
@@ -64,10 +64,9 @@ it.skipIf(!postgresEnabled)('carries the full saved Claude default profile throu
     expect((await fetch(new URL(`/api/operator/conversations/${history.id}/messages`, address), {
       method: 'POST', headers, body: JSON.stringify(sourceRequest),
     })).status).toBe(202)
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if ((await repository.active(history.id))?.turn_state === 'error') break
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
+    await vi.waitFor(async () => {
+      expect((await repository.active(history.id))?.turn_state).toBe('error')
+    }, { interval: 5, timeout: 1000 })
     const previous = await defaults.getAgentDefaults()
     const saved = await settings.updateAgentDefaults(f.writer.principal, 'http', { commandId: randomUUID(), expectedRevision: previous.revision,
       value: { ...previous.value, operator: { ...previous.value.operator, harness: configuration, harnessProfileSelection: selection } } })
@@ -83,10 +82,9 @@ it.skipIf(!postgresEnabled)('carries the full saved Claude default profile throu
     expect((await fetch(url, { method: 'POST', headers: { ...headers, authorization: `Bearer ${reader.token}` }, body: JSON.stringify(input) })).status).toBe(403)
     expect((await f.db.pool.query('select 1 from operator_conversation_turns where conversation_id=$1', [old.id])).rowCount).toBe(0)
     expect((await post()).status).toBe(202)
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if ((await repository.active(old.id))?.turn_state === 'error') break
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
+    await vi.waitFor(async () => {
+      expect((await repository.active(old.id))?.turn_state).toBe('error')
+    }, { interval: 5, timeout: 1000 })
     const allocations = captured.length
     const accepted = await repository.acceptedConfiguration(old.id, input.requestId)
     expect(accepted).toMatchObject({ harness: configuration, harnessProfileSelection: selection, showThinking: input.settings.showThinking })
