@@ -137,6 +137,35 @@ it('splits integration over two build computers, reports progress and logs, and 
   } finally { await f.close() }
 })
 
+it('sizes each partition by the measured speed of the computer it is planned for', async () => {
+  const f = await fixture()
+  try {
+    // History: mana finished half the suite in 200 s, dexter half in 400 s, so mana works twice as fast.
+    for (const [index, computer, seconds] of [[0, f.computers[0]!, 200], [1, f.computers[1]!, 400]] as const) {
+      const finishedAt = new Date(Date.now() - 60_000), startedAt = new Date(finishedAt.getTime() - seconds * 1000)
+      const run = { id: crypto.randomUUID(), workspaceId: f.workspaceId, suite: 'integration', commit: 'b'.repeat(40),
+        repository: 'octo/site', partition: { index, count: 2 }, groupId: crypto.randomUUID(), state: 'passed',
+        computer: { hostRef: computer.hostRef, label: computer.label }, step: 'integration', exitCode: 0, message: null,
+        queuedAt: startedAt.toISOString(), startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(),
+        initiator: { principalId: 'principal-history', executionId: null } }
+      await f.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record) values($1,$2,$3,'passed',$4::jsonb)`,
+        [run.id, f.workspaceId, run.groupId, JSON.stringify(run)])
+    }
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'weighted',
+      partitions: 2 }))
+    await f.ci.dispatch()
+    const requests = f.started.map(value => ({ computer: value.computer,
+      partition: value.request.operation === 'start' ? value.request.partition : undefined }))
+    expect(requests).toHaveLength(2)
+    const weights = requests[0]!.partition!.weights!
+    expect(requests.every(value => JSON.stringify(value.partition!.weights) === JSON.stringify(weights))).toBe(true)
+    const byComputer = Object.fromEntries(requests.map(value => [value.computer, weights[value.partition!.index]!]))
+    expect(byComputer.mana! / byComputer.dexter!).toBeCloseTo(2, 1)
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run.partition?.weights).toEqual(weights)
+  } finally { await f.close() }
+})
+
 it('queues a run while every computer is busy and starts it on the first one that frees up', async () => {
   const f = await fixture()
   try {

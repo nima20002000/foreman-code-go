@@ -9,8 +9,11 @@ export const CiSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'bu
 export type CiSuite = z.infer<typeof CiSuiteSchema>
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 export const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/)
-export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(2).max(12) })
-  .strict().refine(value => value.index < value.count, 'The partition index must be below its count.')
+/** `weights` gives each slice's relative speed (its computer's measured throughput), so slices finish together. */
+export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(2).max(12),
+  weights: z.array(z.number().positive().finite()).optional() }).strict()
+  .refine(value => value.index < value.count, 'The partition index must be below its count.')
+  .refine(value => !value.weights || value.weights.length === value.count, 'Give one weight per partition.')
 export type CiPartition = z.infer<typeof CiPartitionSchema>
 
 export const CiHostRunIdSchema = z.uuid()
@@ -48,7 +51,7 @@ export const CiHostReplySchema = z.discriminatedUnion('operation', [
 export type CiHostReply = z.infer<typeof CiHostReplySchema>
 
 /** One deterministic, duration-balanced slice of the integration files: the longest files go first, each to the
- * partition with the least recorded time. Files without a recorded duration count as the median. */
+ * partition that would finish it earliest for its weight. Files without a recorded duration count as the median. */
 export function integrationPartition(files: readonly string[], durations: Readonly<Record<string, number>>,
   partition: CiPartition): string[] {
   const valid = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -56,10 +59,13 @@ export function integrationPartition(files: readonly string[], durations: Readon
   const fallback = known.length ? known[Math.floor(known.length / 2)]! : 1
   const weight = (file: string) => valid(durations[file]) ? durations[file] : fallback
   const loads = Array<number>(partition.count).fill(0)
+  const speed = (index: number) => partition.weights?.[index] ?? 1
   const owner = new Map<string, number>()
   for (const file of [...files].sort((left, right) => weight(right) - weight(left) || (left < right ? -1 : 1))) {
+    // The slice that would finish this file earliest, given how fast its computer works.
     let lightest = 0
-    for (let index = 1; index < loads.length; index++) if (loads[index]! < loads[lightest]!) lightest = index
+    const finish = (index: number) => (loads[index]! + weight(file)) / speed(index)
+    for (let index = 1; index < loads.length; index++) if (finish(index) < finish(lightest)) lightest = index
     loads[lightest]! += weight(file)
     owner.set(file, lightest)
   }
@@ -76,5 +82,7 @@ export const CiRunRecordSchema = z.object({
   step: z.string().nullable(), exitCode: z.number().int().nullable(), message: z.string().nullable(),
   queuedAt: TimestampSchema, startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(),
   initiator: z.object({ principalId: IdSchema, executionId: IdSchema.nullable() }).strict(),
+  /** The computer a weighted partition was sized for; another free computer may still take it. */
+  plannedHostKey: z.string().nullable().optional(),
 }).strict()
 export type CiRunRecord = z.infer<typeof CiRunRecordSchema>

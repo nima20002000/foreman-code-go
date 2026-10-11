@@ -75,6 +75,66 @@ export class HostCiService {
     return outcome.value
   }
 
+  /** Sizes a partitioned run's slices by the measured speed of the computers that will run them, so they finish
+   * together: each free computer takes one slice, weighted by its throughput; slices without a computer yet get the
+   * mean. Throughput is share of the suite per wall second from that computer's last integration slice. */
+  private async weighPartitions(queued: CiRunRecord[], free: HostCiComputer[]): Promise<CiRunRecord[]> {
+    const groups = new Map<string, CiRunRecord[]>()
+    for (const run of queued) {
+      if (run.partition && !run.partition.weights) groups.set(run.groupId, [...groups.get(run.groupId) ?? [], run])
+    }
+    if (!groups.size) return queued
+    const speed = await this.throughput(free)
+    const replaced = new Map<string, CiRunRecord>()
+    for (const group of groups.values()) {
+      const count = group[0]!.partition!.count
+      if (group.length !== count) continue
+      const ordered = [...free].sort((left, right) => (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0)
+        || right.priority - left.priority).slice(0, count)
+      const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
+      const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
+      const weights = group.map((_, index) => {
+        const computer = ordered[index]
+        return Number((computer ? speed.get(computer.key) ?? mean : mean).toPrecision(6))
+      })
+      for (const [index, run] of group.sort((left, right) => left.partition!.index - right.partition!.index).entries()) {
+        const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights },
+          plannedHostKey: ordered[index]?.key ?? null })
+        await this.save(next, null)
+        replaced.set(run.id, next)
+      }
+    }
+    return queued.map(run => replaced.get(run.id) ?? run)
+  }
+
+  private async throughput(computers: HostCiComputer[]): Promise<Map<string, number>> {
+    const rows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
+      where state in ('passed','failed') and record->>'suite'='integration' and record->'partition' is not null
+        and record->>'finishedAt' is not null order by created_at desc limit 200`)).rows
+      .map(row => CiRunRecordSchema.parse(row.record))
+    const speed = new Map<string, number>()
+    for (const run of rows) {
+      const key = computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(run.computer?.hostRef))?.key
+      if (!key || speed.has(key) || !run.startedAt || !run.finishedAt || run.step !== 'integration') continue
+      const seconds = (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000
+      // Fail-fast runs say nothing about speed.
+      if (seconds < 120) continue
+      const weights = run.partition!.weights
+      const share = weights ? weights[run.partition!.index]! / weights.reduce((sum, value) => sum + value, 0) : 1 / run.partition!.count
+      speed.set(key, share / seconds)
+    }
+    for (const computer of computers) {
+      if (speed.has(computer.key)) continue
+      // No measurement yet: CPU count relative to the measured computers' typical speed per CPU.
+      const status = await this.endpoint.request(computer, { operation: 'status' }).catch(() => null)
+      if (status?.operation === 'status' && speed.size) {
+        const perCpu = [...speed.values()].reduce((sum, value) => sum + value, 0) / speed.size / 12
+        speed.set(computer.key, perCpu * status.cpuCount)
+      }
+    }
+    return speed
+  }
+
   private async read(id: string, workspaceId: string): Promise<CiRunRecord> {
     const row = (await this.pool.query<{ record: unknown }>('select record from ci_runs where id=$1 and workspace_id=$2',
       [id, workspaceId])).rows[0]
@@ -183,10 +243,13 @@ export class HostCiService {
     }
     const busy = new Set((await this.pool.query<{ host_key: string }>(
       `select host_key from ci_runs where state in ('starting','running')`)).rows.map(row => row.host_key))
-    const queued = (await this.pool.query<{ record: unknown }>(
+    let queued = (await this.pool.query<{ record: unknown }>(
       `select record from ci_runs where state='queued' order by created_at,id limit 50`)).rows.map(row => CiRunRecordSchema.parse(row.record))
+    queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
     for (const run of queued) {
-      for (const computer of [...computers].sort((left, right) => right.priority - left.priority)) {
+      const order = [...computers].sort((left, right) => Number(right.key === run.plannedHostKey)
+        - Number(left.key === run.plannedHostKey) || right.priority - left.priority)
+      for (const computer of order) {
         if (busy.has(computer.key)) continue
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
