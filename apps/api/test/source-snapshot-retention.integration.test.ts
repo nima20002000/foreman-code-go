@@ -20,8 +20,9 @@ import { JobRepository } from '../src/modules/jobs/repository.js'
 import { qualifiedGit } from '../src/modules/sources/capture.js'
 import type { RegisteredSourceRootPort } from '../src/modules/sources/admissionPorts.js'
 import { type SourceReservation } from '../src/modules/sources/reservations.js'
-import { PostgresSourceService } from '../src/modules/sources/service.js'
-import { SOURCE_RETENTION_SECONDS } from '../src/modules/sources/snapshotRetention.js'
+import { PostgresSourceService, type SourceExecutionHostPort } from '../src/modules/sources/service.js'
+import { sourceBindingHash } from '../src/modules/sources/bindingHash.js'
+import { releaseUnusedSourceSnapshots, SOURCE_RETENTION_SECONDS } from '../src/modules/sources/snapshotRetention.js'
 import { reconcileFailedCaptures } from '../src/modules/sources/failedCaptureCleanup.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -68,10 +69,13 @@ async function setup() {
   const store = new PrivateSourceSnapshotStore(canonical)
   vi.spyOn(store, 'storageCapacity').mockImplementation(async () =>
     sourceStorageCapacityFixture({ filesystem: await store.storageIdentity() }))
+  const executions: SourceExecutionHostPort = {
+    storageCapacity: notInvoked, authorize: notInvoked, prepare: notInvoked, verify: notInvoked,
+    verifyWorkingDirectory: notInvoked, releaseClaim: notInvoked, authorizeFinal: notInvoked,
+  }
   const sources = new PostgresSourceService(pool, commands, locations, store, mainId,
     { authorize: notInvoked, attest: notInvoked, fence: notInvoked } satisfies RegisteredSourceRootPort,
-    { authorize: notInvoked, prepare: notInvoked, verify: notInvoked, verifyWorkingDirectory: notInvoked,
-      releaseClaim: notInvoked, authorizeFinal: notInvoked }, { confirmedClosed: notInvoked })
+    executions, { confirmedClosed: notInvoked })
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
     operator: { access, services: { sources, commands, workspaces, locations } as unknown as OperatorServices } })
@@ -145,14 +149,245 @@ async function setup() {
       process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true },
       startedAt: execution.createdAt, finishedAt, updatedAt: finishedAt })
   }
-  return { pool, store, sources, client, access, owner, workspaceId, canonical, mainId, app,
+  async function executionRoot(source: ApprovedSource) {
+    const base = verificationCapacityFixture('main').root
+    const root = SourceRootRecordSchema.parse({ ...base, source: sourcePin(source),
+      selection: { ...base.selection, hostRef: { kind: 'main', mainId } },
+      binding: { ...base.binding, rootId: randomUUID(), workspaceId, mainId, canonicalPath: project,
+        filesystem: await store.storageIdentity(), snapshotId: source.manifest.snapshotId,
+        manifestDigest: source.manifest.manifestDigest },
+      ownerPrincipalId: owner.principal.id, authorizedByPrincipalId: owner.principal.id,
+      boundAt: source.approvedAt })
+    await pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
+      values($1,$2,$3,1)`, [root.binding.rootId, workspaceId, randomUUID()])
+    await pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
+      values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, workspaceId, source.manifest.snapshotId, JSON.stringify(root)])
+    vi.spyOn(executions, 'authorize').mockResolvedValue(undefined)
+    vi.spyOn(executions, 'storageCapacity').mockImplementation(async () => sourceStorageCapacityFixture({
+      filesystem: root.binding.filesystem, cpuCount: 16, availableMemoryBytes: 32 * 2 ** 30,
+    }))
+    vi.spyOn(executions, 'prepare').mockImplementation(async (manifest, selected, attempt) => ({
+      version: 1, materializationId: randomUUID(), binding: selected.binding, ...attempt,
+      verifiedManifestDigest: manifest.manifestDigest, verifiedEntries: manifest.totalEntries,
+      verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(),
+      localTreeIdentity: selected.binding.filesystem,
+    }))
+    return root
+  }
+  function preparation(root: SourceRootRecord) {
+    const operationId = randomUUID()
+    const attempt = { executionId: randomUUID(), attemptId: randomUUID(), placementHash: '',
+      keyRevision: null, authorizationRevision: null }
+    attempt.placementHash = sourceBindingHash(root, attempt, operationId)
+    return { principal: owner.principal, workspaceId, rootId: root.binding.rootId,
+      bindingRevision: root.binding.bindingRevision, source: root.source, operationId, attempt }
+  }
+  return { pool, store, sources, executions, client, access, owner, workspaceId, canonical, mainId, app,
     approve, approval, sourcePin, pin, reservation, read, seedJob, finishJob, connect,
+    executionRoot, preparation,
     async close() {
       await Promise.allSettled(clients.map(value => value.close()))
       await app.close()
       await database.close()
     } }
 }
+
+it('prepares sixteen executions concurrently without releasing unused snapshots', async () => {
+  fixture = await setup()
+  const f = fixture
+  const unused = (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source
+  const source = (await f.approve()).source
+  const root = await f.executionRoot(source)
+  const entered = deferred()
+  const resume = deferred()
+  const prepare = vi.mocked(f.executions.prepare).getMockImplementation()!
+  let preparing = 0
+  vi.mocked(f.executions.prepare).mockImplementation(async (...args) => {
+    preparing++
+    if (preparing === 16) entered.resolve()
+    await resume.promise
+    return prepare(...args)
+  })
+  const remove = vi.spyOn(f.store, 'remove').mockRejectedValue(new Error('Unexpected preparation cleanup'))
+  const preparations = Array.from({ length: 16 }, () => f.sources.prepareExecution(f.preparation(root)))
+  const completed = Promise.all(preparations)
+  try {
+    await Promise.race([entered.promise, completed])
+    expect(preparing).toBe(16)
+  } finally {
+    resume.resolve()
+    await Promise.allSettled(preparations)
+  }
+  const records = await completed
+  expect(records).toHaveLength(16)
+  expect(records.every(record => record.state === 'prepared')).toBe(true)
+  expect(remove).not.toHaveBeenCalled()
+  expect((await f.read(unused)).availability).toBe('retained')
+  const persisted = await f.pool.query<{ state: string }>(
+    'select state from source_execution_materializations where materialization_id=any($1::uuid[])',
+    [records.map(record => record.receipt.materializationId)])
+  expect(persisted.rows).toHaveLength(16)
+  expect(persisted.rows.every(row => row.state === 'prepared')).toBe(true)
+}, 60_000)
+
+it('retries preparation under capacity pressure while keeping current roots and active Jobs', async () => {
+  fixture = await setup()
+  const f = fixture
+  const unused = (await f.approve()).source
+  const active = (await f.approve()).source
+  await f.seedJob(active)
+  const source = (await f.approve()).source
+  const root = await f.executionRoot(source)
+  const held = await f.reservation(unused)
+  await f.sources.reservations.retain(f.pool, held.record, 'retained',
+    sourceStorageLimits(sourceStorageCapacityFixture()).bytes)
+
+  const record = await f.sources.prepareExecution(f.preparation(root))
+
+  expect(record.state).toBe('prepared')
+  expect((await f.reservation(unused)).state).toBe('reclaimed')
+  expect(await f.store.retainedCaptureBytes(unused.manifest.snapshotId)).toBe(0)
+  for (const protectedSource of [active, source]) {
+    expect((await f.read(protectedSource)).availability).toBe('retained')
+    expect((await f.reservation(protectedSource)).state).toBe('retained')
+  }
+  const unavailable = await f.client.callTool({ name: 'source_get', arguments: f.pin(unused) })
+  expect(unavailable.isError).toBe(true)
+  expect(JSON.stringify(unavailable.content)).toContain('SOURCE_UNAVAILABLE')
+}, 60_000)
+
+it('scans protected snapshots without waiting for the storage lock', async () => {
+  fixture = await setup()
+  const f = fixture
+  const protectedSources: ApprovedSource[] = []
+  for (let index = 0; index < 8; index++) {
+    const source = (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source
+    await f.seedJob(source)
+    protectedSources.push(source)
+  }
+  const held = await f.reservation(protectedSources[0]!)
+  const sql = await f.pool.connect()
+  try {
+    await sql.query('begin')
+    await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${held.record.scopeId}`])
+    await f.sources.releaseUnusedSnapshots(undefined, true)
+    for (const source of protectedSources) {
+      expect((await f.read(source)).availability).toBe('retained')
+      expect((await f.reservation(source)).state).toBe('retained')
+    }
+  } finally {
+    await sql.query('rollback')
+    sql.release()
+  }
+}, 60_000)
+
+it('coalesces concurrent pressure scans and allows retry after a deletion failure', async () => {
+  fixture = await setup()
+  const f = fixture
+  const source = (await f.approve()).source
+  const scopeId = (await f.reservation(source)).record.scopeId
+  const entered = deferred()
+  const resume = deferred()
+  const failure = new Error('Interrupted shared release')
+  const remove = vi.spyOn(f.store, 'remove').mockImplementation(async () => {
+    entered.resolve()
+    await resume.promise
+    throw failure
+  })
+  const first = releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, undefined, true)
+  const started = first.then(() => entered.reject(new Error('Release did not remove its candidate')), entered.reject)
+  const report = vi.fn()
+  let callers: Promise<void>[] = [first]
+  try {
+    await entered.promise
+    callers = [first, ...Array.from({ length: 15 }, () =>
+      releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, undefined, true))]
+    callers.push(releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, report, true))
+  } finally {
+    resume.resolve()
+  }
+  const results = await Promise.allSettled(callers)
+  await started
+  expect(results.slice(0, 16).every(result => result.status === 'rejected' && result.reason === failure)).toBe(true)
+  expect(results[16]?.status).toBe('fulfilled')
+  expect(report).toHaveBeenCalledExactlyOnceWith(failure)
+  expect(remove).toHaveBeenCalledTimes(1)
+  expect((await f.reservation(source)).state).toBe('retained')
+  remove.mockRestore()
+
+  await f.sources.releaseUnusedSnapshots(undefined, true)
+
+  expect((await f.reservation(source)).state).toBe('reclaimed')
+  const audit = await f.pool.query<{ count: string }>(`select count(*) from management_audit
+    where action='source.snapshot.release' and details->>'snapshotId'=$1`, [source.manifest.snapshotId])
+  expect(audit.rows[0]?.count).toBe('1')
+}, 60_000)
+
+it('honors pressure callers that join a periodic release scan', async () => {
+  fixture = await setup()
+  const f = fixture
+  const expired = (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source
+  const recent = (await f.approve()).source
+  const scopeId = (await f.reservation(expired)).record.scopeId
+  const entered = deferred()
+  const resume = deferred()
+  const remove = f.store.remove.bind(f.store)
+  vi.spyOn(f.store, 'remove').mockImplementation(async snapshotId => {
+    if (snapshotId === expired.manifest.snapshotId) {
+      entered.resolve()
+      await resume.promise
+    }
+    return remove(snapshotId)
+  })
+  const maintenance = releaseUnusedSourceSnapshots(f.pool, f.store, scopeId)
+  const started = maintenance.then(() => entered.reject(new Error('Maintenance did not reach deletion')), entered.reject)
+  let pressure: Promise<void> | undefined
+  try {
+    await entered.promise
+    pressure = releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, undefined, true)
+  } finally {
+    resume.resolve()
+    await Promise.allSettled([maintenance, ...(pressure ? [pressure] : [])])
+    await started
+  }
+  await maintenance
+  await pressure
+  for (const source of [expired, recent]) {
+    expect((await f.reservation(source)).state).toBe('reclaimed')
+    expect(await f.store.retainedCaptureBytes(source.manifest.snapshotId)).toBe(0)
+  }
+}, 60_000)
+
+it('rechecks a candidate that acquires an active consumer after the batch scan', async () => {
+  fixture = await setup()
+  const f = fixture
+  const first = (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source
+  const protectedSource = (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source
+  const entered = deferred()
+  const resume = deferred()
+  const remove = f.store.remove.bind(f.store)
+  vi.spyOn(f.store, 'remove').mockImplementation(async snapshotId => {
+    if (snapshotId === first.manifest.snapshotId) {
+      entered.resolve()
+      await resume.promise
+    }
+    return remove(snapshotId)
+  })
+  const release = f.sources.releaseUnusedSnapshots()
+  const started = release.then(() => entered.reject(new Error('Release did not reach deletion')), entered.reject)
+  try {
+    await entered.promise
+    await f.seedJob(protectedSource)
+  } finally {
+    resume.resolve()
+    await Promise.allSettled([release, started])
+  }
+  await release
+  expect((await f.reservation(first)).state).toBe('reclaimed')
+  expect((await f.read(protectedSource)).availability).toBe('retained')
+  expect((await f.reservation(protectedSource)).state).toBe('retained')
+  expect(await f.store.retainedCaptureBytes(protectedSource.manifest.snapshotId)).toBeGreaterThan(0)
+}, 60_000)
 
 it('reclaims older terminal snapshots before capture capacity fails and exposes unavailability through authenticated MCP',
   async () => {
