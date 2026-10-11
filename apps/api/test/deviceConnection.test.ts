@@ -18,6 +18,7 @@ import WebSocket, { WebSocketServer } from 'ws'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { EventEmitter } from 'node:events'
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { signMainEnrollmentProof } from '../src/modules/devices/mainIdentity.js'
 import { deviceHttpHandler } from '../src/modules/devices/deviceHttp.js'
@@ -335,6 +336,19 @@ describe('device-only HTTP bootstrap', () => {
 it('refuses a GitHub mutation on a replacement authenticated installation after target validation', async () => {
   // Transport deadlines advance only when this test advances time, independent of runner scheduling.
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+  const withTransportProgress = async <T>(operation: Promise<T>): Promise<T> => {
+    let settled = false
+    void operation.then(
+      () => { settled = true },
+      () => { settled = true },
+    )
+    while (!settled) {
+      await nextEventLoopTurn()
+      // The HTTP adapter flushes responses on a zero-delay timer; device deadlines stay frozen.
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    return operation
+  }
   const extension: DeviceExtensionRegistration = { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1,
     role: 'client', maxJsonBytes: 2048, maxBinaryBytes: 0 }
   const { endpoint, auth, presence } = makeEndpoint([extension], 2000)
@@ -400,9 +414,9 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
     const connectMcp = async (token: string) => {
       const client = new Client({ name: 'github-device-test', version: '1' })
       clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', url), {
+      await withTransportProgress(client.connect(new StreamableHTTPClientTransport(new URL('/mcp', url), {
         authProvider: { token: async () => token },
-      }))
+      })))
       return client
     }
     const writer = await connectMcp('writer')
@@ -412,10 +426,13 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
     await originalReady
     expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined()
     const args = { target, expectedAccount: 'owner' }
-    expect((await reader.callTool({ name: 'computer_github_logout', arguments: args })).isError).toBe(true)
+    const denied = await withTransportProgress(reader.callTool({ name: 'computer_github_logout', arguments: args }))
+    expect(denied.isError).toBe(true)
     expect(mutate).not.toHaveBeenCalled()
-    const pending = writer.callTool({ name: 'computer_github_logout', arguments: args })
-    await reached
+    const pending = withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: args }))
+    await Promise.race([reached, pending.then(() => {
+      throw new Error('GitHub mutation returned before target validation.')
+    })])
     await original.stop()
     auth.authenticateDevice.mockResolvedValue({ ...principal, ...replacementIdentity })
     registrationIdentity = replacementIdentity
@@ -428,23 +445,23 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
     release()
     expect((await pending).isError).toBe(true)
     expect(mutate).not.toHaveBeenCalled()
-    const stale = await writer.callTool({ name: 'computer_github_logout', arguments: args })
+    const stale = await withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: args }))
     expect(stale.isError).toBe(true)
     expect(JSON.stringify(stale)).toContain('COMPUTER_NOT_FOUND')
-    const fresh = await writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
-      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } })
+    const fresh = await withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
+      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } }))
     expect(decodeMcpToolResult(fresh)).toMatchObject({ state: 'signed-out' })
     expect(mutate).toHaveBeenCalledOnce()
     mutate.mockRejectedValueOnce(new DomainError('GITHUB_ACCOUNT_CHANGED', 'Account changed.', 409))
-    const retry = await writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
-      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } })
+    const retry = await withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
+      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } }))
     expect(retry.isError).toBe(true)
     expect(JSON.stringify(retry)).toContain('GITHUB_ACCOUNT_CHANGED')
     expect(local.handle).not.toHaveBeenCalled()
   } finally {
     release()
     await Promise.allSettled(clients.map(client => client.close()))
-    await app.close()
+    await withTransportProgress(app.close())
     authenticate.mockRestore()
     await original.stop()
     await replacement.stop()

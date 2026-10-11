@@ -42,7 +42,7 @@ it('stops workflow credential maintenance before terminal publication and native
     expect(observed.state).toBe('completed')
     expect(terminalChecks).toBe(0)
     expect(fixture.getProof()?.session).toEqual(fixture.session)
-    expect(fixture.revoked()).toBe(true)
+    expect(fixture.calls).toContain('revoke:principal-native2-captured')
     expect(fixture.calls).toContain(`close:${fixture.session.nativeSessionId}`)
   } finally {
     await fixture.connection.close()

@@ -37,9 +37,10 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     await inject(session, 'item/commandExecution/requestApproval', {
       itemId: 'command-901', command: 'printf harmless', cwd: f.directory, availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
     }, 901)
-    await inject(session, 'item/started', {
+    await emit(f.directory, { method: 'item/started', params: {
+      threadId: session.nativeSessionId, turnId: original.id, startedAtMs: 1,
       item: agentMessage('after-duplicate', '', 'commentary'),
-    })
+    } })
     await until(async () => (await manager.history(session)).events.some((event) =>
       event.type === 'item.started' && isObject(event.payload.item) && event.payload.item.id === 'after-duplicate'))
     assert.equal(await manager.pending(session), undefined)
