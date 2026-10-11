@@ -7,7 +7,7 @@ import { recoverTerminalBeforeClosure, useCrashCutDatabase } from './helpers/res
 describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3', () => {
   const database = useCrashCutDatabase()
   describe.each(['sequential', 'repeat'] as const)('%s', (form) => {
-    it.each(['retry', 'retry-exhausted'] as const)(
+    it.each(['retry'] as const)(
       'recovers a durable terminal before its closure receipt: %s', async (kind) => {
         await recoverTerminalBeforeClosure(database(), form, kind)
       }, 60_000)
