@@ -7,6 +7,7 @@ import { ApiError } from '../../shared/api/client'
 import { Button } from '../../shared/ui/nocturne'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { isRunAccessError, runReadErrorLabel } from '../runs-selector/query'
+import { PinnedProviderAccount } from '../provider-accounts/PinnedProviderAccount'
 import { SelectedNodePlacement } from '../node-placement/SelectedNodePlacement'
 import { readRunExecution, readRunExecutions } from '../workflow-board/runDetailsClient'
 import { ExecutionBranch } from '../workflow-board/inspect/ExecutionBranch'
@@ -56,6 +57,7 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
     <header><h2>{node?.name ?? nodeId}</h2><span>Read only</span>
       <Button size="sm" onClick={() => onInspect()}>Close inspector</Button></header>
     {!node ? <p role="status">This node is not in the saved Run.</p> : <>
+      {node.kind !== 'job' ? <PinnedProviderAccount binding={snapshot.providerAccountBindings?.[node.id]} label="Saved Run account" /> : null}
       <SelectedNodePlacement selection={selection} nodeId={node.id} />
       {unavailable ? <p role="status">{invalid ? 'Execution does not match this saved node.' : runReadErrorLabel(pages.error)}</p> : <>
         {pages.isPending ? <p role="status">Reading node executions…</p> : null}

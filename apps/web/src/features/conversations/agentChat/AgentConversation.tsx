@@ -19,6 +19,7 @@ import { chatStatus } from '../chatStatus'
 import { AgentChatTranscript } from './AgentChatTranscript'
 import { chatBusy, deliveryLabels, intentLabels, intentUnavailable } from './model'
 import { useAgentChat } from './useAgentChat'
+import { PinnedProviderAccount } from '../../provider-accounts/PinnedProviderAccount'
 import './agentChat.css'
 import '../chatAttachments.css'
 
@@ -153,6 +154,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   })
   const notices = <div className="agent-chat-notices">
     {runActivity}
+    {!retired && conversation ? <PinnedProviderAccount binding={conversation.providerAccountBinding}
+      label={conversation.origin.kind === 'run_execution' ? 'Source Run account · saved chat account' : 'Saved chat account'} /> : null}
     {retired ? <p role="status">Retired harness (OpenCode): read-only</p> : <CompactionActivity controls={sessionControls} />}
     {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
       ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
@@ -169,7 +172,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       <summary title={state.availability.message}>{state.availability.canSend ? 'Chat note' : 'Chat unavailable'}</summary>
       <p>{state.availability.message}</p>
     </details> : null}
-    {sessionMissing ? <div className="agent-chat-new-conversation">
+    {sessionMissing && conversation?.providerAccountBinding ? <p role="status">This chat keeps its saved account and native profile. Restore access to its original computer and profile to continue.</p> : null}
+    {sessionMissing && !conversation?.providerAccountBinding ? <div className="agent-chat-new-conversation">
       <p>{state?.conversation
         ? 'This conversation cannot be resumed. A separate conversation will not change this chat or the selected Run.'
         : context.runId ? 'No chat exists for this Run selection. A separate chat with the Agent outside the Run will not change the Run.'

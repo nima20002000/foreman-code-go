@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { agentChatFixtures, type AgentChatContext, type AgentChatState, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import { accountBinding, observedAccount } from '../../provider-accounts/providerAccounts.fixtures'
 import { server } from '../../../mocks/server'
 import { agentChatFixtureFor, createAgentChatMock } from '../../../shared/mocks/agentChatHandlers'
 import { getConversationDraft, useConversationDraftStore } from '../conversationDraftStore'
@@ -547,4 +548,36 @@ it('keeps a persisted unavailable question visible with disabled reply options a
   const view = mountChat(state); await view.ready()
   expect(screen.getByText(state.responseAvailability.message)).toBeInTheDocument()
   expect(screen.getByRole('button', { name: /approve once/i })).toBeDisabled()
+})
+
+
+it('displays the accepted chat account after the provider default changes', async () => {
+  const initial = structuredClone(agentChatFixtures.idleAfterCompletion)
+  if (!initial.conversation) throw new Error('A saved conversation is required')
+  initial.conversation.providerAccountBinding = accountBinding()
+  server.use(http.get('/api/provider-accounts/:id', () => HttpResponse.json({ ...observedAccount(), isDefault: false })))
+  const mounted = mountChat(initial)
+  await mounted.ready()
+  expect(await screen.findByText('Original account')).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Saved chat account' })).toBeVisible()
+  expect(screen.queryByRole('combobox', { name: 'Account' })).not.toBeInTheDocument()
+})
+
+it('retains a removed account and its source Run without offering a replacement chat', async () => {
+  const initial = structuredClone(agentChatFixtures.idleAfterCompletion)
+  if (!initial.conversation) throw new Error('A saved conversation is required')
+  initial.conversation.providerAccountBinding = accountBinding()
+  initial.conversation.origin = { kind: 'run_execution', runId: 'saved-run', executionId: 'saved-execution',
+    sourceNativeSessionId: 'saved-source-session' }
+  initial.context.runId = 'saved-run'
+  initial.sessionState = 'unavailable'
+  initial.availability = { canSend: false, reason: 'native_session_missing', message: 'Original account unavailable' }
+  server.use(http.get('/api/provider-accounts/:id', () => HttpResponse.json({ ...observedAccount(),
+    removedAt: '2026-10-01T13:00:00.000Z', isDefault: false })))
+  const mounted = mountChat(initial)
+  await mounted.ready()
+  expect(await screen.findByText(/This account was removed from selection/)).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Source Run account · saved chat account' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Start separate chat without this Run' })).not.toBeInTheDocument()
+  expect(mounted.newConversation).not.toHaveBeenCalled()
 })

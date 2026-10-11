@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { AgentHarnessSchema, AgentEffortSchema, ClaudeEffortSchema, operatorChatSettings, type OperatorChatSettings } from '@foreman-code/contracts'
 import type { ReactNode } from 'react'
-import { useNativeHarnessOptions } from '../../shared/api/harnessSettings'
+import { useProviderHarnessModels } from '../provider-accounts/useProviderHarnessModels'
 import { useHarnessDefaultsQuery } from '../../shared/api/query'
 import { Button, Icon, SearchField, SegmentedControl, Slider, Switch } from '../../shared/ui/nocturne'
 import { harnessNames } from '../settings/settingsPresentation'
@@ -12,7 +12,7 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
   value: OperatorChatSettings; onChange(value: OperatorChatSettings): void; disabled: boolean;
   access?: ReactNode;
 }) {
-  const catalog = useNativeHarnessOptions(value.harness)
+  const catalog = useProviderHarnessModels(value.harness, value.harness === 'opencode' ? undefined : value.accountId)
   const defaults = useHarnessDefaultsQuery()
   const [open, setOpen] = useState(false)
   const [choosingModel, setChoosingModel] = useState(false)
@@ -46,7 +46,9 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
   function chooseModel(id: string) {
     const next = models.find((item) => item.id === id)
     if (!next) return
-    if (value.harness === 'codex') {
+    if (value.harness !== 'opencode' && value.accountId) {
+      update({ ...value, model: next.id })
+    } else if (value.harness === 'codex') {
       const allowed = supportedEfforts(next)
       update({ ...value, model: next.id, reasoningEffort: allowed.includes(value.reasoningEffort) ? value.reasoningEffort : allowed.includes('medium') ? 'medium' : allowed[0] ?? value.reasoningEffort,
         serviceTier: next.serviceTiers.includes(value.serviceTier) ? value.serviceTier : 'standard' })
@@ -116,10 +118,11 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
         {access}
         <div className="operator-agent-toggles">
         <Switch label="Fast mode" checked={value.harness === 'codex' && value.serviceTier === 'priority'}
-          disabled={disabled || value.harness !== 'codex' || (!fastSupported && value.serviceTier !== 'priority')}
+          disabled={disabled || value.harness !== 'codex' || Boolean(value.accountId) || (!fastSupported && value.serviceTier !== 'priority')}
           onChange={(event) => { if (value.harness === 'codex') update({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' }) }} />
         <Switch label="Show thinking" checked={value.showThinking} disabled={disabled} onChange={(event) => update({ ...value, showThinking: event.target.checked })} />
         </div>
+        {value.harness !== 'opencode' && value.accountId ? <p>Effort and service-tier availability require account-specific qualification. Saved values are kept.</p> : null}
         {catalog.isPending ? <small role="status">Loading models…</small> : null}
         {catalog.isError || defaults.isError ? <div role="alert">Settings unavailable. <Button size="sm" onClick={() => { void catalog.refetch(); void defaults.refetch() }}>Retry</Button></div> : null}
       </>}

@@ -15,6 +15,8 @@ import { JsonValue } from './inspect/JsonValue'
 import { useInspectionPresentation } from './inspect/presentation'
 import { recordBoardStopReceipt, reserveBoardStop, sendBoardStop, settleBoardStop, useBoardStopOutbox } from './stopOutbox'
 import { canUseBoardAction } from './permissions'
+import { runsSelectorApi } from '../runs-selector/client'
+import { PinnedProviderAccount } from '../provider-accounts/PinnedProviderAccount'
 import { RunHistory } from './RunHistory'
 
 /** Lane C replaces the action controls, not the Board's passive Stop-journal
@@ -38,6 +40,22 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
   const pinned = useRunVersionQuery(scope, !runDenied && !canonicalDenied)
   const pinnedDenied = useProtectedAccessError(pinned)
   const version = pinned.isError || pinnedDenied || runDenied || canonicalDenied ? undefined : pinned.data?.version
+  const accountSnapshot = useQuery({
+    queryKey: ['provider-accounts', generation, 'run', scope], retry: false,
+    enabled: !runDenied && !canonicalDenied,
+    queryFn: async ({ signal }) => {
+      const result = await runsSelectorApi.snapshot({ workspaceId: scope.workspaceId, workflowId: scope.workflowId,
+        runId: scope.runId }, { signal })
+      assertSession(generation)
+      if (result.snapshot.kind === 'available' && result.snapshot.workflowVersionId !== scope.workflowVersionId) {
+        throw new Error('Saved account readback belongs to a different workflow version.')
+      }
+      return result.snapshot
+    },
+  })
+  const accountsDenied = useProtectedAccessError(accountSnapshot)
+  const acceptedAccounts = !accountSnapshot.isError && !accountsDenied && !denied
+    && accountSnapshot.data?.kind === 'available' ? accountSnapshot.data : undefined
   const configurationKey = `${identity}:configuration`
   const configurationOpen = useInspectionPresentation((state) => !!state.open[configurationKey])
   const computersKey = `${identity}:computers`
@@ -99,6 +117,12 @@ export function CurrentRunDetails({ scope, runActions }: RunDetailsProps) {
       <Button size="sm" onClick={() => void canonical.refetch()}>Refresh exact Run</Button></Alert> : <p role="status">
       Recorded {snapshot.state.run.executionState} · {snapshot.state.run.outcome} · complete cut {snapshot.asOfSequence}.
       {snapshot.state.run.stopRequested ? ' Stop requested; cleanup is not implied.' : ''}</p>}
+    {acceptedAccounts ? <section aria-label="Saved Run accounts">
+      {acceptedAccounts.nodes.filter(node => node.kind !== 'job').map(node =>
+        <PinnedProviderAccount key={node.id} label={`Saved Run account · ${node.name}`}
+          binding={acceptedAccounts.providerAccountBindings?.[node.id]} />)}
+    </section> : null}
+    {accountSnapshot.isError && !denied ? <p role="status">Saved Run accounts are unavailable.</p> : null}
     {run.isPending ? <p role="status">Reading accepted Run facts…</p> : null}
     {detail ? <p>Saved Run details below were read from the server.
       <Button size="sm" variant="ghost" disabled={run.isFetching} onClick={() => void refetchRun()}>Refresh accepted Run facts</Button></p> : null}
