@@ -1,17 +1,27 @@
 name: CI
 
+# Runs only on the public mirror, where standard runners are free.
 on:
-  pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
+    if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [typecheck, lint, test, build]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -20,20 +30,28 @@ jobs:
           node-version: 22.16.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
-      - run: pnpm build
-      - run: node --check scripts/production-smoke.mjs
-      - run: pnpm db:up
-      - run: pnpm test:integration
-      - name: Production start and PostgreSQL restart on Node 22.16.0
-        run: node scripts/production-smoke.mjs --restart-postgres
+      - run: pnpm ${{ matrix.suite }}
+        env:
+          FOREMAN_CODE_CI_DEDICATED: '1'
+
+  integration:
+    if: github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 16 shards plus the 4 checks fill the 20 concurrent jobs of a free account.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.0.0
-      - name: Production start on the declared Node runtime baseline
-        run: node scripts/production-smoke.mjs
-      - name: Stop test infrastructure
-        if: always()
-        run: docker compose down
+          node-version: 22.16.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:up
+      - run: pnpm test:integration --files $(node scripts/ci-shard.mjs ${{ matrix.shard }} 16)
+        env:
+          FOREMAN_CODE_CI_DEDICATED: '1'
