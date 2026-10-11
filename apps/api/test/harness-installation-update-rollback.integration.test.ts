@@ -13,18 +13,24 @@ describe('installed harness updates', () => {
     let blocked = false
     try {
       const reader = await profileReader(fixture)
-      const original = (await profiles(fixture, reader))[0]!
+      const before = await profiles(fixture, reader)
+      expect(before).toHaveLength(1)
+      const original = before[0]!
       await fixture.provider.blockWorkflowTurns()
       blocked = true
       const started = await fixture.start()
       const turn = await runningTurn(fixture)
       const pins = await pinnedPlacements(fixture, started.run.id)
       await fixture.provider.updatePayload()
-      await waitForRemoteReview(() => profiles(fixture, reader), values => values.every(value =>
-        value.qualification === 'qualified' && value.revision === original.revision + 1), 'qualified intermediate payload')
+      await waitForRemoteReview(() => profiles(fixture, reader), values =>
+        values.length === before.length && values.every(value => value.qualification === 'qualified'
+          && value.revision === original.revision + 1
+          && value.target.installationFingerprint !== original.target.installationFingerprint),
+      'qualified intermediate payload')
       await fixture.provider.restorePayload()
-      await waitForRemoteReview(() => profiles(fixture, reader), values => values.every(value =>
-        value.qualification === 'qualified' && value.revision === original.revision + 2
+      await waitForRemoteReview(() => profiles(fixture, reader), values =>
+        values.length === before.length && values.every(value => value.qualification === 'qualified'
+          && value.revision === original.revision + 2
           && value.target.installationFingerprint === original.target.installationFingerprint), 'qualified rollback')
       const latest = (await latestEvidence(fixture))[0]!
       const next = (await startWhenReady(fixture))!

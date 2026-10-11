@@ -63,6 +63,7 @@ export async function createRemoteReviewProvider(directory: string, launcher: st
 int main(int argc, char **argv) {
   char **args = calloc((size_t)argc + 3, sizeof(char *));
   if (!args) return 127;
+  setenv("REMOTE_REVIEW_CODEX_VERSION", "0.154.0", 1);
   args[0] = ${nodePath};
   args[1] = ${scriptPath};
   args[2] = ${rootPath};
@@ -84,7 +85,6 @@ int main(int argc, char **argv) {
     join(directory, 'stable', 'codex_app_server_protocol.schemas.json'),
     join(directory, 'experimental', 'codex_app_server_protocol.schemas.json')]
   const originalBinary = await readFile(binary)
-  const originalScript = await readFile(script, 'utf8')
   const readActivity = async (filename: string): Promise<Array<Record<string, unknown>>> => {
     try {
       const contents = await readFile(join(directory, filename), 'utf8')
@@ -100,16 +100,14 @@ int main(int argc, char **argv) {
       const replacement = join(directory, 'codex-restored')
       await writeFile(replacement, originalBinary, { mode: 0o700 })
       await rename(replacement, binary)
-      await writeFile(script, originalScript)
     },
     async updatePayload() {
       const sourceText = await readFile(source, 'utf8')
-      await writeFile(source, sourceText.replace('if (!args) return 127;', 'if (!args) return 126;'))
+      await writeFile(source, sourceText.replace('"0.154.0"', '"0.156.1"'))
       const replacement = join(directory, 'codex-updated')
       await execute('cc', ['-O2', source, '-o', replacement])
+      // Publish the payload and its version together so discovery sees one installation change.
       await rename(replacement, binary)
-      const scriptText = await readFile(script, 'utf8')
-      await writeFile(script, scriptText.replaceAll('codex-cli 0.154.0', 'codex-cli 0.156.1'))
     },
     hideModels: () => writeFile(join(directory, 'hide-models'), '', { mode: 0o600 }),
     showModels: () => rm(join(directory, 'hide-models')),

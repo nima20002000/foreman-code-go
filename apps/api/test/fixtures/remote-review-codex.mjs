@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline'
 // pinned schema, native manager, credentials and physical process owner.
 const root = process.argv[2]
 const args = process.argv.slice(3)
+const cliVersion = process.env.REMOTE_REVIEW_CODEX_VERSION ?? '0.154.0'
 const executableSha256 = createHash('sha256').update(readFileSync(join(root, 'codex'))).digest('hex')
 const settings = JSON.parse(readFileSync(join(root, 'settings.json'), 'utf8'))
 const startup = value => appendFileSync(join(root, 'startup.jsonl'),
@@ -28,7 +29,7 @@ const mcp = {
 startup({ nativeCommand: { pid: process.pid, command: args[0] ?? null, subcommand: args[1] ?? null } })
 
 if (args[0] === '--version') {
-  process.stdout.write('codex-cli 0.154.0\n')
+  process.stdout.write(`codex-cli ${cliVersion}\n`)
   process.exit(0)
 }
 if (args[0] === 'login') {
@@ -66,7 +67,7 @@ const pending = new Map()
 const save = () => writeFileSync(join(root, `thread-${thread.id}.json`), JSON.stringify(thread), { mode: 0o600 })
 const view = includeTurns => {
   const active = thread.turns.some(turn => turn.status === 'inProgress')
-  return { id: thread.id, cliVersion: '0.154.0', createdAt: 1, updatedAt: 2, cwd: thread.settings.cwd,
+  return { id: thread.id, cliVersion, createdAt: 1, updatedAt: 2, cwd: thread.settings.cwd,
     ephemeral: thread.ephemeral, modelProvider: 'openai', preview: '', projectId: null, sessionId: thread.id,
     source: 'appServer', status: active ? { type: 'active', activeFlags: [] } : { type: 'idle' },
     path: null, gitInfo: null, turns: includeTurns ? thread.turns : [] }
@@ -213,7 +214,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
   log({ method: message.method, threadId: params.threadId, correlationId: params.clientUserMessageId,
     ...(message.method === 'model/list' ? { workingDirectory: process.cwd() } : {}) })
   if (message.method === 'initialize') {
-    reply(message.id, { userAgent: 'codex-cli 0.154.0', platformFamily: 'unix', platformOs: 'linux', codexHome: root })
+    reply(message.id, { userAgent: `codex-cli ${cliVersion}`, platformFamily: 'unix', platformOs: 'linux', codexHome: root })
   } else if (message.method === 'initialized') {
     return
   } else if (message.method === 'thread/start') {
