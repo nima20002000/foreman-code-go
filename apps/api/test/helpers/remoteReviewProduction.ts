@@ -87,8 +87,8 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
  * shipped installed domains in a separate process with its own native owners. */
 export async function remoteReviewProduction(options: {
   workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
-  claudeInventory?: boolean; parallelProfileChecks?: boolean; workerRelease?: string
-  installationRefreshIntervalMs?: number
+  claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean; workerRelease?: string
+  installationRefreshIntervalMs?: number; parallelSetup?: boolean
 } = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
@@ -99,19 +99,39 @@ export async function remoteReviewProduction(options: {
     if (errors.length) throw new AggregateError(errors, 'Remote review fixture cleanup failed.')
   }
   try {
-    const db = await agent3Database()
-    closes.push(db.close)
     const directory = await privateFixtureDirectory('remote-review-production-')
     closes.push(() => rm(directory, { recursive: true, force: true }))
-    const workerRelease = options.workerRelease ?? await buildRemoteReviewWorkerRelease(directory)
     const launcher = join(directory, 'app-mcp', 'launcher.mjs')
-    await installManagedLauncher(new URL('../../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
-    const provider = await createRemoteReviewProvider(join(directory, 'provider'), launcher)
     const claudeDirectory = join(directory, 'claude-inventory')
-    const claudeCommands = await createRemoteReviewClaudeInventory(claudeDirectory)
+    const setupDatabase = async () => {
+      const db = await agent3Database()
+      closes.push(db.close)
+      return db
+    }
+    const setupProvider = async () => {
+      await installManagedLauncher(new URL('../../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
+      return createRemoteReviewProvider(join(directory, 'provider'), launcher)
+    }
+    const setupWorkerRelease = () => options.workerRelease ?? buildRemoteReviewWorkerRelease(directory)
+    const setupClaude = () => createRemoteReviewClaudeInventory(claudeDirectory)
+    const setupTls = () => createRemoteReviewTls(join(directory, 'tls'))
+    const setup = async () => {
+      if (!options.parallelSetup) {
+        return [await setupDatabase(), await setupWorkerRelease(), await setupProvider(),
+          await setupClaude(), await setupTls()] as const
+      }
+      const tasks = [setupDatabase(), setupWorkerRelease(), setupProvider(), setupClaude(), setupTls()] as const
+      try {
+        return await Promise.all(tasks)
+      } catch (error) {
+        // Setup processes must settle before cleanup removes their working directories.
+        await Promise.allSettled(tasks)
+        throw error
+      }
+    }
+    const [db, workerRelease, provider, claudeCommands, tls] = await setup()
     const claudeInventory = options.claudeInventory ? claudeCommands : undefined
     if (options.modelCatalog) await provider.hideModels()
-    const tls = await createRemoteReviewTls(join(directory, 'tls'))
     const certificate = await readFile(tls.certificateFile)
     const project = join(directory, 'projects', 'project')
     const runtime = join(directory, 'main-runtime')
@@ -449,17 +469,28 @@ export async function remoteReviewProduction(options: {
       if (!checked.proof.qualified) throw new Error(`Remote profile qualification failed: ${JSON.stringify(checked.proof)}`)
       return checked.value
     }
+    const matchingProfiles = new Map<string, ReturnType<typeof qualifyProfile>>()
+    const prepareProfile = (configuration: typeof saved.configurations[number]) => {
+      if (!options.reuseMatchingProfiles) return qualifyProfile(configuration)
+      const key = JSON.stringify(configuration.harness)
+      let profile = matchingProfiles.get(key)
+      if (!profile) {
+        profile = qualifyProfile(configuration)
+        matchingProfiles.set(key, profile)
+      }
+      return profile
+    }
     const profiles = []
     if (options.parallelProfileChecks) {
       // Drain every native check before setup cleanup can stop Main or Worker.
-      const results = await Promise.allSettled(saved.configurations.map(qualifyProfile))
+      const results = await Promise.allSettled(saved.configurations.map(prepareProfile))
       const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Remote profile qualification failed.')
       for (const result of results) {
         if (result.status === 'fulfilled') profiles.push(result.value)
       }
     } else {
-      for (const configuration of saved.configurations) profiles.push(await qualifyProfile(configuration))
+      for (const configuration of saved.configurations) profiles.push(await prepareProfile(configuration))
     }
     let location = mainLocation
     if (options.executionHost !== 'main') {

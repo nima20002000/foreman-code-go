@@ -5,12 +5,22 @@ import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
 it('saves a completed computer workflow using each accepted native directory and rejects changed execution directories', async () => {
-  const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true })
+  // Directory validation needs two native executions, but only one identical harness profile.
+  const fixture = await remoteReviewProduction({
+    workflow: 'sequential', parallelProfileChecks: true, reuseMatchingProfiles: true,
+  })
   try {
     const started = await fixture.start()
+    let nextReconcileAt = 0
     const details = await waitForRemoteReview(async () => {
-      await fixture.reconcile()
-      return fixture.details(started.run.id)
+      const current = await fixture.details(started.run.id)
+      if (current.run.executionState === 'completed' && !current.cleanupPending) return current
+      if (Date.now() >= nextReconcileAt) {
+        await fixture.reconcile()
+        nextReconcileAt = Date.now() + 250
+        return fixture.details(started.run.id)
+      }
+      return current
     }, value => value.run.executionState === 'completed' && !value.cleanupPending, 'completed remote workflow cleanup')
     expect(details.run.outcome).toBe('succeeded')
     expect(details.executions).toHaveLength(2)
