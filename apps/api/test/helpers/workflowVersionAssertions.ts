@@ -16,12 +16,8 @@ function withoutRepeat(graph: WorkflowDefinitionV3) {
 async function historicalVersion(f: Harness, saved: Saved, current: Saved) {
   const input = { workspaceId: saved.version.workspaceId, workflowId: saved.version.workflowId, workflowVersionId: saved.version.id }
   const path = `${f.workflowPath(input.workflowId)}/definition?workflowVersionId=${input.workflowVersionId}`
-  const [httpValue, mcpValue] = await Promise.all([
-    f.http('GET', path),
-    f.mcp(CURRENT_WORKFLOW_TOOLS.saved, input),
-  ])
-  const http = CurrentWorkflowReadResultSchema.parse(httpValue)
-  expect(mcpValue).toEqual(http)
+  const http = CurrentWorkflowReadResultSchema.parse(await f.http('GET', path))
+  expect(await f.mcp(CURRENT_WORKFLOW_TOOLS.saved, input)).toEqual(http)
   expect(http.version).toEqual(saved.version)
   expect(http.currentVersionId).toBe(current.currentVersionId)
 }
@@ -90,14 +86,14 @@ async function rejectedTag(f: Harness, method: string, path: string, tool: strin
   await invalidMcpTag(f, tool, input)
 }
 
-export async function assertHistoricalVersionPins(via: Via, evidenceVersionIndex?: 0 | 1 | 2) {
+export async function assertHistoricalVersionPins(via: Via) {
   const repeated = scenarioFixture('S3-05-early', randomUUID()), f = await scenarioHarness(repeated)
   // Same IDs/configurations/Run input, different saved definitions. No retagging
   // of versions or Runs, and no overwriting an old accepted result.
   const ordinary: Scenario = { ...repeated, id: 'S3-01', repeat: false, occurrences: 1,
     result: (node, round) => ({ outcome: 'succeeded', output: { marker: `ordinary:${node}:${round}`, exact: [0, false, '', 'λ'] } }) }
   const completed: Array<{ started: Started; initial: ReturnType<typeof RepeatGraphSnapshotV3Schema.parse>; expected: Scenario;
-    evidence: Awaited<ReturnType<typeof assertScenarioEvidence>> | undefined }> = []
+    evidence: Awaited<ReturnType<typeof assertScenarioEvidence>> }> = []
   try {
     let previous: Saved | undefined
     for (const expected of [ordinary, repeated, ordinary]) {
@@ -113,11 +109,7 @@ export async function assertHistoricalVersionPins(via: Via, evidenceVersionIndex
       await f.waitUntilParked(started.scope, expected.nodes[0]!.id)
       const initial = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
       release(); await settledWithDiagnosis(f, started)
-      // Split files each compare one Run before and after all three Saves.
-      // The unsplit HTTP caller continues checking every Run.
-      const evidence = evidenceVersionIndex === undefined || evidenceVersionIndex === completed.length
-        ? await assertScenarioEvidence(f, started, initial, expected)
-        : undefined
+      const evidence = await assertScenarioEvidence(f, started, initial, expected)
       completed.push({ started, initial, expected, evidence }); previous = saved
     }
     expect(new Set(completed.map((item) => item.started.scope.runId)).size).toBe(3)
@@ -129,11 +121,7 @@ export async function assertHistoricalVersionPins(via: Via, evidenceVersionIndex
     // cursor, receipt or version; compare the complete earlier readback again.
     for (const item of completed) {
       await historicalVersion(f, item.started.saved, previous!)
-      if (item.evidence !== undefined) {
-        if (item.evidence !== undefined) {
-        expect(await assertScenarioEvidence(f, item.started, item.initial, item.expected)).toEqual(item.evidence)
-      }
-      }
+      expect(await assertScenarioEvidence(f, item.started, item.initial, item.expected)).toEqual(item.evidence)
     }
     expect(f.base.provider.counts.starts).toBe(8)
   } finally { await f.close() }

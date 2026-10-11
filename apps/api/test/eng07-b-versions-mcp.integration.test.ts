@@ -5,7 +5,7 @@ import { assertHistoricalVersionPins } from './helpers/workflowVersionAssertions
 afterEach(() => vi.restoreAllMocks())
 
 describe.skipIf(!postgresEnabled)('immutable optional-repeat versions over MCP', () => {
-  it('mcp: ordinary → repeat → ordinary retains all historical Run pins and initial ordinary Run evidence', async () => {
-    await assertHistoricalVersionPins('mcp', 0)
+  it('mcp: ordinary → repeat → ordinary retains all historical Run pins and exact evidence', async () => {
+    await assertHistoricalVersionPins('mcp')
   }, 240000)
 })
