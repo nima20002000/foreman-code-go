@@ -10,6 +10,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { RunCiAuthority, CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
+import type { CiUnitInventory } from '../src/modules/ci-host/parts.js'
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { DomainError } from '../src/modules/errors.js'
 
@@ -65,7 +66,7 @@ function fakeComputers(github: Record<string, boolean> = {}) {
   return { endpoint, started, finish, computers }
 }
 
-async function fixture(options: { repository?: boolean; github?: Record<string, boolean> } = {}) {
+async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory } = {}) {
   const runtime = await codexApprovalRuntime('user')
   const workspaceId = runtime.f.scope.workspaceId
   if (options.repository !== false) {
@@ -73,7 +74,9 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
       [workspaceId])
   }
   const published: string[] = []
-  const commits = { resolve: async (_repository: string, _branch: string, commit: string | undefined) => {
+  const inventory = options.unitInventory
+  const commits = { ...(inventory ? { unitInventory: async () => inventory } : {}),
+    resolve: async (_repository: string, _branch: string, commit: string | undefined) => {
     const resolved = commit ?? 'a'.repeat(40)
     published.push(resolved)
     return resolved
@@ -112,6 +115,114 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
       await runtime.close()
     } }
 }
+
+it.each([
+  ['unit', 10], ['lint', 2], ['typecheck', 2], ['build', 2],
+] as const)('persists and dispatches all %s parts through authenticated MCP', async (suite, count) => {
+  const f = await fixture()
+  try {
+    const input = { suite, commandId: `parts-${suite}` }
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    expect(started.partitions).toHaveLength(count)
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.partitions).toHaveLength(count)
+    expect(read.partitions!.every(run => run.suite === suite && run.part?.startsWith(`${suite}-`)
+      && run.groupId === read.run.groupId)).toBe(true)
+    const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
+      [read.run.groupId])).rows
+    expect(stored).toHaveLength(count)
+    expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(read.partitions!))
+    for (let pass = 0; pass < count; pass++) {
+      await f.ci.dispatch()
+      const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+      const active = running.partitions!.filter(run => run.state === 'running')
+      if (!active.length) break
+      for (const run of active) f.finish(run.id, 0, `${run.part} passed\n`)
+    }
+    const done = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(done.group).toMatchObject({ groupId: read.run.groupId, state: 'passed' })
+    expect(f.started).toHaveLength(count)
+    expect(f.started.every(item => item.request.operation === 'start' && item.request.part)).toBe(true)
+    const logs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', {
+      ticketId: started.ticketId, group: true, maxBytes: 4096,
+    }))
+    expect(logs.parts).toHaveLength(count)
+    for (const part of logs.parts!) expect(part.text).toBe(`${part.run.part} passed\n`)
+  } finally { await f.close() }
+})
+
+it('shares split suite and group log readback between authenticated HTTP and MCP', async () => {
+  const f = await fixture()
+  try {
+    const url = `/api/management/workspaces/${f.workspaceId}/ci`
+    const writer = await f.credential([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
+    const headers = { authorization: `Bearer ${writer.token}` }
+    const input = { suite: 'build', commandId: 'http-parts' }
+    const reader = await f.credential(CI_GET_ACTIONS)
+    expect((await f.app.inject({ method: 'POST', url, payload: input,
+      headers: { authorization: `Bearer ${reader.token}` } })).statusCode).toBe(403)
+    const response = await f.app.inject({ method: 'POST', url, headers, payload: input })
+    expect(response.statusCode).toBe(200)
+    const started = CiRunOutputSchema.parse(response.json())
+    expect(started.partitions).toHaveLength(2)
+    await f.ci.dispatch()
+    for (const [index, ticket] of started.partitions!.entries()) f.finish(ticket.ticketId, index, `result ${index}\n`)
+    const read = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}`, headers })
+    const result = CiGetOutputSchema.parse(read.json())
+    expect(result.group?.state).toBe('failed')
+    expect(result.partitions!.map(run => run.part).sort()).toEqual(['build-api', 'build-other'])
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))).toEqual(result)
+    const httpLogs = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}/logs?group=true&maxBytes=4096`, headers })
+    expect(httpLogs.statusCode).toBe(200)
+    const mcpLogs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', {
+      ticketId: started.ticketId, group: true, maxBytes: 4096,
+    }))
+    expect(CiLogsOutputSchema.parse(httpLogs.json())).toEqual(mcpLogs)
+    expect(mcpLogs.parts!.map(part => part.text).sort()).toEqual(['result 0\n', 'result 1\n'])
+  } finally { await f.close() }
+})
+
+it('splits affected unit files without sending an empty part to a computer', async () => {
+  const f = await fixture()
+  try {
+    const files = ['apps/api/test/a.test.ts', 'apps/api/test/b.test.ts', 'apps/api/test/c.test.ts']
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'unit', commandId: 'selected-parts', scope: 'affected', files, commit: 'a'.repeat(40),
+    }))
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.partitions).toHaveLength(3)
+    expect(read.partitions!.every(run => run.part === 'unit-api' && run.files.length === 1)).toBe(true)
+    expect(read.partitions!.flatMap(run => run.files).sort()).toEqual(files)
+    await f.ci.dispatch()
+    expect(f.started).toHaveLength(2)
+    for (const item of f.started) expect(item.request).toMatchObject({ part: 'unit-api', scope: 'affected',
+      files: expect.any(Array), partition: { count: 3 } })
+  } finally { await f.close() }
+})
+
+it('sizes persisted unit parts from committed timings and then from learned unit timings', async () => {
+  const files = Array.from({ length: 6 }, (_, index) => `apps/api/test/unit-${index}.test.ts`)
+  const durations = Object.fromEntries(files.map(file => [file, 150_000]))
+  const f = await fixture({ unitInventory: { files, durations, heavy: [] } })
+  try {
+    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'timed-parts' }))
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: first.ticketId }))
+    expect(read.partitions!.filter(run => run.part === 'unit-api')).toHaveLength(6)
+    const active = read.partitions!.filter(run => run.state === 'running')
+    for (const [index, run] of active.entries()) {
+      f.finish(run.id, 0, 'passed\n', Object.fromEntries(files.slice(index * 3, index * 3 + 3).map(file => [file, 60_000])))
+    }
+    await f.ci.dispatch()
+    const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'learned-parts' }))
+    const learned = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: next.ticketId }))
+    expect(learned.partitions!.filter(run => run.part === 'unit-api')).toHaveLength(3)
+    expect((await f.pool.query('select count(*)::int as count from ci_file_durations')).rows[0].count).toBe(6)
+  } finally { await f.close() }
+})
 
 it('persists affected files through authenticated MCP, bounds partition count and rejects a denied caller', async () => {
   const f = await fixture()
@@ -249,9 +360,9 @@ it('sizes each partition by the measured speed of the computer it is planned for
 it('queues a run while every computer is busy and starts it on the first one that frees up', async () => {
   const f = await fixture()
   try {
-    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'one' }))
-    const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'lint', commandId: 'two' }))
-    const third = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'build', commandId: 'three' }))
+    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'one' }))
+    const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'two' }))
+    const third = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'three' }))
     await f.ci.dispatch()
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId })).run.state).toBe('queued')
     f.finish(first.ticketId, 0, 'ok\n')
@@ -268,8 +379,8 @@ it('cancels queued and running runs and skips a computer without a GitHub login'
     const computers = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
     expect(computers.computers.find(value => value.label === 'builder')).toMatchObject({ ready: false,
       reasons: [expect.stringContaining('gh auth login')] })
-    const running = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'run' }))
-    const queued = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'wait' }))
+    const running = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'run' }))
+    const queued = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'wait' }))
     await f.ci.dispatch()
     expect(f.started.map(value => value.computer)).toEqual(['laptop'])
     expect(await f.value(f.operator, 'ci_cancel', { ticketId: queued.ticketId })).toMatchObject({ run: { state: 'canceled' } })

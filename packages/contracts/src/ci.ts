@@ -6,7 +6,7 @@ import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
 const CiRunInputObjectSchema = z.object({
-  suite: CiSuiteSchema,
+  suite: CiSuiteSchema.describe('Unit, lint, typecheck and build automatically queue separate suite parts; install runs one job.'),
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
   commandId: IdSchema,
   /** Split an integration run into this many duration-balanced runs on separate build computers. */
@@ -26,12 +26,13 @@ export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspac
   .refine(partitionedSuite, partitionIssue)
   .refine(selectedSuite, selectionIssue)
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
-/** `partitions` lists every partition's ticket in order; the first is also `ticketId`. Poll each with ci_get. */
-export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(32).optional() }).strict()
+/** `partitions` lists every part or integration partition; the first is also `ticketId`. Poll each with ci_get. */
+export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(66).optional() }).strict()
 export const CiGetInputSchema = z.object({ ticketId: IdSchema }).strict()
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({
   run: CiRunRecordSchema, partitions: z.array(CiRunRecordSchema).optional(), logTail: z.string(),
+  group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
 }).strict()
 export type CiRunInput = z.infer<typeof CiRunInputSchema>
 export type CiGetInput = z.infer<typeof CiGetInputSchema>
@@ -42,10 +43,15 @@ export const CiLogsInputSchema = CiGetInputSchema.extend({
   /** Omit to read the last maxBytes; continue with nextOffset. */
   afterOffset: z.number().int().nonnegative().optional(),
   maxBytes: z.number().int().min(1).max(65_536).optional(),
+  /** Include a bounded page from every part, with a separate cursor for each ticket. */
+  group: z.boolean().optional(),
 }).strict()
 export const OperatorCiLogsInputSchema = CiLogsInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiLogsOutputSchema = z.object({ text: z.string(), nextOffset: z.number().int().nonnegative(),
-  logBytes: z.number().int().nonnegative() }).strict()
+  logBytes: z.number().int().nonnegative(),
+  parts: z.array(z.object({ run: CiRunRecordSchema, text: z.string(), nextOffset: z.number().int().nonnegative(),
+    logBytes: z.number().int().nonnegative() }).strict()).optional(),
+}).strict()
 export const CiComputersOutputSchema = z.object({ computers: z.array(z.object({
   label: z.string(), hostRef: z.object({ kind: z.enum(['main', 'device']), mainId: z.string(), deviceId: z.string().optional() }).strict(),
   priority: z.number().int(), ready: z.boolean(), reasons: z.array(z.string()),

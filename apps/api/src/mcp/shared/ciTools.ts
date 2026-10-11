@@ -21,9 +21,13 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'ci-remote computes them by changed-file import reachability and falls back to full for shared infrastructure. '
   + 'ci_get reads back the persisted scope and files. Empty affected selections pass without launching a runner. '
   + 'Requires the same CI run grants for either scope. partitions (2–32, integration only) splits integration '
-  + 'into duration-balanced runs on separate computers; poll every partition ticket. Retrying commandId returns the '
+  + 'into duration-balanced runs on separate computers. Unit automatically queues unit-api and unit-web shards '
+  + '(defaults 5 and 3, sized from measured durations when available), unit-web-heavy and unit-other. '
+  + 'Lint, typecheck and build each queue their -api and -other parts. Each part has its own ticket and shares a groupId; '
+  + 'affected selections omit empty parts and shard only selected tests. Poll every ticket in partitions. Retrying commandId returns the '
   + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '
-  + 'computer, exit code and a 32 KiB log tail; ci_logs_read pages the full log; ci_cancel stops a run. '
+  + 'computer, part, shard, exit code, group state and a 32 KiB log tail; ci_logs_read pages the full log '
+  + '(group=true includes bounded pages and individual cursors for every part); ci_cancel stops one ticket. '
   + 'Agents are restricted to their active Run workspace. Computers without a GitHub login report it in ci_computers_list.'
 
 export const CI_TOOLS = ['ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', 'ci_logs_read'] as const
