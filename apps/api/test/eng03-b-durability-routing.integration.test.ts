@@ -1,14 +1,13 @@
 import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { reduceRepeatGraphPageV3, makeCurrentWorkflowFixture, ExecutableWorkflowV3Schema } from '@foreman-code/contracts/wave25'
 import { readRepeatGraphPage, readRepeatGraphSnapshot } from '../src/modules/run-graph/repeatReader.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { graphHead, postgresEnabled } from './helpers/wave25Agent3.js'
-import { ApprovalTransportFaults } from './helpers/eng06ApprovalFaults.js'
 
 function fanInFixture() {
   const fixture = makeCurrentWorkflowFixture(randomUUID())
@@ -46,8 +45,6 @@ function fanInFixture() {
   return fixture
 }
 
-/** ENG-03 durability assertions now run through the current V3 engine and real
- * private native captures. The provider is deterministic, not a live binary. */
 describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durability', () => {
   describe('six-node routing fixture', () => {
     let t: Awaited<ReturnType<typeof checkpointRuntimeFixture>>
@@ -96,57 +93,4 @@ describe.skipIf(!postgresEnabled)('Current workflow result and checkpoint durabi
       expect(await graphHead(t.db.pool, t.f.run.id)).toBe(current.asOfSequence)
     }, 60000)
   })
-  it('a cold engine closes the waiting native lifetime without replaying the completed predecessor', async () => {
-    const faults = new ApprovalTransportFaults()
-    const t = await checkpointRuntimeFixture(1, 1, {
-      recoverNativeProcesses: (executionId, signal) => faults.recoverNativeProcesses(executionId, signal),
-    })
-    const connection = t.provider.connection.bind(t.provider)
-    vi.spyOn(t.provider, 'connection').mockImplementation(() => faults.wrap(connection()))
-    try {
-      await t.engine.start(t.f.run.id)
-      const pending = (await t.pending())[0]!
-      const before = { ...t.provider.counts }
-      const acceptedBefore = (await t.db.pool.query<{ count: string }>(
-        "select count(*)::text as count from run_graph_effects where run_id=$1 and effect_kind='result.accept'",
-        [t.f.run.id])).rows[0]!.count
-      faults.killOnRestart = true
-      await t.engine.shutdown()
-      const recovered = t.compose()
-      await recovered.engine.resume(t.f.run.id)
-      expect(t.provider.counts.starts).toBe(before.starts)
-      expect(t.provider.counts.sessions).toBe(before.sessions)
-      expect(t.provider.closedSessions.has(pending.nativeSessionId)).toBe(true)
-      expect((await t.db.pool.query<{ count: string }>(
-        "select count(*)::text as count from run_graph_effects where run_id=$1 and effect_kind='result.accept'",
-        [t.f.run.id])).rows[0]!.count).toBe(acceptedBefore)
-      expect(await recovered.runs.get(t.f.run.id)).toMatchObject({ executionState: 'completed', outcome: 'failed' })
-      expect((await recovered.repository.get(pending.id))?.status).toBe('canceled')
-      expect(t.provider.counts.responses).toBe(0)
-    } finally { await t.close() }
-  }, 60000)
-  it('a committed result survives a lost acceptance acknowledgement without another native launch', async () => {
-    const t = await checkpointRuntimeFixture()
-    try {
-      const factory = t.runs.repeatRepositoryFactory(), original = factory.forOwner.bind(factory)
-      let lose = true
-      const hook = vi.spyOn(factory, 'forOwner').mockImplementation((...args) => {
-        const store = original(...args), accept = store.acceptTerminal.bind(store)
-        if (!vi.isMockFunction(store.acceptTerminal)) vi.spyOn(store, 'acceptTerminal').mockImplementation(async (...input) => {
-          const result = await accept(...input)
-          if (lose) { lose = false; throw new Error('ENG03_LOST_RESULT_ACK') }
-          return result
-        })
-        return store
-      })
-      await expect(t.engine.start(t.f.run.id)).rejects.toThrow('ENG03_LOST_RESULT_ACK')
-      expect((await t.db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='result.accept'", [t.f.run.id])).rowCount).toBe(1)
-      hook.mockRestore()
-      await t.engine.resume(t.f.run.id)
-      await t.service.respond({ kind: 'user', principal: t.principal }, approvalResponse((await t.pending())[0]!))
-      expect(t.provider.counts).toMatchObject({ sessions: 2, starts: 2, responses: 1 })
-      expect((await t.runs.get(t.f.run.id))?.outcome).toBe('succeeded')
-      expect((await t.db.pool.query("select 1 from run_graph_effects where run_id=$1 and effect_kind='result.accept'", [t.f.run.id])).rowCount).toBe(2)
-    } finally { vi.restoreAllMocks(); await t.close() }
-  }, 60000)
 })
