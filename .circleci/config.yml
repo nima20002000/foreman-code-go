@@ -85,6 +85,9 @@ jobs:
       - store_artifacts:
           path: /tmp/ci-durations
           destination: durations
+      - store_artifacts:
+          path: .logs/test-integration
+          destination: integration-logs
 
 workflows:
   ci:

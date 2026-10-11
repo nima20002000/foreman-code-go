@@ -125,6 +125,14 @@ jobs:
             packages/*/node_modules/.cache
             !apps/web/node_modules/.cache/tsc
           key: ${{ steps.suite-cache.outputs.cache-primary-key }}
+      # Each failing integration file's full test log, for diagnosis without rerunning it.
+      - if: failure() && inputs.suite == 'integration'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: .logs/test-integration/
+          retention-days: 2
+          if-no-files-found: ignore
       - if: always() && contains(fromJSON('["integration", "unit-api", "unit-web"]'), inputs.suite)
         uses: actions/upload-artifact@v4
         with:
