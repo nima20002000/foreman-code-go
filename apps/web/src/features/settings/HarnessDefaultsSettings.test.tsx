@@ -6,7 +6,8 @@ import { server } from '../../mocks/server'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { queryKeys } from '../../shared/api/query'
-import { accountTarget, observedAccount } from '../provider-accounts/providerAccounts.fixtures'
+import { accountTarget, accountTargetInfo, observedAccount, workerAccountTarget } from '../provider-accounts/providerAccounts.fixtures'
+import { providerTargetsKey } from '../provider-accounts/providerAccountsKeys'
 import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 import { providerAccountsKey } from '../provider-accounts/providerAccountsQueries'
 import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
@@ -23,8 +24,10 @@ afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clea
 function mount(props: Parameters<typeof HarnessDefaultsSettings>[0] = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } }); clients.push(client)
   client.setQueryData(['workbench', 'runtime-identity', 0], mockRuntimeIdentity)
+  client.setQueryData(providerTargetsKey(), { targets: [accountTargetInfo()] })
   for (const provider of ['codex', 'claude'] as const) {
-    client.setQueryData(providerAccountsKey({ provider, target: accountTarget }), { revision: 1, accounts: [] })
+    client.setQueryData(providerAccountsKey({ provider, target: accountTarget, generation: 1, includeRemoved: true }),
+      { revision: 1, accounts: [] })
   }
   client.setQueryData(queryKeys.managedHarnessCatalog, Object.entries({ ...DEFAULT_HARNESS_DEFAULTS, claude: savedClaudeConfiguration })
     .map(([harness, defaults]) => ({ harness, defaults, defaultsRevision: 4,
@@ -101,7 +104,7 @@ it('keeps the other card, presets and panels usable after one account read fails
     if (new URL(request.url).searchParams.get('provider') === 'claude') return HttpResponse.json({
       error: { code: 'UNAVAILABLE', message: 'Claude accounts could not update' },
     }, { status: 503 })
-    return HttpResponse.json({ revision: 2, accounts: [observedAccount()], defaults: [], nextCursor: null })
+    return HttpResponse.json({ target: accountTarget, revision: 2, accounts: [observedAccount()], defaults: [], nextCursor: null })
   }))
   const client = mount()
   await act(async () => { await client.invalidateQueries({ queryKey: ['provider-accounts'] }) })
@@ -112,4 +115,20 @@ it('keeps the other card, presets and panels usable after one account read fails
   expect(within(codex).getByRole('button', { name: 'Connections' })).toBeEnabled()
   expect(within(claude).getByRole('button', { name: 'Plugins' })).toBeEnabled()
   expect(within(codex).getByText('Ready')).toBeVisible()
+})
+
+it('uses discovered canonical targets for both account cards without placing controls inside the preset buttons', async () => {
+  const onAccountTargetChange = vi.fn()
+  const client = mount({ accountTarget: workerAccountTarget, onAccountTargetChange })
+  await act(async () => { client.setQueryData(providerTargetsKey(), {
+    targets: [accountTargetInfo(), accountTargetInfo(workerAccountTarget)],
+  }) })
+  for (const harness of ['Codex', 'Claude']) {
+    const picker = await screen.findByRole('combobox', { name: `${harness} account computer` })
+    expect(picker).toHaveValue(JSON.stringify(workerAccountTarget))
+    expect(screen.getByRole('button', { name: `Edit ${harness} defaults` }).contains(picker)).toBe(false)
+  }
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Claude account computer' }), JSON.stringify(accountTarget))
+  expect(onAccountTargetChange).toHaveBeenCalledWith(accountTarget)
+  expect(screen.getAllByText(/Worker ·.*Installation/)).toHaveLength(2)
 })

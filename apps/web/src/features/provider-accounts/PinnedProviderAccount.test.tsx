@@ -36,3 +36,27 @@ it('retains the saved binding when its account is unavailable', async () => {
   expect(await screen.findByText(/The original account is unavailable/)).toBeVisible()
   expect(screen.getByText(accountBinding().accountId)).toBeVisible()
 })
+
+it('reads the original slot while retaining the qualified subject recorded at acceptance', async () => {
+  const accepted = { ...accountBinding(), subject: { subject: 'accepted-provider-subject',
+    provenance: 'qualified-native' as const, qualificationId: 'accepted-qualification',
+    observedAt: '2026-10-01T12:00:00.000Z' } }
+  server.use(http.get('/api/provider-accounts/:id', ({ request }) => {
+    expect(JSON.parse(new URL(request.url).searchParams.get('target')!)).toEqual(accepted.target)
+    return HttpResponse.json({ ...observedAccount(), isDefault: false })
+  }))
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}><PinnedProviderAccount binding={accepted} /></QueryClientProvider>)
+  expect(await screen.findByText('Original account')).toBeVisible()
+  expect(screen.getByText('Provider identity recorded at acceptance: accepted-provider-subject')).toBeVisible()
+  expect(screen.queryByText(/The original account is unavailable/)).not.toBeInTheDocument()
+})
+
+it('shows recovery guidance when fresh observation cannot prove the saved account is available', async () => {
+  server.use(http.get('/api/provider-accounts/:id', () => HttpResponse.json({ ...observedAccount(), status: 'unavailable',
+    observation: { ...observedAccount().observation!, status: 'unavailable', readiness: 'unavailable' } })))
+  mount()
+  expect(await screen.findByText(/The original account is unavailable/)).toBeVisible()
+  expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+})

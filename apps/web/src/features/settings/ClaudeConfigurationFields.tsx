@@ -4,6 +4,7 @@ import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { Alert, Combobox, Select, TextField } from '../../shared/ui/nocturne'
 import { fieldMessage, type FieldIssue } from './fieldValidation'
 import { useProviderAccounts } from '../provider-accounts/providerAccountsQueries'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import './harnessModelFields.css'
 
 type Props = {
@@ -14,13 +15,14 @@ type Props = {
   pending?: boolean
   error?: string
   issues?: readonly FieldIssue[]
+  accountHost?: DeviceProvisioningTarget['hostRef'] | undefined
 }
 /** Discovery and saved state are provided by the shared settings query/command owner. */
-export function ClaudeConfigurationFields({ value, onChange, models, qualified, pending = false, error, issues = [] }: Props) {
-  const accounts = useProviderAccounts()
-  const selectedAccount = accounts.data?.accounts.find(account => account.provider === 'claude'
-    && (value.accountId ? account.id === value.accountId : account.isDefault))
-  const managedAccount = Boolean(value.accountId || selectedAccount)
+export function ClaudeConfigurationFields({ value, onChange, models, qualified, pending = false, error, issues = [], accountHost }: Props) {
+  const accounts = useProviderAccounts(Boolean(value.accountId), { provider: 'claude',
+    ...(accountHost ? { hostRef: accountHost } : {}) })
+  const selectedAccount = !accounts.isError ? accounts.data?.accounts.find(account => account.id === value.accountId) : undefined
+  const managedAccount = Boolean(value.accountId)
   const options = models.map((model) => ({ value: model.id, label: model.name ?? model.id, description: model.id, disabled: false }))
   const selected = models.find(model => model.id === value.model)
   const efforts = selected?.reasoningEfforts?.filter(effort => ClaudeEffortSchema.safeParse(effort).success) ?? []

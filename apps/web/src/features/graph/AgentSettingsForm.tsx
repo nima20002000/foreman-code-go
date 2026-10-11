@@ -206,7 +206,7 @@ function EditableAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, cre
       </div>
       <div className={`agent-settings-row agent-settings-row-runtime agent-settings-row-${configuration.harness}`}>
         <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration}
-          accountRemote={placement?.hostRef.kind === 'device'} />
+          accountHost={placement?.hostRef} />
       </div>
       {Boolean(workspaceId || nodePlacement || placementOptions) && <section className="agent-worktree-fields" aria-label="Worktree">
         <h3>Worktree</h3>

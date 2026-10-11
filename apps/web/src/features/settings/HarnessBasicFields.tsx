@@ -8,11 +8,12 @@ import { ClaudeConfigurationFields } from './ClaudeConfigurationFields'
 import { nativeOptionsWithSaved, selectNativeModel, supportedEfforts } from './harnessModelSelection'
 import { useProviderHarnessModels } from '../provider-accounts/useProviderHarnessModels'
 import { ProviderAccountSelect } from '../provider-accounts/ProviderAccountSelect'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import './harnessModelFields.css'
 
 type Props = { value: HarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[] }
-function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError, accountRemote = false }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string; accountRemote?: boolean }) {
-  const query = useProviderHarnessModels(value.harness, value.harness === 'opencode' ? undefined : value.accountId, accountRemote)
+function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError, accountHost }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string; accountHost?: DeviceProvisioningTarget['hostRef'] | undefined }) {
+  const query = useProviderHarnessModels(value.harness, value.harness === 'opencode' ? undefined : value.accountId, accountHost)
   const refresh = useRefreshNativeHarness(value.harness)
   const selected = query.data?.models.find((item) => item.id === value.model)
   const models: Array<{ value: string; label: string; description: string; disabled?: boolean }> = query.data?.models.map((item) => ({ value: item.id, label: item.name || item.id, description: item.id })) ?? []
@@ -22,7 +23,7 @@ function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandb
     Choose a native model before using this preset.
   </Alert> : null
   if (value.harness === 'opencode') return null
-  const account = <ProviderAccountSelect provider={value.harness} value={value.accountId} remote={accountRemote}
+  const account = <ProviderAccountSelect provider={value.harness} value={value.accountId} hostRef={accountHost}
     onChange={accountId => {
       if (accountId) onChange({ ...value, accountId })
       else {
@@ -33,7 +34,7 @@ function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandb
     }} />
   if (value.harness === 'claude') return <>{account}{missingModel}<ClaudeConfigurationFields value={value} onChange={onChange}
     models={query.data?.models ?? []} qualified={qualified} pending={checking || query.isPending}
-    error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} /></>
+    error={checkError ?? (refresh.error ?? query.error)?.message} issues={issues} accountHost={accountHost} /></>
   return <div className="harness-basic-fields">
     {account}
     {missingModel}
@@ -43,31 +44,31 @@ function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandb
           onValueChange={id => {
             const model = query.data?.models.find(item => item.id === id)
             if (!model) return
-            onChange(value.accountId ? { ...value, model: model.id } : selectNativeModel(value, model))
+            onChange(selectNativeModel(value, model))
           }} />
-        {value.harness === 'codex' ? <Select label="Effort" disabled={Boolean(value.accountId)} value={value.reasoningEffort} aria-label="Effort" error={fieldMessage(issues, 'reasoningEffort')}
+        {value.harness === 'codex' ? <Select label="Effort" disabled={!query.isSuccess} value={value.reasoningEffort} aria-label="Effort" error={fieldMessage(issues, 'reasoningEffort')}
           options={nativeOptionsWithSaved(supportedEfforts(selected), value.reasoningEffort)}
           onChange={(event) => onChange({ ...value, reasoningEffort: event.target.value as typeof value.reasoningEffort })} /> : null}
       </div>
-      <div className="harness-model-toggles"><HarnessModelOptions accountRemote={accountRemote} value={value} onChange={onChange} issues={issues} /></div>
+      <div className="harness-model-toggles"><HarnessModelOptions accountHost={accountHost} value={value} onChange={onChange} issues={issues} /></div>
     </div>
-    {value.accountId ? <p>Model effort and service-tier availability require account-specific qualification. Saved values are kept.</p> : null}
+    {value.accountId ? <p>Options come from this account. Check the configuration before running.</p> : null}
     {query.isPending ? <span className="harness-status" role="status">Loading native models…</span> : null}
     {query.isError || refresh.isError ? <Alert live tone="danger" title={(refresh.error ?? query.error)?.message ?? 'Model discovery failed.'}
       action={<Button size="sm" disabled={refresh.isPending} onClick={() => {
-        if (value.accountId || accountRemote) void query.refetch()
+        if (value.accountId || accountHost?.kind === 'device') void query.refetch()
         else refresh.mutate()
       }}>Retry</Button>} /> : null}
     {value.harness === 'codex' && includeSandbox ? <div className="harness-model-secondary"><HarnessSandboxField value={value} onChange={onChange} issues={issues} /></div> : null}
   </div>
 }
-function HarnessModelOptions({ value, onChange, issues = [], accountRemote = false }: Props & { accountRemote?: boolean }) {
-  const query = useProviderHarnessModels(value.harness, value.harness === 'opencode' ? undefined : value.accountId, accountRemote)
+function HarnessModelOptions({ value, onChange, issues = [], accountHost }: Props & { accountHost?: DeviceProvisioningTarget['hostRef'] | undefined }) {
+  const query = useProviderHarnessModels(value.harness, value.harness === 'opencode' ? undefined : value.accountId, accountHost)
   const errorId = useId()
   if (value.harness !== 'codex') return null
   const supported = query.data?.models.find((item) => item.id === value.model)?.serviceTiers.includes('priority') === true
-  const error = fieldMessage(issues, 'serviceTier') ?? (!value.accountId && query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)
-  return <div className="harness-model-toggle"><Switch label="Fast mode" checked={value.serviceTier === 'priority'} disabled={Boolean(value.accountId) || accountRemote || !supported && value.serviceTier !== 'priority'}
+  const error = fieldMessage(issues, 'serviceTier') ?? (query.isSuccess && !supported && value.serviceTier === 'priority' ? 'Not offered by this model. Turn Fast mode off.' : undefined)
+  return <div className="harness-model-toggle"><Switch label="Fast mode" checked={value.serviceTier === 'priority'} disabled={!query.isSuccess || !supported && value.serviceTier !== 'priority'}
     aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined}
     onChange={(event) => onChange({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' })} />
     {error ? <span className="n-field-error" id={errorId}>{error}</span> : null}

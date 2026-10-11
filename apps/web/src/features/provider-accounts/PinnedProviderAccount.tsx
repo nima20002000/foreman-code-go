@@ -15,7 +15,7 @@ export function PinnedProviderAccount({ binding, label = 'Saved account' }: {
   if (binding.kind === 'legacy-profile') return <p className="pinned-provider-account">{label}: legacy {binding.provider} profile.
     Historical provider identity is unknown.{binding.profileRef ? ` Profile ${binding.profileRef}.` : ''}</p>
   const target = binding.target
-  const unavailable = !account || Boolean(account.removedAt)
+  const unavailable = !account || Boolean(account.removedAt) || account.status === 'unavailable'
   return <section className="pinned-provider-account" aria-label={label}>
     <p>{label}: <strong>{account?.name ?? binding.accountId}</strong> · {binding.provider}</p>
     <p>{target.hostRef.kind === 'main' ? 'Main' : 'Worker'} · {target.hostRef.kind === 'main'

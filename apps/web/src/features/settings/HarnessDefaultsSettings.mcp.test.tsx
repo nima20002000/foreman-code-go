@@ -8,6 +8,7 @@ import { queryKeys } from '../../shared/api/query'
 import { UnsavedChangesProvider } from '../../shared/ui/UnsavedChangesProvider'
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { HarnessDefaultsSettings } from './HarnessDefaultsSettings'
+import { accountTarget, accountTargetInfo } from '../provider-accounts/providerAccounts.fixtures'
 
 const revision = 'sha256:' + 'a'.repeat(64)
 const checkedAt = '2026-09-20T00:00:00.000Z'
@@ -31,8 +32,10 @@ function mount() {
 
 function nativeReaders() {
   server.use(
+    http.get('/api/provider-accounts/targets', () => HttpResponse.json({ targets: [accountTargetInfo()] })),
     http.get('/api/provider-accounts', () => HttpResponse.json({ revision: 1, accounts: [] })),
-    http.get('/api/provider-accounts/page', () => HttpResponse.json({ revision: 1, accounts: [], defaults: [], nextCursor: null })),
+    http.get('/api/provider-accounts/page', () => HttpResponse.json({ target: accountTarget,
+      revision: 1, accounts: [], defaults: [], nextCursor: null })),
     http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({
       harness: 'codex', revision, checkedAt, scope: 'native-user',
       servers: [{ name: 'private-tools', transport: 'stdio', label: 'tools', enabled: true,

@@ -46,9 +46,7 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
   function chooseModel(id: string) {
     const next = models.find((item) => item.id === id)
     if (!next) return
-    if (value.accountId) {
-      update({ ...value, model: next.id })
-    } else if (value.harness === 'codex') {
+    if (value.harness === 'codex') {
       const allowed = supportedEfforts(next)
       update({ ...value, model: next.id, reasoningEffort: allowed.includes(value.reasoningEffort) ? value.reasoningEffort : allowed.includes('medium') ? 'medium' : allowed[0] ?? value.reasoningEffort,
         serviceTier: next.serviceTiers.includes(value.serviceTier) ? value.serviceTier : 'standard' })
@@ -104,8 +102,8 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
         <button className="operator-model-choice" type="button" disabled={disabled || !catalog.isSuccess} onClick={() => { setChoosingModel(true); setSearch('') }}>
           <span>{modelName}<small>Choose model</small></span><Icon name="chevron" size={14} />
         </button>
-        {value.harness !== 'claude' || efforts.length > 0 ? <Slider label="Effort" min={0} max={Math.max(0, efforts.length - 1)} step={1}
-          value={Math.max(0, efforts.indexOf(effort))} disabled={disabled || efforts.length < 2}
+        {value.harness !== 'claude' || efforts.length > 0 || Boolean(effort) ? <Slider label="Effort" min={0} max={Math.max(0, efforts.length - 1)} step={1}
+          value={Math.max(0, efforts.indexOf(effort))} disabled={disabled || !catalog.isSuccess || efforts.length < 2}
           format={(index) => efforts.includes(effort) ? efforts[index] ?? 'Default' : effort || 'Default'}
           onValueChange={(index) => {
             const next = efforts[index]
@@ -115,14 +113,15 @@ export function OperatorComposerSettings({ value, onChange, disabled, access }: 
               if (effort.success) update({ ...value, reasoningEffort: effort.data })
             } else if (value.harness === 'claude') { const effort = ClaudeEffortSchema.safeParse(next); if (effort.success) update({ ...value, effort: effort.data }) }
           }} /> : null}
+        {effort && !efforts.includes(effort) ? <p>Saved effort {effort} is unavailable for this model.</p> : null}
         {access}
         <div className="operator-agent-toggles">
         <Switch label="Fast mode" checked={value.harness === 'codex' && value.serviceTier === 'priority'}
-          disabled={disabled || value.harness !== 'codex' || Boolean(value.accountId) || (!fastSupported && value.serviceTier !== 'priority')}
+          disabled={disabled || !catalog.isSuccess || value.harness !== 'codex' || (!fastSupported && value.serviceTier !== 'priority')}
           onChange={(event) => { if (value.harness === 'codex') update({ ...value, serviceTier: event.target.checked ? 'priority' : 'standard' }) }} />
         <Switch label="Show thinking" checked={value.showThinking} disabled={disabled} onChange={(event) => update({ ...value, showThinking: event.target.checked })} />
         </div>
-        {value.accountId ? <p>Effort and service-tier availability require account-specific qualification. Saved values are kept.</p> : null}
+        {value.accountId ? <p>Options come from this account. Check the configuration before running.</p> : null}
         {catalog.isPending ? <small role="status">Loading models…</small> : null}
         {catalog.isError || defaults.isError ? <div role="alert">Settings unavailable. <Button size="sm" onClick={() => { void catalog.refetch(); void defaults.refetch() }}>Retry</Button></div> : null}
       </>}

@@ -1,18 +1,13 @@
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
-import { useLocalHumanAccessQuery } from '../../shared/api/settingsExperience'
+import { sameDeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import type { ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
+import { useProviderAccountEligibility, useProviderAccountTargets } from './providerAccountDiscovery'
 
-export function useProviderAccountAccess(target?: DeviceProvisioningTarget, accountId?: string) {
-  const query = useLocalHumanAccessQuery()
-  const principal = !query.isError ? query.data?.principal : undefined
-  const canManageAccount = (selectedAccountId?: string) => Boolean(principal && Date.parse(principal.expiresAt) > Date.now()
-    && (['provider_accounts:read', 'provider_accounts:manage'] as const).every(action =>
-      principal.grants.some(grant => grant.actions.includes(action)
-      && (!grant.scope.mainIds || target && grant.scope.mainIds.includes(target.hostRef.mainId))
-      && (!grant.scope.applicationInstallationIds || target
-        && grant.scope.applicationInstallationIds.includes(target.applicationInstallationId))
-      && (!grant.scope.deviceIds || target?.hostRef.kind === 'device'
-        && grant.scope.deviceIds.includes(target.hostRef.deviceId))
-      && (!grant.scope.providerAccountIds || selectedAccountId && grant.scope.providerAccountIds.includes(selectedAccountId))
-      && !grant.scope.workspaceIds && !grant.scope.workflowIds && !grant.scope.runIds)))
-  return { canManage: canManageAccount(accountId), canManageAccount, query }
+export function useProviderAccountAccess(target?: DeviceProvisioningTarget, binding?: ProviderAccountBinding) {
+  const discovery = useProviderAccountTargets()
+  const eligibility = useProviderAccountEligibility(binding)
+  const selected = !discovery.isError ? discovery.data?.targets.find(item => target
+    && sameDeviceProvisioningTarget(item.target, target)) : undefined
+  const canManage = binding ? !eligibility.isError && eligibility.data?.canManage === true : selected?.canManage === true
+  return { canManage, target: selected, eligibility, discovery }
 }

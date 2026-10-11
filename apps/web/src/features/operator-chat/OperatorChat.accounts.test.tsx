@@ -10,7 +10,7 @@ import {
 } from '@foreman-code/contracts'
 import { AgentDefaultsUpdateInputSchema, ManagedAgentDefaultsSchema } from '@foreman-code/contracts/management'
 import { ProviderAccountsSnapshotSchema, type AccountProvider } from '@foreman-code/contracts/provider-accounts'
-import { accountBinding, observedAccount } from '../provider-accounts/providerAccounts.fixtures'
+import { accountBinding, accountTarget, accountTargetInfo, observedAccount } from '../provider-accounts/providerAccounts.fixtures'
 import { server } from '../../mocks/server'
 import { useConversationDraftStore } from '../conversations'
 import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
@@ -69,13 +69,16 @@ function setup(provider: AccountProvider, mode: 'explicit' | 'default' | 'defaul
   const edits: unknown[] = []
   let defaultAccountId = mode === 'default-race' ? sourceAccountId : otherAccountId
   server.use(
-    http.get('/api/provider-accounts', () => HttpResponse.json(ProviderAccountsSnapshotSchema.parse({
+    http.get('/api/provider-accounts/targets', () => HttpResponse.json({ targets: [accountTargetInfo()] })),
+    http.get('/api/provider-accounts/page', () => HttpResponse.json({ target: accountTarget,
+      ...ProviderAccountsSnapshotSchema.parse({
       revision: 2, accounts: [sourceAccountId, otherAccountId].map((id, index) => ({
         id, provider, name: index === 0 ? 'Original account' : 'Other account', authMode: 'subscription',
         status: 'signed-in', identity: null, isDefault: id === defaultAccountId, revision: 1,
         binding: { ...accountBinding(id), provider },
+        observation: { ...observedAccount(id).observation!, status: 'signed-in', readiness: 'ready' },
       })),
-    }))),
+    }), defaults: [], nextCursor: null })),
     http.get('/api/provider-accounts/:id/models', ({ params }) => HttpResponse.json({
       binding: { ...accountBinding(String(params.id)), provider }, generation: 1, observedAt: '2026-10-01T12:00:00.000Z', models: [],
     })),

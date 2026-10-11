@@ -19,7 +19,8 @@ export function ProviderAccountRow({ account, revision, defaultRevision, scope, 
   onConfigure(): void; onAuthenticate(): void;
 }) {
   const write = useProviderAccountWrite(undefined, scope)
-  const access = useProviderAccountAccess(account.binding?.target ?? scope.target, account.id)
+  const access = useProviderAccountAccess(account.binding?.target ?? scope.target, account.binding)
+  const capability = access.target?.providers.find(item => item.provider === account.provider)
   const [removing, setRemoving] = useState(false)
   const attempt = useRef(new CommandAttempt<Omit<ProviderAccountDefaultInput, 'commandId'>>()).current
   const original = useRef<{ action: ProviderAccountAction; input: Omit<ProviderAccountDefaultInput, 'commandId'> } | undefined>(undefined)
@@ -45,6 +46,7 @@ export function ProviderAccountRow({ account, revision, defaultRevision, scope, 
     save: () => original.current ? act(original.current.action) : undefined, discard: () => undefined })
   const target = account.binding?.target
   const observation = account.observation
+  const identity = observation ? observation.identity : account.identity
   return <article className="provider-account-card" aria-label={`${account.name} account`}>
     <div className="provider-account-summary">
       <header><strong>{account.name}</strong>{account.isDefault ? <small>Default for new work</small> : null}</header>
@@ -53,13 +55,15 @@ export function ProviderAccountRow({ account, revision, defaultRevision, scope, 
           target.hostRef.kind === 'main' ? target.hostRef.mainId : target.hostRef.deviceId}` : 'Ownership not recorded'}</dd></div>
         <div><dt>Installation</dt><dd>{target?.applicationInstallationId ?? 'Unknown'}</dd></div>
         <div><dt>Sign-in</dt><dd>{statusLabels[observation?.status ?? account.status]}</dd></div>
-        <div><dt>Identity</dt><dd>{observation?.identity ?? account.identity ?? 'Unknown'}</dd></div>
-        <div><dt>Readiness</dt><dd>{readinessLabels[observation?.readiness ?? 'unknown']}</dd></div>
+        <div><dt>Identity</dt><dd>{identity ?? 'Unknown'}</dd></div>
+        <div><dt>Readiness</dt><dd>{observation && scope.generation !== undefined
+          && observation.generation !== scope.generation ? 'Awaiting a fresh observation'
+          : readinessLabels[observation?.readiness ?? 'unknown']}</dd></div>
         <div><dt>Last observed</dt><dd>{observation ? <time dateTime={observation.observedAt}>
           {new Date(observation.observedAt).toLocaleString()}</time> : 'Not observed'}</dd></div>
         <div><dt>Authentication</dt><dd>{account.authMode === 'api-key' ? 'API key' : 'Subscription'}</dd></div>
       </dl>
-      {!observation?.subject ? <p className="provider-account-note">{account.identity || observation?.identity
+      {!observation?.subject ? <p className="provider-account-note">{identity
         ? 'Display identity only; provider identity is unproved.' : 'Provider identity is unknown.'}</p> : null}
       {account.possibleDuplicateAccountIds?.length ? <p role="status">This may be the same provider identity as another account.
         Accounts and their history remain separate.</p> : null}
@@ -71,7 +75,8 @@ export function ProviderAccountRow({ account, revision, defaultRevision, scope, 
         onClick={() => void act('default')}>Make default</Button> : null}
       {account.authMode === 'subscription' && !account.removedAt ? <Button size="sm" disabled={locked}
         onClick={onAuthenticate}>Authentication progress</Button> : null}
-      <Button size="sm" variant="ghost" disabled={unavailable} onClick={() => void act('refresh')}>Refresh status</Button>
+      <Button size="sm" variant="ghost" disabled={unavailable || !access.target?.connected || !capability?.actions.includes('status')}
+        onClick={() => void act('refresh')}>Refresh status</Button>
       {!account.removedAt ? <Button size="sm" variant="ghost" disabled={unavailable}
         onClick={() => setRemoving(true)}>Remove from selection</Button> : null}
       {attempt.unresolved && !write.isPending ? <Button size="sm" disabled={!access.canManage}

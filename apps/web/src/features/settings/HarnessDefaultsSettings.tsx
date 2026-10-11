@@ -11,6 +11,7 @@ import { CodexPluginManager } from './CodexPluginManager'
 import { HarnessMcpManager } from './HarnessMcpManager'
 import { OperatorMcpStatus } from './OperatorMcpStatus'
 import { ProviderAccountsSettings, type ProviderAccountNavigation } from '../provider-accounts/ProviderAccountsSettings'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 
 /** Harnesses this app runs: Codex and Claude. */
 const HARNESSES = ['codex', 'claude'] as const
@@ -26,11 +27,14 @@ function useProviderDefaults() {
   return { incoming, query: catalogQuery }
 }
 
-function ProviderCard({ harness, value, revision, readiness, onOpen, accountSelection, onAccountSelect }: {
+function ProviderCard({ harness, value, revision, readiness, onOpen, accountSelection, onAccountSelect,
+  accountTarget, onAccountTargetChange }: {
   harness: Harness; value?: HarnessDefaults | undefined; revision?: number | undefined; readiness: string
   onOpen(section: 'connections' | 'plugins'): void
   accountSelection?: ProviderAccountNavigation | undefined
   onAccountSelect?: ((selection: ProviderAccountNavigation | undefined) => void) | undefined
+  accountTarget?: DeviceProvisioningTarget | undefined
+  onAccountTargetChange?: ((target: DeviceProvisioningTarget) => void) | undefined
 }) {
   const name = harnessNames[harness]
   const preset = value?.[harness]
@@ -47,15 +51,19 @@ function ProviderCard({ harness, value, revision, readiness, onOpen, accountSele
         </> : null}
         <Button size="sm" variant="ghost" onClick={() => onOpen('plugins')}>Plugins</Button>
       </span>
-      <ProviderAccountsSettings provider={harness} selection={accountSelection} onSelect={onAccountSelect} />
+      <ProviderAccountsSettings provider={harness} selection={accountSelection} onSelect={onAccountSelect}
+        target={accountTarget} onTargetChange={onAccountTargetChange} />
     </>} />
 }
 
 /** Harness presets and plugin changes are managed by the Operator. */
-export function HarnessDefaultsSettings({ selectedHarness, section, onOpen, accountSelection, onAccountSelect }: {
+export function HarnessDefaultsSettings({ selectedHarness, section, onOpen, accountSelection, onAccountSelect,
+  accountTarget, onAccountTargetChange }: {
   selectedHarness?: AgentHarness | undefined; section?: HarnessSettingsSection | undefined
   accountSelection?: ProviderAccountNavigation | undefined
   onAccountSelect?: ((selection: ProviderAccountNavigation | undefined) => void) | undefined
+  accountTarget?: DeviceProvisioningTarget | undefined
+  onAccountTargetChange?: ((target: DeviceProvisioningTarget) => void) | undefined
   onOpen?(next: { harness: Harness; section: 'connections' | 'plugins' } | undefined): void
 }) {
   const { incoming, query } = useProviderDefaults()
@@ -84,6 +92,7 @@ export function HarnessDefaultsSettings({ selectedHarness, section, onOpen, acco
     <SettingsOverview title="Harnesses" description="Your harness presets. Ask the Operator to change one.">
       {HARNESSES.map(harness => <ProviderCard key={harness} harness={harness} value={incoming?.value}
         revision={incoming?.revision} readiness={readiness(harness)} accountSelection={accountSelection}
+        accountTarget={accountTarget} onAccountTargetChange={onAccountTargetChange}
         onAccountSelect={onAccountSelect} onOpen={next => onOpen?.({ harness, section: next })} />)}
     </SettingsOverview>
     <Dialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) onOpen?.(undefined) }} size="lg"

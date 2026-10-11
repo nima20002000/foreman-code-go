@@ -34,17 +34,27 @@ export function HarnessSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/harnesses' })
   const navigate = useNavigate({ from: '/settings/harnesses' })
   return <SettingsShell><HarnessDefaultsSettings selectedHarness={search.harness} section={search.section}
+    accountTarget={search.accountTarget}
     accountSelection={search.accountProvider && search.accountId ? {
       provider: search.accountProvider, accountId: search.accountId,
       ...(search.operationId ? { operationId: search.operationId } : {}),
+      ...(search.accountTarget ? { target: search.accountTarget } : {}),
     } : undefined}
     onAccountSelect={selection => void navigate({ search: {
       ...(search.harness ? { harness: search.harness } : {}),
       ...(search.section ? { section: search.section } : {}),
+      ...(search.accountTarget ? { accountTarget: search.accountTarget } : {}),
       ...(selection ? { accountProvider: selection.provider, accountId: selection.accountId,
+        ...(selection.target ? { accountTarget: selection.target } : {}),
         ...(selection.operationId ? { operationId: selection.operationId } : {}) } : {}),
     } })}
-    onOpen={(next) => void navigate({ search: next ?? {} })} /></SettingsShell>
+    onAccountTargetChange={target => void navigate({ search: {
+      ...(search.harness ? { harness: search.harness } : {}),
+      ...(search.section ? { section: search.section } : {}), accountTarget: target,
+    } })}
+    onOpen={(next) => void navigate({ search: { ...next,
+      ...(search.accountTarget ? { accountTarget: search.accountTarget } : {}),
+    } })} /></SettingsShell>
 }
 export function SkillsSettingsRouteEntry() {
   const search = useSearch({ from: '/settings/skills' })
