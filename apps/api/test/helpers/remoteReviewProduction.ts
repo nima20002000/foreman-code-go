@@ -86,7 +86,7 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
  * shipped installed domains in a separate process with its own native owners. */
 export async function remoteReviewProduction(options: {
   workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
-  claudeInventory?: boolean
+  claudeInventory?: boolean; parallelProfileChecks?: boolean
 } = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
@@ -421,8 +421,7 @@ export async function remoteReviewProduction(options: {
     const target = { hostRef: executionHostRef,
       applicationInstallationId: options.executionHost === 'main' ? mainId : identity.workerInstallationId,
       harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint! }
-    const profiles = []
-    for (const configuration of saved.configurations) {
+    const qualifyProfile = async (configuration: typeof saved.configurations[number]) => {
       const profile = HostHarnessOverrideSaveResultSchema.parse(await value('harness_instance_save', {
         commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0, target,
         presetId: 'remote-review-fixture', enabled: true, configuration: configuration.harness,
@@ -431,7 +430,19 @@ export async function remoteReviewProduction(options: {
         commandId: randomUUID(), instanceId: profile.instanceId, expectedRevision: profile.revision, target,
       }))
       if (!checked.proof.qualified) throw new Error(`Remote profile qualification failed: ${JSON.stringify(checked.proof)}`)
-      profiles.push(checked.value)
+      return checked.value
+    }
+    const profiles = []
+    if (options.parallelProfileChecks) {
+      // Drain every native check before setup cleanup can stop Main or Worker.
+      const results = await Promise.allSettled(saved.configurations.map(qualifyProfile))
+      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      if (errors.length) throw new AggregateError(errors, 'Remote profile qualification failed.')
+      for (const result of results) {
+        if (result.status === 'fulfilled') profiles.push(result.value)
+      }
+    } else {
+      for (const configuration of saved.configurations) profiles.push(await qualifyProfile(configuration))
     }
     let location = mainLocation
     if (options.executionHost !== 'main') {
