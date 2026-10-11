@@ -627,6 +627,8 @@ export const OperatorToolNameSchema = z.enum([
   'general_settings_get', 'general_settings_update',
   'provider_accounts_list', 'provider_account_create', 'provider_account_rename',
   'provider_account_default_set', 'provider_account_login', 'provider_account_logout', 'provider_account_refresh',
+  'provider_accounts_page', 'provider_account_get', 'provider_account_register', 'provider_account_remove',
+  'provider_account_auth_prepare', 'provider_account_auth_status', 'provider_account_auth_cancel', 'provider_account_models',
   'system_prompt_get', 'system_prompt_update', 'operator_initial_prompt_get', 'operator_initial_prompt_update',
   'worker_execution_settings_get', 'remote_execution_settings_get', 'remote_execution_settings_update',
   "workspace_defaults_update",

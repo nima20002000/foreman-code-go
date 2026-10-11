@@ -5,11 +5,16 @@ import {
 } from '@foreman-code/contracts/management'
 
 import { DomainError } from '../errors.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 
 export interface AuthorizedResource {
   workspaceId?: string
   workflowId?: string
   runId?: string
+  mainId?: string
+  deviceId?: string
+  applicationInstallationId?: string
+  providerAccountId?: string
 }
 
 function includesOrUnscoped(values: string[] | undefined, value: string | undefined): boolean {
@@ -30,7 +35,11 @@ export function isAuthorized(
   return principal.grants.some((grant) => grant.actions.includes(action)
     && includesOrUnscoped(grant.scope.workspaceIds, resource.workspaceId)
     && includesOrUnscoped(grant.scope.workflowIds, resource.workflowId)
-    && includesOrUnscoped(grant.scope.runIds, resource.runId))
+    && includesOrUnscoped(grant.scope.runIds, resource.runId)
+    && includesOrUnscoped(grant.scope.mainIds, resource.mainId)
+    && includesOrUnscoped(grant.scope.deviceIds, resource.deviceId)
+    && includesOrUnscoped(grant.scope.applicationInstallationIds, resource.applicationInstallationId)
+    && includesOrUnscoped(grant.scope.providerAccountIds, resource.providerAccountId))
 }
 
 export function hasAction(principal: ManagementPrincipal, action: ManagementAction): boolean {
@@ -47,5 +56,26 @@ export function requireAuthorization(
 ): void {
   if (!isAuthorized(principal, action, resource)) {
     throw new DomainError('ACCESS_DENIED', 'The caller is not authorized for this operation and resource.', 403)
+  }
+}
+
+/** Account target restrictions apply to every live delegation link. */
+export async function requireLiveAccountAuthorization(sql: GraphSqlClient, principalId: string,
+  action: 'provider_accounts:read' | 'provider_accounts:manage', resource: AuthorizedResource): Promise<void> {
+  const seen = new Set<string>()
+  let id: string | null = principalId
+  while (id) {
+    if (seen.has(id) || seen.size >= 16) throw new DomainError('AUTH_INVALID', 'The delegation chain is invalid.', 403)
+    seen.add(id)
+    const row = (await sql.query<{ id: string; name: string; audience: string; grants: unknown;
+      expires_at: Date; revoked_at: Date | null; delegated_from: string | null }>(
+      'select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1 for share',
+      [id])).rows[0]
+    if (!row) throw new DomainError('AUTH_REVOKED', 'The account authority is unavailable.', 403)
+    const principal = ManagementPrincipalSchema.parse({ id: row.id, name: row.name, audience: row.audience,
+      grants: row.grants, expiresAt: row.expires_at.toISOString(), revokedAt: row.revoked_at?.toISOString() ?? null })
+    requireAuthorization(principal, 'provider_accounts:read', resource)
+    requireAuthorization(principal, action, resource)
+    id = row.delegated_from
   }
 }

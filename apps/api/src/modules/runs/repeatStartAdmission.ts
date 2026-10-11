@@ -33,6 +33,8 @@ import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { validateReviewerBootstrap } from '../workflows/reviewerBootstrap.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { prepareRunStart } from './startPreparation.js'
+import type { AcceptedProviderAccountBindings } from '../provider-accounts/acceptedBindings.js'
+import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
@@ -41,6 +43,8 @@ import { prepareRunStart } from './startPreparation.js'
 export interface RepeatStartPublication {
   readonly workerExecution?: WorkerExecutionPolicy
   readonly placementAdmission?: RunPlacementAdmissionPort
+  readonly accountBindings?: AcceptedProviderAccountBindings
+  readonly preparedAccountBindings?: Readonly<Record<string, AcceptedProviderAccountBinding>>
   /** Open existing G1 with historyCoverage='from_admission', publish the queued
    * v3 Run and empty/lazy occurrence projection, on THIS branded transaction.
    * Register the G1 finalizer before returning its validated semantic digest.
@@ -59,8 +63,11 @@ export interface RepeatStartPreparation {
   value?: {
     key: string
     preparedPlacements: PreparedRunPlacementAdmission | undefined
-    prepared: PreparedRepeatStartLocation
+    prepared: AccountStartLocation
   }
+}
+type AccountStartLocation = PreparedRepeatStartLocation & {
+  accountBindings?: Record<string, AcceptedProviderAccountBinding>
 }
 interface ReceiptRow { input_hash: string; target_key: string; result: unknown }
 const locationColumns = 'id,execution_location,execution_location_identity,location_revision::text,archived_at'
@@ -130,7 +137,8 @@ async function readStartReceipt(sql: GraphTransactionSql, principalId: string, i
 
 async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationService,
   input: RunStartV3Input, signal: AbortSignal,
-  placements?: PreparedRunPlacementAdmission): Promise<PreparedRepeatStartLocation> {
+  placements?: PreparedRunPlacementAdmission,
+  accounts?: AcceptedProviderAccountBindings): Promise<AccountStartLocation> {
   signal.throwIfAborted()
   const client = await pool.connect()
   try {
@@ -153,6 +161,14 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     const configurations = configs.rows.map((row) => readImmutableAgentConfiguration(row, {
       workspaceId: input.workspaceId, id: version.agentConfigurationVersionIds[row.agent_id]!, agentId: row.agent_id,
     }))
+    const accountBindings: Record<string, AcceptedProviderAccountBinding> = {}
+    if (accounts) {
+      for (const configuration of configurations) {
+        const binding = await accounts.prepare(configuration.harness, configuration.harnessProfileSelection)
+        if (binding) accountBindings[configuration.id] = binding
+        signal.throwIfAborted()
+      }
+    }
     signal.throwIfAborted()
     for (const configuration of configurations) assertClaudeFullAccess(configuration.harness)
     ExecutableWorkflowV3Schema.parse({ version, configurations })
@@ -176,7 +192,7 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     const after = await client.query<PreparedRepeatStartLocation['row']>(`select ${locationColumns} from workspaces where id=$1`, [input.workspaceId])
     if (!sameWorkflowValue(row, after.rows[0])) return conflict('LOCATION_REVISION_CONFLICT', 'The location changed during validation.')
     signal.throwIfAborted()
-    return { row, location }
+    return { row, location, ...(accounts ? { accountBindings } : {}) }
   } finally { client.release() }
 }
 
@@ -191,7 +207,7 @@ async function prepareStart(pool: pg.Pool, locations: WorkspaceLocationService, 
   const value = await prepareRunStart(async (signal) => {
     const preparedPlacements = await publication.placementAdmission?.prepare(input, principal, signal)
     signal.throwIfAborted()
-    const prepared = await prepareLocation(pool, locations, input, signal, preparedPlacements)
+    const prepared = await prepareLocation(pool, locations, input, signal, preparedPlacements, publication.accountBindings)
     signal.throwIfAborted()
     return { key, preparedPlacements, prepared }
   }, schedule?.signal)
@@ -212,9 +228,28 @@ export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedR
     runner_id,working_directory,location_revision) values($1,$2,$3,$4,'queued',$5::jsonb,$6,$7,$8)`,
   [run.id, run.workspaceId, run.workflowId, run.workflowVersionId, canonicalGraphJson(run),
     run.executionLocation.runnerId, run.executionLocation.rootPath, run.executionLocation.locationRevision])
+  const providerAccountBindings: Record<string, AcceptedProviderAccountBinding> = {}
+  if (publication.accountBindings) {
+    for (const configuration of accepted.snapshot.executable.configurations) {
+      const binding = await publication.accountBindings.accept(sql, 'run-node', `${run.id}:agent:${configuration.agentId}`,
+        configuration.harness, configuration.harnessProfileSelection,
+        { prepared: publication.preparedAccountBindings?.[configuration.id] })
+      if (binding) providerAccountBindings[`agent:${configuration.agentId}`] = binding
+    }
+    for (const node of accepted.snapshot.executable.version.definition.nodes) {
+      if (node.kind === 'job') continue
+      const configuration = accepted.snapshot.executable.configurations.find(value => value.agentId === node.agentId)
+      if (!configuration) throw new DomainError('RUN_CONFIGURATION_MISSING', 'The node configuration is unavailable.', 409)
+      const binding = await publication.accountBindings.accept(sql, 'run-node', `${run.id}:${node.id}`,
+        configuration.harness, configuration.harnessProfileSelection,
+        { prepared: publication.preparedAccountBindings?.[configuration.id] })
+      if (binding) providerAccountBindings[node.id] = binding
+    }
+  }
   // Required admission write: failure rolls back the Run, authority and command.
   // Internal scheduled admission must pass 'schedule'; never accept it from HTTP/MCP input.
-  await insertRunBoardSnapshot(sql, accepted, admissionTrigger)
+  await insertRunBoardSnapshot(sql, accepted, admissionTrigger,
+    publication.accountBindings ? providerAccountBindings : undefined)
   if (placementAdmission) await insertAcceptedPlacements(sql, run.id, accepted.snapshot.executable.version.definition.nodes.filter(node => node.kind !== 'job'),
     run.agentConfigurationVersionIds, placementAdmission.bind(run.id), placementAdmission.fence(sql))
   else if (accepted.snapshot.executable.version.definition.nodes.some(node => node.kind !== 'job' && node.placement)) {
@@ -317,7 +352,9 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
         executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
         input: input.input, createdAt: new Date().toISOString() })
       admissionBegan = true
-      await insertRepeatRun(sql, AcceptedRepeatStartV1Schema.parse({ snapshot, run }), publication,
+      await insertRepeatRun(sql, AcceptedRepeatStartV1Schema.parse({ snapshot, run }), {
+        ...publication, ...(prepared.accountBindings ? { preparedAccountBindings: prepared.accountBindings } : {}),
+      },
         source === 'schedule' ? 'schedule' : 'manual', preparedPlacements)
       await bindRunAuthority(client, run.id, authority)
       await sql.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)

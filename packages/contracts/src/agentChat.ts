@@ -7,6 +7,7 @@ import { OperatorConversationHistoryQuerySchema } from "./operatorChat.js";
 import { SavedNodePlacementSchema } from './nodePlacement.js';
 import { WorkspaceRootPolicySchema } from './workspaceRootPolicies.js';
 import { PromptSettingSnapshotSchema } from './prompts.js';
+import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js';
 
 export const AgentChatDirectoryBindingSchema = z.object({ workflowVersionId: z.string().min(1),
   placement: SavedNodePlacementSchema, policy: WorkspaceRootPolicySchema,
@@ -101,6 +102,7 @@ export const AgentChatOriginSchema = z.discriminatedUnion("kind", [
 export type AgentChatOrigin = z.infer<typeof AgentChatOriginSchema>;
 
 export const AgentConversationSchema = z.object({
+  providerAccountBinding: AcceptedProviderAccountBindingSchema.optional(),
   id: IdSchema,
   workspaceId: IdSchema,
   workflowId: IdSchema,

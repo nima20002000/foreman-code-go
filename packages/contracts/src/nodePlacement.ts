@@ -7,6 +7,7 @@ import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 import { SourcePinSchema, SourceMaterializationRecordSchema, VerifiedSourceWorkingTreeSchema } from './sourceAdmission.js'
 import { GraphIdSchema, IdSchema } from './schemaPrimitives.js'
 import { WorkflowArtifactOutputsV1Schema } from './workflowArtifactDeclarations.js'
+import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js'
 
 /** v0 interface checkpoint uses wire version 1; unknown versions fail closed. */
 export const PLACEMENT_CONTRACT_VERSION = 1 as const
@@ -30,6 +31,7 @@ export const AcceptedDestinationSchema = z.object({
   attestationId: IdSchema, attestationHash: PlacementDigestSchema,
 }).strict()
 const AgentPayload = z.object({
+  accountBinding: AcceptedProviderAccountBindingSchema.optional(),
   worktree: SourceWorktreeRequestSchema.optional(),
   kind: z.literal('agent'), agentId: IdSchema, agentConfigurationVersionId: IdSchema,
   driverId: IdSchema, driverRevision: IdSchema, instanceId: IdSchema, instanceRevision: IdSchema,

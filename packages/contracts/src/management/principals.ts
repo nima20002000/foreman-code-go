@@ -5,6 +5,7 @@ export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
+  'provider_accounts:read', 'provider_accounts:manage',
   'bug_reports:report', 'bug_reports:read', 'bug_reports:update',
   "sources:read", "sources:approve", "sources:reconcile", "source_roots:read", "source_roots:bind",
   "job_definitions:read", "job_definitions:write", "jobs:start", "jobs:read", "jobs:cancel", "job_logs:read", "job_artifacts:read",
@@ -65,7 +66,8 @@ export type ManagementAction = z.infer<typeof ManagementActionSchema>;
 
 /** Host telemetry and provisioning require separately selected grants, including for broad presets. */
 export const DEFAULT_MANAGEMENT_ACTIONS = ManagementActionSchema.options.filter(
-  (action) => action !== "devices:metrics:read" && action !== "devices:provision",
+  (action) => action !== "devices:metrics:read" && action !== "devices:provision"
+    && action !== 'provider_accounts:read' && action !== 'provider_accounts:manage',
 );
 
 export const ManagementScopeSchema = z
@@ -73,6 +75,10 @@ export const ManagementScopeSchema = z
     workspaceIds: z.array(IdSchema).max(500).optional(),
     workflowIds: z.array(IdSchema).max(500).optional(),
     runIds: z.array(IdSchema).max(500).optional(),
+    mainIds: z.array(z.uuid()).max(500).optional(),
+    deviceIds: z.array(z.uuid()).max(500).optional(),
+    applicationInstallationIds: z.array(z.uuid()).max(500).optional(),
+    providerAccountIds: z.array(z.uuid()).max(500).optional(),
   })
   .strict();
 export type ManagementScope = z.infer<typeof ManagementScopeSchema>;

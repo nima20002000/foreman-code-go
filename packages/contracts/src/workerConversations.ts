@@ -17,6 +17,7 @@ import { FileMediaTypeSchema, MAX_FILE_BYTES, MessageAttachmentRefsSchema } from
 import { PromptSettingSnapshotSchema } from './prompts.js'
 import { AcceptedNodePlacementSchema } from './nodePlacement.js'
 import { VerifiedSourceWorkingTreeSchema } from './sourceAdmission.js'
+import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js'
 
 const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -28,6 +29,7 @@ export const WorkerConversationOwnerSchema = z.discriminatedUnion('kind', [
     workflowId: id, workflowNodeId: id }).strict(),
 ])
 export const WorkerConversationBindingSchema = z.object({
+  accountBinding: AcceptedProviderAccountBindingSchema.optional(),
   owner: WorkerConversationOwnerSchema,
   directoryBinding: AgentChatDirectoryBindingSchema.optional(),
   systemPrompt: PromptSettingSnapshotSchema.optional(),

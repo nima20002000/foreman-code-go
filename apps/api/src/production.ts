@@ -117,7 +117,10 @@ import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/c
 import { ProviderAccountsService } from './modules/provider-accounts/service.js'
 import { ProviderAccountsRepository } from './modules/provider-accounts/repository.js'
 import { LocalProviderCredentials } from './modules/provider-accounts/localCredentials.js'
-import { NativeProviderAccountCommands } from './modules/provider-accounts/nativeCommands.js'
+import { NativeProviderAccountCommands, type AccountNativeSelection } from './modules/provider-accounts/nativeCommands.js'
+import { NativeProviderAccountOperations } from './modules/provider-accounts/nativeOperations.js'
+import { NativeAccountJournal } from './modules/provider-accounts/nativeJournal.js'
+import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { ProviderAccountConfigurationService } from './modules/harnesses/providerAccountConfiguration.js'
 import { assertClaudeCredentialEndpoint } from './modules/harnesses/claudeSdk/mcpInspection.js'
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
@@ -279,6 +282,11 @@ import { HostHarnessOverrideService, type HostHarnessOverrideAuthority } from '.
 import { commandInputHash } from './modules/commands/postgres.js'
 import { authorizeDeviceHost, assertDeviceHostInstallation } from './modules/devices/hostAuthorization.js'
 
+/** The native owner supplies slot-specific installation and isolation qualification. */
+export type ProductionProviderAccountSelection = AccountNativeSelection & {
+  selectAccount?: NonNullable<ConstructorParameters<typeof NativeHarnessFactories>[0]['selectAccount']>
+}
+
 /** The startup composition is shared with regression tests; infrastructure owns its lifecycle. */
 export function buildProductionApp(
   config: ApiConfig,
@@ -291,6 +299,7 @@ export function buildProductionApp(
   codexChatFiles?: ProductionCodexChatFiles,
   qualificationSuites?: Record<CompatibilityHarness, QualificationSuite>,
   infrastructure?: ProductionHarnessInfrastructure,
+  accountSelection?: ProductionProviderAccountSelection,
 ) {
   const mainCodex = new MainCodexSelection(config.harnesses.codexBinary,
     resolve(config.harnesses.workspaceRoot, 'main-codex-selection.json'), systemMaintenancePorts())
@@ -499,9 +508,16 @@ export function buildProductionApp(
   const commands = new PostgresCommandCoordinator(database.pool)
   const bugReports = new BugReportService(database.pool, commands)
   const accountCredentials = new LocalProviderCredentials(resolve(config.harnesses.workspaceRoot, 'provider-accounts'))
+  const accountCommands = new NativeProviderAccountCommands(accountSelection ?? { selected: async () => null })
+  const accountNative = processRegistry instanceof NativeProcessRegistry
+    ? new NativeProviderAccountOperations(accountCommands,
+      new NativeAccountJournal(resolve(config.harnesses.workspaceRoot, 'provider-account-operations')), processRegistry,
+      input => providerAccounts.assertAuthenticationEligibility(input.operation))
+    : accountCommands
   const providerAccounts = new ProviderAccountsService(database.pool,
     new ProviderAccountsRepository(database.pool, () => accountCredentials.hostId()), accountCredentials,
-    new NativeProviderAccountCommands({ codex: () => mainCodex.binary, claude: 'claude' }), commands)
+    accountNative, commands)
+  const workflowAccountBindings = new Map<string, AcceptedProviderAccountBinding>()
   const accountConfigurations = new ProviderAccountConfigurationService(providerAccounts)
   // Producer/consumer halves are installed during construction. Neither HTTP,
   // MCP nor a caller-supplied JSON observation can manufacture these captures.
@@ -681,6 +697,7 @@ export function buildProductionApp(
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ get codexBinary() { return mainCodex.binary }, responseJournal,
     accounts: providerAccounts,
+    ...(accountSelection?.selectAccount ? { selectAccount: accountSelection.selectAccount } : {}),
     refreshInstallations: signal => harnessRegistry.refreshMain(signal),
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
@@ -850,6 +867,8 @@ export function buildProductionApp(
   const claudeLaunches = new WeakMap<NativeHarnessSessionManager, ReturnType<typeof productionClaudeManager>>()
   const managers = new ExecutionScopedNativeSessionManagerResolver((context, getOwner) => {
     const configuration = context.configuration.harness
+    const acceptedAccount = workflowAccountBindings.get(context.executionId)
+    const accountBinding = acceptedAccount?.kind === 'slot' ? acceptedAccount : undefined
     if (configuration.harness === 'opencode') {
       throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     }
@@ -885,6 +904,7 @@ export function buildProductionApp(
         'Claude requires the persisted Run and execution attempt.', 409)
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
         accounts: providerAccounts,
+        ...(accountBinding ? { accountBinding } : {}),
         profiles: claudeProfiles, ...(selector ? { selector } : {}),
         binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner },
         role: 'workflow', configuration, workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
@@ -910,6 +930,7 @@ export function buildProductionApp(
     if (selector) {
       if (!context.runId || !context.attempt) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact Run attempt is unavailable.', 409)
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
+        ...(accountBinding ? { accountBinding } : {}),
         selector, binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner,
           ...(context.purpose ? { purpose: context.purpose } : {}) },
         configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
@@ -919,6 +940,7 @@ export function buildProductionApp(
     }
     const selection = harnessRegistry.initialized ? harnessRegistry.pinAccepted(context.configuration) : undefined
     const { manager } = nativeFactories.allocate({
+      ...(accountBinding ? { accountBinding } : {}),
       ...(selection ? { selection } : {}),
       role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,
       configured: { instanceId: selection?.instance.instanceId ?? context.agentId, instanceRevision: context.configuration.id, driverId: configuration.harness,
@@ -969,12 +991,17 @@ export function buildProductionApp(
   const credentials = new WorkerCredentialService(database.pool, access)
   const prepareWorkflowManagerContext = async (context: NativeManagerResolutionContext) => {
     const prepared = await remoteWorkflow!.prepareContext(context)
-    if (!context.runId || context.purpose) return prepared
+    if (!context.runId) return prepared
     const row = (await database.pool.query<{ version: unknown; node_id: string }>(
       `select v.record as version,e.workflow_node_id as node_id from harness_executions e
        join runs r on r.id=e.run_id join workflow_versions v on v.id=r.workflow_version_id
        where e.id=$1 and r.id=$2`, [context.executionId, context.runId])).rows[0]
     if (!row) throw new DomainError('WORKFLOW_ARTIFACT_SOURCE_UNAVAILABLE', 'The saved native execution is unavailable.', 409)
+    const binding = await providerAccounts.runtimeBinding('run-node', context.purpose
+      ? `${context.runId}:agent:${context.configuration.agentId}` : `${context.runId}:${row.node_id}`,
+    context.configuration.harness, context.configuration.harnessProfileSelection)
+    if (binding) workflowAccountBindings.set(context.executionId, binding)
+    if (context.purpose) return prepared
     const node = WorkflowVersionV3Schema.parse(row.version).definition.nodes.find(item => item.id === row.node_id)
     return node && node.kind !== 'job' && node.artifactOutputs
       ? { ...prepared, artifactOutputs: node.artifactOutputs } : prepared
@@ -1138,7 +1165,7 @@ export function buildProductionApp(
   const operatorWorkingDirectory = resolve(config.harnesses.workspaceRoot, 'operator')
   const operatorManagers = new Map<string, NativeHarnessSessionManager>()
   const operatorConversations = new PostgresOperatorConversationRepository(database.pool, accountConfigurations)
-  const agentConversations = new PostgresAgentChatRepository(database.pool)
+  const agentConversations = new PostgresAgentChatRepository(database.pool, providerAccounts.acceptedBindings)
   const workerChats = createProductionWorkerConversations({ pool: database.pool,
     endpoint: () => deviceRuntime.endpointForDomains(), profiles: selectedProfiles, claudeProfiles,
     operators: operatorConversations, agents: agentConversations, registry: harnessRegistry,
@@ -1227,6 +1254,7 @@ export function buildProductionApp(
         return await manager.readCompaction!(session, start, state, signal)
       } finally { await nativeFactories.disposeAuxiliary(manager) }
     }
+  const operatorAccountBindings = new Map<string, AcceptedProviderAccountBinding>()
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
     processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
@@ -1238,6 +1266,8 @@ export function buildProductionApp(
       }
       if (!configuration.harnessProfileSelection || configuration.harness.harness === 'claude') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The selected Operator driver profile is unavailable.', 409)
       return productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
+        ...(operatorAccountBindings.get(conversationId)
+          ? { accountBinding: operatorAccountBindings.get(conversationId)! } : {}),
         selector: configuration.harnessProfileSelection, binding: { kind: 'operator', conversationId, repository: operatorConversations },
         configuration: configuration.harness, role: 'operator', workingDirectory: operatorWorkingDirectory, ownerAgentId: configuration.operatorId,
         recovery, appMcpAccess: 'scoped',
@@ -1251,6 +1281,8 @@ export function buildProductionApp(
         = { kind: 'operator', conversationId, repository: operatorConversations }
       const claude = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
         accounts: providerAccounts,
+        ...(operatorAccountBindings.get(conversationId)
+          ? { accountBinding: operatorAccountBindings.get(conversationId)! } : {}),
         profiles: claudeProfiles,
         ...(configuration.harnessProfileSelection ? { selector: configuration.harnessProfileSelection } : {}),
         binding: controlBinding, role: 'operator',
@@ -1324,6 +1356,12 @@ export function buildProductionApp(
       finally { await close() }
     },
   )
+  resolveOperatorManager.prepareAccountBinding = async (configuration, conversationId) => {
+    const binding = await providerAccounts.runtimeBinding('operator-command', `${conversationId}:session`,
+      configuration.harness, configuration.harnessProfileSelection)
+    if (binding?.kind === 'slot') operatorAccountBindings.set(conversationId, binding)
+    else operatorAccountBindings.delete(conversationId)
+  }
   resolveOperatorManager.recoverCompaction = recoverChatCompaction
   const chat = new OperatorChatService(
     operatorConversations, operators,
@@ -1341,6 +1379,8 @@ export function buildProductionApp(
     }
     const existing = agentChatManagers.get(conversationId)
     if (existing) return existing
+    const accountBinding = await providerAccounts.runtimeBinding('agent-conversation', conversationId,
+      configuration.harness, configuration.harnessProfileSelection)
     const selected = await agentChatProfileSelection(configuration, workingDirectory, accountSource?.executionId)
     const selector = selected.profileSelection
     const resolved = agentChatManagers.get(conversationId)
@@ -1359,6 +1399,7 @@ export function buildProductionApp(
     if (harness.harness === 'claude') {
       const { manager } = productionClaudeManager({ pool: database.pool, factories: nativeFactories, registry: harnessRegistry,
         ...sourceRecovery,
+        ...(accountBinding?.kind === 'slot' ? { accountBinding } : {}),
         accounts: providerAccounts,
         profiles: claudeProfiles,
         ...(selector ? { selector } : {}),
@@ -1375,6 +1416,7 @@ export function buildProductionApp(
     if (selector) {
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         ...sourceRecovery,
+        ...(accountBinding?.kind === 'slot' ? { accountBinding } : {}),
         selector,
         binding: { kind: 'agent', conversationId, workspaceId: configuration.workspaceId, repository: agentConversations },
         configuration: harness, role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId, recovery, appMcpAccess: 'none',
@@ -1385,6 +1427,7 @@ export function buildProductionApp(
     const selection = harnessRegistry.initialized ? harnessRegistry.pinAccepted(configuration) : undefined
     const { manager } = nativeFactories.allocate({
       ...sourceRecovery,
+      ...(accountBinding?.kind === 'slot' ? { accountBinding } : {}),
       ...(selection ? { selection } : {}),
       role: 'agent-chat', workingDirectory, ownerAgentId: configuration.agentId,
       configured: { instanceId: selection?.instance.instanceId ?? configuration.agentId, instanceRevision: configuration.id, driverId: harness.harness,
@@ -1450,7 +1493,8 @@ export function buildProductionApp(
       'The native runtime has not acquired ownership or is shutting down.', 503)
   }
   const currentProduction: CurrentRunProductionBinding = Object.freeze({
-    startPublication: { ...binding.startPublication, workerExecution, ...(selectedSuites ? { placementAdmission: {
+    startPublication: { ...binding.startPublication, workerExecution, accountBindings: providerAccounts.acceptedBindings,
+      ...(selectedSuites ? { placementAdmission: {
       prepare: (...args: Parameters<AgentPlacementProducer['prepare']>) => {
         if (!agentPlacement) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual saved-placement admission producer is unavailable.', 503)
         return agentPlacement.prepare(...args)
@@ -1747,6 +1791,8 @@ export function buildProductionApp(
       assertOpen()
       const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
+      providerAccounts.bindTarget(async () => ({ hostRef: { kind: 'main', mainId: machine.installationId },
+        applicationInstallationId: machine.installationId, keyRevision: null, authorizationRevision: null }))
       assertOpen()
       const connectionAuthority = new PostgresTrustedConnectionHumanAuthority(
         database.pool, machine.installationId,
@@ -1829,7 +1875,7 @@ export function buildProductionApp(
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
           harnessRegistry, { codex: selectedSuites.codex.revision },
           workerExecution, host => hostProfileChecks.assertReady(host),
-          (hosts, signal) => installationMonitor.refreshHosts(hosts, signal))
+          (hosts, signal) => installationMonitor.refreshHosts(hosts, signal), providerAccounts)
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)
       }

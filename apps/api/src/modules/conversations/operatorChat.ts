@@ -91,6 +91,7 @@ export class OperatorConversationEvents {
 
 export interface NativeManagerResolver {
   (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs?: boolean): NativeHarnessSessionManager
+  prepareAccountBinding?(configuration: OperatorConfigurationVersion, conversationId: string): Promise<void>
   /** Resolve the accepted receipt, not the caller's current route or upload owner. */
   recoverCompaction?(configuration: OperatorConfigurationVersion, conversationId: string,
     session: NativeSessionReference, start: import('../harnesses/port.js').NativeSessionStart,
@@ -570,6 +571,7 @@ export class OperatorChatService {
       }
       existing.configuration = configuration; return existing
     }
+    if (!existing) await this.managers.prepareAccountBinding?.(configuration, id)
     const runtime: Runtime = existing ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     runtime.configuration = configuration
     if (controlPrincipalId) runtime.manager.setSessionControlPrincipal?.(controlPrincipalId)
@@ -614,6 +616,7 @@ export class OperatorChatService {
       // context before a cleanup-only attach; the durable request stays fenced.
       await this.release(id)
     }
+    if (!this.runtimes.has(id)) await this.managers.prepareAccountBinding?.(configuration, id)
     const runtime: Runtime = this.runtimes.get(id) ?? { manager: this.managers(configuration, id, fileInputs), fileInputs }
     this.runtimes.set(id, runtime)
     if (!runtime.session) {

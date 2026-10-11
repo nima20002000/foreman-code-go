@@ -8,6 +8,7 @@ export const ProviderAccountStatusSchema = z.enum(['signed-out', 'signed-in', 'l
 export const ProviderAccountIdSchema = z.string().uuid()
 const Revision = z.number().int().safe().nonnegative()
 const Reference = z.string().trim().min(1).max(200)
+const ProfileReference = Reference.regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
 export const ProviderAccountSubjectSchema = z.object({
   subject: Reference,
   provenance: z.literal('qualified-native'),
@@ -19,7 +20,7 @@ export const ProviderAccountBindingSchema = z.object({
   accountId: ProviderAccountIdSchema,
   provider: AccountProviderSchema,
   target: DeviceProvisioningTargetSchema,
-  profileRef: Reference,
+  profileRef: ProfileReference,
   bindingRevision: Revision.min(1),
   subject: ProviderAccountSubjectSchema.nullable(),
 }).strict()
@@ -27,8 +28,9 @@ export const ProviderAccountLegacyBindingSchema = z.object({
   kind: z.literal('legacy-profile'),
   provider: AccountProviderSchema,
   target: DeviceProvisioningTargetSchema.nullable(),
-  profileRef: Reference.nullable(),
+  profileRef: ProfileReference.nullable(),
   historicalSubject: z.literal('unknown'),
+  accountId: ProviderAccountIdSchema.optional(),
 }).strict()
 export const AcceptedProviderAccountBindingSchema = z.discriminatedUnion('kind', [
   ProviderAccountBindingSchema, ProviderAccountLegacyBindingSchema,
@@ -61,6 +63,7 @@ export const ProviderAccountSchema = z.object({
   binding: ProviderAccountBindingSchema.optional(),
   observation: ProviderAccountObservationSchema.optional(),
   removedAt: z.string().datetime().nullable().optional(),
+  legacyProfile: z.boolean().optional(),
   possibleDuplicateAccountIds: z.array(ProviderAccountIdSchema).max(100).optional(),
 }).strict()
 export const ProviderAccountsSnapshotSchema = z.object({
@@ -91,6 +94,7 @@ export const ProviderAccountCreateInputSchema = ProviderAccountCommandInputSchem
 })
 export const ProviderAccountRenameInputSchema = ProviderAccountCommandInputSchema.extend({
   name: ProviderAccountSchema.shape.name,
+  expectedLabelRevision: Revision.optional(),
 })
 export const ProviderAccountListInputSchema = z.object({
   target: DeviceProvisioningTargetSchema.optional(),
@@ -112,7 +116,7 @@ export const ProviderAccountRegisterInputSchema = ProviderAccountCommandInputSch
   provider: AccountProviderSchema,
   name: ProviderAccountSchema.shape.name,
   authMode: ProviderAccountAuthModeSchema,
-  profileRef: Reference,
+  profileRef: ProfileReference,
   qualificationId: Reference,
 }).strict()
 export const ProviderAccountDefaultInputSchema = ProviderAccountCommandInputSchema.extend({

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { GraphIdSchema, IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 import { CurrentWorkflowRelationshipSchema } from "./wave25/workflowShape.js";
 import type { RunExecutionState, RunOutcome } from "./index.js";
+import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js';
 
 const Workflow = { workspaceId: IdSchema, workflowId: IdSchema };
 const Run = { ...Workflow, runId: IdSchema };
@@ -63,6 +64,7 @@ export const RunBoardEdgeSnapshotSchema = CurrentWorkflowRelationshipSchema.read
 export type RunBoardEdgeSnapshot = z.infer<typeof RunBoardEdgeSnapshotSchema>;
 
 const AvailableSnapshot = z.object({
+  providerAccountBindings: z.record(z.string(), AcceptedProviderAccountBindingSchema).optional(),
   ...Run, kind: z.literal("available"), workflowVersionId: IdSchema,
   /** The admission transaction's timestamp, not a later history-read timestamp. */
   capturedAt: TimestampSchema,

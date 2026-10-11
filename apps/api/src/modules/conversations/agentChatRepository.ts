@@ -22,11 +22,16 @@ import { agentActivityScope } from './activitySnapshot.js'
 import { readConversationPublicationReceipts, type ConversationPublicationReceipt } from './messagePublications.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { OPERATOR_SNAPSHOT_MESSAGE_BYTES, OPERATOR_HISTORY_PAGE_BYTES } from './operatorChatRepository.js'
+import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
+import { legacyProviderAccountBinding, readProviderAccountBinding, type AcceptedProviderAccountBindings }
+  from '../provider-accounts/acceptedBindings.js'
+import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
 
 /** Agent rows in the shared conversation table. Operator columns stay null. */
 export interface AgentConversationRow {
+  providerAccountBinding?: AcceptedProviderAccountBinding
   id: string
   agent_key: string
   workspace_id: string
@@ -104,6 +109,7 @@ export function agentConversation(row: AgentConversationRow): AgentConversation 
     id: row.id, workspaceId: row.workspace_id, workflowId: row.workflow_id, workflowNodeId: row.workflow_node_id,
     agentId: row.agent_id, agentConfigurationVersionId: row.agent_configuration_version_id, harness: row.harness,
     origin: row.record.origin,
+    ...(row.providerAccountBinding ? { providerAccountBinding: row.providerAccountBinding } : {}),
     ...(row.record.systemPrompt ? { systemPrompt: row.record.systemPrompt } : {}),
     nativeSession: row.native_session_id && row.provider_version
       ? { nativeSessionId: row.native_session_id, providerVersion: row.provider_version } : null,
@@ -141,13 +147,44 @@ export interface NewAgentConversation {
 }
 
 export class PostgresAgentChatRepository {
-  constructor(readonly pool: pg.Pool) {}
+  constructor(readonly pool: pg.Pool, private readonly accountBindings?: AcceptedProviderAccountBindings) {}
+
+  private async acceptAccount(sql: Queryable, row: AgentConversationRow) {
+    if (!this.accountBindings) return
+    const found = (await sql.query<{ record: unknown }>(
+      'select record from agent_configuration_versions where id=$1', [row.agent_configuration_version_id])).rows[0]
+    if (!found) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND', 'The accepted chat configuration is unavailable.', 409)
+    const configuration = AgentConfigurationVersionSchema.parse(found.record)
+    const origin = row.record.origin
+    const source = origin.kind === 'run_execution'
+      ? await readProviderAccountBinding(sql, 'run-node', `${origin.runId}:${row.workflow_node_id}`)
+        ?? legacyProviderAccountBinding(configuration.harness, configuration.harnessProfileSelection)
+      : undefined
+    const binding = await this.accountBindings.accept(sql, 'agent-conversation', row.id,
+      configuration.harness, configuration.harnessProfileSelection, { source })
+    if (binding) row.providerAccountBinding = binding
+  }
+
+  private async accountReadback(query: Queryable, row: AgentConversationRow | undefined) {
+    if (!row || !this.accountBindings) return row
+    let binding = await readProviderAccountBinding(query, 'agent-conversation', row.id)
+    if (!binding) {
+      const configuration = (await query.query<{ record: unknown }>(
+        'select record from agent_configuration_versions where id=$1', [row.agent_configuration_version_id])).rows[0]
+      if (configuration) {
+        const saved = AgentConfigurationVersionSchema.parse(configuration.record)
+        binding = legacyProviderAccountBinding(saved.harness, saved.harnessProfileSelection)
+      }
+    }
+    if (binding) row.providerAccountBinding = binding
+    return row
+  }
 
   unfinishedActivityOwners(conversationId?: string) { return new PostgresOperatorActivityRepository(this.pool).unfinishedOwners('agent', conversationId) }
 
   async byKey(key: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
-    return (await query.query<AgentConversationRow>(
-      `select * from operator_conversations where kind='agent' and agent_key=$1 and deleted_at is null`, [key])).rows[0]
+    return this.accountReadback(query, (await query.query<AgentConversationRow>(
+      `select * from operator_conversations where kind='agent' and agent_key=$1 and deleted_at is null`, [key])).rows[0])
   }
   async ensureForControls(key: string, create: NewAgentConversation,
     authorize: (client: pg.PoolClient) => Promise<void>): Promise<AgentConversationRow> {
@@ -171,6 +208,7 @@ export class PostgresAgentChatRepository {
           JSON.stringify({ origin, workingDirectory, runtimeDirectory,
             ...(directoryBinding ? { directoryBinding } : {}), ...(systemPrompt ? { systemPrompt } : {}) })])
         row = (await this.get(id, client))!
+        await this.acceptAccount(client, row)
       }
       await client.query('commit')
       return row
@@ -181,8 +219,8 @@ export class PostgresAgentChatRepository {
   }
 
   async get(id: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
-    return (await query.query<AgentConversationRow>(
-      `select * from operator_conversations where kind='agent' and id=$1 and deleted_at is null`, [id])).rows[0]
+    return this.accountReadback(query, (await query.query<AgentConversationRow>(
+      `select * from operator_conversations where kind='agent' and id=$1 and deleted_at is null`, [id])).rows[0])
   }
   /** Conversations with an in-flight or queued turn, oldest first. */
   async open(): Promise<AgentConversationRow[]> {
@@ -359,6 +397,7 @@ export class PostgresAgentChatRepository {
           JSON.stringify({ origin, workingDirectory, runtimeDirectory,
             ...(directoryBinding ? { directoryBinding } : {}), ...(systemPrompt ? { systemPrompt } : {}) })])
         row = (await this.get(id, client))!
+        await this.acceptAccount(client, row)
         created = true
       }
       if (row.record.origin.kind === 'fresh' && !row.native_session_id && !row.record.startupDelivered

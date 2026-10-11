@@ -41,6 +41,8 @@ import { authorizeOperatorConfigurationRead } from '../operators/configurationRe
 import { acceptOperatorConfiguration } from './operatorAcceptedConfiguration.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { OperatorConversationRecordSchema, publicOperatorConversation } from './operatorConversationRecord.js'
+import { legacyProviderAccountBinding, readProviderAccountBinding, saveProviderAccountBinding }
+  from '../provider-accounts/acceptedBindings.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -270,7 +272,12 @@ export class PostgresOperatorConversationRepository {
     const row = result.rows[0]
     if (!row) return undefined
     const configuration = OperatorConfigurationVersionSchema.parse(row.configuration)
+    const providerAccountBinding = this.accountConfigurations ? await readProviderAccountBinding(query, 'operator-command',
+      `${id}:${row.active_request_id ?? 'session'}`)
+      ?? await readProviderAccountBinding(query, 'operator-command', `${id}:session`)
+      ?? legacyProviderAccountBinding(configuration.harness, configuration.harnessProfileSelection) : undefined
     return OperatorConversationStateSchema.parse({ conversation: conversation(row), messages: await hydrateMessageAttachments(query, id, row.messages),
+      ...(providerAccountBinding ? { providerAccountBinding } : {}),
       ...(row.parent_conversation_id && row.handoff_source_harness && row.handoff_source_sequence ? { handoff: {
         parentConversationId: row.parent_conversation_id, sourceHarness: row.handoff_source_harness,
         sourceMessageSequence: row.handoff_source_sequence, omittedMessages: row.handoff_omitted_messages,
@@ -550,6 +557,11 @@ export class PostgresOperatorConversationRepository {
         context.text])
       await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash,operator_configuration_version_id)
         values ($1,$2,$3::jsonb,$4,$5)`, [childId,input.requestId,JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: next.id }),commandHash(input),next.id])
+      if (this.accountConfigurations) {
+        const binding = await this.accountConfigurations.acceptedBindings.accept(client, 'operator-command',
+          `${childId}:${input.requestId}`, next.harness, next.harnessProfileSelection)
+        if (binding) await saveProviderAccountBinding(client, 'operator-command', `${childId}:session`, binding)
+      }
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: childId, role: 'user', requestId: input.requestId,
         content: input.content, createdAt: now, updatedAt: now })
       await client.query(`insert into operator_conversation_messages (id,conversation_id,role,content,client_request_id,record)
@@ -630,6 +642,16 @@ export class PostgresOperatorConversationRepository {
         if (!prior) await admitSessionMessage(client, id, input)
         await validateMessageAttachments(client, id, input.attachments)
         if (!prior) {
+          if (this.accountConfigurations) {
+            const configuration = await this.configuration(row.operator_configuration_version_id, client)
+            const sessionBinding = await readProviderAccountBinding(client, 'operator-command', `${id}:session`)
+              ?? (row.native_session_id ? legacyProviderAccountBinding(configuration!.harness,
+                configuration!.harnessProfileSelection) : undefined)
+            const binding = await this.accountConfigurations.acceptedBindings.accept(client, 'operator-command',
+              `${id}:${input.requestId}`, configuration!.harness, configuration!.harnessProfileSelection,
+              { source: sessionBinding })
+            if (binding) await saveProviderAccountBinding(client, 'operator-command', `${id}:session`, binding)
+          }
           await client.query(`insert into operator_conversation_turns (conversation_id,request_id,payload,input_hash,operator_configuration_version_id)
             values ($1,$2,$3::jsonb,$4,$5)`, [id, input.requestId, JSON.stringify({ ...commandPayload(input), acceptedConfigurationVersionId: row.operator_configuration_version_id }), commandHash(input),row.operator_configuration_version_id])
           const now = new Date().toISOString()

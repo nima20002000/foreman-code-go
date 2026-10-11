@@ -41,6 +41,7 @@ import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
 import { definedProperties } from '../definedProperties.js'
 import { readExecutionPlacement, readNativePlacement } from '../placement/persistence.js'
 import type { WorkerConversationBinding } from '@foreman-code/contracts/remote-execution-rpc'
+import { legacyProviderAccountBinding, readProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -154,6 +155,10 @@ export function createProductionWorkerConversations(input: {
         conversationId: options.conversationId, configurationVersionId: executionConfiguration.id,
         configurationHash: commandInputHash(executionConfiguration) }, harness: configuration.harness.harness,
         profile: selector, workingDirectory: options.workingDirectory, appMcpAccess: options.appMcpAccess,
+        accountBinding: await readProviderAccountBinding(input.pool,
+          original.kind === 'agent' ? 'agent-conversation' : 'operator-command',
+          original.kind === 'agent' ? original.id : `${original.id}:session`)
+          ?? legacyProviderAccountBinding(executionConfiguration.harness, executionConfiguration.harnessProfileSelection),
         ...(original.kind === 'agent' && original.record.systemPrompt ? { systemPrompt: original.record.systemPrompt } : {}),
         ...(sourceExecution ? { sourceExecution } : {}),
         ...(directoryBinding ? { directoryBinding } : {}) })

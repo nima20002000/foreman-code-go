@@ -24,6 +24,8 @@ import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
 import { readPlacementHarnessFacts } from './harnessFacts.js'
 import { freezePlacement, deriveDispatch, directoryIdentityHash, placementDigest } from './binding.js'
+import type { ProviderAccountResolver } from '../provider-accounts/service.js'
+import { legacyProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 import { readAcceptedPlacement, insertDispatchIntent } from './persistence.js'
 import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from './startPort.js'
 import { resolveBoundRootPlacement, resolveLocalMainPlacement, resolveWorkflowRootBinding } from './localMainPlacement.js'
@@ -40,7 +42,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     private readonly assertProfileReady?: (host: CanonicalMachineReference) => void,
     private readonly refreshProfileInventory?: (
       hosts: readonly CanonicalMachineReference[], signal?: AbortSignal,
-    ) => Promise<void>) {}
+    ) => Promise<void>, private readonly accounts?: ProviderAccountResolver) {}
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
     signal?: AbortSignal): Promise<PreparedRunPlacementAdmission | undefined> {
     signal?.throwIfAborted()
@@ -125,6 +127,9 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           || instance.driverId !== config.harness.harness) this.conflict()
         this.assertProfileReady?.(instance.target.hostRef)
         const selection = this.registry.pinOverride(instance)
+        const account = this.accounts && config.harness.harness !== 'opencode' && config.harness.accountId
+          ? await this.accounts.resolve(config.harness.harness, config.harness.accountId, { allowDefault: false }) : null
+        const accountBinding = account?.binding ?? legacyProviderAccountBinding(config.harness, config.harnessProfileSelection)
         prepared.push({ selection, saved, configuration: config, implicit: !node.placement,
           generatedBranch: !!worktree && !branchPrefix,
           pins: { schemaVersion: 1, mainId: this.mainId, mainInstallationId: this.mainId,
@@ -138,6 +143,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           source: { kind: 'pending', ...root.source, revisionId: root.source.snapshotId, rootId: root.binding.rootId,
             bindingRevision: root.binding.bindingRevision, materializationId: null, materializationDigest: null },
           payload: { kind: 'agent', agentId: config.agentId, agentConfigurationVersionId: config.id,
+            ...(accountBinding ? { accountBinding } : {}),
             ...(worktree ? { worktree } : {}),
             ...(node.artifactOutputs ? { artifactOutputs: structuredClone(node.artifactOutputs) } : {}),
             driverId: selection.selection.driverId, driverRevision: selection.installation.driverRevision,
@@ -164,6 +170,11 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           const saved = prepared.find(item => item.pins.nodeId === pin.nodeId)
           if (!saved || !sameWorkflowValue(bind(saved, pin.runId), pin)) this.conflict()
           this.registry.installations.assertCurrent(saved!.selection)
+          if (this.accounts && pin.payload.kind === 'agent' && pin.payload.accountBinding?.kind === 'slot') {
+            const binding = pin.payload.accountBinding
+            await this.accounts.resolve(binding.provider, binding.accountId, { sql: transaction,
+              allowDefault: false, acceptedBinding: binding })
+          }
           const live = await readLiveManagementPrincipal(transaction, principal.id)
           if (saved.implicit && !sameWorkflowValue(saved.saved, await resolveInherited(transaction, live, saved.configuration))) {
             this.conflict()
