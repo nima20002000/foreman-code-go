@@ -8,6 +8,10 @@ describe('automatic Worker profile qualification', () => {
       parallelSetup: true })
     try {
       const before = await latestEvidence(fixture)
+      expect(fixture.profiles).toHaveLength(2)
+      expect(new Set(fixture.profiles.map(profile => profile.instanceId)).size).toBe(2)
+      expect(before).toHaveLength(fixture.profiles.length)
+      expect(before.every(proof => proof.qualified)).toBe(true)
       await fixture.restartMain()
       const evidence = await refreshedEvidence(fixture, before[0]!.connectionGeneration)
       await assertMcpReadback(fixture, evidence)

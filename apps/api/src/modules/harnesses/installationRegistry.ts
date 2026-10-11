@@ -38,7 +38,9 @@ export interface RegistryHarnessSelection {
   readonly installation: HarnessInstallationRecord
 }
 const hostKey = (host: CanonicalMachineReference) => host.kind === 'main' ? `main:${host.mainId}` : `device:${host.mainId}:${host.deviceId}`
+// Publishing qualification results does not change the installation being checked.
 const installationIdentity = (record: HarnessInstallationRecord) => ({ ...record,
+  observedVersion: undefined, qualified: undefined,
   launcher: { ...record.launcher, checkedAt: undefined, diagnostics: undefined } })
 const usableInstallation = (record: HarnessInstallationRecord) => record.installed
   && record.launcher.status === 'installed' && Boolean(record.installationFingerprint)
