@@ -1,0 +1,193 @@
+import { randomUUID } from 'node:crypto'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { CI_HOST_NAMESPACE, CiComputersOutputSchema, CiGetOutputSchema, CiHostRequestSchema,
+  CiRunOutputSchema, CiRunRecordSchema, type CiHostReply, type CiHostRequest, type CiHostRun } from '@foreman-code/contracts'
+import { BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import type { ManagementAction } from '@foreman-code/contracts/management'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { expect, it } from 'vitest'
+import { buildApp } from '../src/app.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { ProductionHostCiEndpoint } from '../src/modules/ci-host/endpoint.js'
+import { HostCiService } from '../src/modules/ci-host/service.js'
+import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
+import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js'
+import { buildComputerFixture } from './helpers/buildComputerFixture.js'
+import { agent3Database } from './helpers/wave25Agent3.js'
+
+it('honors persisted MCP build participation and priority while retaining assigned run control', async () => {
+  const db = await agent3Database()
+  const clients: Client[] = []
+  let app: ReturnType<typeof buildApp> | undefined
+  let ci: HostCiService | undefined
+  try {
+    const workspaceId = randomUUID()
+    const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    await db.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
+      JSON.stringify({ id: workspaceId, name: 'CI preferences fixture', repository: {
+        provider: 'github', owner: 'fixture-owner', name: 'fixture-repository', defaultBranch: 'main',
+      } })])
+    const devices = [0, 1, 2].map(() => buildComputerFixture(mainId, workspaceId))
+    for (const { registration } of devices) {
+      await db.pool.query(`insert into device_registrations
+        (id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,'fixture',$4::jsonb)`,
+      [registration.deviceId, mainId, registration.workerInstallationId, JSON.stringify(registration)])
+    }
+    const main: DeviceProvisioningTarget = { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId,
+      keyRevision: null, authorizationRevision: null }
+    const runs = new Map<string, { computer: string; run: CiHostRun }>()
+    const starts: string[] = []
+    const request = async (computer: string, input: CiHostRequest): Promise<CiHostReply> => {
+      if (input.operation === 'status') return { operation: 'status', ready: true, reasons: [],
+        cpuCount: 8, memoryBytes: 16 * 2 ** 30,
+        runs: [...runs.values()].filter(entry => entry.computer === computer).map(entry => entry.run) }
+      if (input.operation === 'start') {
+        const run: CiHostRun = { runId: input.runId, state: 'running', step: input.suite, exitCode: null,
+          startedAt: new Date().toISOString(), finishedAt: null, logBytes: 0, message: null }
+        runs.set(input.runId, { computer, run })
+        starts.push(computer)
+        return { operation: 'start', run }
+      }
+      const entry = runs.get(input.runId)!
+      if (input.operation === 'cancel') {
+        entry.run = { ...entry.run, state: 'canceled', finishedAt: new Date().toISOString() }
+        return { operation: 'cancel', run: entry.run }
+      }
+      return { operation: 'read', run: entry.run, text: '', nextOffset: input.afterOffset }
+    }
+    const endpoint = new ProductionHostCiEndpoint(db.pool, mainId, () => ({
+      capabilities: () => [{ namespace: CI_HOST_NAMESPACE, mainCanRequest: true }],
+      request: async (deviceId, _namespace, payload) => ({ payload: await request(deviceId, CiHostRequestSchema.parse(payload)) }),
+    }), { handle: input => request('main', CiHostRequestSchema.parse(input)) })
+    const commands = new PostgresCommandCoordinator(db.pool)
+    const settings = new BuildComputerSettings(db.pool, commands, async () => ({
+      state: 'ready', reasons: [], remoteExecutionEnabled: true,
+    }))
+    const access = new PostgresAccessService(db.pool)
+    ci = new HostCiService(db.pool, commands, new RunCiAuthority(db.pool), {
+      resolve: async () => 'a'.repeat(40),
+    }, endpoint)
+    app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { commands, ci, buildComputers: settings } as unknown as OperatorServices } })
+    const address = await app.listen({ port: 0 })
+    const connect = async (actions: ManagementAction[]) => {
+      const issued = await access.issue({ name: 'CI preferences caller', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600_000), grants: [{ actions, scope: {} }] })
+      const client = new Client({ name: 'ci-preferences-test', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { requestInit: { headers: { authorization: `Bearer ${issued.token}` } } }))
+      return client
+    }
+    const writer = await connect([...CI_GET_ACTIONS, ...CI_RUN_ACTIONS, 'jobs:cancel', 'settings:read', 'settings:update'])
+    const reader = await connect([...CI_GET_ACTIONS, 'settings:read'])
+    const call = async (client: Client, name: string, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+      return decodeMcpToolResult(result)
+    }
+    const read = async (target: DeviceProvisioningTarget) => BuildComputerStatusSchema.parse(
+      await call(reader, 'build_computer_get', { target }))
+    const save = async (target: DeviceProvisioningTarget, buildEnabled: boolean, buildPriority: number) => {
+      const old = await read(target)
+      const saved = BuildComputerStatusSchema.parse(await call(writer, 'build_computer_update', {
+        commandId: randomUUID(), target, expectedRevision: old.preference.revision, buildEnabled, buildPriority,
+      }))
+      expect(await read(target)).toEqual(saved)
+      return saved
+    }
+    const list = async () => CiComputersOutputSchema.parse(await call(reader, 'ci_computers_list', { workspaceId }))
+    const start = async () => CiRunOutputSchema.parse(await call(writer, 'ci_run', {
+      workspaceId, suite: 'install', commandId: randomUUID(),
+    }))
+    const get = async (ticketId: string) => CiGetOutputSchema.parse(await call(reader, 'ci_get', { workspaceId, ticketId }))
+
+    expect((await list()).computers).toEqual([])
+    await save(main, false, 100)
+    await save(devices[0]!.target, true, 20)
+    const high = await save(devices[1]!.target, true, 90)
+    await save(devices[2]!.target, false, 100)
+    expect((await list()).computers.map(computer => computer.hostRef)).toEqual([
+      devices[1]!.target.hostRef, devices[0]!.target.hostRef,
+    ])
+    const denied = await reader.callTool({ name: 'build_computer_update', arguments: {
+      commandId: randomUUID(), target: devices[1]!.target, expectedRevision: high.preference.revision,
+      buildEnabled: false, buildPriority: 0,
+    } })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    expect(await read(devices[1]!.target)).toEqual(high)
+    expect((await reader.callTool({ name: 'ci_run', arguments: {
+      workspaceId, suite: 'install', commandId: randomUUID(),
+    } })).isError).toBe(true)
+    expect((await db.pool.query('select count(*)::int as count from ci_runs')).rows[0]!.count).toBe(0)
+
+    const first = await start()
+    const firstRead = await get(first.ticketId)
+    expect(firstRead.run.computer?.hostRef).toEqual(devices[1]!.target.hostRef)
+    expect((await db.pool.query('select record from ci_runs where id=$1', [first.ticketId])).rows[0]!.record)
+      .toEqual(firstRead.run)
+    const staleComputer = (await endpoint.computers())[0]!
+    await save(devices[1]!.target, false, 90)
+    await expect(endpoint.request(staleComputer, { operation: 'start', runId: randomUUID(),
+      repository: 'fixture-owner/fixture-repository', commit: 'a'.repeat(40), suite: 'install' }))
+      .rejects.toMatchObject({ code: 'BUILD_COMPUTER_DISABLED' })
+    expect((await get(first.ticketId)).run.state).toBe('running')
+    expect(await call(reader, 'ci_logs_read', { workspaceId, ticketId: first.ticketId })).toMatchObject({ text: '' })
+    const second = await start()
+    expect((await get(second.ticketId)).run.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
+    await save(main, true, 100)
+    const third = await start()
+    expect((await get(third.ticketId)).run.computer?.hostRef).toEqual(main.hostRef)
+    expect(starts).toEqual([devices[1]!.registration.deviceId, devices[0]!.registration.deviceId, 'main'])
+    expect(await call(writer, 'ci_cancel', { workspaceId, ticketId: first.ticketId }))
+      .toMatchObject({ run: { state: 'canceled' } })
+    expect((await get(first.ticketId)).run.state).toBe('canceled')
+    const entry = runs.get(second.ticketId)!
+    entry.run = { ...entry.run, state: 'passed', exitCode: 0, finishedAt: new Date().toISOString() }
+    await save(devices[0]!.target, false, 20)
+    expect((await get(second.ticketId)).run.state).toBe('passed')
+    expect((await db.pool.query('select state from ci_runs where id=$1', [second.ticketId])).rows[0]!.state).toBe('passed')
+    await db.pool.query('update build_computer_preferences set target=$1::jsonb where host_key=$2',
+      [JSON.stringify({ ...main, applicationInstallationId: randomUUID() }), `${mainId}:main`])
+    expect((await read(main)).preference.buildEnabled).toBe(false)
+    expect((await list()).computers).toEqual([])
+    expect((await get(third.ticketId)).run.state).toBe('running')
+    expect(await call(writer, 'ci_cancel', { workspaceId, ticketId: third.ticketId }))
+      .toMatchObject({ run: { state: 'canceled' } })
+    await save(main, false, 100)
+    await save(devices[0]!.target, true, 20)
+    await save(devices[1]!.target, true, 90)
+    for (const [index, device, seconds] of [[0, devices[1]!, 400], [1, devices[0]!, 200]] as const) {
+      const finishedAt = new Date(Date.now() - 60_000)
+      const startedAt = new Date(finishedAt.getTime() - seconds * 1000).toISOString()
+      const history = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId, groupId: randomUUID(),
+        suite: 'integration', repository: 'fixture-owner/fixture-repository', commit: 'b'.repeat(40),
+        partition: { index, count: 2 }, state: 'passed', step: 'integration', exitCode: 0, message: null,
+        computer: { hostRef: device.target.hostRef, label: 'Build computer' },
+        queuedAt: startedAt, startedAt, finishedAt: finishedAt.toISOString(),
+        initiator: { principalId: 'fixture-history', executionId: null } })
+      await db.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record)
+        values($1,$2,$3,'passed',$4::jsonb)`, [history.id, workspaceId, history.groupId, JSON.stringify(history)])
+    }
+    const partitioned = CiRunOutputSchema.parse(await call(writer, 'ci_run', {
+      workspaceId, suite: 'integration', commandId: randomUUID(), partitions: 2,
+    }))
+    const partitionRead = await get(partitioned.ticketId)
+    const higher = partitionRead.partitions!.find(run => run.partition?.index === 0)!
+    const lower = partitionRead.partitions!.find(run => run.partition?.index === 1)!
+    expect(higher.computer?.hostRef).toEqual(devices[1]!.target.hostRef)
+    expect(lower.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
+    expect(higher.partition!.weights).toEqual(lower.partition!.weights)
+    expect(higher.partition!.weights![0]! / higher.partition!.weights![1]!).toBeCloseTo(0.5, 1)
+  } finally {
+    await Promise.allSettled(clients.map(client => client.close()))
+    await ci?.close()
+    await app?.close()
+    await db.close()
+  }
+})

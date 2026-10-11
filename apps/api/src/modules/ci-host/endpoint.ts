@@ -3,6 +3,10 @@ import { CI_HOST_NAMESPACE, CiHostReplySchema, type CiHostRequest } from '@forem
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import type { HostCiRunner } from './runner.js'
 import type { CloudCi } from './cloud.js'
+import { DomainError } from '../errors.js'
+import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
+import { assertBuildComputerTarget } from '../settings/buildComputers.js'
+import { DeviceAccessError } from '../devices/access.js'
 
 interface DeviceRequests {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest?: boolean }[]
@@ -13,30 +17,43 @@ interface DeviceRequests {
  * on the workspace's public mirror. */
 export class ProductionHostCiEndpoint implements HostCiEndpoint {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
-    private readonly devices: () => DeviceRequests | undefined, private readonly local: HostCiRunner,
-    private readonly mainPriority = 10, private readonly clouds: CloudCi[] = []) {}
+    private readonly devices: () => DeviceRequests | undefined, private readonly local: Pick<HostCiRunner, 'handle'>,
+    private readonly clouds: CloudCi[] = []) {}
 
   async computers(): Promise<HostCiComputer[]> {
-    const rows = (await this.pool.query<{ host_key: string; target: { hostRef: HostCiComputer['hostRef'] }
+    const rows = (await this.pool.query<{ host_key: string; target: DeviceProvisioningTarget
       build_enabled: boolean; build_priority: number }>(
       'select host_key,target,build_enabled,build_priority from build_computer_preferences')).rows
     const devices = this.devices()
     const computers: HostCiComputer[] = []
     for (const row of rows) {
       const hostRef = row.target.hostRef
-      if (!row.build_enabled || hostRef.kind !== 'device' || !hostRef.deviceId) continue
+      if (!row.build_enabled || hostRef.mainId !== this.mainId) continue
+      try {
+        await assertBuildComputerTarget(this.pool, row.target)
+      } catch (error) {
+        if (error instanceof DeviceAccessError
+          || error instanceof DomainError && error.code === 'BUILD_COMPUTER_IDENTITY_CHANGED') continue
+        throw error
+      }
+      if (hostRef.kind === 'main') {
+        computers.push({ key: row.host_key, hostRef, label: 'Main computer', priority: row.build_priority })
+        continue
+      }
+      if (hostRef.kind !== 'device' || !hostRef.deviceId) continue
       if (!devices?.capabilities(hostRef.deviceId).some(value => value.namespace === CI_HOST_NAMESPACE && value.mainCanRequest)) continue
       computers.push({ key: row.host_key, hostRef, label: `Computer ${hostRef.deviceId.slice(0, 8)}`, priority: row.build_priority })
     }
-    const main = rows.find(row => row.target.hostRef.kind === 'main')
-    if (!main || main.build_enabled) {
-      computers.push({ key: `${this.mainId}:main`, hostRef: { kind: 'main', mainId: this.mainId }, label: 'Main computer',
-        priority: main?.build_priority ?? this.mainPriority })
-    }
     return [...computers, ...this.clouds.flatMap(cloud => cloud.computers())]
+      .sort((left, right) => right.priority - left.priority)
   }
 
   async request(computer: HostCiComputer, request: CiHostRequest) {
+    if (request.operation === 'start' && computer.hostRef.kind !== 'cloud'
+      && !(await this.computers()).some(value => value.key === computer.key
+        && JSON.stringify(value.hostRef) === JSON.stringify(computer.hostRef))) {
+      throw new DomainError('BUILD_COMPUTER_DISABLED', 'This computer is no longer available for builds.', 409)
+    }
     if (computer.hostRef.kind === 'main') return this.local.handle(request)
     if (computer.hostRef.kind === 'cloud') {
       const cloud = this.clouds.find(value => value.provider.id === computer.hostRef.provider)

@@ -17,6 +17,8 @@ it('runs only affected integration files and balances partitions within that sel
   try {
     await mkdir(join(origin, 'apps/api/test'), { recursive: true })
     await mkdir(join(origin, 'scripts'))
+    await writeFile(join(origin, 'scripts/ci-suite.sh'),
+      await readFile(new URL('../../../../../scripts/ci-suite.sh', import.meta.url), 'utf8'))
     await mkdir(bin)
     await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { 'test:integration': 'fixture' } }))
     const files = ['a', 'b', 'c', 'd'].map(name => `apps/api/test/${name}.integration.test.ts`)
@@ -33,6 +35,9 @@ it('runs only affected integration files and balances partitions within that sel
     await writeFile(join(bin, 'corepack'), `#!${process.execPath}\n`
       + "require('node:fs').appendFileSync(process.env.CI_CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '\\n')\n")
     await chmod(join(bin, 'corepack'), 0o755)
+    for (const cli of ['codex', 'claude']) {
+      await writeFile(join(bin, cli), '#!/bin/bash\nexit 0\n', { mode: 0o755 })
+    }
     const environment = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CI_CALLS_FILE: calls }
     const ports: HostCiPorts = { ...system, run: async (file, args, options) => {
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
@@ -62,6 +67,7 @@ it('runs only affected integration files and balances partitions within that sel
     await launched
     expect(await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })).toMatchObject({ run: { state: 'passed' } })
     const commands = (await readFile(calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
+    expect(commands.slice(0, 2)).toEqual([['pnpm', 'install', '--frozen-lockfile'], ['pnpm', 'db:up']])
     expect(commands).toContainEqual(['pnpm', 'test:integration', '--files', files[1]!])
     expect(commands.filter(command => command[1] === 'test:integration')).toHaveLength(1)
   } finally {

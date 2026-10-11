@@ -24,7 +24,7 @@ afterEach(async () => {
 /** A computer with a real git origin standing in for GitHub, gh and corepack shims, and a systemd-run that runs the
  * unit's script as a child process the way the user manager would. */
 async function computer(options: { github?: boolean; suiteExit?: number; pause?: boolean
-  measured?: Record<string, number> } = {}) {
+  measured?: Record<string, number>; databaseExit?: number } = {}) {
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? '/tmp', 'host-ci-'))
   roots.push(root)
   const environment = gitFixtureEnvironment()
@@ -42,7 +42,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   await writeFile(join(origin, 'apps/web/heavy-tests.json'), JSON.stringify({ files: [] }))
   await writeFile(join(origin, 'scripts/ci-unit-files.mjs'),
     await readFile(new URL('../../../../../scripts/ci-unit-files.mjs', import.meta.url), 'utf8'))
-  for (const file of ['ci-affected-run.mjs', 'ci-files.mjs']) {
+  for (const file of ['ci-affected-run.mjs', 'ci-files.mjs', 'ci-suite.sh']) {
     await writeFile(join(origin, 'scripts', file), await readFile(new URL(`../../../../../scripts/${file}`, import.meta.url), 'utf8'))
   }
   await writeFile(join(origin, 'scripts/test-command.mjs'),
@@ -66,10 +66,18 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
     if (output) fs.writeFileSync(output.slice("--outputFile.json=".length), JSON.stringify({ testResults:
       args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(file), status: "passed", startTime: 1, endTime: 6 })) }));' "$@"\n`
   await writeFile(join(bin, 'corepack'), `#!/bin/bash\necho "corepack $*"\n${integration}${unitReport}`
+    + `if [ "$2" = db:up ]; then code=${options.databaseExit ?? 0};`
+    + ' if [ "$code" = 0 ]; then touch "$TMPDIR/database-ready"; fi; exit "$code"; fi\n'
+    + 'if [ "$2" = test ] || [ "$2" = test:integration ]'
+    + ' || { [ "$2" = --dir ] && [ "$3" = apps/api ] && [ "$5" = vitest ]; }; then\n'
+    + '  [ -f "$TMPDIR/database-ready" ] || exit 11\nfi\n'
     + 'if [ "$*" = "pnpm --filter @foreman-code/contracts build" ]; then exit 0; fi\n'
     + 'if [ "$2" != install ] && [ "$2" != db:up ]; then '
     + `${options.pause ? 'read -r pauseInput; ' : ''}exit ${options.suiteExit ?? 0}; fi\n`)
   await chmod(join(bin, 'corepack'), 0o755)
+  for (const cli of ['codex', 'claude']) {
+    await writeFile(join(bin, cli), '#!/bin/bash\nexit 0\n', { mode: 0o755 })
+  }
   let notifyUnitStarted!: () => void
   const unitStarted = new Promise<void>(resolve => { notifyUnitStarted = resolve })
   const units = new Map<string, ReturnType<typeof spawn>>()
@@ -115,6 +123,37 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
 }
 
 describe('host CI runner', () => {
+  it.each([
+    ['unit', undefined, true], ['unit', 'unit-api', true], ['integration', undefined, true],
+    ['unit', 'unit-web', false], ['unit', 'unit-web-heavy', false], ['unit', 'unit-other', false],
+    ['lint', 'lint-api', false], ['typecheck', 'typecheck-api', false], ['build', 'build-api', false],
+  ])('prepares the database for %s/%s only when needed', async (suite, part, databaseRequired) => {
+    const f = await computer()
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite, ...(part ? { part } : {}) })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    const database = done.text.indexOf('corepack pnpm db:up')
+    if (databaseRequired) {
+      expect(database).toBeGreaterThan(done.text.indexOf('corepack pnpm install --frozen-lockfile'))
+      expect(done.text.slice(database + 'corepack pnpm db:up'.length)).toContain('corepack pnpm')
+    } else {
+      expect(database).toBe(-1)
+    }
+  })
+
+  it('stops before the unit part when database preparation fails', async () => {
+    const f = await computer({ databaseExit: 9 })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'unit', part: 'unit-api' })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'failed', exitCode: 9, step: 'unit-api' })
+    expect(done.text).toContain('corepack pnpm db:up')
+    expect(done.text).not.toContain('corepack pnpm test')
+  })
+
   it.each([
     ['lint-api', 'lint', '--filter @foreman-code/api lint'],
     ['lint-other', 'lint', '-r --no-bail --filter !@foreman-code/api --if-present lint'],

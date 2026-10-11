@@ -17,6 +17,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'GitHub repository at a commit: the requested one, the Agent’s current files (published to GitHub first) or the default '
   + 'branch head. A build computer fetches it with its own GitHub CLI login, installs packages and runs the repository’s '
   + 'own script in a fresh worktree, like a self-hosted runner. scope defaults to full for merges and callers that omit it. '
+  + 'Main and paired computers participate only with builds enabled; buildPriority orders their selection. '
   + 'scope=affected requires an explicit snapshot commit and repository-relative files selected against origin/main; '
   + 'ci-remote computes them by changed-file import reachability and falls back to full for shared infrastructure. '
   + 'ci_get reads back the persisted scope and files. Empty affected selections pass without launching a runner. '
@@ -85,6 +86,7 @@ export function registerCiTools(server: McpServer, context: CiContext) {
   }, input => invoke('ci_get', () => ci.get(context.principal, input)))
   if (available('ci_computers_list')) server.registerTool('ci_computers_list', {
     description: 'List the build computers CI can use, with readiness (GitHub login, git, corepack), size and running runs. '
+      + 'Read participation and priority with build_computer_get. '
       + CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiGetInputSchema.pick({ workspaceId: true }) : z.object({}).strict(),
     outputSchema: CiComputersOutputSchema, annotations: read,

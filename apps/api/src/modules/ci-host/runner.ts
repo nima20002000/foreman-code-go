@@ -197,7 +197,7 @@ export class HostCiRunner {
     }
     const apiUnit = meta.suite === 'unit' && (meta.part === 'unit-api'
       || (meta.scope === 'affected' && meta.files?.some(file => file.startsWith('apps/api/'))))
-    if (apiUnit && scripts['db:up']) command = `corepack pnpm db:up && ${command}`
+    const prerequisiteSuite = apiUnit ? 'unit-api' : meta.part ?? meta.suite
     const run = this.runDirectory(meta.runId)
     let integrationEnvironment = ''
     if (meta.suite === 'integration') {
@@ -219,7 +219,6 @@ export class HostCiRunner {
         if (!slice.length && meta.partition) throw new Error('This partition has no integration files.')
         command = slice.length ? `${command} --files ${slice.map(quote).join(' ')}` : 'true'
       }
-      if (scripts['db:up']) command = `corepack pnpm db:up && ${command}`
     }
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       // The repository's own integration runner sizes its shards to this computer.
@@ -230,7 +229,9 @@ export class HostCiRunner {
       `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
       'step install', 'corepack pnpm install --frozen-lockfile || finish $?',
-      ...(command ? [`step ${meta.part ?? meta.suite}`, `${command} || finish $?`] : []),
+      ...(command ? [`step ${meta.part ?? meta.suite}`,
+        `SUITE=${quote(prerequisiteSuite)} bash scripts/ci-suite.sh prepare || finish $?`,
+        `${command} || finish $?`] : []),
       'finish 0', ''].join('\n')
   }
 

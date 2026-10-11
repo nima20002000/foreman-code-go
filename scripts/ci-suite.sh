@@ -2,6 +2,7 @@
 # Runs one CI suite on a fresh cloud machine (GitHub Actions or CircleCI).
 #   scripts/ci-suite.sh start  — before `pnpm install`: starts PostgreSQL and the harness CLIs in the background
 #   scripts/ci-suite.sh        — after `pnpm install`: waits for them, then runs the suite
+#   scripts/ci-suite.sh prepare — after `pnpm install` on a build computer: prepares prerequisites synchronously
 # SUITE: install, typecheck, lint, unit, build or integration, or one part of a check so the parts run on separate
 # machines: unit-api, unit-web, unit-web-heavy, unit-other, lint-api, lint-other, typecheck-api, typecheck-other,
 # build-api, build-other. For unit-api and unit-web, SLICE is
@@ -10,13 +11,22 @@
 set -euo pipefail
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
 
-if [ "${1:-}" = start ]; then
+if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
+  case "$SUITE" in unit|unit-api|integration) ;; *) exit 0 ;; esac
+  clis="npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
+  if [ "$1" = prepare ]; then
+    corepack pnpm db:up
+    if ! command -v codex >/dev/null || ! command -v claude >/dev/null; then
+      bash -c "$clis"
+    fi
+    exit 0
+  fi
   mkdir -p "$state"
   background() { setsid nohup bash -c "$2 > '$state/$1.log' 2>&1; echo \$? > '$state/$1.exit'" >/dev/null 2>&1 & }
   # scripts/test-db.mjs needs only Node, so the database starts while packages install.
-  case "$SUITE" in unit|unit-api|integration) background db 'node scripts/test-db.mjs up' ;; esac
+  background db 'node scripts/test-db.mjs up'
   # Harness tests check the installed Codex and Claude CLIs, as on our build computers; same 48-hour package age rule.
-  case "$SUITE" in unit|unit-api|integration) background clis "npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code" ;; esac
+  background clis "$clis"
   exit 0
 fi
 

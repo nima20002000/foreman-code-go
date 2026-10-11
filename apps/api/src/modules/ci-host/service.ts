@@ -133,8 +133,8 @@ export class HostCiService {
     for (const group of groups.values()) {
       const count = group[0]!.partition!.count
       if (group.length !== count) continue
-      const ordered = [...free].sort((left, right) => (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0)
-        || right.priority - left.priority).slice(0, count)
+      const ordered = [...free].sort((left, right) => right.priority - left.priority
+        || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0)).slice(0, count)
       const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
       const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
       const weights = group.map((_, index) => {
@@ -272,6 +272,11 @@ export class HostCiService {
 
   private async computer(hostRef: HostRef) {
     const computer = (await this.endpoint.computers()).find(value => JSON.stringify(value.hostRef) === JSON.stringify(hostRef))
+    // Disabling future builds does not prevent reading or cancelling an assigned run.
+    if (!computer && hostRef.kind !== 'cloud') {
+      return { key: `${hostRef.mainId}:${hostRef.kind === 'main' ? 'main' : hostRef.deviceId}`, hostRef,
+        label: hostRef.kind === 'main' ? 'Main computer' : `Computer ${hostRef.deviceId.slice(0, 8)}`, priority: 0 }
+    }
     if (!computer) throw new DomainError('CI_COMPUTER_OFFLINE', 'The build computer running this CI run is offline.', 409)
     return computer
   }
@@ -299,6 +304,7 @@ export class HostCiService {
     await inBatches(active, 8, async row => {
       const run = CiRunRecordSchema.parse(row.record)
       const computer = computers.find(value => value.key === row.host_key)
+        ?? (run.computer && run.computer.hostRef.kind !== 'cloud' ? await this.computer(run.computer.hostRef) : null)
       if (!computer) return
       const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
         ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }).catch(() => null)
@@ -339,7 +345,8 @@ export class HostCiService {
           // A busy or unready computer is skipped; the run stays queued for the next free one.
           const code = (error as { code?: unknown } | null)?.code
           if (code !== 'CI_HOST_BUSY') busy.delete(computer.key)
-          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE') continue
+          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE'
+            || code === 'BUILD_COMPUTER_DISABLED') continue
           log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')
         }
       }
