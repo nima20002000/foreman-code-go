@@ -21,6 +21,30 @@ function cachedConversion(converters: JsonConverters, mode: 'input' | 'output'):
   }
 }
 
+/** Cheap structural identity: field names, optionality and nested object fields, without converting. */
+function schemaShape(schema: unknown, depth = 0): string {
+  const def = (schema as { _zod?: { def?: Record<string, unknown> } })?._zod?.def
+  if (!def || depth > 6) return '?'
+  const type = String(def.type)
+  if (type === 'object') {
+    const shape = def.shape as Record<string, unknown>
+    return `{${Object.keys(shape).sort().map(name => `${name}:${schemaShape(shape[name], depth + 1)}`).join(',')}`
+      + `${def.catchall ? '+' : ''}}`
+  }
+  if (['optional', 'nullable', 'default', 'readonly', 'nonoptional', 'catch', 'prefault'].includes(type)) {
+    return `${type}(${schemaShape(def.innerType, depth + 1)})`
+  }
+  if (type === 'array') return `[${schemaShape(def.element, depth + 1)}]`
+  if (type === 'union' || type === 'intersection') {
+    const options = (def.options as unknown[] | undefined) ?? [def.left, def.right]
+    return `${type}(${options.map(option => schemaShape(option, depth + 1)).join('|')})`
+  }
+  if (type === 'enum') return `enum(${Object.keys(def.entries as object).sort().join('|')})`
+  if (type === 'literal') return `literal(${JSON.stringify(def.values)})`
+  if (type === 'pipe') return `pipe(${schemaShape(def.in, depth + 1)})`
+  return type
+}
+
 function cachedSchema(schema: unknown, key: string): unknown {
   if (!schema || (typeof schema !== 'object' && typeof schema !== 'function') || !('~standard' in schema)) {
     return schema
@@ -29,10 +53,12 @@ function cachedSchema(schema: unknown, key: string): unknown {
   if (cached) return cached
   const standard = (schema as StandardSchemaWithJSON)['~standard']
   if (!standard.jsonSchema) return schema
-  let conversions = conversionsByTool.get(key)
+  // The same tool name can carry different schemas per caller role, so the key includes the schema's shape.
+  const shapeKey = `${key}:${schemaShape(schema)}`
+  let conversions = conversionsByTool.get(shapeKey)
   if (!conversions) {
     conversions = { input: cachedConversion(standard.jsonSchema, 'input'), output: cachedConversion(standard.jsonSchema, 'output') }
-    conversionsByTool.set(key, conversions)
+    conversionsByTool.set(shapeKey, conversions)
   }
   // Validation always uses this request's schema; only the advertised JSON Schema is shared.
   const properties = {
