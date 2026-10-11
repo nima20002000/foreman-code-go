@@ -11,6 +11,8 @@ export async function remoteReviewChanges(pool: pg.Pool) {
   create trigger remote_review_interaction_changed after insert or update on durable_interactions
     for each row execute function remote_review_fixture_changed();
   create trigger remote_review_execution_changed after insert or update on harness_executions
+    for each row execute function remote_review_fixture_changed();
+  create trigger remote_review_job_changed after insert or update on review_jobs
     for each row execute function remote_review_fixture_changed();`)
   const connection = await pool.connect()
   const listeners = new Set<() => void>()

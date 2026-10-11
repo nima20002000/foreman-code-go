@@ -15,7 +15,7 @@ type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
   description: string, subscribe?: (changed: () => void) => () => void): Promise<T> {
   const started = performance.now()
-  console.info(`[remote-review] waiting for ${description}`)
+  console.info(`[remote-review] waiting for ${description} at ${new Date().toISOString()}`)
   try {
     return await waitForProduction(read, accept, description, subscribe)
   } finally {
@@ -83,11 +83,22 @@ async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<voi
       reviewDecisionError: call.reviewDecisionError, approvalResponse: call.approvalResponse,
       reviewDecision: call.reviewDecision,
     })))
+    await reportNativeStartup(fixture)
     throw error
   }
 }
 
+async function reportNativeStartup(fixture: Fixture, after = 0) {
+  const activity = await fixture.provider.startupActivity()
+  console.info('[remote-review] native startup', activity.slice(after).map(event => ({
+    occurredAt: event.occurredAt, nativeCommand: event.nativeCommand, method: event.method,
+    nativeStarted: event.nativeStarted, workflowTurn: event.workflowTurn, workflowCompleted: event.workflowCompleted,
+  })))
+  return activity.length
+}
+
 export async function reviewInProgress(fixture: Fixture) {
+  let startupOffset = (await fixture.provider.startupActivity()).length
   const workspace = ManagedWorkspaceSchema.parse(await fixture.value('workspace_get', {
     workspaceId: fixture.version.definition.workspaceId,
   }))
@@ -118,6 +129,7 @@ export async function reviewInProgress(fixture: Fixture) {
     }
     return pending
   }, value => value !== undefined, 'routed native interaction', fixture.subscribeNativeChanges)
+  startupOffset = await reportNativeStartup(fixture, startupOffset)
   if (!interaction) throw new Error('The requester has no pending interaction.')
   const job = await waitForRemoteReview(async () => {
     await fixture.reconcileReviews()
@@ -126,7 +138,8 @@ export async function reviewInProgress(fixture: Fixture) {
     const current = row ? ReviewJobSchema.parse(row.record) : undefined
     if (current?.state === 'failed') throw new Error(`Remote reviewer failed: ${JSON.stringify(current.error)}`)
     return current
-  }, value => value?.state === 'acknowledged', 'authenticated remote review submission')
+  }, value => value?.state === 'acknowledged', 'authenticated remote review submission', fixture.subscribeNativeChanges)
+  await reportNativeStartup(fixture, startupOffset)
   if (!job) throw new Error('The retained reviewer has no submitted review job.')
   const executions = await fixture.executions(started.run.id)
   const reviewer = executions.find(execution => execution.agentId === job.reviewerAgentId)

@@ -45,6 +45,7 @@ import { waitForChildReady } from './remoteReviewReadiness.js'
 import { measureIntegrationPhase, reportIntegrationPhase } from './integrationPhase.js'
 import { remoteReviewWorkerArtifacts } from './remoteReviewWorkerArtifacts.js'
 import { remoteReviewChanges } from './remoteReviewChanges.js'
+import type { RuntimeTimingRecord } from '../../src/modules/diagnostics/runtimeTiming.js'
 
 const execute = promisify(execFile)
 const tsxLoader = createRequire(import.meta.url).resolve('tsx')
@@ -160,6 +161,7 @@ export async function remoteReviewProduction(options: {
     const workerRuntime = join(directory, 'worker-runtime')
     const claudeProfile = join(directory, 'claude-profile')
     const logEnvironment = remoteReviewEnvironment(claudeDirectory, claudeProfile, launcher)
+    if (options.reportPhase) logEnvironment.LOG_LEVEL = 'debug'
     for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime, claudeProfile]) {
       await mkdir(path, { recursive: true, mode: 0o700 })
     }
@@ -235,7 +237,7 @@ export async function remoteReviewProduction(options: {
       })
     }
     closes.push(stopMain)
-    const collectFailures = (child: ChildProcess) => {
+    const collectFailures = (child: ChildProcess, role: 'Main' | 'Worker') => {
       let pendingLog = ''
       child.stdout!.on('data', chunk => {
         pendingLog = `${pendingLog}${String(chunk)}`.slice(-65536)
@@ -245,6 +247,14 @@ export async function remoteReviewProduction(options: {
           let parsed: unknown
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
+          if ('diagnostic' in parsed && parsed.diagnostic === 'runtime-timing' && options.reportPhase) {
+            const timing = parsed as RuntimeTimingRecord & { diagnostic: 'runtime-timing' }
+            console.info(`[remote-review] ${role} timing`, {
+              component: timing.component, phase: timing.phase, operation: timing.operation,
+              startedAt: timing.startedAt, finishedAt: timing.finishedAt, durationMs: timing.durationMs,
+              intervalMs: timing.intervalMs, reused: timing.reused, count: timing.count,
+            })
+          }
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
             namespace?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
             phase?: unknown; errorType?: unknown; errorLocation?: unknown }
@@ -280,7 +290,7 @@ export async function remoteReviewProduction(options: {
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
       })
       main = started
-      collectFailures(started)
+      collectFailures(started, 'Main')
       started.stderr!.on('data', chunk => { mainFailure = `${mainFailure}${String(chunk)}`.slice(-16384) })
       started.on('message', message => {
         if (message && typeof message === 'object' && 'kind' in message && message.kind === 'ready'
@@ -459,7 +469,7 @@ export async function remoteReviewProduction(options: {
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
       })
       worker = started
-      collectFailures(started)
+      collectFailures(started, 'Worker')
       started.stderr!.on('data', chunk => { workerFailure = `${workerFailure}${String(chunk)}`.slice(-16384) })
       started.on('message', message => {
         if (message && typeof message === 'object' && 'view' in message) {
