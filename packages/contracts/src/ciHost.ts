@@ -15,7 +15,7 @@ export type CiExecutionSuite = CiSuite | CiPart
 export function validCiPart(value: { suite: CiSuite; part?: CiPart | null | undefined; partition?: CiPartition | null | undefined }) {
   if (!value.part) return !value.partition || value.suite === 'integration'
   if (!value.part.startsWith(`${value.suite}-`)) return false
-  return !value.partition || value.part === 'unit-api' || value.part === 'unit-web'
+  return !value.partition || value.part === 'unit-api' || value.part === 'unit-web' || value.part === 'unit-web-heavy'
 }
 export const CiScopeSchema = z.enum(['affected', 'full'])
 export type CiScope = z.infer<typeof CiScopeSchema>
