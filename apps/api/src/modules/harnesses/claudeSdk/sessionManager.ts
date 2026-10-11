@@ -1250,7 +1250,8 @@ export function createClaudeNativeSessionManager(options: {
       return promise
     },
     async pending(session, signal) {
-      runtimeFor(session)
+      // The callback bridge remains owned while the idle query is replaced on resume.
+      runtimeFor(session, { readOnly: true })
       return options.interactionPort?.pending(session, signal)
     },
     async respond(session, requestId, option, signal) {

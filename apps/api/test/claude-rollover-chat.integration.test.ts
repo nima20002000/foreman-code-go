@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
@@ -11,7 +11,7 @@ import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, deferred, seedAgent3 } from './helpers/wave25Agent3.js'
 import { waitForDelivery } from './helpers/agentChatDelivery.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { productionClaudeFixture } from './support/claudeProduction.js'
@@ -19,8 +19,12 @@ import { claudeSdkToolTransport } from './support/claudeSdkToolTransport.js'
 
 it('settles an unoffered rollover failure and retries through authenticated Agent MCP without replaying earlier inputs', async () => {
   const db = await agent3Database()
+  const claimReady = deferred()
+  const resumeEntered = deferred()
+  const resumeReady = deferred()
   let chat: AgentChatService | undefined
   let app: ReturnType<typeof buildApp> | undefined
+  let manager: ReturnType<typeof productionClaudeFixture>['manager'] | undefined
   try {
     const harness: ClaudeHarnessConfiguration = { harness: 'claude', model: 'recorded-model', authMode: 'subscription',
       configDirectory: '/recorded/profile', permissionMode: 'default', sandbox: 'danger-full-access', tools: [],
@@ -46,10 +50,11 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
         executionId: `agent-chat:${id}`, runId: `agent-chat:${id}`, workspaceId: seeded.scope.workspaceId,
         workflowNodeId: node.id, configuration, input: {}, workingDirectory: cwd, runtimeDirectory: join(db.directory, 'agent-chat', id),
       } }
-      return productionClaudeFixture('agent', undefined, undefined, undefined, {
+      manager = productionClaudeFixture('agent', undefined, undefined, undefined, {
         database: db.pool, binding: { kind: 'agent', conversationId: id, workspaceId: seeded.scope.workspaceId, repository },
         start, sdk: transport.sdk,
       }).manager
+      return manager
     }, db.directory)
     app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services: { agentChat: chat, commands: new PostgresCommandCoordinator(db.pool) } as never } })
@@ -78,9 +83,39 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     const denied = await graphRpc(app, reader.token, 'tools/call', { name: 'agent_chat_send',
       arguments: { workspaceId: seeded.scope.workspaceId, request: input } })
     expect(denied.error || denied.result?.isError).toBeTruthy()
+
+    // Capture an idle response snapshot, then close the query before pending is read.
+    const claim = repository.claim.bind(repository)
+    vi.spyOn(repository, 'claim').mockImplementationOnce(async (...args) => {
+      await claimReady.promise
+      return claim(...args)
+    })
+    const sessionInfo = transport!.sdk.getSessionInfo.bind(transport!.sdk)
+    vi.spyOn(transport!.sdk, 'getSessionInfo').mockImplementationOnce(async (...args) => {
+      resumeEntered.resolve()
+      await resumeReady.promise
+      return sessionInfo(...args)
+    })
+    const state = repository.state.bind(repository)
+    vi.spyOn(repository, 'state').mockImplementationOnce(async (...args) => {
+      const snapshot = await state(...args)
+      expect(snapshot?.row.active_request_id).toBeNull()
+      claimReady.resolve()
+      await resumeEntered.promise
+      return snapshot
+    })
+    const pending = manager!.pending.bind(manager!)
+    const pendingRead = vi.spyOn(manager!, 'pending').mockImplementationOnce(async (...args) => {
+      try {
+        return await pending(...args)
+      } finally {
+        resumeReady.resolve()
+      }
+    })
     const failed = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_send',
       arguments: { workspaceId: seeded.scope.workspaceId, request: input } })
-    expect(failed.result?.isError).not.toBe(true)
+    expect(failed.result?.isError, JSON.stringify(failed)).not.toBe(true)
+    expect(pendingRead).toHaveBeenCalledOnce()
     await waitForDelivery(chat, repository, id!, input.requestId, 'failed', { timeoutMs: 1_000 })
     expect((await repository.turn(id!, input.requestId))?.delivery).toBe('failed')
     expect((await repository.get(id!))?.active_request_id).toBeNull()
@@ -103,10 +138,16 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     expect(replay.result?.isError).not.toBe(true)
     expect(transport!.offers).toHaveLength(257)
   } finally {
+    claimReady.resolve()
+    resumeReady.resolve()
+    resumeEntered.resolve()
     try { await chat?.shutdown() }
     finally {
       try { await app?.close() }
-      finally { await db.close() }
+      finally {
+        vi.restoreAllMocks()
+        await db.close()
+      }
     }
   }
 }, 120_000)
