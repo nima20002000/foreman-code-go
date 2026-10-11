@@ -15,7 +15,7 @@ import { GitCiCommits } from './modules/ci-host/commits.js'
 import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
 import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
 import { HostCiRunner } from './modules/ci-host/runner.js'
-import { GitHubActionsCi, workspaceMirrors } from './modules/ci-host/cloud.js'
+import { cloudCis, workspaceMirrors } from './modules/ci-host/cloud.js'
 import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
@@ -1960,7 +1960,7 @@ export function buildProductionApp(
       // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
       const hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),
         new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner(),
-          undefined, new GitHubActionsCi(machine.installationId, workspaceMirrors(database.pool))),
+          undefined, cloudCis(machine.installationId, workspaceMirrors(database.pool))),
         agentSnapshots(database.pool, readAgentFiles))
       hostCi.start()
       app.addHook('onClose', async () => { await hostCi.close() })

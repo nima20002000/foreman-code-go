@@ -8,18 +8,13 @@ import { DomainError } from '../errors.js'
 import { ensureClone, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
+import { CircleCiProvider, GitHubActionsProvider, type CloudProvider } from './cloudProviders.js'
 
-/** The workflow every mirror carries (.github/workflows/ci.yml): one dispatched job per suite or partition. */
-const WORKFLOW = 'ci.yml'
-/** A free account runs 20 jobs at once; Main keeps a few for the mirror's own pushes and reruns. */
-const SLOTS = 16
-// A standard public-repository runner: 4 vCPUs and 16 GB.
-const RUNNER_CPUS = 4, RUNNER_MEMORY = 16 * 2 ** 30
 const LOG_LIMIT = 4 * 1024 * 1024
 
-interface CloudRun {
+export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
-  githubRunId: number | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
+  providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; durations?: CiDurations
 }
 type Mirrors = (repository: string) => Promise<string | null>
@@ -36,37 +31,35 @@ export function workspaceMirrors(pool: pg.Pool): Mirrors {
   }
 }
 
-/** GitHub Actions on a workspace's public mirror as CI computers: one slot per concurrent job. A run pushes the
- * commit's files to the mirror as one commit without history, dispatches the mirror's workflow, and reads the
- * result, log and measured durations back from GitHub. */
-export class GitHubActionsCi {
-  private githubChecked: { at: number; ready: boolean } | undefined
+/** A cloud CI service on a workspace's public mirror as CI computers: one slot per concurrent job. A run pushes the
+ * commit's files to the mirror as one commit without history, starts the provider's run of them, and reads the
+ * result, log and measured durations back. */
+export class CloudCi {
+  private checked: { at: number; ready: boolean } | undefined
 
-  constructor(private readonly mainId: string, private readonly mirrors: Mirrors,
-    private readonly root = join(homedir(), '.local/share/foreman-code/ci-cloud'),
+  constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
+    private readonly root = join(homedir(), '.local/share/foreman-code/ci-cloud', provider.id),
     private readonly ports: HostCiPorts = systemHostCiPorts(),
     private readonly git: GitWorktreePorts = systemGitWorktreePorts(),
     private readonly identity = { home: homedir(), user: userInfo().username, host: hostname() }) {}
 
   computers(priority = 30): HostCiComputer[] {
-    return Array.from({ length: SLOTS }, (_, slot) => ({ key: `${this.mainId}:cloud:${slot}`,
-      hostRef: { kind: 'cloud' as const, mainId: this.mainId, slot }, label: `GitHub Actions ${slot + 1}`, priority }))
+    return Array.from({ length: this.provider.slots }, (_, slot) => ({ key: `${this.mainId}:cloud:${this.provider.id}:${slot}`,
+      hostRef: { kind: 'cloud' as const, mainId: this.mainId, provider: this.provider.id, slot },
+      label: `${this.provider.label} ${slot + 1}`, priority }))
   }
 
   async handle(raw: unknown): Promise<CiHostReply> {
     const request = CiHostRequestSchema.parse(raw)
     if (request.operation === 'status') {
-      const ready = await this.github()
-      return CiHostReplySchema.parse({ operation: 'status', ready,
-        reasons: ready ? [] : ['Log in to GitHub on Main (gh auth login) to run CI on GitHub Actions.'],
-        cpuCount: RUNNER_CPUS, memoryBytes: RUNNER_MEMORY, runs: [] })
+      const ready = await this.ready()
+      return CiHostReplySchema.parse({ operation: 'status', ready, reasons: ready ? [] : [this.provider.loginHint],
+        cpuCount: this.provider.cpus, memoryBytes: this.provider.memoryBytes, runs: [] })
     }
     if (request.operation === 'start') return CiHostReplySchema.parse({ operation: 'start', run: await this.start(request) })
     if (request.operation === 'cancel') {
       const run = await this.refresh(request.runId)
-      if (run.githubRunId && ['starting', 'running'].includes(run.state)) {
-        await this.gh(['run', 'cancel', String(run.githubRunId), '-R', run.mirror])
-      }
+      if (run.providerRunId && ['starting', 'running'].includes(run.state)) await this.provider.cancel(run)
       const canceled = ['starting', 'running'].includes(run.state)
         ? await this.save({ ...run, state: 'canceled', finishedAt: this.ports.now().toISOString(), message: 'Canceled.' }) : run
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
@@ -79,28 +72,18 @@ export class GitHubActionsCi {
       ...(request.durations && run.durations ? { durations: run.durations } : {}) })
   }
 
-  private async github() {
-    if (this.githubChecked && Date.now() - this.githubChecked.at < 60_000) return this.githubChecked.ready
-    const ready = (await this.ports.run('gh', ['auth', 'status', '--hostname', 'github.com'], { timeoutMs: 15_000 })
-      .catch(() => ({ code: 127 }))).code === 0
-    this.githubChecked = { at: Date.now(), ready }
+  private async ready() {
+    if (this.checked && Date.now() - this.checked.at < 60_000) return this.checked.ready
+    const ready = await this.provider.ready().catch(() => false)
+    this.checked = { at: Date.now(), ready }
     return ready
-  }
-
-  private async gh(args: string[], timeoutMs = 120_000) {
-    const result = await this.ports.run('gh', args, { timeoutMs })
-    if (result.code !== 0) {
-      throw new DomainError('CI_CLOUD_FAILED', `GitHub Actions did not accept gh ${args[0]} ${args[1]}: `
-        + `${result.stderr.trim().slice(0, 300)}`, 502)
-    }
-    return result.stdout
   }
 
   private path(runId: string, name: 'meta.json' | 'log') { return join(this.root, 'runs', runId, name) }
 
   private async read(runId: string): Promise<CloudRun> {
     try { return JSON.parse(await readFile(this.path(runId, 'meta.json'), 'utf8')) as CloudRun }
-    catch { throw new DomainError('CI_RUN_UNKNOWN', 'GitHub Actions has no such CI run.', 404) }
+    catch { throw new DomainError('CI_RUN_UNKNOWN', `${this.provider.label} has no such CI run.`, 404) }
   }
 
   private async save(run: CloudRun) {
@@ -119,8 +102,8 @@ export class GitHubActionsCi {
     const existing = await this.read(request.runId).catch(() => null)
     if (existing) return this.view(existing, 0)
     const mirror = await this.mirrors(request.repository)
-    if (!mirror || !await this.github()) {
-      throw new DomainError('CI_CLOUD_UNAVAILABLE', 'This workspace has no CI mirror, or Main is not logged in to GitHub.', 409)
+    if (!mirror || !await this.ready()) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE', `This workspace has no CI mirror, or Main is not logged in to ${this.provider.label}.`, 409)
     }
     const signal = AbortSignal.timeout(600_000)
     const clone = await ensureClone(this.git, request.repository, signal)
@@ -139,16 +122,16 @@ export class GitHubActionsCi {
     const snapshot = await git(['commit-tree', `${request.commit}^{tree}`, '-p', base, '-m', `Snapshot ${request.commit.slice(0, 12)}`],
       { ...author, GIT_COMMITTER_NAME: author.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: author.GIT_AUTHOR_EMAIL })
     const branch = `ci/${request.commit}`
-    // Runs start from main, whose cache scope every run shares, and check out the commit's branch.
+    // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`])
     const files = request.suite === 'integration' && request.partition
       ? await this.slice(git, request.commit, request.partition, request.durations ?? {}) : []
-    const run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
-      suite: request.suite, startedAt: this.ports.now().toISOString(), githubRunId: null, state: 'starting',
+    let run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
+      suite: request.suite, startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
       finishedAt: null, exitCode: null, message: null })
-    await this.gh(['workflow', 'run', WORKFLOW, '-R', mirror, '--ref', 'main', '-f', `ref=${branch}`, '-f', `run_id=${request.runId}`,
-      '-f', `suite=${request.suite}`, '-f', `files=${files.join(' ')}`])
+    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.suite, files })
+    if (providerRunId) run = await this.save({ ...run, providerRunId, state: 'running' })
     return this.view(run, 0)
   }
 
@@ -197,42 +180,40 @@ export class GitHubActionsCi {
     }
   }
 
-  /** Follows the dispatched GitHub run; once it finishes, keeps its log and measured durations. */
+  /** Follows the provider's run; once it finishes, keeps its log and measured durations. */
   private async refresh(runId: string): Promise<CloudRun> {
     let run = await this.read(runId)
     if (!['starting', 'running'].includes(run.state)) return run
-    if (!run.githubRunId) {
-      const listed = JSON.parse(await this.gh(['run', 'list', '-R', run.mirror, '--workflow', WORKFLOW, '--branch', 'main',
-        '--event', 'workflow_dispatch', '--limit', '200', '--json', 'databaseId,displayTitle'])) as
-        { databaseId: number; displayTitle: string }[]
-      const match = listed.find(value => value.displayTitle === `ci ${run.runId}`)
-      if (!match) {
-        // GitHub lists a dispatched run within seconds; one never listed was not accepted.
+    if (!run.providerRunId) {
+      const providerRunId = await this.provider.find(run)
+      if (!providerRunId) {
+        // A provider lists a started run within seconds; one never listed was not accepted.
         if (Date.now() - Date.parse(run.startedAt) < 10 * 60_000) return run
         return this.save({ ...run, state: 'lost', finishedAt: this.ports.now().toISOString(),
-          message: 'GitHub Actions never started this run.' })
+          message: `${this.provider.label} never started this run.` })
       }
-      run = await this.save({ ...run, githubRunId: match.databaseId, state: 'running' })
+      run = await this.save({ ...run, providerRunId, state: 'running' })
     }
-    const view = JSON.parse(await this.gh(['run', 'view', String(run.githubRunId), '-R', run.mirror, '--json',
-      'status,conclusion,updatedAt'])) as { status: string; conclusion: string; updatedAt: string }
-    if (view.status !== 'completed') return run
-    const log = await this.ports.run('gh', ['run', 'view', String(run.githubRunId), '-R', run.mirror, '--log'], { timeoutMs: 300_000 })
-    await writeFile(this.path(runId, 'log'), Buffer.from(log.stdout).subarray(-LOG_LIMIT), { mode: 0o600 })
+    const status = await this.provider.status(run)
+    if (!status.done) return run
+    await writeFile(this.path(runId, 'log'), Buffer.from(await this.provider.log(run).catch(() => '')).subarray(-LOG_LIMIT),
+      { mode: 0o600 })
     let durations: CiDurations | undefined
     if (run.suite === 'integration') {
-      const directory = join(this.root, 'runs', runId, 'artifact')
-      const downloaded = await this.ports.run('gh', ['run', 'download', String(run.githubRunId), '-R', run.mirror,
-        '-n', 'durations', '-D', directory], { timeoutMs: 120_000 })
-      const parsed = downloaded.code === 0 ? CiDurationsSchema.safeParse(await readFile(join(directory, 'durations.json'), 'utf8')
-        .then(text => JSON.parse(text) as unknown, () => null)) : null
-      if (parsed?.success) durations = parsed.data
+      const parsed = CiDurationsSchema.safeParse(await this.provider.durations(run, join(this.root, 'runs', runId, 'artifact'))
+        .catch(() => null))
+      if (parsed.success) durations = parsed.data
     }
-    const passed = view.conclusion === 'success'
-    return this.save({ ...run, state: passed ? 'passed' : view.conclusion === 'cancelled' ? 'canceled' : 'failed',
-      exitCode: passed ? 0 : 1, finishedAt: view.updatedAt, message: passed ? null : `GitHub Actions: ${view.conclusion}.`,
-      ...(durations ? { durations } : {}) })
+    const passed = status.conclusion === 'success'
+    return this.save({ ...run, state: passed ? 'passed' : status.conclusion === 'cancelled' ? 'canceled' : 'failed',
+      exitCode: passed ? 0 : 1, finishedAt: status.finishedAt,
+      message: passed ? null : `${this.provider.label}: ${status.conclusion}.`, ...(durations ? { durations } : {}) })
   }
+}
+
+/** GitHub Actions and CircleCI on the same public mirror. */
+export function cloudCis(mainId: string, mirrors: Mirrors, ports: HostCiPorts = systemHostCiPorts()): CloudCi[] {
+  return [new CloudCi(mainId, new GitHubActionsProvider(ports), mirrors), new CloudCi(mainId, new CircleCiProvider(ports), mirrors)]
 }
 
 interface Peer { HostName?: string; TailscaleIPs?: string[] }

@@ -2,19 +2,19 @@ import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CiHostReplySchema, type CiHostRequest } from '@foreman-code/contracts'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import type { HostCiRunner } from './runner.js'
-import type { GitHubActionsCi } from './cloud.js'
+import type { CloudCi } from './cloud.js'
 
 interface DeviceRequests {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest?: boolean }[]
   request(deviceId: string, namespace: string, payload: unknown, options?: { timeoutMs?: number }): Promise<{ payload: unknown }>
 }
 
-/** Build-enabled paired computers that serve host CI now, Main itself through its local runner, and GitHub Actions
+/** Build-enabled paired computers that serve host CI now, Main itself through its local runner, and cloud CI services
  * on the workspace's public mirror. */
 export class ProductionHostCiEndpoint implements HostCiEndpoint {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly devices: () => DeviceRequests | undefined, private readonly local: HostCiRunner,
-    private readonly mainPriority = 10, private readonly cloud?: GitHubActionsCi) {}
+    private readonly mainPriority = 10, private readonly clouds: CloudCi[] = []) {}
 
   async computers(): Promise<HostCiComputer[]> {
     const rows = (await this.pool.query<{ host_key: string; target: { hostRef: HostCiComputer['hostRef'] }
@@ -33,14 +33,15 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       computers.push({ key: `${this.mainId}:main`, hostRef: { kind: 'main', mainId: this.mainId }, label: 'Main computer',
         priority: main?.build_priority ?? this.mainPriority })
     }
-    return [...computers, ...this.cloud?.computers() ?? []]
+    return [...computers, ...this.clouds.flatMap(cloud => cloud.computers())]
   }
 
   async request(computer: HostCiComputer, request: CiHostRequest) {
     if (computer.hostRef.kind === 'main') return this.local.handle(request)
     if (computer.hostRef.kind === 'cloud') {
-      if (!this.cloud) throw new Error('GitHub Actions CI is off.')
-      return this.cloud.handle(request)
+      const cloud = this.clouds.find(value => value.provider.id === computer.hostRef.provider)
+      if (!cloud) throw new Error('This cloud CI service is off.')
+      return cloud.handle(request)
     }
     const devices = this.devices()
     if (!devices || !computer.hostRef.deviceId) throw new Error('The build computer is offline.')

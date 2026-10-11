@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import type { GitWorktreePorts } from '../sources/gitWorktree.js'
-import { GitHubActionsCi } from './cloud.js'
+import { CloudCi } from './cloud.js'
+import { GitHubActionsProvider } from './cloudProviders.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 
 const roots: string[] = []
@@ -73,7 +74,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     }
     return { code: 1, stdout: '', stderr: `unexpected gh ${args.join(' ')}` }
   } }
-  const cloud = new GitHubActionsCi('main-1', async repository => options.mirror === false ? null
+  const cloud = new CloudCi('main-1', new GitHubActionsProvider(ports), async repository => options.mirror === false ? null
     : repository === 'octo/site' ? 'octo/site-ci' : null, join(root, 'ci-cloud'), ports, git,
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
