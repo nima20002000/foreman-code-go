@@ -7,6 +7,29 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.61] - 2026-10-11
+
+### CI
+
+- CI runs on GitHub Actions and CircleCI through a public mirror of the code (fresh history, private names refused), together with the build computers; the full suite takes about five minutes.
+- `pnpm test`, `typecheck`, `lint` and `test:integration` run on Main's CI unless on a CI machine; agent runs test only what their changes affect.
+- Unit, lint, typecheck and build split into parts on separate machines; runs start and are read concurrently; one mirror push per commit.
+- An integration file still running after three minutes fails; fixed sleeps in integration tests are lint errors; failing files keep their full logs.
+- Test databases are cloned from a migrated template; Worker artifacts and fixtures are cached by content across runs.
+
+### Accounts
+
+- Several Codex and Claude accounts per computer, managed under each Settings harness card: sign-in, defaults for new work, removal, and per-account models; saved Runs and chats keep their account.
+
+### Computers
+
+- The sidebar shows live CPU, memory and disk for every computer (paired laptops now report without a Job runtime) and the cloud CI services with their machines in use.
+
+### Fixes
+
+- Remote review continues across Main crash, expired receipts and graceful restart; Main restart closure and remote disposal settle.
+- Many race and timing fixes in tests found by the cloud runs.
+
 ## [0.0.60] - 2026-10-11
 
 ### CI
