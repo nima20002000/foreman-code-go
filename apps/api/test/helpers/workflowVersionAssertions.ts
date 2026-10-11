@@ -114,7 +114,7 @@ export async function assertHistoricalVersionPins(via: Via, evidenceVersionIndex
       const initial = RepeatGraphSnapshotV3Schema.parse(await f.graph(started.scope, 'snapshot'))
       release(); await settledWithDiagnosis(f, started)
       // Split files each compare one Run before and after all three Saves.
-      // The unsplit HTTP caller continues checking every Run.
+      // Omitting the index checks every Run.
       const evidence = evidenceVersionIndex === undefined || evidenceVersionIndex === completed.length
         ? await assertScenarioEvidence(f, started, initial, expected)
         : undefined
@@ -130,9 +130,7 @@ export async function assertHistoricalVersionPins(via: Via, evidenceVersionIndex
     for (const item of completed) {
       await historicalVersion(f, item.started.saved, previous!)
       if (item.evidence !== undefined) {
-        if (item.evidence !== undefined) {
         expect(await assertScenarioEvidence(f, item.started, item.initial, item.expected)).toEqual(item.evidence)
-      }
       }
     }
     expect(f.base.provider.counts.starts).toBe(8)
