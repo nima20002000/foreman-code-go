@@ -59,7 +59,10 @@ jobs:
             unit) pnpm db:up && pnpm test ;;
             typecheck|lint|build) pnpm "$SUITE" ;;
             integration)
+              # Harness tests check the installed Codex and Claude CLIs, as on our build computers.
+              npm install --global --silent @openai/codex @anthropic-ai/claude-code &
               pnpm db:up
+              wait
               export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$RUNNER_TEMP/durations.json"
               # Native process tests need a delegated cgroup, as a systemd user service gets on our build computers.
               cgroup=/sys/fs/cgroup/foreman-ci
