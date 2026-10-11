@@ -9,13 +9,17 @@ const CiRunInputObjectSchema = z.object({
   suite: CiSuiteSchema.describe('Repositories with the CI suite hook queue unit, lint, typecheck and build parts; '
     + 'other repositories run their package script for the suite as one job. Install runs one job.'),
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
+  baseCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional()
+    .describe('Optional full SHA for runner-selected affected scope. Compare against this ancestor of the resolved '
+      + 'commit; an unavailable or non-ancestor base falls back to the full suite with a reason.'),
   commandId: IdSchema,
   /** Split integration when the repository supplies its CI hook and file selector. */
   partitions: z.number().int().min(2).max(32).describe('Integration partitions for repositories with '
     + 'scripts/ci-suite.sh and scripts/ci-files.mjs; other repositories run integration as one job.').optional(),
   scope: CiScopeSchema.optional().describe('Defaults to affected; full runs the complete suite. '
     + 'Repositories without an affected selector always run the full suite.'),
-  files: CiSelectedFilesSchema.optional().describe('Optional affected selection with an explicit commit. Omit to select on the runner against the workspace default branch; an empty list runs no tests.'),
+  files: CiSelectedFilesSchema.optional().describe('Optional affected selection with an explicit commit. Omit to select '
+    + 'on the runner against baseCommit or the workspace default branch; an empty list runs no tests.'),
 }).strict()
 const partitionedSuite = (value: { suite: string; partitions?: number | undefined }) =>
   value.partitions === undefined || value.suite === 'integration'

@@ -64,6 +64,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   await writeFile(join(origin, 'scripts/unit-durations.json'), JSON.stringify(Object.fromEntries(
     unitFiles.map((file, index) => [file, 100 + index * 10]))))
   git('init', '-q', '-b', 'main'); git('add', '.'); git('commit', '-qm', 'fixture')
+  const baseCommit = git('rev-parse', 'HEAD')
   if (options.defaultBranch) git('branch', '-m', options.defaultBranch)
   if (options.change) {
     git('checkout', '-qb', 'feature')
@@ -139,10 +140,47 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
     }
     return reply
   }, { interval: 5, timeout: 10_000 })
-  return { root, runner, commit, settle, units, unitStarted }
+  return { root, runner, commit, baseCommit, git, settle, units, unitStarted }
 }
 
 describe('host CI runner', () => {
+  it('selects changes since an explicit base even when the resolved commit is the default branch head', async () => {
+    const f = await computer({ selector: true, change: 'source' })
+    f.git('update-ref', 'refs/heads/main', f.commit)
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      baseCommit: f.baseCommit, suite: 'unit', part: 'unit-api', scope: 'affected' })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed', message: 'Selected 1 affected files for unit-api.' })
+    expect(done.text).toContain('vitest run test/first.test.ts')
+    expect(done.text).not.toContain('second.test.ts')
+    expect(done.text).not.toContain('Running full suite:')
+  })
+
+  it.each(['unavailable', 'non-ancestor'] as const)('runs the full suite with a reason for an %s base', async kind => {
+    const f = await computer({ selector: true, change: 'source' })
+    f.git('commit', '--allow-empty', '-qm', 'later commit')
+    const baseCommit = kind === 'unavailable' ? 'f'.repeat(40) : f.git('rev-parse', 'HEAD')
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      baseCommit, suite: 'unit', scope: 'affected' })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed',
+      message: 'Running full suite: baseCommit is unavailable or is not an ancestor of the resolved commit.' })
+    expect(done.text).toContain('corepack pnpm test')
+    expect(done.text).toContain('Running full suite:')
+  })
+
+  it('treats the resolved commit itself as a valid base with no changes', async () => {
+    const f = await computer({ selector: true, change: 'source' })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      baseCommit: f.commit, suite: 'unit' })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed', message: 'No affected files for this suite part.' })
+    expect(done.text).not.toContain('corepack pnpm test')
+  })
+
   it('derives omitted files against a non-main workspace default branch and selects the unit part', async () => {
     const f = await computer({ selector: true, change: 'source', defaultBranch: 'release/stable' })
     const runId = randomUUID()

@@ -96,6 +96,7 @@ export class HostCiService {
         const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,
+          ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
           ...(deriveFiles ? { deriveFiles, defaultBranch } : {}),
           state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
           exitCode: empty ? 0 : null, message: empty ? 'No affected files for this suite.' : null,
@@ -405,6 +406,7 @@ export class HostCiService {
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
             scope: run.scope, ...(run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}),
             ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
+            ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
           if (reply.operation !== 'start') {
             busy.delete(computer.key)

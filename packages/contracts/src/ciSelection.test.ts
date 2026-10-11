@@ -5,6 +5,23 @@ import { CiHostRequestSchema } from './ciHost.js'
 const input = { suite: 'unit', scope: 'affected', files: ['apps/api/src/feature.test.ts'],
   commit: 'a'.repeat(40), commandId: 'affected' }
 
+it('accepts a full base SHA through Agent, Operator and host contracts and rejects abbreviated or invalid bases', () => {
+  for (const baseCommit of ['b'.repeat(40), 'b'.repeat(64)]) {
+    const request = { suite: 'unit', commandId: 'release-changes', baseCommit }
+    expect(CiRunInputSchema.parse(request)).toEqual(request)
+    expect(OperatorCiRunInputSchema.parse({ ...request, workspaceId: 'workspace-ci' })).toMatchObject(request)
+    expect(CiHostRequestSchema.parse({ operation: 'start', runId: '00000000-0000-4000-8000-000000000001',
+      repository: 'example/project', commit: input.commit, suite: request.suite, baseCommit })).toMatchObject({ baseCommit })
+  }
+  for (const baseCommit of ['abcd123', 'g'.repeat(40), 'HEAD']) {
+    const request = { suite: 'unit', commandId: 'invalid-base', baseCommit }
+    expect(CiRunInputSchema.safeParse(request).success).toBe(false)
+    expect(OperatorCiRunInputSchema.safeParse({ ...request, workspaceId: 'workspace-ci' }).success).toBe(false)
+    expect(CiHostRequestSchema.safeParse({ operation: 'start', runId: '00000000-0000-4000-8000-000000000001',
+      repository: 'example/project', commit: input.commit, suite: request.suite, baseCommit }).success).toBe(false)
+  }
+})
+
 it('accepts affected scope through Agent, Operator and host contracts', () => {
   expect(CiRunInputSchema.parse(input)).toEqual(input)
   expect(OperatorCiRunInputSchema.parse({ ...input, workspaceId: 'workspace-ci' })).toMatchObject(input)

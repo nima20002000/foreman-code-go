@@ -21,6 +21,9 @@ parameters:
   default_branch:
     type: string
     default: main
+  base_commit:
+    type: string
+    default: ''
   partition:
     type: string
     default: ''
@@ -42,6 +45,7 @@ jobs:
       SCOPE: << pipeline.parameters.scope >>
       SELECTED_FILES: << pipeline.parameters.files >>
       DEFAULT_BRANCH: << pipeline.parameters.default_branch >>
+      BASE_COMMIT: << pipeline.parameters.base_commit >>
       CI_PARTITION: << pipeline.parameters.partition >>
       CI_DURATIONS: << pipeline.parameters.durations >>
       DURATIONS_OUTPUT: /tmp/ci-durations/durations.json

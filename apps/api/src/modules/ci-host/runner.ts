@@ -36,7 +36,7 @@ interface RunMeta {
   runId: string; repository: string; commit: string; suite: CiSuite; partition: CiPartition | null
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; cleaned: boolean; durations?: CiDurations
-  scope?: CiScope; files?: string[]; part?: CiPart; defaultBranch?: string; deriveFiles?: boolean
+  scope?: CiScope; files?: string[]; part?: CiPart; defaultBranch?: string; baseCommit?: string; deriveFiles?: boolean
 }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
@@ -127,7 +127,8 @@ export class HostCiRunner {
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
     part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined;
-    scope?: CiScope | undefined; files?: string[] | undefined; defaultBranch?: string | undefined }) {
+    scope?: CiScope | undefined; files?: string[] | undefined; defaultBranch?: string | undefined;
+    baseCommit?: string | undefined }) {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
     const busy = await this.active()
@@ -142,6 +143,7 @@ export class HostCiRunner {
       scope: request.scope ?? 'affected', ...(request.files !== undefined ? { files: request.files } : {}),
       deriveFiles: (request.scope ?? 'affected') === 'affected' && request.files === undefined,
       ...(request.defaultBranch ? { defaultBranch: request.defaultBranch } : {}),
+      ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
     const preparing = this.launch(meta).catch(async error => {
@@ -193,15 +195,23 @@ export class HostCiRunner {
     }
     const selector = join(source, 'scripts/ci-affected.mjs')
     if (!existsSync(selector)) return full('The repository has no affected selector.')
-    const branch = meta.defaultBranch ?? 'main'
-    const ref = `refs/remotes/origin/${branch}`
-    await this.git(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:${ref}`], source)
-    if ((await this.git(['rev-parse', ref], source)).trim() === meta.commit) {
-      return full('The commit is the workspace default branch head.')
+    let baseCommit = meta.baseCommit
+    if (baseCommit) {
+      const ancestor = await this.ports.run('git', ['merge-base', '--is-ancestor', baseCommit, meta.commit],
+        { cwd: source, env: this.environment })
+      if (ancestor.code !== 0) return full('baseCommit is unavailable or is not an ancestor of the resolved commit.')
+    } else {
+      const branch = meta.defaultBranch ?? 'main'
+      const ref = `refs/remotes/origin/${branch}`
+      await this.git(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:${ref}`], source)
+      if ((await this.git(['rev-parse', ref], source)).trim() === meta.commit) {
+        return full('The commit is the workspace default branch head.')
+      }
+      const base = await this.ports.run('git', ['merge-base', meta.commit, ref], { cwd: source, env: this.environment })
+      if (base.code !== 0) return full('No merge-base with the workspace default branch is available.')
+      baseCommit = base.stdout.trim()
     }
-    const base = await this.ports.run('git', ['merge-base', meta.commit, ref], { cwd: source, env: this.environment })
-    if (base.code !== 0) return full('No merge-base with the workspace default branch is available.')
-    const changed = (await this.git(['diff', '--name-only', '--no-renames', '-z', base.stdout.trim(), meta.commit], source))
+    const changed = (await this.git(['diff', '--name-only', '--no-renames', '-z', baseCommit, meta.commit], source))
       .split('\0').filter(Boolean)
     const selection = await this.repositorySelection(meta, source, selector, changed)
     if (selection.scope === 'full') return full(selection.reason)

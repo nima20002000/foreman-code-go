@@ -19,9 +19,9 @@ export function executionFiles(files, executionSuite, cwd) {
 }
 
 /** Selection and partitioning happen in the checked-out repository on the cloud runner. */
-export function executionSelection({ commit, executionSuite, defaultRef, partition, learned = {}, cwd = process.cwd() }) {
+export function executionSelection({ commit, baseCommit, executionSuite, defaultRef, partition, learned = {}, cwd = process.cwd() }) {
   const suite = executionSuite.split('-')[0]
-  const selection = affectedSnapshot(commit, suite, cwd, defaultRef)
+  const selection = affectedSnapshot(commit, suite, cwd, defaultRef, baseCommit)
   let files = executionFiles(selection.files, executionSuite, cwd)
   if (selection.scope === 'full' && suite === 'integration' && partition) files = integrationFileList(cwd)
   if (partition && (selection.scope === 'affected' || suite === 'integration')) {
@@ -35,6 +35,7 @@ export function executionSelection({ commit, executionSuite, defaultRef, partiti
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [executionSuite, defaultRef, partition, output] = process.argv.slice(2)
   const selection = executionSelection({ commit: 'HEAD', executionSuite, defaultRef,
+    baseCommit: process.env.BASE_COMMIT || undefined,
     partition: partition ? JSON.parse(partition) : undefined, learned: JSON.parse(process.env.CI_DURATIONS || '{}') })
   writeFileSync(output, JSON.stringify(selection.files))
   console.error(selection.scope === 'full' ? `Running full suite: ${selection.reason}`

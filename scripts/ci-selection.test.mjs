@@ -43,6 +43,42 @@ test('filters the same affected selection into API, fast web, heavy web and othe
   assert.deepEqual(executionFiles(f.files, 'unit-other', f.cwd), ['packages/contracts/src/other.test.ts'])
 })
 
+test('an explicit base selects release changes even at the default branch head and without a default ref', t => {
+  const f = repository(t)
+  const baseCommit = f.git('rev-parse', 'HEAD')
+  f.write('apps/api/src/value.ts', 'export const value = 2')
+  f.git('add', '.')
+  f.git('commit', '-qm', 'release changes')
+  f.git('update-ref', 'refs/remotes/origin/stable', 'HEAD')
+  for (const defaultRef of ['origin/stable', 'origin/unavailable']) {
+    assert.deepEqual(executionSelection({ commit: 'HEAD', baseCommit, executionSuite: 'unit-api', defaultRef,
+      cwd: f.cwd }).files, ['apps/api/src/value.test.ts'])
+    const slices = [0, 1].map(index => executionSelection({ commit: 'HEAD', baseCommit,
+      executionSuite: 'integration', defaultRef, partition: { index, count: 2 }, cwd: f.cwd }))
+    assert.ok(slices.every(slice => slice.scope === 'affected'))
+    assert.deepEqual(slices.flatMap(slice => slice.files), ['apps/api/test/value.integration.test.ts'])
+  }
+  const empty = executionSelection({ commit: 'HEAD', baseCommit: f.git('rev-parse', 'HEAD'),
+    executionSuite: 'unit-api', cwd: f.cwd })
+  assert.equal(empty.scope, 'affected')
+  assert.deepEqual(empty.files, [])
+})
+
+test('unavailable and non-ancestor bases fall back to full with a reason and retain integration partition coverage', t => {
+  const f = repository(t)
+  const commit = f.git('rev-parse', 'HEAD')
+  f.git('commit', '--allow-empty', '-qm', 'later commit')
+  const laterCommit = f.git('rev-parse', 'HEAD')
+  for (const baseCommit of ['f'.repeat(40), laterCommit]) {
+    const selections = [0, 1].map(index => executionSelection({ commit, baseCommit, executionSuite: 'integration',
+      partition: { index, count: 2 }, cwd: f.cwd }))
+    assert.ok(selections.every(selection => selection.scope === 'full'
+      && selection.reason === 'baseCommit is unavailable or is not an ancestor of the resolved commit.'))
+    assert.deepEqual(selections.flatMap(selection => selection.files).sort(),
+      ['apps/api/test/other.integration.test.ts', 'apps/api/test/value.integration.test.ts'])
+  }
+})
+
 test('selects and partitions affected tests against a non-main default branch, including empty shards', t => {
   const f = repository(t)
   f.write('apps/api/src/value.ts', 'export const value = 2')

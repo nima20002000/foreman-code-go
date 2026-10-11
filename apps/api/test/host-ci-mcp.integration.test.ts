@@ -562,6 +562,40 @@ it('records an empty affected selection as passed and preserves explicit full sc
   } finally { await f.close() }
 })
 
+it('persists an explicit base through authenticated Operator MCP, enforces grants and dispatches it to the runner', async () => {
+  const f = await fixture()
+  try {
+    const baseCommit = 'b'.repeat(40)
+    const input = { suite: 'integration', scope: 'affected', baseCommit, commandId: 'release-changes' }
+    const tool = (await f.operator.listTools()).tools.find(item => item.name === 'ci_run')!
+    expect(tool.inputSchema.properties).toHaveProperty('baseCommit')
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const foreign = await f.connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS], { workspaceIds: ['workspace-other'] })
+    for (const caller of [reader, foreign]) {
+      const denied = await f.call(caller, 'ci_run', input)
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    }
+    expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
+    expect((await f.call(f.operator, 'ci_run', { ...input, baseCommit: 'c'.repeat(40) })).isError).toBe(true)
+    await f.ci.dispatch()
+    expect(f.started).toHaveLength(1)
+    expect(f.started[0]!.request).toMatchObject({ baseCommit, commit: 'a'.repeat(40), scope: 'affected' })
+    expect(f.started[0]!.request).not.toHaveProperty('files')
+    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run).toMatchObject({ baseCommit, commit: 'a'.repeat(40), scope: 'affected', deriveFiles: true })
+    const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+      [started.ticketId])).rows[0]!.record
+    expect(stored).toEqual(read.run)
+    f.finish(started.ticketId, 0, 'completed')
+    await f.ci.dispatch()
+    expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run)
+      .toMatchObject({ baseCommit, state: 'passed', exitCode: 0 })
+  } finally { await f.close() }
+})
+
 it('defaults authenticated Operator MCP and HTTP calls to runner-selected affected scope with denied read-only callers', async () => {
   const f = await fixture()
   try {
@@ -603,17 +637,21 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
     const tool = (await agent.listTools()).tools.find(item => item.name === 'ci_run')!
     expect(tool.inputSchema.properties).toHaveProperty('scope')
     expect(tool.inputSchema.properties).toHaveProperty('files')
-    for (const scope of [undefined, 'full'] as const) {
-      const result = await agent.callTool({ name: 'ci_run', arguments: {
-        suite: 'integration', commandId: `agent-${scope ?? 'default'}`, ...(scope ? { scope } : {}) } })
-      expect(result.isError).not.toBe(true)
-      const started = CiRunOutputSchema.parse(decodeMcpToolResult(result))
-      const read = await agent.callTool({ name: 'ci_get', arguments: { ticketId: started.ticketId } })
-      expect(read.isError).not.toBe(true)
-      const run = CiGetOutputSchema.parse(decodeMcpToolResult(read)).run
-      expect(run).toMatchObject({ scope: scope ?? 'affected', files: [] })
-      expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])).rows[0]!.record)
-        .toEqual(run)
+    for (const baseCommit of [undefined, 'b'.repeat(40)]) {
+      for (const scope of [undefined, 'full'] as const) {
+        const result = await agent.callTool({ name: 'ci_run', arguments: {
+          suite: 'integration', commandId: `agent-${scope ?? 'default'}${baseCommit ? '-base' : ''}`,
+          ...(baseCommit ? { baseCommit } : {}), ...(scope ? { scope } : {}) } })
+        expect(result.isError).not.toBe(true)
+        const started = CiRunOutputSchema.parse(decodeMcpToolResult(result))
+        const read = await agent.callTool({ name: 'ci_get', arguments: { ticketId: started.ticketId } })
+        expect(read.isError).not.toBe(true)
+        const run = CiGetOutputSchema.parse(decodeMcpToolResult(read)).run
+        expect(run).toMatchObject({ scope: scope ?? 'affected', files: [] })
+        expect(run.baseCommit).toBe(baseCommit)
+        expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])).rows[0]!.record)
+          .toEqual(run)
+      }
     }
     const stored = (await f.pool.query<{ grants: { actions: ManagementAction[]; scope: Record<string, unknown> }[] }>(
       'select grants from management_principals where id=$1', [f.authorizationPrincipalId])).rows[0]!
@@ -621,6 +659,8 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
     await f.pool.query('update management_principals set grants=$2::jsonb where id=$1',
       [f.authorizationPrincipalId, JSON.stringify(grants)])
     expect((await agent.callTool({ name: 'ci_run', arguments: { suite: 'unit', commandId: 'agent-denied' } })).isError).toBe(true)
+    expect((await agent.callTool({ name: 'ci_run', arguments: { suite: 'unit', baseCommit: 'b'.repeat(40),
+      commandId: 'agent-base-denied' } })).isError).toBe(true)
   } finally { await f.close() }
 }, 60_000)
 
