@@ -1,13 +1,16 @@
 import { execFile } from 'node:child_process'
 import { chmod, copyFile, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { cachedTestFixture, testFixtureCacheRoot, workerFixtureInputs } from '../../../../scripts/test-fixture-cache.mjs'
 import { measureIntegrationPhase } from './integrationPhase.js'
+import { diagnosticEnvironment } from '../../src/modules/harnesses/compatibility/probe.js'
+import { passiveDriverPayloads } from '../../src/modules/harnesses/payloadDiscovery.js'
+import { inventoryPayloadFingerprints } from '../../src/modules/harnesses/payloadFingerprintCache.js'
 
 const execute = promisify(execFile)
 const require = createRequire(import.meta.url)
@@ -16,13 +19,21 @@ async function copyProviderSchemas(directory: string) {
   const pinnedLauncher = require.resolve('@openai/codex/bin/codex.js')
   const lockfile = new URL('../../../../pnpm-lock.yaml', import.meta.url)
   const inputs = await Promise.all([readFile(pinnedLauncher), readFile(lockfile)])
+  const payload = await passiveDriverPayloads('codex', pinnedLauncher)
+  if (!payload.complete || !payload.paths.length) throw new Error('Pinned provider schema exporter is unavailable.')
+  const payloadHashes = await Promise.all(payload.paths.map(path => inventoryPayloadFingerprints.fingerprint(path)))
   const variants = ['stable', 'experimental']
   const cached = await cachedTestFixture(testFixtureCacheRoot(), 'codex-schemas',
-    [...inputs, process.platform, process.arch, process.version], async temporary => {
+    [...inputs, ...payloadHashes, pinnedLauncher, process.execPath,
+      process.platform, process.arch, process.version, 'isolated-schema-export'], async temporary => {
+      await mkdir(join(temporary, 'codex'), { mode: 0o700 })
+      const environment = diagnosticEnvironment(temporary, {
+        PATH: [dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter),
+      })
       const results = await Promise.allSettled(variants.map(async variant => {
         const args = [pinnedLauncher, 'app-server', 'generate-json-schema', '--out', join(temporary, variant)]
         if (variant === 'experimental') args.push('--experimental')
-        await execute(process.execPath, args)
+        await execute(process.execPath, args, { cwd: temporary, env: environment })
       }))
       const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
       if (failures.length) throw new AggregateError(failures, 'Provider schema generation failed.')

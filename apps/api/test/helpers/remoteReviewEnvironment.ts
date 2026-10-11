@@ -23,5 +23,7 @@ export function remoteReviewEnvironment(
   }
   environment.DBUS_SESSION_BUS_ADDRESS = `unix:path=${environment.XDG_RUNTIME_DIR}/bus`
   delete environment.GRAPHQL_APP_MCP_DIRECTORY
+  delete environment.NODE_OPTIONS
+  delete environment.NODE_PATH
   return environment
 }

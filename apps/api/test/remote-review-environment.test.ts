@@ -22,6 +22,8 @@ it('keeps native fixture writes and session discovery separate from an installed
       ...Object.fromEntries(storageKeys.map(key => [key, installed])),
       PATH: join(installed, 'bin'),
       GRAPHQL_APP_MCP_DIRECTORY: installed,
+      NODE_OPTIONS: `--require=${join(installed, 'loader.cjs')}`,
+      NODE_PATH: installed,
       DBUS_SESSION_BUS_ADDRESS: `unix:path=${installed}/bus`,
     }
     const before = { ...source }
@@ -39,13 +41,19 @@ it('keeps native fixture writes and session discovery separate from an installed
         path: process.env.PATH,
         bus: process.env.DBUS_SESSION_BUS_ADDRESS,
         legacyMcp: process.env.GRAPHQL_APP_MCP_DIRECTORY ?? null,
+        nodeOptions: process.env.NODE_OPTIONS ?? null,
+        nodePath: process.env.NODE_PATH ?? null,
       }))
     `], { env: environment })
-    const discovery = JSON.parse(stdout) as { path: string; bus: string; legacyMcp: string | null }
+    const discovery = JSON.parse(stdout) as {
+      path: string; bus: string; legacyMcp: string | null; nodeOptions: string | null; nodePath: string | null
+    }
     expect(discovery.path.split(':')).not.toContain(source.PATH)
     expect(discovery.bus).not.toBe(source.DBUS_SESSION_BUS_ADDRESS)
     expect(discovery.bus).toBe(`unix:path=${environment.XDG_RUNTIME_DIR}/bus`)
     expect(discovery.legacyMcp).toBeNull()
+    expect(discovery.nodeOptions).toBeNull()
+    expect(discovery.nodePath).toBeNull()
     for (const key of storageKeys) {
       expect(await readFile(join(environment[key]!, 'state.txt'), 'utf8')).toBe('fixture state')
     }

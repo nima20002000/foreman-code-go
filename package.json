@@ -20,6 +20,7 @@
     "lint": "node scripts/ci-remote.mjs lint -- node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --no-sort --if-present lint\"",
     "test": "node scripts/ci-remote.mjs unit -- node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --workspace-concurrency=1 --if-present test && corepack pnpm test:scripts\"",
     "test:integration": "node scripts/ci-remote.mjs integration -- node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-integration.mjs",
+    "test:integration:delegated": "node scripts/test-integration-delegated.mjs",
     "test:dense": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-dense.mjs",
     "test:acceptance": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- sh -c 'corepack pnpm --filter @foreman-code/contracts build && node scripts/test-native-acceptance.mjs \"$@\"' --",
     "test:production": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- node scripts/production-smoke.mjs",
