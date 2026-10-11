@@ -100,8 +100,6 @@ export class GitHubActionsProvider implements CloudProvider {
   async cancel(run: CloudRun) { await this.gh(['run', 'cancel', run.providerRunId!, '-R', run.mirror]) }
 }
 
-const CIRCLECI_ACTIVE = new Set(['pending', 'created', 'queued', 'started', 'running', 'blocked', 'not_running', 'on_hold'])
-
 /** Large Linux machines (4 vCPUs, 15 GB); the free plan runs 30 jobs at once and open-source Linux builds are free. */
 export class CircleCiProvider implements CloudProvider {
   readonly id = 'circleci' as const
@@ -128,16 +126,18 @@ export class CircleCiProvider implements CloudProvider {
 
   private async job(run: CloudRun) {
     const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as
-      { phase: string; workflows?: { phase: string; jobs?: { id: string; phase: string }[] }[] }
-    return { view, job: view.workflows?.[0]?.jobs?.[0] ?? null }
+      { workflows?: { jobs?: { id: string }[] }[] }
+    return { job: view.workflows?.[0]?.jobs?.[0] ?? null }
   }
 
   async status(run: CloudRun): Promise<CloudStatus> {
-    const { view, job } = await this.job(run)
-    const phase = job?.phase ?? view.workflows?.[0]?.phase ?? view.phase
-    if (!job || CIRCLECI_ACTIVE.has(phase)) return { done: false }
-    return { done: true, finishedAt: new Date().toISOString(),
-      conclusion: phase === 'success' ? 'success' : ['canceled', 'cancelled'].includes(phase) ? 'cancelled' : 'failure' }
+    const { job } = await this.job(run)
+    if (!job) return { done: false }
+    const detail = JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as
+      { phase: string; outcome?: string; stopped_at?: string }
+    if (detail.phase !== 'ended') return { done: false }
+    return { done: true, finishedAt: detail.stopped_at ?? new Date().toISOString(),
+      conclusion: detail.outcome === 'succeeded' ? 'success' : detail.outcome === 'canceled' ? 'cancelled' : 'failure' }
   }
 
   async log(run: CloudRun) {
