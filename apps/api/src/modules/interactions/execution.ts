@@ -1954,10 +1954,11 @@ export class ApprovalExecutionCoordinator {
               },
             }, signal)
           } else {
-            await publishObservedSession(await this.openingSession(ownedSession,
-              timeRuntimeOperation('harness', 'native.create_session', () => manager!.createSession(start, signal))))
-            nativeEvents = manager.startTurnBatches(session!, {
+            const observed = await this.openingSession(ownedSession,
+              timeRuntimeOperation('harness', 'native.create_session', () => manager!.createSession(start, signal)))
+            nativeEvents = manager.startTurnBatches(observed, {
               prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              onSessionReady: () => publishObservedSession(observed),
               onTurnOffered: () => { nativeTurnOffered = true },
             }, signal)
           }

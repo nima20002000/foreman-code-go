@@ -465,13 +465,14 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     for await (const batch of this.turnBatches(session, input, signal, individualEvents)) yield* batch
   }
 
-  startTurnBatches(session: NativeSessionReference, input: NativeTurnInput & { onTurnOffered?(): void },
+  startTurnBatches(session: NativeSessionReference,
+    input: NativeTurnInput & { onTurnOffered?(): void; onSessionReady?(): Promise<void> },
     signal?: AbortSignal): AsyncIterable<NativeHarnessEvent[]> {
     return this.turnBatches(session, input, signal)
   }
 
   private async *turnBatches(session: NativeSessionReference,
-    input: NativeTurnInput & { onTurnOffered?(): void }, signal?: AbortSignal,
+    input: NativeTurnInput & { onTurnOffered?(): void; onSessionReady?(): Promise<void> }, signal?: AbortSignal,
     batches = nativeEventBatches): AsyncIterable<NativeHarnessEvent[]> {
     const lease = await this.acquire(session, input.clientCorrelationId, signal)
     const evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
@@ -479,12 +480,16 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     try {
       await this.requireIdle(this.manager, session, input.clientCorrelationId, lease)
       await this.coordination.bindLaneTurn(lease.fence, input.clientCorrelationId)
+      this.active.set(session.nativeSessionId, lease)
+      const { onTurnOffered, onSessionReady, ...nativeInput } = input
+      if (onSessionReady) {
+        await timeRuntimeOperation('harness', 'native.publish_session', onSessionReady,
+          { nativeSessionId: session.nativeSessionId, laneId: lease.fence.id })
+      }
+      await lease.guard.check()
       lease.observedStatus = 'uncertain'
       delete lease.providerId
-      this.active.set(session.nativeSessionId, lease)
-      await lease.guard.check()
       submitted = true
-      const { onTurnOffered, ...nativeInput } = input
       onTurnOffered?.()
       const events = this.manager.startTurn(session, {
         ...nativeInput,

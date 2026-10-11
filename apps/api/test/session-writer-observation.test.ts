@@ -49,6 +49,89 @@ function silentProvider() {
   return { manager, reading, release, detached, signal: () => nativeSignal }
 }
 
+it('submits the first turn when session publication finishes under the same writer', async () => {
+  vi.useFakeTimers()
+  const provider = silentProvider()
+  const publishing = deferred()
+  const published = deferred()
+  const submitted = deferred()
+  const offered = vi.fn()
+  const coordination = nativeLanes()
+  const claim = vi.spyOn(coordination, 'claimLane')
+  const release = vi.spyOn(coordination, 'releaseLane')
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  provider.manager.startTurn = vi.fn(async function* (_session, input) {
+    expect(input).not.toHaveProperty('onSessionReady')
+    await input.onSubmitted?.('provider-turn')
+    submitted.resolve()
+    yield frame
+  })
+  const created = await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const startedAt = Date.now()
+  let publicationToken: string | undefined
+  const iterator = writer.startTurnBatches(created, {
+    prompt: 'stream', clientCorrelationId: 'stream-turn', onTurnOffered: offered,
+    onSessionReady: async () => {
+      publicationToken = writer.capturedLease(created)?.fence.token
+      publishing.resolve()
+      await published.promise
+    },
+  })[Symbol.asyncIterator]()
+  const first = iterator.next()
+  try {
+    await publishing.promise
+    expect(publicationToken).toBeDefined()
+    expect(provider.manager.startTurn).not.toHaveBeenCalled()
+    expect(offered).not.toHaveBeenCalled()
+    expect(claim).toHaveBeenCalledOnce()
+    expect(release).not.toHaveBeenCalled()
+    await expect(writer.withLane(created, 'competing-turn', undefined, async () => undefined))
+      .rejects.toMatchObject({ code: 'SESSION_LANE_BUSY' })
+    expect(claim).toHaveBeenCalledTimes(2)
+    published.resolve()
+    await submitted.promise
+    expect(Date.now()).toBe(startedAt)
+    expect(claim).toHaveBeenCalledTimes(2)
+    expect(release).not.toHaveBeenCalled()
+    expect(writer.capturedLease(created)?.fence.token).toBe(publicationToken)
+    expect((await coordination.getLane('codex', created.nativeSessionId))?.currentTurnOrMessageId)
+      .toBe('provider-turn')
+    expect(offered).toHaveBeenCalledOnce()
+    expect(await first).toEqual({ value: [frame], done: false })
+    expect((await iterator.next()).done).toBe(true)
+    expect(release).toHaveBeenCalledOnce()
+  } finally {
+    published.resolve()
+    await Promise.allSettled([first])
+    await iterator.return?.()
+  }
+})
+
+it.each(['rejected', 'aborted'] as const)('keeps native input unoffered when publication is %s', async failure => {
+  const provider = silentProvider()
+  provider.manager.startTurn = vi.fn(provider.manager.startTurn)
+  const coordination = nativeLanes()
+  const release = vi.spyOn(coordination, 'releaseLane')
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  const controller = new AbortController()
+  const error = new Error('Session publication did not complete')
+  const offered = vi.fn()
+  const created = await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const iterator = writer.startTurnBatches(created, {
+    prompt: 'stream', clientCorrelationId: 'stream-turn', onTurnOffered: offered,
+    onSessionReady: async () => {
+      expect(writer.capturedLease(created)).toBeDefined()
+      if (failure === 'rejected') throw error
+      controller.abort(error)
+    },
+  }, controller.signal)[Symbol.asyncIterator]()
+  await expect(iterator.next()).rejects.toBe(error)
+  expect(provider.manager.startTurn).not.toHaveBeenCalled()
+  expect(offered).not.toHaveBeenCalled()
+  expect(writer.isActive(created)).toBe(false)
+  expect(release).toHaveBeenCalledOnce()
+})
+
 it('retries failed disposal on the same manager while keeping native writes closed', async () => {
   const provider = silentProvider()
   const disposed = deferred()
