@@ -143,7 +143,7 @@ it('keeps a newer label while accepting a newer native observation from an older
     observation: { ...observedAccount().observation!, sequence: 2, identity: 'newer-display@example.test' } }
   await act(async () => { await view.result.current.refetch() })
   expect(view.result.current.data?.name).toBe('Saved new label')
-  expect(view.result.current.data?.observation?.identity).toBe('newer-display@example.test')
+  await waitFor(() => expect(view.result.current.data?.observation?.identity).toBe('newer-display@example.test'))
 })
 
 it('rejects a model observation from an earlier computer connection', async () => {

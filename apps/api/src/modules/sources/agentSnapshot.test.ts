@@ -48,8 +48,8 @@ it('keeps concurrent identical snapshots alive until each operation finishes bun
   git(root, 'commit', '-qm', 'base')
   const baseCommit = git(root, 'rev-parse', 'HEAD')
   await writeFile(join(root, 'app.ts'), 'agent change\n')
-  const system = systemGitWorktreePorts({ ...gitFixtureEnvironment(),
-    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' })
+  const system = systemGitWorktreePorts(gitFixtureEnvironment())
+  const dates = { GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' }
   let secondBundling!: () => void
   const secondBundle = new Promise<void>(resolve => { secondBundling = resolve })
   let firstDeleted!: () => void
@@ -69,7 +69,7 @@ it('keeps concurrent identical snapshots alive until each operation finishes bun
         await firstDeletion
       }
     }
-    const result = await system.git(...args)
+    const result = await system.git(args[0], { ...args[1], env: { ...args[1].env, ...dates } })
     if (creatingRef) firstRefCreated()
     if (args[0][0] === 'update-ref' && args[0][1] === '-d') firstDeleted()
     return result
