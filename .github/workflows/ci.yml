@@ -35,10 +35,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
+      # The pinned pnpm through corepack, as on our computers; Worker tests read it offline from corepack's cache.
+      - run: corepack enable && corepack install
       - run: scripts/ci-suite.sh start
       # Keep the pnpm store inside node_modules so cache hits retain the package integrity index.
       - id: packages

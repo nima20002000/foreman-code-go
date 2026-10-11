@@ -15,9 +15,16 @@ if [ "${1:-}" = start ]; then
   # scripts/test-db.mjs needs only Node, so the database starts while packages install.
   case "$SUITE" in unit|unit-api|integration) background db 'node scripts/test-db.mjs up' ;; esac
   # Harness tests check the installed Codex and Claude CLIs, as on our build computers; same 48-hour package age rule.
-  [ "$SUITE" = integration ] && background clis "npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
+  case "$SUITE" in unit|unit-api|integration) background clis "npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code" ;; esac
   exit 0
 fi
+
+# Native process tests need a delegated cgroup, as a systemd user service gets on our build computers.
+delegate_cgroup() {
+  local cgroup=/sys/fs/cgroup/foreman-ci
+  sudo mkdir -p "$cgroup" && sudo chown -R "$(id -u):$(id -g)" "$cgroup"
+  echo $$ | sudo tee "$cgroup/cgroup.procs" >/dev/null
+}
 
 ready() {
   [ -d "$state" ] || return 0
@@ -28,8 +35,8 @@ ready() {
 
 case "$SUITE" in
   install) ;;
-  unit) ready db; pnpm test ;;
-  unit-api) ready db; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api test ${SLICE:+--shard=$SLICE} ;;
+  unit) ready db; ready clis; delegate_cgroup; pnpm test ;;
+  unit-api) ready db; ready clis; delegate_cgroup; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api test ${SLICE:+--shard=$SLICE} ;;
   unit-web) pnpm --filter @foreman-code/contracts build
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=fast pnpm exec vitest run ${SLICE:+--shard=$SLICE}) ;;
   unit-web-heavy) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/web test:run-graph-smoke
@@ -43,10 +50,7 @@ case "$SUITE" in
   integration)
     ready db; ready clis
     export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$DURATIONS_OUTPUT"
-    # Native process tests need a delegated cgroup, as a systemd user service gets on our build computers.
-    cgroup=/sys/fs/cgroup/foreman-ci
-    sudo mkdir -p "$cgroup" && sudo chown -R "$(id -u):$(id -g)" "$cgroup"
-    echo $$ | sudo tee "$cgroup/cgroup.procs" >/dev/null
+    delegate_cgroup
     FILES="$(node scripts/ci-files.mjs "${SLICE:-}")"
     # shellcheck disable=SC2086 # the partition's files are separate arguments
     pnpm test:integration ${SLICE:+--files $FILES} ;;
