@@ -450,10 +450,10 @@ test('unavailable database settings retain the fallback without exposing connect
   assert.doesNotMatch(plan.reason, /private database/)
 })
 
-test('process deadlines allow long progressing files and cannot be disabled by overrides', () => {
+test('an integration file fails after three minutes and overrides cannot disable the deadlines', () => {
   const limits = integrationTimeouts({})
-  assert.equal(limits.idleTimeoutMs, 300_000)
-  assert.equal(limits.fileTimeoutMs, 3_600_000)
+  assert.equal(limits.idleTimeoutMs, 180_000)
+  assert.equal(limits.fileTimeoutMs, 180_000)
   assert.equal(integrationTimeouts({ FOREMAN_CODE_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
   for (const value of ['0', '-1', 'Infinity', 'NaN', '3600001', '1.5']) {
     assert.throws(() => integrationTimeouts({ FOREMAN_CODE_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)

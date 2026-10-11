@@ -693,12 +693,12 @@ export async function runIntegration(argv = [], {
       const metricsTracker = child.pid ? startProcessMetrics(child.pid) : null
       let metrics
       let result
-      const fileTimeoutMs = Math.ceil(timeouts.fileTimeoutMs * timeoutScale)
+      const fileTimeoutMs = timeouts.fileTimeoutMs
       const expectedMs = expectedDurations[file]
       const deadlineMs = adaptiveDeadlineMs(expectedMs, fileTimeoutMs, timeoutScale)
       try {
         result = await superviseIntegrationProcess(child, { log, progress, ...timeouts,
-          idleTimeoutMs: Math.ceil(timeouts.idleTimeoutMs * timeoutScale),
+          idleTimeoutMs: Math.min(fileTimeoutMs, Math.ceil(timeouts.idleTimeoutMs * timeoutScale)),
           fileTimeoutMs, deadlineMs,
           onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
           resetAfterTimeout: async () => {
