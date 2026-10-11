@@ -1,7 +1,11 @@
 import { exclusiveIntegrationFiles, requirements } from './integrationScheduling.mjs'
 
 /** Spread capability-dependent and host-exclusive files before balancing the remaining durations by computer speed.
- * Files without a recorded duration count as the median. */
+ * Files without a recorded duration count as the median.
+ * @param {readonly string[]} files
+ * @param {Readonly<Record<string, number>>} durations
+ * @param {import('./ciHost.js').CiPartition} partition
+ * @returns {string[]} */
 export function integrationPartition(files, durations, partition) {
   const valid = value => typeof value === 'number' && Number.isFinite(value) && value > 0
   const known = files.map(file => durations[file]).filter(valid).sort((a, b) => a - b)
