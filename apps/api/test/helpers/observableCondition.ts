@@ -18,13 +18,11 @@ export async function readUntil<T>(
         const value = await read()
         if (accept(value)) return value
         if (performance.now() >= deadline) throw new Error(`Timed out waiting for ${options.description}.`)
-        if (unsubscribe) await Promise.race([notification, expired])
-        else {
-          // Native fixtures share runner CPUs with their API and Worker processes.
-          const polling = new Promise<void>(resolve => { pollTimer = setTimeout(resolve, 25) })
-          await Promise.race([polling, expired])
-        }
+        // Retry deadlines and external native progress do not necessarily commit a row.
+        const polling = new Promise<void>(resolve => { pollTimer = setTimeout(resolve, 25) })
+        await Promise.race([notification, polling, expired])
       } finally {
+        clearTimeout(pollTimer)
         unsubscribe?.()
       }
     }

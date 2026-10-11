@@ -121,7 +121,8 @@ export async function reviewInProgress(fixture: Fixture) {
   expect(location.runnerId).toBe(fixture.profiles[0]!.target.applicationInstallationId)
   expect((await fixture.details(started.run.id)).run.executionLocation).toEqual(location)
   const interaction = await waitForRemoteReview(async () => {
-    // Start already drives native execution. A full recovery sweep can outlast the routed interaction.
+    // Retry recoverable workflow boundaries through the engine without the source-cleanup sweep.
+    await fixture.reconcileReviews()
     const pending = (await fixture.pending(started.run.id))[0]
     if (!pending) {
       const failed = (await fixture.executions(started.run.id)).find(execution => execution.result?.outcome === 'failed')
@@ -164,7 +165,7 @@ export async function deliveredReview(fixture: Fixture, interactionId: string) {
   const interaction = await waitForRemoteReview(async () => {
     const failure = (await fixture.provider.calls()).find(call => call.providerFailure !== undefined)
     if (failure) throw new Error(`Remote review provider failed: ${String(failure.providerFailure)}`)
-    await fixture.reconcileReviews()
+    await fixture.reconcile()
     return readInteraction(fixture, interactionId)
   }, value => value.deliveryState === 'delivered', 'persisted native decision delivery')
   const job = await waitForRemoteReview(async () => {
