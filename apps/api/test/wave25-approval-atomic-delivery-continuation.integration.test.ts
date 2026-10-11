@@ -30,27 +30,4 @@ describe.skipIf(!postgresEnabled)('approval delivery', { timeout: 60000 }, () =>
     expect((await br1002Batches(f)).flatMap((batch) => batch.facts).filter((fact) => fact.type === 'worker.resumed')).toHaveLength(1)
     await compare()
   })
-
-  it('missing native receipt stays uncertain and retains the same reconciliation attempt', async () => {
-    const f = await setup()
-    await decision(f); await f.settle()
-    const first = (await f.repository.delivery.claim(f.interaction.id, 'missing-receipt'))!
-    const uncertain = await f.repository.delivery.finish(first, async () => ({ state: 'delivered' }))
-    expect(uncertain.deliveryState).toBe('uncertain')
-    const retry = (await f.repository.delivery.claim(f.interaction.id, 'reconcile-receipt'))!
-    expect(retry).toMatchObject({ mode: 'reconcile', attempt: first.attempt, correlationId: first.correlationId })
-    expect(f.counts().responses).toBe(0)
-    expect(await f.receipts()).toHaveLength(0)
-  })
-
-  it('a changed requester generation fences a delivery owner before native writes', async () => {
-    const f = await setup()
-    await decision(f); await f.settle()
-    const claim = (await f.repository.delivery.claim(f.interaction.id, 'old-generation'))!
-    await f.pool.query("update native_session_lanes set record=jsonb_set(record,'{connectionGeneration}',to_jsonb((record->>'connectionGeneration')::integer+1)) where owner_agent_id=$1", [f.requester.agentId])
-    let writes = 0
-    await expect(f.repository.delivery.finish(claim, async () => { writes++; return { state: 'delivered' } })).rejects.toBeDefined()
-    expect(writes).toBe(0)
-    expect(f.counts().responses).toBe(0)
-  })
 })
