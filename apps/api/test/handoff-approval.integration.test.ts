@@ -210,7 +210,27 @@ describe.skipIf(!postgresEnabled)('handoff Worker approval through the designate
       const secondReviewerId = await reviewThroughMcp(f, runtime, firstReviewerId)
       expect(secondReviewerId).not.toBe(firstReviewerId)
       expect((await runtime.runs.get(f.f.run.id))).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
-      expect(f.counts()).toEqual({ sessions: 4, prompts: 6, responses: 2 })
+      const details = await runtime.runs.getDetails(f.f.run.workspaceId, f.f.run.id)
+      expect(details?.executions).toHaveLength(4)
+      const sessionIds = new Set<string>()
+      for (const node of f.f.version.definition.nodes) {
+        const executions = details!.executions.filter((execution) => execution.workflowNodeId === node.id)
+        expect(executions).toHaveLength(2)
+        const original = executions.find((execution) => !execution.sessionContinuation)!
+        const resumed = executions.find((execution) => execution.sessionContinuation)!
+        expect(original).toMatchObject({ state: 'completed', nativeSessionId: expect.any(String) })
+        expect(resumed).toMatchObject({
+          state: 'completed',
+          nativeSessionId: original.nativeSessionId,
+          sessionContinuation: {
+            previousExecutionId: original.id,
+            session: { nativeSessionId: original.nativeSessionId },
+          },
+        })
+        sessionIds.add(original.nativeSessionId!)
+      }
+      expect(sessionIds.size).toBe(2)
+      expect(f.counts()).toEqual({ sessions: 2, prompts: 6, responses: 2 })
       const jobs = (await f.db.pool.query<{ execution_id: string; state: string }>(
         `select j.execution_id,j.state from review_jobs j join durable_interactions i on i.id=j.interaction_id
           where i.run_id=$1 order by j.execution_id`, [f.f.run.id])).rows
@@ -220,7 +240,7 @@ describe.skipIf(!postgresEnabled)('handoff Worker approval through the designate
       for (let attempt = 0; attempt < 2; attempt++) await runtime.engine.reconcile(() => {
         throw new Error('Reconciliation failed after completed approvals')
       })
-      expect(f.counts()).toEqual({ sessions: 4, prompts: 6, responses: 2 })
+      expect(f.counts()).toEqual({ sessions: 2, prompts: 6, responses: 2 })
     } finally {
       release.resolve()
       pause.mockRestore()
