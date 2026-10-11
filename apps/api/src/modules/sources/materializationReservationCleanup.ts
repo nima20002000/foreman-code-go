@@ -43,6 +43,8 @@ async function admissionInactive(sql: GraphSqlClient, operationId: string): Prom
       const ownership = await sql.query<{ locked: boolean }>(
         'select pg_try_advisory_xact_lock($1,hashtext($2)) as locked', [810_002, preparation.run_id])
       if (!ownership.rows[0]?.locked) return false
+      const run = await sql.query('select id from runs where id=$1 for share skip locked', [preparation.run_id])
+      if (!run.rowCount) return false
     }
   }
   for (const preparation of preparations.rows) {
