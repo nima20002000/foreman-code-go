@@ -74,6 +74,7 @@ jobs:
           command: mkdir -p /tmp/ci-durations && scripts/ci-suite.sh
       - save_cache:
           key: ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-{{ .Revision }}
+          when: always
           paths:
             - node_modules/.vitest-cache
             - apps/api/node_modules/.cache

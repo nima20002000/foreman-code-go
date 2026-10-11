@@ -6,24 +6,18 @@ import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
-import { cachedTestFixture } from '../../../../scripts/test-fixture-cache.mjs'
-import { privateFixtureRoot } from './privateFixtureDirectory.js'
+import { cachedTestFixture, testFixtureCacheRoot, workerFixtureInputs } from '../../../../scripts/test-fixture-cache.mjs'
 import { measureIntegrationPhase } from './integrationPhase.js'
 
 const execute = promisify(execFile)
 const require = createRequire(import.meta.url)
-
-async function fixtureCacheRoot() {
-  const privateRoot = await privateFixtureRoot()
-  return process.env.FOREMAN_CODE_TEST_CACHE_ROOT ?? join(privateRoot, 'setup-cache')
-}
 
 async function copyProviderSchemas(directory: string) {
   const pinnedLauncher = require.resolve('@openai/codex/bin/codex.js')
   const lockfile = new URL('../../../../pnpm-lock.yaml', import.meta.url)
   const inputs = await Promise.all([readFile(pinnedLauncher), readFile(lockfile)])
   const variants = ['stable', 'experimental']
-  const cached = await cachedTestFixture(await fixtureCacheRoot(), 'codex-schemas',
+  const cached = await cachedTestFixture(testFixtureCacheRoot(), 'codex-schemas',
     [...inputs, process.platform, process.arch, process.version], async temporary => {
       const results = await Promise.allSettled(variants.map(async variant => {
         const args = [pinnedLauncher, 'app-server', 'generate-json-schema', '--out', join(temporary, variant)]
@@ -195,8 +189,9 @@ async function cachedWorkerRelease(directory: string) {
       'scripts/quota-helper-abi.mjs', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs',
       'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', targetFile], { cwd: root })
     const builder = fileURLToPath(new URL('../../../../scripts/build-worker-artifact.mjs', import.meta.url))
-    const cached = await cachedTestFixture(await fixtureCacheRoot(), 'worker-artifacts',
-      [commit, targetBytes], async temporary => {
+    const inputs = await workerFixtureInputs(root, commit)
+    const cached = await cachedTestFixture(testFixtureCacheRoot(), 'worker-artifacts',
+      [inputs, targetBytes, process.platform, process.arch, process.version], async temporary => {
         await execute(process.execPath, [builder, targetFile, join(temporary, 'release')], {
           maxBuffer: 4 * 1024 * 1024,
           env: { ...process.env, FOREMAN_CODE_WORKER_BUILD_COMMIT: commit },

@@ -101,7 +101,8 @@ jobs:
           restore-keys: web-typecheck-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-
       # Publish each run's updated incremental state even when a mutable mirror ref is reused. Compiler and
       # ESLint entries validate file content. Runs start from main so every run shares main's cache scope.
-      - uses: actions/cache@v4
+      - id: suite-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             node_modules/.vitest-cache
@@ -114,6 +115,16 @@ jobs:
         run: scripts/ci-suite.sh
         env:
           DURATIONS_OUTPUT: ${{ runner.temp }}/durations.json
+      - name: Save suite caches
+        if: always() && steps.suite-cache.conclusion == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            node_modules/.vitest-cache
+            apps/*/node_modules/.cache
+            packages/*/node_modules/.cache
+            !apps/web/node_modules/.cache/tsc
+          key: ${{ steps.suite-cache.outputs.cache-primary-key }}
       - if: always() && contains(fromJSON('["integration", "unit-api", "unit-web"]'), inputs.suite)
         uses: actions/upload-artifact@v4
         with:

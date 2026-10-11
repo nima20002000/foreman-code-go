@@ -1,17 +1,66 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { cachedTestFixture } from './test-fixture-cache.mjs'
+import { promisify } from 'node:util'
+import { cachedTestFixture, testFixtureCacheRoot, workerFixtureInputs } from './test-fixture-cache.mjs'
+
+const execute = promisify(execFile)
 
 async function fixtureCache(t) {
   const root = await mkdtemp(join(tmpdir(), 'test-fixture-cache-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   return root
 }
+
+test('setup cache persists across invocation roots and respects an explicit cache location', () => {
+  assert.equal(testFixtureCacheRoot({ FOREMAN_CODE_TEST_ROOT: 'first-run' }),
+    testFixtureCacheRoot({ FOREMAN_CODE_TEST_ROOT: 'second-run' }))
+  assert.equal(testFixtureCacheRoot({ FOREMAN_CODE_TEST_CACHE_ROOT: 'selected-cache' }), 'selected-cache')
+})
+
+test('Worker output survives unrelated commits and rebuilds when packaging input content changes', async t => {
+  const root = await fixtureCache(t)
+  const repository = join(root, 'repository')
+  await mkdir(join(repository, 'scripts'), { recursive: true })
+  await mkdir(join(repository, 'apps/worker/src'), { recursive: true })
+  await mkdir(join(repository, 'apps/api/src'), { recursive: true })
+  await writeFile(join(repository, 'scripts/worker-api-allowlist.json'),
+    JSON.stringify(['apps/api/src/native.ts']))
+  await writeFile(join(repository, 'apps/api/src/native.ts'), 'export const native = 1\n')
+  await writeFile(join(repository, 'apps/worker/src/worker.mjs'), 'export const worker = 1\n')
+  await writeFile(join(repository, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+  const git = async args => (await execute('git', args, { cwd: repository,
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } })).stdout.trim()
+  await git(['init', '--quiet'])
+  const commit = async () => {
+    await git(['add', '.'])
+    await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'Fixture input'])
+    return git(['rev-parse', 'HEAD'])
+  }
+  let builds = 0
+  const output = async () => cachedTestFixture(join(root, 'cache'), 'worker',
+    [await workerFixtureInputs(repository, await commit())], async directory => {
+      builds++
+      await writeFile(join(directory, 'payload'), `build ${builds}`)
+    })
+  const first = await output()
+  await writeFile(join(repository, 'unrelated.md'), 'Unrelated documentation\n')
+  assert.equal(await output(), first)
+  assert.equal(builds, 1)
+  await writeFile(join(repository, 'apps/api/src/native.ts'), 'export const native = 2\n')
+  const changed = await output()
+  assert.notEqual(changed, first)
+  assert.equal(await readFile(join(changed, 'payload'), 'utf8'), 'build 2')
+  await writeFile(join(repository, 'pnpm-lock.yaml'), 'lockfileVersion: 10\n')
+  const dependencies = await output()
+  assert.notEqual(dependencies, changed)
+  assert.equal(await readFile(join(dependencies, 'payload'), 'utf8'), 'build 3')
+})
 
 test('unchanged inputs reuse complete output and changed inputs populate separately', async t => {
   const root = await fixtureCache(t)

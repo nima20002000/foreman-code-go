@@ -1,8 +1,37 @@
 import { Buffer } from 'node:buffer'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, open, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+
+const execute = promisify(execFile)
+
+export function testFixtureCacheRoot(environment = process.env) {
+  return environment.FOREMAN_CODE_TEST_CACHE_ROOT
+    ?? fileURLToPath(new URL('../apps/api/node_modules/.cache/fixtures', import.meta.url))
+}
+
+/** Git blob identities let unchanged packaging inputs survive unrelated commits. */
+export async function workerFixtureInputs(repository, commit) {
+  const { stdout: allowlist } = await execute('git', ['show', `${commit}:scripts/worker-api-allowlist.json`], {
+    cwd: repository,
+  })
+  const paths = [
+    ...JSON.parse(allowlist), 'apps/worker/src', 'apps/worker/artifacts', 'packages/contracts/src',
+    'apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs',
+    'scripts/worker-api-allowlist.json', 'scripts/quota-helper-abi.mjs', 'scripts/graphql-mcp.mjs',
+    'scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs',
+    'scripts/integration-process.mjs', 'scripts/integration-capabilities.mjs',
+    'packages/contracts/package.json', 'apps/worker/package.json', 'package.json',
+    'pnpm-workspace.yaml', 'pnpm-lock.yaml',
+  ]
+  const { stdout } = await execute('git', ['ls-tree', '-r', '-z', commit, '--', ...paths], {
+    cwd: repository, encoding: 'buffer', maxBuffer: 4 * 1024 * 1024,
+  })
+  return stdout
+}
 
 async function cacheEntryExists(directory) {
   try {

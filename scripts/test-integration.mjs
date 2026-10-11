@@ -13,6 +13,7 @@ import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatab
 import { createTestDatabaseTemplate, dropTestDatabaseTemplate } from './test-database-template.mjs'
 import { readIntegrationStartup } from './integration-startup.mjs'
 import { integrationPhaseForwarder } from './integration-phase.mjs'
+import { testFixtureCacheRoot } from './test-fixture-cache.mjs'
 import { adaptiveDeadlineMs, groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
@@ -687,7 +688,7 @@ export async function runIntegration(argv = [], {
       const output = boundedLog(log, logBytes)
       const json = `${log}.json`
       const environment = { ...integrationEnvironment(env, slot), FOREMAN_CODE_TEST_FILE_STARTED_AT: String(Date.now()),
-        FOREMAN_CODE_TEST_FILE: file, FOREMAN_CODE_TEST_CACHE_ROOT: join(tempRoot.directory, 'fixture-cache') }
+        FOREMAN_CODE_TEST_FILE: file, FOREMAN_CODE_TEST_CACHE_ROOT: testFixtureCacheRoot(env) }
       const vitest = vitestCommand(environment, file, testNamePattern, json)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
       const child = spawn(vitest.command, vitest.args,
