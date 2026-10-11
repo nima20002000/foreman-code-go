@@ -12,7 +12,7 @@ import { HarnessQualificationRepository } from '../src/modules/harnesses/qualifi
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
 it('uses the selected Worker qualification when the general harness cache has a conflicting record', async () => {
-  const fixture = await remoteReviewProduction({ workflow: 'single' })
+  const fixture = await remoteReviewProduction({ workflow: 'single', parallelSetup: true })
   let failure: unknown
   try {
     const profile = fixture.profiles[0]!
