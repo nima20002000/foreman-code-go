@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect } from 'vitest'
-import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, ReviewJobSchema,
+import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, NativeSessionLaneSchema, ReviewJobSchema,
   withAdvancedDefaults } from '@foreman-code/contracts'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { RunExecutionLocationV3Schema } from '@foreman-code/contracts/wave25'
@@ -220,6 +220,19 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
       expect(retained.providerTurnOrMessageId).toBe(active.job.providerTurnOrMessageId)
       expect(retained.leaseToken).toBeUndefined()
       expect(retained.leaseExpiresAt).toBeUndefined()
+      const lanes = (await fixture.db.pool.query<{ record: unknown }>(
+        'select record from native_session_lanes where native_session_id=any($1::text[])',
+        [[active.reviewer.nativeSessionId, active.requester.nativeSessionId]],
+      )).rows.map(row => NativeSessionLaneSchema.parse(row.record))
+      expect(lanes).toHaveLength(2)
+      for (const lane of lanes) {
+        expect(lane.leaseToken).toBeUndefined()
+        expect(lane.leaseOwner).toBeUndefined()
+        expect(lane.leaseExpiresAt).toBeUndefined()
+      }
+      expect(lanes.find(lane => lane.nativeSessionId === retained.nativeSessionId)).toMatchObject({
+        correlationId: retained.correlationId, currentTurnOrMessageId: retained.providerTurnOrMessageId,
+      })
     }
     if (recovery !== 'graceful') {
       // Main has exited; expire its observer leases without waiting for the wall clock.

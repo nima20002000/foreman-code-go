@@ -1130,8 +1130,15 @@ export class ApprovalExecutionCoordinator {
     if (this.restartClosure) return this.restartClosure
     const sessions = [...this.ownedSessions.values()]
     const reason = new DomainError('ENGINE_RESTART', 'The native lifetime is detaching for application restart.', 409)
-    for (const owned of sessions) owned.controller.abort(reason)
+    const drainingReviews = this.reviewers.shutdown()
+    // A captured finalizer may already be running outside the dispatch guard.
+    // Keep its lifetime valid until the dispatcher has joined it.
+    for (const owned of sessions) {
+      if (!owned.reviewFinalizer) owned.controller.abort(reason)
+    }
     const task = (async () => {
+      const reviewResults = await Promise.allSettled([drainingReviews])
+      for (const owned of sessions) owned.controller.abort(reason)
       const closeSession = async (owned: OwnedNativeSession) => {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
         const failures: Error[] = []
@@ -1189,6 +1196,9 @@ export class ApprovalExecutionCoordinator {
         Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {})))
       const failures = results.flatMap(result => result.status === 'fulfilled'
         ? result.value : [safe.error(result.reason) as Error])
+      for (const result of reviewResults) {
+        if (result.status === 'rejected') failures.push(safe.error(result.reason) as Error)
+      }
       if (failures.length) throw new AggregateError(failures, 'Native restart closure was incomplete.', { cause: failures[0] })
     })()
     this.restartClosure = task
@@ -1388,6 +1398,7 @@ export class ApprovalExecutionCoordinator {
     // Claim outside cleanup: losing a concurrent startup race does not own its credentials.
     if (resolved.processState === 'needs_start') resolved.beginStart?.()
     const owned = this.ownSession(execution, resolutionContext, resolved.manager)
+    if (options.restartOwner) owned.runOwner = options.restartOwner
     if (continuing) {
       owned.closureRegistration = Promise.resolve(continuing.generation)
       owned.closureGeneration = continuing.generation
