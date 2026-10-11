@@ -2044,7 +2044,9 @@ export class ApprovalExecutionCoordinator {
       // A created session with no offered turn cannot recover by observing a turn.
       // Close its original manager before recording failure; possible submissions remain recoverable.
       const sessionWithoutTurn = repeatLaunch && ownedSession?.session && !nativeTurnOffered
-      if (!signal.aborted && !(rawError instanceof HarnessExecutionError) && !sessionWithoutTurn) {
+      const activeTimeout = error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT'
+      // A persisted budget check can detect expiry before the deadline timer fires.
+      if (!signal.aborted && !activeTimeout && !(rawError instanceof HarnessExecutionError) && !sessionWithoutTurn) {
         input.owner.assertOwned()
         if (repeatPhysicalSettlementPending(error)) await this.budgets.beginWait(execution.id)
         input.owner.assertOwned()
@@ -2071,7 +2073,7 @@ export class ApprovalExecutionCoordinator {
         if (error instanceof DomainError) code = error.code
         componentLogger('harness').warn({ executionId: execution.id, code, err: error },
           'Workflow native execution failed before cleanup')
-        const failure = error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT'
+        const failure = activeTimeout
           ? { outcome: 'failed' as const, error: { code: error.code, message: error.message, retryable: false } }
           : undefined
         if (failure) {
