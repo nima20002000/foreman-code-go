@@ -29,4 +29,3 @@ export const add = (f: Fixture, input: WorkspaceRepositoryAddInput) =>
 export const get = (f: Fixture, input: { workspaceId: string; commandId?: string }) =>
   callWorkspaceTool(f.owner.client, 'workspace_repository_get', WorkspaceRepositoryReadResultSchema, input)
 export const clones = (f: Fixture) => f.gitCalls.filter(args => args.includes('clone')).length
-

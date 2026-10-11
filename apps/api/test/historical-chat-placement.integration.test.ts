@@ -46,9 +46,14 @@ it('forks and recovers historical chat on its accepted Worker instead of the Age
     expect(binding.profile.instanceId).toBe(fixture.profiles[0]!.instanceId)
     expect(binding.sourceExecution?.executionId).toBe(execution.id)
     const followUp = { requestId: randomUUID(), content: 'Continue after recovery.', expectedConversationId: id }
-    await fixture.provider.blockModels()
+    const qualificationsBefore = (await fixture.provider.calls()).filter(call => call.qualificationSuite).length
+    // Hold the Worker check without blocking Main's startup model discovery.
+    await fixture.provider.blockQualification()
     try {
       await fixture.restartMain({ mode: 'graceful' })
+      await waitForRemoteReview(() => fixture.provider.calls(), calls =>
+        calls.filter(call => call.qualificationSuite).length > qualificationsBefore,
+      'Worker profile requalification entry')
       const recovered = AgentChatStateSchema.parse(await read())
       expect(recovered.conversation?.nativeSession).toEqual(completed.conversation?.nativeSession)
       expect(recovered.messages.some(entry => entry.content === message.content)).toBe(true)
@@ -60,7 +65,7 @@ it('forks and recovers historical chat on its accepted Worker instead of the Age
         where conversation_id=$1 and request_id=$2`,
         [id, followUp.requestId])
       expect(stored.rows).toHaveLength(0)
-    } finally { await fixture.provider.releaseModels() }
+    } finally { await fixture.provider.releaseQualification() }
     await waitForRemoteReview(read, state => state.availability.canSend, 'requalified Worker chat profile')
     await fixture.value('agent_chat_send', { workspaceId, selection, message: followUp })
     const resumed = await waitForRemoteReview(read, state => {
