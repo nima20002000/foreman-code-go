@@ -1,4 +1,5 @@
 import { runAsQualificationCandidate } from './gate.js'
+import { setTimeout as delay } from 'node:timers/promises'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +30,7 @@ export class HarnessQualificationService {
   private readonly directories = new Set<string>()
   private joining: Promise<void> | undefined
   private readonly flights = new Map<CompatibilityHarness, { identity: string; task: Promise<void> }>()
+  private readonly restorations = new Map<CompatibilityHarness, Promise<HarnessQualification | null>>()
   constructor(private readonly repository: HarnessQualificationRepository, private readonly registry: HarnessQualificationRegistry,
     private readonly suites: Record<CompatibilityHarness, QualificationSuite>, private readonly binaries: Record<CompatibilityHarness, string>,
     private readonly commands: PostgresCommandCoordinator,
@@ -69,19 +71,35 @@ export class HarnessQualificationService {
     }))
   }
 
-  /** Main's live evidence is fenced to its process, so a restart leaves Main-hosted Agents without admission.
-   * Re-run the live suite in the background for a binary this Main had already qualified; a binary without a
-   * qualified record still waits for an explicit run. Resolves with the restarted run, or null when none applies. */
+  /** Restore an already qualified binary after startup load delays its inspection. */
   restore(harness: CompatibilityHarness): Promise<HarnessQualification | null> {
     try { this.assertRunning(harness) } catch (error) { return Promise.reject(error) }
-    return this.track(this.prepare(harness, true, true).catch((error: unknown) => {
-      if (error instanceof Error && error.name === 'TimeoutError') throw qualificationError(error)
-      throw error
-    }))
+    const existing = this.restorations.get(harness)
+    if (existing) return existing
+    const task = this.track(this.retryPreparation(harness, () => this.prepare(harness, true, true)))
+    this.restorations.set(harness, task)
+    const finished = () => { this.restorations.delete(harness) }
+    void task.then(finished, finished)
+    return task
+  }
+
+  private async retryPreparation<T>(harness: CompatibilityHarness, prepare: () => Promise<T>): Promise<T> {
+    while (true) {
+      this.assertRunning(harness)
+      try {
+        return await prepare()
+      } catch (error) {
+        const timedOut = error instanceof Error && (error.name === 'TimeoutError'
+          || ('code' in error && ['CHECK_TIMEOUT', 'HARNESS_CHECK_TIMEOUT'].includes(String(error.code))))
+        if (!timedOut) throw error
+        this.assertRunning(harness)
+        await delay(30_000, undefined, { signal: this.cancellation.signal, ref: false })
+      }
+    }
   }
 
   async verify(harness: CompatibilityHarness, options?: { force: true }): Promise<HarnessQualification> {
-    const state = await this.begin(harness, options?.force)
+    const state = await this.track(this.retryPreparation(harness, () => this.prepare(harness, options?.force ?? false)))
     await this.flights.get(harness)?.task
     if (!state.binarySha256 || !state.suiteRevision) return state
     return await this.repository.find(harness, state.version, state.binarySha256, state.suiteRevision) ?? state

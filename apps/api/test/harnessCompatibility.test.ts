@@ -161,6 +161,47 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     await vi.waitFor(() => expect(service.get('codex')).toMatchObject({ status: 'probe-passed', schemaSha256: 'b'.repeat(64) }))
     expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(2)
   })
+  it('automatically retries after startup inspection exhausts both timeout attempts', async () => {
+    const options = fixture('0.162.1')
+    vi.mocked(options.probe.inspect)
+      .mockRejectedValueOnce(new CompatibilityCheckError('CHECK_TIMEOUT', 'Startup inspection timed out.'))
+      .mockRejectedValueOnce(new CompatibilityCheckError('CHECK_TIMEOUT', 'Startup inspection timed out.'))
+    const service = create(options)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      expect((await service.checkAll())[0]).toMatchObject({ status: 'unavailable', installedVersion: null,
+        reason: { code: 'CHECK_TIMEOUT' } })
+      expect(options.cache.entries.size).toBe(0)
+      await vi.advanceTimersByTimeAsync(29_999)
+      expect(options.probe.inspect).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.waitFor(() => expect(service.get('codex')).toMatchObject({
+        status: 'probe-passed', installedVersion: '0.162.1', reason: null,
+      }))
+      expect(options.probe.inspect).toHaveBeenCalledTimes(3)
+      expect(options.cache.entries.get('codex')).toMatchObject({ status: 'probe-passed', schemaSha256: sha })
+    } finally {
+      await service.close()
+      vi.useRealTimers()
+    }
+  })
+  it('cancels an automatic timeout retry when the diagnostic service closes', async () => {
+    const options = fixture()
+    vi.mocked(options.probe.inspect).mockRejectedValue(new CompatibilityCheckError('CHECK_TIMEOUT', 'Startup timed out.'))
+    const service = create(options)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await service.checkAll()
+      await service.close()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(options.probe.inspect).toHaveBeenCalledTimes(2)
+      expect(options.probe.probe).not.toHaveBeenCalled()
+      expect(options.cache.entries.size).toBe(0)
+    } finally {
+      await service.close()
+      vi.useRealTimers()
+    }
+  })
   it('does not reuse a successful probe if the executable changes during it', async () => {
     const options = fixture()
     vi.mocked(options.probe.assertUnchanged).mockRejectedValue(new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed.'))

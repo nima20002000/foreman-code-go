@@ -741,8 +741,7 @@ export function buildProductionApp(
     },
     harness => commandInputHash(qualificationIdentity(harnessRegistry.pinDefault(harness), selectedSuites[harness].revision)),
   ) : undefined
-  // Live qualification is an explicit authenticated operation; optional
-  // compatibility diagnostics never start model turns during startup.
+  // Compatibility diagnostics do not grant execution readiness; automatic restoration uses the native suite.
   const harnessCompatibility = infrastructure?.auxiliary
     ? new HarnessCompatibilityService({ ...infrastructure.auxiliary.compatibility, commands })
     : new HarnessCompatibilityService({ probe: compatibilityProbe(), cache: new FileCompatibilityCache(), commands })
@@ -2138,7 +2137,7 @@ export function buildProductionApp(
       // Fill the settings status and model caches in the background so first reads do not wait on native checks.
       void Promise.allSettled([harnessCatalog.warmup(), nativeConfigurations.options('codex'), nativeConfigurations.options('claude'),
         harnessSettings.mcp.warmup(['codex']), harnessSettings.plugins.warmup(), harnessSettings.claudePlugins.warmup()])
-      // Main's live harness evidence ends with its process; restore a Codex binary it had qualified before.
+      // Deployment can change the launcher or environment; restore a previously qualified Codex binary.
       if (harnessQualifications) void harnessQualifications.restore('codex').catch((error: unknown) =>
         app.log.warn({ err: error }, 'Main Codex requalification after restart failed'))
       installationMonitor.start(machine.installationId)
