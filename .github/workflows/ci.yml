@@ -30,6 +30,10 @@ on:
         description: Workspace default branch comparison ref on the mirror
         required: false
         default: main
+      base_commit:
+        description: Optional sanitized ancestor SHA for affected selection on the mirror
+        required: false
+        default: ''
       partition:
         description: Runner-selected partition as JSON
         required: false
@@ -54,6 +58,7 @@ jobs:
       SCOPE: ${{ inputs.scope }}
       SELECTED_FILES: ${{ inputs.files }}
       DEFAULT_BRANCH: ${{ inputs.default_branch }}
+      BASE_COMMIT: ${{ inputs.base_commit }}
       CI_PARTITION: ${{ inputs.partition }}
       CI_DURATIONS: ${{ inputs.durations }}
     steps:

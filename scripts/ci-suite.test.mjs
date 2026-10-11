@@ -24,8 +24,11 @@ if (args.at(-1) === process.env.FAIL_COMMAND) process.exit(9)
 require('node:fs').appendFileSync(process.env.CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '\\n')
 if (process.argv[2] === 'scripts/ci-selection.mjs') {
   const selection = JSON.parse(process.env.RUNNER_SELECTION)
+  if (process.env.BASE_COMMIT) {
+    require('node:fs').appendFileSync(process.env.CALLS_FILE, JSON.stringify(['baseCommit', process.env.BASE_COMMIT]) + '\\n')
+  }
   require('node:fs').writeFileSync(process.argv.at(-1), JSON.stringify(selection.files))
-  console.error(selection.scope === 'full' ? 'Running full suite: Shared CI infrastructure changed.' : 'Selected affected files.')
+  console.error(selection.scope === 'full' ? 'Running full suite: ' + (selection.reason || 'Shared CI infrastructure changed.') : 'Selected affected files.')
   console.log(selection.scope)
 }
 `, { mode: 0o755 })
@@ -62,6 +65,7 @@ if (process.argv[2] === 'rev-parse') console.log('false')
     env: { ...process.env, SUITE: suite, SCOPE: selection?.omitScope ? undefined : scope,
       SELECTED_FILES: selection ? '' : 's:1', DEFAULT_BRANCH: 'release/stable', CI_STATE: join(directory, 'state'),
       RUNNER_SELECTION: JSON.stringify(selection),
+      BASE_COMMIT: selection?.baseCommit ?? '',
       CI_HOST_RUNNER: hostRunner ? '1' : '0',
       PATH: installedClis ? `${directory}${delimiter}${process.env.PATH}` : directory,
       CALLS_FILE: callsFile, FAIL_COMMAND: failCommand },
@@ -71,6 +75,26 @@ if (process.argv[2] === 'rev-parse') console.log('false')
 }
 
 const contractsBuild = ['--filter', '@foreman-code/contracts', 'build']
+test('cloud suites forward an explicit base to selection without fetching the default branch', t => {
+  const baseCommit = 'a'.repeat(40)
+  const { result, calls } = runSuite(t, 'typecheck-api', '', 'affected', '', true,
+    { scope: 'affected', files: ['apps/api/src/value.ts'], baseCommit })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(calls[0], ['git', 'rev-parse', '--is-shallow-repository'])
+  assert.deepEqual(calls[2], ['baseCommit', baseCommit])
+  assert.equal(calls.some(call => call[0] === 'git' && call[1] === 'fetch'), false)
+  assert.deepEqual(calls[3], ['scripts/ci-affected-run.mjs', 'typecheck', '--files-from', calls[1].at(-1)])
+})
+
+test('an invalid explicit base logs the reason and runs the full cloud suite part', t => {
+  const reason = 'baseCommit is unavailable or is not an ancestor of the resolved commit.'
+  const { result, calls } = runSuite(t, 'typecheck-api', '', 'affected', '', true,
+    { scope: 'full', files: [], baseCommit: 'a'.repeat(40), reason })
+  assert.equal(result.status, 0, result.stderr)
+  assert.ok(result.stderr.includes(`Running full suite: ${reason}`))
+  assert.deepEqual(calls.slice(3), [contractsBuild, ['--filter', '@foreman-code/api', 'typecheck']])
+})
+
 test('omitted scope derives affected files on the cloud runner using the workspace default branch', t => {
   const { result, calls } = runSuite(t, 'typecheck-api', '', 'affected', '', true,
     { scope: 'affected', files: ['apps/api/src/value.ts'], omitScope: true })

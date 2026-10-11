@@ -10,6 +10,7 @@ import { CircleCiProvider, GitHubActionsProvider } from './cloudProviders.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import { selectByIndexes } from '../../../../../scripts/ci-files.mjs'
 import { affectedSnapshot } from '../../../../../scripts/ci-affected.mjs'
+import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -139,6 +140,64 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
 }
 
 describe('GitHub Actions CI on a public mirror', () => {
+  it.each(['github', 'circleci'] as const)('selects changes since an explicit base on the %s runner without publishing private history', async provider => {
+    const source = 'apps/api/test/value.ts'
+    const test = 'apps/api/test/value.integration.test.ts'
+    const f = await fixture({ [source]: 'export const value = 1', [test]: "import './value.js'" }, { provider })
+    const baseCommit = f.commit
+    await f.write(source, 'export const value = 2')
+    f.run('add', '.')
+    f.run('commit', '-qm', 'change since release')
+    const commit = f.run('rev-parse', 'HEAD')
+    f.push('main')
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit,
+      baseCommit, suite: 'integration', scope: 'affected', defaultBranch: 'unavailable-branch' })
+    const command = (provider === 'github' ? f.dispatched : f.circle.triggered)[0]!
+    expect(command).toContain('scope=affected')
+    expect(command).toContain('slice=')
+    expect(command.some(value => value.startsWith('default_branch='))).toBe(false)
+    const runnerBaseCommit = command.find(value => value.startsWith('base_commit='))!.slice('base_commit='.length)
+    expect(runnerBaseCommit).toMatch(/^[a-f0-9]{40}$/)
+    expect(runnerBaseCommit).not.toBe(baseCommit)
+    const checkout = await f.checkoutMirror(`refs/heads/ci/${commit}-${baseCommit}`)
+    expect(executionSelection({ commit: 'HEAD', baseCommit: runnerBaseCommit, executionSuite: 'integration',
+      defaultRef: 'origin/unavailable-branch', cwd: checkout })).toMatchObject({ scope: 'affected', files: [test] })
+    expect(f.mirrorGit('log', '--all', '--format=%s')).not.toContain('private history')
+    for (const original of [commit, baseCommit]) expect(() => f.mirrorGit('cat-file', '-e', original)).toThrow()
+  })
+
+  it.each(['github', 'circleci'] as const)('dispatches a full suite with a persisted reason for invalid bases on %s', async provider => {
+    const f = await fixture({}, { provider })
+    f.run('commit', '--allow-empty', '-qm', 'later commit')
+    const laterCommit = f.run('rev-parse', 'HEAD')
+    f.push('main')
+    for (const baseCommit of ['f'.repeat(40), laterCommit]) {
+      const runId = randomUUID()
+      const started = await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+        baseCommit, suite: 'integration', scope: 'affected' })
+      expect(started.operation === 'start' && started.run.message)
+        .toBe('Running full suite: baseCommit is unavailable or is not an ancestor of the resolved commit.')
+      const command = (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1)!
+      expect(command).toContain('scope=full')
+      expect(command.some(value => value.startsWith('base_commit='))).toBe(false)
+      const read = await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 })
+      expect(read.operation === 'read' && read.run.message)
+        .toBe('Running full suite: baseCommit is unavailable or is not an ancestor of the resolved commit.')
+    }
+  })
+
+  it('selects no changes on a cloud runner when the explicit base equals the resolved commit', async () => {
+    const f = await fixture()
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+      baseCommit: f.commit, suite: 'integration', scope: 'affected' })
+    const command = f.dispatched[0]!
+    expect(command).toContain('scope=affected')
+    const baseCommit = command.find(value => value.startsWith('base_commit='))!.slice('base_commit='.length)
+    const checkout = await f.checkoutMirror(`refs/heads/ci/${f.commit}-${f.commit}`)
+    expect(executionSelection({ commit: 'HEAD', baseCommit, executionSuite: 'integration', cwd: checkout }))
+      .toMatchObject({ scope: 'affected', files: [] })
+  })
+
   it('retries a CircleCI pipeline with no workflow and follows only the replacement workflow', async () => {
     const f = await fixture({}, { provider: 'circleci' })
     f.circle.phantoms = 1

@@ -20,7 +20,7 @@ export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
   providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; durations?: CiDurations
-  scope?: CiScope; files?: string[]; part?: CiPart
+  scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
   workflowStarted?: boolean
 }
@@ -45,7 +45,7 @@ export class CloudCi {
   private checked: { at: number; ready: boolean } | undefined
   private readonly operations = new Map<string, Promise<unknown>>()
   private readonly published = new Map<string, Promise<{
-    git: (args: string[]) => Promise<string>; branch: string; defaultBranch?: string
+    git: (args: string[]) => Promise<string>; branch: string; defaultBranch?: string; baseCommit?: string
   }>>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
@@ -129,7 +129,7 @@ export class CloudCi {
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
     part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
-    files?: string[] | undefined; defaultBranch?: string | undefined }): Promise<CiHostRun> {
+    files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined }): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(() => null)
     if (existing) return this.view(existing, 0)
     const mirror = await this.mirrors(request.repository)
@@ -142,11 +142,14 @@ export class CloudCi {
     }
     const scope = request.scope ?? 'affected'
     const deriveFiles = scope === 'affected' && request.files === undefined
-    const { git, branch, defaultBranch } = await this.publish(request.repository, mirror, request.commit,
-      deriveFiles ? request.defaultBranch ?? 'main' : undefined)
-    const selectOnRunner = deriveFiles && defaultBranch !== undefined
+    const { git, branch, defaultBranch, baseCommit } = await this.publish(request.repository, mirror, request.commit,
+      deriveFiles && !request.baseCommit ? request.defaultBranch ?? 'main' : undefined,
+      deriveFiles ? request.baseCommit : undefined)
+    const selectOnRunner = deriveFiles && (defaultBranch !== undefined || baseCommit !== undefined)
     const message = deriveFiles && !selectOnRunner
-      ? 'Running full suite: No merge-base with the workspace default branch is available.' : null
+      ? 'Running full suite: ' + (request.baseCommit
+        ? 'baseCommit is unavailable or is not an ancestor of the resolved commit.'
+        : 'No merge-base with the workspace default branch is available.') : null
     let slice = request.suite === 'integration' && !selectOnRunner && (request.partition || !deriveFiles && scope === 'affected')
       ? await this.slice(git, request.commit, request.partition, request.durations ?? {}, request.files) : ''
     if ((!request.files || scope !== 'affected') && request.partition && request.part) {
@@ -157,12 +160,14 @@ export class CloudCi {
     let run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
       suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
       scope, ...(request.files !== undefined ? { files: request.files } : {}),
+      ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
       finishedAt: null, exitCode: null, message })
     // Providers cap pipeline parameter length: a full partition too long to list is computed on the runner from the
     // commit's durations instead, and oversized learned durations stay behind.
     const limit = this.provider.parameterLimit ?? Number.POSITIVE_INFINITY
     let partition = selectOnRunner && request.partition ? JSON.stringify(request.partition) : undefined
-    if (slice.length > limit && request.suite === 'integration' && request.partition && scope === 'full' && request.files === undefined) {
+    if (slice.length > limit && request.suite === 'integration' && request.partition
+      && (scope === 'full' || message !== null) && request.files === undefined) {
       slice = ''
       partition = JSON.stringify(request.partition)
     }
@@ -170,6 +175,7 @@ export class CloudCi {
     const input: CloudDispatchInput = { mirror, branch, runId: request.runId, suite: request.part ?? request.suite, slice,
       scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
       ...(defaultBranch ? { defaultBranch } : {}),
+      ...(baseCommit ? { baseCommit } : {}),
       ...(partition ? { partition } : {}),
       ...(durations && durations.length <= limit ? { durations } : {}) }
     run = await this.trigger(run, input)
@@ -210,11 +216,11 @@ export class CloudCi {
   }
 
   /** Puts the commit's files on the mirror once: every partition of a run starting together shares one push. */
-  private publish(repository: string, mirror: string, commit: string, defaultBranch?: string) {
-    const key = `${mirror}\n${commit}\n${defaultBranch ?? ''}`
+  private publish(repository: string, mirror: string, commit: string, defaultBranch?: string, baseCommit?: string) {
+    const key = `${mirror}\n${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}`
     let published = this.published.get(key)
     if (!published) {
-      published = this.push(repository, mirror, commit, defaultBranch)
+      published = this.push(repository, mirror, commit, defaultBranch, baseCommit)
       this.published.set(key, published)
       // A failed push is retried by the next start; a done one is kept for the run's later partitions.
       published.catch(() => { this.published.delete(key) })
@@ -223,7 +229,7 @@ export class CloudCi {
     return published
   }
 
-  private async push(repository: string, mirror: string, commit: string, defaultBranch?: string) {
+  private async push(repository: string, mirror: string, commit: string, defaultBranch?: string, baseCommit?: string) {
     const signal = AbortSignal.timeout(600_000)
     const clone = await ensureClone(this.git, repository, signal)
     const git = async (args: string[], env?: Record<string, string>) => {
@@ -272,8 +278,16 @@ export class CloudCi {
     ], identity)
     let parent = base
     let comparison: { branch: string; commit: string } | undefined
+    let runnerBaseCommit: string | undefined
     let head: string | undefined
-    if (defaultBranch) {
+    if (baseCommit) {
+      const ancestor = await this.git.git(['merge-base', '--is-ancestor', baseCommit, commit], { cwd: clone, signal })
+      if (ancestor.code === 0) {
+        await this.guard(clone, baseCommit, signal)
+        parent = await snapshotOf(baseCommit, base)
+        runnerBaseCommit = parent
+      }
+    } else if (defaultBranch) {
       head = await fetchRepositoryBranch(this.git, clone, repository, defaultBranch, signal)
       const mergeBase = await this.git.git(['merge-base', commit, head], { cwd: clone, signal })
       if (mergeBase.code === 0) {
@@ -285,12 +299,16 @@ export class CloudCi {
         comparison = { branch: `ci-default/${commit}`, commit: await snapshotOf(head, parent) }
       }
     }
-    const snapshot = commit === head && comparison ? comparison.commit : await snapshotOf(commit, parent)
-    const branch = `ci/${commit}`
+    let snapshot: string
+    if (commit === baseCommit && runnerBaseCommit) snapshot = runnerBaseCommit
+    else if (commit === head && comparison) snapshot = comparison.commit
+    else snapshot = await snapshotOf(commit, parent)
+    const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
     // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])])
-    return { git, branch, ...(comparison ? { defaultBranch: comparison.branch } : {}) }
+    return { git, branch, ...(comparison ? { defaultBranch: comparison.branch } : {}),
+      ...(runnerBaseCommit ? { baseCommit: runnerBaseCommit } : {}) }
   }
 
   /** The same duration-balanced slice a build computer would run, from the commit's own files and durations, as

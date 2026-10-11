@@ -55,6 +55,7 @@ export const CiHostStartSchema = z.object({
   suite: CiSuiteSchema, part: CiPartSchema.optional(), partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
   defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
+  baseCommit: CommitSchema.optional(),
 }).strict().refine(validCiSelection, 'Selected files require affected scope and a supported suite; full scope runs all files.')
   .refine(validCiPart, 'The part and partition must belong to the requested suite.')
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
@@ -94,6 +95,7 @@ export const CiRunRecordSchema = z.object({
   scope: CiScopeSchema.default('full'), files: CiSelectedFilesSchema.default([]),
   /** An omitted caller selection is computed on the runner; an explicit empty list is already complete. */
   deriveFiles: z.boolean().optional(), defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
+  baseCommit: CommitSchema.optional(),
   partition: CiPartitionSchema.nullable(), groupId: CiHostRunIdSchema,
   part: CiPartSchema.nullable().default(null),
   state: z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost']),

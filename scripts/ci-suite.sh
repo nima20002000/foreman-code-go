@@ -80,10 +80,16 @@ if [ "$scope" = affected ] && [ -z "${SELECTED_FILES:-}" ] && { [ "$SUITE" != in
   else
     branch="${DEFAULT_BRANCH:-main}"
     default_ref="refs/remotes/origin/$branch"
-    if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-      git fetch --quiet --no-tags --unshallow origin "+refs/heads/$branch:$default_ref"
+    if [ -n "${BASE_COMMIT:-}" ]; then
+      if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+        git fetch --quiet --no-tags --unshallow origin
+      fi
     else
-      git fetch --quiet --no-tags origin "+refs/heads/$branch:$default_ref"
+      if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+        git fetch --quiet --no-tags --unshallow origin "+refs/heads/$branch:$default_ref"
+      else
+        git fetch --quiet --no-tags origin "+refs/heads/$branch:$default_ref"
+      fi
     fi
     mkdir -p "$state"
     selected_list="$state/selected-files.json"
