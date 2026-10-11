@@ -2,7 +2,8 @@
 # Runs one CI suite on a fresh cloud machine (GitHub Actions or CircleCI).
 #   scripts/ci-suite.sh start  — before `pnpm install`: starts PostgreSQL and the harness CLIs in the background
 #   scripts/ci-suite.sh        — after `pnpm install`: waits for them, then runs the suite
-# SUITE: install, typecheck, lint, unit, build or integration. SLICE: an integration partition's file indexes
+# SUITE: install, typecheck, lint, unit, build or integration, or one part of a check so the parts run on separate
+# machines: unit-api, unit-web, unit-other, lint-api, lint-other. SLICE: an integration partition's file indexes
 # (scripts/ci-files.mjs); empty runs every file. DURATIONS_OUTPUT: where measured file durations go.
 set -euo pipefail
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
@@ -11,7 +12,7 @@ if [ "${1:-}" = start ]; then
   mkdir -p "$state"
   background() { setsid nohup bash -c "$2 > '$state/$1.log' 2>&1; echo \$? > '$state/$1.exit'" >/dev/null 2>&1 & }
   # scripts/test-db.mjs needs only Node, so the database starts while packages install.
-  case "$SUITE" in unit|integration) background db 'node scripts/test-db.mjs up' ;; esac
+  case "$SUITE" in unit|unit-api|integration) background db 'node scripts/test-db.mjs up' ;; esac
   # Harness tests check the installed Codex and Claude CLIs, as on our build computers; same 48-hour package age rule.
   [ "$SUITE" = integration ] && background clis "npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
   exit 0
@@ -27,6 +28,13 @@ ready() {
 case "$SUITE" in
   install) ;;
   unit) ready db; pnpm test ;;
+  unit-api) ready db; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api test ;;
+  unit-web) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/web test ;;
+  unit-other) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
+    && pnpm test:scripts ;;
+  lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;
+  lint-other) pnpm --filter @foreman-code/contracts build \
+    && pnpm -r --no-bail --filter '!@foreman-code/api' --if-present lint ;;
   typecheck|lint|build) pnpm "$SUITE" ;;
   integration)
     ready db; ready clis

@@ -12,7 +12,7 @@ on:
         description: The mirror branch holding the commit's files
         required: true
       suite:
-        description: install, typecheck, lint, unit, build or integration
+        description: install, typecheck, lint, unit, build, integration or a check part (scripts/ci-suite.sh)
         required: true
       slice:
         description: The integration file indexes of this partition (scripts/ci-files.mjs); empty runs them all
