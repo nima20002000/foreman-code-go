@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { setTimeout as delay } from 'node:timers/promises'
 import type pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -28,6 +27,19 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
     await pool?.end()
     await database?.close()
   }, 60_000)
+
+  async function waitForQueuedStarts(minimum: number) {
+    // Nonblocking lock probes leave transactions open rather than creating pg_locks waiters.
+    await vi.waitFor(async () => {
+      const queued = await database.pool.query<{ count: number }>(`select count(*)::int as count
+        from pg_stat_activity where datname=current_database()
+        and application_name='run-start-lock-test'
+        and state='idle in transaction'
+        and query='select pg_try_advisory_xact_lock(hashtext($1)) as locked'
+        and clock_timestamp()-xact_start > interval '2.5 seconds'`)
+      expect(queued.rows[0]!.count).toBeGreaterThanOrEqual(minimum)
+    }, { timeout: 5_000, interval: 20 })
+  }
 
   async function createStarters(runtimes: Runtime[]): Promise<Starter[]> {
     const starters: Starter[] = []
@@ -107,8 +119,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
         }))
         pending = calls
         await vi.waitFor(() => { expect(prepared).toBe(starters.length) }, { timeout: 5_000, interval: 20 })
-        // The holder outlasts both the 1s server deadline and 2s client delivery deadline.
-        await delay(2_500)
+        await waitForQueuedStarts(lockKind === 'runner' ? starters.length : 1)
         await holder.query('commit')
         const accepted = await Promise.all(calls)
         const ids: string[] = []
@@ -165,7 +176,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
         name: 'run_start', arguments: starter.input,
       }))
       pending = calls
-      await delay(2_500)
+      await waitForQueuedStarts(calls.length)
       await holder.query('commit')
       const responses = await Promise.all(calls)
       const results = responses.map((response) => {

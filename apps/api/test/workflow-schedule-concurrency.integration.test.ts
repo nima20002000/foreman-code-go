@@ -1,6 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import pg from 'pg'
-import { setTimeout as delay } from 'node:timers/promises'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { DomainError } from '../src/modules/errors.js'
@@ -23,7 +22,7 @@ describe.skipIf(!postgresEnabled)('scheduled Start concurrency and cancellation'
     f.time.now = firstSchedule.nextOccurrenceAt!
     other.time.now = secondSchedule.nextOccurrenceAt!
     const pool = new pg.Pool({ ...database.pool.options, options: `-c search_path=${database.schema}`,
-      statement_timeout: 1_000, query_timeout: 2_000 })
+      statement_timeout: 1_000, query_timeout: 2_000, application_name: 'scheduled-start-lock-test' })
     const holder = await database.pool.connect()
     let pending: Promise<unknown>[] = []
     try {
@@ -32,7 +31,16 @@ describe.skipIf(!postgresEnabled)('scheduled Start concurrency and cancellation'
       const first = f.dispatcher(f.startUsing(pool)).dispatch(firstSchedule)
       const second = other.dispatcher(other.startUsing(pool)).dispatch(secondSchedule)
       pending = [first, second]
-      await delay(2_500)
+      // Observe both lock-probing transactions surviving the server and client SQL deadlines.
+      await vi.waitFor(async () => {
+        const queued = await database.pool.query<{ count: number }>(`select count(*)::int as count
+          from pg_stat_activity where datname=current_database()
+          and application_name='scheduled-start-lock-test'
+          and state='idle in transaction'
+          and query='select pg_try_advisory_xact_lock(hashtext($1)) as locked'
+          and clock_timestamp()-xact_start > interval '2.5 seconds'`)
+        expect(queued.rows[0]!.count).toBe(2)
+      }, { timeout: 5_000, interval: 20 })
       await holder.query('commit')
       await Promise.all(pending)
       expect(await f.countRuns()).toBe(1)
