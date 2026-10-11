@@ -8,7 +8,7 @@ import {
   type ManagedWorkspace,
   type WorkspaceCreateInput,
 } from '@foreman-code/contracts/management'
-import { WorkspaceSchema, type WorkspaceRepository } from '@foreman-code/contracts'
+import { WorkspaceSchema, type WorkspaceCiMirror, type WorkspaceRepository } from '@foreman-code/contracts'
 import type pg from 'pg'
 
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
@@ -176,7 +176,7 @@ export class WorkspaceManagementService {
 
   async update(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
     workspaceId: string; commandId: string; expectedRevision: number; name?: string | undefined; description?: string | null | undefined
-    repository?: WorkspaceRepository | null | undefined
+    repository?: WorkspaceRepository | null | undefined; ciMirror?: WorkspaceCiMirror | null | undefined
   }) {
     requireAuthorization(principal, 'workspaces:update', { workspaceId: input.workspaceId })
     let canReadLocation = false

@@ -62,8 +62,10 @@ jobs:
               pnpm db:up
               export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$RUNNER_TEMP/durations.json"
               # Native process tests need a delegated cgroup, as a systemd user service gets on our build computers.
-              sudo -E env "PATH=$PATH" systemd-run --quiet --scope -p Delegate=yes --uid="$(id -u)" --gid="$(id -g)" -- \
-                pnpm test:integration ${FILES:+--files $FILES} ;;
+              cgroup=/sys/fs/cgroup/foreman-ci
+              sudo mkdir -p "$cgroup" && sudo chown -R "$(id -u):$(id -g)" "$cgroup"
+              echo $$ | sudo tee "$cgroup/cgroup.procs" >/dev/null
+              pnpm test:integration ${FILES:+--files $FILES} ;;
             *) echo "Unknown suite $SUITE"; exit 2 ;;
           esac
       - if: always() && inputs.suite == 'integration'
