@@ -13,6 +13,7 @@ import { createInstalledNativeQualifier } from './installedNativeQualification.j
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { createInstalledClaudeQualifier } from './installedClaudeQualification.js'
 import { createInstalledClaudeOperatorInspection } from './installedClaudeOperatorInspection.js'
+import { PayloadFingerprintCache } from './payloadFingerprintCache.js'
 
 export async function createInstalledWorkerProfileChecks(input: {
   stateDirectory: string
@@ -23,6 +24,7 @@ export async function createInstalledWorkerProfileChecks(input: {
 }) {
   const configuration = await readInstalledWorkflowConfiguration(input.configuration)
   if (!configuration) return null
+  const payloadFingerprints = new PayloadFingerprintCache()
   const qualifiers = new Set<ReturnType<typeof createInstalledNativeQualifier>>()
   const claude = createInstalledClaudeQualifier(input)
   const claudeInspection = createInstalledClaudeOperatorInspection(input)
@@ -45,7 +47,8 @@ export async function createInstalledWorkerProfileChecks(input: {
       const qualifier = createInstalledNativeQualifier({ harness,
         binding, trustedCurrentBinding: input.current,
         inspect: (current, signal) => inspectInstalledCodex({ binding: current,
-          configuration: input.configuration, environment: process.env, cwd: input.stateDirectory, signal }),
+          configuration: input.configuration, environment: process.env, cwd: input.stateDirectory, signal,
+          fingerprintCache: payloadFingerprints }),
         registry: input.registry, workingRoot: input.stateDirectory, environment: process.env,
         checkConfiguration: async (profile, directory, signal, recovery, assertInstallation) => {
           const guarded = async <T>(work: () => Promise<T>, effectSignal = signal): Promise<T> => {

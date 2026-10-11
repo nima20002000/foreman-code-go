@@ -234,6 +234,20 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
       expect(retained.leaseToken).toBeUndefined()
       expect(retained.leaseExpiresAt).toBeUndefined()
     }
+    if (recovery !== 'graceful') {
+      // Main has exited; expire its observer leases without waiting for the wall clock.
+      const expired = new Date(Date.now() - 1_000).toISOString()
+      const job = await fixture.db.pool.query(`update review_jobs
+        set record=jsonb_set(record,'{leaseExpiresAt}',to_jsonb($3::text))
+        where id=$1 and record->>'leaseToken'=$2`, [active.job.id, active.job.leaseToken, expired])
+      expect(job.rowCount).toBe(1)
+      const lane = await fixture.db.pool.query(`update native_session_lanes
+        set record=jsonb_set(record,'{leaseExpiresAt}',to_jsonb($4::text))
+        where harness=$1 and native_session_id=$2 and record->>'correlationId'=$3
+          and record->>'leaseToken' is not null`,
+      [active.job.provider, active.job.nativeSessionId, active.job.correlationId, expired])
+      expect(lane.rowCount).toBe(1)
+    }
     if (recovery === 'expired-receipt') {
       const expired = new Date(Date.now() - 60_000).toISOString()
       const journal = JSON.parse(await readFile(join(fixture.stateDirectory, 'workflow-operations.json'), 'utf8')) as

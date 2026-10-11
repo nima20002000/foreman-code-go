@@ -1,9 +1,59 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
+import { retainRemoteReviewerCredential } from '../src/modules/interactions/retainedRemoteReviewer.js'
+import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { approvalResponse } from './helpers/approvalResponse.js'
+import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('current durable approval orchestration', () => {
+  it('releases a drained review observer without changing its acknowledged native turn', async () => {
+    const f = await approvalDatabase()
+    try {
+      await expect(f.repository.coordination.transitionReviewJob(f.job.id, f.job.leaseToken!, 'completed', {
+        releaseLease: true,
+      })).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+      await expect(f.repository.coordination.transitionReviewJob(f.job.id, f.job.leaseToken!, 'acknowledged', {
+        releaseLease: true, retryAfter: new Date().toISOString(),
+      })).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+      f.resumeObservation()
+      await f.native.reviewers.shutdown()
+      const retained = await f.repository.coordination.findReviewJob(f.interaction.id, f.reviewer.agentId)
+      expect(retained).toEqual({
+        ...f.job, updatedAt: expect.any(String),
+        leaseOwner: undefined, leaseToken: undefined, leaseExpiresAt: undefined,
+      })
+      expect((await f.repository.coordination.getLane(f.job.provider, f.job.nativeSessionId))?.leaseToken)
+        .toBeUndefined()
+      const successor = await f.repository.coordination.claimReviewJob(f.job.id, 'successor', 'successor-token',
+        new Date(Date.now() + 60_000).toISOString())
+      await expect(f.repository.coordination.transitionReviewJob(f.job.id, f.job.leaseToken!, f.job.state, {
+        releaseLease: true,
+      })).rejects.toMatchObject({ code: 'REVIEW_JOB_LEASE_LOST' })
+      expect(await f.repository.coordination.findReviewJob(f.interaction.id, f.reviewer.agentId)).toEqual(successor)
+      const token = f.credential.environment.variables.GRAPHQL_MCP_TOKEN!
+      await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      const native = (await f.repository.coordination.workflowSession(f.reviewer.id))!
+      await withExclusiveGraphConnection(f.pool, connection => connection.transaction(sql =>
+        retainRemoteReviewerCredential(sql, f.reviewer, {
+          generation: '1', principalId: f.principal.id, session: native.session,
+        })))
+      const recovered = await f.access.authenticate(token, 'worker')
+      expect(recovered).toEqual(f.principal)
+      const binding = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence
+        from worker_credential_bindings where principal_id=$1`, [recovered.id])).rows[0]
+      expect(binding).toEqual({ approval_review_job_id: null, approval_review_lease_fence: null })
+      const app = new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)
+      await expect(app.respond(recovered, approvalResponse(f.interaction)))
+        .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
+      expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
+    } finally {
+      await f.close()
+    }
+  }, 50_000)
+
   it('keeps a busy reviewer pending and gives exactly one contender its durable job lease', async () => {
     const f = await routedApprovalFixture()
     let busyLaneId: string | undefined
