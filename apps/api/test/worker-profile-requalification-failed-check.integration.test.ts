@@ -9,6 +9,8 @@ describe('automatic Worker profile qualification', () => {
     const fixture = await remoteReviewProduction({ workflow: 'sequential' })
     try {
       const before = await latestEvidence(fixture)
+      expect(before).toHaveLength(fixture.profiles.length)
+      expect(before.every(proof => proof.qualified)).toBe(true)
       await fixture.provider.hideModels()
       await fixture.restartWorker()
       const evidence = await waitForRemoteReview(() => latestEvidence(fixture), proofs =>

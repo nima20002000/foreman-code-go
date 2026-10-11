@@ -602,9 +602,20 @@ export async function remoteReviewProduction(options: {
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },
       async restartWorker(afterCrash?: () => void) {
+        const previous = HarnessRegistryReadbackSchema.parse(await value('harness_registry_get', hostRef))
+          .hostMetadata!.connection!.binding.connectionEpoch
         await stopWorker('SIGKILL')
         afterCrash?.()
+        await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
+          await value('harness_registry_get', hostRef)),
+        inventory => inventory.hostMetadata?.connection?.phase === 'offline'
+          || inventory.hostMetadata?.connection === null, 'Main observing the stopped Worker connection')
         await startWorker()
+        await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
+          await value('harness_registry_get', hostRef)), inventory => {
+          const connection = inventory.hostMetadata?.connection
+          return connection?.phase === 'ready' && connection.binding.connectionEpoch !== previous
+        }, 'Main observing the replacement Worker connection')
       },
       async pending(runId: string) {
         const rows = await db.pool.query<{ record: unknown }>(

@@ -7,10 +7,12 @@ import { latestEvidence, refreshedEvidence, startWhenReady, assertMcpReadback } 
 
 describe('automatic Worker profile qualification', () => {
   it('retries Start during a reconnect check and then starts with fresh evidence through authenticated MCP', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true })
+    const fixture = await remoteReviewProduction({ workflow: 'sequential' })
     let blocked = false
     try {
       const before = await latestEvidence(fixture)
+      expect(before).toHaveLength(fixture.profiles.length)
+      expect(before.every(proof => proof.qualified)).toBe(true)
       const modelsBefore = (await fixture.provider.calls()).filter(call => call.method === 'model/list').length
       await fixture.provider.blockModels()
       blocked = true
