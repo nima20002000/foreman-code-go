@@ -14,6 +14,27 @@ describe.each(['codex'] as const)('%s managed MCP naming', (harness) => {
   const managed = { preset: 'graphql' as const, endpoint }
   const add = managedChange('graphql', true, endpoint)
 
+  it.each(['foreman-code', 'graphql'])('writes timeouts without customizing the managed %s entry', name => {
+    const entry = connection('FOREMAN_CODE_MCP_TOKEN')
+    expect(entry).toMatchObject({ startup_timeout_sec: 60, tool_timeout_sec: 120 })
+    expect(isAppLauncher(entry)).toBe(true)
+    expect(managedStatus(snapshot({ [name]: entry }), 'graphql')).toBe('installed')
+    const old = { ...entry, startup_timeout_sec: 10, tool_timeout_sec: 30, enabled: false,
+      disabled_tools: ['interaction_respond'] }
+    const enabled = applyMcpEdits({ [name]: old }, mcpEdits(snapshot({ [name]: old }),
+      managedEnableChange('graphql', true), managed))
+    expect(enabled[name]).toEqual({ ...old, enabled: true, startup_timeout_sec: 60, tool_timeout_sec: 120 })
+    expect(managedStatus(snapshot(enabled), 'graphql')).toBe('installed')
+  })
+
+  it('repairs old launcher timeout settings while preserving native restrictions', () => {
+    const old = { ...connection('GRAPHQL_MCP_TOKEN'), startup_timeout_sec: 10, tool_timeout_sec: 30,
+      enabled: false, disabled_tools: ['interaction_respond'] }
+    const repaired = applyMcpEdits({ graphql: old }, mcpEdits(snapshot({ graphql: old }), add, managed))
+    expect(repaired['foreman-code']).toEqual({ ...old, ...connection('FOREMAN_CODE_MCP_TOKEN'), enabled: false })
+    expect(repaired['foreman-code']).toMatchObject({ startup_timeout_sec: 60, tool_timeout_sec: 120 })
+  })
+
   it('installs one canonical connection with the new token reference', () => {
     expect(add.name).toBe('foreman-code')
     const installed = applyMcpEdits({}, mcpEdits(snapshot({}), add, managed))

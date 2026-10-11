@@ -408,7 +408,22 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       enabled: processDisabledMcp.has(name) ? false : configured.enabled !== false } }
     result(message.id, { config: { approval_policy: 'on-request', mcp_servers: servers }, origins: {}, layers: [] })
   }
-  else if (message.method === 'mcpServerStatus/list') result(message.id, { data: [], nextCursor: null })
+  else if (message.method === 'mcpServerStatus/list') {
+    if (flag('reject-mcp-status')) {
+      fail(message.id)
+      return
+    }
+    const configured = read('mcp.json', { name: 'graphql', enabled: true })
+    const name = configured.name || 'graphql'
+    const enabled = configured.enabled !== false && !processDisabledMcp.has(name)
+    const page = read('mcp-status.json', { data: flag('no-mcp') ? [] : [{
+      name, runtimeStatus: enabled ? 'connected' : 'disabled', pluginId: null, serverInfo: null,
+      tools: enabled ? { context_get: { name: 'context_get', inputSchema: { type: 'object' } } } : {},
+      toolsError: null, resources: [], resourceTemplates: [], authStatus: 'bearerToken',
+    }], nextCursor: null })
+    const pages = read('mcp-status-pages.json', {})
+    result(message.id, pages[message.params?.cursor] || page)
+  }
   else if (message.method === 'model/list') {
     if (flag('models-refresh-failed')) console.error('failed to refresh available models: fixture refresh failure')
     const catalog = read('models.json', { models: [{ slug: 'test-model',

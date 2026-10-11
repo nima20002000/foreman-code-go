@@ -97,7 +97,10 @@ export class ActivityProductionReplay {
         }
         if (method === 'config/read') return { config: { approval_policy: 'on-request',
           mcp_servers: { graphql: { enabled: !disabledMcpServerNames.includes('graphql'), required: true } } }, origins: {}, layers: [] }
-        if (method === 'mcpServerStatus/list') return { data: [], nextCursor: null }
+        if (method === 'mcpServerStatus/list') return { data: [{ name: 'graphql',
+          runtimeStatus: disabledMcpServerNames.includes('graphql') ? 'disabled' : 'connected', toolsError: null,
+          tools: { context_get: { name: 'context_get', inputSchema: { type: 'object' } } },
+          resources: [], resourceTemplates: [], authStatus: 'bearerToken' }], nextCursor: null }
         if (method === 'model/list') return { data: [{ id: 'test-model' }], nextCursor: null }
         if (method === 'config/mcpServer/reload') return {}
         throw new Error(`Unrecorded replay operation: ${method}`)

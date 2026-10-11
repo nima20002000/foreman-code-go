@@ -57,6 +57,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         })
       }
       const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
+      await writeFile(file, JSON.stringify(user))
       snapshots[harness] = { ...snapshot, user, effective: structuredClone(user), revision: fingerprint(user),
         }
     },
@@ -124,6 +125,10 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         if (preset === 'graphql') expect(JSON.stringify((await listed(harness)).servers)).not.toContain('GRAPHQL_MCP_TOKEN')
         const name = preset === 'graphql' ? 'foreman-code' : preset
         const original = structuredClone(snapshots[harness].user[name])
+        if (preset === 'graphql') {
+          expect(original).toMatchObject({ startup_timeout_sec: 60, tool_timeout_sec: 120 })
+          expect(JSON.parse(await readFile(file, 'utf8'))[name]).toEqual(original)
+        }
         for (const enabled of [false, true]) {
           const toggle = { harness, preset, enabled, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
           const togglePlan = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: toggle }))))
@@ -170,6 +175,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       await registerWorkerMcpInstallation({ home: workerHome, stateDirectory, releaseDirectory })
       vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', join(workerHome, '.local/share/graphql/mcp'))
       const oldEntry = { ...installed as Record<string, unknown>, command: previousNode, args: [workerLauncher],
+        startup_timeout_sec: 10, tool_timeout_sec: 30,
         enabled: false, disabled_tools: ['interaction_respond'] }
       const oldUser = { graphql: oldEntry }
       snapshots[harness] = { ...snapshots[harness], user: oldUser, effective: structuredClone(oldUser),
@@ -189,7 +195,10 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       expect(renamed.presets?.graphql).toBe('disabled')
       expect(renamed.servers.map(server => server.name)).toEqual(['foreman-code'])
       expect(snapshots[harness].user['foreman-code']).toMatchObject({ command: process.execPath,
-        args: [workerLauncher], enabled: false, disabled_tools: ['interaction_respond'] })
+        args: [workerLauncher], enabled: false, disabled_tools: ['interaction_respond'],
+        startup_timeout_sec: 60, tool_timeout_sec: 120 })
+      expect(JSON.parse(await readFile(file, 'utf8'))['foreman-code'])
+        .toEqual(snapshots[harness].user['foreman-code'])
     }
     inspectionFails = true
     const now = Date.now()

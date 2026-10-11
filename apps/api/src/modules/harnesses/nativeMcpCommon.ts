@@ -1,4 +1,4 @@
-import { APP_MCP_PATH, APP_MCP_SERVER_NAME, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, appLauncherPath, isAppLauncher, isManagedLauncherCommand, isStaleAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
+import { APP_MCP_PATH, APP_MCP_SERVER_NAME, APP_MCP_TIMEOUTS, LEGACY_APP_MCP_SERVER_NAMES, appLauncherConnection, appLauncherPath, isAppLauncher, isManagedLauncherCommand, isStaleAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { createHash } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
@@ -131,7 +131,8 @@ function managedNativeConnection(snapshot: NativeMcpSnapshot, preset: HarnessMcp
   const name = configuredManagedName(snapshot, preset)
   if (preset === 'graphql') {
     const retiredPolicies = legacyAppPolicies(snapshot)
-    if (!Object.hasOwn(snapshot.user, name)) return { ...nativeConnection(appLauncherConnection()), ...retiredPolicies }
+    if (!Object.hasOwn(snapshot.user, name)) return { ...retiredPolicies, ...nativeConnection(appLauncherConnection()),
+      enabled: retiredPolicies.enabled }
     const existing = record(snapshot.user[name])
     if (!standardAppRemote(existing) && !(isAppLauncher(existing) && appReference(existing)) && !isStaleAppLauncher(existing)) {
       throw new DomainError('MCP_PRESET_CUSTOMIZED', 'The graphql entry has custom transport or authentication settings. Edit it at its native source.', 409)
@@ -227,14 +228,22 @@ export function nativeConnection(input: HarnessMcpConnection): JsonObject {
     enabled: true,
     ...(input.bearerTokenEnvironmentVariable ? { bearer_token_env_var: input.bearerTokenEnvironmentVariable } : {}),
   }
-  return { command: input.executable, args: input.arguments, env_vars: input.environmentVariables, enabled: true }
+  const entry = { command: input.executable, args: input.arguments, env_vars: input.environmentVariables, enabled: true }
+  return isAppLauncher(entry) ? { ...entry, ...APP_MCP_TIMEOUTS } : entry
 }
 export function replacement(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
   managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): JsonObject | undefined {
   if (managed) {
     assertManagedChange(snapshot, change, managed.preset, managed.endpoint)
-    return change.kind === 'add' ? managedNativeConnection(snapshot, managed.preset)
-      : change.kind === 'enable' ? { ...record(snapshot.user[configuredManagedName(snapshot, managed.preset)]), enabled: change.enabled } : undefined
+    if (change.kind === 'add') return managedNativeConnection(snapshot, managed.preset)
+    if (change.kind === 'enable') {
+      return {
+        ...record(snapshot.user[configuredManagedName(snapshot, managed.preset)]),
+        ...(managed.preset === 'graphql' ? APP_MCP_TIMEOUTS : {}),
+        enabled: change.enabled,
+      }
+    }
+    return undefined
   }
   assertChange(snapshot, change)
   if (change.kind === 'remove') return undefined

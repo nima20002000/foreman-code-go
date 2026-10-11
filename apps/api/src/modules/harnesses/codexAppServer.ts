@@ -10,6 +10,7 @@ import type { CompactionState, ContextSnapshot, SessionControlCapabilities } fro
 import type { NativeCompactInput } from './port.js'
 import { childHistoryCursor, childHistoryEvent, encodeChildHistoryCursor } from '../subagents/nativeReadback.js'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames, appMcpServerName, appLauncherTokenName, isAppLauncher, isSupportedAppMcpServerName, isSupportedAppMcpTokenName } from './appMcpLauncher.js'
+import { requireCodexAppMcp } from './codexMcpReadiness.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { normalize } from 'node:path'
 
@@ -180,6 +181,7 @@ interface Runtime extends TurnSnapshot {
   workingDirectory: string
   configuration: CodexHarnessConfiguration
   scopedCredentialVariable: string | undefined
+  approvedAppMcpServerName: string | undefined
   strippedCredentialVariable: string | undefined
   qualified: QualifiedCodex
   transport: CodexTransport
@@ -1046,6 +1048,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         runtime.fileRequests.clear()
         const preparationSignal = AbortSignal.any([starting.preparationController.signal, this.shutdownController.signal, subscriberSignal, ...(signal ? [signal] : [])])
         preparationSignal.throwIfAborted()
+        if (isWorkflowStart(runtime.input) && this.appMcpAccess === 'scoped') {
+          await requireCodexAppMcp(runtime.transport, session.nativeSessionId,
+            runtime.approvedAppMcpServerName ?? this.appMcpServerName, preparationSignal)
+        }
         if (this.chatFiles) {
           starting.filePreparation = this.chatFiles.prepare({ session: structuredClone(session),
             clientCorrelationId: input.clientCorrelationId, signal: preparationSignal }).then(async (bridge) => {
@@ -2103,6 +2109,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonical(accepted(prepared.input)),
       input: prepared.input, workingDirectory: prepared.workingDirectory, configuration: prepared.harnessConfiguration,
       scopedCredentialVariable: prepared.scopedCredentialVariable, transport, session, generation: 0,
+      approvedAppMcpServerName: prepared.approvedAppMcpServerName,
       strippedCredentialVariable: prepared.strippedCredentialVariable,
       qualified: { ...prepared.qualified },
       phase: 'idle', streamActive: false, starting: undefined, cancellation: undefined,
@@ -2223,6 +2230,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       runtime.generation = generation
       runtime.input = prepared.input
       runtime.scopedCredentialVariable = prepared.scopedCredentialVariable
+      runtime.approvedAppMcpServerName = prepared.approvedAppMcpServerName
       runtime.strippedCredentialVariable = prepared.strippedCredentialVariable
       runtime.qualified = { ...prepared.qualified }
       runtime.effectiveSandbox = prepared.effectiveSandbox ? structuredClone(prepared.effectiveSandbox) : undefined

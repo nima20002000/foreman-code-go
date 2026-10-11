@@ -266,7 +266,9 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     reply(message.id, { config: { approval_policy: thread?.settings.approvalPolicy ?? 'on-request',
       mcp_servers: { [mcpName]: { ...mcp.transport, enabled: mcp.enabled, required: true } } }, origins: {}, layers: [] })
   } else if (message.method === 'mcpServerStatus/list') {
-    reply(message.id, { data: [], nextCursor: null })
+    reply(message.id, { data: [{ name: mcpName, runtimeStatus: mcp.enabled ? 'connected' : 'disabled', toolsError: null,
+      tools: mcp.enabled ? { context_get: { name: 'context_get', inputSchema: { type: 'object' } } } : {},
+      resources: [], resourceTemplates: [], authStatus: 'bearerToken' }], nextCursor: null })
   } else if (message.method === 'model/list') {
     const models = [{ id: 'test-model', model: 'test-model', displayName: 'Test model',
       description: 'External protocol fixture', hidden: false, isDefault: true, defaultReasoningEffort: 'low',

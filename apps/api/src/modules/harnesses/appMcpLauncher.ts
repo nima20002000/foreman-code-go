@@ -11,6 +11,7 @@ import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES, PRODUCT_SLUG } from '@forema
 /** One native entry serves every role; the credential decides Operator, Orchestrator or Coder. */
 export const APP_MCP_SERVER_NAME = PRODUCT_SLUG
 export const APP_MCP_TOKEN = 'FOREMAN_CODE_MCP_TOKEN'
+export const APP_MCP_TIMEOUTS = { startup_timeout_sec: 60, tool_timeout_sec: 120 } as const
 export const isSupportedAppMcpServerName = (name: string): name is (typeof APP_MCP_SERVER_NAMES)[number] =>
   APP_MCP_SERVER_NAMES.some((supported) => supported === name)
 export const isSupportedAppMcpTokenName = (name: string | undefined): name is (typeof APP_MCP_TOKEN_NAMES)[number] =>
