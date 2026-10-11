@@ -19,12 +19,14 @@ const CACHE_MS = 30_000
 /** Which harness and GitHub accounts each paired computer is signed in to. Identity strings only. */
 export class ComputerAccountsService {
   private readonly cache = new Map<string, { at: number; pending: boolean; value: Promise<ComputerAccounts | null> }>()
+  private readonly refreshRequired = new Set<string>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
     private readonly endpoint: () => ComputerAccountsEndpoint | undefined,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly probeMain: () => Promise<ComputerAccounts> = () => probeComputerAccounts(),
+    private readonly probeMain: (refresh?: boolean) => Promise<ComputerAccounts> = refresh =>
+      probeComputerAccounts(undefined, undefined, { refresh: refresh === true }),
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -58,7 +60,9 @@ export class ComputerAccountsService {
   }
 
   invalidate(target: DeviceProvisioningTarget): void {
-    this.cache.delete(`${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`)
+    const key = `${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`
+    this.cache.delete(key)
+    this.refreshRequired.add(key)
   }
 
   async readTarget(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<ComputerAccountsList> {
@@ -80,9 +84,11 @@ export class ComputerAccountsService {
 
   private read(target: DeviceProvisioningTarget, refresh: boolean): Promise<ComputerAccounts | null> {
     const key = `${target.applicationInstallationId}:${target.authorizationRevision ?? 0}`
+    refresh ||= this.refreshRequired.has(key)
     const cached = this.cache.get(key)
     if (cached && (cached.pending || (!refresh && this.now() - cached.at < CACHE_MS))) return cached.value
-    const value = (target.hostRef.kind === 'main' ? this.probeMain() : this.readDevice(target.hostRef.deviceId))
+    this.refreshRequired.delete(key)
+    const value = (target.hostRef.kind === 'main' ? this.probeMain(refresh) : this.readDevice(target.hostRef.deviceId, refresh))
       .catch((): null => null)
     const entry = { at: this.now(), pending: true, value }
     this.cache.set(key, entry)
@@ -93,10 +99,11 @@ export class ComputerAccountsService {
     return value
   }
 
-  private async readDevice(deviceId: string): Promise<ComputerAccounts | null> {
+  private async readDevice(deviceId: string, refresh: boolean): Promise<ComputerAccounts | null> {
     const endpoint = this.endpoint()
     if (!endpoint?.capabilities(deviceId).some(value => value.namespace === COMPUTER_ACCOUNTS_NAMESPACE && value.mainCanRequest)) return null
-    const reply = await endpoint.request(deviceId, COMPUTER_ACCOUNTS_NAMESPACE, { operation: 'read' },
+    const reply = await endpoint.request(deviceId, COMPUTER_ACCOUNTS_NAMESPACE,
+      { operation: 'read', ...(refresh ? { refresh: true } : {}) },
       { signal: AbortSignal.timeout(25_000) })
     return ComputerAccountsSchema.parse(reply.payload)
   }

@@ -1,7 +1,7 @@
 import { constants, readFileSync, type BigIntStats } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { open, mkdir, realpath, type FileHandle } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
+import { open, mkdir, lstat, realpath, type FileHandle } from 'node:fs/promises'
+import { isAbsolute, join } from 'node:path'
 import { SourceError } from './manifest.js'
 import { DomainError } from '../errors.js'
 
@@ -51,6 +51,44 @@ function cachedIdentity(handle: FileHandle, checkedStat?: BigIntStats): Promise<
   return pending
 }
 export function identity(handle: FileHandle): Promise<{ device: string; inode: string; mountId: string }> { return cachedIdentity(handle) }
+
+type DirectoryIdentity = Awaited<ReturnType<typeof identity>>
+interface RootValidation {
+  ancestors: Array<{ path: string; metadata: string }>
+  identity: DirectoryIdentity
+}
+const validatedRoots = new Map<string, RootValidation>()
+function directoryMetadata(stat: BigIntStats): string {
+  return [stat.dev, stat.ino, stat.uid, stat.mode].join(':')
+}
+async function reopenValidatedRoot(path: string, key: string): Promise<FileHandle | null> {
+  const cached = validatedRoots.get(key)
+  if (!cached) return null
+  try {
+    const ancestors = await Promise.all(cached.ancestors.map(entry => lstat(entry.path, { bigint: true })))
+    if (ancestors.some((stat, index) => !stat.isDirectory()
+      || directoryMetadata(stat) !== cached.ancestors[index]!.metadata)) {
+      validatedRoots.delete(key)
+      return null
+    }
+    const root = await open(path, directoryFlags)
+    try {
+      const stat = await root.stat({ bigint: true })
+      const current = await cachedIdentity(root, stat)
+      if (directoryMetadata(stat) === cached.ancestors.at(-1)!.metadata
+        && JSON.stringify(current) === JSON.stringify(cached.identity)) return root
+    } catch (error) {
+      await root.close()
+      throw error
+    }
+    await root.close()
+    validatedRoots.delete(key)
+    return null
+  } catch (error) {
+    validatedRoots.delete(key)
+    throw error
+  }
+}
 /** Linux procfs anchors every operation to an open directory, including ancestors.
  * The app-private root must exclude other principals; same-UID hostile processes
  * are outside this filesystem qualification, not secured by leaf O_NOFOLLOW.
@@ -58,26 +96,40 @@ export function identity(handle: FileHandle): Promise<{ device: string; inode: s
 export async function openPrivateRoot(path: string, privateOnly = true): Promise<FileHandle> {
   if (process.platform !== 'linux' || !isAbsolute(path) || path !== await realpath(path))
     throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'An approved canonical Linux private root is required.', 422)
+  const key = `${process.getuid?.()}:${privateOnly}:${path}`
+  // Recheck ancestor replacement/permissions and the opened mount on every read,
+  // but walk open directory handles only when their validation changes.
+  const cached = await reopenValidatedRoot(path, key)
+  if (cached) return cached
+  const ancestors: RootValidation['ancestors'] = []
+  let parentPath = '/'
   let parent = await open('/', directoryFlags)
   try {
     for (const component of path.split('/').filter(Boolean)) {
-      const ancestor = await parent.stat()
-      if ((ancestor.uid !== 0 && ancestor.uid !== process.getuid?.())
-        || ((ancestor.mode & 0o022) !== 0 && (ancestor.mode & 0o1000) === 0))
+      const ancestor = await parent.stat({ bigint: true })
+      ancestors.push({ path: parentPath, metadata: directoryMetadata(ancestor) })
+      if ((ancestor.uid !== 0n && ancestor.uid !== BigInt(process.getuid?.() ?? -1))
+        || ((ancestor.mode & 0o022n) !== 0n && (ancestor.mode & 0o1000n) === 0n))
         throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Root ancestors must exclude replacement by other principals.', 422)
       const child = await open(anchored(parent, component), directoryFlags)
-      if ((ancestor.mode & 0o022) !== 0 && (await child.stat()).uid !== process.getuid?.()) {
+      if ((ancestor.mode & 0o022n) !== 0n && (await child.stat()).uid !== process.getuid?.()) {
         await child.close(); throw new DomainError('SOURCE_FILESYSTEM_UNSUPPORTED', 'Sticky-directory entries must be owned by this worker.', 422)
       }
       await parent.close(); parent = child
+      parentPath = join(parentPath, component)
     }
-    const stat = await parent.stat()
-    if (stat.uid !== process.getuid?.() || (privateOnly ? (stat.mode & 0o077) !== 0 || (stat.mode & 0o700) !== 0o700 : (stat.mode & 0o022) !== 0 || (stat.mode & 0o500) !== 0o500))
+    const stat = await parent.stat({ bigint: true })
+    const privateMode = (stat.mode & 0o077n) === 0n && (stat.mode & 0o700n) === 0o700n
+    const protectedMode = (stat.mode & 0o022n) === 0n && (stat.mode & 0o500n) === 0o500n
+    if (stat.uid !== BigInt(process.getuid?.() ?? -1) || !(privateOnly ? privateMode : protectedMode))
       throw new SourceError('SOURCE_ROOT_NOT_PRIVATE', privateOnly ? 'The approved root must be owned by this worker with mode 0700.' : 'The approved base must be worker-owned and protected from other writers.')
     const current = await open(path, directoryFlags)
     try {
-      const [currentIdentity, parentIdentity] = await Promise.all([identity(current), identity(parent)])
+      const [currentIdentity, parentIdentity] = await Promise.all([identity(current), cachedIdentity(parent, stat)])
       if (JSON.stringify(currentIdentity) !== JSON.stringify(parentIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Root changed during validation.')
+      ancestors.push({ path, metadata: directoryMetadata(stat) })
+      if (validatedRoots.size >= 128) validatedRoots.delete(validatedRoots.keys().next().value!)
+      validatedRoots.set(key, { ancestors, identity: parentIdentity })
     }
     finally { await current.close() }
     return parent

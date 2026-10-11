@@ -1,5 +1,31 @@
-import { expect, it, vi } from 'vitest'
-import { probeComputerAccounts, type AccountProbePorts } from './accountProbe.js'
+import { mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { afterEach, expect, it, vi } from 'vitest'
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
+import { probeComputerAccounts, systemPorts, type AccountProbePorts } from './accountProbe.js'
+
+const directories: string[] = []
+afterEach(async () => {
+  vi.useRealTimers()
+  await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })))
+})
+async function cachedProbeFixture() {
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'account-probe-'))
+  directories.push(directory)
+  const binary = join(directory, 'claude')
+  await writeFile(binary, 'original', { mode: 0o700 })
+  const environment = { HOME: directory, PATH: '' }
+  const native = systemPorts(environment)
+  let installed = true
+  let account = 'first'
+  const run = vi.fn(async () => ({ code: 0, stdout: JSON.stringify({ loggedIn: true, email: account }), stderr: '' }))
+  const ports: AccountProbePorts = {
+    ...native, find: async name => installed && name === 'claude' ? binary : null, run,
+  }
+  const read = (refresh = false) => probeComputerAccounts(ports, new AbortController().signal, { refresh })
+  return { directory, binary, environment, run, read, account(value: string) { account = value },
+    installed(value: boolean) { installed = value } }
+}
 
 const token = (claims: object) => `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`
 function ports(installed: string[], outputs: Record<string, { code?: number; stdout?: string; stderr?: string }>,
@@ -119,4 +145,107 @@ it.each([true, false])('reports GitHub signed-out with another host configured a
     return { code: 1, stdout: '', stderr: 'You are not logged into any accounts on github.com' }
   } })
   expect(result.accounts.find(value => value.tool === 'github')).toMatchObject({ signedIn: false, account: null })
+})
+
+it('reuses unchanged account probes and refreshes keyring facts at expiry or on request', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const f = await cachedProbeFixture()
+  const first = await f.read()
+  expect(first.accounts[1]?.account).toBe('first')
+  f.account('second')
+  vi.advanceTimersByTime(1000)
+  const cached = await f.read()
+  expect(cached.accounts[1]?.account).toBe('first')
+  expect(cached.observedAt).toBe(first.observedAt)
+  expect(f.run).toHaveBeenCalledTimes(1)
+  vi.advanceTimersByTime(30_000)
+  expect((await f.read()).accounts[1]?.account).toBe('second')
+  f.account('third')
+  expect((await f.read(true)).accounts[1]?.account).toBe('third')
+  expect(f.run).toHaveBeenCalledTimes(3)
+})
+
+it('reprobes when the clock moves backwards instead of extending cached account freshness', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const f = await cachedProbeFixture()
+  await f.read()
+  f.account('changed')
+  vi.setSystemTime(Date.now() - 1000)
+  expect((await f.read()).accounts[1]?.account).toBe('changed')
+  expect(f.run).toHaveBeenCalledTimes(2)
+})
+
+it.each(['overwrite', 'replace', 'symlink'] as const)('reprobes an executable after %s with restored mtime', async method => {
+  const f = await cachedProbeFixture()
+  await utimes(f.binary, new Date(0), new Date(1000))
+  await f.read()
+  const before = await stat(f.binary)
+  const replacement = join(f.directory, 'replacement')
+  if (method === 'overwrite') {
+    await writeFile(f.binary, 'modified')
+    await utimes(f.binary, before.atime, before.mtime)
+  } else {
+    await writeFile(replacement, 'modified', { mode: 0o700 })
+    await utimes(replacement, before.atime, before.mtime)
+    if (method === 'replace') await rename(replacement, f.binary)
+    else {
+      await rm(f.binary)
+      await symlink(replacement, f.binary)
+    }
+  }
+  f.account('replacement')
+  expect((await f.read()).accounts[1]?.account).toBe('replacement')
+  expect(f.run).toHaveBeenCalledTimes(2)
+})
+
+it('reprobes changed credential files and environment without waiting for expiry', async () => {
+  const f = await cachedProbeFixture()
+  await f.read()
+  await mkdir(join(f.directory, '.claude'))
+  await writeFile(join(f.directory, '.claude', '.credentials.json'), 'changed')
+  f.account('changed-credentials')
+  expect((await f.read()).accounts[1]?.account).toBe('changed-credentials')
+  f.environment.PATH = 'changed-environment'
+  f.account('changed-environment')
+  expect((await f.read()).accounts[1]?.account).toBe('changed-environment')
+  expect(f.run).toHaveBeenCalledTimes(3)
+})
+
+it('reprobes GitHub when its credential configuration changes', async () => {
+  const f = await cachedProbeFixture()
+  const native = systemPorts(f.environment)
+  const run = vi.fn(async () => ({ code: 0, stdout: JSON.stringify({ hosts: {} }), stderr: '' }))
+  const ports: AccountProbePorts = { ...native, find: async name => name === 'gh' ? f.binary : null, run }
+  const read = () => probeComputerAccounts(ports)
+  expect((await read()).accounts[2]?.signedIn).toBe(false)
+  await read()
+  expect(run).toHaveBeenCalledTimes(1)
+  const config = join(f.directory, '.config', 'gh')
+  await mkdir(config, { recursive: true })
+  await writeFile(join(config, 'hosts.yml'), 'changed')
+  expect((await read()).accounts[2]?.signedIn).toBe(false)
+  expect(run).toHaveBeenCalledTimes(2)
+})
+
+it('does not reuse an installed account when its executable disappears', async () => {
+  const f = await cachedProbeFixture()
+  await f.read()
+  f.installed(false)
+  expect((await f.read()).accounts[1]?.installed).toBe(false)
+  f.installed(true)
+  await rm(f.binary)
+  expect((await f.read()).accounts[1]?.signedIn).toBeNull()
+  await writeFile(f.binary, 'restored', { mode: 0o700 })
+  f.account('restored')
+  expect((await f.read()).accounts[1]?.account).toBe('restored')
+  expect(f.run).toHaveBeenCalledTimes(2)
+})
+
+it('retries a failed process probe and shares concurrent successful probes', async () => {
+  const f = await cachedProbeFixture()
+  f.run.mockRejectedValueOnce(new Error('probe failed'))
+  expect((await f.read()).accounts[1]?.signedIn).toBeNull()
+  const values = await Promise.all([f.read(), f.read()])
+  expect(values.every(value => value.accounts[1]?.account === 'first')).toBe(true)
+  expect(f.run).toHaveBeenCalledTimes(2)
 })

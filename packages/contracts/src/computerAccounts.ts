@@ -17,7 +17,9 @@ export const ComputerAccountsSchema = z.object({
   accounts: z.array(ComputerAccountSchema).max(ComputerAccountToolSchema.options.length),
   observedAt: z.string().datetime(),
 }).strict()
-export const ComputerAccountsRequestSchema = z.object({ operation: z.literal('read') }).strict()
+export const ComputerAccountsRequestSchema = z.object({
+  operation: z.literal('read'), refresh: z.boolean().optional(),
+}).strict()
 export const ComputerAccountsEntrySchema = z.object({
   target: DeviceProvisioningTargetSchema,
   /** null when the computer is offline or did not answer in time. */

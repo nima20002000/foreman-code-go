@@ -29,8 +29,24 @@ interface ScopeBaseline { cpu?: CpuBaseline; processes?: Map<string, bigint>; re
 export class LinuxSampler {
   private sources = new Map<string, string>()
   private baselines = new Map<string, ScopeBaseline>()
+  private storage: { generation: string; at: bigint; value: TelemetryStorage } | undefined
   constructor(private readonly ports: SamplerPorts) {}
-  reset(): void { this.baselines.clear(); this.sources.clear() }
+  reset(): void { this.baselines.clear(); this.sources.clear(); this.storage = undefined }
+  private async captureStorage(identity: TelemetryIdentity, signal: AbortSignal): Promise<TelemetryStorage | null> {
+    if (!this.ports.storage) return null
+    const generation = telemetryCanonical(identity)
+    const now = this.ports.now()
+    const cached = this.storage
+    signal.throwIfAborted()
+    if (cached?.generation === generation && now >= cached.at && now - cached.at < 10_000_000_000n) {
+      return cached.value
+    }
+    this.storage = undefined
+    const value = await this.ports.storage(signal)
+    signal.throwIfAborted()
+    this.storage = { generation, at: now, value }
+    return value
+  }
   async capture(identity: TelemetryIdentity, signal: AbortSignal): Promise<{ host: TelemetryCollectedRow | null; owned: TelemetryCollectedRow[]; logicalCpuCount: number; truncated: boolean; diagnostics: Reason[] }> {
     const p = this.ports
     const deadlineNs = p.now() + 250_000_000n
@@ -69,7 +85,7 @@ export class LinuxSampler {
     let host: TelemetryCollectedRow
     if (p.wholeHostVisible) {
       const [cpu, memory, storage] = await Promise.allSettled([p.read('/proc/stat', signal).then(text => ({ ...parseHostCpu(text), monoNs: p.now() })), p.read('/proc/meminfo', signal).then(parseHostMemory),
-        p.storage ? p.storage(signal) : Promise.resolve(null)])
+        this.captureStorage(identity, signal)])
       host = { selector: { schemaVersion: 1, scope: 'computer', ...identity }, coverage: { boundary: 'complete-boundary', shared: false, reasons: [] },
         cpu: cpu.status === 'fulfilled' ? cpuCapture('computer', cpu.value.active, cpu.value.total, 'host-active-ticks', cpu.value.monoNs) : failed(cpu.reason),
         memory: memory.status === 'fulfilled' ? { state: 'ok', value: { kind: 'host-used-estimate', ...memory.value, sharedPagesMayDoubleCount: false } } : failed(memory.reason),

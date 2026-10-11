@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -9,7 +9,11 @@ import { mainSyncId } from '../../../test/helpers/syncthing.js'
 const mock = vi.hoisted(() => ({ ports: {} as Record<string, unknown> }))
 vi.mock('./accountProbe.js', () => ({ systemPorts: () => mock.ports }))
 const homes: string[] = []
-afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true }))) })
+afterEach(async () => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true })))
+})
 async function fixture(options: { installed?: boolean; checksum?: string; failStart?: boolean } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'foreman-sync-system-'))
   homes.push(home)
@@ -62,7 +66,7 @@ async function fixture(options: { installed?: boolean; checksum?: string; failSt
   })
   vi.stubGlobal('fetch', fetcher)
   return { home, binary, config, calls, downloaded, settings, ports: systemSyncthingPorts({ HOME: home }),
-    allowStart: () => { failStart = false } }
+    allowStart: () => { failStart = false }, stop: () => { running = false } }
 }
 
 it('installs checksum-verified Syncthing, starts its user service and configures Tailscale through local REST', async () => {
@@ -135,4 +139,45 @@ it('stops a canceled conflict scan before reading the directory', async () => {
   controller.abort(new Error('Context budget expired'))
   await expect(f.ports.conflicts(join(f.home, 'missing-folder'), controller.signal))
     .rejects.toThrow('Context budget expired')
+})
+
+it('reuses unchanged preparation while checking service liveness and refreshes at expiry', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const f = await fixture()
+  const first = await f.ports.prepare()
+  f.calls.length = 0
+  expect(await f.ports.prepare()).toEqual(first)
+  expect(f.calls).toEqual([{ file: 'systemctl', args: ['--user', 'is-active', 'foreman-syncthing.service'] }])
+  vi.advanceTimersByTime(30_000)
+  expect(await f.ports.prepare()).toEqual(first)
+  expect(f.calls.some(call => call.args.includes('daemon-reload'))).toBe(true)
+})
+
+it.each(['binary', 'config', 'unit', 'stopped'] as const)('reprepares after %s changes', async changed => {
+  const f = await fixture()
+  const first = await f.ports.prepare()
+  f.calls.length = 0
+  if (changed === 'binary') {
+    const before = await stat(f.binary)
+    const replacement = join(f.home, 'replacement')
+    await writeFile(replacement, 'replacement data', { mode: 0o755 })
+    await utimes(replacement, before.atime, before.mtime)
+    await rename(replacement, f.binary)
+  }
+  if (changed === 'config') await writeFile(f.config, await readFile(f.config))
+  if (changed === 'unit') await writeFile(join(f.home, '.config', 'systemd', 'user', 'foreman-syncthing.service'), 'changed')
+  if (changed === 'stopped') f.stop()
+  expect(await f.ports.prepare()).toEqual(first)
+  expect(f.calls.some(call => call.args.includes('daemon-reload'))).toBe(true)
+  expect((await f.ports.available()).running).toBe(true)
+})
+
+it('refreshes preparation after the clock moves backwards', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const f = await fixture()
+  const first = await f.ports.prepare()
+  f.calls.length = 0
+  vi.setSystemTime(Date.now() - 1000)
+  expect(await f.ports.prepare()).toEqual(first)
+  expect(f.calls.some(call => call.args.includes('daemon-reload'))).toBe(true)
 })

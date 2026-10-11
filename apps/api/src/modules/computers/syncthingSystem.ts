@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -24,6 +24,21 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
   const state = join(home, '.local', 'state', 'foreman-code', 'syncthing')
   const rootPath = join(home, '.local', 'share', 'foreman-code', 'shared-files')
   const processPorts = systemPorts(environment)
+  let prepared: { at: number; metadata: string; identity: SyncIdentity } | undefined
+  const preparationMetadata = async (binary: string): Promise<string | null> => {
+    try {
+      const selected = await realpath(binary)
+      const files = [selected, join(state, 'config.xml'), join(home, '.config', 'systemd', 'user', UNIT)]
+      const metadata = await Promise.all(files.map(async path => {
+        const value = await stat(path, { bigint: true })
+        return [path, value.dev, value.ino, value.size, value.mode, value.mtimeNs, value.ctimeNs].join(':')
+      }))
+      return metadata.join('|')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
   const run = async (file: string, args: string[]) => {
     const result = await processPorts.run(file, args, AbortSignal.timeout(120_000))
     if (result.code !== 0) throw failure(`${file.split('/').at(-1)} failed: ${result.stderr.trim().slice(-300)}`)
@@ -111,6 +126,12 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
       return names
     },
     prepare: async () => {
+      const installed = await processPorts.find('syncthing')
+      if (prepared && installed && Date.now() >= prepared.at && Date.now() - prepared.at < 30_000
+        && await preparationMetadata(installed) === prepared.metadata && (await available()).running) {
+        return structuredClone(prepared.identity)
+      }
+      prepared = undefined
       const address = TailscaleAddressSchema.parse((await run('tailscale', ['ip', '-4'])).trim().split('\n')[0])
       const binary = await install()
       await mkdir(state, { recursive: true, mode: 0o700 })
@@ -139,7 +160,10 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
         relaysEnabled: false, natEnabled: false, listenAddresses: [`tcp://${address}:22001`],
         autoUpgradeIntervalH: 0, crashReportingEnabled: false, urAccepted: -1 })
       const system = z.object({ myID: SyncIdentitySchema.shape.deviceId }).parse(await rest('GET', '/rest/system/status'))
-      return SyncIdentitySchema.parse({ deviceId: system.myID, address, rootPath })
+      const identity = SyncIdentitySchema.parse({ deviceId: system.myID, address, rootPath })
+      const metadata = await preparationMetadata(binary)
+      if (metadata) prepared = { at: Date.now(), metadata, identity }
+      return identity
     },
   }
 }

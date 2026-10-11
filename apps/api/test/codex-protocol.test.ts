@@ -39,6 +39,18 @@ describe.skipIf(process.platform === 'win32')('Codex installed contract verifica
     assert.equal((await schemaCalls()).length, 1)
   })
 
+  it('probes version once per executable identity and reprobes after replacement', async () => {
+    await configure()
+    await qualify()
+    await qualify()
+    const versionCalls = async () => (await calls(f.directory))
+      .filter(entry => Array.isArray(entry.cli) && entry.cli.includes('--version'))
+    assert.equal((await versionCalls()).length, 1)
+    await appendFile(f.binary, '\n// changed executable\n')
+    await qualify()
+    assert.equal((await versionCalls()).length, 2)
+  })
+
   it('names the harness, observed version and missing required method', async () => {
     const schema = codexSchema()
     schema.definitions.ClientRequest.oneOf = schema.definitions.ClientRequest.oneOf.filter(

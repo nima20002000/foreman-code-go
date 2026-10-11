@@ -62,6 +62,48 @@ describe('captured process sets', () => {
   it('enforces identity budget and deduplicates shared roots', async () => { const result = await collect({ stat: async pid => stat(pid), children: async () => [43, 44] }, [root], 1); expect(result.identities).toHaveLength(1); expect(result.limitations).toContain('limit-exceeded') })
 })
 describe('owned/host sampler', () => {
+  it('refreshes storage every ten seconds while CPU and memory remain live', async () => {
+    const p = ports([])
+    let availableBytes = 250
+    p.storage = vi.fn(async () => ({ totalBytes: 1000, availableBytes }))
+    const sampler = new LinuxSampler(p)
+    await sampler.capture(identity, signal())
+    availableBytes = 100
+    p.advance(2_000_000_000n)
+    const warm = await sampler.capture(identity, signal())
+    expect(warm.host?.storage?.availableBytes).toBe(250)
+    expect(warm.host?.cpu.state).toBe('ok')
+    expect(warm.host?.memory.state).toBe('ok')
+    expect(p.storage).toHaveBeenCalledTimes(1)
+    p.advance(8_000_000_000n)
+    expect((await sampler.capture(identity, signal())).host?.storage?.availableBytes).toBe(100)
+    expect(p.storage).toHaveBeenCalledTimes(2)
+  })
+  it('invalidates storage on collector generation changes, reset and backwards time', async () => {
+    const p = ports([])
+    p.storage = vi.fn(async () => ({ totalBytes: 1000, availableBytes: 250 }))
+    const sampler = new LinuxSampler(p)
+    await sampler.capture(identity, signal())
+    const changed = { ...identity, host: { ...identity.host, collectorGeneration: 'replacement-collector' } }
+    await sampler.capture(changed, signal())
+    sampler.reset()
+    await sampler.capture(changed, signal())
+    p.advance(-1n)
+    await sampler.capture(changed, signal())
+    expect(p.storage).toHaveBeenCalledTimes(4)
+  })
+  it('retries failed storage refreshes without publishing an old value', async () => {
+    const p = ports([])
+    const storage = vi.fn(async () => ({ totalBytes: 1000, availableBytes: 250 }))
+    p.storage = storage
+    const sampler = new LinuxSampler(p)
+    await sampler.capture(identity, signal())
+    p.advance(10_000_000_000n)
+    storage.mockRejectedValueOnce(new Error('storage unavailable'))
+    expect((await sampler.capture(identity, signal())).host?.storage).toBeNull()
+    expect((await sampler.capture(identity, signal())).host?.storage?.availableBytes).toBe(250)
+    expect(storage).toHaveBeenCalledTimes(3)
+  })
   it('reports host storage for the computer and none when the host cannot report it', async () => {
     const p = ports(); p.storage = async () => ({ totalBytes: 1000, availableBytes: 250 })
     expect((await new LinuxSampler(p).capture(identity, signal())).host?.storage).toEqual({ totalBytes: 1000, availableBytes: 250 })
