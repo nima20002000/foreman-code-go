@@ -21,7 +21,6 @@ const connectionString = process.env.TEST_DATABASE_URL
 
 let pool: OperatorChatFixture['pool']
 let access: OperatorChatFixture['access']
-let owner: OperatorChatFixture['owner']
 let operators: OperatorChatFixture['operators']
 let repository: OperatorChatFixture['repository']
 let manager: OperatorChatFixture['manager']
@@ -30,7 +29,7 @@ let chat: OperatorChatFixture['chat']
 let runtimeDirectory: OperatorChatFixture['runtimeDirectory']
 
 registerOperatorChatFixture(fixture => {
-  ({ pool, access, owner, operators, repository, manager, authority, chat, runtimeDirectory } = fixture)
+  ({ pool, access, operators, repository, manager, authority, chat, runtimeDirectory } = fixture)
 }, () => chat)
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {

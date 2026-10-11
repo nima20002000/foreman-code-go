@@ -20,13 +20,12 @@ let access: OperatorChatFixture['access']
 let owner: OperatorChatFixture['owner']
 let operators: OperatorChatFixture['operators']
 let repository: OperatorChatFixture['repository']
-let manager: OperatorChatFixture['manager']
 let authority: OperatorChatFixture['authority']
 let chat: OperatorChatFixture['chat']
 let runtimeDirectory: OperatorChatFixture['runtimeDirectory']
 
 registerOperatorChatFixture(fixture => {
-  ({ pool, access, owner, operators, repository, manager, authority, chat, runtimeDirectory } = fixture)
+  ({ pool, access, owner, operators, repository, authority, chat, runtimeDirectory } = fixture)
 }, () => chat)
 
 function settlingClaude() {

@@ -14,11 +14,10 @@ let owner: OperatorChatFixture['owner']
 let operators: OperatorChatFixture['operators']
 let repository: OperatorChatFixture['repository']
 let manager: OperatorChatFixture['manager']
-let authority: OperatorChatFixture['authority']
 let chat: OperatorChatFixture['chat']
 
 registerOperatorChatFixture(fixture => {
-  ({ pool, access, owner, operators, repository, manager, authority, chat } = fixture)
+  ({ pool, access, owner, operators, repository, manager, chat } = fixture)
 }, () => chat)
 
 describe.skipIf(!connectionString)('Operator chat persistence and native binding with stubbed authority', () => {
