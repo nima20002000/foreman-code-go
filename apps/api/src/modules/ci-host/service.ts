@@ -27,6 +27,10 @@ export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: stri
 
 const log = componentLogger('jobs')
 
+function isGitHubComputer(computer: HostCiComputer): boolean {
+  return computer.hostRef.kind === 'cloud' && computer.hostRef.provider === 'github'
+}
+
 /** Runs work over every item with at most `limit` in flight. */
 async function inBatches<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>) {
   let next = 0
@@ -133,7 +137,8 @@ export class HostCiService {
     for (const group of groups.values()) {
       const count = group[0]!.partition!.count
       if (group.length !== count) continue
-      const ordered = [...free].sort((left, right) => right.priority - left.priority
+      const ordered = [...free].sort((left, right) => Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
+        || right.priority - left.priority
         || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0)).slice(0, count)
       const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
       const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
@@ -319,35 +324,59 @@ export class HostCiService {
           .catch(error => log.warn({ err: error, runId: run.id }, 'CI durations not recorded'))
       }
     })
-    const busy = new Set((await this.pool.query<{ host_key: string }>(
-      `select host_key from ci_runs where state in ('starting','running')`)).rows.map(row => row.host_key))
+    const busyRows = (await this.pool.query<{ host_key: string; record: unknown }>(
+      `select host_key,record from ci_runs where state in ('starting','running')`)).rows
+    const busy = new Set(busyRows.map(row => row.host_key))
+    const github = computers.filter(isGitHubComputer)
+    const githubKeys = new Set(github.map(computer => computer.key))
+    const integrationOnGitHub = new Set(busyRows.filter(row => githubKeys.has(row.host_key)
+      && CiRunRecordSchema.parse(row.record).suite === 'integration').map(row => row.host_key))
+    // Check parts must remain visible even behind more than one batch of integration partitions.
     const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
-      `select record,durations from ci_runs where state='queued' order by created_at,id limit 50`)).rows
+      `select record,durations from ci_runs where id in
+        (select id from ci_runs where state='queued' order by created_at,id limit 50)
+        or id in (select id from ci_runs where state='queued' and record->>'suite'<>'integration'
+          order by created_at,id limit 50)
+        order by created_at,id`)).rows
     let queued = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
+    // Reserve four GitHub slots while checks wait, including integration already using GitHub.
+    const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
     const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
     queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
     // Runs start at once, in queue order: each claims its computer before waiting, so none is given twice.
     await Promise.all(queued.map(async run => {
-      // Typecheck, lint, build and unit suites are CPU- and memory-hungry and need no host capabilities, so they go
-      // to GitHub Actions first and leave the build computers to integration work.
-      const cloudFirst = (computer: HostCiComputer) => Number(run.suite !== 'integration' && computer.hostRef.kind === 'cloud')
-      const order = [...computers].sort((left, right) => Number(right.key === run.plannedHostKey)
-        - Number(left.key === run.plannedHostKey) || cloudFirst(right) - cloudFirst(left) || right.priority - left.priority)
+      const preferred = (computer: HostCiComputer) => Number(run.suite === 'integration'
+        ? !isGitHubComputer(computer) : isGitHubComputer(computer))
+      const order = computers.filter(computer => run.suite === 'integration'
+        || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
+        .sort((left, right) => preferred(right) - preferred(left)
+          || Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
+          || right.priority - left.priority)
       for (const computer of order) {
         if (busy.has(computer.key)) continue
+        const usesGitHubIntegration = run.suite === 'integration' && isGitHubComputer(computer)
+        if (usesGitHubIntegration && integrationOnGitHub.size >= githubIntegrationLimit) continue
         busy.add(computer.key)
+        if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
             scope: run.scope, ...(run.scope === 'affected' ? { files: run.files } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
-          if (reply.operation !== 'start') { busy.delete(computer.key); continue }
+          if (reply.operation !== 'start') {
+            busy.delete(computer.key)
+            if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
+            continue
+          }
           await this.settle({ ...run, computer: { hostRef: computer.hostRef, label: computer.label } }, computer, reply.run)
           return
         } catch (error) {
           // A busy or unready computer is skipped; the run stays queued for the next free one.
           const code = (error as { code?: unknown } | null)?.code
-          if (code !== 'CI_HOST_BUSY') busy.delete(computer.key)
+          if (code !== 'CI_HOST_BUSY') {
+            busy.delete(computer.key)
+            if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
+          }
           if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE'
             || code === 'BUILD_COMPUTER_DISABLED') continue
           log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')

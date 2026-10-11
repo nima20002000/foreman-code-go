@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema,
+import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
   integrationPartition, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -15,12 +15,17 @@ import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { DomainError } from '../src/modules/errors.js'
 
 /** Two build computers that answer the host CI protocol from memory; tests finish their runs. */
-function fakeComputers(github: Record<string, boolean> = {}, cloud = false) {
+function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { github: number; circleci: number } = false) {
   const mainId = randomUUID()
   const computers: HostCiComputer[] = ['laptop', 'builder'].map((name, index) => ({ key: `${mainId}:${name}`,
     hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: name, priority: 60 - index }))
-  if (cloud) computers.push({ key: `${mainId}:cloud:github:0`, hostRef: { kind: 'cloud', mainId, provider: 'github', slot: 0 },
-    label: 'GitHub Actions 1', priority: 30 })
+  const slots = typeof cloud === 'boolean' ? { github: Number(cloud), circleci: 0 } : cloud
+  for (const provider of ['github', 'circleci'] as const) {
+    for (let slot = 0; slot < slots[provider]; slot++) {
+      computers.push({ key: `${mainId}:cloud:${provider}:${slot}`, hostRef: { kind: 'cloud', mainId, provider, slot },
+        label: `${provider === 'github' ? 'GitHub Actions' : 'CircleCI'} ${slot + 1}`, priority: 30 })
+    }
+  }
   const runs = new Map<string, { computer: string; run: CiHostRun; log: string; request: CiHostRequest
     durations?: Record<string, number> }>()
   const started: { computer: string; request: CiHostRequest }[] = []
@@ -33,6 +38,10 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud = false) {
           runs: [...runs.values()].filter(value => value.computer === computer.label).map(value => value.run) }
       }
       if (request.operation === 'start') {
+        if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider === 'circleci'
+          && request.suite !== 'integration') {
+          throw new DomainError('CI_CLOUD_UNAVAILABLE', 'CircleCI runs integration only.', 409)
+        }
         if (github[computer.label] === false) throw new DomainError('COMPUTER_GITHUB_REQUIRED', 'Log in to GitHub.', 409)
         const existing = runs.get(request.runId)
         if (existing) return { operation: 'start', run: existing.run }
@@ -69,7 +78,7 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud = false) {
 }
 
 async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory
-  cloud?: boolean } = {}) {
+  cloud?: boolean | { github: number; circleci: number } } = {}) {
   const runtime = await codexApprovalRuntime('user')
   const workspaceId = runtime.f.scope.workspaceId
   if (options.repository !== false) {
@@ -441,6 +450,102 @@ it('lists cloud CI slots beside build computers through MCP', async () => {
     const computers = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
     expect(computers.computers.find(value => value.label === 'GitHub Actions 1'))
       .toMatchObject({ hostRef: { kind: 'cloud', provider: 'github', slot: 0 }, priority: 30 })
+  } finally { await f.close() }
+})
+
+it('prefers build computers and CircleCI over higher-priority GitHub slots for integration', async () => {
+  const f = await fixture({ cloud: { github: 2, circleci: 2 } })
+  try {
+    for (const computer of f.computers) {
+      if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider === 'github') computer.priority = 100
+    }
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', commandId: 'integration-preference', partitions: 4,
+    }))
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.partitions).toHaveLength(4)
+    expect(read.partitions!.filter(run => run.computer?.hostRef.kind === 'device')).toHaveLength(2)
+    expect(read.partitions!.filter(run => run.computer?.hostRef.provider === 'circleci')).toHaveLength(2)
+    expect(read.partitions!.every(run => run.state === 'running')).toBe(true)
+    const fallback = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', commandId: 'integration-fallback', partitions: 2,
+    }))
+    await f.ci.dispatch()
+    const fallbackRead = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
+    expect(fallbackRead.partitions!.every(run => run.state === 'running'
+      && run.computer?.hostRef.provider === 'github')).toBe(true)
+  } finally { await f.close() }
+})
+
+it.each(['typecheck', 'lint', 'build', 'unit'] as const)(
+  'reserves GitHub slots for queued %s parts behind a large integration run', async suite => {
+    const f = await fixture({ cloud: { github: 20, circleci: 2 } })
+    try {
+      const available = f.computers.splice(0)
+      const reader = await f.connect(CI_GET_ACTIONS)
+      expect((await f.call(reader, 'ci_run', { suite, commandId: 'denied-dispatch' })).isError).toBe(true)
+      expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+      const integration = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+        suite: 'integration', commandId: 'integration-backlog', partitions: 32,
+      }))
+      await f.ci.dispatch()
+      const checks = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+        suite, commandId: 'queued-checks',
+      }))
+      await f.ci.dispatch()
+      expect(f.started).toHaveLength(0)
+      f.computers.push(...available)
+      await f.ci.dispatch()
+      const dispatched = (await f.pool.query<{ record: unknown }>(
+        'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',
+        [integration.ticketId])).rows
+        .map(row => CiRunRecordSchema.parse(row.record))
+      expect(dispatched.filter(run => run.computer?.hostRef.provider === 'github')).toHaveLength(16)
+      const integrationRead = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+        ticketId: integration.ticketId,
+      }))
+      const checksRead = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: checks.ticketId }))
+      const integrationLimit = checksRead.partitions!.some(run => run.state === 'queued') ? 16 : 18
+      expect(integrationRead.partitions!.filter(run => run.computer?.hostRef.provider === 'github'))
+        .toHaveLength(integrationLimit)
+      expect(integrationRead.partitions!.filter(run => run.computer?.hostRef.provider === 'circleci')).toHaveLength(2)
+      expect(checksRead.partitions!.filter(run => run.state === 'running'))
+        .toHaveLength(Math.min(4, checksRead.partitions!.length))
+      expect(checksRead.partitions!.filter(run => run.state === 'running').every(run =>
+        run.computer?.hostRef.kind === 'cloud' && run.computer.hostRef.provider === 'github')).toBe(true)
+      expect(integrationRead.partitions!.some(run => run.state === 'queued')).toBe(true)
+      const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
+        [checksRead.run.groupId])).rows
+      expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(checksRead.partitions!))
+      await f.ci.dispatch()
+      const next = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: integration.ticketId }))
+      expect(next.partitions!.filter(run => run.computer?.hostRef.provider === 'github')).toHaveLength(integrationLimit)
+    } finally { await f.close() }
+  },
+)
+
+it('dispatches queued typecheck parts beyond the first fifty integration partitions', async () => {
+  const f = await fixture({ cloud: { github: 20, circleci: 2 } })
+  try {
+    const available = f.computers.splice(0)
+    for (const commandId of ['integration-first', 'integration-second']) {
+      await f.value(f.operator, 'ci_run', { suite: 'integration', commandId, partitions: 32 })
+      await f.ci.dispatch()
+    }
+    const checks = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'typecheck', commandId: 'typecheck-after-backlog',
+    }))
+    await f.ci.dispatch()
+    f.computers.push(...available)
+    await f.ci.dispatch()
+    const stored = (await f.pool.query<{ record: unknown }>(
+      'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',
+      [checks.ticketId])).rows.map(row => CiRunRecordSchema.parse(row.record))
+    expect(stored).toHaveLength(2)
+    expect(stored.every(run => run.state === 'running' && run.computer?.hostRef.provider === 'github')).toBe(true)
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: checks.ticketId }))
+    expect(read.partitions).toEqual(expect.arrayContaining(stored))
   } finally { await f.close() }
 })
 
