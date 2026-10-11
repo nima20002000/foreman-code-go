@@ -1,15 +1,24 @@
 import { expect, it, vi } from 'vitest'
-import { reservationCleanupWorkflow, completeReservationCleanupWorkflow } from './helpers/reservationCleanupWorkflow.js'
+import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { MaterializationReservationCleanup } from '../src/modules/sources/materializationReservationCleanup.js'
 import type { SourceReservation } from '../src/modules/sources/reservations.js'
 
 it('defers reservation cleanup without waiting on a locked completed Run', async () => {
-  const fixture = await reservationCleanupWorkflow()
+  // Payloads stay unchanged here; startup discovery and profile qualification still run.
+  const fixture = await remoteReviewProduction({ workflow: 'single', installationRefreshIntervalMs: 60_000 })
   try {
     const started = await fixture.start()
     const runId = started.run.id
-    const completed = await completeReservationCleanupWorkflow(fixture, runId)
+    const completed = await waitForRemoteReview(async () => {
+      const details = await fixture.details(runId)
+      if (details.run.executionState !== 'completed' || details.cleanupPending) {
+        await fixture.reconcile()
+        return fixture.details(runId)
+      }
+      return details
+    }, value => value.run.executionState === 'completed' && !value.cleanupPending,
+    'workflow completion after cleanup deferral')
     expect(completed.run.outcome).toBe('succeeded')
     const owner = await RunOwnership.acquire(fixture.db.pool, runId, () => {})
     try { expect(owner).toBeDefined() } finally { await owner?.release() }
