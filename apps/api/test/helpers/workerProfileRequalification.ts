@@ -36,9 +36,12 @@ export async function startWhenReady(fixture: Fixture) {
 
 export async function assertMcpReadback(fixture: Fixture, evidence: Awaited<ReturnType<typeof latestEvidence>>) {
   const reads = await Promise.allSettled([
-    fixture.value('harness_instances_list', {
-      hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
-    }),
+    // Evidence commits before the inventory refresh finishes and clears the pending check.
+    waitForRemoteReview(async () => HostHarnessOverrideListSchema.parse(
+      await fixture.value('harness_instances_list', {
+        hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
+      })), profiles => profiles.overrides.every(profile => profile.qualification !== 'qualifying'),
+    'automatic profile checks completing through MCP'),
     fixture.value('harness_qualifications_list', {}),
     fixture.inventory(),
   ])

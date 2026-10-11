@@ -24,6 +24,12 @@ describe('automatic Worker profile qualification', () => {
         calls.filter(call => call.qualificationSuite).length > checksBefore, 'automatic native profile check')
       await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_CHECK_PENDING')
       expect(await latestEvidence(fixture)).toEqual(before)
+      const checkingProfiles = HostHarnessOverrideListSchema.parse(await fixture.value('harness_instances_list', {
+        hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
+      }))
+      expect(checkingProfiles.overrides).toHaveLength(fixture.profiles.length)
+      expect(checkingProfiles.overrides.map(profile => profile.qualification)).toEqual(
+        fixture.profiles.map(() => 'qualifying'))
       await fixture.provider.releaseQualification()
       blocked = false
       const evidence = await refreshedEvidence(fixture, before[0]!.connectionGeneration)
