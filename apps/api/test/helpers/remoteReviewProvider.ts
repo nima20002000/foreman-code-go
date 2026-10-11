@@ -118,6 +118,8 @@ int main(int argc, char **argv) {
     releaseQualification: () => rm(join(directory, 'block-qualification')),
     blockVersions: () => writeFile(join(directory, 'block-versions'), '', { mode: 0o600 }),
     releaseVersions: () => rm(join(directory, 'block-versions')),
+    invalidateVersions: () => writeFile(join(directory, 'invalid-versions'), '', { mode: 0o600 }),
+    restoreVersions: () => rm(join(directory, 'invalid-versions')),
     calls: () => readActivity('calls.jsonl'),
     startupActivity: () => readActivity('startup.jsonl'),
     releaseReview: () => writeFile(join(directory, 'release-review'), '', { mode: 0o600 }),

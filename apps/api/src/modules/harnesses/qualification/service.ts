@@ -12,6 +12,7 @@ import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { DomainError } from '../../errors.js'
 import type { PostgresSettingsRepository } from '../../settings/postgres.js'
 import { QUALIFICATION_TARGET_PROFILE } from './profiles.js'
+import { CompatibilityCheckError } from '../compatibility/errors.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe } from '../compatibility/probe.js'
 import { qualificationError } from '../qualificationErrors.js'
 import type { HarnessQualificationRepository } from './repository.js'
@@ -19,6 +20,9 @@ import type { HarnessQualificationRegistry } from './registry.js'
 import type { QualificationSuite } from './types.js'
 
 class QualificationCleanupError extends AggregateError {}
+
+type PreparationOptions = { force: boolean; automatic?: true; onlyQualified?: boolean }
+const VERSION_RETRY_DELAYS = [1_000, 2_000, 4_000] as const
 
 export class HarnessQualificationService {
   private readonly cancellation = new AbortController()
@@ -65,7 +69,7 @@ export class HarnessQualificationService {
 
   begin(harness: CompatibilityHarness, force = false): Promise<HarnessQualification> {
     try { this.assertRunning(harness) } catch (error) { return Promise.reject(error) }
-    return this.track(this.prepare(harness, force).catch((error: unknown) => {
+    return this.track(this.prepare(harness, { force }).catch((error: unknown) => {
       if (error instanceof Error && error.name === 'TimeoutError') throw qualificationError(error)
       throw error
     }))
@@ -76,7 +80,8 @@ export class HarnessQualificationService {
     try { this.assertRunning(harness) } catch (error) { return Promise.reject(error) }
     const existing = this.restorations.get(harness)
     if (existing) return existing
-    const task = this.track(this.retryPreparation(harness, () => this.prepare(harness, true, true)))
+    const task = this.track(this.retryPreparation(harness, () => this.prepare(harness,
+      { force: true, automatic: true, onlyQualified: true })))
     this.restorations.set(harness, task)
     const finished = () => { this.restorations.delete(harness) }
     void task.then(finished, finished)
@@ -99,7 +104,8 @@ export class HarnessQualificationService {
   }
 
   async verify(harness: CompatibilityHarness, options?: { force: true }): Promise<HarnessQualification> {
-    const state = await this.track(this.retryPreparation(harness, () => this.prepare(harness, options?.force ?? false)))
+    const state = await this.track(this.retryPreparation(harness, () => this.prepare(harness,
+      { force: options?.force ?? false, automatic: true })))
     await this.flights.get(harness)?.task
     if (!state.binarySha256 || !state.suiteRevision) return state
     return await this.repository.find(harness, state.version, state.binarySha256, state.suiteRevision) ?? state
@@ -164,22 +170,66 @@ export class HarnessQualificationService {
     this.directories.delete(directory)
   }
 
-  private async prepare(harness: CompatibilityHarness, force: boolean, onlyQualified: true): Promise<HarnessQualification | null>
-  private async prepare(harness: CompatibilityHarness, force: boolean, onlyQualified?: false): Promise<HarnessQualification>
-  private async prepare(harness: CompatibilityHarness, force: boolean, onlyQualified = false): Promise<HarnessQualification | null> {
+  private async retryInvalidVersion<T>(harness: CompatibilityHarness, binary: string, sha256: string,
+    eligible: () => Promise<boolean>, operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      this.assertRunning(harness)
+      try {
+        return await operation()
+      } catch (error) {
+        if (!(error instanceof CompatibilityCheckError && error.code === 'CLI_VERSION_INVALID')) throw error
+        if (!await eligible()) throw error
+        if ((await this.registry.inspectBinary(binary)).sha256 !== sha256) {
+          throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during qualification. Retry after the installation has finished.')
+        }
+        const milliseconds = VERSION_RETRY_DELAYS[attempt]
+        if (milliseconds === undefined) throw error
+        await delay(milliseconds, undefined, { signal: this.cancellation.signal, ref: false })
+        this.assertRunning(harness)
+        if ((await this.registry.inspectBinary(binary)).sha256 !== sha256) {
+          throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during qualification. Retry after the installation has finished.')
+        }
+      }
+    }
+  }
+
+  private async inspectVersion(harness: CompatibilityHarness, binary: string): Promise<string> {
+    const probe = this.probeFactory?.(harness, binary, 30_000)
+      ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, 30_000)
+    this.probes.add(probe)
+    // The probe bounds the CLI command; installation checks and closure have separate ownership.
+    try { return (await probe.inspect(harness, this.cancellation.signal)).version }
+    finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
+  }
+
+  private async prepare(harness: CompatibilityHarness, options: PreparationOptions & { onlyQualified: true }): Promise<HarnessQualification | null>
+  private async prepare(harness: CompatibilityHarness, options: PreparationOptions & { onlyQualified?: false }): Promise<HarnessQualification>
+  private async prepare(harness: CompatibilityHarness, options: PreparationOptions): Promise<HarnessQualification | null> {
     const suite = this.suites[harness]
     await this.refreshInstalled?.(harness, this.cancellation.signal)
     this.assertRunning(harness)
     const { binary, sha256 } = await this.registry.inspectBinary(this.binaries[harness])
     const installationIdentity = this.installationIdentity?.(harness)
     this.assertRunning()
-    const probe = this.probeFactory?.(harness, binary, 30_000)
-      ?? nativeCompatibilityProbe({ codex: binary }, process.cwd(), process.env, 30_000)
-    this.probes.add(probe)
+    let previouslyQualified: HarnessQualification | undefined
+    const eligible = async () => {
+      if (!options.automatic) return false
+      previouslyQualified ??= (await this.repository.list()).find(record => record.harness === harness
+        && record.binarySha256 === sha256 && record.suiteRevision === suite.revision && record.status === 'qualified')
+      return previouslyQualified !== undefined
+    }
     let version: string
-    // The probe bounds the CLI command; installation checks and closure have separate ownership.
-    try { version = (await probe.inspect(harness, this.cancellation.signal)).version }
-    finally { await closeQualificationProbe(probe, this.probes, () => { this.blocked.add(harness) }) }
+    try {
+      version = await this.retryInvalidVersion(harness, binary, sha256, eligible, () => this.inspectVersion(harness, binary))
+    } catch (error) {
+      if (previouslyQualified && error instanceof CompatibilityCheckError && error.code === 'CLI_VERSION_INVALID') {
+        await this.repository.save({ ...previouslyQualified, status: 'failed',
+          checks: [{ id: 'static-compatibility', passed: false, detail: error.message }],
+          failureReason: `${harness} ${previouslyQualified.version}: ${error.message}`,
+          startedAt: new Date().toISOString(), checkedAt: new Date().toISOString() })
+      }
+      throw error
+    }
     const identity = JSON.stringify([binary, sha256, version, suite.revision, installationIdentity])
     const previous = await this.repository.find(harness, version, sha256, suite.revision)
     this.assertRunning()
@@ -188,12 +238,15 @@ export class HarnessQualificationService {
     if (flight && flight.identity !== identity) {
       await flight.task
       this.assertRunning(harness)
-      return onlyQualified ? this.prepare(harness, force, true) : this.prepare(harness, force)
+      return options.onlyQualified ? this.prepare(harness, { ...options, onlyQualified: true })
+        : this.prepare(harness, { ...options, onlyQualified: false })
     }
-    if (onlyQualified && previous?.status !== 'qualified') return null
-    if (!force && (previous?.status === 'qualified' || previous?.status === 'failed')) return previous
+    if (options.onlyQualified && previous?.status !== 'qualified') return null
+    if (!options.force && (previous?.status === 'qualified' || previous?.status === 'failed')) return previous
     if (!this.flights.has(harness)) {
-      const task = this.track(Promise.resolve().then(() => this.execute(harness, suite, binary, sha256, version)), true)
+      const retryVersion = options.automatic === true && previous?.status === 'qualified'
+      const task = this.track(Promise.resolve().then(() => this.execute(harness, suite, binary, sha256, version,
+        { retryVersion })), true)
       const entry = { identity, task }
       this.flights.set(harness, entry)
       void task.finally(() => {
@@ -207,7 +260,8 @@ export class HarnessQualificationService {
     }
   }
 
-  private async execute(harness: CompatibilityHarness, suite: QualificationSuite, binary: string, sha256: string, version: string): Promise<void> {
+  private async execute(harness: CompatibilityHarness, suite: QualificationSuite, binary: string, sha256: string,
+    version: string, options: { retryVersion: boolean }): Promise<void> {
     this.assertRunning()
     const startedAt = new Date().toISOString()
     const profile = QUALIFICATION_TARGET_PROFILE[harness]
@@ -216,15 +270,22 @@ export class HarnessQualificationService {
     const checks: HarnessQualification['checks'] = []
     try {
       let schemaSha256: string
-      let attempts = 1
+      let attempts = 0
+      let timeoutAttempt = 1
+      const checkVersion = () => this.retryInvalidVersion(harness, binary, sha256,
+        async () => options.retryVersion, () => {
+          attempts++
+          return this.timed(timeoutAttempt === 1 ? 120_000 : 240_000, signal =>
+            this.checkStatic(harness, binary, version, signal, timeoutAttempt))
+        })
       try {
-        schemaSha256 = await this.timed(120_000, (signal) => this.checkStatic(harness, binary, version, signal, 1))
+        schemaSha256 = await checkVersion()
       } catch (error) {
         if (error instanceof AggregateError) throw error
         this.assertRunning()
         if (!(error instanceof Error && (error.name === 'TimeoutError' || ('code' in error && error.code === 'CHECK_TIMEOUT')))) throw error
-        attempts = 2
-        schemaSha256 = await this.timed(240_000, (signal) => this.checkStatic(harness, binary, version, signal, 2))
+        timeoutAttempt = 2
+        schemaSha256 = await checkVersion()
       }
       checks.push({ id: 'static-compatibility', passed: true, detail: `${schemaSha256} (${attempts} attempt${attempts === 1 ? '' : 's'})` })
     } catch (error) {
