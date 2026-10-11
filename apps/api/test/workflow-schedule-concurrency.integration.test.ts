@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import pg from 'pg'
+import { setTimeout as delay } from 'node:timers/promises'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { DomainError } from '../src/modules/errors.js'
@@ -13,6 +15,37 @@ describe.skipIf(!postgresEnabled)('scheduled Start concurrency and cancellation'
   beforeAll(async () => { database = await agent3Database() }, 60_000)
   afterAll(async () => { await database?.close() })
   beforeEach(async () => { f = await sch11Fixture(database) }, 60_000)
+
+  it('queues scheduled Starts on one runner beyond the production SQL deadlines', async () => {
+    const other = await sch11Fixture(database)
+    const firstSchedule = await f.save()
+    const secondSchedule = await other.save()
+    f.time.now = firstSchedule.nextOccurrenceAt!
+    other.time.now = secondSchedule.nextOccurrenceAt!
+    const pool = new pg.Pool({ ...database.pool.options, options: `-c search_path=${database.schema}`,
+      statement_timeout: 1_000, query_timeout: 2_000 })
+    const holder = await database.pool.connect()
+    let pending: Promise<unknown>[] = []
+    try {
+      await holder.query('begin')
+      await holder.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:runner:${f.locations.runnerId}`])
+      const first = f.dispatcher(f.startUsing(pool)).dispatch(firstSchedule)
+      const second = other.dispatcher(other.startUsing(pool)).dispatch(secondSchedule)
+      pending = [first, second]
+      await delay(2_500)
+      await holder.query('commit')
+      await Promise.all(pending)
+      expect(await f.countRuns()).toBe(1)
+      expect(await other.countRuns()).toBe(1)
+      expect(await f.history()).toEqual([expect.objectContaining({ status: 'accepted' })])
+      expect(await other.history()).toEqual([expect.objectContaining({ status: 'accepted' })])
+    } finally {
+      await holder.query('rollback')
+      holder.release()
+      await Promise.allSettled(pending)
+      await pool.end()
+    }
+  }, 15_000)
 
   it('admits another workspace that becomes due while the first preflight is pending', async () => {
     const healthy = await sch11Fixture(database)

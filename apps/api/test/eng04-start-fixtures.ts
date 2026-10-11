@@ -114,7 +114,7 @@ export function startSqlFixture() {
         return answer()
       }
       const db = this.transaction ?? database
-      if (sql.includes('pg_advisory_xact_lock')) return answer()
+      if (sql.includes('pg_try_advisory_xact_lock')) return answer([{ locked: true }])
       if (sql.startsWith('select 1 where clock_timestamp()')) return answer(state.denyClock ? [] : [{}])
       if (sql.includes('from management_principals where id=$1')) return answer(db.principals.filter((row) => row.id === values[0]))
       if (sql.startsWith('select id from management_principals where id=any')) return answer(db.principals.filter((row) => (values[0] as string[]).includes(row.id)))
