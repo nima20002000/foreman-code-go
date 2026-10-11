@@ -16,7 +16,7 @@ import { DomainError } from '../src/modules/errors.js'
 /** Two build computers that answer the host CI protocol from memory; tests finish their runs. */
 function fakeComputers(github: Record<string, boolean> = {}) {
   const mainId = randomUUID()
-  const computers: HostCiComputer[] = ['mana', 'dexter'].map((name, index) => ({ key: `${mainId}:${name}`,
+  const computers: HostCiComputer[] = ['laptop', 'builder'].map((name, index) => ({ key: `${mainId}:${name}`,
     hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: name, priority: 60 - index }))
   const runs = new Map<string, { computer: string; run: CiHostRun; log: string; request: CiHostRequest
     durations?: Record<string, number> }>()
@@ -119,7 +119,7 @@ it('splits integration over two build computers, reports progress and logs, and 
     expect(started.partitions).toHaveLength(2)
     expect(f.published).toHaveLength(1)
     await f.ci.dispatch()
-    expect(f.started.map(value => value.computer).sort()).toEqual(['dexter', 'mana'])
+    expect(f.started.map(value => value.computer).sort()).toEqual(['builder', 'laptop'])
     expect(f.started.map(value => value.request.operation === 'start' && value.request.partition?.index).sort())
       .toEqual([0, 1])
     const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
@@ -145,7 +145,7 @@ it('splits integration over two build computers, reports progress and logs, and 
 it('sizes each partition by the measured speed of the computer it is planned for', async () => {
   const f = await fixture()
   try {
-    // History: mana finished half the suite in 200 s, dexter half in 400 s, so mana works twice as fast.
+    // History: laptop finished half the suite in 200 s, builder half in 400 s, so laptop works twice as fast.
     for (const [index, computer, seconds] of [[0, f.computers[0]!, 200], [1, f.computers[1]!, 400]] as const) {
       const finishedAt = new Date(Date.now() - 60_000), startedAt = new Date(finishedAt.getTime() - seconds * 1000)
       const run = { id: crypto.randomUUID(), workspaceId: f.workspaceId, suite: 'integration', commit: 'b'.repeat(40),
@@ -165,7 +165,7 @@ it('sizes each partition by the measured speed of the computer it is planned for
     const weights = requests[0]!.partition!.weights!
     expect(requests.every(value => JSON.stringify(value.partition!.weights) === JSON.stringify(weights))).toBe(true)
     const byComputer = Object.fromEntries(requests.map(value => [value.computer, weights[value.partition!.index]!]))
-    expect(byComputer.mana! / byComputer.dexter!).toBeCloseTo(2, 1)
+    expect(byComputer.laptop! / byComputer.builder!).toBeCloseTo(2, 1)
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run.partition?.weights).toEqual(weights)
   } finally { await f.close() }
@@ -188,15 +188,15 @@ it('queues a run while every computer is busy and starts it on the first one tha
 })
 
 it('cancels queued and running runs and skips a computer without a GitHub login', async () => {
-  const f = await fixture({ github: { dexter: false } })
+  const f = await fixture({ github: { builder: false } })
   try {
     const computers = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
-    expect(computers.computers.find(value => value.label === 'dexter')).toMatchObject({ ready: false,
+    expect(computers.computers.find(value => value.label === 'builder')).toMatchObject({ ready: false,
       reasons: [expect.stringContaining('gh auth login')] })
     const running = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'run' }))
     const queued = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'wait' }))
     await f.ci.dispatch()
-    expect(f.started.map(value => value.computer)).toEqual(['mana'])
+    expect(f.started.map(value => value.computer)).toEqual(['laptop'])
     expect(await f.value(f.operator, 'ci_cancel', { ticketId: queued.ticketId })).toMatchObject({ run: { state: 'canceled' } })
     expect(await f.value(f.operator, 'ci_cancel', { ticketId: running.ticketId })).toMatchObject({ run: { state: 'canceled' } })
     await f.ci.dispatch()

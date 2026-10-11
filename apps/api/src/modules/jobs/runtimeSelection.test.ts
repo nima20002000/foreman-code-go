@@ -3,14 +3,14 @@ import { AutoVerificationJobSpecSchema, ResolvedVerificationJobSpecSchema, jobVe
   from '@foreman-code/contracts/job-verification'
 import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
-import { preparationProfile, qualifiedPreparationProfile, dexter, mana, oldImage, newImage }
+import { preparationProfile, qualifiedPreparationProfile, builder, laptop, oldImage, newImage }
   from '../../../test/helpers/ciPreparationFixture.js'
 import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import { compatibleJobComputer, orderForPlacement } from './computerSelection.js'
 import { buildComputerTarget } from '../settings/buildComputers.js'
 import { matchesRuntimePolicy } from './runtimeSelection.js'
 
-function candidate(imageDigest: string, deviceId = dexter) {
+function candidate(imageDigest: string, deviceId = builder) {
   let profile = preparationProfile('runtime', 'Runtime', deviceId, '44444444-4444-4444-8444-444444444444', ['unit'])
   profile.spec.policy.imageDigest = imageDigest
   profile = qualifiedPreparationProfile(profile)
@@ -43,7 +43,7 @@ describe('CI resolves the runtime image at admission', () => {
 
   it('considers the Agent’s preferred computer with a different image and keeps the other computer for spillover', async () => {
     const ci = ciFixture()
-    const primary = candidate(oldImage, mana)
+    const primary = candidate(oldImage, laptop)
     const local = candidate(newImage)
     ci.templates.splice(0, ci.templates.length, primary.template, primary.template, local.template)
     ci.agentExecution.id = 'active-agent'

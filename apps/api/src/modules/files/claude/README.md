@@ -25,7 +25,7 @@ The installed SDK `sdk.d.ts` declares the tool handler as `(args, extra: unknown
 JSON-RPC `message`. The installed `sdk.mjs` `mcp_message` branch forwards that
 message to the registered SDK transport. The installed CLI 2.1.284 MCP wrapper
 stamps `_meta['claudecode/toolUseId']` after spreading caller metadata in
-`/home/nima/.local/share/claude/versions/2.1.284` (binary
+`/home/user/.local/share/claude/versions/2.1.284` (binary
 byte offsets 231461709 and 231782413), then forwards that metadata to `callTool`.
 SDK `sdk.mjs` `_onrequest` (character offset 609552) copies `params._meta` into
 handler extra. The standard MCP `RequestHandlerExtra` declares `_meta` and

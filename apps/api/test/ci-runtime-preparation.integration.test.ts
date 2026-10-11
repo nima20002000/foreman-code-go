@@ -13,7 +13,7 @@ import { PostgresDeviceAccessService } from '../src/modules/devices/access.js'
 import { CiRuntimeProvisioner } from '../src/modules/jobs/ciRuntimeProvisioner.js'
 import { buildComputerTarget, buildComputerKey } from '../src/modules/settings/buildComputers.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
-import { ciPreparationFixture, qualifiedPreparationProfile, commit, dexter, mainId } from './helpers/ciPreparationFixture.js'
+import { ciPreparationFixture, qualifiedPreparationProfile, commit, builder, mainId } from './helpers/ciPreparationFixture.js'
 import type { AppInteractionService } from '../src/modules/interactions/app.js'
 import { ciPreparationLimits } from '../src/modules/jobs/ciPreparationLimits.js'
 
@@ -46,8 +46,8 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
           repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' } })])
     }
     await database.pool.query(`insert into device_registrations(id,main_id,worker_installation_id,public_key,record)
-      values($1,$2,$1,'synthetic-runtime-key',$3::jsonb)`, [dexter, mainId, JSON.stringify({
-      mainId, deviceId: dexter, workerInstallationId: dexter, publicKeyFingerprint: 'a'.repeat(64),
+      values($1,$2,$1,'synthetic-runtime-key',$3::jsonb)`, [builder, mainId, JSON.stringify({
+      mainId, deviceId: builder, workerInstallationId: builder, publicKeyFingerprint: 'a'.repeat(64),
       keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'] })])
     const profile = fixture.profiles.get('p-unit')!
     const target = buildComputerTarget({ hostRef: profile.root.selection.hostRef,
@@ -226,12 +226,12 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
       const input = { workspaceId: fixture.workspaceId, profileId: 'p-unit', commit, commandId: randomUUID() }
       const devices = new PostgresDeviceAccessService(database.pool, mainId)
       if (condition === 'revoked') {
-        await devices.revoke(f.writer.principal, dexter, 1, randomUUID(), 'mcp')
+        await devices.revoke(f.writer.principal, builder, 1, randomUUID(), 'mcp')
       } else if (condition === 'missing') {
-        await database.pool.query('delete from device_registrations where id=$1', [dexter])
+        await database.pool.query('delete from device_registrations where id=$1', [builder])
       } else if (condition === 'registration changed') {
         await database.pool.query(`update device_registrations
-          set record=jsonb_set(record,'{authorizationRevision}','2'::jsonb) where id=$1`, [dexter])
+          set record=jsonb_set(record,'{authorizationRevision}','2'::jsonb) where id=$1`, [builder])
       } else {
         await database.pool.query('update application_installation set id=$1 where singleton=true', [randomUUID()])
       }
@@ -268,7 +268,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
         await atSource
         const original = (await database.pool.query<{ id: string }>('select id from ci_runtime_preparations')).rows[0]!
         const devices = new PostgresDeviceAccessService(database.pool, mainId)
-        await devices.revoke(f.writer.principal, dexter, 1, randomUUID(), 'mcp')
+        await devices.revoke(f.writer.principal, builder, 1, randomUUID(), 'mcp')
         let service = f.service
         if (phase === 'recovery') {
           stopped = true
@@ -287,7 +287,7 @@ describe.skipIf(!postgresEnabled)('persisted runtime preparation over authentica
         expect(fixture.calls.refresh).toEqual([])
         expect(fixture.calls.qualified).toEqual([])
         expect((await database.pool.query('select id,device_id,active from ci_runtime_preparations')).rows)
-          .toEqual([{ id: original.id, device_id: dexter, active: false }])
+          .toEqual([{ id: original.id, device_id: builder, active: false }])
         const read = await f.call('build_computer_prepare_get', {
           workspaceId: fixture.workspaceId, profileId: 'p-unit',
         }, f.reader.token)

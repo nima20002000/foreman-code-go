@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { WorkspaceLocationCard } from './WorkspaceLocationCard'
 
-const path = '/home/nima/.local/share/graphql/workspaces/New workspace(1)'
+const path = '/home/user/.local/share/graphql/workspaces/New workspace(1)'
 afterEach(cleanup)
 
 it('activates the compact picker only from its displayed path, not the row or folder icon', async () => {

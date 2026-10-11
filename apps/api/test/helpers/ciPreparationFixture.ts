@@ -22,17 +22,17 @@ import { ciPreparationMemory } from './ciPreparationMemory.js'
 import { verificationCapacityFixture } from './verificationCapacityFixture.js'
 
 export const mainId = '11111111-1111-4111-8111-111111111111'
-export const dexter = '22222222-2222-4222-8222-222222222222'
-export const mana = '33333333-3333-4333-8333-333333333333'
+export const builder = '22222222-2222-4222-8222-222222222222'
+export const laptop = '33333333-3333-4333-8333-333333333333'
 export const oldImage = `sha256:${'1'.repeat(64)}`
 export const newImage = `sha256:${'2'.repeat(64)}`
-/** A verification profile in another workspace still runs this image on Dexter. */
+/** A verification profile in another workspace still runs this image on Builder. */
 export const otherWorkspaceImage = `sha256:${'3'.repeat(64)}`
 export const commit = 'c'.repeat(40)
 const uuid = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`
 const oldPin = { approvedSourceId: uuid('a'), snapshotId: uuid('b'), manifestDigest: 'a'.repeat(64) }
 export const newPin = { approvedSourceId: uuid('d'), snapshotId: uuid('e'), manifestDigest: 'd'.repeat(64) }
-const dexterRoot = uuid('4'), manaRoot = uuid('5'), mainRoot = uuid('6')
+const builderRoot = uuid('4'), laptopRoot = uuid('5'), mainRoot = uuid('6')
 
 /** `deviceId` null is Main itself. */
 function root(deviceId: string | null, rootId: string, bindingRevision: number, source = oldPin) {
@@ -96,10 +96,10 @@ export async function ciPreparationFixture(options: {
   const data = ciFixture()
   const workspaceId = data.workspaceId
   const profiles = new Map([
-    ['p-install', preparationProfile('p-install', 'Dexter install', dexter, dexterRoot, ['install'])],
-    ['p-unit', preparationProfile('p-unit', 'Dexter unit', dexter, dexterRoot, ['install', 'unit'])],
-    ['p-mana', preparationProfile('p-mana', 'Mana install', mana, manaRoot, ['install'])],
-    ['p-small', preparationProfile('p-small', 'Dexter small', dexter, dexterRoot, ['install'], 2 ** 30)],
+    ['p-install', preparationProfile('p-install', 'Builder install', builder, builderRoot, ['install'])],
+    ['p-unit', preparationProfile('p-unit', 'Builder unit', builder, builderRoot, ['install', 'unit'])],
+    ['p-laptop', preparationProfile('p-laptop', 'Laptop install', laptop, laptopRoot, ['install'])],
+    ['p-small', preparationProfile('p-small', 'Builder small', builder, builderRoot, ['install'], 2 ** 30)],
     ...options.main ? [['p-main', preparationProfile('p-main', 'Main unit', null, mainRoot, ['install', 'unit'])] as const] : [],
   ])
   const calls = { prepare: [] as unknown[], bind: [] as unknown[],
@@ -117,7 +117,7 @@ export async function ciPreparationFixture(options: {
     if (text.includes('from application_installation')) return { rows: [{ id: mainId }] }
     if (text.includes('from device_registrations')) {
       const deviceId = String(values[0])
-      const knownDevice = deviceId === dexter || deviceId === mana
+      const knownDevice = deviceId === builder || deviceId === laptop
       return { rows: knownDevice && values[1] === mainId ? [{ record: {
         mainId, deviceId, workerInstallationId: deviceId, publicKeyFingerprint: 'a'.repeat(64),
         keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'],
@@ -140,7 +140,7 @@ export async function ciPreparationFixture(options: {
       const hostRef = JSON.parse(String(values[0])) as { kind: string; deviceId?: string }
       const images = [...profiles.values()].filter(profile => JSON.stringify(profile.root.selection.hostRef)
         === JSON.stringify(hostRef)).map(profile => profile.spec.policy.imageDigest)
-      return { rows: [...images, ...hostRef.deviceId === dexter ? [otherWorkspaceImage] : []].map(image => ({ image })) }
+      return { rows: [...images, ...hostRef.deviceId === builder ? [otherWorkspaceImage] : []].map(image => ({ image })) }
     }
     if (text.includes('from workspaces')) return { rows: [{ record: { id: workspaceId, name: 'CI',
       repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' } } }] }
@@ -189,7 +189,7 @@ export async function ciPreparationFixture(options: {
   let statusDrops = options.statusDrops ?? 0
   let ackLost = false
   const endpoint = {
-    capabilities: (deviceId: string) => deviceId === dexter ? [{ namespace: CI_RUNTIME_NAMESPACE, mainCanRequest: true }] : [],
+    capabilities: (deviceId: string) => deviceId === builder ? [{ namespace: CI_RUNTIME_NAMESPACE, mainCanRequest: true }] : [],
     request: async (_deviceId: string, _namespace: string, raw: unknown) => {
       const payload = raw as CiRuntimeRequest
       if (refreshRecord && restartedOperation !== refreshRecord.operationId) {
@@ -209,7 +209,7 @@ export async function ciPreparationFixture(options: {
     input: { commandId: string; approvalId?: string },
     perform: () => Promise<T>) => (await commands.execute({ principal, source: 'mcp', operation,
       commandId: input.commandId, targetKey: workspaceId, payload: input, perform })).value
-  const currentRoots = new Map([[dexterRoot, root(dexter, dexterRoot, 1)], [manaRoot, root(mana, manaRoot, 1)],
+  const currentRoots = new Map([[builderRoot, root(builder, builderRoot, 1)], [laptopRoot, root(laptop, laptopRoot, 1)],
     [mainRoot, root(null, mainRoot, 1)]])
   const sources = {
     approveProject: async (principal: ManagementPrincipal, input: { commandId: string; commit?: string }) => {
@@ -227,7 +227,7 @@ export async function ciPreparationFixture(options: {
       input: { commandId: string; expectedBindingRevision: number; selection: { hostRef: { deviceId?: string } } }) => {
       const result = await command(principal, 'fixture.root', input, async () => {
         calls.bind.push(input)
-        const host = input.selection.hostRef.deviceId ?? null, rootId = host ? dexterRoot : mainRoot
+        const host = input.selection.hostRef.deviceId ?? null, rootId = host ? builderRoot : mainRoot
         const current = currentRoots.get(rootId)!
         if (current.binding.bindingRevision !== input.expectedBindingRevision) throw new DomainError('REVISION_CONFLICT', 'changed', 409)
         const value = root(host, rootId, current.binding.bindingRevision + 1, acceptedPin)

@@ -18,11 +18,11 @@
       "workflowVersionId": "wv-08117807652a44b5904df53e6ba4ad47",
       "binaries": {
         "codex": {
-          "path": "/home/nima/.local/bin/codex",
+          "path": "/home/user/.local/bin/codex",
           "version": "codex-cli 0.156.1"
         },
         "opencode": {
-          "path": "/home/nima/.local/bin/opencode",
+          "path": "/home/user/.local/bin/opencode",
           "version": "1.18.31"
         }
       },
@@ -180,11 +180,11 @@
       "workflowVersionId": "wv-55976eab597f47a9a9bb6aeb23db7668",
       "binaries": {
         "codex": {
-          "path": "/home/nima/.local/bin/codex",
+          "path": "/home/user/.local/bin/codex",
           "version": "codex-cli 0.156.1"
         },
         "opencode": {
-          "path": "/home/nima/.local/bin/opencode",
+          "path": "/home/user/.local/bin/opencode",
           "version": "1.18.31"
         }
       },
@@ -342,11 +342,11 @@
       "workflowVersionId": "wv-e795c5de27944395a089e8729ef5ef6a",
       "binaries": {
         "codex": {
-          "path": "/home/nima/.local/bin/codex",
+          "path": "/home/user/.local/bin/codex",
           "version": "codex-cli 0.156.1"
         },
         "opencode": {
-          "path": "/home/nima/.local/bin/opencode",
+          "path": "/home/user/.local/bin/opencode",
           "version": "1.18.31"
         }
       },

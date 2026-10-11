@@ -49,7 +49,7 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
       JSON.stringify({ harnessProfileSelection: { target: { hostRef: target.hostRef, applicationInstallationId: target.applicationInstallationId } } })])
     await database.pool.query('update agents set current_configuration_version_id=$2 where id=$1', [agentId, configurationId])
     const main = await fakeSyncthing({ deviceId: mainSyncId, address: '100.64.0.1', rootPath: '/main/shared' })
-    const worker = await fakeSyncthing({ deviceId: workerSyncId, address: '100.76.219.118', rootPath: '/worker/shared' })
+    const worker = await fakeSyncthing({ deviceId: workerSyncId, address: '100.64.0.20', rootPath: '/worker/shared' })
     const local = new SyncthingComputer(main.ports)
     const remote = new SyncthingComputer(worker.ports)
     let online = true

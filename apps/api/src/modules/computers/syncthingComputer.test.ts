@@ -10,7 +10,7 @@ async function fixture() {
   fixtures.push(rest)
   return { ...rest, computer: new SyncthingComputer(rest.ports) }
 }
-const peer = { deviceId: workerSyncId, address: '100.76.219.118' }
+const peer = { deviceId: workerSyncId, address: '100.64.0.20' }
 
 it('installs automatically and configures only explicit Tailscale peers with local folders and versioning', async () => {
   const f = await fixture()
@@ -20,7 +20,7 @@ it('installs automatically and configures only explicit Tailscale peers with loc
   expect(await f.rest('GET', '/rest/config/options')).toMatchObject({ globalAnnounceEnabled: false,
     relaysEnabled: false, localAnnounceEnabled: false, listenAddresses: ['tcp://100.64.0.1:22001'] })
   expect(await f.rest('GET', '/rest/config/devices')).toEqual([expect.objectContaining({ deviceID: workerSyncId,
-    addresses: ['tcp://100.76.219.118:22001'], introducer: false, autoAcceptFolders: false })])
+    addresses: ['tcp://100.64.0.20:22001'], introducer: false, autoAcceptFolders: false })])
   const path = `/main/shared/${sharedFolderId('workspace-a')}`
   expect(await f.rest('GET', '/rest/config/folders')).toEqual([expect.objectContaining({ id: sharedFolderId('workspace-a'),
     path, type: 'sendreceive', devices: [{ deviceID: f.identity.deviceId }, { deviceID: workerSyncId }],

@@ -149,7 +149,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [0.0.55] - 2026-10-09
 
-Known issues: under heavy parallel load, Main can shut down before a completed remote Agent session has closed, leaving its Run for reconciliation (seen only in the computer-workflow-save test). A Worker's unit-test verification profile cannot qualify while its tests run inside an overlay-root container. A workspace located on another computer cannot start CI runs from that computer (RUNNER_UNSUPPORTED). The real-model remote CI acceptance (an Agent running CI on Dexter) currently fails with SOURCE_QUOTA_MISSING on the build computer and is being fixed.
+Known issues: under heavy parallel load, Main can shut down before a completed remote Agent session has closed, leaving its Run for reconciliation (seen only in the computer-workflow-save test). A Worker's unit-test verification profile cannot qualify while its tests run inside an overlay-root container. A workspace located on another computer cannot start CI runs from that computer (RUNNER_UNSUPPORTED). The real-model remote CI acceptance (an Agent running CI on Builder) currently fails with SOURCE_QUOTA_MISSING on the build computer and is being fixed.
 
 ### Added
 
@@ -298,7 +298,7 @@ Released as is at the owner's request; these are open and will be fixed later.
 
 ### Changed
 
-- Integration file durations now live in `~/.cache/graphql-disposable-tests/integration-durations.json` on each machine, so fresh snapshot checkouts (Dexter lanes) keep the slowest-first schedule.
+- Integration file durations now live in `~/.cache/graphql-disposable-tests/integration-durations.json` on each machine, so fresh snapshot checkouts (Builder lanes) keep the slowest-first schedule.
 
 ## [0.0.51] - 2026-10-08
 
@@ -638,7 +638,7 @@ Released as is at the owner's request; these are open and will be fixed later.
 - Pass the owned fixture directory explicitly to terminal OpenCode requests, preventing inherited PWD from creating the native session in the surrounding checkout.
 - Verify native MCP startup reads the fixture's unique placement marker while preserving every local HTTP denial, scoped MCP permission and cleanup assertion.
 - Check the selected native OpenCode model and provider through the shared qualification service before terminal launch, keeping unsupported models separate from missing provider credentials and closing the diagnostic process before the unregistered isolation client starts.
-- Terminal OpenCode local-human isolation was verified locally in v0.0.48. Native preflight reports missing provider credentials explicitly. Both Codex isolation cases passed on Mana in the original gate.
+- Terminal OpenCode local-human isolation was verified locally in v0.0.48. Native preflight reports missing provider credentials explicitly. Both Codex isolation cases passed on Laptop in the original gate.
 
 ## [0.0.33] - 2026-10-06
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JobRuntimeApprovalRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { JobVerificationRuntimeApprovalSchema } from '@foreman-code/contracts/job-verification-runtime'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
-import { preparationProfile, dexter } from '../../../test/helpers/ciPreparationFixture.js'
+import { preparationProfile, builder } from '../../../test/helpers/ciPreparationFixture.js'
 import { qualificationDeadline, qualificationTimeoutMs,validateRuntimeQualification } from './runtimeQualificationFacts.js'
 
 afterEach(() => vi.useRealTimers())
@@ -26,7 +26,7 @@ describe('qualification deadlines', () => {
   })
   it('reserves every integration run and interruption probe within the reviewed approval', () => {
     vi.useFakeTimers()
-    const profile = preparationProfile('integration', 'Integration', dexter,
+    const profile = preparationProfile('integration', 'Integration', builder,
       '44444444-4444-4444-8444-444444444444', ['integration'])
     profile.spec.policy.executionTimeoutMs = 9_000_000
     const approval = { fingerprint: profile.measurement!.fingerprint,

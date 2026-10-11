@@ -12,7 +12,7 @@ Record: formatVersion1, backend literalrsync, full existing registration,
 consentRevision, endpoint{user,host,localRoot,remoteRoot}, localBinary/remoteBinary
 {path,sha256,version:'3.5.1'}, sourceProvenance{sourceSha256,releaseSignerFingerprint}.
 Package provenance is historical installer evidence, not fresh authorization or
-binary qualification. No known PC/Dexter paths/digests appear as product defaults.
+binary qualification. No known PC/Builder paths/digests appear as product defaults.
 
 `createInstalledRsyncSelectionProvider({installed,setup,accepted,capture,executor?})`
 returns `{selection(intent,signal):Promise<RsyncBackendSelection>}`.

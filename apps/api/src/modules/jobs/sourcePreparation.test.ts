@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest'
 import type { JobSql } from './repository.js'
 import { AutoVerificationJobSpecSchema, jobVerificationTemplate } from '@foreman-code/contracts/job-verification'
 import { CanonicalJobPreparationSources } from './sourcePreparation.js'
-import { preparationProfile, qualifiedPreparationProfile, dexter, mana, oldImage, newImage, mainId }
+import { preparationProfile, qualifiedPreparationProfile, builder, laptop, oldImage, newImage, mainId }
   from '../../../test/helpers/ciPreparationFixture.js'
 import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
@@ -38,7 +38,7 @@ it.each([true, false])('uses the currently ready policy inventory for verificati
 
 it('discovers both computers when CI resolves their reviewed images at admission', async () => {
   const caller = ciFixture().operator
-  const profiles = [dexter, mana].map((deviceId, index) => {
+  const profiles = [builder, laptop].map((deviceId, index) => {
     const profile = preparationProfile(`profile-${index}`, 'Verification', deviceId,
       `${index + 4}4444444-4444-4444-8444-444444444444`, ['unit'])
     profile.spec.policy.imageDigest = index === 0 ? oldImage : newImage

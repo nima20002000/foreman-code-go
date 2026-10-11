@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { discoverTrustedConnectionHost, probeTrustedConnection, trustedSshArguments, type ReadinessRunner } from './trustedConnectionProbe.js'
-const endpoint = { host: '100.76.219.118', port: 22, osUser: 'dexter', transport: 'tailscale' as const }
+const endpoint = { host: '100.64.0.20', port: 22, osUser: 'builder', transport: 'tailscale' as const }
 const fingerprint = `SHA256:${'a'.repeat(43)}`
-const good = { code: 0, stdout: 'GQL-USER\ndexter\n1000\nlaptop\nGQL-SSH\nOpenSSH_9.6p1\nGQL-RSYNC\nrsync  version 3.2.7\nGQL-TAILSCALE\n1.102.4\n', stderr: `debug1: Server host key: ssh-ed25519 ${fingerprint}\n` }
+const good = { code: 0, stdout: 'GQL-USER\nbuilder\n1000\nlaptop\nGQL-SSH\nOpenSSH_9.6p1\nGQL-RSYNC\nrsync  version 3.2.7\nGQL-TAILSCALE\n1.102.4\n', stderr: `debug1: Server host key: ssh-ed25519 ${fingerprint}\n` }
 describe('strict fixed SSH diagnostics', () => {
   it('observes authenticated selected user, host identity and tool versions', async () => {
     const run = vi.fn<ReadinessRunner>(async () => good)
-    expect(await probeTrustedConnection(endpoint, run)).toMatchObject({ state: 'connected', uid: 1000, osUser: 'dexter', hostKeyFingerprint: fingerprint, rsyncVersion: 'rsync  version 3.2.7' })
+    expect(await probeTrustedConnection(endpoint, run)).toMatchObject({ state: 'connected', uid: 1000, osUser: 'builder', hostKeyFingerprint: fingerprint, rsyncVersion: 'rsync  version 3.2.7' })
     const args = run.mock.calls[0]![1]
     expect(args).toContain('StrictHostKeyChecking=yes'); expect(args).toContain('UpdateHostKeys=no'); expect(args).toContain('ForwardAgent=no')
     expect(args.at(-1)).not.toContain(endpoint.host)
@@ -17,7 +17,7 @@ describe('strict fixed SSH diagnostics', () => {
     expect(run).not.toHaveBeenCalled()
   })
   it('rejects username/port injection and accepts IPv6', () => {
-    expect(() => trustedSshArguments({ ...endpoint, osUser: 'dexter;id' })).toThrow()
+    expect(() => trustedSshArguments({ ...endpoint, osUser: 'builder;id' })).toThrow()
     expect(() => trustedSshArguments({ ...endpoint, port: 0 })).toThrow()
     expect(trustedSshArguments({ ...endpoint, host: 'fd7a:115c:a1e0::1234' })).toContain('fd7a:115c:a1e0::1234')
   })
@@ -34,13 +34,13 @@ describe('strict fixed SSH diagnostics', () => {
   })
   it('does not infer SSH authentication from a successful command without observed host identity', async () => {
     expect((await probeTrustedConnection(endpoint, async () => ({ ...good, stderr: '' }))).state).toBe('unavailable')
-    expect((await probeTrustedConnection(endpoint, async () => ({ ...good, stdout: good.stdout.replace('dexter', 'root') }))).state).toBe('permission-denied')
+    expect((await probeTrustedConnection(endpoint, async () => ({ ...good, stdout: good.stdout.replace('builder', 'root') }))).state).toBe('permission-denied')
     expect((await probeTrustedConnection(endpoint, async () => ({ ...good, stdout: good.stdout.replace('rsync  version 3.2.7', '') }))).rsyncVersion).toBeNull()
   })
   it('returns only actual Tailscale self endpoints without peer data or auth URLs', async () => {
-    const runner: ReadinessRunner = async (name, args) => args[0] === 'status' ? { code: 0, stdout: JSON.stringify({ BackendState: 'Running', TailscaleIPs: ['100.123.130.10'], Self: { DNSName: 'main.example.ts.net.' }, Peer: { private: 'unrelated' }, AuthURL: 'secret' }), stderr: '' } : { code: 0, stdout: `${name}-version\n`, stderr: '' }
+    const runner: ReadinessRunner = async (name, args) => args[0] === 'status' ? { code: 0, stdout: JSON.stringify({ BackendState: 'Running', TailscaleIPs: ['100.64.0.22'], Self: { DNSName: 'main.example.ts.net.' }, Peer: { private: 'unrelated' }, AuthURL: 'secret' }), stderr: '' } : { code: 0, stdout: `${name}-version\n`, stderr: '' }
     const facts = await discoverTrustedConnectionHost(runner)
-    expect(facts.tailscaleState).toBe('running'); expect(facts.tailscaleAddresses).toEqual(['100.123.130.10', 'main.example.ts.net'])
+    expect(facts.tailscaleState).toBe('running'); expect(facts.tailscaleAddresses).toEqual(['100.64.0.22', 'main.example.ts.net'])
     expect(JSON.stringify(facts)).not.toMatch(/secret|unrelated/)
   })
   it.each(['NeedsLogin', 'NeedsMachineAuth'])('reports %s without presenting usable endpoints', async BackendState => {
