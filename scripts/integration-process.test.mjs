@@ -178,6 +178,57 @@ test('when every slot is retired, remaining files are identified as unexecuted a
   }
 })
 
+test('cleanup finishes after the owned group exits and before its slot is reused', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-cleanup-'))
+  const children = []
+  const events = []
+  try {
+    const result = await scheduleFiles(['failed', 'next'], [{ index: 1 }], async (_slot, file) => {
+      events.push(`start ${file}`)
+      const log = join(directory, `${file}.log`)
+      const child = loggedChild(log, file === 'failed'
+        ? "console.log('failed'); process.exitCode = 1" : "console.log('completed')")
+      children.push(child)
+      return superviseIntegrationProcess(child, { log, cleanupAfterExit: async () => {
+        assert.equal(groupUsed(child.pid), false)
+        events.push(`cleanup ${file}`)
+      } })
+    })
+    assert.deepEqual(events, ['start failed', 'cleanup failed', 'start next', 'cleanup next'])
+    assert.deepEqual(result.outcomes.map(({ code }) => code), [1, 0])
+  } finally {
+    for (const child of children) await stopGroup(child.pid, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('unconfirmed cleanup fails its owning file and retires the slot before another file starts', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-cleanup-retired-'))
+  const children = []
+  const cleanupError = new Error('Test cleanup remains unconfirmed')
+  try {
+    const result = await scheduleFiles(['owner', 'next'], [{ index: 1 }], async (_slot, file) => {
+      const log = join(directory, `${file}.log`)
+      const child = loggedChild(log, "console.log('completed')")
+      children.push(child)
+      return superviseIntegrationProcess(child, { log, cleanupAfterExit: async () => {
+        assert.equal(groupUsed(child.pid), false)
+        throw cleanupError
+      } })
+    })
+    assert.equal(result.outcomes.length, 1)
+    assert.equal(result.outcomes[0].file, 'owner')
+    assert.equal(result.outcomes[0].code, 1)
+    assert.equal(result.outcomes[0].error, cleanupError)
+    assert.equal(result.outcomes[0].slotUnavailable, true)
+    assert.deepEqual(result.unexecuted, ['next'])
+    assert.equal(existsSync(join(directory, 'next.log')), false)
+  } finally {
+    for (const child of children) await stopGroup(child.pid, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('continuous log noise cannot defeat the absolute file deadline', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-noise-'))
   const log = join(directory, 'noise.log')

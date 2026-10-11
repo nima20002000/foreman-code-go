@@ -10,7 +10,7 @@ import { availableParallelism, freemem } from 'node:os'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
-  resetTestDatabase, testAdminPool, testEnvironment } from './test-resources.mjs'
+  resetTestDatabase, settleTestResources, testAdminPool, testEnvironment } from './test-resources.mjs'
 import { createTestDatabaseTemplate, dropTestDatabaseTemplate } from './test-database-template.mjs'
 import { readIntegrationStartup } from './integration-startup.mjs'
 import { integrationPhaseForwarder } from './integration-phase.mjs'
@@ -718,6 +718,7 @@ export async function runIntegration(argv = [], {
           idleTimeoutMs: Math.min(fileTimeoutMs, Math.ceil(timeouts.idleTimeoutMs * timeoutScale)),
           fileTimeoutMs, deadlineMs,
           onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
+          cleanupAfterExit: () => settleTestResources(admin, slot),
           resetAfterTimeout: async () => {
             try { await resetSlotDatabase(slot) }
             catch (reason) { slot.resetError = reason; throw reason }

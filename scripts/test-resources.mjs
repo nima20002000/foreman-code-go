@@ -282,32 +282,37 @@ export async function dropTestDatabase(admin, resource) {
   await admin.query(`drop database ${identifier(name)} with (force)`)
 }
 
+export async function settleTestResources(admin, resource) {
+  assertTestRoot(resource.directory, resource.token)
+  const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
+  const pending = existsSync(directory) ? readdirSync(directory).map(name =>
+    JSON.parse(readFileSync(assertTestPath(resource, join(directory, name)), 'utf8'))) : []
+  if (pending.some(record => record.token !== resource.token
+    || !['fixture-database', 'native-acceptance-database'].includes(record.kind))) {
+    assertTestResourcesSettled(resource)
+  }
+  // The suite controller closes its process group before this fallback. Never force-close a database caller.
+  for (const record of pending) {
+    identifier(record.name)
+    const database = (await admin.query(`select shobj_description(oid,'pg_database') as owner,
+      (select count(*)::int from pg_stat_activity where datname=$1) as callers
+      from pg_database where datname=$1`, [record.name])).rows[0]
+    if (database) {
+      if (database.owner !== `graphql-test:${resource.token}` || database.callers !== 0) {
+        throw new Error('Fixture database cleanup ownership or closure is unconfirmed')
+      }
+      await admin.query(`drop database ${identifier(record.name)}`)
+    }
+    completeTestResourceCleanup(resource, record.id)
+  }
+  assertTestResourcesSettled(resource)
+}
+
 export async function cleanupTestResources(resource) {
   assertTestRoot(resource.directory, resource.token)
   const admin = await testAdminPool()
   try {
-    const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
-    const pending = existsSync(directory) ? readdirSync(directory).map(name =>
-      JSON.parse(readFileSync(assertTestPath(resource, join(directory, name)), 'utf8'))) : []
-    if (pending.some(record => record.token !== resource.token
-      || !['fixture-database', 'native-acceptance-database'].includes(record.kind))) {
-      assertTestResourcesSettled(resource)
-    }
-    // The suite controller closes its process group before this fallback. Never force-close a database caller.
-    for (const record of pending) {
-      identifier(record.name)
-      const database = (await admin.query(`select shobj_description(oid,'pg_database') as owner,
-        (select count(*)::int from pg_stat_activity where datname=$1) as callers
-        from pg_database where datname=$1`, [record.name])).rows[0]
-      if (database) {
-        if (database.owner !== `graphql-test:${resource.token}` || database.callers !== 0) {
-          throw new Error('Fixture database cleanup ownership or closure is unconfirmed')
-        }
-        await admin.query(`drop database ${identifier(record.name)}`)
-      }
-      completeTestResourceCleanup(resource, record.id)
-    }
-    assertTestResourcesSettled(resource)
+    await settleTestResources(admin, resource)
     await dropTestDatabase(admin, resource)
     removeTestRoot(resource)
   } finally { await admin.end() }

@@ -1,5 +1,56 @@
-import { expect, it } from 'vitest'
+import { EventEmitter } from 'node:events'
+import type { PoolConfig } from 'pg'
+import { expect, it, vi } from 'vitest'
 import { createTestPool } from './helpers/testPool.mjs'
+
+class ClosingClient extends EventEmitter {
+  closeCallback?: () => void
+
+  connect(callback: (error: Error | null) => void) {
+    callback(null)
+  }
+
+  end(callback: () => void) {
+    this.closeCallback = callback
+  }
+
+  finishClose() {
+    this.emit('end')
+    this.closeCallback?.()
+  }
+}
+
+it.each(['promise', 'callback'])('waits for every connection to close through the %s end API', async mode => {
+  const pool = createTestPool({ max: 2, Client: ClosingClient } as PoolConfig)
+  const first = await pool.connect()
+  const second = await pool.connect()
+  const firstClient = first as unknown as ClosingClient
+  const secondClient = second as unknown as ClosingClient
+  // A discarded client also remains open after it leaves the pool's client count.
+  first.release(true)
+  second.release()
+  const finished = vi.fn()
+  const closing = mode === 'promise'
+    ? pool.end().then(finished)
+    : new Promise<void>(resolve => pool.end(() => {
+      finished()
+      resolve()
+    }))
+  try {
+    await Promise.resolve()
+    expect(finished).not.toHaveBeenCalled()
+    secondClient.finishClose()
+    await Promise.resolve()
+    expect(finished).not.toHaveBeenCalled()
+    firstClient.finishClose()
+    await closing
+    expect(finished).toHaveBeenCalledOnce()
+  } finally {
+    firstClient.finishClose()
+    secondClient.finishClose()
+    await closing
+  }
+})
 
 it('accepts an idle administrative termination arriving after pool teardown', async () => {
   const pool = createTestPool({ max: 1 })

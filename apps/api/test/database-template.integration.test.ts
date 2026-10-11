@@ -3,7 +3,8 @@ import type pg from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { migrations } from '../src/infrastructure/migrations.js'
 import { createTestDatabaseTemplate, dropTestDatabaseTemplate, migrationContentsHash } from '../../../scripts/test-database-template.mjs'
-import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, resetTestDatabase,
+import { assertTestResourcesSettled, completeTestResourceCleanup, createTestDatabase, createTestRoot,
+  dropTestDatabase, registerTestResourceCleanup, removeTestRoot, resetTestDatabase, settleTestResources,
   testAdminPool, testEnvironment } from '../../../scripts/test-resources.mjs'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { createTestPool } from './helpers/testPool.mjs'
@@ -106,6 +107,52 @@ it('provides independently migrated databases through the shared fixture helper'
   } finally {
     await first.close()
     await second.close()
+  }
+})
+
+it('settles an abandoned fixture database before resetting a slot, only after its callers close', async () => {
+  const resource = createTestRoot(root.directory)
+  const database = await createTestDatabase(admin, resource, { template })
+  const abandoned = await createTestDatabase(admin, resource, { template })
+  registerTestResourceCleanup(resource, { kind: 'fixture-database', name: abandoned.name })
+  const pool = createTestPool({ connectionString: abandoned.databaseUrl, max: 1 })
+  let reset: Awaited<ReturnType<typeof resetTestDatabase>> | undefined
+  try {
+    try {
+      await pool.query('select 1')
+      await expect(settleTestResources(admin, resource)).rejects.toThrow('closure is unconfirmed')
+      await expect(resetTestDatabase(admin, database)).rejects.toThrow('cleanup remains unconfirmed')
+      expect(() => assertTestResourcesSettled(resource)).toThrow('cleanup remains unconfirmed')
+      expect((await admin.query('select datname from pg_database where datname=$1', [database.name])).rows)
+        .toEqual([{ datname: database.name }])
+    } finally { await pool.end() }
+    await settleTestResources(admin, resource)
+    reset = await resetTestDatabase(admin, database)
+    assertTestResourcesSettled(resource)
+    expect((await admin.query('select datname from pg_database where datname=any($1::text[])',
+      [[database.name, abandoned.name]])).rows).toEqual([])
+    expect(reset.name).not.toBe(database.name)
+  } finally {
+    await settleTestResources(admin, resource)
+    await dropTestDatabase(admin, reset ?? database)
+    removeTestRoot(resource)
+  }
+})
+
+it('retains a slot and its recovery state when a native cleanup owner has not confirmed closure', async () => {
+  const resource = createTestRoot(root.directory)
+  const database = await createTestDatabase(admin, resource, { template })
+  const cleanupId = registerTestResourceCleanup(resource, { kind: 'native-qualification' })
+  try {
+    await expect(settleTestResources(admin, resource)).rejects.toThrow('cleanup remains unconfirmed')
+    await expect(resetTestDatabase(admin, database)).rejects.toThrow('cleanup remains unconfirmed')
+    expect(() => removeTestRoot(resource)).toThrow('cleanup remains unconfirmed')
+    expect((await admin.query('select datname from pg_database where datname=$1', [database.name])).rows)
+      .toEqual([{ datname: database.name }])
+  } finally {
+    completeTestResourceCleanup(resource, cleanupId)
+    await dropTestDatabase(admin, database)
+    removeTestRoot(resource)
   }
 })
 

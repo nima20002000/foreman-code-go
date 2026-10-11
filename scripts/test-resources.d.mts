@@ -15,6 +15,7 @@ export function registerTestResourceCleanup(resource: TestRoot, details: Record<
 export function completeTestResourceCleanup(resource: TestRoot, id: string): void
 export function assertTestResourcesSettled(resource: TestRoot): void
 export function assertFixtureResourcesSettled(directory: string): void
+export function settleTestResources(admin: Sql, resource: TestRoot): Promise<void>
 export function cleanupTestResources(resource: TestDatabase): Promise<void>
 export function testEnvironment(environment: NodeJS.ProcessEnv, resource: TestDatabase): NodeJS.ProcessEnv
 export function copyTestAuthenticationFile(resource: TestRoot, filename: string, destination: string): void

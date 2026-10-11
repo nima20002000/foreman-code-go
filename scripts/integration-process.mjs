@@ -129,10 +129,13 @@ export function waitForIntegrationProcess(child, {
   })
 }
 
-export async function superviseIntegrationProcess(child, { resetAfterTimeout, ...options }) {
+export async function superviseIntegrationProcess(child, {
+  resetAfterTimeout, cleanupAfterExit = async () => {}, ...options
+}) {
   const result = await waitForIntegrationProcess(child, options)
   try {
     await stopGroup(child.pid, { graceMs: options.graceMs ?? integrationProcessLimits.graceMs })
+    await cleanupAfterExit()
   } catch (error) {
     return { ...result, code: 1, error, slotUnavailable: true }
   }
