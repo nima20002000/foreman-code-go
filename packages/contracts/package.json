@@ -305,9 +305,9 @@
   "scripts": {
     "build": "node ../../scripts/heavy-job.mjs --build contracts -- tsc -p tsconfig.build.json",
     "dev": "tsc -p tsconfig.build.json --watch",
-    "test": "node ../../scripts/heavy-job.mjs -- vitest run",
-    "typecheck": "node ../../scripts/heavy-job.mjs -- tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo",
-    "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint/"
+    "test": "node ../../scripts/ci-remote.mjs unit -- node ../../scripts/heavy-job.mjs -- vitest run",
+    "typecheck": "node ../../scripts/ci-remote.mjs typecheck -- node ../../scripts/heavy-job.mjs -- tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo",
+    "lint": "node ../../scripts/ci-remote.mjs lint -- node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint/"
   },
   "dependencies": {
     "@cfworker/json-schema": "4.1.1",

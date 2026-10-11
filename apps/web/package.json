@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "typecheck": "node ../../scripts/heavy-job.mjs -- tsc -b",
-    "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint/",
-    "test": "node ../../scripts/heavy-job.mjs -- sh -c \"corepack pnpm test:run-graph-smoke && corepack pnpm test:unit\"",
+    "typecheck": "node ../../scripts/ci-remote.mjs typecheck -- node ../../scripts/heavy-job.mjs -- tsc -b",
+    "lint": "node ../../scripts/ci-remote.mjs lint -- node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint/",
+    "test": "node ../../scripts/ci-remote.mjs unit -- node ../../scripts/heavy-job.mjs -- sh -c \"corepack pnpm test:run-graph-smoke && corepack pnpm test:unit\"",
     "test:run-graph-smoke": "node ../../scripts/heavy-job.mjs -- node --test src/features/workflow-board/currentSource.smoke.mjs",
     "build": "node ../../scripts/heavy-job.mjs --build web -- sh -c \"tsc -b && vite build\"",
     "test:unit": "node ../../scripts/heavy-job.mjs -- sh -c \"FOREMAN_WEB_TEST_PHASE=fast vitest run && FOREMAN_WEB_TEST_PHASE=heavy vitest run\""

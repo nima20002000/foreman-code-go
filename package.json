@@ -16,10 +16,10 @@
     "dev:api": "corepack pnpm --filter @foreman-code/contracts build && corepack pnpm --parallel --filter @foreman-code/contracts --filter @foreman-code/api dev",
     "db:up": "node scripts/test-db.mjs up",
     "db:down": "node scripts/test-db.mjs down",
-    "typecheck": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --if-present typecheck\"",
-    "lint": "node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --no-sort --if-present lint\"",
-    "test": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --workspace-concurrency=1 --if-present test && corepack pnpm test:scripts\"",
-    "test:integration": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-integration.mjs",
+    "typecheck": "node scripts/ci-remote.mjs typecheck -- node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --if-present typecheck\"",
+    "lint": "node scripts/ci-remote.mjs lint -- node scripts/heavy-job.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --no-sort --if-present lint\"",
+    "test": "node scripts/ci-remote.mjs unit -- node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- sh -c \"corepack pnpm --filter @foreman-code/contracts build && corepack pnpm -r --no-bail --workspace-concurrency=1 --if-present test && corepack pnpm test:scripts\"",
+    "test:integration": "node scripts/ci-remote.mjs integration -- node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-integration.mjs",
     "test:dense": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-dense.mjs",
     "test:acceptance": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- sh -c 'corepack pnpm --filter @foreman-code/contracts build && node scripts/test-native-acceptance.mjs \"$@\"' --",
     "test:production": "node scripts/heavy-job.mjs -- node scripts/test-command.mjs -- node scripts/production-smoke.mjs",
@@ -28,6 +28,6 @@
     "test:files": "node scripts/heavy-job.mjs --timeout-ms 9000000 -- node scripts/test-command.mjs -- node scripts/test-files.mjs",
     "production:verify": "node scripts/heavy-job.mjs -- node scripts/verify-local-production.mjs",
     "verify:job": "node scripts/verify-repository.mjs",
-    "test:scripts": "node scripts/heavy-job.mjs -- node --test scripts/local-production.test.mjs scripts/heavy-job.test.mjs scripts/integration-process.test.mjs scripts/test-integration.test.mjs scripts/verification-reports.test.mjs scripts/verify-repository.test.mjs scripts/project-verification.test.mjs scripts/build-computer/create-volume.test.mjs scripts/ci-runtime-qualification.test.mjs scripts/quota-helper-abi.test.mjs scripts/dense-scheduler.test.mjs scripts/dense-resources.test.mjs scripts/dense-process.test.mjs scripts/test-dense.test.mjs scripts/worker-release-artifacts.test.mjs"
+    "test:scripts": "node scripts/heavy-job.mjs -- node --test scripts/local-production.test.mjs scripts/heavy-job.test.mjs scripts/integration-process.test.mjs scripts/test-integration.test.mjs scripts/verification-reports.test.mjs scripts/verify-repository.test.mjs scripts/project-verification.test.mjs scripts/build-computer/create-volume.test.mjs scripts/ci-runtime-qualification.test.mjs scripts/quota-helper-abi.test.mjs scripts/dense-scheduler.test.mjs scripts/dense-resources.test.mjs scripts/dense-process.test.mjs scripts/test-dense.test.mjs scripts/worker-release-artifacts.test.mjs scripts/ci-remote.test.mjs"
   }
 }
