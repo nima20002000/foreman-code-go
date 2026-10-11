@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.72] - 2026-10-11
+
+### Performance
+
+- MCP request servers, payload validation, source directory identity checks, canonical graph JSON and launcher discovery do less repeated work under load.
+
+### Fixed
+
+- A Worker update keeps its managed Foreman Code MCP launcher entry recognized when its Node interpreter changes.
+
 ## [0.0.71] - 2026-10-11
 
 ### Performance
