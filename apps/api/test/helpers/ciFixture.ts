@@ -156,9 +156,12 @@ export function ciFixture(options: { initialWaitingReasons?: ('busy' | 'dependen
         commandId: input.commandId, commandDigest: jobDigest(input), principalId: principal.id, definition: queuedDefinition,
         ...enqueueOptions,
         executionId: randomUUID(), attemptId: randomUUID(), operationId: randomUUID(), workflow: null, gateId: null,
-        placement: input.placementOverride ?? { kind: 'auto' }, placementOverride: input.placementOverride ?? null,
+        placement: input.placementOverride ?? ('kind' in queuedDefinition.spec.target
+          ? { kind: 'auto' } : { kind: 'explicit', target: queuedDefinition.spec.target }),
+        placementOverride: input.placementOverride ?? null,
         resources: 'verification' in queuedDefinition.spec ? queuedDefinition.spec.verification.resources : runtime.spec.verification.resources,
-        enqueueSequence: '1', enqueuedAt: now, deadlineAt: new Date(at + 60_000).toISOString(),
+        enqueueSequence: '1', enqueuedAt: now,
+        deadlineAt: new Date(at + queuedDefinition.spec.policy.queueTimeoutMs).toISOString(),
         state: 'waiting', waitingReasons: options.initialWaitingReasons ?? ['busy'], compatibleTargetCount: 1,
         queuePosition: 1, estimatedStartAt: null,
         reservationId: null, cancelRequestedAt: null, terminalReason: null, finishedAt: null })

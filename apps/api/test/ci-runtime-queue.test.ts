@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
-import { JobExecutionRecordSchema, ResolvedVerificationJobSpecSchema, jobVerificationTemplate }
+import { AutoVerificationJobSpecSchema, JobExecutionRecordSchema, ResolvedVerificationJobSpecSchema,
+  jobVerificationTemplate }
   from '@foreman-code/contracts/job-verification'
 import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
 import { JobQueuePreparation } from '../src/modules/jobs/preparation.js'
@@ -21,9 +22,22 @@ describe('CI preparation follows persisted queue state', () => {
     const preparation = await ciPreparationFixture({ loseRefreshAck: true })
     const ci = ciFixture({ initialWaitingReasons: [] })
     const before = preparation.profiles.get('p-unit')!
-    ci.templates.splice(0, ci.templates.length, jobVerificationTemplate({ profileId: before.id, profileRevision: before.revision,
-      suite: 'unit', ready: true, policy: before.spec.policy, resources: before.spec.resources, maxUnitWorkers: 1 }))
-    const run = await ci.services.ci!.run(ci.operator, { workspaceId: ci.workspaceId, suite: 'unit', commit, commandId: 'queued-ci' })
+    const template = jobVerificationTemplate({ profileId: before.id, profileRevision: before.revision,
+      suite: 'unit', ready: true, policy: before.spec.policy, resources: before.spec.resources, maxUnitWorkers: 1 })
+    const saved = verificationFixture().spec
+    const spec = AutoVerificationJobSpecSchema.parse({ ...saved,
+      source: { ...saved.source, commit }, target: { kind: 'auto' },
+      limits: template.resources.limits, policy: template.policy, runtimeSelection: 'qualified-profile',
+      argv: template.argv, outputs: template.outputs,
+      verification: { ...saved.verification, resources: template.resources, parameters: template.parameters },
+    })
+    const definition = await ci.jobs.saveDefinition(ci.operator, 'mcp', ci.workspaceId, {
+      commandId: 'save-queued-ci', expectedRevision: null, name: 'Queued verification', spec,
+    })
+    const queued = await ci.jobs.enqueue(ci.operator, 'mcp', ci.workspaceId, {
+      commandId: 'queued-ci', definitionId: definition.id, expectedRevision: definition.revision,
+    }, { runtimePreparation: ci.operator })
+    if (queued.kind !== 'pending-admission') throw new Error('Expected a queued verification ticket')
     let ticket = ci.ticket()
     const original = structuredClone(ticket)
     const admitted = vi.fn()
@@ -79,7 +93,7 @@ describe('CI preparation follows persisted queue state', () => {
       wake: async () => {},
     }, () => new Date())
     try {
-      expect(ticket.id).toBe(run.ticketId)
+      expect(ticket.id).toBe(queued.ticket.id)
       expect(ticket.waitingReasons).toEqual([])
       expect(preparation.calls.prepare).toEqual([])
       await queue.waitForWork(await queue.scan())

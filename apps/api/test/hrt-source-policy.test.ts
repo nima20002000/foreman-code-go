@@ -119,7 +119,7 @@ describe('production execution-source current root policy fence', () => {
   it('applies the same exact-policy fence to authenticated worker owner resolution', async () => {
     const f = await fixture(true), identity = await f.factory.owners.prepareIdentity(f.rootRecord, f.attempt)
     const request = { version: 1, operation: 'sources.authorize', request: { version: 1, operation: 'sources.prepare', identity, root: f.rootRecord, attempt: f.attempt,
-      package: { transferId: randomUUID(), receiptId: randomUUID(), sha256: 'e'.repeat(64), byteSize: 2 } } }
+      github: { repository: 'example/project', commit: 'b'.repeat(40), executablePolicy: 'strip' } } }
     const frame = { binding: f.binding, signal: new AbortController().signal }
     expect((await f.factory.sourceExtension.handle!(request, frame)).payload).toMatchObject({ operation: 'sources.authorize' })
     f.revoke()
@@ -149,7 +149,7 @@ describe('production execution-source current root policy fence', () => {
       const identity = await f.factory.owners.prepareIdentity(f.rootRecord, f.attempt)
       const request = { version: 1, operation: 'sources.authorize', request: {
         version: 1, operation: 'sources.prepare', identity, root: f.rootRecord, attempt: f.attempt,
-        package: { transferId: randomUUID(), receiptId: randomUUID(), sha256: 'e'.repeat(64), byteSize: 2 },
+        github: { repository: 'example/project', commit: 'b'.repeat(40), executablePolicy: 'strip' },
       } }
       const frame = { binding: f.binding, signal: new AbortController().signal }
       expect((await f.factory.sourceExtension.handle!(request, frame)).payload)
