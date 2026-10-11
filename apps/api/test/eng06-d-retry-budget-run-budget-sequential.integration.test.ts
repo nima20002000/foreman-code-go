@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { attempts, describeRetryBudget, occurrences } from './helpers/retryBudget.js'
+import { describeRetryBudget, occurrences } from './helpers/retryBudget.js'
 import {
   executionRows, readback, recoveryFixture, assertOriginalFailure,
   type Form,

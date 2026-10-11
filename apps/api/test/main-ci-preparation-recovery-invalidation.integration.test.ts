@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { mainId } from './helpers/ciPreparationFixture.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { mainPreparationRecoverySuite } from './helpers/mainPreparationRecoverySuite.js'
 import { randomUUID } from 'node:crypto'
