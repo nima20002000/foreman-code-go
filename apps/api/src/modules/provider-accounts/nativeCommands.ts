@@ -4,9 +4,10 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
   ProviderAccountModelsSchema, ProviderAccountSubjectSchema,
-  type AccountProvider, type ProviderAccount, type ProviderAccountBinding,
+  type AccountProvider, type ProviderAccountAuthMode, type ProviderAccount, type ProviderAccountBinding,
   type ProviderAccountAuthenticationOperation, type ProviderAccountObservation,
-  type ProviderAccountModels,
+  type ProviderAccountModels, type ProviderAccountCapability, type ProviderAccountProfileChoice,
+  type ProviderAccountHumanHandoff,
 } from '@foreman-code/contracts/provider-accounts'
 import type { z } from 'zod'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -110,10 +111,15 @@ export interface QualifiedAccountInstallation {
 export type AccountProcessRegistry = Pick<NativeProcessRegistry, 'reserveLaunch' | 'abandonReservedLaunch' | 'closeOwner'>
 
 export interface AccountNativeSelection {
+  discover?(target: DeviceProvisioningTarget, provider?: AccountProvider): Promise<{
+    providers: ProviderAccountCapability[]; profiles: ProviderAccountProfileChoice[]; generation: number
+  }>
+  humanHandoff?(input: ProviderAccountNativeInput & { operation: ProviderAccountAuthenticationOperation }):
+    Promise<ProviderAccountHumanHandoff>
   selected(input: ProviderAccountNativeInput): Promise<QualifiedAccountInstallation | null>
   models?(input: ProviderAccountNativeInput, selected: QualifiedAccountInstallation): Promise<ProviderAccountModels>
   resolveProfile?(account: ProviderAccount): Promise<{ binding: ProviderAccountBinding; homePath: string; userHome: string }>
-  registerProfile?(input: { provider: AccountProvider; profileRef: string; qualificationId: string;
+  registerProfile?(input: { provider: AccountProvider; authMode?: ProviderAccountAuthMode | undefined; profileRef: string; qualificationId: string;
     target: DeviceProvisioningTarget }): Promise<{ profileRef: string }>
 }
 
@@ -122,6 +128,12 @@ function hasControlCharacters(value: string): boolean {
     const code = character.charCodeAt(0)
     return code < 32 || code === 127
   })
+}
+
+function accountReadiness(status: ProviderAccount['status']): ProviderAccountObservation['readiness'] {
+  if (status === 'signed-out') return 'sign-in-required'
+  if (status === 'unavailable') return 'unavailable'
+  return 'unknown'
 }
 
 function safeIdentity(value: unknown): string | null {
@@ -253,6 +265,20 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     return { status: 'signed-in', identity: safeIdentity(observation.email), subject }
   }
 
+  async discover(target: DeviceProvisioningTarget, provider?: AccountProvider) {
+    if (this.selection.discover) return this.selection.discover(target, provider)
+    return { generation: 1, profiles: [], providers: (provider ? [provider] : ['codex', 'claude'] as const)
+      .map(value => ({ provider: value, actions: [], qualified: false,
+        reason: 'The selected installation has no account isolation qualification.' })) }
+  }
+
+  async humanHandoff(input: ProviderAccountNativeInput & { operation: ProviderAccountAuthenticationOperation }) {
+    await this.selected(input)
+    if (!this.selection.humanHandoff) throw new DomainError('PROVIDER_HANDOFF_UNAVAILABLE',
+      'This installed CLI has no qualified human handoff.', 409)
+    return this.selection.humanHandoff(input)
+  }
+
   async requireRuntimeAccount(input: ProviderAccountNativeInput): Promise<void> {
     await this.selected(input)
   }
@@ -272,7 +298,7 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     return { bindingRevision: selected.binding.bindingRevision, generation: selected.generation,
       sequence, observedAt: new Date().toISOString(), status: state.status,
       identity: state.identity, subject: state.subject ?? null,
-      readiness: state.status === 'signed-out' ? 'sign-in-required' : 'unknown' }
+      readiness: accountReadiness(state.status) }
   }
 
   async models(input: ProviderAccountNativeInput): Promise<ProviderAccountModels> {
@@ -286,7 +312,7 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     return result
   }
 
-  registerProfile(input: { provider: AccountProvider; profileRef: string; qualificationId: string;
+  registerProfile(input: { provider: AccountProvider; authMode?: ProviderAccountAuthMode | undefined; profileRef: string; qualificationId: string;
     target: DeviceProvisioningTarget }): Promise<{ profileRef: string }> {
     if (!this.selection.registerProfile) throw new DomainError('PROVIDER_PROFILE_UNQUALIFIED',
       'Select an existing qualified native profile on its owning computer.', 409)
@@ -300,7 +326,7 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
   }
 
   async resolveProfile(account: ProviderAccount): Promise<{ homePath: string; userHome: string }> {
-    if (!this.selection.resolveProfile || !account.binding || account.removedAt) {
+    if (!this.selection.resolveProfile || !account.binding) {
       throw new DomainError('PROVIDER_PROFILE_UNAVAILABLE', 'The registered native profile is unavailable.', 409)
     }
     const profile = await this.selection.resolveProfile(account)

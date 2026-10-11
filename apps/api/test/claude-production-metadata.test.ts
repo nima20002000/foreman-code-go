@@ -1,4 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import type { ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
+import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { NativeConfigurationService } from '../src/modules/harnesses/nativeConfiguration.js'
 import { productionClaudeMetadata } from '../src/modules/harnesses/claudeSdk/productionMetadata.js'
@@ -153,4 +156,28 @@ it('never returns discovery success when owned process closure is unconfirmed', 
   vi.mocked(discoverClaudeMetadata).mockResolvedValueOnce(metadata)
   f.processes.closeOwner.mockResolvedValue(false)
   await expect(f.port.discover('/workspace', AbortSignal.timeout(3000))).rejects.toThrow('closure is unconfirmed')
+})
+
+it('discovers account models through that account\'s selected installation and retains owned cleanup', async () => {
+  const f = fixture()
+  const mainId = randomUUID()
+  const account: ProviderAccountBinding = { kind: 'slot', provider: 'claude', accountId: randomUUID(),
+    profileRef: 'selected-profile', bindingRevision: 1, subject: null,
+    target: { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId,
+      keyRevision: null, authorizationRevision: null } }
+  const selectAccount = vi.fn(() => ({ ...f.binding,
+    selection: { ...f.binding.selection, hostRef: account.target.hostRef },
+    installation: { ...f.binding.installation, launcher: { resolvedLauncher: '/fixture/selected-claude' } },
+  } as unknown as RegistryHarnessSelection))
+  const port = productionClaudeMetadata({ ...f, selectAccount, accounts: { resolve: async () => ({
+    accountId: account.accountId, homePath: '/fixture/selected-profile', authMode: 'subscription', binding: account,
+  }) } } as unknown as Parameters<typeof productionClaudeMetadata>[0])
+  vi.mocked(discoverClaudeMetadata).mockResolvedValueOnce(metadata)
+  expect(await port.discoverAccount('/workspace', AbortSignal.timeout(3000), account)).toMatchObject({ models: metadata.models })
+  expect(selectAccount).toHaveBeenCalledWith(account)
+  expect(f.registry.pinAccepted).not.toHaveBeenCalled()
+  expect(vi.mocked(discoverClaudeMetadata).mock.calls[0]![0]).toMatchObject({
+    binary: '/fixture/selected-claude', profilePath: '/fixture/selected-profile', accountId: account.accountId,
+  })
+  expect(f.processes.closeOwner).toHaveBeenCalledOnce()
 })

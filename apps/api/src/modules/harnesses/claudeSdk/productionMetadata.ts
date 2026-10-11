@@ -7,6 +7,7 @@ import type { HarnessConfiguration } from '@foreman-code/contracts'
 import type { HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import type { ClaudeQualificationPin } from '@foreman-code/contracts/claude-qualification'
 import type { ProductionHarnessRegistry } from '../productionRegistry.js'
+import type { RegistryHarnessSelection } from '../installationRegistry.js'
 import type { NativeProcessRegistry } from '../recovery/processRegistry.js'
 import type { NativeHarnessFactories } from '../runtimeFactory.js'
 import type { HarnessInstanceSettingsRepository } from '../instanceSettings/repository.js'
@@ -26,6 +27,7 @@ export function productionClaudeMetadata(input: {
   defaults(): Promise<{ claude?: Extract<HarnessConfiguration, { harness: 'claude' }> | undefined }>
   current(value: HostHarnessOverride, signal?: AbortSignal): Promise<{ pin: ClaudeQualificationPin }>
   accounts?: ProviderAccountResolver
+  selectAccount?: (binding: ProviderAccountBinding) => RegistryHarnessSelection
 }) {
   type Metadata = Awaited<ReturnType<typeof discoverClaudeMetadata>>
   const pending = new Map<string, { value: Promise<Metadata>; controller: AbortController; readers: number }>()
@@ -43,7 +45,16 @@ export function productionClaudeMetadata(input: {
     const configuration = account ? { ...requested, accountId: account.accountId, configDirectory: account.homePath,
       authMode: account.authMode } : requested
     const apiKey = await requireClaudeProductionCredentialDelivery(configuration, input.accounts)
-    const binding = input.registry.pinAccepted({ id: `claude-metadata:${commandInputHash(configuration)}`, agentId: 'owned-catalog', harness: configuration })
+    if (accountBinding && !input.selectAccount) {
+      throw new DomainError('HARNESS_ACCOUNT_SELECTION_UNAVAILABLE',
+        'Account discovery requires its qualified installed Claude profile.', 409)
+    }
+    const binding = accountBinding ? input.selectAccount!(accountBinding)
+      : input.registry.pinAccepted({ id: `claude-metadata:${commandInputHash(configuration)}`,
+        agentId: 'owned-catalog', harness: configuration })
+    if (accountBinding && !isDeepStrictEqual(binding.selection.hostRef, accountBinding.target.hostRef)) {
+      throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT', 'Model discovery requires the owning account installation.', 409)
+    }
     const binary = binding.installation.launcher.resolvedLauncher
     if (!binary) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The installed Claude SDK executable is unavailable.', 409)
     signal.throwIfAborted()

@@ -58,6 +58,8 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
   registerProfile(input: Parameters<NativeProviderAccountCommands['registerProfile']>[0]) {
     return this.commands.registerProfile(input)
   }
+  discover(...input: Parameters<NativeProviderAccountCommands['discover']>) { return this.commands.discover(...input) }
+  humanHandoff(input: OperationInput) { return this.commands.humanHandoff(input) }
   login(input: ProviderAccountNativeInput) { return this.commands.login(input) }
   logout(input: ProviderAccountNativeInput) { return this.commands.logout(input) }
   cancelLogin(accountId: string) { return this.commands.cancelLogin(accountId) }

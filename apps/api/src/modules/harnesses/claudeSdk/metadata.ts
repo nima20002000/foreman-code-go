@@ -16,12 +16,13 @@ function record(value: unknown): Record<string, unknown> {
  * ambient MCP/settings is admitted by discovery. Account details stay private. */
 export async function discoverClaudeMetadata(input: {
   binary: string; model: string; profilePath: string; workingDirectory: string; recovery: NativeProcessRecovery; signal: AbortSignal
+  sdkEntrypoint?: string
   authMode?: 'subscription' | 'api-key'; apiKey?: string; accountId?: string
 }): Promise<Pick<HarnessOptions, 'providerVersion' | 'authenticated' | 'models' | 'nativeAgents'>> {
   const configuration: ClaudeHarnessConfiguration = { harness: 'claude', model: input.model,
     authMode: input.authMode ?? 'subscription', ...(input.accountId ? { accountId: input.accountId } : {}),
     configDirectory: input.profilePath, permissionMode: 'default', sandbox: 'danger-full-access', tools: [], permissionRules: [], instructions: '', mcpServers: {} }
-  const runner = createClaudeSdkRunner({ loadClient: () => loadOfficialClaudeSdk(input.profilePath, input.recovery, input.binary) })
+  const runner = createClaudeSdkRunner({ loadClient: () => loadOfficialClaudeSdk(input.profilePath, input.recovery, input.binary, input.sdkEntrypoint) })
   try {
     const version = await runCommand(input.binary, ['--version'], input.workingDirectory, input.signal,
       claudeEnvironment(configuration, process.env, input.apiKey), { recovery: input.recovery })

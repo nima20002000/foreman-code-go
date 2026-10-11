@@ -68,7 +68,12 @@ export class AcceptedProviderAccountBindings {
       throw new DomainError('PROVIDER_ACCOUNT_SIGN_IN_REQUIRED', 'Sign in to the selected account before accepting work.', 409)
     }
     assertAccountConfiguration(selected.binding, configuration, selection)
-    if (configuration.harness === 'claude' && (configuration.configDirectory !== selected.homePath
+    if (configuration.harness === 'claude' && selected.binding.target.hostRef.kind === 'device'
+      && (!selection || configuration.authMode !== selected.authMode)) {
+      throw new DomainError('HARNESS_PROFILE_SELECTION_REQUIRED', 'Select the qualified Claude profile on the owning Worker.', 409)
+    }
+    if (configuration.harness === 'claude' && selected.binding.target.hostRef.kind === 'main'
+      && (configuration.configDirectory !== selected.homePath
       || configuration.authMode !== selected.authMode)) throw new DomainError('HARNESS_PROFILE_SELECTION_REQUIRED',
       'Select and qualify a Claude profile for this account before starting work.', 409)
     return selected.binding
@@ -104,7 +109,12 @@ export class AcceptedProviderAccountBindings {
       throw new DomainError('PROVIDER_ACCOUNT_BINDING_UNAVAILABLE', 'The selected account has no canonical binding.', 409)
     }
     assertAccountConfiguration(selected.binding, configuration, selection)
-    if (configuration.harness === 'claude' && (configuration.configDirectory !== selected.homePath
+    if (configuration.harness === 'claude' && selected.binding.target.hostRef.kind === 'device'
+      && (!selection || configuration.authMode !== selected.authMode)) {
+      throw new DomainError('HARNESS_PROFILE_SELECTION_REQUIRED', 'Select the qualified Claude profile on the owning Worker.', 409)
+    }
+    if (configuration.harness === 'claude' && selected.binding.target.hostRef.kind === 'main'
+      && (configuration.configDirectory !== selected.homePath
       || configuration.authMode !== selected.authMode)) {
       throw new DomainError('HARNESS_PROFILE_SELECTION_REQUIRED',
         'Select and qualify a Claude profile for this account before starting work.', 409)

@@ -117,6 +117,9 @@ import { requireClaudeProductionCredentialDelivery } from './modules/harnesses/c
 import { ProviderAccountsService } from './modules/provider-accounts/service.js'
 import { ProviderAccountsRepository } from './modules/provider-accounts/repository.js'
 import { LocalProviderCredentials } from './modules/provider-accounts/localCredentials.js'
+import { createProductionAccountSelection } from './modules/provider-accounts/productionSelection.js'
+import { ProviderAccountWorkerAuthorityRequestSchema } from '@foreman-code/contracts/provider-accounts'
+import { createRemoteAccountServices } from './modules/provider-accounts/remoteServices.js'
 import { NativeProviderAccountCommands, type AccountNativeSelection } from './modules/provider-accounts/nativeCommands.js'
 import { NativeProviderAccountOperations } from './modules/provider-accounts/nativeOperations.js'
 import { NativeAccountJournal } from './modules/provider-accounts/nativeJournal.js'
@@ -425,6 +428,34 @@ export function buildProductionApp(
       createMainWorkflowArtifactTransferExtension(() => workflowArtifacts?.receiver,
         infrastructure?.deviceDomains?.extensions.find(value => value.namespace === BYTE_TRANSFER_NAMESPACE),()=>jobRuntime?.outputs),
       { namespace: 'harness-discovery-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { namespace: 'provider-accounts-v1', version: 1, role: 'duplex', maxJsonBytes: 65_536, maxBinaryBytes: 0,
+        async handle(raw, context) {
+          const request = ProviderAccountWorkerAuthorityRequestSchema.parse(raw)
+          const target = request.kind === 'binding' ? request.binding.target : request.operation.binding.target
+          const current = deviceRuntime.endpointForDomains().currentBinding(context.binding.deviceId)
+          if (context.bytes !== undefined || !isDeepStrictEqual(current, context.binding)
+            || target.hostRef.kind !== 'device' || target.hostRef.deviceId !== context.binding.deviceId
+            || target.hostRef.mainId !== context.binding.mainId
+            || target.applicationInstallationId !== context.binding.workerInstallationId
+            || target.keyRevision !== context.binding.keyRevision
+            || target.authorizationRevision !== context.binding.authorizationRevision) {
+            throw new DomainError('ACCESS_DENIED', 'The original Worker account authority is unavailable.', 403)
+          }
+          let payload: { available: true } | { allowed: true }
+          if (request.kind === 'binding') {
+            const resolved = await providerAccounts.resolve(request.binding.provider, request.binding.accountId,
+              { allowDefault: false, acceptedBinding: request.binding })
+            if (!resolved) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The accepted account is unavailable.', 409)
+            payload = { available: true }
+          } else {
+            await providerAccounts.assertAuthenticationEligibility(request.operation)
+            payload = { allowed: true }
+          }
+          if (!isDeepStrictEqual(current, deviceRuntime.endpointForDomains().currentBinding(context.binding.deviceId))) {
+            throw new DomainError('ACCESS_DENIED', 'The original Worker account channel changed.', 403)
+          }
+          return { payload }
+        } },
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
       { namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: COMPUTER_MAINTENANCE_VERSION, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       createProductionWorkerArtifactExtension({
@@ -508,7 +539,20 @@ export function buildProductionApp(
   const commands = new PostgresCommandCoordinator(database.pool)
   const bugReports = new BugReportService(database.pool, commands)
   const accountCredentials = new LocalProviderCredentials(resolve(config.harnesses.workspaceRoot, 'provider-accounts'))
-  const accountCommands = new NativeProviderAccountCommands(accountSelection ?? { selected: async () => null })
+  const selectedAccounts: ProductionProviderAccountSelection = accountSelection ?? createProductionAccountSelection({
+    path: resolve(config.harnesses.workspaceRoot, 'provider-account-qualifications.json'),
+    managedPaths: accountId => accountCredentials.paths(accountId),
+    validate: () => harnessRegistry.refreshMain(),
+    pin: record => harnessRegistry.pinOverride(record.override),
+    models: async (binding, generation) => {
+      const options = await nativeConfigurations.options(binding.provider, binding)
+      const selected = selectedAccounts.selectAccount?.(binding)
+      if (!selected) throw new DomainError('PROVIDER_ACCOUNT_UNQUALIFIED', 'Account model installation is unavailable.', 409)
+      return { binding, generation, observedAt: options.checkedAt,
+        models: options.models.map(row => ({ ...row, name: row.name ?? row.id })), options }
+    },
+  })
+  const accountCommands = new NativeProviderAccountCommands(selectedAccounts)
   const accountNative = processRegistry instanceof NativeProcessRegistry
     ? new NativeProviderAccountOperations(accountCommands,
       new NativeAccountJournal(resolve(config.harnesses.workspaceRoot, 'provider-account-operations')), processRegistry,
@@ -517,6 +561,15 @@ export function buildProductionApp(
   const providerAccounts: ProviderAccountsService = new ProviderAccountsService(database.pool,
     new ProviderAccountsRepository(database.pool, () => accountCredentials.hostId()), accountCredentials,
     accountNative, commands)
+  providerAccounts.bindTarget(async () => {
+    const row = (await database.pool.query<{ id: string }>(
+      'select id from application_installation where singleton=true')).rows[0]
+    if (!row) throw new DomainError('PROVIDER_ACCOUNT_TARGET_UNAVAILABLE', 'The canonical Main installation is unavailable.', 503)
+    return { hostRef: { kind: 'main', mainId: row.id }, applicationInstallationId: row.id,
+      keyRevision: null, authorizationRevision: null }
+  })
+  providerAccounts.bindRouting(createRemoteAccountServices({ pool: database.pool, commands, local: providerAccounts,
+    endpoint: () => deviceRuntime.endpointForDomains() }))
   const workflowAccountBindings = new Map<string, AcceptedProviderAccountBinding>()
   const accountConfigurations = new ProviderAccountConfigurationService(providerAccounts)
   // Producer/consumer halves are installed during construction. Neither HTTP,
@@ -697,7 +750,7 @@ export function buildProductionApp(
   const appMcpEndpoint = `http://${endpointHost}:${config.port}/mcp`
   const nativeFactories = new NativeHarnessFactories({ get codexBinary() { return mainCodex.binary }, responseJournal,
     accounts: providerAccounts,
-    ...(accountSelection?.selectAccount ? { selectAccount: accountSelection.selectAccount } : {}),
+    ...(selectedAccounts.selectAccount ? { selectAccount: selectedAccounts.selectAccount } : {}),
     refreshInstallations: signal => harnessRegistry.refreshMain(signal),
     instances: harnessRegistry.instances, installations: harnessRegistry.installations,
     selectDefault: (harness) => harnessRegistry.pinDefault(harness),
@@ -837,6 +890,7 @@ export function buildProductionApp(
     }, error => app.log.error({ err: error }, 'Automatic harness installation checks failed'))
   const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
     accounts: providerAccounts,
+    ...(selectedAccounts.selectAccount ? { selectAccount: selectedAccounts.selectAccount } : {}),
     processes: processRegistry, factories: nativeFactories, settings: hostSettings, defaults: () => settings.getHarnessDefaults(), current: claudeDiscovery.currentForConfiguration })
   const qualifier = new NativeHarnessConfigurationQualifier(config.harnesses.codexBinary, nativeFactories, claudeMetadata, providerAccounts)
   const harnessCatalog = new HarnessCatalogService(qualifier, settings, commands, config.harnesses.workspaceRoot, appMcpEndpoint)
@@ -1258,6 +1312,7 @@ export function buildProductionApp(
   const resolveOperatorManager = productionOperatorManagers({
     app: () => app, pool: database.pool, config, workingDirectory: operatorWorkingDirectory,
     processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
+    accountBinding: conversationId => operatorAccountBindings.get(conversationId),
     createDevice: (configuration, conversationId, fileInputs) => workerChats!.create({
       configuration, conversationId, workingDirectory: operatorWorkingDirectory, appMcpAccess: fileInputs ? 'none' : 'scoped' }),
     createSelected: (configuration, conversationId, fileInputs, recovery) => {
@@ -1359,7 +1414,7 @@ export function buildProductionApp(
   resolveOperatorManager.prepareAccountBinding = async (configuration, conversationId) => {
     const binding = await providerAccounts.runtimeBinding('operator-command', `${conversationId}:session`,
       configuration.harness, configuration.harnessProfileSelection)
-    if (binding?.kind === 'slot') operatorAccountBindings.set(conversationId, binding)
+    if (binding) operatorAccountBindings.set(conversationId, binding)
     else operatorAccountBindings.delete(conversationId)
   }
   resolveOperatorManager.recoverCompaction = recoverChatCompaction

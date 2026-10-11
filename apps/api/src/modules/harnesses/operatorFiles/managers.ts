@@ -1,3 +1,4 @@
+import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { PostgresOperatorConversationRepository } from '../../conversations/operatorChatRepository.js'
 import type { FastifyInstance } from 'fastify'
@@ -25,6 +26,7 @@ export function productionOperatorManagers(input: {
   processRegistry: Pick<NativeProcessRegistry, 'scope' | 'closeOwner'>
   responseJournal: NativeResponseJournal
   managers: Map<string, NativeHarnessSessionManager>
+  accountBinding?: (conversationId: string) => AcceptedProviderAccountBinding | undefined
   nativeFactories?: NativeHarnessFactories
   createSelected?: (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs: boolean, recovery: ReturnType<NativeProcessRegistry['scope']>) => NativeHarnessSessionManager
   createClaude?: (configuration: OperatorConfigurationVersion, conversationId: string, fileInputs: boolean, recovery: ReturnType<NativeProcessRegistry['scope']>) => NativeHarnessSessionManager
@@ -65,7 +67,9 @@ export function productionOperatorManagers(input: {
       return manager
     }
     const selection = input.selectInstallation?.(configuration)
+    const accountBinding = input.accountBinding?.(conversationId)
     const { manager } = factories.allocate({
+      ...(accountBinding ? { accountBinding } : {}),
       ...(selection ? { selection } : {}),
       role: 'operator', workingDirectory: input.workingDirectory, ownerAgentId: configuration.operatorId,
       configured: { instanceId: selection?.instance.instanceId ?? configuration.operatorId, instanceRevision: configuration.id, driverId: configuration.harness.harness,

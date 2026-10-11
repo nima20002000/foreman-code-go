@@ -29,14 +29,14 @@ function fixture() {
   const request = { version: 1, target: binding.target, connection: identity, request: { kind: 'status', binding } }
   const context = { binding: connection, signal: new AbortController().signal }
   return { extension, request, context, observeAccount, resolve, authorize,
-    change: (value: DeviceSessionBinding) => { current = value }, connection }
+    change: (value: DeviceSessionBinding) => { current = value }, connection, binding }
 }
 
 describe('qualified Worker account extension', () => {
   it('advertises a versioned narrow port and returns metadata without local paths', async () => {
     const f = fixture()
     expect(f.extension).toMatchObject({ namespace: 'provider-accounts-v1', version: 1,
-      role: 'server', maxBinaryBytes: 0 })
+      role: 'duplex', maxBinaryBytes: 0 })
     const result = await f.extension.handle!(f.request, f.context)
     expect(result.payload).toMatchObject({ status: 'unavailable', readiness: 'unknown' })
     expect(JSON.stringify(result)).not.toContain('/private')
@@ -101,4 +101,14 @@ it('resolves only a locally retained accepted Worker slot without a default or p
   await expect(resolver.resolve('codex', randomUUID(), { acceptedBinding: binding }))
     .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_BINDING_UNAVAILABLE' })
   expect(f.resolve).toHaveBeenCalledTimes(1)
+})
+
+it('requires live Main binding readback before runtime recovery even when the original local slot still exists', async () => {
+  const f = fixture()
+  const validate = vi.fn(async () => { throw new Error('The original account was removed on Main') })
+  const resolver = workerProviderAccountResolver({ current: () => f.connection, resolve: f.resolve, validate })
+  await expect(resolver.resolve('codex', f.request.request.binding.accountId, { allowDefault: false, acceptedBinding: f.request.request.binding }))
+    .rejects.toThrow('removed on Main')
+  expect(validate).toHaveBeenCalledWith(f.request.request.binding)
+  expect(f.resolve).not.toHaveBeenCalled()
 })

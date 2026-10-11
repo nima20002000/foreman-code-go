@@ -2,7 +2,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { PROVIDER_ACCOUNT_WORKER_NAMESPACE, ProviderAccountWorkerRequestSchema,
   ProviderAccountObservationSchema, ProviderAccountModelsSchema, ProviderAccountNativeAuthenticationObservationSchema,
-  type ProviderAccountWorkerRequest } from '@foreman-code/contracts/provider-accounts'
+  ProviderAccountNativeDiscoverySchema, ProviderAccountSchema,
+  type ProviderAccountBinding, type ProviderAccountWorkerRequest } from '@foreman-code/contracts/provider-accounts'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
@@ -36,8 +37,11 @@ export class ProviderAccountWorkerCarrier {
       || connection.authorizationRevision !== target.authorizationRevision) {
       throw new DomainError('PROVIDER_ACCOUNT_WORKER_BINDING_CONFLICT', 'The Worker installation or authority changed.', 409)
     }
-    const binding = 'binding' in request ? request.binding : request.operation.binding
-    if (!isDeepStrictEqual(binding.target, target)) {
+    let binding: ProviderAccountBinding | undefined
+    if ('binding' in request) binding = request.binding
+    else if ('operation' in request) binding = request.operation.binding
+    else if (request.kind === 'provision') binding = request.account.binding
+    if (binding && !isDeepStrictEqual(binding.target, target)) {
       throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT', 'This slot belongs to another target.', 409)
     }
     const input = ProviderAccountWorkerRequestSchema.parse({ version: 1, target, connection, request })
@@ -47,6 +51,21 @@ export class ProviderAccountWorkerCarrier {
     if (!current || !isDeepStrictEqual(channel.binding, current.binding) || result.bytes !== undefined) {
       throw new DomainError('PROVIDER_ACCOUNT_WORKER_BINDING_CONFLICT', 'The original account channel is no longer current.', 409)
     }
+    if (request.kind === 'discover') return ProviderAccountNativeDiscoverySchema.parse(result.payload)
+    if (request.kind === 'register') {
+      const payload = result.payload as { profileRef?: unknown }
+      if (payload?.profileRef !== request.profileRef || Object.keys(payload).length !== 1) {
+        throw new DomainError('PROVIDER_PROFILE_UNQUALIFIED', 'The Worker returned another profile reference.', 409)
+      }
+      return { profileRef: request.profileRef }
+    }
+    if (request.kind === 'provision') {
+      const account = ProviderAccountSchema.parse(result.payload)
+      if (!isDeepStrictEqual(account.binding, request.account.binding)) throw new DomainError(
+        'PROVIDER_ACCOUNT_BINDING_CONFLICT', 'The Worker provisioned another slot.', 409)
+      return account
+    }
+    if (!binding) throw new DomainError('PROVIDER_ACCOUNT_BINDING_UNAVAILABLE', 'The Worker account binding is unavailable.', 409)
     if (request.kind === 'status') {
       const observed = ProviderAccountObservationSchema.parse(result.payload)
       if (observed.bindingRevision !== binding.bindingRevision || observed.generation !== connection.connectionGeneration) {

@@ -63,11 +63,15 @@ it('uses one advertised authenticated account channel and rejects revoked or rei
     const carrier = new ProviderAccountWorkerCarrier(() => endpoint, async (principal, target, request) => {
       const action = request.kind === 'status' || request.kind === 'models' || request.kind === 'observe'
         ? 'provider_accounts:read' : 'provider_accounts:manage'
-      const id = 'binding' in request ? request.binding.accountId : request.operation.binding.accountId
+      let id: string | undefined
+      if ('binding' in request) id = request.binding.accountId
+      else if ('operation' in request) id = request.operation.binding.accountId
+      else if (request.kind === 'provision') id = request.account.id
       requireAuthorization(await readLiveManagementPrincipal(db.pool, principal.id), action, {
         mainId: target.hostRef.mainId,
         ...(target.hostRef.kind === 'device' ? { deviceId: target.hostRef.deviceId } : {}),
-        applicationInstallationId: target.applicationInstallationId, providerAccountId: id,
+        applicationInstallationId: target.applicationInstallationId,
+        ...(id ? { providerAccountId: id } : {}),
       })
     })
     const request = { kind: 'status' as const, binding }
