@@ -45,7 +45,10 @@ import { approvalFixture } from './wave25ApprovalFixture.js'
  * registration are retained. Only provider transport and filesystem identity
  * qualification are synthetic. This is not a buildProductionApp/HTTP test. */
 export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1,
-  options: { databaseUrl?: string; acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
+  options: { databaseUrl?: string;
+    /** A suite-owned database; the caller closes it after all runtimes shut down. */
+    database?: Awaited<ReturnType<typeof agent3Database>>;
+    acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
     nativeSourcePersisted?: Parameters<typeof createWorkflowRepositoryServices>[2];
     nativeCommitted?: ConstructorParameters<typeof PostgresRunRepository>[4];
     approvalNodeIds?: string[]; insertRun?: boolean; workerParallelism?: number;
@@ -54,7 +57,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     preparePlacementExecution?: RepeatRepositoryServices['preparePlacementExecution'];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
     recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
-  const db = await agent3Database(options.databaseUrl)
+  const db = options.database ?? await agent3Database(options.databaseUrl)
   const engines: LangGraphWorkflowEngine[] = []
   try {
     const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
@@ -147,10 +150,16 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
         // Shutdown runs before ending their pools; all timing gates in the test
         // must be released in finally blocks before entering fixture cleanup.
         try { for (const engine of engines.reverse()) await engine.shutdown() }
-        finally { await db.close() }
+        finally {
+          if (!options.database) await db.close()
+        }
       } }
   } catch (error) {
-    try { for (const engine of engines.reverse()) await engine.shutdown() } finally { await db.close() }
+    try {
+      for (const engine of engines.reverse()) await engine.shutdown()
+    } finally {
+      if (!options.database) await db.close()
+    }
     throw error
   }
 }
