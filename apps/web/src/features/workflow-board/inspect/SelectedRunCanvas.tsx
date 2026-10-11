@@ -22,8 +22,11 @@ import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
 import { runsSelectorApi } from '../../runs-selector/client'
 import { isRunAccessError } from '../../runs-selector/query'
 import { runBoardCi } from '../../run-board/model'
-import { ciNodePresentation } from '../../run-board/ciPresentation'
 import { useRunChoreography } from './runChoreography'
+import { useInteractionsQuery } from '../../../shared/api/query'
+import { useApprovalInboxStore } from '../../approvals/approvalInboxStore'
+import { activeCiJobs, interactionWaits, liveNodeView } from './runLiveStatus'
+import { RunLiveStatus } from './RunLiveStatus'
 import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
 import type { SubagentLayoutNode } from '../../run-subagents/layout'
 import './inspection.css'
@@ -136,6 +139,17 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       ? runBoardCi(data.snapshot, data.activitySnapshot) : new Map<string, CiActivity>()
   }, [ciQuery.data, ciQuery.isError, scope.workflowVersionId])
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
+  const ciJobs = useMemo(() => {
+    const data = ciQuery.isError ? undefined : ciQuery.data
+    return data?.snapshot.kind === 'available' && data.snapshot.workflowVersionId === scope.workflowVersionId
+      ? activeCiJobs(data.activitySnapshot, scope.runId) : []
+  }, [ciQuery.data, ciQuery.isError, scope.workflowVersionId, scope.runId])
+  const live = Boolean(record && record.state.run.executionState !== 'completed')
+  // The same pending-request read as the approval inbox; this Run's requests name why its Agents wait.
+  const pending = useInteractionsQuery({ workspaceId: scope.workspaceId, workflowId: scope.workflowId, status: 'pending', limit: 100 }, live)
+  const names = useMemo(() => new Map(topology?.nodes.map((node) => [node.id, node.label])), [topology])
+  const waits = useMemo(() => interactionWaits(record, pending.isError ? [] : pending.data?.items ?? [], names),
+    [record, pending.data, pending.isError, names])
   const states = useMemo(() => pinnedNodeStates(record), [record])
   const choreography = useRunChoreography(record, topology?.edges)
   // One line per agent pair: an approval beside a handoff is drawn on the handoff's line.
@@ -204,8 +218,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       const nodeFacts:Facts = node.kind==='job'?{...unknownFacts,harness:undefined,harnessLabel:'Job',roleLabel:'Job',model:undefined,meta:[{label:'Revision',value:String(node.jobDefinitionRevision)}]}:facts.get(node.configurationId)??unknownFacts
       const baseView = !record ? { state: 'unavailable' as const, label: 'Unavailable' }
         : choreography.nodes.get(node.id) ?? { state: 'idle' as const, label: 'Not started' }
-      const ci = cis.get(node.id)
-      const view = ci ? { ...baseView, label: `${baseView.label} · ${ciNodePresentation(ci).label}` } : baseView
+      const current = liveNodeView(baseView, waits.get(node.id), cis.get(node.id))
+      const view = current === baseView ? baseView : { ...baseView, ...current }
       const shown = `${view.state}:${view.label}:${'transition' in view ? `${view.transition}@${view.transitionKey}` : ''}`
       const cached = previous.current.get(node.id)
       const execution = node.kind === 'job' ? jobExecutions.get(node.id) : undefined
@@ -218,7 +232,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     }) ?? []
     previous.current = next
     return result
-  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis])
+  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits])
   const layoutById = useMemo(() => new Map(layout?.map((node) => [node.id, node])), [layout])
   const pinnedById = useMemo(() => new Map(version?.definition.nodes.map((node) => [node.id, node])), [version])
   const presented = useRef(new Map<string, { source: RunNode; node: RunNode }>())
@@ -266,6 +280,9 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   return <section className="next-draft-canvas board-draft-canvas pinned-run-canvas" aria-label="Selected Run pinned topology">
     {/* Seen, the Run is just this Board; the small Run tag names it. Assistive tech still gets the exact pins. */}
     <h2 className="visually-hidden">{version?.definition.name ?? 'Selected Run'} · Run {scope.runId} · version {scope.workflowVersionId}</h2>
+    <RunLiveStatus live={live} ci={ciJobs} waits={waits}
+      nodes={nodes.map((node) => ({ id: node.id, name: node.data.label, state: node.data.state, label: node.data.status }))}
+      onOpenDecision={() => useApprovalInboxStore.getState().openInbox({ workspaceId: scope.workspaceId, workflowId: scope.workflowId })} />
     {query.isPaused ? <p role="status">Pinned topology refresh is paused. Any retained topology is a previously verified saved version.</p>
       : query.isPending ? <p role="status">Loading this Run’s exact saved topology…</p> : null}
     {query.isError || denied || canonicalDenied ? <Alert tone="warning" title="The selected Run topology is unavailable.">
