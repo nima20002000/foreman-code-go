@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.63] - 2026-10-11
+
+### CI
+
+- CPU-heavy integration files count as two slots, so a small runner never runs more heavy work than its CPUs carry.
+- CircleCI takes integration partitions only; check and unit parts run on GitHub Actions or build computers.
+
+### Fixes
+
+- A Worker chat continuation no longer stalls when Main's reconciliation runs before the Worker journals the turn.
+
 ## [0.0.62] - 2026-10-11
 
 ### CI
