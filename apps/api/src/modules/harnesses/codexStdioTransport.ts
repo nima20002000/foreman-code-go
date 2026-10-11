@@ -1,7 +1,9 @@
 import { beginRuntimeTiming, runtimeTimingPoint } from '../diagnostics/runtimeTiming.js'
+import { randomUUID } from 'node:crypto'
 import { HarnessExecutionError } from './errors.js'
 import { spawnOwnedStdioProcess } from './process.js'
-import { nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
+import { attachDetachedStdio, detachRecoveredChild, hasDetachedStdioProcess,
+  nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets } from './secrets.js'
 import { openCodexRuntimeTiming } from './codexRuntimeTiming.js'
 
@@ -62,6 +64,14 @@ const MODEL_REFRESH_FAILURE = 'failed to refresh available models:'
 /** All stream and dispatch failures end at this boundary, never at EventEmitter. */
 export class CodexStdioTransport {
   private owned?: ReturnType<typeof spawnOwnedStdioProcess>
+  private reconnected?: Awaited<ReturnType<typeof attachDetachedStdio>>
+  private readonly requestPrefix = randomUUID()
+  private detached = false
+  reattached(): boolean { return this.reconnected !== undefined }
+  retainedThreadSettings(threadId: string): JsonObject | undefined {
+    const settings = this.reconnected?.threadSettings[threadId]
+    return isObject(settings) ? settings : undefined
+  }
   private readonly operations = new Map<RequestId, Operation>()
   private readonly uncertainOperations = new Map<RequestId, Operation>()
   private readonly writes = new Set<(error: Error) => void>()
@@ -84,11 +94,22 @@ export class CodexStdioTransport {
     /** Process-local only; never edits the native configuration file. */
     private readonly disabledMcpServerNames: readonly string[] = [],
     private readonly onModelRefreshFailure?: () => void,
+    private readonly restartOptions: { reconnectableStdio?: boolean } = {},
   ) {}
 
   async start(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
-    if (this.owned || this.stopped) throw new HarnessExecutionError('CODEX_TRANSPORT_REUSED', 'Create a new provider transport.')
+    if (this.owned || this.reconnected || this.stopped) throw new HarnessExecutionError('CODEX_TRANSPORT_REUSED', 'Create a new provider transport.')
+    if (this.restartOptions.reconnectableStdio && this.processRecovery && hasDetachedStdioProcess(this.processRecovery)) {
+      this.reconnected = await attachDetachedStdio(this.processRecovery, signal)
+      const socket = this.reconnected.socket
+      socket.on('error', error => this.fail(error))
+      socket.on('close', () => this.fail(new HarnessExecutionError(
+        'CODEX_APP_SERVER_DISCONNECTED', 'The original Codex observer disconnected.')))
+      void this.readFrames().catch(error => this.fail(error instanceof Error ? error : new Error('Codex dispatch failed.')))
+      socket.resume()
+      return
+    }
     if (this.disabledMcpServerNames.some((name) => !/^[A-Za-z0-9_-]+$/.test(name))) {
       throw new HarnessExecutionError('CODEX_APP_MCP_UNAVAILABLE', 'The App MCP name cannot be represented safely by a native dotted-key override.')
     }
@@ -105,6 +126,7 @@ export class CodexStdioTransport {
         onError: (error) => this.fail(error),
         ...(this.onModelRefreshFailure ? { preserveReadableDrain: true } : {}),
         ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
+        ...(this.restartOptions.reconnectableStdio && this.processRecovery ? { reconnectableStdio: true } : {}),
       })
     } catch (error) { await this.closeTiming(); throw error }
     const { child, closed } = this.owned
@@ -133,7 +155,7 @@ export class CodexStdioTransport {
     method: string, params?: JsonObject, signal?: AbortSignal,
     late?: (value: unknown, error?: Error) => void,
   ): Promise<unknown> {
-    const id = this.nextId++
+    const id = `${this.requestPrefix}:${this.nextId++}`
     let frame: string
     try {
       signal?.throwIfAborted()
@@ -164,7 +186,7 @@ export class CodexStdioTransport {
       // Once write is attempted, neither EPIPE nor abort proves non-delivery.
       operation.submitted = true
       try {
-        this.owned!.child.stdin.write(frame, (error) => {
+        this.input().write(frame, (error: Error | null | undefined) => {
           if (error) this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_UNCERTAIN')
         })
       } catch {
@@ -193,15 +215,35 @@ export class CodexStdioTransport {
   }
 
   close(): Promise<void> {
+    if (this.detached) return Promise.resolve()
     if (this.closePromise) return this.closePromise
     this.stop(new HarnessExecutionError('CODEX_APP_SERVER_CLOSED', 'Codex transport was closed.'))
     const physical = this.onModelRefreshFailure ? this.closeModelInspection()
-      : this.owned?.close() ?? Promise.resolve()
+      : this.reconnected?.close() ?? this.owned?.close() ?? Promise.resolve()
     const attempt = this.timing ? physical.then(() => this.closeTiming()) : physical
     this.closePromise = attempt
     // A failed cleanup stays fenced, but the next explicit close must retry it.
     void attempt.catch(() => { if (this.closePromise === attempt) this.closePromise = undefined })
     return attempt
+  }
+
+  async detachForRestart(): Promise<void> {
+    if (this.detached) return
+    if (!this.restartOptions.reconnectableStdio || !this.processRecovery) {
+      await this.close()
+      return
+    }
+    this.stop(new HarnessExecutionError('CODEX_APP_SERVER_DETACHED', 'Codex observation paused for restart.'))
+    if (this.reconnected) await this.reconnected.detach()
+    else if (this.owned) await detachRecoveredChild(this.owned.child)
+    this.detached = true
+    await this.closeTiming()
+  }
+
+  private input() {
+    if (this.reconnected) return this.reconnected.socket
+    if (!this.owned) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex is not connected.')
+    return this.owned.child.stdin
   }
 
   private async closeTiming() {
@@ -236,6 +278,7 @@ export class CodexStdioTransport {
 
   /** Current writable callback channel only; this snapshot is not delivery evidence. */
   isConnected(): boolean {
+    if (this.reconnected) return !this.stopped && !this.reconnected.socket.destroyed
     const child = this.owned?.child
     if (this.stopped || !child) return false
     try {
@@ -246,7 +289,7 @@ export class CodexStdioTransport {
   }
 
   private assertConnected(code = 'CODEX_APP_SERVER_DISCONNECTED'): void {
-    if (this.stopped || !this.owned || this.owned.child.stdin.destroyed) {
+    if (this.stopped || this.input().destroyed) {
       throw new HarnessExecutionError(code, 'Codex app-server is not connected.')
     }
   }
@@ -268,7 +311,7 @@ export class CodexStdioTransport {
       }
       const timer = setTimeout(() => finish(new Error('Provider write timed out.')), this.timeoutMs)
       this.writes.add(finish)
-      try { this.owned!.child.stdin.write(frame, finish) } catch (error) {
+      try { this.input().write(frame, finish) } catch (error) {
         finish(error instanceof Error ? error : new Error('Provider write failed.'))
       }
     })
@@ -292,7 +335,7 @@ export class CodexStdioTransport {
   }
 
   private async readFrames(): Promise<void> {
-    const stdout = this.owned!.child.stdout
+    const stdout = this.reconnected?.socket ?? this.owned!.child.stdout
     stdout.setEncoding('utf8')
     let pending = ''
     for await (const chunk of stdout) {

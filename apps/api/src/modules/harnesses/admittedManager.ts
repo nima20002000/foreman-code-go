@@ -36,6 +36,8 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
   const manager: NativeHarnessSessionManager = {
     harness,
     requiresRuntimeClosure: () => allocation?.manager.requiresRuntimeClosure?.() ?? Boolean(allocation),
+    canDetachForRestart: session => allocation?.manager.canDetachForRestart?.(session) ?? false,
+    originalEnvironment: async (session, signal) => (await actual(signal)).originalEnvironment?.(session, signal),
     capabilities: async signal => (await actual(signal)).capabilities(signal),
     applySessionPreferences: async (session, preferences, signal) => {
       const current = await actual(signal)

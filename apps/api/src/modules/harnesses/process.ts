@@ -332,6 +332,7 @@ export function spawnOwnedStdioProcess(options: {
   cwd: string
   environment: NodeJS.ProcessEnv
   recovery?: NativeProcessRecovery
+  reconnectableStdio?: true
   onError(error: Error): void
   /** Metadata inspectors need actual readable EOF, not pipe destruction, to classify late diagnostics. */
   preserveReadableDrain?: boolean
@@ -343,6 +344,7 @@ export function spawnOwnedStdioProcess(options: {
   const child = spawnNativeProcess(options.binary, options.args, {
     cwd: options.cwd, env: options.environment,
     purpose: options.preserveReadableDrain ? 'inspection' : 'session',
+    ...(options.reconnectableStdio ? { restartDetachable: true, reconnectableStdio: true } : {}),
     ...(options.recovery ? { recovery: options.recovery } : {}),
   })
   let didClose = false

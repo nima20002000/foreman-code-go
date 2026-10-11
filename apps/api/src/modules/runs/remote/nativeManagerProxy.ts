@@ -64,6 +64,11 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private review: RemoteReviewerRequest | undefined
   private historyCorrelation: string | undefined
   get retainsReviewerSession() { return this.receipt?.retainedReviewer !== undefined && !this.receipt.terminal }
+  canDetachForRestart(session: NativeSessionReference): boolean {
+    return !this.detached && this.session?.nativeSessionId === session.nativeSessionId
+      && this.session.providerVersion === session.providerVersion && !!this.receipt?.native?.turnId
+      && !this.receipt?.stopFence
+  }
   constructor(private readonly options: RemoteNativeManagerOptions) { this.harness = options.harness; this.intent = structuredClone(options.intent) }
   private async request(method: Parameters<RemoteNativeTransport['request']>[0], payload: Record<string, unknown>, signal?: AbortSignal) {
     const { operationId: _operationId, ...fields } = payload

@@ -195,6 +195,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   readonly startInitialTurnBatches?: (start: NativeSessionStart, input: NativeInitialTurnInput & { onTurnOffered?(): void },
     signal?: AbortSignal) => AsyncIterable<NativeHarnessEvent[]>
   readonly inspectResponseAvailability?: NonNullable<ResponseAvailabilityInspector['inspectResponseAvailability']>
+  readonly originalEnvironment?: NonNullable<NativeHarnessSessionManager['originalEnvironment']>
 
   constructor(
     private readonly manager: NativeHarnessSessionManager & ResponseAvailabilityInspector,
@@ -203,6 +204,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     private readonly leaseMs = 30_000,
   ) {
     this.harness = manager.harness
+    if (manager.originalEnvironment) this.originalEnvironment = manager.originalEnvironment.bind(manager)
     if (manager.inspectResponseAvailability) this.inspectResponseAvailability = manager.inspectResponseAvailability.bind(manager)
     if (manager.startInitialTurn) {
       this.startInitialTurn = (start, input, signal) => this.initialTurn(start, input, signal)
@@ -211,6 +213,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   }
 
   capabilities: NativeHarnessSessionManager['capabilities'] = (signal) => this.manager.capabilities(signal)
+  canDetachForRestart = (session: NativeSessionReference) => this.manager.canDetachForRestart?.(session) ?? false
   get retainsReviewerSession() { return this.manager.retainsReviewerSession === true }
   prepareReview: NonNullable<NativeHarnessSessionManager['prepareReview']> = async (session, job, signal) => {
     await this.manager.prepareReview?.(session, job, signal)

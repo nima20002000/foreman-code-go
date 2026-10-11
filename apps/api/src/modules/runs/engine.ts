@@ -493,6 +493,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private async requestRestartCleanup(owner: RunOwnership, approvals?: WorkflowRestartApprovals): Promise<void> {
     const { version } = await this.runs.getRepeatSnapshot(owner.runId, owner)
     if (version.definition.handoffs && await settleWorkForRestart(owner, approvals)) return
+    if (await this.nativeExecutions.preserveActiveForRestart(owner)) return
     await this.runs.requestCleanup(owner.runId, owner)
   }
 }

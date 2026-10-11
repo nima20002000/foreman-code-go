@@ -181,6 +181,9 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   readonly harness: AgentHarness
   /** True after native query dispatch; false proves this manager never launched work. */
   requiresRuntimeClosure?(): boolean
+  canDetachForRestart?(session: NativeSessionReference): boolean
+  /** Original scoped credential for a gracefully detached local daemon. */
+  originalEnvironment?(session: NativeSessionReference, signal?: AbortSignal): Promise<Record<string, string> | undefined>
   readonly retainsReviewerSession?: boolean
   prepareReview?(session: NativeSessionReference, job: ReviewJob, signal?: AbortSignal): Promise<void>
   originalApplicationAccess?(session: NativeSessionReference, signal?: AbortSignal):

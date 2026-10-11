@@ -177,7 +177,7 @@ import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpo
 import { createCurrentNativeProductionFactory, isCurrentNativeProductionBinding } from './modules/runs/workflowProduction.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
-import { NativeProcessRegistry, type NativeProcessRecovery } from './modules/harnesses/recovery/processRegistry.js'
+import { hasDetachedStdioProcess, NativeProcessRegistry, type NativeProcessRecovery } from './modules/harnesses/recovery/processRegistry.js'
 import { join, resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
@@ -1195,6 +1195,7 @@ export function buildProductionApp(
       const scope = launchScopes.get(manager)
       if (!scope || scope.owner !== `execution:${executionId}` || scope.launchId) throw new DomainError(
         'NATIVE_LAUNCH_RESERVATION_CONFLICT', 'The exact manager launch scope is unavailable or already reserved.', 409)
+      if (hasDetachedStdioProcess(scope)) return
       Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
     },
     prepareWorkflowManagerContext,

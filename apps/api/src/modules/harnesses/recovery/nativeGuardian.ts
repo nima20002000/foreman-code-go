@@ -1,4 +1,5 @@
 import { CLAUDE_COMPACTION_CAPTURE_SOURCE } from '../claudeSdk/nativeCompactionCapture.js'
+import { CODEX_STDIO_BRIDGE_SOURCE } from './codexStdioBridge.js'
 /**
  * A self-contained Node program. Keeping it in the compiled module avoids a
  * missing .js asset when the API runs through Vitest/tsx rather than dist/.
@@ -90,9 +91,10 @@ function contain(id, dir, owner, boot) {
 }
 let containmentFd
 ${CLAUDE_COMPACTION_CAPTURE_SOURCE}
+${CODEX_STDIO_BRIDGE_SOURCE}
 let capture
 let disconnected=false
-let stopping=false,started=false,leader=false,detached=false
+let stopping=false,started=false,leader=false,detached=false,detachRecorded=false
 function killTree() {
   // The cgroup includes detached descendants and is pinned by an open fd.
   if(containmentFd!==undefined) {
@@ -148,6 +150,7 @@ process.on('message',input=>{
     leader=true
     const certificate={format:1,id:intent.id,owner:intent.owner,boot,guardian:live}
     let provider
+    let bridge
     const expected=Buffer.from(intent.controlKey,'hex')
     const server=createServer(socket=>{
       let pending=''
@@ -161,13 +164,33 @@ process.on('message',input=>{
         try {
           const message=object(JSON.parse(pending.slice(0,pending.indexOf('\\n'))))
           const supplied=typeof message.controlKey==='string' && /^[0-9a-f]{64}$/.test(message.controlKey)?Buffer.from(message.controlKey,'hex'):Buffer.alloc(0)
-          if(!['stop','detach'].includes(message.operation) || message.id!==intent.id || message.owner!==intent.owner
+          if(!['stop','detach','attach','environment'].includes(message.operation) || message.id!==intent.id || message.owner!==intent.owner
             || message.startTicks!==live.startTicks || supplied.length!==expected.length
             || !timingSafeEqual(supplied,expected)){socket.destroy();return}
           if(message.operation==='detach') {
             if(config.restartDetachable!==true || !provider || stopping){socket.destroy();return}
-            if(!detached)birth(join(dir,'restart-detached.json'),{...certificate,provider})
+            bridge?.detach(message.connectionId)
+            if(!detachRecorded) {
+              birth(join(dir,'restart-detached.json'),
+                {...certificate,provider,reconnectableStdio:config.reconnectableStdio===true})
+              detachRecorded=true
+            }
             detached=true
+          }
+          if(message.operation==='attach' || message.operation==='environment') {
+            if(!bridge || !detached || stopping){socket.destroy();return}
+            if(message.operation==='attach') {
+              if(typeof message.connectionId!=='string'){socket.destroy();return}
+              socket.removeAllListeners('data')
+              socket.write(JSON.stringify({id:intent.id,startTicks:live.startTicks,accepted:true,
+                threadSettings:bridge.settings()})+'\\n')
+              bridge.attach(socket,message.connectionId)
+              detached=false
+              return
+            }
+            socket.end(JSON.stringify({id:intent.id,startTicks:live.startTicks,accepted:true,
+              variables:bridge.environment()})+'\\n')
+            return
           }
           socket.end(JSON.stringify({id:intent.id,startTicks:live.startTicks,accepted:true})+'\\n')
           if(message.operation==='stop')stop()
@@ -188,7 +211,7 @@ process.on('message',input=>{
         const detachable=config.restartDetachable===true
         const pipedOutput=!!config.claudeSessionScope||detachable
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
-          detached:false,stdio:[detachable&&!config.claudeSessionScope?'ignore':'pipe',
+          detached:false,stdio:[detachable&&!config.claudeSessionScope&&!config.reconnectableStdio?'ignore':'pipe',
             pipedOutput?'pipe':'inherit',pipedOutput?'pipe':'inherit'],windowsHide:true})
         // Forward request input after the provider record so fast replies cannot race owner capture.
         try{if(native.pid)provider=identity(native.pid)}catch{}
@@ -216,6 +239,8 @@ process.on('message',input=>{
           process.stdout.on('drain',()=>native.stdout.resume())
           native.stderr.on('data',chunk=>{if(!stderrClosed && !process.stderr.write(chunk))native.stderr.pause()})
           process.stderr.on('drain',()=>native.stderr.resume())
+        } else if(config.reconnectableStdio) {
+          bridge=codexStdioBridge(native,environment,()=>detached)
         } else if(detachable) {
           native.stdout.on('data',chunk=>{if(!detached&&process.connected)process.stdout.write(chunk)})
           native.stderr.on('data',chunk=>{if(!detached&&process.connected)process.stderr.write(chunk)})
