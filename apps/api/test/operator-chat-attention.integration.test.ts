@@ -182,7 +182,10 @@ describe.skipIf(!connectionString)('Operator conversation attention', () => {
       expect(answered.isError).not.toBe(true)
       const resolved = decodeMcpToolResult(await client.callTool({ name: 'operator_chat_get',
         arguments: { conversationId: conversation.id } }))
-      expect(resolved).toMatchObject({ activeRequestId: null, pendingInteraction: null })
+      expect(resolved).toMatchObject({ activeRequestId: null })
+      expect(resolved).not.toHaveProperty('pendingInteraction')
+      expect(resolved).not.toHaveProperty('responseDelivery')
+      expect(resolved).not.toHaveProperty('responseAvailability')
       expect(await chat.summaries(issued.principal, undefined, true)).toEqual([])
       expect(await chat.summaries(issued.principal)).toEqual([
         expect.objectContaining({ conversationId: conversation.id, needsAttention: false }),
