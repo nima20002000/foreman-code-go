@@ -1,13 +1,13 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { CiSuite, CiScope } from '@foreman-code/contracts'
+import type { CiExecutionSuite, CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
 import type { CloudRun } from './cloud.js'
 
 export type CloudStatus = { done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string }
 export interface CloudDispatchInput {
-  mirror: string; branch: string; runId: string; suite: CiSuite; slice: string
+  mirror: string; branch: string; runId: string; suite: CiExecutionSuite; slice: string
   scope?: CiScope; files?: string
 }
 
@@ -27,7 +27,7 @@ export interface CloudProvider {
   find(run: CloudRun): Promise<string | null>
   status(run: CloudRun): Promise<CloudStatus>
   log(run: CloudRun): Promise<string>
-  /** The measured integration file durations the run left as an artifact. */
+  /** The measured test file durations the run left as an artifact. */
   durations(run: CloudRun, directory: string): Promise<unknown>
   cancel(run: CloudRun): Promise<void>
 }

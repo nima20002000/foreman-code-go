@@ -3,7 +3,7 @@ import { homedir, hostname, userInfo } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, WorkspaceSchema, integrationPartition,
-  type CiDurations, type CiHostReply, type CiHostRun, type CiPartition, type CiSuite, type CiScope } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRun, type CiPartition, type CiSuite, type CiPart, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { ensureClone, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
@@ -16,7 +16,7 @@ export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
   providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; durations?: CiDurations
-  scope?: CiScope; files?: string[]
+  scope?: CiScope; files?: string[]; part?: CiPart
 }
 type Mirrors = (repository: string) => Promise<string | null>
 
@@ -96,12 +96,12 @@ export class CloudCi {
   }
 
   private view(run: CloudRun, logBytes: number): CiHostRun {
-    return { runId: run.runId, state: run.state, step: run.state === 'starting' ? 'dispatch' : run.suite,
+    return { runId: run.runId, state: run.state, step: run.state === 'starting' ? 'dispatch' : run.part ?? run.suite,
       exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes, message: run.message }
   }
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
-    partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
+    part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
     files?: string[] | undefined }): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(() => null)
     if (existing) return this.view(existing, 0)
@@ -110,15 +110,18 @@ export class CloudCi {
       throw new DomainError('CI_CLOUD_UNAVAILABLE', `This workspace has no CI mirror, or Main is not logged in to ${this.provider.label}.`, 409)
     }
     const { git, branch } = await this.publish(request.repository, mirror, request.commit)
-    const slice = request.suite === 'integration' && (request.partition || request.scope === 'affected')
+    let slice = request.suite === 'integration' && (request.partition || request.scope === 'affected')
       ? await this.slice(git, request.commit, request.partition, request.durations ?? {}, request.files) : ''
+    if (request.scope !== 'affected' && request.partition && request.part) {
+      slice = `${request.partition.index + 1}/${request.partition.count}`
+    }
     const files = request.scope === 'affected' && request.suite !== 'integration'
       ? await this.selectedIndexes(git, request.commit, request.files ?? []) : undefined
     let run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
-      suite: request.suite, startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
+      suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
       scope: request.scope ?? 'full', files: request.files ?? [],
       finishedAt: null, exitCode: null, message: null })
-    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.suite, slice,
+    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.part ?? request.suite, slice,
       ...(request.scope === 'affected' ? { scope: request.scope } : {}), ...(files !== undefined ? { files } : {}) })
     if (providerRunId) run = await this.save({ ...run, providerRunId, state: 'running' })
     return this.view(run, 0)
@@ -252,7 +255,7 @@ export class CloudCi {
     await writeFile(this.path(runId, 'log'), Buffer.from(await this.provider.log(run).catch(() => '')).subarray(-LOG_LIMIT),
       { mode: 0o600 })
     let durations: CiDurations | undefined
-    if (run.suite === 'integration') {
+    if (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web') {
       const parsed = CiDurationsSchema.safeParse(await this.provider.durations(run, join(this.root, 'runs', runId, 'artifact'))
         .catch(() => null))
       if (parsed.success) durations = parsed.data

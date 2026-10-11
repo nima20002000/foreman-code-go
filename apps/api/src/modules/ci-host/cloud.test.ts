@@ -99,6 +99,42 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
 }
 
 describe('GitHub Actions CI on a public mirror', () => {
+  it.each(['github', 'circleci'] as const)('dispatches unit part names and one-based shards through %s', async provider => {
+    const f = await fixture({}, { provider })
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+      suite: 'unit', part: 'unit-web', partition: { index: 1, count: 3 } })
+    const command = provider === 'github' ? f.dispatched[0]! : f.circle.triggered[0]!
+    expect(command).toContain('suite=unit-web')
+    expect(command).toContain('slice=2/3')
+  })
+
+  it.each(['github', 'circleci'] as const)('passes already sharded affected files to the unit part through %s', async provider => {
+    const f = await fixture({ 'apps/api/test/feature.test.ts': 'export {}' }, { provider })
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+      suite: 'unit', part: 'unit-api', scope: 'affected', files: ['apps/api/test/feature.test.ts'],
+      partition: { index: 1, count: 2 } })
+    const command = provider === 'github' ? f.dispatched[0]! : f.circle.triggered[0]!
+    expect(command).toContain('suite=unit-api')
+    expect(command).toContain('slice=')
+    expect(command).toContain('scope=affected')
+    expect(command).toContain('files=s:4')
+  })
+
+  it.each(['github', 'circleci'] as const)('reads measured unit durations from %s artifacts', async provider => {
+    const f = await fixture({}, { provider })
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'unit', part: 'unit-api', partition: { index: 0, count: 5 } })
+    const durations = { 'apps/api/test/feature.test.ts': 250 }
+    f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }]
+    f.github.status = 'completed'
+    f.github.conclusion = 'success'
+    f.github.durations = durations
+    f.circle.outcome = 'succeeded'
+    f.circle.durations = durations
+    expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true }))
+      .toMatchObject({ run: { state: 'passed', step: 'unit-api' }, durations })
+  })
   it('encodes affected integration files against the complete commit inventory before partitioning', async () => {
     const f = await fixture()
     const files = ['apps/api/test/b.integration.test.ts', 'apps/api/test/d.integration.test.ts']

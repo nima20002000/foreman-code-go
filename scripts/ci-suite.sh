@@ -56,11 +56,11 @@ unit_slice() {
 
 if [ "${SCOPE:-full}" = affected ] && [ "$SUITE" != integration ]; then
   case "$SUITE" in
-    unit) ready db; ready clis; delegate_cgroup ;;
-    lint|typecheck) ;;
+    unit|unit-api) ready db; ready clis; delegate_cgroup ;;
+    unit-web|unit-web-heavy|unit-other|lint|lint-api|lint-other|typecheck|typecheck-api|typecheck-other) ;;
     *) echo "Unsupported affected suite $SUITE"; exit 2 ;;
   esac
-  node scripts/ci-affected-run.mjs "$SUITE" --indexes "${SELECTED_FILES:-}"
+  node scripts/ci-affected-run.mjs "${SUITE%%-*}" --indexes "${SELECTED_FILES:-}"
   exit $?
 fi
 

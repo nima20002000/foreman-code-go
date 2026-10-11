@@ -38,6 +38,21 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   await writeFile(join(origin, 'scripts/integration-durations.json'), JSON.stringify({
     'apps/api/test/a.integration.test.ts': 400, 'apps/api/test/b.integration.test.ts': 300,
     'apps/api/test/c.integration.test.ts': 200, 'apps/api/test/d.integration.test.ts': 100 }))
+  await mkdir(join(origin, 'apps/web/src'), { recursive: true })
+  await writeFile(join(origin, 'apps/web/heavy-tests.json'), JSON.stringify({ files: [] }))
+  await writeFile(join(origin, 'scripts/ci-unit-files.mjs'),
+    await readFile(new URL('../../../../../scripts/ci-unit-files.mjs', import.meta.url), 'utf8'))
+  for (const file of ['ci-affected-run.mjs', 'ci-files.mjs']) {
+    await writeFile(join(origin, 'scripts', file), await readFile(new URL(`../../../../../scripts/${file}`, import.meta.url), 'utf8'))
+  }
+  await writeFile(join(origin, 'scripts/test-command.mjs'),
+    "import { spawnSync } from 'node:child_process'; const [, command, ...args] = process.argv.slice(2);"
+      + " const result = spawnSync(command, args, { stdio: 'inherit' }); process.exit(result.status ?? 1);\n")
+  const unitFiles = ['apps/api/test/first.test.ts', 'apps/api/test/second.test.ts',
+    'apps/web/src/first.test.tsx', 'apps/web/src/second.test.tsx']
+  for (const file of unitFiles) await writeFile(join(origin, file), '')
+  await writeFile(join(origin, 'scripts/unit-durations.json'), JSON.stringify(Object.fromEntries(
+    unitFiles.map((file, index) => [file, 100 + index * 10]))))
   git('init', '-q', '-b', 'main'); git('add', '.'); git('commit', '-qm', 'fixture')
   const commit = git('rev-parse', 'HEAD')
   const bin = join(root, 'bin')
@@ -46,7 +61,13 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   // integration suite prints the durations it was given and reports the ones it measured, like the repository's runner.
   const integration = options.measured ? `if [ "$2" = test:integration ]; then echo "expected $(cat "$FOREMAN_CODE_INTEGRATION_DURATIONS")"; `
     + `printf '%s' '${JSON.stringify(options.measured)}' > "$FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT"; fi\n` : ''
-  await writeFile(join(bin, 'corepack'), `#!/bin/bash\necho "corepack $*"\n${integration}if [ "$2" != install ] && [ "$2" != db:up ]; then `
+  const unitReport = `${process.execPath} -e 'const fs = require("node:fs"); const path = require("node:path");
+    const args = process.argv.slice(1); const output = args.find(arg => arg.startsWith("--outputFile.json="));
+    if (output) fs.writeFileSync(output.slice("--outputFile.json=".length), JSON.stringify({ testResults:
+      args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(file), status: "passed", startTime: 1, endTime: 6 })) }));' "$@"\n`
+  await writeFile(join(bin, 'corepack'), `#!/bin/bash\necho "corepack $*"\n${integration}${unitReport}`
+    + 'if [ "$*" = "pnpm --filter @foreman-code/contracts build" ]; then exit 0; fi\n'
+    + 'if [ "$2" != install ] && [ "$2" != db:up ]; then '
     + `${options.pause ? 'read -r pauseInput; ' : ''}exit ${options.suiteExit ?? 0}; fi\n`)
   await chmod(join(bin, 'corepack'), 0o755)
   let notifyUnitStarted!: () => void
@@ -94,6 +115,59 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
 }
 
 describe('host CI runner', () => {
+  it.each([
+    ['lint-api', 'lint', '--filter @foreman-code/api lint'],
+    ['lint-other', 'lint', '-r --no-bail --filter !@foreman-code/api --if-present lint'],
+    ['typecheck-api', 'typecheck', '--filter @foreman-code/api typecheck'],
+    ['typecheck-other', 'typecheck', '-r --filter !@foreman-code/api --if-present typecheck'],
+    ['build-api', 'build', '--filter @foreman-code/api build'],
+    ['build-other', 'build', '-r --filter !@foreman-code/api --if-present build'],
+  ])('executes %s with the package commands used by the cloud suite', async (part, suite, command) => {
+    const f = await computer()
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite, part })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed', step: part })
+    expect(done.text).toContain(`corepack pnpm ${command}`)
+  })
+
+  it.each(['unit-api', 'unit-web'])('executes every file once across %s shards and reports timings', async part => {
+    const f = await computer()
+    const measured: string[] = []
+    for (const index of [0, 1]) {
+      const runId = randomUUID()
+      await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+        suite: 'unit', part, partition: { index, count: 2 } })
+      expect((await f.settle(runId)).run).toMatchObject({ state: 'passed', step: part })
+      const result = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true })
+      expect(result.operation).toBe('read')
+      if (result.operation === 'read') measured.push(...Object.keys(result.durations!))
+    }
+    const project = part === 'unit-api' ? 'apps/api/test' : 'apps/web/src'
+    const extension = part === 'unit-api' ? 'ts' : 'tsx'
+    expect(measured.sort()).toEqual([`${project}/first.test.${extension}`, `${project}/second.test.${extension}`])
+  })
+
+  it('preserves a failing unit part exit code after collecting its durations', async () => {
+    const f = await computer({ suiteExit: 7 })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'unit', part: 'unit-web', partition: { index: 0, count: 2 } })
+    expect((await f.settle(runId)).run).toMatchObject({ state: 'failed', exitCode: 7, step: 'unit-web' })
+  })
+
+  it('executes an affected unit part selection without slicing it again', async () => {
+    const f = await computer()
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'unit', part: 'unit-api', partition: { index: 1, count: 2 }, scope: 'affected',
+      files: ['apps/api/test/first.test.ts'] })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed', step: 'unit-api' })
+    expect(done.text).toContain('corepack pnpm --dir apps/api exec vitest run test/first.test.ts')
+    expect(done.text).not.toContain('test/second.test.ts')
+  })
+
   it('fetches the commit, installs and runs the suite in its own worktree, then frees the worktree', async () => {
     const f = await computer()
     const runId = randomUUID()

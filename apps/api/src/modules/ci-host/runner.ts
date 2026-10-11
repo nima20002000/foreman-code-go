@@ -4,7 +4,7 @@ import { mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/pro
 import { availableParallelism, homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, integrationPartition,
-  type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPartition, type CiScope } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 
 type Command = { code: number; stdout: string; stderr: string }
@@ -34,7 +34,7 @@ interface RunMeta {
   runId: string; repository: string; commit: string; suite: CiSuite; partition: CiPartition | null
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; cleaned: boolean; durations?: CiDurations
-  scope?: CiScope; files?: string[]
+  scope?: CiScope; files?: string[]; part?: CiPart
 }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
@@ -68,7 +68,7 @@ export class HostCiRunner {
         nextOffset = request.afterOffset + bytesRead
       } finally { await handle.close() }
     }
-    // A finished integration run reports the file durations it measured, so Main can learn them.
+    // A finished test run reports the file durations it measured, so Main can learn them.
     const measured = request.durations && !['starting', 'running'].includes(run.state)
       ? CiDurationsSchema.safeParse(await readFile(join(this.runDirectory(request.runId), 'measured-durations.json'), 'utf8')
         .then(text => JSON.parse(text) as unknown).catch(() => null)) : null
@@ -124,7 +124,7 @@ export class HostCiRunner {
   }
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
-    partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined; files?: string[] | undefined }) {
+    part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined; files?: string[] | undefined }) {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
     const busy = await this.active()
@@ -135,6 +135,7 @@ export class HostCiRunner {
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
       suite: request.suite, partition: request.partition ?? null, startedAt: this.ports.now().toISOString(),
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
+      ...(request.part ? { part: request.part } : {}),
       scope: request.scope ?? 'full', files: request.files ?? [],
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
@@ -185,13 +186,18 @@ export class HostCiRunner {
     const suiteScript: Record<CiSuite, string | null> = { install: null, typecheck: 'typecheck', lint: 'lint',
       unit: 'test', build: 'build', integration: 'test:integration' }
     const name = suiteScript[meta.suite]
-    if (name && !scripts[name]) throw new Error(`The repository has no "${name}" script for the ${meta.suite} suite.`)
-    let command = name ? `corepack pnpm ${name}` : ''
+    if (!meta.part && name && !scripts[name]) throw new Error(`The repository has no "${name}" script for the ${meta.suite} suite.`)
+    let command = ''
+    if (meta.part) command = this.partCommand(meta, quote)
+    else if (name) command = `corepack pnpm ${name}`
     if (meta.scope === 'affected' && meta.suite !== 'integration') {
       const selectedPath = join(this.runDirectory(meta.runId), 'selected-files.json')
       await writeFile(selectedPath, JSON.stringify(meta.files ?? []), { mode: 0o600 })
       command = `node scripts/ci-affected-run.mjs ${meta.suite} --files-from ${quote(selectedPath)}`
     }
+    const apiUnit = meta.suite === 'unit' && (meta.part === 'unit-api'
+      || (meta.scope === 'affected' && meta.files?.some(file => file.startsWith('apps/api/'))))
+    if (apiUnit && scripts['db:up']) command = `corepack pnpm db:up && ${command}`
     const run = this.runDirectory(meta.runId)
     let integrationEnvironment = ''
     if (meta.suite === 'integration') {
@@ -224,8 +230,43 @@ export class HostCiRunner {
       `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
       'step install', 'corepack pnpm install --frozen-lockfile || finish $?',
-      ...(command ? [`step ${meta.suite}`, `${command} || finish $?`] : []),
+      ...(command ? [`step ${meta.part ?? meta.suite}`, `${command} || finish $?`] : []),
       'finish 0', ''].join('\n')
+  }
+
+  /** The same package commands and unit selector used by ci-suite.sh, without cloud machine setup. */
+  private partCommand(meta: RunMeta, quote: (value: string) => string): string {
+    const contracts = 'corepack pnpm --filter @foreman-code/contracts build'
+    const part = meta.part!
+    if (part === 'unit-api' || part === 'unit-web') {
+      const run = this.runDirectory(meta.runId)
+      const output = join(run, 'measured-durations.json')
+      const report = `${output}.vitest.json`
+      const list = quote(join(run, 'unit-files'))
+      const slice = meta.partition ? `${meta.partition.index + 1}/${meta.partition.count}` : ''
+      const project = part === 'unit-api' ? 'apps/api' : 'apps/web'
+      const test = part === 'unit-api' ? 'corepack pnpm test' : 'FOREMAN_WEB_TEST_PHASE=fast corepack pnpm exec vitest run'
+      return ['(', `${contracts} || exit $?`,
+        `node scripts/ci-unit-files.mjs select ${part} ${quote(slice)} > ${list} || exit $?`,
+        `mapfile -d '' -t files < ${list} || exit $?`,
+        `code=0; (cd ${project} && ${test} "\${files[@]}" --reporter=default --reporter=json`
+          + ` --outputFile.json=${quote(report)}) || code=$?`,
+        `if [ -f ${quote(report)} ]; then node scripts/ci-unit-files.mjs record ${part} ${quote(report)} ${quote(output)}`
+          + ' || exit $?; fi', 'exit "$code"', ')'].join('\n')
+    }
+    const commands: Record<Exclude<CiPart, 'unit-api' | 'unit-web'>, string> = {
+      'unit-web-heavy': `${contracts} && corepack pnpm --filter @foreman-code/web test:run-graph-smoke`
+        + ' && (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy corepack pnpm exec vitest run)',
+      'unit-other': `${contracts} && corepack pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test`
+        + ' && corepack pnpm test:scripts',
+      'lint-api': `${contracts} && corepack pnpm --filter @foreman-code/api lint`,
+      'lint-other': `${contracts} && corepack pnpm -r --no-bail --filter \'!@foreman-code/api\' --if-present lint`,
+      'typecheck-api': `${contracts} && corepack pnpm --filter @foreman-code/api typecheck`,
+      'typecheck-other': `${contracts} && corepack pnpm -r --filter \'!@foreman-code/api\' --if-present typecheck`,
+      'build-api': `${contracts} && corepack pnpm --filter @foreman-code/api build`,
+      'build-other': 'corepack pnpm -r --filter \'!@foreman-code/api\' --if-present build',
+    }
+    return commands[part]
   }
 
   private async finish(runId: string, state: CiHostRun['state'], exitCode: number | null, message: string | null) {
