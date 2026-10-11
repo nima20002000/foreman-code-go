@@ -144,6 +144,7 @@ Delegate=yes
 WorkingDirectory=@APP@/current/apps/api
 EnvironmentFile=@HOME@/.config/graphql-production/production.env
 Environment=FOREMAN_CODE_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
+Environment=DATABASE_POOL_MAX=40
 Environment=FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY=@APP@/current/worker-artifacts
 Environment=PATH=@PATH@
 ExecStart=@NODE@ @APP@/current/apps/api/dist/server.js
