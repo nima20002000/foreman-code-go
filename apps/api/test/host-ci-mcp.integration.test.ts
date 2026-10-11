@@ -15,7 +15,7 @@ import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { DomainError } from '../src/modules/errors.js'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
-import { bindRunAuthority, currentOperatorAuthority } from '../src/modules/access/runAuthority.js'
+import { acceptRunAuthority, bindRunAuthority, currentOperatorAuthority } from '../src/modules/access/runAuthority.js'
 import { genericCiRepository } from './helpers/genericCiRepository.js'
 
 /** Two build computers that answer the host CI protocol from memory; tests finish their runs. */
@@ -134,9 +134,16 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
         scope: { workspaceIds: [workspaceId] } }])])
     const client = await runtime.db.pool.connect()
     try {
-      const authority = await currentOperatorAuthority(client, runtime.authorizationPrincipalId)
-      await bindRunAuthority(client, runtime.f.run.id, { principal: authority.principal,
-        ownerId: authority.owner.id, callerId: authority.principal.id })
+      await client.query('begin')
+      const owner = await currentOperatorAuthority(client, runtime.authorizationPrincipalId)
+      const authority = await acceptRunAuthority(client, owner.principal)
+      await bindRunAuthority(client, runtime.f.run.id, authority)
+      await client.query(`update runs set record=jsonb_set(record,'{authorizationPrincipalId}',to_jsonb($2::text))
+        where id=$1`, [runtime.f.run.id, authority.principal.id])
+      await client.query('commit')
+    } catch (error) {
+      await client.query('rollback')
+      throw error
     } finally { client.release() }
     await runtime.engine.start(runtime.f.run.id)
     const [interaction] = await runtime.pending()
