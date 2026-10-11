@@ -1,4 +1,4 @@
-import { exclusiveIntegrationFiles } from '../packages/contracts/src/integrationScheduling.mjs'
+import { exclusiveIntegrationFiles, requirements } from '../packages/contracts/src/integrationScheduling.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities } from './integration-capabilities.mjs'
 import { spawn, spawnSync } from 'node:child_process'
@@ -361,21 +361,38 @@ export async function scheduleFiles(files, slots, runFile, shouldStop = () => fa
 
 export async function scheduleIntegrationQueue(files, slots, {
   extraItems = [], executeExtra, runFile, prepareRetest = async () => {},
-  maxConcurrency, profiles = {}, samplePressure, shouldStop = () => false, onEvent,
+  maxConcurrency, profiles = {}, durations = {}, samplePressure, shouldStop = () => false, onEvent,
   pollIntervalMs, onProcessFailure = () => {},
 }) {
-  const integrationItems = files.map((file) => ({ id: file, file, kind: 'integration',
-    exclusive: exclusiveIntegrationFiles.includes(file) }))
+  const queueProfiles = { ...profiles }
+  const integrationItems = files.map((file) => {
+    const durationMs = profiles[file]?.durationMs ?? durations[file]
+    if (Number.isFinite(durationMs) && durationMs >= 0) {
+      queueProfiles[file] = { ...profiles[file], durationMs }
+    }
+    const cpuHeavy = requirements.get(file)?.includes('installedWorkerHost')
+      || [profiles[file]?.durationMs, durations[file]].some((ms) => Number.isFinite(ms) && ms >= 60_000)
+    // The queue capacity scales with CPUs; heavy files reserve two of those slots.
+    return { id: file, file, kind: 'integration', cpuCost: cpuHeavy ? Math.min(2, maxConcurrency) : 1,
+      exclusive: exclusiveIntegrationFiles.includes(file) }
+  })
   const items = [...integrationItems, ...extraItems]
   const busy = new Set()
+  let usedCpuSlots = 0
   let processFailure
   const freeSlot = () => slots.find((slot) => !slot.unavailable && !busy.has(slot.index))
   return scheduleQueue(items, {
-    maxConcurrency, profiles, samplePressure,
+    maxConcurrency, profiles: queueProfiles, samplePressure,
     dedicated: process.env.FOREMAN_CODE_CI_DEDICATED === '1',
     shouldStop: () => Boolean(processFailure) || shouldStop(),
-    onEvent, pollIntervalMs, retest: true,
-    canUseWorker: (_index, item) => item.kind !== 'integration' || Boolean(freeSlot()),
+    onEvent: (event) => {
+      if (event.type === 'start') usedCpuSlots += event.item.cpuCost ?? 1
+      if (event.type === 'finish') usedCpuSlots -= event.item.cpuCost ?? 1
+      onEvent?.(event)
+    },
+    pollIntervalMs, retest: true,
+    canUseWorker: (_index, item) => usedCpuSlots + (item.cpuCost ?? 1) <= maxConcurrency
+      && (item.kind !== 'integration' || Boolean(freeSlot())),
     execute: async (item, context) => {
       if (item.kind !== 'integration') return executeExtra(item, context)
       const slot = freeSlot()
@@ -633,6 +650,8 @@ export async function runIntegration(argv = [], {
     }
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
     console.log(`[integration] chosen shards ${shardCount}, resource cap ${shardPlan.limit}: ${shardPlan.reason}.`)
+    console.log(`[integration] CPU budget ${concurrency}; installed-Worker or measured >=60 s files use`
+      + ` ${Math.min(2, concurrency)} slots; other work uses 1.`)
     for (const entry of unavailable) console.error(`[integration] UNAVAILABLE ${entry.file}: ${entry.reason}`)
     console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file;`
       + ` a file with a known duration is hung after 3x that (at least 60 s more); ${Object.keys(expectedDurations).length} durations known.`)
@@ -852,7 +871,7 @@ export async function runIntegration(argv = [], {
       }
     }
     queueResult = await scheduleIntegrationQueue(runnable, slots, {
-      maxConcurrency: concurrency, profiles, runFile: runSafely, prepareRetest,
+      maxConcurrency: concurrency, profiles, durations: expectedDurations, runFile: runSafely, prepareRetest,
       extraItems,
       executeExtra: (item, context) => executeExtra(item, context, {
         shouldStop: shouldStopQueue, signal: abortController.signal,

@@ -809,6 +809,128 @@ test('integration files launch workspace Vitest directly with package binaries a
 const lowPressure = () => ({ cpuUtilization: 0, cpuPressure: 0,
   memoryPressure: 0, memoryUtilization: 0, totalMemoryBytes: 16 * 1024 ** 3, cpuCount: 8 })
 
+const installedWorkerFiles = [
+  'apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts',
+  'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
+  'apps/api/test/remote-review-production-main-graceful.integration.test.ts',
+]
+const measuredFiles = Array.from({ length: 9 }, (_, index) => `apps/api/test/measured-${index}.integration.test.ts`)
+const ordinaryFiles = Array.from({ length: 5 }, (_, index) => `apps/api/test/ordinary-${index}.integration.test.ts`)
+const cpuSchedulingCases = [
+  {
+    name: 'four CPUs admit two installed-Worker files even with short measurements',
+    capacity: 4, files: installedWorkerFiles,
+    durations: Object.fromEntries(installedWorkerFiles.map(file => [file, 1000])),
+    cost: () => 2, firstWave: installedWorkerFiles.slice(0, 2),
+  },
+  {
+    name: 'failed heavy files release CPU capacity and retest on healthy database slots',
+    capacity: 4, files: installedWorkerFiles, failFile: installedWorkerFiles[0],
+    cost: () => 2, firstWave: installedWorkerFiles.slice(0, 2),
+  },
+  {
+    name: 'four CPUs admit long measured files in longest-first order',
+    capacity: 4, files: measuredFiles.slice(0, 3),
+    durations: { [measuredFiles[0]]: 60_000, [measuredFiles[1]]: 59_999, [measuredFiles[2]]: 70_000 },
+    cost: file => file === measuredFiles[1] ? 1 : 2, firstWave: [measuredFiles[2], measuredFiles[0]],
+  },
+  {
+    name: 'resource profiles classify long files and preserve longest-first order',
+    capacity: 4, files: measuredFiles.slice(0, 3),
+    profiles: Object.fromEntries(measuredFiles.slice(0, 3).map((file, index) => [file, { durationMs: 60_000 + index }])),
+    cost: () => 2, firstWave: [measuredFiles[2], measuredFiles[1]],
+  },
+  {
+    name: 'a long duration remains CPU-heavy when a shorter resource profile exists',
+    capacity: 4, files: measuredFiles.slice(0, 3),
+    durations: Object.fromEntries(measuredFiles.slice(0, 3).map(file => [file, 60_000])),
+    profiles: Object.fromEntries(measuredFiles.slice(0, 3).map(file => [file, { durationMs: 1000 }])),
+    cost: () => 2, firstWave: measuredFiles.slice(0, 2),
+  },
+  {
+    name: 'a heavy file shares four CPU slots with one ordinary file and one gate check',
+    capacity: 4, files: [ordinaryFiles[0], measuredFiles[0], ordinaryFiles[1], ordinaryFiles[2]],
+    durations: { [measuredFiles[0]]: 60_000, [ordinaryFiles[0]]: 59_999 },
+    profiles: { 'gate:check': { durationMs: 70_000 } }, extraItems: [{ id: 'gate:check' }],
+    cost: file => file === measuredFiles[0] ? 2 : 1,
+    firstWave: ['gate:check', measuredFiles[0], ordinaryFiles[0]],
+  },
+  {
+    name: 'sixteen CPUs admit eight heavy files in parallel',
+    capacity: 16, files: measuredFiles,
+    durations: Object.fromEntries(measuredFiles.map(file => [file, 60_000])),
+    cost: () => 2, firstWave: measuredFiles.slice(0, 8),
+  },
+  {
+    name: 'a one-slot runner completes heavy files without stalling',
+    capacity: 1, files: installedWorkerFiles,
+    cost: () => 1, firstWave: installedWorkerFiles.slice(0, 1),
+  },
+  {
+    name: 'ordinary and invalid-duration files retain all four CPU slots',
+    capacity: 4, files: ordinaryFiles,
+    durations: { [ordinaryFiles[0]]: NaN, [ordinaryFiles[1]]: Infinity, [ordinaryFiles[2]]: -1 },
+    cost: () => 1, firstWave: ordinaryFiles.slice(0, 4),
+  },
+]
+
+for (const scenario of cpuSchedulingCases) {
+  test(scenario.name, { timeout: 2000 }, async () => {
+    const waiting = new Map()
+    const started = []
+    let activeCost = 0
+    let peakCost = 0
+    let holding = true
+    let firstWave
+    let releaseHandle
+    const execute = (id) => {
+      started.push(id)
+      if (!holding) return { code: 0, complete: true }
+      return new Promise(resolve => waiting.set(id, resolve))
+    }
+    try {
+      const result = await scheduleIntegrationQueue(scenario.files,
+        Array.from({ length: scenario.capacity }, (_, index) => ({ index: index + 1 })), {
+          maxConcurrency: scenario.capacity, durations: scenario.durations, profiles: scenario.profiles,
+          extraItems: scenario.extraItems, pollIntervalMs: 0.01,
+          samplePressure: () => {
+            if (holding && activeCost >= scenario.capacity && !releaseHandle) {
+              firstWave = [...started]
+              // Release after this admission decision, so overbooking is observable.
+              releaseHandle = setImmediate(() => {
+                holding = false
+                for (const [file, finish] of waiting) {
+                  const failed = file === scenario.failFile
+                  finish({ code: failed ? 1 : 0, complete: true, slotUnavailable: failed })
+                }
+                waiting.clear()
+              })
+            }
+            return { ...lowPressure(), cpuCount: scenario.capacity }
+          },
+          onEvent: (event) => {
+            if (event.type === 'start') activeCost += scenario.cost(event.item.id)
+            if (event.type === 'finish') activeCost -= scenario.cost(event.item.id)
+            peakCost = Math.max(peakCost, activeCost)
+          },
+          runFile: (_slot, file) => execute(file), executeExtra: item => execute(item.id),
+        })
+      assert.deepEqual(firstWave, scenario.firstWave)
+      assert.equal(peakCost, scenario.capacity)
+      assert.equal(activeCost, 0)
+      assert.equal(result.unexecuted.length, 0)
+      for (const item of result.results) {
+        assert.equal(item.status, item.id === scenario.failFile ? 'FLAKY' : 'PASSED')
+      }
+      assert.equal(started.length, scenario.files.length + (scenario.extraItems?.length ?? 0)
+        + (scenario.failFile ? 1 : 0))
+    } finally {
+      clearImmediate(releaseHandle)
+      for (const finish of waiting.values()) finish({ code: 0, complete: true })
+    }
+  })
+}
+
 test('integration and gate checks share the bounded queue and delay exclusive files', async () => {
   const ordinary = 'apps/api/test/ordinary.integration.test.ts'
   const exclusive = 'apps/api/test/dev-startup.integration.test.ts'
