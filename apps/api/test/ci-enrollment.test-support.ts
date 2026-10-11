@@ -179,4 +179,3 @@ async function createFixture(db: Awaited<ReturnType<typeof currentDatabase>>) {
     throw error
   }
 }
-
