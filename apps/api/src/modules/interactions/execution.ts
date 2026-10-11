@@ -924,8 +924,8 @@ export class ApprovalExecutionCoordinator {
     const stopRenewal = !signal.aborted && initial && this.credentials ? maintainCredential({
       expiresAt: () => this.managerCredentials.get(owned.manager)?.expiresAt,
       signal,
+      check,
       refresh: async () => {
-        await check()
         const credential = this.managerCredentials.get(owned.manager)
         if (!credential || credential.principalId !== initial.principalId || credential.environment !== initial.environment
           || !Number.isFinite(Date.parse(credential.expiresAt)) || Date.parse(credential.expiresAt) <= Date.now()) {
@@ -1799,11 +1799,13 @@ export class ApprovalExecutionCoordinator {
       stopRenewal = maintainCredential({
         expiresAt: () => this.managerCredentials.get(manager!)?.expiresAt,
         signal,
-        refresh: async () => {
+        check: async () => {
           signal.throwIfAborted()
           input.owner.assertOwned()
           await this.validateContinuation?.(execution.id, signal)
           input.owner.assertOwned()
+        },
+        refresh: async () => {
           const credential = this.managerCredentials.get(manager!)
           if (!credential) throw new Error('The execution lost its native credential lease.')
           if (Date.parse(credential.expiresAt) <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
