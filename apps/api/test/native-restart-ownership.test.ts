@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type HarnessExecution,
   type NativeSessionReference } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
@@ -23,6 +24,7 @@ vi.mock('../src/modules/interactions/retainedRemoteReviewer.js', () => {
 })
 
 it('shares one reacquired Run owner across sibling retained session detachment', async () => {
+  const saved = makeCurrentWorkflowFixture('restart-ownership', 'approval')
   const createdAt = '2026-10-01T00:00:00.000Z'
   const configuration: AgentConfigurationVersion = {
     id: 'configuration', agentId: 'reviewer', workspaceId: 'workspace', version: 1,
@@ -101,7 +103,11 @@ it('shares one reacquired Run owner across sibling retained session detachment',
     acquireOwnership,
     getExecution: async (id: string) => executions.find(execution => execution.id === id),
     getExecutionConfiguration: async () => configuration,
+    getRepeatVersion: async () => ({ ...saved.version, definition: { ...saved.version.definition,
+      nodes: executions.map(execution => ({ ...saved.version.definition.nodes[0]!, id: execution.workflowNodeId })),
+    } }),
     get: async () => ({ id: 'run', workspaceId: 'workspace', executionState: 'waiting', outcome: 'pending',
+      workflowVersionId: saved.version.id,
       approval: { handler: 'orchestrator', designatedOrchestratorAgentId: configuration.agentId } }),
   } as unknown as Args[0], { coordination } as unknown as Args[1], {} as Args[2], managers, 60_000, {
     recoverRemote: async (id: string) => ({ principalId: `principal:${id}`,
