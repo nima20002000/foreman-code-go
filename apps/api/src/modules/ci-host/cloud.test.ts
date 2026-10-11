@@ -113,7 +113,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.mirrorGit('rev-parse', 'refs/heads/main')).toBe(f.mirrorGit('rev-parse', branch))
     expect(f.dispatched).toEqual([['workflow', 'run', 'ci.yml', '-R', 'octo/site-ci', '--ref', 'main', '-f', `ref=ci/${f.commit}`,
       '-f', `run_id=${runId}`, '-f', 'suite=integration',
-      '-f', 'files=apps/api/test/a.integration.test.ts apps/api/test/d.integration.test.ts']])
+      '-f', 'slice=s:0,3']])
     // A retried start returns the same run without dispatching again.
     await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration',
       partition: { index: 0, count: 2 } })
@@ -162,7 +162,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.mirrorGit('rev-parse', `refs/heads/ci/${f.commit}^{tree}`)).toBe(f.run('rev-parse', 'HEAD^{tree}'))
     expect(f.circle.triggered).toEqual([['run', 'trigger', '--project', 'gh/octo/site-ci', '--branch', `ci/${f.commit}`,
       '--parameter', `run_id=${runId}`, '--parameter', 'suite=integration',
-      '--parameter', 'files=apps/api/test/b.integration.test.ts apps/api/test/c.integration.test.ts', '--json']])
+      '--parameter', 'slice=s:1-2', '--json']])
     const read = () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true })
     expect(await read()).toMatchObject({ run: { state: 'running' } })
     f.circle.outcome = 'failed'; f.circle.durations = { 'apps/api/test/c.integration.test.ts': 180 }

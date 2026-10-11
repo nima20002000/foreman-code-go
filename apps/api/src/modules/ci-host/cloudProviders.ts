@@ -18,7 +18,7 @@ export interface CloudProvider {
   readonly loginHint: string
   ready(): Promise<boolean>
   /** Starts a run; returns the service's run id when it is known at once. */
-  dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; files: string[] }): Promise<string | null>
+  dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; slice: string }): Promise<string | null>
   /** The service's run id of a started run, once the service lists it. */
   find(run: CloudRun): Promise<string | null>
   status(run: CloudRun): Promise<CloudStatus>
@@ -63,10 +63,10 @@ export class GitHubActionsProvider implements CloudProvider {
     return (await this.ports.run('gh', ['auth', 'status', '--hostname', 'github.com'], { timeoutMs: 15_000 })).code === 0
   }
 
-  async dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; files: string[] }) {
+  async dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; slice: string }) {
     // Runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await this.gh(['workflow', 'run', WORKFLOW, '-R', input.mirror, '--ref', 'main', '-f', `ref=${input.branch}`,
-      '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `files=${input.files.join(' ')}`])
+      '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `slice=${input.slice}`])
     return null
   }
 
@@ -115,10 +115,10 @@ export class CircleCiProvider implements CloudProvider {
 
   async ready() { return (await this.ports.run('circleci', ['auth', 'me'], { timeoutMs: 15_000 })).code === 0 }
 
-  async dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; files: string[] }) {
+  async dispatch(input: { mirror: string; branch: string; runId: string; suite: CiSuite; slice: string }) {
     const started = JSON.parse(await this.circleci(['run', 'trigger', '--project', `gh/${input.mirror}`, '--branch', input.branch,
       '--parameter', `run_id=${input.runId}`, '--parameter', `suite=${input.suite}`,
-      '--parameter', `files=${input.files.join(' ')}`, '--json'])) as { id: string }
+      '--parameter', `slice=${input.slice}`, '--json'])) as { id: string }
     return started.id
   }
 

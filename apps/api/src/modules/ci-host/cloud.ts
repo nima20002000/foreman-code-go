@@ -125,25 +125,34 @@ export class CloudCi {
     // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`])
-    const files = request.suite === 'integration' && request.partition
-      ? await this.slice(git, request.commit, request.partition, request.durations ?? {}) : []
+    const slice = request.suite === 'integration' && request.partition
+      ? await this.slice(git, request.commit, request.partition, request.durations ?? {}) : ''
     let run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
       suite: request.suite, startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
       finishedAt: null, exitCode: null, message: null })
-    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.suite, files })
+    const providerRunId = await this.provider.dispatch({ mirror, branch, runId: request.runId, suite: request.suite, slice })
     if (providerRunId) run = await this.save({ ...run, providerRunId, state: 'running' })
     return this.view(run, 0)
   }
 
-  /** The same duration-balanced slice a build computer would run, from the commit's own files and durations. */
+  /** The same duration-balanced slice a build computer would run, from the commit's own files and durations, as
+   * indexes into the commit's sorted integration files (scripts/ci-files.mjs), so it fits a short CI parameter. */
   private async slice(git: (args: string[]) => Promise<string>, commit: string, partition: CiPartition, learned: CiDurations) {
     const files = (await git(['ls-tree', '--name-only', `${commit}:apps/api/test`])).split('\n')
       .filter(name => name.endsWith('.integration.test.ts')).map(name => `apps/api/test/${name}`).sort()
     const committed = await git(['show', `${commit}:scripts/integration-durations.json`])
       .then(text => JSON.parse(text) as Record<string, number>, () => ({}))
-    const slice = integrationPartition(files, { ...committed, ...learned }, partition)
-    if (!slice.length) throw new DomainError('CI_CLOUD_FAILED', 'This partition has no integration files.', 409)
-    return slice
+    const slice = new Set(integrationPartition(files, { ...committed, ...learned }, partition))
+    if (!slice.size) throw new DomainError('CI_CLOUD_FAILED', 'This partition has no integration files.', 409)
+    const indexes = files.flatMap((file, index) => slice.has(file) ? [index] : [])
+    const ranges: string[] = []
+    for (let start = 0; start < indexes.length;) {
+      let end = start
+      while (end + 1 < indexes.length && indexes[end + 1] === indexes[end]! + 1) end++
+      ranges.push(start === end ? `${indexes[start]}` : `${indexes[start]}-${indexes[end]}`)
+      start = end + 1
+    }
+    return `s:${ranges.join(',')}`
   }
 
   /** Refuses to publish files that name this fleet: Main's home path and user, and every Tailscale computer's

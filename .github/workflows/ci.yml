@@ -14,8 +14,8 @@ on:
       suite:
         description: install, typecheck, lint, unit, build or integration
         required: true
-      files:
-        description: The integration files of this partition, space-separated; empty runs them all
+      slice:
+        description: The integration file indexes of this partition (scripts/ci-files.mjs); empty runs them all
         required: false
         default: ''
 
@@ -30,7 +30,7 @@ jobs:
       CI: 'true'
       FOREMAN_CODE_CI_DEDICATED: '1'
       SUITE: ${{ inputs.suite }}
-      FILES: ${{ inputs.files }}
+      SLICE: ${{ inputs.slice }}
     steps:
       - uses: actions/checkout@v4
         with:

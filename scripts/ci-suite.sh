@@ -1,6 +1,7 @@
 #!/bin/bash
 # Runs one CI suite on a fresh cloud machine (GitHub Actions or CircleCI) after `pnpm install`.
-# SUITE: install, typecheck, lint, unit, build or integration. FILES: an integration partition's files, space-separated.
+# SUITE: install, typecheck, lint, unit, build or integration. SLICE: an integration partition's file indexes
+# (scripts/ci-files.mjs); empty runs every file.
 # DURATIONS_OUTPUT: where the integration runner writes the file durations it measured.
 set -euo pipefail
 case "$SUITE" in
@@ -18,7 +19,8 @@ case "$SUITE" in
     cgroup=/sys/fs/cgroup/foreman-ci
     sudo mkdir -p "$cgroup" && sudo chown -R "$(id -u):$(id -g)" "$cgroup"
     echo $$ | sudo tee "$cgroup/cgroup.procs" >/dev/null
+    FILES="$(node scripts/ci-files.mjs "${SLICE:-}")"
     # shellcheck disable=SC2086 # the partition's files are separate arguments
-    pnpm test:integration ${FILES:+--files $FILES} ;;
+    pnpm test:integration ${SLICE:+--files $FILES} ;;
   *) echo "Unknown suite $SUITE"; exit 2 ;;
 esac

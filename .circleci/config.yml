@@ -9,7 +9,7 @@ parameters:
   suite:
     type: string
     default: ''
-  files:
+  slice:
     type: string
     default: ''
 
@@ -23,7 +23,7 @@ jobs:
       CI: 'true'
       FOREMAN_CODE_CI_DEDICATED: '1'
       SUITE: << pipeline.parameters.suite >>
-      FILES: << pipeline.parameters.files >>
+      SLICE: << pipeline.parameters.slice >>
       DURATIONS_OUTPUT: /tmp/ci-durations/durations.json
     steps:
       - checkout
