@@ -4,7 +4,7 @@ import { appendFileSync, closeSync, existsSync, mkdtempSync, openSync, readFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { groupUsed, integrationProcessProgress, stopGroup, superviseIntegrationProcess,
+import { adaptiveDeadlineMs, groupUsed, integrationProcessProgress, stopGroup, superviseIntegrationProcess,
   waitForIntegrationProcess } from './integration-process.mjs'
 import { boundedLog } from './verification-reports.mjs'
 import { fullRunExitCode, scheduleFiles } from './test-integration.mjs'
@@ -285,6 +285,66 @@ test('bounded log retention does not mistake continuing output for an idle proce
   } finally {
     await stopGroup(child.pid, { graceMs: 100 })
     output.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a file with a known duration gets three times that, at least a minute more, scaled and capped', () => {
+  assert.equal(adaptiveDeadlineMs(20_000, 3_600_000), 80_000)
+  assert.equal(adaptiveDeadlineMs(120_000, 3_600_000), 360_000)
+  assert.equal(adaptiveDeadlineMs(120_000, 3_600_000, 2), 720_000)
+  assert.equal(adaptiveDeadlineMs(120_000, 3_600_000, 0.5), 360_000)
+  assert.equal(adaptiveDeadlineMs(30 * 60_000, 3_600_000), 3_600_000)
+  for (const unknown of [undefined, null, 0, -5, Number.NaN, '20000']) assert.equal(adaptiveDeadlineMs(unknown, 3_600_000), null)
+})
+
+test('a file still logging past its adaptive deadline is stopped and reported as hung', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-hung-'))
+  const log = join(directory, 'hung.log')
+  const child = loggedChild(log, "console.log('ready'); setInterval(() => console.log('still waiting'), 20)")
+  try {
+    await waitForLog(log, 'ready')
+    const outcome = await waitForIntegrationProcess(child, { log, idleTimeoutMs: 2000,
+      fileTimeoutMs: 3000, deadlineMs: 300, pollIntervalMs: 20, graceMs: 100 })
+    assert.equal(outcome.code, 124)
+    assert.equal(outcome.timedOut, true)
+    assert.equal(outcome.hung, true)
+    assert.match(outcome.error.message, /hung: still running after its 300 ms deadline/)
+    assert.match(readFileSync(log, 'utf8'), /TIMEOUT: hung/)
+    assert.equal(groupUsed(child.pid), false)
+  } finally {
+    await stopGroup(child.pid, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('the idle watchdog still stops a silent file before its adaptive deadline, and is not called hung', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-silent-'))
+  const log = join(directory, 'silent.log')
+  const child = loggedChild(log, "console.log('ready'); setInterval(() => {}, 1000)")
+  try {
+    await waitForLog(log, 'ready')
+    const outcome = await waitForIntegrationProcess(child, { log, idleTimeoutMs: 200,
+      fileTimeoutMs: 3000, deadlineMs: 2500, pollIntervalMs: 20, graceMs: 100 })
+    assert.equal(outcome.code, 124)
+    assert.equal(outcome.hung, undefined)
+    assert.match(outcome.error.message, /no log output for 200 ms/)
+  } finally {
+    await stopGroup(child.pid, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a file within its adaptive deadline finishes normally', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-watchdog-on-time-'))
+  const log = join(directory, 'on-time.log')
+  const child = loggedChild(log, "console.log('ready'); setTimeout(() => console.log('done'), 100)")
+  try {
+    const outcome = await waitForIntegrationProcess(child, { log, idleTimeoutMs: 2000,
+      fileTimeoutMs: 3000, deadlineMs: 2000, pollIntervalMs: 20, graceMs: 100 })
+    assert.deepEqual(outcome, { code: 0, timedOut: false })
+  } finally {
+    await stopGroup(child.pid, { graceMs: 100 })
     rmSync(directory, { recursive: true, force: true })
   }
 })

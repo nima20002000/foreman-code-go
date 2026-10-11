@@ -10,7 +10,7 @@ import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
   testAdminPool, testEnvironment } from './test-resources.mjs'
-import { groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
+import { adaptiveDeadlineMs, groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
   readVitestReport, privateDirectory, writeReport } from './verification-reports.mjs'
@@ -84,7 +84,7 @@ export function failedFilesFromLog(output, files) {
   const known = new Set(files)
   const failed = new Set()
   for (const line of output.split(/\r?\n/)) {
-    const match = /^\[integration\] FAIL (.*) \(slot \d+, exit /.exec(line)
+    const match = /^\[integration\] (?:FAIL|HUNG) (.*) \(slot \d+, exit /.exec(line)
     if (!match) continue
     if (!known.has(match[1])) throw new Error(`Unknown failed integration file: ${match[1]}`)
     failed.add(match[1])
@@ -103,6 +103,15 @@ export function failedCasesFromLog(output) {
   const names = output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/)
     .map((line) => /^\s*FAIL\s+\S+\s+>\s+(.+)$/.exec(line)?.[1].trim()).filter(Boolean)
   return [...new Set(names)]
+}
+
+/** Where a hung file stopped: its last finished case and its last output line, when the log has them. */
+export function hungContext(output) {
+  const lines = output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('[integration]'))
+  const lastCase = lines.findLast((line) => /^[✓✔×✗↓]\s+\S.* > /.test(line))
+  return { lastCase: lastCase?.replace(/^\S+\s+/, '').replace(/\s+\d+ms$/, '').slice(0, 500) ?? null,
+    lastOutput: lines.at(-1)?.slice(0, 500) ?? null }
 }
 
 export function parseVitestCases(output) {
@@ -148,6 +157,17 @@ export function vitestCommand(environment, file, testNamePattern, json) {
 export function orderByDuration(files, durations) {
   const duration = (file) => Number.isFinite(durations[file]) && durations[file] >= 0 ? durations[file] : Infinity
   return [...files].sort((a, b) => duration(b) - duration(a))
+}
+
+/** Main's learned durations when the host CI runner provides them, otherwise the committed ones. */
+export function integrationDurationsPath(environment) {
+  return readProductEnvironment(environment, 'INTEGRATION_DURATIONS') || join(root, 'scripts', 'integration-durations.json')
+}
+
+/** Wall time of each file that passed on its first attempt; failed and hung files say nothing about their usual time. */
+export function measuredDurations(firstPass) {
+  return Object.fromEntries(firstPass.filter((record) => record.code === 0 && record.complete
+    && Number.isFinite(record.elapsedMs) && record.elapsedMs > 0).map((record) => [record.file, record.elapsedMs]))
 }
 
 export function readDurations(path) {
@@ -224,6 +244,7 @@ export function integrationReport(selected, firstPass, retests, { startedAt, fin
     }
     return { ...details, ...(status ? { status } : {}), totals: report?.totals ?? emptyCounts() }
   })
+  const hungFiles = files.filter((file) => file.status === 'HUNG').map((file) => file.file)
   const completedPortions = files.filter((file) => file.complete).length
   const firstPassFailed = files.filter((file) => file.code !== null && file.code !== 0).length
   const complete = completedPortions === selected.length && !diagnostic && processStopped
@@ -231,7 +252,7 @@ export function integrationReport(selected, firstPass, retests, { startedAt, fin
   if (complete && (firstPassFailed || totals.failed || totals.skipped)) outcome = 'failed'
   if (interrupted) outcome = 'cancelled'
   return { schemaVersion: 1, suite: 'integration', startedAt, finishedAt, totals, environment,
-    expectedPortions: selected.length, completedPortions, firstPassFailed,
+    expectedPortions: selected.length, completedPortions, firstPassFailed, hungFiles,
     disallowedSkipped: diagnostic ? 0 : totals.skipped,
     completeness: complete ? 'complete' : 'partial', outcome, files,
     retests: retests.map(({ report, ...result }) => ({ ...result, totals: report?.totals ?? emptyCounts() })) }
@@ -510,6 +531,7 @@ export async function runIntegration(argv = [], {
     throw new Error('Integration Jobs require an explicit Job-local test database URL')
   }
   const timeouts = integrationTimeouts(env)
+  const expectedDurations = readDurations(integrationDurationsPath(env))
   const admin = await testAdminPool()
   let shardPlan
   try {
@@ -560,9 +582,11 @@ export async function runIntegration(argv = [], {
   process.on('SIGTERM', onSigterm)
   let passed = 0
   let failed = 0
+  let hung = 0
   let skipped = 0
   let unreported = 0
   const failedFiles = []
+  const hungFiles = []
   const retestFailedFiles = new Set()
   const cases = { passed: 0, failed: 0, skipped: 0 }
   const retest = { passed: 0, failed: 0, skipped: 0 }
@@ -610,7 +634,8 @@ export async function runIntegration(argv = [], {
     console.log(`[integration] ${allFiles.length} files discovered; ${selected.length} selected; ${shardCount} ${shardCount === 1 ? 'slot' : 'slots'}.`)
     console.log(`[integration] chosen shards ${shardCount}, resource cap ${shardPlan.limit}: ${shardPlan.reason}.`)
     for (const entry of unavailable) console.error(`[integration] UNAVAILABLE ${entry.file}: ${entry.reason}`)
-    console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file.`)
+    console.log(`[integration] process watchdog: ${timeouts.idleTimeoutMs} ms without output; ${timeouts.fileTimeoutMs} ms per file;`
+      + ` a file with a known duration is hung after 3x that (at least 60 s more); ${Object.keys(expectedDurations).length} durations known.`)
     heartbeat = setInterval(reportProgress, 30_000)
     if (files) console.log('[integration] REQUESTED files only; skipped cases still fail this run.')
     if (startAt) console.log(`[integration] RESUME at ${startAt}: partial run only; a clean full run is required for suite proof.`)
@@ -653,10 +678,13 @@ export async function runIntegration(argv = [], {
       const metricsTracker = child.pid ? startProcessMetrics(child.pid) : null
       let metrics
       let result
+      const fileTimeoutMs = Math.ceil(timeouts.fileTimeoutMs * timeoutScale)
+      const expectedMs = expectedDurations[file]
+      const deadlineMs = adaptiveDeadlineMs(expectedMs, fileTimeoutMs, timeoutScale)
       try {
         result = await superviseIntegrationProcess(child, { log, progress, ...timeouts,
           idleTimeoutMs: Math.ceil(timeouts.idleTimeoutMs * timeoutScale),
-          fileTimeoutMs: Math.ceil(timeouts.fileTimeoutMs * timeoutScale),
+          fileTimeoutMs, deadlineMs,
           onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
           resetAfterTimeout: async () => {
             try { await resetSlotDatabase(slot) }
@@ -711,6 +739,7 @@ export async function runIntegration(argv = [], {
         code = 1
         error = new Error(`${summary.skipped} skipped cases in an integration run`)
       }
+      let hangDetails
       if (code === 0) {
         if (isRetest) retest.passed++
         else passed++
@@ -719,12 +748,23 @@ export async function runIntegration(argv = [], {
       else {
         if (isRetest) {
           if (!retestFailedFiles.has(file)) { retest.failed++; retestFailedFiles.add(file) }
-        } else { failed++; failedFiles.push(file) }
+        } else {
+          failed++
+          failedFiles.push(file)
+          if (result.hung) { hung++; hungFiles.push(file) }
+        }
         const saved = integrationLogPath(isRetest ? join(failedLogs, 'retest') : failedLogs, file)
         mkdirSync(dirname(saved), { recursive: true })
         copyFileSync(log, saved)
-        console.error(`[integration] ${label}FAIL ${file} (slot ${slot.index}, exit ${code}); ${elapsedMs} ms; log: ${saved}`)
         const output = readFileSync(log, 'utf8')
+        if (result.hung) {
+          hangDetails = { expectedMs, deadlineMs, ...hungContext(output.slice(-65_536)) }
+          console.error(`[integration] ${label}HUNG ${file} (slot ${slot.index}, exit ${code}); ${elapsedMs} ms,`
+            + ` expected ${expectedMs} ms, deadline ${deadlineMs} ms; last case: ${hangDetails.lastCase ?? 'none finished'};`
+            + ` last output: ${hangDetails.lastOutput ?? 'none'}; log: ${saved}`)
+        } else {
+          console.error(`[integration] ${label}FAIL ${file} (slot ${slot.index}, exit ${code}); ${elapsedMs} ms; log: ${saved}`)
+        }
         for (const name of failedCasesFromLog(output)) console.error(`[integration]   × ${name}`)
         // Keep actionable errors in the queue log when its temporary checkout is removed.
         const detail = output.slice(-32_768).split(/\r?\n/).slice(-160).join('\n')
@@ -734,7 +774,8 @@ export async function runIntegration(argv = [], {
       }
       const record = { file, slot: slot.index, code, elapsedMs,
         complete: Boolean(fileReport?.complete && !reportError && !ownedProcessActive), timedOut: result.timedOut,
-        report: fileReport, reportError, log: retainedLog, metrics, reason: error?.message ?? reportError }
+        report: fileReport, reportError, log: retainedLog, metrics, reason: error?.message ?? reportError,
+        ...(hangDetails ? { status: 'HUNG', hung: hangDetails } : {}) }
       recordFileAttempt(isRetest ? retestReports : firstPass, file, record)
       writeReport(`${retained}.result.json`, record, reportBytes)
       return { code, complete: record.complete, metrics, reason: record.reason,
@@ -810,7 +851,8 @@ export async function runIntegration(argv = [], {
     }
     for (const result of queueResult.results) {
       const record = firstPass.find((entry) => entry.file === result.id)
-      if (record) record.status = result.status
+      // A hung first attempt stays HUNG even when its isolated retest passes.
+      if (record && record.status !== 'HUNG') record.status = result.status
       if (result.status === 'FLAKY' && record) {
         console.error(`[integration] FLAKY ${result.id}: failed first pass, passed isolated retest; first pass still fails this run.`)
       }
@@ -869,14 +911,25 @@ export async function runIntegration(argv = [], {
         cleanupError, error: fatalProcessError })
       if (finalResult.error) console.error(`[integration] cleanup/process error: ${finalResult.error}`)
       writeReport(join(failedLogs, 'summary.json'), report, reportBytes)
+      // Measured file durations, so a host CI dispatcher can learn each file's usual time.
+      const measured = measuredDurations(firstPass)
+      try {
+        writeDurations(join(failedLogs, 'durations.json'), measured)
+        const output = readProductEnvironment(env, 'INTEGRATION_DURATIONS_OUTPUT')
+        if (output) writeDurations(resolve(output), measured)
+      } catch (error) {
+        console.error(`[integration] could not record measured durations: ${error.message}`)
+      }
       console.log(`[integration] machine-readable reports: ${failedLogs}`)
       if (!active.size && !cleanupError) removeTestRoot(tempRoot)
-      console.log(`[integration] files: ${passed} passed, ${failed} failed, ${skipped} skipped;`
+      console.log(`[integration] files: ${passed} passed, ${failed - hung} failed, ${hung} hung, ${skipped} skipped;`
         + ` ${unavailable.length} unavailable; cases: ${cases.passed} passed, ${cases.failed} failed,`
         + ` ${cases.skipped} skipped${unreported ? `; ${unreported} files without case totals` : ''}`
         + `${diagnostic || files ? '; partial run is not full-suite proof' : ''}.`)
       if (retest.passed || retest.failed || retest.skipped) console.log(`[integration] retest files: ${retest.passed} passed, ${retest.failed} failed, ${retest.skipped} skipped; first-pass failures still fail this run.`)
-      if (failedFiles.length) console.error(`[integration] failed files: ${failedFiles.sort().join(', ')}`)
+      const failedOnly = failedFiles.filter((file) => !hungFiles.includes(file)).sort()
+      if (failedOnly.length) console.error(`[integration] failed files: ${failedOnly.join(', ')}`)
+      if (hungFiles.length) console.error(`[integration] hung files: ${hungFiles.sort().join(', ')}`)
     }
   }
   return finalResult
