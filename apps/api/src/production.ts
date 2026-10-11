@@ -818,7 +818,8 @@ export function buildProductionApp(
       const result = await harnessQualifications.verify('codex', { force: true })
       if (result.status !== 'qualified') throw new DomainError('HARNESS_REQUALIFICATION_FAILED',
         result.failureReason ?? 'The updated Codex installation failed its native checks.', 409)
-    }, error => app.log.error({ err: error }, 'Automatic harness installation checks failed'))
+    }, error => app.log.error({ err: error }, 'Automatic harness installation checks failed'),
+    infrastructure?.installationRefreshIntervalMs)
   const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
     accounts: providerAccounts,
     processes: processRegistry, factories: nativeFactories, settings: hostSettings, defaults: () => settings.getHarnessDefaults(), current: claudeDiscovery.currentForConfiguration })

@@ -1,15 +1,33 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createHash, randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
-import { describe, expect, it } from 'vitest'
+import { readFile, rm } from 'node:fs/promises'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema, HostHarnessProfileEvidenceSchema,
   HostHarnessOverrideSaveResultSchema, HostHarnessInstanceCheckResultSchema } from '@foreman-code/contracts/harness-registry'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 import { AcceptedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
 import { placementDigest } from '../src/modules/placement/binding.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { buildRemoteReviewWorkerRelease } from './helpers/remoteReviewProvider.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
+
+let releaseDirectory: string | undefined
+let workerRelease: string
+
+beforeAll(async () => {
+  releaseDirectory = await privateFixtureDirectory('installation-update-release-')
+  workerRelease = await buildRemoteReviewWorkerRelease(releaseDirectory)
+}, 60_000)
+
+afterAll(async () => {
+  if (releaseDirectory) await rm(releaseDirectory, { recursive: true, force: true })
+})
+
+function installationUpdateFixture(options: Parameters<typeof remoteReviewProduction>[0] = {}) {
+  return remoteReviewProduction({ ...options, workerRelease, installationRefreshIntervalMs: 100 })
+}
 
 async function profiles(fixture: Fixture, token = fixture.writer.token) {
   const result = await fixture.call('harness_instances_list', { hostRef: fixture.hostRef,
@@ -73,8 +91,13 @@ async function completedRun(fixture: Fixture, runId: string) {
 
 describe('installed harness updates', () => {
   it('starts a Main-only workflow while discovery on an unused Worker is still blocked', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'single', executionHost: 'main' })
+    const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'main' })
     try {
+      const inventory = await fixture.inventory()
+      expect(inventory.installations.find(value => value.driverId === 'claude')!.installed).toBe(false)
+      expect(await fixture.value('claude_plugins_list', { view: 'installed' })).toMatchObject({
+        items: [], marketplaces: [], total: 0,
+      })
       const reader = await profileReader(fixture)
       await fixture.blockWorkerDiscovery()
       const started = await fixture.start()
@@ -88,7 +111,7 @@ describe('installed harness updates', () => {
   }, 240_000)
 
   it('cancels Start during required Worker discovery without canceling its shared refresh or persisting a Run', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'single', executionHost: 'worker' })
+    const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'worker' })
     try {
       const reader = await profileReader(fixture)
       await fixture.blockWorkerDiscovery()
@@ -110,7 +133,7 @@ describe('installed harness updates', () => {
   }, 240_000)
 
   it('keeps a Main Codex Run and its pinned outputs valid when only Claude inventory changes', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'single', executionHost: 'main', claudeInventory: true })
+    const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'main', claudeInventory: true })
     let blocked = false
     try {
       const reader = await profileReader(fixture)
@@ -155,7 +178,7 @@ describe('installed harness updates', () => {
   it.each(['main', 'worker'] as const)(
     'retains a resident %s Run across unavailable inventory before a completed payload replacement',
     async executionHost => {
-      const fixture = await remoteReviewProduction({ workflow: 'single', executionHost })
+      const fixture = await installationUpdateFixture({ workflow: 'single', executionHost })
       let blocked = false
       try {
         const reader = await profileReader(fixture)
@@ -194,7 +217,7 @@ describe('installed harness updates', () => {
     }, 240_000)
 
   it('runs the updated Main suite after an explicit qualification of the previous payload drains', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'single', executionHost: 'main' })
+    const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'main' })
     let blocked = false
     try {
       const reader = await profileReader(fixture)
@@ -233,7 +256,7 @@ describe('installed harness updates', () => {
   }, 240_000)
 
   it('keeps a Worker Run on its original profile proof through a payload update and rollback', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'single', executionHost: 'worker' })
+    const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'worker' })
     let blocked = false
     try {
       const reader = await profileReader(fixture)
@@ -271,7 +294,7 @@ describe('installed harness updates', () => {
   it.each(['main', 'worker'] as const)(
     'automatically checks every qualified %s profile and preserves the running process through authenticated MCP',
     async executionHost => {
-      const fixture = await remoteReviewProduction({ workflow: 'single', executionHost })
+      const fixture = await installationUpdateFixture({ workflow: 'single', executionHost })
       let modelsBlocked = false
       let turnsBlocked = false
       try {
@@ -369,7 +392,7 @@ describe('installed harness updates', () => {
     }, 240_000)
 
   it('persists a failed update check and exposes its reason through MCP without admitting a new Run', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'sequential' })
+    const fixture = await installationUpdateFixture({ workflow: 'sequential' })
     try {
       await fixture.provider.hideModels()
       await fixture.provider.updatePayload()

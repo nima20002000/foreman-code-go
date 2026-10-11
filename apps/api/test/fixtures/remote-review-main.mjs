@@ -10,10 +10,12 @@ import { inventoryDriverPayloads } from '../../src/modules/harnesses/payloadDisc
 import { discoverInstalledClaudeSdk } from '../../src/modules/harnesses/claudeSdk/currentPin.ts'
 
 const { config, infrastructure, claudeInventory } = JSON.parse(await readFile(process.argv[2], 'utf8'))
-if (claudeInventory) infrastructure.inventoryDiscovery = {
+infrastructure.inventoryDiscovery = {
   launcher: discoverInventoryLauncher, payloads: inventoryDriverPayloads,
-  claude: (_host, environment, signal) => discoverInstalledClaudeSdk(claudeInventory,
-    { harnessInstallationId: 'fixture-claude-sdk', environment }, signal),
+  claude: async (_host, environment, signal) => claudeInventory
+    ? discoverInstalledClaudeSdk(claudeInventory,
+      { harnessInstallationId: 'fixture-claude-sdk', environment }, signal)
+    : null,
 }
 const database = createDatabase(config.database)
 const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)

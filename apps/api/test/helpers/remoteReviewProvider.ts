@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -98,7 +98,17 @@ export async function createRemoteReviewClaudeInventory(directory: string) {
   const selectedExecutable = join(directory, 'claude')
   const installedLockPath = join(directory, 'pnpm-lock.yaml')
   await writeFile(entrypoint, 'export const inventoryRevision = 1\n', { mode: 0o600 })
-  await writeFile(selectedExecutable, '#!/bin/sh\nprintf "2.1.5\\n"\n', { mode: 0o700 })
+  await writeFile(selectedExecutable, `#!/bin/sh
+case "$1 $2 $3" in
+  "--version  ") printf '2.1.5\\n' ;;
+  "plugin list --json") printf '{"installed":[],"available":[]}\\n' ;;
+  "plugin marketplace list") printf '[]\\n' ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 })
+  const bin = join(directory, '.local', 'bin')
+  await mkdir(bin, { recursive: true, mode: 0o700 })
+  await symlink(selectedExecutable, join(bin, 'claude'))
   await writeFile(join(directory, 'package.json'), JSON.stringify({
     name: '@anthropic-ai/claude-agent-sdk', version: '0.3.284',
   }), { mode: 0o600 })

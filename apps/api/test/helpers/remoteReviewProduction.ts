@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:https'
 import { createServer } from 'node:net'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -86,7 +86,8 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
  * shipped installed domains in a separate process with its own native owners. */
 export async function remoteReviewProduction(options: {
   workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
-  claudeInventory?: boolean; parallelProfileChecks?: boolean
+  claudeInventory?: boolean; parallelProfileChecks?: boolean; workerRelease?: string
+  installationRefreshIntervalMs?: number
 } = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
@@ -101,10 +102,11 @@ export async function remoteReviewProduction(options: {
     closes.push(db.close)
     const directory = await privateFixtureDirectory('remote-review-production-')
     closes.push(() => rm(directory, { recursive: true, force: true }))
-    const workerRelease = await buildRemoteReviewWorkerRelease(directory)
+    const workerRelease = options.workerRelease ?? await buildRemoteReviewWorkerRelease(directory)
     const provider = await createRemoteReviewProvider(join(directory, 'provider'))
-    const claudeInventory = options.claudeInventory
-      ? await createRemoteReviewClaudeInventory(join(directory, 'claude-inventory')) : undefined
+    const claudeDirectory = join(directory, 'claude-inventory')
+    const claudeCommands = await createRemoteReviewClaudeInventory(claudeDirectory)
+    const claudeInventory = options.claudeInventory ? claudeCommands : undefined
     if (options.modelCatalog) await provider.hideModels()
     const tls = await createRemoteReviewTls(join(directory, 'tls'))
     const certificate = await readFile(tls.certificateFile)
@@ -134,7 +136,7 @@ export async function remoteReviewProduction(options: {
       name: randomUUID(), defaultBranch: 'main' }
     const repositoryName = `${repository.owner}/${repository.name}`
     // Prepopulate the production clone with a local Git remote instead of contacting GitHub.
-    const clone = systemGitWorktreePorts().cloneDirectory(repositoryName)
+    const clone = systemGitWorktreePorts({ ...process.env, HOME: claudeDirectory }).cloneDirectory(repositoryName)
     closes.push(() => rm(clone, { recursive: true, force: true }))
     await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
     await execute('git', ['clone', '--quiet', '--no-checkout', '--template=', project, clone], gitOptions)
@@ -168,6 +170,7 @@ export async function remoteReviewProduction(options: {
     const devicePort = await freePort()
     const deviceEndpoint = `wss://127.0.0.1:${devicePort}/device/connect`
     const infrastructure = { mode: 'native' as const,
+      installationRefreshIntervalMs: options.installationRefreshIntervalMs,
       deviceListener: { ...tls, host: '127.0.0.1', port: devicePort, advertisedEndpoint: deviceEndpoint } }
     const mainConfiguration = join(directory, 'main-configuration.json')
     await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure, claudeInventory: claudeInventory?.sdk }),
@@ -191,7 +194,9 @@ export async function remoteReviewProduction(options: {
     }
     closes.push(stopMain)
     // Vitest silences the product logger; Main and Worker warnings carry the failure codes read here.
-    const logEnvironment = { ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn' }
+    const logEnvironment = { ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn',
+      HOME: claudeDirectory, CLAUDE_CONFIG_DIR: claudeProfile,
+      FOREMAN_CODE_APP_MCP_DIRECTORY: dirname(appLauncherPath()) }
     const collectFailures = (child: ChildProcess) => {
       let pendingLog = ''
       child.stdout!.on('data', chunk => {
@@ -363,7 +368,9 @@ export async function remoteReviewProduction(options: {
       codexBinary: provider.binary, expectedVersion: 'codex-cli 0.154.0',
       appMcpLauncher: appLauncherPath(), payloadPaths: provider.payloadPaths }), { mode: 0o600 })
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
-    await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'])
+    await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
+      env: logEnvironment,
+    })
     let worker: ChildProcess | undefined
     let ready = false
     let workerStateRevision = 0

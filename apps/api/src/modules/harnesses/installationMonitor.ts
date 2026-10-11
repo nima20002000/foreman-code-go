@@ -26,13 +26,14 @@ export class HarnessInstallationMonitor {
     private readonly endpoint: () => DeviceEndpoint,
     private readonly collectWorker: (binding: DeviceSessionBinding, inventory: unknown) => Promise<void>,
     private readonly qualifyMain: () => Promise<void>,
-    private readonly report: (error: unknown) => void) {}
+    private readonly report: (error: unknown) => void,
+    private readonly refreshIntervalMs = 5_000) {}
 
   start(mainId: string): void {
     this.mainHost = { kind: 'main', mainId }
     this.registry.observeInstallations((host, installationId) => this.changed(host, installationId))
     this.changed(this.mainHost, mainId)
-    this.timer = setInterval(() => { void this.refresh().catch(this.report) }, 5_000)
+    this.timer = setInterval(() => { void this.refresh().catch(this.report) }, this.refreshIntervalMs)
     this.timer.unref()
   }
   workerReady(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): void {
