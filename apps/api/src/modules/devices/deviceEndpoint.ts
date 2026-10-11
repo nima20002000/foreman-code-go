@@ -18,7 +18,8 @@ const authorizationFailure = (error: unknown) => {
   const code = (error as { code?: string })?.code
   if (code === 'wrong_main') return new DeviceConnectionError('wrong-main')
   if (code === 'forbidden') return new DeviceConnectionError('permission')
-  if (code === 'unauthorized' || code === 'revoked' || code === 'expired') return new DeviceConnectionError('authentication')
+  if (code === 'revoked') return new DeviceConnectionError('revoked')
+  if (code === 'unauthorized' || code === 'expired') return new DeviceConnectionError('authentication')
   return error instanceof DeviceConnectionError ? error : new DeviceConnectionError('transport')
 }
 /** Mount on a separately approved device-only listener, never the browser/MCP server. */
@@ -78,7 +79,7 @@ export class DeviceEndpoint {
       } catch (error) { throw authorizationFailure(error) }
       if (this.closed || this.admissionStopped || abort.signal.aborted) throw new DeviceConnectionError('transport')
       if (principal.audience !== 'graphql-worker' || principal.mainId !== this.options.mainId) throw new DeviceConnectionError('wrong-main')
-      if (principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
+      if (principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('revoked')
       this.tickets.add(principal)
       return principal
     } finally { abort.abort(); if (!physicalAuthentication) this.pending.delete(abort) }
@@ -102,7 +103,8 @@ export class DeviceEndpoint {
     try {
       if (this.closed || this.admissionStopped || principal.mainId !== this.options.mainId
         || principal.audience !== 'graphql-worker') throw new DeviceConnectionError('authentication')
-      if (!this.tickets.has(principal) || principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('authentication')
+      if (!this.tickets.has(principal)) throw new DeviceConnectionError('authentication')
+      if (principal.authorizationRevision <= (this.revoked.get(principal.deviceId) ?? 0)) throw new DeviceConnectionError('revoked')
       const previous = this.sessions.get(principal.deviceId)
       previous?.abort.abort(); previous?.socket.close()
       if (previous?.presence) this.options.presence(Object.freeze({ ...previous.presence, phase: 'offline', dispatch: false, transfer: false }))
@@ -218,7 +220,12 @@ export class DeviceEndpoint {
     const revision = Math.max(this.revoked.get(deviceId) ?? 0, authorizationRevision)
     this.revoked.set(deviceId, revision)
     const session = this.sessions.get(deviceId)
-    if (session && session.authorizationRevision <= revision) { this.channels.get(deviceId)?.close(new DeviceConnectionError('authentication')); session.abort.abort(); session.socket.close() }
+    if (session && session.authorizationRevision <= revision) {
+      try { sendFrame(session.socket, { type: 'blocked', code: 'revoked' }) } catch { /* socket already unavailable */ }
+      this.channels.get(deviceId)?.close(new DeviceConnectionError('revoked'))
+      session.abort.abort()
+      session.socket.close()
+    }
   }
   /** Keep authenticated resident channels available for restart disposition. */
   stopAdmission(): void {

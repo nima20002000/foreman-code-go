@@ -103,8 +103,9 @@ export class ExecutionScopedNativeSessionManagerResolver implements NativeSessio
     const admission = { owner, generation: randomUUID() }
     const manager = this.create(context, () => {
       const current = this.entries.get(context.executionId)
+      // Failed startup still needs its owner to commit cleanup before release.
       return current?.admission === admission
-        && (current.lifecycle === 'disposing' || (!this.disposed && current.lifecycle !== 'failed'))
+        && (current.lifecycle === 'disposing' || !this.disposed)
         ? admission.owner : undefined
     })
     if (manager.harness !== context.harness) throw new Error('The native manager factory returned the wrong harness.')

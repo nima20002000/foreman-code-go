@@ -157,6 +157,7 @@ export class PostgresDeviceAccessService {
   async revalidateDevice(principal: DevicePrincipal, scope: DeviceScope): Promise<void> {
     const result = await this.pool.query<{ record: DeviceRegistration }>('select record from device_registrations where id=$1 and main_id=$2', [principal.deviceId, this.mainId])
     const row = result.rows[0]
+    if (row?.record.status === 'revoked') throw new DeviceAccessError('revoked')
     if (!row || !authorizeDevice(row.record, principal, scope, Date.now())) throw new DeviceAccessError('unauthorized')
   }
 }

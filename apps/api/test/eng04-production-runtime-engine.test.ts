@@ -32,7 +32,10 @@ vi.mock('../src/modules/runs/approvalCheckpointResume.js', () => ({
     checkpoints.consumed = true; checkpoints.claim = claim; return checkpoints.stale ? undefined : {}
   },
 }))
-async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' | 'approval' | 'repeat' } = {}) {
+async function fixture(options: {
+  form?: 'single' | 'parallel' | 'conditional' | 'approval' | 'repeat'
+  maximumActiveRuns?: number
+} = {}) {
   calls.entries = []; calls.work = undefined
   checkpoints.interrupted = false; checkpoints.delivered = false; checkpoints.consumed = false; checkpoints.stale = false; checkpoints.claim = undefined
   const f = makeCurrentWorkflowFixture('a1-engine-registration', options.form ?? 'single')
@@ -55,7 +58,7 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
   const owner = { runId: run.id, oneShotConnection: () => connection, assertOwned() { if (!state.owned) throw new Error('owner-lost') },
     release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
   const factory = {} as RepeatEngineStartContext['factory']
-  const runs = { acquireOwnership: async (): Promise<RunOwnership | undefined> => owner, getRepeatSnapshot: async () => {
+  const runs = { acquireOwnership: async (_runId: string): Promise<RunOwnership | undefined> => owner, getRepeatSnapshot: async () => {
     AcceptedWorkflowRunV3Schema.parse(state.run); return snapshot()
   }, repeatRepositoryFactory() { state.factoryReads++; return factory },
     get: async (runId: string) => { assert.equal(runId, run.id); return structuredClone(state.run) },
@@ -77,9 +80,61 @@ async function fixture(options: { form?: 'single' | 'parallel' | 'conditional' |
     getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },
   } as unknown as Args[1], native as unknown as Args[2], {} as Args[3],
     '/synthetic/a1-engine', {} as Args[5], {} as Args[6], {} as Args[7],
-    async () => { state.events.push('terminal-notification') }, { workerParallelism: 2 })
+    async () => { state.events.push('terminal-notification') }, {
+      workerParallelism: 2,
+      ...(options.maximumActiveRuns ? { maximumActiveRuns: options.maximumActiveRuns } : {}),
+    })
   return { f, run, state, owner, native, runs, engine, factory, terminal, stopSharingOwner }
 }
+
+test('backs off failed reconciliation, caps the delay, and clears it after recovery', async () => {
+  const h = await fixture()
+  let now = 0
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+  const failure = new Error('Native closure unconfirmed')
+  const acquire = vi.spyOn(h.runs, 'acquireOwnership').mockRejectedValue(failure)
+  const errors: unknown[] = []
+  const reconcile = async () => {
+    await h.engine.reconcile(error => errors.push(error))
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  try {
+    for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]) {
+      await reconcile()
+      const attempts = acquire.mock.calls.length
+      now += delay - 1
+      await reconcile()
+      assert.equal(acquire.mock.calls.length, attempts)
+      now++
+    }
+    assert.equal(errors.length, 8)
+    acquire.mockResolvedValue(h.owner)
+    await reconcile()
+    assert.equal(calls.entries.length, 1)
+    // A successful recovery removes the delay for the next eligible pass.
+    await reconcile()
+    assert.equal(calls.entries.length, 2)
+  } finally { clock.mockRestore() }
+})
+
+test('leaves capacity for later Runs while an earlier cleanup is backing off', async () => {
+  const h = await fixture({ maximumActiveRuns: 1 })
+  h.runs.reconciliationCandidates = async () => [
+    h.state.run, { ...h.state.run, id: `${h.run.id}-later` },
+  ]
+  const acquire = vi.spyOn(h.runs, 'acquireOwnership')
+    .mockRejectedValueOnce(new Error('Native closure unconfirmed'))
+    .mockResolvedValue(undefined)
+  const errors: unknown[] = []
+  await h.engine.reconcile(error => errors.push(error))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(acquire.mock.calls.length, 1)
+  await h.engine.reconcile(error => errors.push(error))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(acquire.mock.calls.length, 2)
+  assert.equal(acquire.mock.calls[1]![0], `${h.run.id}-later`)
+  assert.equal(errors.length, 1)
+})
 
 for (const form of ['single', 'parallel', 'conditional', 'approval', 'repeat'] as const) test(`ENG04 A1 engine ${form}: the same owner/gate/composition entry`, async () => {
   const h = await fixture({ form })

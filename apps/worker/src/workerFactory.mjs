@@ -154,6 +154,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
       }
     }
     connection = createWorkerConnection({ pairing, bootId, appVersion: manifest.version,
+      readPairing: () => loadWorkerPairing(stateDirectory),
       onBindingLost: bindingLost,
       onReady: () => updater?.ready(),
       extensions: [...extensions, ...(updater ? [workerUpdateExtension] : []),

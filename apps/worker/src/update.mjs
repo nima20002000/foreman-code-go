@@ -9,9 +9,13 @@ import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateSt
 import { WorkerError } from './diagnostics.mjs';
 import { validateManifest, stageRunningVersion } from './installation.mjs';
 import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor } from './updateSupervisor.mjs';
+import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
+import { DeviceApplicationError } from '../../../apps/api/src/modules/devices/deviceApplicationError.ts';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const expected = { protocolVersion: 1, identityFormat: 1 };
+const automaticRetryErrors = new Set(['worker_update_interrupted', 'worker_updater_stopped',
+  'worker_update_channel_unavailable']);
 
 export const workerUpdateExtension = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
   role: 'client', maxJsonBytes: WORKER_UPDATE_MAX_JSON_BYTES, maxBinaryBytes: WORKER_UPDATE_MAX_BINARY_BYTES };
@@ -157,6 +161,7 @@ export class WorkerUpdater {
 
   ready() {
     if (this.closed) return;
+    this.pendingReadyCheck = true;
     this.scheduleCheck();
     this.timer ??= setInterval(() => this.scheduleCheck(), this.options.checkIntervalMs ?? 60_000);
     this.timer.unref();
@@ -164,8 +169,12 @@ export class WorkerUpdater {
 
   scheduleCheck() {
     if (this.active || this.closed) return;
+    const reconnected = this.pendingReadyCheck;
+    this.pendingReadyCheck = false;
     void this.status().then(status => {
-      if (status.state !== 'restarting') return this.start();
+      if (status.state !== 'restarting') {
+        return this.start({ retry: Boolean(reconnected && status.lastError === 'worker_update_failed') });
+      }
     }).catch(error => this.options.reportError?.(error));
   }
 
@@ -174,7 +183,11 @@ export class WorkerUpdater {
     if (this.closed) return Promise.reject(new WorkerError('worker_updater_closed'));
     const task = this.update(retry);
     this.active = task;
-    void task.then(() => { this.active = undefined; }, () => { this.active = undefined; });
+    const finished = () => {
+      this.active = undefined;
+      if (this.pendingReadyCheck) this.scheduleCheck();
+    };
+    void task.then(finished, finished);
     return task;
   }
 
@@ -188,7 +201,16 @@ export class WorkerUpdater {
       if (retry) throw new WorkerError('worker_update_channel_unavailable');
       return 'Worker update is unavailable on this Main connection.';
     }
-    const request = payload => captured.request(payload, { timeoutMs: 60_000, signal: this.lifetime.signal });
+    const request = async payload => {
+      try {
+        return await captured.request(payload, { timeoutMs: 60_000, signal: this.lifetime.signal });
+      } catch (error) {
+        const channelLost = error instanceof DeviceConnectionError && error.code !== 'revoked'
+          || error instanceof DeviceApplicationError && ['unavailable', 'transport', 'timeout'].includes(error.code);
+        if (channelLost) throw new WorkerError('worker_update_channel_unavailable');
+        throw error;
+      }
+    };
     const target = Object.fromEntries(['os', 'osRelease', 'arch', 'libc', 'node'].map(key => [key, facts[key]]));
     let downloading;
     let drained = false;
@@ -199,15 +221,16 @@ export class WorkerUpdater {
       if (!reply.release) throw new WorkerError('worker_update_target_unavailable');
       const release = reply.release;
       if (release.version === version && release.manifestSha256 === this.options.manifestSha256) {
-        if (retry || !['rolled-back', 'failed'].includes(this.statusValue.state)) {
+        if (retry || automaticRetryErrors.has(this.statusValue.lastError)
+          || !['rolled-back', 'failed'].includes(this.statusValue.state)) {
           await this.save({ targetVersion: version, state: 'current', lastError: null });
         }
         return `Worker ${version} is current.`;
       }
-      // An update cut short by a Worker stop is retried automatically; other failures wait for a manual retry.
+      // Connection loss and interrupted shutdowns are safe to retry from the release manifest.
       if (!retry && this.record?.manifestSha256 === release.manifestSha256
         && ['failed', 'rolled-back'].includes(this.statusValue.state)
-        && !['worker_update_interrupted', 'worker_updater_stopped'].includes(this.statusValue.lastError)) {
+        && !automaticRetryErrors.has(this.statusValue.lastError)) {
         return 'Worker update needs a retry.';
       }
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);

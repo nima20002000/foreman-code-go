@@ -14,6 +14,7 @@ import { readUpdateRecord, superviseWorkerUpdate, waitForWorkerReady, locateWork
   launchUpdateSupervisor } from '../src/updateSupervisor.mjs';
 import { recoverPendingWorkerUpdate, writeUpdateRecord, migrateWorkerService } from '../src/updateSupervisor.mjs';
 import { renderUserService } from '../src/service.mjs';
+import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2',
@@ -306,6 +307,90 @@ test('manual retry clears an earlier failure when Main now serves the already ru
   assert.equal(await updater.start({ retry: true }), 'Worker 1.0.0 is current.');
   assert.deepEqual(await updater.status(), { currentVersion: '1.0.0', targetVersion: '1.0.0',
     state: 'current', lastError: null });
+});
+
+test('an update interrupted by Main restart retries the saved target on the reconnected channel', async t => {
+  const f = await fixture(t);
+  const originalRequest = f.options.connection().captureRequest().request;
+  let available = true;
+  let disconnect = true;
+  let captures = 0;
+  let resumed = 0;
+  let launched = 0;
+  const options = { ...f.options, resume: () => { resumed++; },
+    launchSupervisor: async () => { launched++; },
+    connection: () => ({ captureRequest: () => {
+      if (!available) return undefined;
+      captures++;
+      return { request: async payload => {
+        if (payload.operation === 'chunk' && disconnect) {
+          disconnect = false;
+          available = false;
+          throw new DeviceConnectionError('transport');
+        }
+        return originalRequest(payload);
+      } };
+    } }) };
+  const updater = await new WorkerUpdater(options).initialize();
+  t.after(() => updater.close());
+  await assert.rejects(updater.start(), { code: 'worker_update_channel_unavailable' });
+  const interrupted = await readUpdateRecord(f.stateDirectory);
+  assert.equal(interrupted.manifestSha256, f.incoming.release.manifestSha256);
+  assert.equal(interrupted.status.lastError, 'worker_update_channel_unavailable');
+  assert.equal(resumed, 1);
+  assert.equal(launched, 0);
+  assert.equal(await updater.start(), 'Worker update is unavailable on this Main connection.');
+  available = true;
+  updater.ready();
+  await until(async () => (await updater.status()).state === 'restarting');
+  assert.equal(captures, 2);
+  assert.equal(launched, 1);
+  assert.equal((await updater.status()).lastError, null);
+});
+
+test('reconnection during a failing update schedules a fresh check after the old channel settles', async t => {
+  const f = await fixture(t, '1.0.0');
+  let rejectRequest;
+  let captures = 0;
+  const updater = await new WorkerUpdater({ ...f.options, connection: () => ({ captureRequest: () => {
+    captures++;
+    if (captures === 1) return { request: () => new Promise((_resolve, reject) => { rejectRequest = reject; }) };
+    return { request: async () => ({ payload: { operation: 'release', release: f.previous.release } }) };
+  } }) }).initialize();
+  t.after(() => updater.close());
+  const interrupted = assert.rejects(updater.start(), { code: 'worker_update_channel_unavailable' });
+  await until(() => rejectRequest !== undefined);
+  updater.ready();
+  rejectRequest(new DeviceConnectionError('authentication'));
+  await interrupted;
+  await until(async () => captures === 2 && (await updater.status()).state === 'current');
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
+});
+
+test('a persisted channel failure retries automatically after Worker starts on a connected Main', async t => {
+  const f = await fixture(t);
+  const interrupted = await new WorkerUpdater({ ...f.options, connection: () => ({ captureRequest: () => ({
+    request: async () => { throw new DeviceConnectionError('transport'); },
+  }) }) }).initialize();
+  await assert.rejects(interrupted.start(), { code: 'worker_update_channel_unavailable' });
+  await interrupted.close();
+  const updater = await new WorkerUpdater(f.options).initialize();
+  t.after(() => updater.close());
+  updater.ready();
+  await until(async () => (await updater.status()).state === 'restarting');
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
+});
+
+test('reconnection retries a retained generic update failure from before channel errors were classified', async t => {
+  const f = await fixture(t);
+  await writeUpdateRecord(f.stateDirectory, { format: 1, manifestSha256: f.incoming.release.manifestSha256,
+    status: { currentVersion: '1.0.0', targetVersion: '1.1.0', state: 'failed', lastError: 'worker_update_failed' } });
+  const updater = await new WorkerUpdater(f.options).initialize();
+  t.after(() => updater.close());
+  assert.equal(await updater.start(), 'Worker update needs a retry.');
+  updater.ready();
+  await until(async () => (await updater.status()).state === 'restarting');
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
 });
 
 test('ready health requires both authenticated connection readiness and the original installation identity', async t => {

@@ -1,5 +1,6 @@
 import { NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
+import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { readRemoteReceiptResponse } from '../runs/remote/installedWorkflowResponsePages.js'
 import type { CapturedRemoteTelemetryNativeOwner } from '../resource-telemetry/productionAuthority.js'
 import type pg from 'pg'
@@ -93,7 +94,18 @@ export function createProductionRemoteWorkflow(input: {
         || intent.nodeId !== execution.workflowNodeId || intent.technicalAttempt !== execution.attempt) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The original native execution directory or attempt changed.', 409)
       binding = { intent, placement, executionPlacement }
     }
-    if (bindings.has(executionId) && !sameWorkflowValue(bindings.get(executionId), binding)) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The original native placement cannot change after preparation.', 409)
+    const previous = bindings.get(executionId)
+    // Source lifecycle and audited owner renewals can change without changing placement.
+    let comparable = previous
+    if (previous && binding) {
+      comparable = { ...previous, intent: { ...previous.intent, owner: binding.intent.owner } }
+      if (previous.executionPlacement && binding.executionPlacement) {
+        comparable.executionPlacement = { ...previous.executionPlacement,
+          materialization: { ...previous.executionPlacement.materialization,
+            state: binding.executionPlacement.materialization.state } }
+      }
+    }
+    if (bindings.has(executionId) && !sameWorkflowValue(comparable, binding)) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The original native placement cannot change after preparation.', 409)
     bindings.set(executionId, binding)
     return binding
   }
@@ -101,8 +113,11 @@ export function createProductionRemoteWorkflow(input: {
   return {
     prepare,
     async confirmClosedExecution(executionId: string, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
+      owner.assertOwned()
       const binding = await prepare(executionId)
       if (!binding || binding.placement.hostRef.kind !== 'device') return false
+      if (owner.runId !== binding.intent.runId) throw new DomainError(
+        'REMOTE_RUN_OWNER_CONFLICT', 'The Run owner does not match native cleanup.', 409)
       const captured = input.endpoint().captureRequest(binding.placement.hostRef.deviceId, 'execution-v1')
       if (!captured) return false
       const reply = await captured.request({ method: 'status', intent: binding.intent,
@@ -115,13 +130,17 @@ export function createProductionRemoteWorkflow(input: {
       }, signal)
       const status = RemoteOperationStatusSchema.parse(raw)
       if (status.status !== 'known' || !sameWorkflowValue(status.receipt.intent, binding.intent)
-        || !status.receipt.native || !status.receipt.terminal) return false
+        || !status.receipt.terminal) return false
       const row = (await input.pool.query<{ reference: unknown }>(
         'select reference from execution_native_sessions where execution_id=$1', [executionId])).rows[0]
-      if (!row) return false
-      const session = NativeSessionReferenceSchema.parse(row.reference)
-      const original = await physical.prefetch(status.receipt, binding.placement, { type: 'boundary' }, signal)
-      if (!physical.confirmedClosed(original, session)) return false
+      const session = row ? NativeSessionReferenceSchema.parse(row.reference) : null
+      const original = status.receipt.native
+        ? await physical.prefetch(status.receipt, binding.placement, { type: 'boundary' }, signal)
+        : undefined
+      const confirmedClosed = () => original ? physical.confirmedClosed(original, session)
+        : session === null && (hasPositiveRemoteEntryClosure(status.receipt)
+          || hasPositiveRemoteNonEntryClosure(status.receipt))
+      if (!confirmedClosed()) return false
       const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision,
         connectionGeneration } = captured.binding
       const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
@@ -130,11 +149,13 @@ export function createProductionRemoteWorkflow(input: {
         new OwnedRemoteReceiptCommit(owner, status.receipt, authenticated, {
           async assertCurrent(sql, intent, placement, connection) {
             await authority(sql, { intent, placement }, connection, 'read')
-            if (!physical.confirmedClosed(original, session)) throw new DomainError(
+            const current = (await sql.query<{ reference: unknown }>(
+              'select reference from execution_native_sessions where execution_id=$1 for share', [executionId])).rows[0]
+            if (!sameWorkflowValue(current?.reference ?? null, session) || !confirmedClosed()) throw new DomainError(
               'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during recovery.', 409)
           },
           async publishNative() {
-            if (!physical.confirmedClosed(original, session)) throw new DomainError(
+            if (!confirmedClosed()) throw new DomainError(
               'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during publication.', 409)
           },
         }))

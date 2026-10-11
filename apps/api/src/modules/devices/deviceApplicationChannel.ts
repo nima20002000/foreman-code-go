@@ -424,5 +424,5 @@ export class DeviceApplicationChannel {
   }
 }
 function classify(code: unknown): import('@foreman-code/contracts/device-connection').DeviceFailureCode {
-  return ['authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
+  return ['authentication', 'revoked', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(String(code)) ? code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame'
 }
