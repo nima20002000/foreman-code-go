@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.66] - 2026-10-11
+
+### Fixed
+
+- Concurrent Run starts on one computer queue for up to 30 seconds instead of failing with a database timeout; a busy start returns a retryable `RUN_START_BUSY`.
+- Main re-qualifies Codex automatically after a restart whose startup checks timed out.
+- A source snapshot that is a root's current binding is never released; placement choices show unusable computers with the reason.
+- Failed capture cleanup no longer holds storage locks during file work, so approvals do not time out while cleanup runs.
+
+### Tests
+
+- Live cross-computer CI acceptance scenario restored for two projects, counting cloud runners as computers.
+
 ## [0.0.65] - 2026-10-11
 
 ### CI
