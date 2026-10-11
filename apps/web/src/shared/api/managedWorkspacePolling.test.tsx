@@ -14,7 +14,7 @@ function wrapper() {
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 it('stops polling a workspace the server reports as missing', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  vi.useFakeTimers({ shouldAdvanceTime: true })
   const request = vi.spyOn(apiClient, 'request').mockRejectedValue(new ApiError({ code: 'WORKSPACE_NOT_FOUND', message: 'Workspace not found.' }, 404))
   const query = renderHook(() => useManagedWorkspaceQuery('missing-workspace'), { wrapper: wrapper() })
   await waitFor(() => expect(query.result.current.isError).toBe(true))
@@ -23,7 +23,7 @@ it('stops polling a workspace the server reports as missing', async () => {
 })
 
 it('keeps polling after a transient workspace read failure', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  vi.useFakeTimers({ shouldAdvanceTime: true })
   const request = vi.spyOn(apiClient, 'request').mockRejectedValue(new ApiError({ code: 'UNAVAILABLE', message: 'Try again.' }, 503))
   const query = renderHook(() => useManagedWorkspaceQuery('workspace-a'), { wrapper: wrapper() })
   await waitFor(() => expect(query.result.current.isError).toBe(true))

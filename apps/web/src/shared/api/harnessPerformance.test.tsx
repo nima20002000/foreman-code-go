@@ -23,7 +23,7 @@ function wrapper() {
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 it('shares one catalog request and each three-second poll while retaining optional Claude defaults and raw revisions', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  vi.useFakeTimers({ shouldAdvanceTime: true })
   const request = vi.spyOn(apiClient, 'request').mockResolvedValue(catalog)
   const { client, Wrapper } = wrapper()
   const queries = renderHook(() => ({ catalog: useManagedHarnessCatalogQuery(), first: useHarnessDefaultsQuery(), second: useHarnessDefaultsQuery() }), { wrapper: Wrapper })

@@ -113,15 +113,15 @@ it.each(['pending', 'paired'] as const)('uses revoked readback after a %s approv
 
 it('keeps confirmed pairing visible after the enrollment secret expires', async () => {
   const { state } = await mount()
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
-  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync })
   server.use(http.post('*/api/devices/setup-codes', () => {
     state.devices = [{ ...registration, status: 'paired' }]
     return HttpResponse.json({ registration: { ...registration, status: 'pending' },
       enrollmentCode: 'GQLWE1.secret', expiresAt: new Date(Date.now() + 300).toISOString() })
   }))
   await user.click(screen.getByRole('button', { name: 'Approve this computer' }))
-  await vi.waitFor(() => expect(screen.getByText('Computer paired.')).toBeVisible())
+  expect(await screen.findByText('Computer paired.')).toBeVisible()
   await act(async () => { await vi.advanceTimersByTimeAsync(350) })
   expect(screen.getByText('Computer paired.')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Done' })).toBeVisible()
