@@ -173,13 +173,17 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     } catch (error) {
       if (error instanceof DomainError && error.status === 403) {
         await this.commands.recordDenied(principal.id, source, operation, await this.repository.key())
+        error.denialAudited = true
       }
       throw error
     }
   }
 
-  async auditDenied(principal: ManagementPrincipal, source: CommandSource, operation: string, accountId: string) {
+  async auditDenied(principal: ManagementPrincipal, source: CommandSource, operation: string,
+    accountId: string, error: DomainError) {
+    if (error.denialAudited) return
     await this.commands.recordDenied(principal.id, source, operation, `provider-account:${accountId}`)
+    error.denialAudited = true
   }
 
   async list(principal: ManagementPrincipal): Promise<ProviderAccountsSnapshot> {
@@ -453,7 +457,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
       await this.authorize(this.pool, principal, 'provider_accounts:manage', account.id)
     } catch (error) {
       if (error instanceof DomainError && error.status === 403) {
-        await this.auditDenied(principal, source, operation, account.id)
+        await this.auditDenied(principal, source, operation, account.id, error)
       }
       throw error
     }
@@ -617,7 +621,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     await this.authorizeMutation(principal, source, 'provider.account.auth.prepare', accountId, input.target)
     return this.authentication.prepare(principal, source, accountId, raw).catch(async (error: unknown) => {
       if (error instanceof DomainError && error.status === 403) {
-        await this.auditDenied(principal, source, 'provider.account.auth.prepare', accountId)
+        await this.auditDenied(principal, source, 'provider.account.auth.prepare', accountId, error)
       }
       throw error
     })
@@ -639,7 +643,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     await this.authorizeMutation(principal, source, 'provider.account.auth.cancel', original.binding.accountId, input.target)
     return this.authentication.cancel(principal, source, raw).catch(async (error: unknown) => {
       if (error instanceof DomainError && error.status === 403) {
-        await this.auditDenied(principal, source, 'provider.account.auth.cancel', original.binding.accountId)
+        await this.auditDenied(principal, source, 'provider.account.auth.cancel', original.binding.accountId, error)
       }
       throw error
     })

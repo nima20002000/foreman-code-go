@@ -395,13 +395,13 @@ it('prepares, rechecks and cancels one authentication operation through MCP with
   const client = await f.connect(f.owner.token)
   const created = await add(f.service, f.owner.principal, 'claude', 'subscription')
   const accountId = created.value.accounts[0]!.id
-  const input = { ...command(1), accountId, intent: 'sign-in' }
+  const input = { ...command(1), intent: 'sign-in' }
   const prepared = ProviderAccountAuthenticationResultSchema.parse(decodeMcpToolResult(await client.callTool({
-    name: 'provider_account_auth_prepare', arguments: input,
+    name: 'provider_account_auth_prepare', arguments: { ...input, accountId },
   })))
   expect(prepared.value.state).toBe('awaiting-human')
   const replay = ProviderAccountAuthenticationResultSchema.parse(decodeMcpToolResult(await client.callTool({
-    name: 'provider_account_auth_prepare', arguments: input,
+    name: 'provider_account_auth_prepare', arguments: { ...input, accountId },
   })))
   expect(replay.replayed).toBe(true)
   expect(replay.value.id).toBe(prepared.value.id)
@@ -446,9 +446,12 @@ it('audits each denied HTTP and guessed MCP mutation without changing persisted 
     expect((await f.app.inject({ method: 'POST', url: operation.url,
       headers: { authorization: `Bearer ${f.reader.token}` }, payload })).statusCode).toBe(403)
   }
-  const audits = await pool.query<{ outcome: string }>(
-    'select outcome from management_audit where principal_id=$1', [f.reader.principal.id])
+  const audits = await pool.query<{ outcome: string; source: string }>(
+    'select outcome,source from management_audit where principal_id=$1', [f.reader.principal.id])
   expect(audits.rows.filter(row => row.outcome === 'denied')).toHaveLength(operations.length * 2)
+  for (const source of ['http', 'mcp']) {
+    expect(audits.rows.filter(row => row.outcome === 'denied' && row.source === source)).toHaveLength(operations.length)
+  }
   expect((await f.service.get(f.reader.principal, { accountId })).removedAt).toBeNull()
 })
 

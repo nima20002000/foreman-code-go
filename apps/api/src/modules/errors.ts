@@ -1,4 +1,7 @@
 export class DomainError extends Error {
+  // Transport handlers reuse a denial already recorded by the domain service.
+  denialAudited = false
+
   constructor(
     readonly code: string,
     message: string,

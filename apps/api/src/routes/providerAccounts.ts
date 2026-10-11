@@ -40,7 +40,7 @@ export function registerProviderAccountRoutes(app: FastifyInstance, accounts: Pr
     const principal = requirePrincipal(request)
     try { requireLocalHuman(request) } catch (error) {
       if (error instanceof DomainError && error.status === 403) {
-        await accounts.auditDenied(principal, 'http', 'provider.account.auth.handoff', 'human-only')
+        await accounts.auditDenied(principal, 'http', 'provider.account.auth.handoff', 'human-only', error)
       }
       throw error
     }
@@ -78,7 +78,7 @@ export function registerProviderAccountRoutes(app: FastifyInstance, accounts: Pr
     const id = accountId(request.params)
     try { requireLocalHuman(request) } catch (error) {
       if (error instanceof DomainError && error.status === 403) {
-        await accounts.auditDenied(principal, 'http', 'provider.account.key.provision', id)
+        await accounts.auditDenied(principal, 'http', 'provider.account.key.provision', id, error)
       }
       throw error
     }

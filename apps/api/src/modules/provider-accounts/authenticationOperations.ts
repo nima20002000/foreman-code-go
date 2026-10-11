@@ -201,6 +201,7 @@ export class ProviderAccountAuthenticationOperations {
       if (!(error instanceof DomainError)) throw error
       if (error.status === 403) {
         await this.commands.recordDenied(principal.id, source, 'provider.account.auth.dispatch', operation.id)
+        error.denialAudited = true
         throw error
       }
       observation = { operationId: operation.id, binding: operation.binding, generation: operation.generation,
@@ -286,6 +287,7 @@ export class ProviderAccountAuthenticationOperations {
       await sql.query('rollback')
       if (error instanceof DomainError && error.status === 403) {
         await this.commands.recordDenied(principal.id, source, 'provider.account.auth.publish', original.id)
+        error.denialAudited = true
       }
       throw error
     } finally { sql.release() }

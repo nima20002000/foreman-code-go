@@ -29,7 +29,7 @@ export async function invokeOperatorTool(
 ) {
   try { return toolResult(await work()) } catch (error) {
     logOperatorToolFailure(name, error)
-    if (error instanceof DomainError && error.status === 403) {
+    if (error instanceof DomainError && error.status === 403 && !error.denialAudited) {
       await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
     }
     return toolFailure(error)
