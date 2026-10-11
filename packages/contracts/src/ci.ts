@@ -11,7 +11,7 @@ const CiRunInputObjectSchema = z.object({
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),
   commandId: IdSchema,
   /** Split an integration run into this many duration-balanced runs on separate build computers. */
-  partitions: z.number().int().min(2).max(12).optional(),
+  partitions: z.number().int().min(2).max(32).optional(),
 }).strict()
 const partitionedSuite = (value: { suite: string; partitions?: number | undefined }) =>
   value.partitions === undefined || value.suite === 'integration'
@@ -21,7 +21,7 @@ export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspac
   .refine(partitionedSuite, partitionIssue)
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every partition's ticket in order; the first is also `ticketId`. Poll each with ci_get. */
-export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(12).optional() }).strict()
+export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(32).optional() }).strict()
 export const CiGetInputSchema = z.object({ ticketId: IdSchema }).strict()
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({

@@ -295,7 +295,7 @@ export class HostCiService {
         } catch (error) {
           // A busy or unready computer is skipped; the run stays queued for the next free one.
           const code = (error as { code?: unknown } | null)?.code
-          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED') {
+          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE') {
             if (code === 'CI_HOST_BUSY') busy.add(computer.key)
             continue
           }

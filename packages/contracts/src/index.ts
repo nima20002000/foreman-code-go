@@ -69,8 +69,8 @@ const OptionalTimestampFields = {
   updatedAt: TimestampSchema.optional(),
 } as const;
 
-import { WorkspaceRepositorySchema } from './workspaceRepository.js';
-export { WorkspaceRepositorySchema, type WorkspaceRepository } from './workspaceRepository.js';
+import { WorkspaceCiMirrorSchema, WorkspaceRepositorySchema } from './workspaceRepository.js';
+export { WorkspaceCiMirrorSchema, WorkspaceRepositorySchema, type WorkspaceCiMirror, type WorkspaceRepository } from './workspaceRepository.js';
 
 /** A workspace is the top-level scope for agents, workflows, conversations and resources. */
 export const WorkspaceSchema = z
@@ -79,6 +79,7 @@ export const WorkspaceSchema = z
     name: z.string().trim().min(1),
     description: z.string().optional(),
     repository: WorkspaceRepositorySchema.optional(),
+    ciMirror: WorkspaceCiMirrorSchema.optional(),
     agentIds: z.array(IdSchema).optional(),
     workflowIds: z.array(IdSchema).optional(),
     ...OptionalTimestampFields,

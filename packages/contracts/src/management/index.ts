@@ -37,6 +37,7 @@ import {
   ExecutionConditionSchema,
   WorkspaceSchema,
   WorkspaceRepositorySchema,
+  WorkspaceCiMirrorSchema,
   DurableInteractionSchema,
   InteractionStatusSchema,
   ApprovalHandlerSchema,
@@ -132,8 +133,10 @@ export const WorkspaceUpdateInputSchema = z.object({
   description: z.string().max(10_000).nullable().optional(),
   /** null removes the repository; agents then work in copied folders without branches. */
   repository: WorkspaceRepositorySchema.nullable().optional(),
-}).strict().refine((value) => value.name !== undefined || value.description !== undefined || value.repository !== undefined,
-  "name, description or repository is required");
+  /** A public GitHub repository for free GitHub Actions CI; null stops using it. See WorkspaceCiMirrorSchema. */
+  ciMirror: WorkspaceCiMirrorSchema.nullable().optional(),
+}).strict().refine((value) => value.name !== undefined || value.description !== undefined || value.repository !== undefined
+  || value.ciMirror !== undefined, "name, description, repository or ciMirror is required");
 export const WorkspaceArchiveInputSchema = z.object({
   ...WorkspaceScopeSchema.shape,
   ...RevisionMutationFields,

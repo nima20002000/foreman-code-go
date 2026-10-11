@@ -10,7 +10,7 @@ export type CiSuite = z.infer<typeof CiSuiteSchema>
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 export const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/)
 /** `weights` gives each slice's relative speed (its computer's measured throughput), so slices finish together. */
-export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(2).max(12),
+export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(2).max(32),
   weights: z.array(z.number().positive().finite()).optional() }).strict()
   .refine(value => value.index < value.count, 'The partition index must be below its count.')
   .refine(value => !value.weights || value.weights.length === value.count, 'Give one weight per partition.')
@@ -86,7 +86,8 @@ export const CiRunRecordSchema = z.object({
   id: CiHostRunIdSchema, workspaceId: IdSchema, suite: CiSuiteSchema, commit: CommitSchema, repository: CiRepositorySchema,
   partition: CiPartitionSchema.nullable(), groupId: CiHostRunIdSchema,
   state: z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost']),
-  computer: z.object({ hostRef: z.object({ kind: z.enum(['main', 'device']), mainId: z.string(), deviceId: z.string().optional() }).strict(),
+  computer: z.object({ hostRef: z.object({ kind: z.enum(['main', 'device', 'cloud']), mainId: z.string(), deviceId: z.string().optional(),
+    slot: z.number().int().nonnegative().optional() }).strict(),
     label: z.string() }).strict().nullable(),
   step: z.string().nullable(), exitCode: z.number().int().nullable(), message: z.string().nullable(),
   queuedAt: TimestampSchema, startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(),

@@ -216,6 +216,8 @@ export class WorkspaceManagementService {
             : input.description !== undefined ? { description: input.description } : {}),
           ...(input.repository === null ? { repository: undefined }
             : input.repository !== undefined ? { repository: input.repository } : {}),
+          ...(input.ciMirror === null ? { ciMirror: undefined }
+            : input.ciMirror !== undefined ? { ciMirror: input.ciMirror } : {}),
           updatedAt: new Date().toISOString(),
         })
         const result = await client.query<WorkspaceRow>(

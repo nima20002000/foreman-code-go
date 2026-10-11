@@ -1,57 +1,59 @@
 name: CI
+# Main dispatches one run per CI suite or integration partition on the public mirror, where runners are free.
+run-name: ci ${{ inputs.run_id }}
 
-# Runs only on the public mirror, where standard runners are free.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: Main's CI run id
+        required: true
+      suite:
+        description: install, typecheck, lint, unit, build or integration
+        required: true
+      files:
+        description: The integration files of this partition, space-separated; empty runs them all
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  checks:
-    if: github.event.repository.visibility == 'public'
+  ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [typecheck, lint, test, build]
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      FOREMAN_CODE_CI_DEDICATED: '1'
+      SUITE: ${{ inputs.suite }}
+      FILES: ${{ inputs.files }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.16.0
+          node-version: 22.23.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm ${{ matrix.suite }}
-        env:
-          FOREMAN_CODE_CI_DEDICATED: '1'
-
-  integration:
-    if: github.event.repository.visibility == 'public'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        # 16 shards plus the 4 checks fill the 20 concurrent jobs of a free account.
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - name: Suite
+        run: |
+          case "$SUITE" in
+            install) ;;
+            unit) pnpm db:up && pnpm test ;;
+            typecheck|lint|build) pnpm "$SUITE" ;;
+            integration)
+              pnpm db:up
+              export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$RUNNER_TEMP/durations.json"
+              # Native process tests need a delegated cgroup, as a systemd user service gets on our build computers.
+              sudo -E env "PATH=$PATH" systemd-run --quiet --scope -p Delegate=yes --uid="$(id -u)" --gid="$(id -g)" -- \
+                pnpm test:integration ${FILES:+--files $FILES} ;;
+            *) echo "Unknown suite $SUITE"; exit 2 ;;
+          esac
+      - if: always() && inputs.suite == 'integration'
+        uses: actions/upload-artifact@v4
         with:
-          node-version: 22.16.0
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm db:up
-      - run: pnpm test:integration --files $(node scripts/ci-shard.mjs ${{ matrix.shard }} 16)
-        env:
-          FOREMAN_CODE_CI_DEDICATED: '1'
+          name: durations
+          path: ${{ runner.temp }}/durations.json
+          retention-days: 1
+          if-no-files-found: ignore
