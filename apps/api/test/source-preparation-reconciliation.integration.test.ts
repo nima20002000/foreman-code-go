@@ -150,7 +150,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     const commands = new PostgresCommandCoordinator(database.pool)
     sources = new PostgresSourceService(database.pool,commands,{} as never,snapshots,mainId,{} as never,
       {authorize:async()=>{},authorizeFinal:async()=>{},
-        storageCapacity: (root, attempt) => remote.storageCapacity(root, attempt),
+        storageCapacity: async (root, attempt) => {
+          const measured = await remote.storageCapacity(root, attempt)
+          // A one-CPU fixture host has two slots regardless of the machine running this suite.
+          return sourceStorageCapacityFixture({ filesystem: measured.filesystem })
+        },
         prepare: async (manifest, root, attempt) => {
           if (interruptSourceTransfer) throw new DomainError('SOURCE_TRANSFER_PENDING', 'Fixture source transfer interrupted', 503)
           const row = (await database.pool.query<{ spec: unknown }>(
@@ -243,7 +247,8 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     }
     const sql=await database.pool.connect()
     try {await sql.query('begin');const original=(await sql.query<{record:{scopeId:string}}>('select record from source_storage_reservations where owner_id=$1',[rows[0]!.operation_id])).rows[0]!.record
-      const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture())
+      const reservations = new PostgresSourceReservations(async () =>
+        sourceStorageCapacityFixture({ filesystem: root.binding.filesystem }))
       await expect(reservations.reserve(sql,{scopeId:original.scopeId,ownerKind:'materialization',ownerId:randomUUID(),reservedBytes:1000})).resolves.toHaveProperty('reservationId');await sql.query('rollback')
     } finally {sql.release()}
     expect(Number((await database.pool.query('select count(*) from job_executions where workspace_id=$1',[workspaceId])).rows[0].count)).toBe(0)
