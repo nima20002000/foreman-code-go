@@ -63,8 +63,7 @@ import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts
 import { HostCiRunner } from '../ci-host/runner.js'
 import { CiRuntimeWorker } from '../jobs/ciRuntimeWorker.js'
 import { prepareCiRuntime } from '../jobs/ciRuntimePrepare.js'
-import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurations,
-  scheduleCiRuntimeRefresh } from '../jobs/ciRuntimeRefresh.js'
+import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurations } from '../jobs/ciRuntimeRefresh.js'
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
@@ -100,7 +99,6 @@ export async function createInstalledWorkerDomains(input: {
 }) {
   const lifetime = new AbortController()
   const active = new Map<Promise<unknown>, string>()
-  let runtimeDrain: ReturnType<typeof createWorkerRuntimeDrain> | undefined
   let maintenance: Promise<ComputerMaintenance> | undefined
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
@@ -328,20 +326,6 @@ export async function createInstalledWorkerDomains(input: {
       journal: jobJournal, registry: jobRegistry, signal: lifetime.signal })
     extensions.push(qualification)
   }
-  if (approved) {
-    runtimeDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
-      active: () => [...active].filter(([, namespace]) => namespace !== CI_RUNTIME_NAMESPACE).map(([task]) => task),
-      drainJobs: async () => { if (jobOpening) await (await jobOpening).beginDrain() },
-      drainQualifications: async () => { await qualification?.drain() },
-      drainMaintenance: async () => { if (maintenance) await (await maintenance).drain() },
-      quiescent: async () => {
-        const journals = await Promise.all([journal(), jobJournal()])
-        const quiet = await Promise.all(journals.map(log => log.isRuntimeQuiescent()))
-        const nativeActive = [registry, jobRegistry].some(value =>
-          value.snapshot().launches.some(launch => launch.lifecycle !== 'closed'))
-        return quiet.every(Boolean) && !nativeActive
-      } })
-  }
   const ciRuntime = new CiRuntimeWorker(input.stateDirectory, { git: systemGitWorktreePorts(process.env),
     managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot,
     prepare: async options => {
@@ -354,15 +338,6 @@ export async function createInstalledWorkerDomains(input: {
       const configurations = await retireCiRuntimeConfigurations(input.stateDirectory, used)
       return prepareCiRuntime({ ...options, stateDirectory: input.stateDirectory, keepImages: [...used, ...configurations.images],
         keepPaths: [...options.keepPaths ?? [], ...configurations.paths] })
-    },
-    refresh: async options => {
-      if (!runtimeDrain) throw new DomainError('CI_RUNTIME_SETUP_REQUIRED', 'Managed CI storage is unavailable.', 409)
-      try { return await scheduleCiRuntimeRefresh({ ...options, drain: () => runtimeDrain!.run() }) }
-      catch (error) {
-        runtimeDrain!.resume()
-        jobs?.resumeAdmissions()
-        throw error
-      }
     },
     lastRefresh: lastCiRuntimeRefresh, currentRuntimePaths: currentCiRuntimePaths,
     now: () => new Date() }, lifetime.signal)
@@ -563,7 +538,6 @@ export async function createInstalledWorkerDomains(input: {
   const tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
     lifetime.signal.throwIfAborted()
     try {
-      runtimeDrain?.assertAdmission(extension.namespace, payload)
       updateDrain.assertAdmission(extension.namespace, payload)
     }
     catch (error) { return Promise.reject(error) }
@@ -575,9 +549,6 @@ export async function createInstalledWorkerDomains(input: {
   let shutdown: Promise<void> | undefined
   return { extensions: tracked, rsyncAvailable: rsync.kind === 'configured', rsyncMissing: rsync.missing,
     async drainForUpdate() {
-      if (runtimeDrain?.isDraining()) {
-        throw new DomainError('WORKER_RUNTIME_DRAINING', 'A CI runtime refresh is already waiting for active work.', 409)
-      }
       await updateDrain.run()
     },
     resumeAfterUpdate() { updateDrain.resume(); jobs?.resumeAdmissions() },

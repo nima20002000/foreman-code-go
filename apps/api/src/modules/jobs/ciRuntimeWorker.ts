@@ -14,7 +14,8 @@ export interface CiRuntimeWorkerPorts {
   /** This build computer's managed runtime root; the installer workspace lives inside it. */
   managedRuntimeRoot(): Promise<string>
   prepare: typeof prepareCiRuntime
-  refresh(input: Omit<Parameters<typeof scheduleCiRuntimeRefresh>[0], 'drain'>): ReturnType<typeof scheduleCiRuntimeRefresh>
+  /** Omitted on Host CI computers, which do not install a container CI runtime. */
+  refresh?: (input: Omit<Parameters<typeof scheduleCiRuntimeRefresh>[0], 'drain'>) => ReturnType<typeof scheduleCiRuntimeRefresh>
   lastRefresh: typeof lastCiRuntimeRefresh
   /** Paths the current protected runtime configuration references. */
   currentRuntimePaths(stateDirectory: string): Promise<string[]>
@@ -36,6 +37,10 @@ export class CiRuntimeWorker {
       const managedSetup = await readCiManagedSetup(this.stateDirectory)
       const installedStorage = managedSetup?.state === 'failed' ? null : await readCiInstalledStorage(this.stateDirectory)
       return { ...await this.status(), installedStorage, ...(managedSetup ? { managedSetup } : {}) }
+    }
+    if (request.operation === 'refresh' && !this.ports.refresh) {
+      throw new DomainError('CI_RUNTIME_RETIRED',
+        'This computer uses Host CI. Start a Host CI run instead of refreshing the legacy CI runtime.', 409)
     }
     const managedSetup = await readCiManagedSetup(this.stateDirectory)
     if (managedSetup && managedSetup.state !== 'ready') {
@@ -107,7 +112,7 @@ export class CiRuntimeWorker {
     }
     const state = this.set({ ...this.state!, state: 'refreshing', stage: 'draining' })
     try {
-      await this.ports.refresh({ operationId: request.operationId, stateDirectory: this.stateDirectory,
+      await this.ports.refresh!({ operationId: request.operationId, stateDirectory: this.stateDirectory,
         prepared, root: request.root, manifest: request.manifest, resources: request.resources })
       return this.set({ ...state, stage: 'restart' })
     } catch (error) {

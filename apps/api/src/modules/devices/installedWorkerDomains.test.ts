@@ -23,6 +23,7 @@ import type { PostgresAccessService } from '../access/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { buildApp } from '../../app.js'
 import { DomainError } from '../errors.js'
+import { verificationRuntimeFixture } from '../../../test/helpers/verificationRuntimeFixture.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -70,8 +71,16 @@ describe('actual installed worker mount availability, no physical acceptance', (
         if (token === 'denied-reader') return { ...principal, grants: [] }
         throw new DomainError('AUTH_REQUIRED', 'Authentication required.', 401)
       } } as unknown as PostgresAccessService
+      const ci = mounted.extensions.find(extension => extension.namespace === 'ci-runtime-v1')!
+      const fingerprint = verificationRuntimeFixture().measurement.fingerprint
+      const commit = fingerprint.sourceCommit!
+      const legacyRefresh = { operation: 'refresh', operationId: randomUUID(), commit, root: fingerprint.root,
+        resources: fingerprint.resources, manifest: { version: 1, ...fingerprint.root.source,
+          git: { commit, tree: 'a'.repeat(40), objectFormat: 'sha1' }, capturePolicy: 'git-tree-v1',
+          executablePolicy: 'preserve-approved', entries: [], deletions: [], totalEntries: 0, totalBytes: 0 } }
       const get = vi.fn(async (caller: ManagementPrincipal) => {
         requireAuthorization(caller, 'harnesses:read')
+        await expect(ci.handle!(legacyRefresh, context)).rejects.toMatchObject({ code: 'CI_RUNTIME_RETIRED' })
         return (await discovery.handle!(request, context)).payload
       })
       const commands = { recordDenied: vi.fn(async () => {}) }
@@ -152,7 +161,8 @@ describe('actual installed worker mount availability, no physical acceptance', (
     expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).not.toThrow()
   })
 
-  it('recovers an unused source reservation from protected journals without native runtime selections', async () => {
+  it.each(['idle', 'failed'] as const)(
+    'keeps Agent discovery and source recovery open after legacy refresh attempts with %s status', async legacyState => {
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-source-cleanup-'))
     roots.push(stateDirectory)
     const project = join(stateDirectory, 'project')
@@ -189,11 +199,37 @@ describe('actual installed worker mount availability, no physical acceptance', (
       scopeId: 'original-filesystem', expiresAt: pairing.expiresAt, roots: [root], owner: null }
     const binding = { mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
       keyRevision: 1, authorizationRevision: 1, bootId: bootIdentity(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
+    if (legacyState === 'failed') {
+      const ciDirectory = join(stateDirectory, 'managed', 'ci')
+      const log = join(ciDirectory, 'refresh.log')
+      await mkdir(ciDirectory, { recursive: true, mode: 0o700 })
+      await writeFile(log, 'EXDEV\nexit=1\n', { mode: 0o600 })
+      await writeFile(join(ciDirectory, 'ci-runtime-last-refresh.json'), JSON.stringify({
+        operationId: randomUUID(), commit: 'a'.repeat(40), log,
+      }), { mode: 0o600 })
+    }
     const mounted = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId: binding.bootId,
       configuration: null, approvedRoots: async () => approved, codexSuiteRevision: 'fixture-suite',
       connection: () => ({ mainNow: () => Date.now(), currentBinding: () => binding, captureRequest: () => ({ binding,
         request: async () => ({ payload: { version: 1, operation: 'sources.reclamation-authorize', grant } }) }) }) })
     try {
+      const ci = mounted.extensions.find(value => value.namespace === 'ci-runtime-v1')!
+      const context = { binding, signal: AbortSignal.timeout(10_000) }
+      const fingerprint = verificationRuntimeFixture().measurement.fingerprint
+      const commit = fingerprint.sourceCommit!
+      const refresh = { operation: 'refresh', operationId: randomUUID(), commit, root,
+        resources: fingerprint.resources, manifest: { version: 1, ...source,
+          git: { commit, tree: 'a'.repeat(40), objectFormat: 'sha1' }, capturePolicy: 'git-tree-v1',
+          executablePolicy: 'preserve-approved', entries: [], deletions: [], totalEntries: 0, totalBytes: 0 } }
+      await expect(ci.handle!(refresh, { ...context, binding: { ...binding, authorizationRevision: 2 } }))
+        .rejects.toMatchObject({ code: 'CI_RUNTIME_STALE' })
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(ci.handle!(refresh, context)).rejects.toMatchObject({ code: 'CI_RUNTIME_RETIRED' })
+        expect((await ci.handle!({ operation: 'status' }, context)).payload).toMatchObject({ state: legacyState })
+        const discovery = mounted.extensions.find(value => value.namespace === 'harness-discovery-v1')!
+        expect((await discovery.handle!({ operation: 'discover', refreshId: randomUUID() }, context)).payload)
+          .toMatchObject({ installations: [] })
+      }
       const extension = mounted.extensions.find(value => value.namespace === 'source-operations-v1')!
       expect(await extension.handle!({ version: 1, operation: 'sources.reclaim-reservation',
         reservationId: grant.reservationId, reclamationId: grant.reclamationId },
