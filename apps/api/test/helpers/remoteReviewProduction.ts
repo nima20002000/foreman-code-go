@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:https'
 import { createServer } from 'node:net'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -26,7 +26,7 @@ import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflo
 import { loadConfig } from '../../src/config.js'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
-import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
+import { installManagedLauncher } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
 import { systemGitWorktreePorts } from '../../src/modules/sources/gitWorktree.js'
@@ -38,6 +38,7 @@ import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemot
   createRemoteReviewClaudeInventory } from './remoteReviewProvider.js'
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
 import { gitFixtureEnvironment } from './gitFixture.js'
+import { remoteReviewEnvironment } from './remoteReviewEnvironment.js'
 
 const execute = promisify(execFile)
 const tsxLoader = createRequire(import.meta.url).resolve('tsx')
@@ -103,7 +104,9 @@ export async function remoteReviewProduction(options: {
     const directory = await privateFixtureDirectory('remote-review-production-')
     closes.push(() => rm(directory, { recursive: true, force: true }))
     const workerRelease = options.workerRelease ?? await buildRemoteReviewWorkerRelease(directory)
-    const provider = await createRemoteReviewProvider(join(directory, 'provider'))
+    const launcher = join(directory, 'app-mcp', 'launcher.mjs')
+    await installManagedLauncher(new URL('../../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
+    const provider = await createRemoteReviewProvider(join(directory, 'provider'), launcher)
     const claudeDirectory = join(directory, 'claude-inventory')
     const claudeCommands = await createRemoteReviewClaudeInventory(claudeDirectory)
     const claudeInventory = options.claudeInventory ? claudeCommands : undefined
@@ -116,8 +119,13 @@ export async function remoteReviewProduction(options: {
     const workerProject = join(directory, 'worker-projects', 'project')
     const workerRuntime = join(directory, 'worker-runtime')
     const claudeProfile = join(directory, 'claude-profile')
+    const logEnvironment = remoteReviewEnvironment(claudeDirectory, claudeProfile, launcher)
     for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime, claudeProfile]) {
       await mkdir(path, { recursive: true, mode: 0o700 })
+    }
+    for (const key of ['CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+      'XDG_STATE_HOME', 'XDG_RUNTIME_DIR']) {
+      await mkdir(logEnvironment[key]!, { recursive: true, mode: 0o700 })
     }
     // The Codex fixture never chooses an ambient Claude model during startup.
     const claude = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'claude-haiku-4-5-20251001',
@@ -136,7 +144,7 @@ export async function remoteReviewProduction(options: {
       name: randomUUID(), defaultBranch: 'main' }
     const repositoryName = `${repository.owner}/${repository.name}`
     // Prepopulate the production clone with a local Git remote instead of contacting GitHub.
-    const clone = systemGitWorktreePorts({ ...process.env, HOME: claudeDirectory }).cloneDirectory(repositoryName)
+    const clone = systemGitWorktreePorts(logEnvironment).cloneDirectory(repositoryName)
     closes.push(() => rm(clone, { recursive: true, force: true }))
     await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
     await execute('git', ['clone', '--quiet', '--no-checkout', '--template=', project, clone], gitOptions)
@@ -193,10 +201,6 @@ export async function remoteReviewProduction(options: {
       })
     }
     closes.push(stopMain)
-    // Vitest silences the product logger; Main and Worker warnings carry the failure codes read here.
-    const logEnvironment = { ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn',
-      HOME: claudeDirectory, CLAUDE_CONFIG_DIR: claudeProfile,
-      FOREMAN_CODE_APP_MCP_DIRECTORY: dirname(appLauncherPath()) }
     const collectFailures = (child: ChildProcess) => {
       let pendingLog = ''
       child.stdout!.on('data', chunk => {
@@ -366,7 +370,7 @@ export async function remoteReviewProduction(options: {
     await writeFile(join(stateDirectory, 'approved-roots.json'), JSON.stringify(roots), { mode: 0o600 })
     await writeFile(join(stateDirectory, 'workflow-runtime.json'), JSON.stringify({ schemaVersion: 1,
       codexBinary: provider.binary, expectedVersion: 'codex-cli 0.154.0',
-      appMcpLauncher: appLauncherPath(), payloadPaths: provider.payloadPaths }), { mode: 0o600 })
+      appMcpLauncher: launcher, payloadPaths: provider.payloadPaths }), { mode: 0o600 })
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
     await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
       env: logEnvironment,
