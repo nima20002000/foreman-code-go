@@ -108,8 +108,7 @@ export class ComputerSyncService {
   }
 
   async paired(target: DeviceProvisioningTarget): Promise<void> {
-    await this.identity(this.repository.mainTarget)
-    await this.identity(target)
+    await this.assertTarget(this.pool, target)
     await this.reconcile()
   }
 

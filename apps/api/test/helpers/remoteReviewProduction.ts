@@ -13,6 +13,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 import { HarnessOptionsResultSchema, ManagedWorkspaceSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
+import { ComputerSyncStatusSchema } from '@foreman-code/contracts/computer-accounts'
 import { DevicePairingGrantResultSchema, DevicePairingResultSchema, MainDeviceIdentityPublicSchema,
   WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { loadOrCreateWorkerIdentity, persistWorkerPairing, pairingProof } from '@foreman-code/contracts/device-identity-node'
@@ -328,6 +329,17 @@ export async function remoteReviewProduction(options: {
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
     beginPhase('source approval and Worker pairing')
     const mainHost = { kind: 'main' as const, mainId }
+    // This fixture exercises native review and source transfer without installing shared-file services.
+    const syncTarget = { hostRef: mainHost, applicationInstallationId: mainId,
+      keyRevision: null, authorizationRevision: null }
+    await value('computer_sync_update', {
+      commandId: randomUUID(), workspaceId: saved.scope.workspaceId, expectedRevision: 0, enabled: false,
+      target: syncTarget,
+    })
+    const sync = ComputerSyncStatusSchema.parse(await value('computer_sync_status', { target: syncTarget }))
+    if (!sync.folders.some(folder => folder.workspaceId === saved.scope.workspaceId && !folder.enabled)) {
+      throw new Error('Remote review fixture shared-file sync was not disabled.')
+    }
     const approveSource = async () => {
       const mainChoices = WorkspaceRootListResultSchema.parse(await value('workspace_root_choices_list', {
         workspaceId: saved.scope.workspaceId,
@@ -574,7 +586,7 @@ export async function remoteReviewProduction(options: {
         expectedLocationRevision: location.locationRevision, input: {},
       }))
     }
-    const reconcile = () => new Promise<void>((resolve, reject) => {
+    const requestReconciliation = (kind: 'reconcile' | 'reconcile-reviews') => new Promise<void>((resolve, reject) => {
       if (!main || !main.connected) {
         reject(new Error('Production Main reconciliation is disconnected.'))
         return
@@ -613,8 +625,10 @@ export async function remoteReviewProduction(options: {
       const timer = setTimeout(() => finish(new Error('Production Main reconciliation timed out.')), 30_000)
       child.on('message', settled)
       child.once('exit', exited)
-      child.send({ kind: 'reconcile', requestId }, error => { if (error) finish(error) })
+      child.send({ kind, requestId }, error => { if (error) finish(error) })
     })
+    const reconcile = () => requestReconciliation('reconcile')
+    const reconcileReviews = () => requestReconciliation('reconcile-reviews')
     async function details(runId: string) {
       const response = await fetch(`${origin}/api/management/workspaces/${saved.scope.workspaceId}/runs/${runId}`, {
         headers: { authorization: `Bearer ${writer.token}` } })
@@ -627,7 +641,7 @@ export async function remoteReviewProduction(options: {
     return { db, directory, stateDirectory, provider, claudeInventory, access, writer, repositoryName,
       sourceManifest: approved.manifest,
       hostRef: executionHostRef, profiles, version, startupCatalog,
-      start, call, value, details, reconcile, registry, close, origin: () => origin,
+      start, call, value, details, reconcile, reconcileReviews, registry, close, origin: () => origin,
       subscribeNativeChanges: changes.subscribe,
       failures: () => structuredClone(failures),
       async workerWorkflowStartup() {

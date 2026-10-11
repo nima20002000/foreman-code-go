@@ -120,7 +120,7 @@ export async function reviewInProgress(fixture: Fixture) {
   }, value => value !== undefined, 'routed native interaction', fixture.subscribeNativeChanges)
   if (!interaction) throw new Error('The requester has no pending interaction.')
   const job = await waitForRemoteReview(async () => {
-    await fixture.reconcile()
+    await fixture.reconcileReviews()
     const row = (await fixture.db.pool.query<{ record: unknown }>(
       'select record from review_jobs where interaction_id=$1', [interaction.id])).rows[0]
     const current = row ? ReviewJobSchema.parse(row.record) : undefined
@@ -151,11 +151,11 @@ export async function deliveredReview(fixture: Fixture, interactionId: string) {
   const interaction = await waitForRemoteReview(async () => {
     const failure = (await fixture.provider.calls()).find(call => call.providerFailure !== undefined)
     if (failure) throw new Error(`Remote review provider failed: ${String(failure.providerFailure)}`)
-    await fixture.reconcile()
+    await fixture.reconcileReviews()
     return readInteraction(fixture, interactionId)
   }, value => value.deliveryState === 'delivered', 'persisted native decision delivery')
   const job = await waitForRemoteReview(async () => {
-    await fixture.reconcile()
+    await fixture.reconcileReviews()
     const row = (await fixture.db.pool.query<{ record: unknown }>(
       'select record from review_jobs where interaction_id=$1', [interactionId])).rows[0]!
     return ReviewJobSchema.parse(row.record)
@@ -257,7 +257,7 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
       && proof.connectionGeneration === installation.connectionGeneration
       && proof.environmentGeneration === installation.environmentGeneration
   }), 'replacement Worker profile qualification')
-  await fixture.reconcile()
+  await fixture.reconcileReviews()
   const currentReceipts = await receipts(fixture, active.run.id)
   expect(currentReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
     .toEqual(originalReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
@@ -267,7 +267,7 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
     guardian: owner.guardian, provider: owner.provider, boundary: owner.boundary }))).toEqual(originalLaunches)
   expect(reconnected.every(owner => owner.lifecycle === 'active')).toBe(true)
   await waitForRemoteReview(async () => {
-    await fixture.reconcile()
+    await fixture.reconcileReviews()
     const row = (await fixture.db.pool.query<{
       record: unknown; credential_bound: boolean; reviewer_live: boolean; writer_live: boolean
     }>(`select
@@ -317,7 +317,7 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
     receipt.intent.executionId === active.reviewer.id)!
   // Observe a persisted periodic renewal before delivering with the original credential.
   await waitForRemoteReview(async () => {
-    await fixture.reconcile()
+    await fixture.reconcileReviews()
     return (await receipts(fixture, active.run.id)).find(receipt =>
       receipt.intent.executionId === active.reviewer.id)
   }, receipt => !!receipt && receipt.sequence > beforeRenewal.sequence

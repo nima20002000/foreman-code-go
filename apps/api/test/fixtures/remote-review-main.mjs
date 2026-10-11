@@ -32,9 +32,11 @@ process.send?.({ kind: 'ready', origin })
 let closing = false
 let reconciliationFailure
 process.on('message', async message => {
-  if (message?.kind !== 'reconcile' || closing) return
+  if (!['reconcile', 'reconcile-reviews'].includes(message?.kind) || closing) return
   try {
-    await production.reconcile(error => { reconciliationFailure = error })
+    const report = error => { reconciliationFailure = error }
+    if (message.kind === 'reconcile-reviews') await production.engine.reconcile(report)
+    else await production.reconcile(report)
     if (reconciliationFailure) throw reconciliationFailure
     process.send?.({ kind: 'reconciled', requestId: message.requestId })
   } catch (error) {
