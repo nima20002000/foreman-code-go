@@ -67,7 +67,8 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/operator-management-file-authority.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/test-database-startup.integration.test.ts', 'testDatabaseStartup'],
     ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', 'installedWorkerHost'],
-    ['apps/api/test/computer-workflow-save.regression-reservation-cleanup.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/remote-review-production.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/historical-chat-placement.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', 'installedWorkerHost'],
@@ -123,7 +124,8 @@ test('unsupported integration files remain required and prevent a complete or pa
 test('installed Worker suites remain unavailable and nonzero even when explicitly selected in a Job', async () => {
   const files = [
     'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
-    'apps/api/test/computer-workflow-save.regression-reservation-cleanup.integration.test.ts',
+    'apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts',
+    'apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts',
     'apps/api/test/remote-review-production.integration.test.ts',
     'apps/api/test/worker-chat-profile-qualification.integration.test.ts',
     'apps/api/test/worker-profile-requalification-main-restart.integration.test.ts',
