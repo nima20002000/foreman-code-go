@@ -175,6 +175,7 @@
   "apps/api/src/modules/harnesses/qualificationCache.ts",
   "apps/api/src/modules/harnesses/qualificationErrors.ts",
   "apps/api/src/modules/harnesses/recovery/cgroupBoundary.ts",
+  "apps/api/src/modules/harnesses/recovery/codexStdioBridge.ts",
   "apps/api/src/modules/harnesses/recovery/linuxIdentity.ts",
   "apps/api/src/modules/harnesses/recovery/nativeGuardian.ts",
   "apps/api/src/modules/harnesses/recovery/processRegistry.ts",

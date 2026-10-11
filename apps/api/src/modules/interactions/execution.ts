@@ -750,8 +750,11 @@ export class ApprovalExecutionCoordinator {
         resolved.markResident?.()
         return undefined
       }
-      let access: Awaited<ReturnType<typeof resolved.manager.originalApplicationAccess>>
-      try { access = await resolved.manager.originalApplicationAccess(session, signal) }
+      const originalApplicationAccess = resolved.manager.originalApplicationAccess
+      if (!originalApplicationAccess) throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED',
+        'The original Worker application access cannot be restored.', 409)
+      let access: Awaited<ReturnType<typeof originalApplicationAccess>>
+      try { access = await originalApplicationAccess.call(resolved.manager, session, signal) }
       catch (error) {
         if (!await completed()) throw error
         resolved.markResident?.()

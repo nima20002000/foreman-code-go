@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.76] - 2026-10-12
+
+### Added
+
+- `ci_run` accepts `baseCommit`: affected selection compares against that commit, so Agents can ask for "changed since the last release" without running git.
+
+### Fixed
+
+- Stopping a Run converges when its native owner is gone, so stuck Runs settle and their workflows can be archived.
+- A planned API restart keeps active Agent turns and resumes them instead of interrupting them.
+- Workflow and workspace lists refresh live; CircleCI trigger parameters stay under its length limit; remote source preparation no longer overflows its timer.
+
 ## [0.0.75] - 2026-10-11
 
 ### Fixed
