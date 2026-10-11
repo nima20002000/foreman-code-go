@@ -157,4 +157,3 @@ async function createFixture(db: Awaited<ReturnType<typeof currentDatabase>>) {
         sourceRuntime.sources,producer) }
   } catch (error) { await close(); throw error }
 }
-
