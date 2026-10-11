@@ -74,6 +74,28 @@ describe('selected harness metadata invalidation', () => {
     await expect(f.registry.metadata(binding, 'suite', async () => 'evidence')).resolves.toBe('evidence')
   })
 
+  it('retains a pending check while another check publishes qualification results for the same installation', async () => {
+    const f = fixture()
+    const binding = f.pin()
+    let finish!: (value: string) => void
+    const pending = f.registry.metadata(binding, 'suite', () => new Promise<string>(resolve => { finish = resolve }))
+    await Promise.resolve()
+
+    for (const observation of [
+      { observedVersion: '0.154.0', qualified: true },
+      { observedVersion: null, qualified: false },
+    ]) {
+      f.registry.refresh([{ ...f.record, ...observation }])
+      expect(() => f.registry.assertCurrent(binding)).not.toThrow()
+      expect(f.registry.list()[0]).toMatchObject(observation)
+      expect(f.pin().installation).toMatchObject(observation)
+    }
+
+    finish('completed check')
+    await expect(pending).resolves.toBe('completed check')
+    expect(binding.installation).toMatchObject({ observedVersion: null, qualified: null })
+  })
+
   it.each(['fingerprint', 'installation', 'protocol', 'environment', 'connection', 'driver', 'launcher', 'installed', 'profile'] as const)(
     'rejects a retained binding and pending evidence after its selected %s changes', async change => {
       const f = fixture(), binding = f.pin()

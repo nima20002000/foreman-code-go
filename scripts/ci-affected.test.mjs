@@ -1,0 +1,114 @@
+import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { affectedSnapshot, selectAffectedFiles } from './ci-affected.mjs'
+import { affectedCommands } from './ci-affected-run.mjs'
+import { selectByIndexes } from './ci-files.mjs'
+import { snapshot } from './ci-remote.mjs'
+
+const source = 'apps/api/src/feature.ts'
+const unit = 'apps/api/src/feature.test.ts'
+const integration = 'apps/api/test/feature.integration.test.ts'
+const sources = new Map([
+  [source, 'export const value = 1'],
+  ['apps/api/src/bridge.ts', "export { value } from './feature.js'"],
+  [unit, "import {\n value\n} from './bridge.js'"],
+  [integration, "const feature = await import('../src/bridge.js')"],
+  ['apps/api/test/unrelated.integration.test.ts', 'export {}'],
+  ['apps/api/test/feature.acceptance.test.ts', "import '../src/feature.js'"],
+  ['apps/web/src/other.test.tsx', 'export {}'],
+])
+
+test('selects transitive unit and integration dependents in their own suites', () => {
+  for (const [suite, expected] of [['unit', unit], ['integration', integration]]) {
+    const result = selectAffectedFiles({ suite, changedFiles: [source], sources })
+    assert.equal(result.scope, 'affected')
+    assert.deepEqual(result.files, [expected])
+  }
+  assert.deepEqual(selectAffectedFiles({ suite: 'integration', changedFiles: [integration], sources }).files, [integration])
+  assert.deepEqual(selectAffectedFiles({ suite: 'unit', changedFiles: ['README.md'], sources }).files, [])
+})
+
+test('tracks contracts exports across packages and handles cycles', () => {
+  const shared = 'packages/contracts/src/feature.ts'
+  const graph = new Map([...sources, [shared, 'export const value = 1'],
+    [source, "import { value } from '@foreman-code/contracts/feature'; import './bridge.js'"],
+    ['apps/web/src/shared.test.tsx', "import { value } from '@foreman-code/contracts/feature'"]])
+  const result = selectAffectedFiles({ suite: 'unit', changedFiles: [shared], sources: graph,
+    exports: { './feature': { import: './dist/feature.js' } } })
+  assert.deepEqual(result.files, [unit, 'apps/web/src/shared.test.tsx'])
+})
+
+test('keeps web integration-named unit tests and asset import dependents', () => {
+  const asset = 'apps/web/src/icon.svg'
+  const webTest = 'apps/web/src/view.integration.test.tsx'
+  const graph = new Map([[asset, ''], ['apps/web/src/view.tsx', "import './icon.svg?raw'"],
+    [webTest, "import './view'"]])
+  assert.deepEqual(selectAffectedFiles({ suite: 'unit', changedFiles: [asset], sources: graph }).files, [webTest])
+})
+
+test('falls back to full for shared infrastructure and removed sources', () => {
+  for (const file of ['package.json', 'apps/api/package.json', 'pnpm-lock.yaml',
+    'apps/api/src/infrastructure/exampleMigration.ts', 'apps/api/test/helpers/common.ts',
+    'scripts/test-integration.mjs', 'scripts/test-integration-process.mjs', 'scripts/test-resources.mjs',
+    '.github/workflows/ci.yml', 'packages/contracts/src/index.ts',
+    'apps/api/src/deleted.ts']) {
+    assert.equal(selectAffectedFiles({ suite: 'integration', changedFiles: [file], sources }).scope, 'full', file)
+  }
+})
+
+test('lint checks changed files and typecheck checks packages reached by imports', () => {
+  const lint = selectAffectedFiles({ suite: 'lint', changedFiles: [source], sources })
+  assert.deepEqual(lint.files, [source])
+  const typecheck = selectAffectedFiles({ suite: 'typecheck', changedFiles: [source], sources })
+  assert.ok(typecheck.files.includes(source))
+  assert.deepEqual(affectedCommands('typecheck', typecheck.files), [['corepack', 'pnpm', '--dir', 'apps/api', 'typecheck']])
+  assert.deepEqual(affectedCommands('unit', [unit]), [['corepack', 'pnpm', '--dir', 'apps/api', 'exec', 'vitest', 'run', 'src/feature.test.ts']])
+  assert.deepEqual(selectByIndexes(['a', 'b', 'c'], 's:0,2'), ['a', 'c'])
+  assert.throws(() => selectByIndexes(['a', 'b', 'c'], '-1'), /Invalid/)
+})
+
+test('runs affected commands without leaking dispatch selections into nested commands', t => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'affected-command-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'apps/api/src'), { recursive: true })
+  writeFileSync(join(root, source), 'export {}')
+  const selection = join(root, 'selected.json')
+  writeFileSync(selection, JSON.stringify([source]))
+  writeFileSync(join(root, 'corepack'), `#!${process.execPath}\n`
+    + "if ('SCOPE' in process.env || 'SELECTED_FILES' in process.env || 'SLICE' in process.env) process.exit(9)\n"
+    + "console.log(process.argv.slice(2).join(' '))\n", { mode: 0o755 })
+  const run = spawnSync(process.execPath, [new URL('./ci-affected-run.mjs', import.meta.url).pathname,
+    'lint', '--files-from', selection], { cwd: root, encoding: 'utf8', env: { ...process.env,
+    PATH: `${root}:${process.env.PATH}`, SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: 's:0' } })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /pnpm --dir apps\/api exec eslint src\/feature\.ts --max-warnings 0/)
+})
+
+test('selects the snapshot tree against origin/main without reading later working tree edits', t => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'affected-ci-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+    GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' }
+  const git = (...args) => execFileSync('git', args, { cwd: root, env, encoding: 'utf8' }).trim()
+  git('init', '-q', '-b', 'feature')
+  for (const [file, text] of sources) {
+    mkdirSync(join(root, file, '..'), { recursive: true })
+    writeFileSync(join(root, file), text)
+  }
+  git('add', '.')
+  git('commit', '-qm', 'base')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  writeFileSync(join(root, source), 'export const value = 2')
+  const commit = snapshot(root)
+  writeFileSync(join(root, unit), 'export {}')
+  assert.deepEqual(affectedSnapshot(commit, 'unit', root).files, [unit])
+  assert.deepEqual(affectedSnapshot(commit, 'unit', join(root, 'apps/api')).files, [unit])
+  const merge = git('commit-tree', `${commit}^{tree}`, '-p', 'HEAD', '-p', commit, '-m', 'merge')
+  assert.equal(affectedSnapshot(merge, 'unit', root).scope, 'full')
+  git('update-ref', '-d', 'refs/remotes/origin/main')
+  assert.equal(affectedSnapshot(commit, 'unit', root).scope, 'full')
+})

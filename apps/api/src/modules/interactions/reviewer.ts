@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { RETIRED_OPENCODE_MESSAGE, ReviewJobSchema, type DurableInteraction, type PendingNativeInteraction, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 
@@ -108,6 +109,8 @@ export class ReviewerDispatcher {
     if (job.provider === 'opencode') {
       throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     }
+    // job is reassigned as the review settles; the closures below keep its checked provider.
+    const provider = job.provider
     const guard = new LeaseGuard(this.leaseMs,
       () => this.coordination.assertReviewJobLease(job.id, jobToken),
       () => this.coordination.renewReviewJob(job.id, jobToken, this.leaseMs),
@@ -124,7 +127,7 @@ export class ReviewerDispatcher {
     }
     const recovering = Boolean(job.submittedAt || job.acknowledgedAt || job.providerTurnOrMessageId
       || ['submitted', 'acknowledged', 'uncertain'].includes(available.state))
-    try {
+    const dispatch = async (): Promise<ReviewJob> => {
       const { providerVersion, ...ownerContext } = await guard.wait(this.coordination.getReviewJobContext(job.id))
       executionId = ownerContext.executionId
       await guard.check()
@@ -196,9 +199,9 @@ export class ReviewerDispatcher {
             ...(job.providerTurnOrMessageId ? { nativeTurnId: job.providerTurnOrMessageId } : {}) }
         : reviewPreflightIdentity(priorLane, workflowCorrelationId)
       const attached = await guard.wait(this.nativeRuntime.attachOwnedSession({
-        harness: job.provider, agentId: job.reviewerAgentId, ...ownerContext, purpose: 'reviewer',
+        harness: provider, agentId: job.reviewerAgentId, ...ownerContext, purpose: 'reviewer',
         ...identity, reviewJob: job,
-      }, { harness: job.provider, providerVersion, nativeSessionId: job.nativeSessionId }, guard.signal))
+      }, { harness: provider, providerVersion, nativeSessionId: job.nativeSessionId }, guard.signal))
       await guard.check()
       if (attached.session.harness !== job.provider || attached.session.nativeSessionId !== job.nativeSessionId
         || attached.session.providerVersion !== providerVersion) throw new Error('Reviewer attach changed its durable native identity.')
@@ -345,55 +348,66 @@ export class ReviewerDispatcher {
             }
           }
           submitting = false
-          // Submitted/unknown work is observation-only. Missing evidence is not permission to resend.
-          await check()
-          workSignal.throwIfAborted()
-          const history = await lane.guard.wait(manager.reconcile(session, job.correlationId, workSignal), workSignal)
-          await check()
-          workSignal.throwIfAborted()
-          const originalHistory = safe.value(history)
-          const normalizedEvents = originalHistory.events.map((event) => normalizeNativeProducerEvent(
-            { ...safe.value(event), executionId: executionId! }).event)
-          const trackedHistory = { ...originalHistory, events: normalizedEvents }
-          delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
-          tracker.observeHistory(trackedHistory)
-          const historyEvidence = tracker.snapshot()
-          const pending = history.pendingInteraction ?? history.pendingInteractions[0]
-          const requests = new Map<string, PendingNativeInteraction>()
-          for (const request of [...(pending ? [pending] : []), ...history.pendingInteractions]) {
-            requests.set(JSON.stringify([request.session, request.turn, request.nativeRequestType]), request)
+          for (;;) {
+            // Submitted/unknown work is observation-only. Missing evidence is not permission to resend.
+            await check()
+            workSignal.throwIfAborted()
+            const history = await lane.guard.wait(manager.reconcile(session, job.correlationId, workSignal), workSignal)
+            await check()
+            workSignal.throwIfAborted()
+            const originalHistory = safe.value(history)
+            const normalizedEvents = originalHistory.events.map((event) => normalizeNativeProducerEvent(
+              { ...safe.value(event), executionId: executionId! }).event)
+            const trackedHistory = { ...originalHistory, events: normalizedEvents }
+            delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
+            tracker.observeHistory(trackedHistory)
+            const historyEvidence = tracker.snapshot()
+            const pending = history.pendingInteraction ?? history.pendingInteractions[0]
+            const requests = new Map<string, PendingNativeInteraction>()
+            for (const request of [...(pending ? [pending] : []), ...history.pendingInteractions]) {
+              requests.set(JSON.stringify([request.session, request.turn, request.nativeRequestType]), request)
+            }
+            // An unbound recovered lane can report an unsupported approval, but
+            // its historical observation cannot establish native control ownership.
+            if (pending && recovering && !lane.previous.correlationId && !historyEvidence.identityConflict) {
+              return await approvalFailure(pending, [...requests.values()])
+            }
+            const observedProviderId = historyEvidence.providerId
+            if (observedProviderId) await recordProviderTurn(observedProviderId)
+            const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
+              { type: 'history', history: originalHistory })
+            await check()
+            workSignal.throwIfAborted()
+            await this.coordination.appendReviewNativeHistory(job, normalizedEvents, {
+              writer: lane.fence, live: false, terminalReady: false, nativeCapture,
+            })
+            await this.nativeRuntime.afterReviewCommit?.(executionId!)
+            const evidence = tracker.snapshot()
+            if (evidence.providerId) lane.providerId = evidence.providerId
+            if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
+              message: 'Native history conflicts with the durable review identity. No further native response will be sent.' })
+            if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
+            if (pending) return await approvalFailure(pending, [...requests.values()])
+            if (evidence.terminal && await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
+              return await failReview({ code: 'REVIEW_NO_DECISION',
+                message: 'The Orchestrator finished its review without responding to the assigned interaction.' })
+            }
+            lane.observedStatus = evidence.nativeIdle ? 'idle' : evidence.nativeBusy || evidence.acknowledged ? 'busy' : 'uncertain'
+            if (recovering && manager.retainsReviewerSession && evidence.acknowledged && evidence.nativeBusy) {
+              // Keep the original process authorized while its running turn is observed, without resubmitting it.
+              await transition('acknowledged', { releaseLease: false })
+              await delay(100, undefined, { signal: workSignal }).catch(error => {
+                workSignal.throwIfAborted()
+                throw error
+              })
+              continue
+            }
+            await maintenance?.stop()
+            return await transition(evidence.terminal ? 'completed' : evidence.acknowledged ? 'acknowledged' : 'uncertain', {
+              ...(evidence.providerId ? { providerTurnOrMessageId: evidence.providerId } : {}),
+              releaseLease: true,
+            })
           }
-          // An unbound recovered lane can report an unsupported approval, but
-          // its historical observation cannot establish native control ownership.
-          if (pending && recovering && !lane.previous.correlationId && !historyEvidence.identityConflict) {
-            return await approvalFailure(pending, [...requests.values()])
-          }
-          const observedProviderId = historyEvidence.providerId
-          if (observedProviderId) await recordProviderTurn(observedProviderId)
-          const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
-            { type: 'history', history: originalHistory })
-          await check()
-          workSignal.throwIfAborted()
-          await this.coordination.appendReviewNativeHistory(job, normalizedEvents, {
-            writer: lane.fence, live: false, terminalReady: false, nativeCapture,
-          })
-          await this.nativeRuntime.afterReviewCommit?.(executionId!)
-          const evidence = tracker.snapshot()
-          if (evidence.providerId) lane.providerId = evidence.providerId
-          if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
-            message: 'Native history conflicts with the durable review identity. No further native response will be sent.' })
-          if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
-          if (pending) return await approvalFailure(pending, [...requests.values()])
-          if (evidence.terminal && await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
-            return await failReview({ code: 'REVIEW_NO_DECISION',
-              message: 'The Orchestrator finished its review without responding to the assigned interaction.' })
-          }
-          lane.observedStatus = evidence.nativeIdle ? 'idle' : evidence.nativeBusy || evidence.acknowledged ? 'busy' : 'uncertain'
-          await maintenance?.stop()
-          return await transition(evidence.terminal ? 'completed' : evidence.acknowledged ? 'acknowledged' : 'uncertain', {
-            ...(evidence.providerId ? { providerTurnOrMessageId: evidence.providerId } : {}),
-            releaseLease: true,
-          })
         } catch (rawError) {
           const error = safe.error(rawError)
           if (isLeaseLost(rawError) || guard.signal.aborted || lane.guard.signal.aborted) throw error
@@ -433,7 +447,8 @@ export class ReviewerDispatcher {
           })
         } finally { await maintenance?.stop() }
       })
-    } catch (rawError) {
+    }
+    const recoverDispatch = async (rawError: unknown): Promise<ReviewJob> => {
       const error = safe.error(rawError)
       if (isLeaseLost(rawError) || guard.signal.aborted) throw error
       await guard.check()
@@ -462,13 +477,37 @@ export class ReviewerDispatcher {
             retryAfter: new Date(Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempt, 4))).toISOString(),
           }),
         })
-    } finally {
-      try {
-        await guard.stop()
-        await finalizeCapturedReview()
-      } finally {
-        if (executionId) await this.nativeRuntime.releaseReviewSession?.(executionId)
-      }
     }
+    const errors: unknown[] = []
+    let result: ReviewJob | undefined
+    try {
+      result = await dispatch().catch(recoverDispatch)
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await guard.stop()
+      await finalizeCapturedReview()
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      if (executionId) await this.nativeRuntime.releaseReviewSession?.(executionId)
+      if (guard.signal.reason instanceof DomainError && guard.signal.reason.code === 'ENGINE_RESTART'
+        && job.leaseToken === jobToken) {
+        // Observation has drained; the replacement Main can claim the same retained turn immediately.
+        try {
+          await this.coordination.transitionReviewJob(job.id, jobToken, job.state, { releaseLease: true })
+        } catch (error) {
+          // An expired lease or a successor's fence already prevents this owner from writing.
+          if (!isLeaseLost(error)) throw error
+        }
+      }
+    } catch (error) {
+      errors.push(error)
+    }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'Review dispatch and cleanup failed.')
+    return result
   }
 }

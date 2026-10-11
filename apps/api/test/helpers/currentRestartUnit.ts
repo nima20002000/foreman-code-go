@@ -12,6 +12,7 @@ import type { RepeatNativeObservationStore } from '../../src/modules/interaction
 import { PostgresWorkflowClosureStore } from '../../src/modules/interactions/workflowClosure.js'
 import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
 import type { NativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
+import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { nativeLanes } from './nativeLanes.js'
 import { currentUnitSnapshot } from './currentUnitSnapshot.js'
 
@@ -25,7 +26,7 @@ export interface RestartClosureRow {
  * settlement run unchanged. The repository host is a narrow recording port;
  * it checks the independently seeded input receipt rather than minting one.
  * Synthetic managers never contact a provider. */
-export function currentRestartUnit(reviewer = false) {
+export function currentRestartUnit(reviewer = false, acceptedPlacement?: AcceptedNodePlacement) {
   const f = currentUnitSnapshot('be001-restart', 'single'), configuration = f.configurations[0]!
   const node = f.version.definition.nodes[0]!
   if (reviewer) {
@@ -178,6 +179,7 @@ export function currentRestartUnit(reviewer = false) {
   const assertOwned = () => { if (!state.owned) throw new Error('RUN_OWNERSHIP_LOST') }
   const connection = new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, assertOwned)
   const owner = { runId: f.run.id, assertOwned, oneShotConnection: () => connection,
+    retain: () => async () => { assertOwned() }, release: async () => {},
     readOneShotFence: async () => {
       if (state.loseAtFinalFence && state.finalizationWrites > 0) state.owned = false
       assertOwned(); return { ownerId: 'unit-owner', fence: '1' }
@@ -261,7 +263,9 @@ export function currentRestartUnit(reviewer = false) {
     const store = new PostgresWorkflowClosureStore(pool)
     type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
     const coordinator = new ApprovalExecutionCoordinator(runs as unknown as Args[0], interactions as unknown as Args[1],
-      budgets as unknown as Args[2], resolver, 60_000, credentials as unknown as Args[5], undefined, store, undefined, captures.capture)
+      budgets as unknown as Args[2], resolver, 60_000, credentials as unknown as Args[5], undefined, store,
+      undefined, captures.capture, undefined, undefined, undefined,
+      acceptedPlacement ? async context => ({ ...context, acceptedPlacement }) : undefined)
     const observation: RepeatNativeObservationStore = {
       async readExecution(id) {
         assert.equal(id, execution.id)

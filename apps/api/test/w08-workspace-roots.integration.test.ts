@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
@@ -194,10 +195,19 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
         ...input, commandId: randomUUID(), expectedLocationRevision: 3, expectedRootPolicyRevision: 3,
       } })
       await bindReached
-      const cleanup = cleanupWorkspaceProjectFolders(db.pool, owner.principal, [removableId], 'runner-local', 'http', randomUUID())
+      const cleanupClient = await db.pool.connect()
+      const cleanupPid = (await cleanupClient.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      const cleanupPool = { connect: async () => cleanupClient } as unknown as typeof db.pool
+      const cleanup = cleanupWorkspaceProjectFolders(cleanupPool, owner.principal, [removableId], 'runner-local', 'http', randomUUID())
       const cleanupOutcome = cleanup.then(() => ({ removed: true as const }), error => ({ error }))
-      await Promise.race([cleanupOutcome, new Promise(resolve => setTimeout(resolve, 1_000))])
-      finishBind()
+      try {
+        await readUntil(async () => (await db.pool.query<{ blocked: boolean }>(
+          'select cardinality(pg_blocking_pids($1)) > 0 as blocked', [cleanupPid])).rows[0]!.blocked,
+        blocked => blocked, { timeoutMs: 1000, description: 'folder cleanup to wait for binding' })
+      } finally {
+        finishBind()
+        await Promise.allSettled([binding, cleanupOutcome])
+      }
       const raceResult = await binding
       raceAttestation.mockRestore()
       expect(raceResult.isError).not.toBe(true)

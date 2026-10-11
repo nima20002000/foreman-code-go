@@ -59,11 +59,11 @@ OS user/root selection is explicit in the approval; no automatic sudo/root.
 ## Actual host checks
 
 Sanitized evidence outside Git:
-`/home/nima/Desktop/graphql-worktrees/_orchestration/resume-20261001/device-setup-readiness.json`.
-PC user nima UID1000: OpenSSH10.2p1 Ubuntu-2ubuntu3.6, rsync3.4.1,
-Tailscale1.102.4 Running. PC LAN192.168.88.197 and Tailscale100.123.130.10
+`/home/user/Desktop/graphql-worktrees/_orchestration/resume-20261001/device-setup-readiness.json`.
+PC user user UID1000: OpenSSH10.2p1 Ubuntu-2ubuntu3.6, rsync3.4.1,
+Tailscale1.102.4 Running. PC LAN192.168.88.197 and Tailscale100.64.0.22
 are observed self candidates; bridge/private interface candidates do not imply
-routability. Dexter strict SSH at100.76.219.118 succeeds as dexter UID1000,
+routability. Builder strict SSH at100.64.0.20 succeeds as builder UID1000,
 OpenSSH9.6p1 Ubuntu-3ubuntu13.19 and rsync3.2.7. LAN192.168.88.254 SSH
 check times out and returns offline. Host-key SHA256 is retained in sanitized
 local evidence. Same physical LAN; no real cross-network test. Version presence
@@ -93,7 +93,7 @@ Actual escalation inspection namespace:pid:[4026531836],mnt:[4026531832].
 Root-owned /proc/1/ns/pid was inaccessible; no assertion about its namespace.
 Sanitized invocation evidence: device-setup-scheduler-evidence.json.
 
-The diagnostic deliberately reports the actual PATH rsync3.2.7 on Dexter. Parent
+The diagnostic deliberately reports the actual PATH rsync3.2.7 on Builder. Parent
 reports app-private patched rsync3.5.1 available; the rsync adapter/integration
 owner must supply its explicit verified binary selection. This diagnostic does
 not certify the system rsync as approved for transfers or silently replace it.

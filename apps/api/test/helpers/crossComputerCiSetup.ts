@@ -43,12 +43,12 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
     const result = await client.callTool({ name, arguments: args }, { timeout: 180_000 })
     const code = result.isError ? toolErrorCode(result) : null
     if (code === 'ACTIVITY_SNAPSHOT_CONFLICT' && ['run_get', 'run_activities_get_v1'].includes(name) && attempt < 4) {
-      await delay(100)
+      await delay(10)
       continue
     }
     // A reconnected Worker rechecks its Agent profiles first; Start retries the same command meanwhile.
     if (code === 'HARNESS_PROFILE_CHECK_PENDING' && name === 'run_start' && Date.now() < pendingDeadline) {
-      await delay(10_000)
+      await delay(100)
       attempt--
       continue
     }

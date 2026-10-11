@@ -40,7 +40,7 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
       buildAllowancePercent: 60 },
     state: 'ready', reasons: [], remoteExecutionEnabled: true },
   ]))
-  const activity: ComputerActivityList = { mainId, activityComplete: true, truncated: false,
+  const activity: ComputerActivityList = { mainId, activityComplete: true, truncated: false, cloud: [],
     computers: [mainTarget, deviceTarget].map((target, index) => ({ target, name: index ? deviceName : 'Main PC',
       online: !index, jobs: [], agents: [] })) }
   const accounts: ComputerAccountsList = { computers: [

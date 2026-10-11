@@ -9,6 +9,8 @@ import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import type { NativeHistory } from '../../harnesses/port.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
 import { RemoteNativeSessionManager, type RemoteNativeTransport, type RemoteNativeManagerOptions } from './nativeManagerProxy.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { DomainError } from '../../errors.js'
 
 function event(sequence: number, text = 'event'): NativeHarnessEvent {
   return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
@@ -80,6 +82,82 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it.each(['prepare', 'reattach'] as const)('preserves restart cancellation during %s before acknowledgment', async mode => {
+    const f = setup(() => terminal([event(0)]))
+    const controller = new AbortController()
+    const restart = new DomainError('ENGINE_RESTART', 'Main is restarting.', 409)
+    let requesting!: () => void
+    const entered = new Promise<void>(resolve => { requesting = resolve })
+    f.request.mockImplementation((_method, _payload, signal) => {
+      requesting()
+      return new Promise<never>((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(new DeviceApplicationError('cancelled')), { once: true })
+      })
+    })
+    const session = { harness: 'codex' as const, providerVersion: 'fixture', nativeSessionId: 'native-session' }
+    const opening = mode === 'prepare'
+      ? f.proxy.createSession(f.start, controller.signal)
+      : f.proxy.attachSession(session, f.start, controller.signal)
+    const canceled = expect(opening).rejects.toBe(restart)
+    await entered
+    controller.abort(restart)
+    await canceled
+    expect(f.observedReceipts).toEqual([])
+    expect(f.observeOriginalSource).not.toHaveBeenCalled()
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual([mode])
+  })
+
+  it('preserves restart cancellation during remote observation and detaches the same session', async () => {
+    const f = setup(() => ({
+      events: [], pendingInteractions: [], correlationId: 'execution:execution', nativeTurnId: 'native-turn',
+    }))
+    const session = await f.proxy.createSession(f.start)
+    const controller = new AbortController()
+    const restart = new DomainError('ENGINE_RESTART', 'Main is restarting.', 409)
+    const request = f.request.getMockImplementation()!
+    let observing!: () => void
+    const entered = new Promise<void>(resolve => { observing = resolve })
+    f.request.mockImplementation((method, payload, signal) => {
+      if (method !== 'history' || signal !== controller.signal) return request(method, payload, signal)
+      observing()
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DeviceApplicationError('cancelled')), { once: true })
+      })
+    })
+    const observation = f.proxy.history(session, controller.signal)
+    const canceled = expect(observation).rejects.toBe(restart)
+    await entered
+    controller.abort(restart)
+    await canceled
+
+    await f.proxy.closeForRestart(session)
+    await f.proxy.dispose()
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'history', 'history'])
+    expect(f.receipt.stopFence).toBe(false)
+    expect(f.receipt.terminal).toBeUndefined()
+    expect(f.observedReceipts.every(receipt => receipt.native?.sessionId === session.nativeSessionId)).toBe(true)
+  })
+
+  it.each(['cancelled', 'transport', 'REMOTE_AUTHORITY_DENIED'])(
+    'keeps an independent %s failure when the caller has not canceled the request', async code => {
+      const f = setup(() => terminal([event(0)]))
+      const error = new DeviceApplicationError(code)
+      f.request.mockRejectedValue(error)
+      await expect(f.proxy.createSession(f.start, new AbortController().signal)).rejects.toBe(error)
+    },
+  )
+
+  it('does not hide a transport failure behind a concurrent restart', async () => {
+    const f = setup(() => terminal([event(0)]))
+    const controller = new AbortController()
+    const error = new DeviceApplicationError('transport')
+    f.request.mockImplementation(async () => {
+      controller.abort(new DomainError('ENGINE_RESTART', 'Main is restarting.', 409))
+      throw error
+    })
+    await expect(f.proxy.createSession(f.start, controller.signal)).rejects.toBe(error)
+  })
+
   it('carries the saved continuation into an authenticated preparation for the new execution', async () => {
     const f = setup(() => terminal([event(0)]))
     const sessionContinuation = { previousExecutionId: 'previous-execution', previousOperationId: 'previous-operation',

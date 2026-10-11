@@ -1,4 +1,4 @@
-import { createFixtureDatabase, dropFixtureDatabase } from './testResources.js'
+import { createMigratedFixtureDatabase, dropFixtureDatabase } from './testResources.js'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -23,7 +23,7 @@ export async function nim2691TaskDatabase<T>(work: (pool: pg.Pool, directory: st
   try {
     await admin.connect()
     assert.equal((await admin.query<{ server_version_num: string }>('show server_version_num')).rows[0]?.server_version_num.startsWith('17'), true)
-    await createFixtureDatabase(admin, name, "template template0 encoding 'UTF8'")
+    await createMigratedFixtureDatabase(admin, name)
     created = true
     registerTestResourceCleanup(invocation, { kind: 'fixture-database', name })
     url.pathname = `/${name}`

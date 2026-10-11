@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
 import { WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { sharedFixture } from './eng04-shared-fixture.js'
 import { assertMeaningfulSaveAdmitted, readAffectedGraphRuns } from '../src/modules/graph-drafts/saveAdmission.js'
+import { currentSaveAdmissionFixture } from './helpers/currentSaveAdmission.js'
+import { saveNativeProtocolFixture } from './helpers/eng07SaveNativeSettlement.testSupport.js'
+import { recoveryIdentity } from './helpers/eng06Recovery.testSupport.js'
 
 function fixture() {
   const t = sharedFixture()
@@ -17,28 +20,14 @@ function fixture() {
 }
 function sqlReturning(rows: unknown[]) {
   // The fixture Run has no executions, so the canonical native-settlement page is empty.
-  const query = vi.fn().mockImplementation(async (text: string) => text.startsWith('select e.id,e.run_id,')
-    ? { rows: [], rowCount: 0 } : { rows, rowCount: rows.length })
-  return { query, client: { query } as unknown as pg.PoolClient }
+  const query = async (text: string) => text.startsWith('select e.id,e.run_id,')
+    ? { rows: [], rowCount: 0 } : { rows: structuredClone(rows), rowCount: rows.length }
+  return { client: { query } as unknown as pg.PoolClient }
 }
-/** The one read that computes every obligation flag; the first query only locks the affected parents. */
-function admissionQuery(query: ReturnType<typeof vi.fn>): [string, unknown[]] {
-  const call = query.mock.calls.find(([text]) => String(text).includes(' as terminal'))
-  if (!call) throw new Error('admission query was not issued')
-  return call as [string, unknown[]]
-}
-
 describe('ENG04 shared meaningful-save admission (SQL-shaped unit tests, not PostgreSQL)', () => {
   it('admits an exact terminal v3 snapshot only when every SQL resource flag is settled', async () => {
     const t = fixture(), sql = sqlReturning([t.row])
     await expect(assertMeaningfulSaveAdmitted(sql.client, t.scope)).resolves.toBeUndefined()
-    // Lock the affected parents, read every flag once, then page the Run's native settlement proof.
-    expect(sql.query).toHaveBeenCalledTimes(3)
-    expect(sql.query.mock.calls[0]![0]).toContain('for share of r')
-    const [query, values] = admissionQuery(sql.query)
-    expect(values.slice(0, 3)).toEqual([t.scope.workspaceId, t.scope.workflowId, ['agent-a', 'agent-z']])
-    expect(query).toContain('case when')
-    expect(query).not.toMatch(/\blimit\s+\$|\boffset\b/i) // no affected-Run page shortcut
     const plan = await readAffectedGraphRuns(sql.client, t.scope)
     expect(plan[0]!.pin.executionSemanticsVersion).toBe(3)
     expect(plan[0]!.settled).toBe(true)
@@ -90,23 +79,72 @@ describe('ENG04 shared meaningful-save admission (SQL-shaped unit tests, not Pos
     expect(String(error)).not.toMatch(/PRIVATE|synthetic-principal|cfg-|run-eng04|latestDeliverable/)
     await expect(readAffectedGraphRuns(sql.client, t.scope)).rejects.toMatchObject({ code: 'WORKFLOW_RUNS_UNSETTLED' })
   })
-  it('binds all v3 resource SQL to exact closure, finalization, parent and immutable receipt identities', async () => {
-    const t = fixture(), sql = sqlReturning([])
-    await assertMeaningfulSaveAdmitted(sql.client, t.scope)
-    const text = admissionQuery(sql.query)[0]
-    for (const predicate of [
-      "r.record->'executionSemanticsVersion' is distinct from '3'::jsonb",
-      // Exact current-generation closure, recovery, unbound-disposal and no-submission receipts are
-      // checked by the canonical readers in saveNativeSettlement.ts; SQL keeps the session fence.
-      "s.reference->>'nativeSessionId'=e.record->>'nativeSessionId'", 's.workflow_finalized_at is not null',
-      'left join management_principals p', 'p.id is null or p.revoked_at is null',
-      'canceled-interaction-',
-      "g.state is distinct from 'resumed'", 'g.execution_id is distinct from i.execution_id',
-      'g.graph_interrupt_id is distinct from', "f.effect_kind='graph.resume'", "s.source_kind='native_event'",
-      's.source_id=i.id and s.source_revision=i.revision', 'from run_native_correlations c',
-      "j.approval_native_evidence->'terminal'->>'nativeSettled' is distinct from 'true'",
-    ]) expect(text).toContain(predicate)
-    // These assertions pin SQL shape only. Real SQL null/join/transaction and
-    // process-restart behavior remains in the native/migration integration matrix.
+  it('admits an empty affected Run set and returns an empty edit plan', async () => {
+    const t = fixture()
+    const sql = sqlReturning([])
+    await expect(assertMeaningfulSaveAdmitted(sql.client, t.scope)).resolves.toBeUndefined()
+    expect(await readAffectedGraphRuns(sql.client, t.scope)).toEqual([])
   })
+
+  it.each(['cleanup', 'native', 'interactions', 'reviews'] as const)(
+    'keeps an outstanding %s obligation visible in the edit plan and blocks Save', async flag => {
+      const t = fixture()
+      const sql = sqlReturning([{ ...t.row, [flag]: true }])
+      await expect(assertMeaningfulSaveAdmitted(sql.client, t.scope))
+        .rejects.toMatchObject({ code: 'WORKFLOW_RUNS_UNSETTLED' })
+      const pendingField = { cleanup: 'cleanupPending', native: 'nativePending',
+        interactions: 'interactionPending', reviews: 'reviewPending' }[flag]
+      expect(await readAffectedGraphRuns(sql.client, t.scope)).toEqual([
+        expect.objectContaining({ settled: false, [pendingField]: true }),
+      ])
+    },
+  )
+
+  it.each(['missing', 'session', 'generation', 'parent', 'attempt'] as const)(
+    'rejects %s native closure evidence despite settled resource flags', async fault => {
+      const t = currentSaveAdmissionFixture('save-closure')
+      const native = saveNativeProtocolFixture(fault === 'generation' ? 'recovered' : 'closed',
+        { ...t.f, run: t.record })
+      const query = async (text: string, values?: unknown[]) => {
+        if (text.startsWith('select r.id from runs')) return { rows: [{ id: t.row.id }], rowCount: 1 }
+        if (text.startsWith('select r.id,r.workspace_id')) {
+          return { rows: [structuredClone(t.row)], rowCount: 1 }
+        }
+        return native.sql.query(text, values)
+      }
+      const client = { query } as unknown as pg.PoolClient
+      const scope = { ...t.f.scope, stagedAgentIds: [] }
+      try {
+        await expect(assertMeaningfulSaveAdmitted(client, scope)).resolves.toBeUndefined()
+        expect(await readAffectedGraphRuns(client, scope)).toEqual([
+          expect.objectContaining({ settled: true, nativePending: false }),
+        ])
+        const lifetime = native.db.state.lifetime!
+        switch (fault) {
+          case 'missing':
+            lifetime.closed = false
+            break
+          case 'session':
+            lifetime.closed_reference = { ...native.db.state.session!, nativeSessionId: 'other-session' }
+            break
+          case 'generation':
+            native.db.state.proof!.generation = '70'
+            break
+          case 'parent':
+            lifetime.execution_identity = { ...recoveryIdentity(native.db.state.execution), runId: 'other-run' }
+            break
+          case 'attempt':
+            lifetime.execution_identity = { ...recoveryIdentity(native.db.state.execution), attempt: 2 }
+            break
+        }
+        await expect(assertMeaningfulSaveAdmitted(client, scope))
+          .rejects.toMatchObject({ code: 'WORKFLOW_RUNS_UNSETTLED' })
+        expect(await readAffectedGraphRuns(client, scope)).toEqual([
+          expect.objectContaining({ settled: false, nativePending: true }),
+        ])
+      } finally {
+        await native.close()
+      }
+    },
+  )
 })

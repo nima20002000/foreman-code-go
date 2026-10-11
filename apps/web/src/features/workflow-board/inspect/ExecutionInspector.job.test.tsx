@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JobWorkflowExecutionReference } from '@foreman-code/contracts/job-workflow'
@@ -41,11 +41,19 @@ function install(nodeExecutionId: string, kind: 'job' | 'agent' = 'job') {
 const mapped = (nodeExecutionId: string, jobExecutionId: string): JobWorkflowExecutionReference => ({ kind: 'job', ...scope, nodeId: 'build',
   nodeExecutionId, jobExecutionId, occurrenceId: null, occurrenceIndex: 0 })
 const jobFor = (nodeExecutionId: string, id: string) => ({ ...jobFixture, id, workflow: { workflowId: scope.workflowId, runId: scope.runId, nodeId: 'build', nodeExecutionId } })
-function jobApi(options: { mappings: Record<string, JobWorkflowExecutionReference>; gate?: Record<string, Promise<void>>; requested?: string[] }) {
+function jobApi(options: {
+  mappings: Record<string, JobWorkflowExecutionReference>
+  gate?: Record<string, Promise<void>>
+  requested?: string[]
+  mappingStarted?: string[]
+  mappingCompleted?: string[]
+}) {
   server.use(
     http.get(mapping, async ({ params }) => {
       const id = String(params.nodeExecutionId)
+      options.mappingStarted?.push(id)
       await options.gate?.[id]
+      options.mappingCompleted?.push(id)
       return HttpResponse.json({ reference: options.mappings[id] })
     }),
     http.get(jobs, ({ params }) => {
@@ -82,14 +90,22 @@ describe('ExecutionInspector exact selected job execution', () => {
     install('node-exec-a'); install('node-exec-b')
     let release!: () => void
     const late = new Promise<void>((resolve) => { release = resolve })
-    jobApi({ mappings: { 'node-exec-a': mapped('node-exec-a', 'job-exec-a'), 'node-exec-b': mapped('node-exec-b', 'job-exec-b') }, gate: { 'node-exec-a': late } })
+    const mappingStarted: string[] = []
+    const mappingCompleted: string[] = []
+    jobApi({ mappings: { 'node-exec-a': mapped('node-exec-a', 'job-exec-a'),
+      'node-exec-b': mapped('node-exec-b', 'job-exec-b') }, gate: { 'node-exec-a': late },
+      mappingStarted, mappingCompleted })
     const cache = client()
     const view = render(tree('node-exec-a', cache))
     expect(await screen.findByText(/Reading the job accepted for this exact Run execution/)).toBeInTheDocument()
+    await waitFor(() => expect(mappingStarted).toContain('node-exec-a'))
     view.rerender(tree('node-exec-b', cache))
     expect(await screen.findByText('job-exec-b')).toBeInTheDocument()
-    release()
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await act(async () => {
+      release()
+      await waitFor(() => expect(mappingCompleted).toContain('node-exec-a'))
+    })
+    await waitFor(() => expect(cache.isFetching()).toBe(0))
     expect(screen.queryByText('job-exec-a')).toBeNull()
     expect(screen.getByText('job-exec-b')).toBeInTheDocument()
   })

@@ -67,7 +67,7 @@ export async function scenarioHarness(scenario: Scenario) {
       return oracle(index, occurrenceIndex).output
     },
   })
-  const gates = new Map<string, ReturnType<typeof latch>>()
+  const gates = new Map<string, ReturnType<typeof latch> & { entered: ReturnType<typeof latch> }>()
   const parked = new Set<string>()
   const requests = new Map<string, HarnessExecutionRequest>()
   const trace: Array<{ nodeId: string; executionId: string; phase: 'started' | 'completed' }> = []
@@ -96,6 +96,7 @@ export async function scenarioHarness(scenario: Scenario) {
             const gate = gates.get(request.workflowNodeId)
             if (gate) {
               parked.add(request.workflowNodeId)
+              gate.entered.release()
               try { await waitGate(gate.promise, signal) } finally { parked.delete(request.workflowNodeId) }
             }
           }
@@ -183,7 +184,8 @@ export async function scenarioHarness(scenario: Scenario) {
     }
     function hold(nodeId: string) {
       if (gates.has(nodeId)) throw new Error(`Duplicate gate ${nodeId}`)
-      const gate = latch(); gates.set(nodeId, gate)
+      const gate = { ...latch(), entered: latch() }
+      gates.set(nodeId, gate)
       return () => { gates.delete(nodeId); gate.release() }
     }
     async function start(via: Via, saved: Saved) {
@@ -227,8 +229,14 @@ export async function scenarioHarness(scenario: Scenario) {
       })
     }
     async function waitUntilParked(scope: RepeatGraphScopeV3, nodeId: string) {
+      const gate = gates.get(nodeId)
+      if (!gate) throw new Error(`Missing provider gate ${nodeId}`)
+      let timer: ReturnType<typeof setTimeout> | undefined
       try {
-        await vi.waitFor(() => expect(parked.has(nodeId)).toBe(true), { timeout: 25000 })
+        await Promise.race([gate.entered.promise, new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('Provider gate was not reached')), 25000)
+        })])
+        expect(parked.has(nodeId)).toBe(true)
       } catch (error) {
         // Read-only, content-free diagnostics. Do not print requests, native
         // history, location paths, credential objects or raw nested errors.
@@ -240,7 +248,7 @@ export async function scenarioHarness(scenario: Scenario) {
         throw new Error(`ENG07 provider gate was not reached: ${JSON.stringify({ runId: scope.runId,
           nodeId, runnerId: base.locations.runnerId, starts: base.provider.counts.starts, executions, codes })}`,
         { cause: error })
-      }
+      } finally { clearTimeout(timer) }
     }
     async function settled(scope: RepeatGraphScopeV3, timeoutMs?: number) {
       let record: Awaited<ReturnType<typeof waitForSuccessfulRunCleanup>>

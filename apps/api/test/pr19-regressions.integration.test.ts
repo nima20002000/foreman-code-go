@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
@@ -101,12 +102,10 @@ let admin: pg.Pool, pool: pg.Pool, schema: string, owner: ManagementPrincipal
 let access: PostgresAccessService, repository: PostgresOperatorConversationRepository, defaults: PostgresFoundationSettingsRepository
 let chat: OperatorChatService, authority: OperatorChatAuthority, codex: PolicyRetainingManager, claude: PolicyRetainingManager
 async function idle(id: string) {
-  for (let index = 0; index < 200; index++) {
-    const state = await chat.get(id, owner)
-    if (!state.activeRequestId) return state
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  throw new Error('The fixture turn did not end')
+  return readUntil(() => chat.get(id, owner), state => !state.activeRequestId, {
+    timeoutMs: 2000, description: 'the fixture turn to end',
+    subscribe: changed => chat.events.subscribe(id, changed),
+  })
 }
 async function setDefaults(harness: HarnessConfiguration) {
   const current = await defaults.getAgentDefaults()

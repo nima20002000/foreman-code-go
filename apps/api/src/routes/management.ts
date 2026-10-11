@@ -1,5 +1,6 @@
 import { registerComputerActivityRoutes } from './computerActivity.js'
 import { registerBugReportRoutes } from './bugReports.js'
+import { registerHostCiRoutes } from './hostCi.js'
 import { registerComputerAccountsRoutes } from './computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './computerMaintenance.js'
 import { registerComputerSyncRoutes } from './computerSync.js'
@@ -84,6 +85,7 @@ function page(query: Query) {
 }
 
 export function registerManagementRoutes(app: FastifyInstance, services: OperatorServices): void {
+  if (services.ci) registerHostCiRoutes(app, services.ci)
   if (services.bugReports) registerBugReportRoutes(app, services.bugReports)
   if (services.harnessRegistry) registerHarnessRegistryRoutes(app, services.harnessRegistry, async request => requirePrincipal(request))
   if (services.computerActivity) registerComputerActivityRoutes(app, services.computerActivity)

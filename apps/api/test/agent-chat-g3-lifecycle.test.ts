@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'vitest'
+import { afterEach, beforeEach, describe, it, vi } from 'vitest'
 import type { AgentChatManagerFactory } from '../src/modules/conversations/agentChat.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { deferred, fixture } from './helpers/agentChatF1.js'
 
 const tick = () => new Promise<void>((done) => setImmediate(done))
+beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }) })
+afterEach(() => { vi.useRealTimers() })
+
 async function entered(gate: ReturnType<typeof deferred>) {
-  // Keep the event loop live while the production timer (which is unref'ed) fires.
-  await new Promise<void>((done, reject) => {
-    const timeout = setTimeout(() => reject(new Error('The timer-driven repair did not reach its SQL tail.')), 3_000)
-    void gate.promise.then(() => { clearTimeout(timeout); done() })
-  })
+  vi.advanceTimersByTime(1_000)
+  await gate.promise
 }
 
 describe('G3 shutdown ownership (fake SQL/native manager; real service and repair timer)', () => {
@@ -73,7 +73,7 @@ describe('G3 shutdown ownership (fake SQL/native manager; real service and repai
       assert.equal(f.service['reconciliationTimers'].size, 1)
       await f.service.shutdown()
       f.service['scheduleReconcile'](f.store.row.id)
-      await new Promise<void>((done) => setTimeout(done, 1_050))
+      await vi.advanceTimersByTimeAsync(1_050)
       assert.equal(reads, 0)
       assert.equal(f.service['reconciliationTimers'].size, 0)
     } finally { await f.service.shutdown() }

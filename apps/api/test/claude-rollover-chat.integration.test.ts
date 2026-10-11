@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { expect, it, vi } from 'vitest'
+import { expect, it } from 'vitest'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
@@ -12,6 +12,7 @@ import { PostgresAgentChatRepository } from '../src/modules/conversations/agentC
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
+import { waitForDelivery } from './helpers/agentChatDelivery.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { productionClaudeFixture } from './support/claudeProduction.js'
 import { claudeSdkToolTransport } from './support/claudeSdkToolTransport.js'
@@ -54,13 +55,21 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
       operator: { access, services: { agentChat: chat, commands: new PostgresCommandCoordinator(db.pool) } as never } })
     const query = { workflowId: seeded.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId }
     let id: string | null = null
-    for (let index = 0; index < 256; index++) {
-      const requestId = `completed-${index}`
-      const admitted = await chat.send(owner.principal, seeded.scope.workspaceId, {
-        requestId, content: requestId, intent: 'next_turn', expectedConversationId: id, context: query,
-      })
-      id = admitted.state.conversation!.id
-      await vi.waitFor(async () => expect((await repository.turn(id!, requestId))?.delivery).toBe('completed'))
+    // Overlap admission with execution while staying below the unfinished-turn limit.
+    for (let offset = 0; offset < 256; offset += 8) {
+      const requestIds: string[] = []
+      for (let index = offset; index < offset + 8; index++) {
+        const requestId = `completed-${index}`
+        const admitted = await chat.send(owner.principal, seeded.scope.workspaceId, {
+          requestId, content: requestId, intent: 'next_turn', expectedConversationId: id, context: query,
+        })
+        id = admitted.state.conversation!.id
+        requestIds.push(requestId)
+      }
+      await Promise.all(requestIds.map(async requestId => {
+        await waitForDelivery(chat!, repository, id!, requestId, 'completed', { timeoutMs: 1_000 })
+        expect((await repository.turn(id!, requestId))?.delivery).toBe('completed')
+      }))
     }
     const nativeId = (await repository.get(id!))!.native_session_id
     expect(transport!.offers).toHaveLength(256)
@@ -72,14 +81,16 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     const failed = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_send',
       arguments: { workspaceId: seeded.scope.workspaceId, request: input } })
     expect(failed.result?.isError).not.toBe(true)
-    await vi.waitFor(async () => expect((await repository.turn(id!, input.requestId))?.delivery).toBe('failed'))
+    await waitForDelivery(chat, repository, id!, input.requestId, 'failed', { timeoutMs: 1_000 })
+    expect((await repository.turn(id!, input.requestId))?.delivery).toBe('failed')
     expect((await repository.get(id!))?.active_request_id).toBeNull()
     expect((await repository.turn(id!, input.requestId))?.nativeSubmission).toBeUndefined()
     expect(transport!.offers).toHaveLength(256)
     const retry = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_send',
       arguments: { workspaceId: seeded.scope.workspaceId, request: { ...input, requestId: 'retry-unoffered' } } })
     expect(retry.result?.isError).not.toBe(true)
-    await vi.waitFor(async () => expect((await repository.turn(id!, 'retry-unoffered'))?.delivery).toBe('completed'))
+    await waitForDelivery(chat, repository, id!, 'retry-unoffered', 'completed', { timeoutMs: 1_000 })
+    expect((await repository.turn(id!, 'retry-unoffered'))?.delivery).toBe('completed')
     const read = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_read',
       arguments: { workspaceId: seeded.scope.workspaceId, query } })
     expect(read.result?.isError).not.toBe(true)

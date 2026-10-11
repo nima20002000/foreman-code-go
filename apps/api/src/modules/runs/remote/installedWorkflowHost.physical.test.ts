@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdir, rm, writeFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { deferred } from '../../../../test/helpers/agentChatF1.js'
 import { describe, expect, it, vi } from 'vitest'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
@@ -429,22 +430,36 @@ it('cannot retain an expired original application lease or use prefetched proof 
 describe('original physical directory revalidation after native closure',()=>{
   it.each(['', 'src'])('bounds authorization requests and their injected latency for cwd %j', async relativeCwd => {
     const f = await physicalFixture(relativeCwd)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => Date.now())
+    const requests = [deferred(), deferred()]
     let authorizationLatency = 0
     const authorize = vi.fn(async () => {
+      requests[authorize.mock.calls.length - 1]!.resolve()
       authorizationLatency += 25
       await new Promise(resolve => setTimeout(resolve, 25))
     })
     const assertCurrent = vi.fn(() => {})
     const started = performance.now()
-    await assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
+    const inspection = assertOriginalPhysicalDirectories({ source: f.readout.source, runtimeLeaf: f.readout.runtimeLeaf,
       placement: f.placement, approvedRoots: f.approvedRoots, signal: new AbortController().signal,
       assertCurrent, authorize })
-    const elapsed = performance.now() - started
-    expect(authorize).toHaveBeenCalledTimes(2)
-    expect(authorizationLatency).toBe(50)
-    expect(elapsed).toBeGreaterThanOrEqual(45)
-    expect(assertCurrent.mock.calls.length).toBeGreaterThan(20)
-    await f.sqlConnection.close()
+    try {
+      for (const request of requests) {
+        await Promise.race([request.promise, inspection])
+        await vi.advanceTimersByTimeAsync(25)
+      }
+      await inspection
+      const elapsed = performance.now() - started
+      expect(authorize).toHaveBeenCalledTimes(2)
+      expect(authorizationLatency).toBe(50)
+      expect(elapsed).toBeGreaterThanOrEqual(45)
+      expect(assertCurrent.mock.calls.length).toBeGreaterThan(20)
+    } finally {
+      clock.mockRestore()
+      vi.useRealTimers()
+      await f.sqlConnection.close()
+    }
   })
   it.each(['connection', 'abort'] as const)('stops a physical inspection when its local %s fence changes', async defect => {
     const f = await physicalFixture('src')

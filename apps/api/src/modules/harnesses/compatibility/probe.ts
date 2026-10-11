@@ -141,8 +141,15 @@ async function command(binary: string, args: string[], directory: string, enviro
   try {
     const result = await Promise.race([owned.closed, failure])
     signal.throwIfAborted()
-    if (result.exitCode !== 0) throw new CompatibilityCheckError('CLI_CHECK_REJECTED',
-      'The CLI rejected its version/schema export command. The release may not support this diagnostic. Review the installation and retry.')
+    if (result.exitCode !== 0) {
+      if (ownership && stderr.includes('Native launch refused: delegated cgroup v2 with cgroup.kill is required.')) {
+        throw new CompatibilityCheckError('NATIVE_CONTAINMENT_UNAVAILABLE',
+          'Native diagnostics require a delegated cgroup v2 with cgroup.kill. '
+          + 'Run the application or tests in their delegated service or scope and retry.')
+      }
+      throw new CompatibilityCheckError('CLI_CHECK_REJECTED',
+        'The CLI rejected its version/schema export command. The release may not support this diagnostic. Review the installation and retry.')
+    }
     return { stdout, stderr }
   } finally {
     signal.removeEventListener('abort', abort)

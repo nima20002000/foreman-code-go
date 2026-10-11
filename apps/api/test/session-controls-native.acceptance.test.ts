@@ -71,7 +71,7 @@ async function idle(row: Row) {
   while (Date.now() < deadline) {
     const state = await controls(row)
     if (!state.busyReason) return state
-    await delay(250)
+    await delay(50)
   }
   throw new Error('Timed out waiting for the real native conversation to become idle.')
 }
@@ -141,7 +141,7 @@ async function verifyNativeControls(row: Row) {
   const deadline = Date.now() + 180000
   let compacted = await controls(row)
   while (Date.now() < deadline && compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
-    await delay(250)
+    await delay(50)
     compacted = await controls(row)
   }
   if (compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
@@ -244,7 +244,7 @@ describe('native session controls through the production Main and installed Work
       const deadline = Date.now() + 180000
       let compacted = await controls(row)
       while (Date.now() < deadline && compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {
-        await delay(250)
+        await delay(50)
         compacted = await controls(row)
       }
       if (compacted.compaction && ['accepted', 'running', 'uncertain'].includes(compacted.compaction.status)) {

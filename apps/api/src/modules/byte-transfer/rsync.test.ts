@@ -17,7 +17,7 @@ const intent = (): TransferIntent => ({ version: 1, transferId: randomUUID(), op
   attemptId: randomUUID(), placementHash: 'a'.repeat(64), rootId: randomUUID(), rootBindingRevision: 1,
   direction: 'to-worker', byteClass: 'artifact', sha256: digest(bytes), byteSize: bytes.length,
   manifestDigest: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60000).toISOString(), chunkBytes: 1024 })
-const endpoint: RsyncEndpoint = { user: 'dexter', host: '100.76.219.118', localBinary: '/usr/bin/rsync',
+const endpoint: RsyncEndpoint = { user: 'builder', host: '100.64.0.20', localBinary: '/usr/bin/rsync',
   remoteBinary: '/usr/bin/rsync', localRoot: '/tmp/graphql-rsync-local', remoteRoot: '/tmp/graphql-rsync-remote',
   localBinarySha256: 'a'.repeat(64), remoteBinarySha256: 'b'.repeat(64) }
 const context = (i: TransferIntent) => ({ mainId: i.mainId, deviceId: i.deviceId, workerInstallationId: i.workerInstallationId,
@@ -44,7 +44,7 @@ async function fixture() {
 }
 
 describe('rsync argument and security boundary', () => {
-  it.each(['$(touch /tmp/bad)', 'dexter;id', 'bad\nname', '-bad', 'user@host'])('rejects endpoint injection %s', value => {
+  it.each(['$(touch /tmp/bad)', 'builder;id', 'bad\nname', '-bad', 'user@host'])('rejects endpoint injection %s', value => {
     expect(() => validateRsyncEndpoint({ ...endpoint, host: value })).toThrow()
   })
   it.each(['/tmp/../escape', '/tmp/a b', '/tmp/$(id)', '/tmp/a\nb', '/tmp/a;id'])('rejects path injection %s', value => {
@@ -53,8 +53,8 @@ describe('rsync argument and security boundary', () => {
   it.each(['to-main', 'to-worker'] as const)('only copies the exact UUID object %s', direction => {
     const i = { ...intent(), direction }, command = rsyncCommand(endpoint, i)
     expect(command.args.slice(-2)).toEqual(direction === 'to-worker'
-      ? [`${endpoint.localRoot}/${i.transferId}.snapshot`, `dexter@100.76.219.118:${endpoint.remoteRoot}/${i.transferId}.part`]
-      : [`dexter@100.76.219.118:${endpoint.remoteRoot}/${i.transferId}.snapshot`, `${endpoint.localRoot}/${i.transferId}.part`])
+      ? [`${endpoint.localRoot}/${i.transferId}.snapshot`, `builder@100.64.0.20:${endpoint.remoteRoot}/${i.transferId}.part`]
+      : [`builder@100.64.0.20:${endpoint.remoteRoot}/${i.transferId}.snapshot`, `${endpoint.localRoot}/${i.transferId}.part`])
     expect(command.args).toContain('--protect-args')
     expect(command.args).not.toContain('--inplace'); expect(command.args).not.toContain('--delete')
     expect(command.args.join(' ')).toContain('StrictHostKeyChecking=yes')

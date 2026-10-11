@@ -209,6 +209,9 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
       requireLeaseAtCommit(publication.sql, row.lease_expires_at, 'REVIEW_JOB_LEASE_LOST')
       const context = await contextFor(publication, current)
       if (row.execution_id !== context.reviewer?.id) return fail('REVIEW_JOB_IDENTITY_CONFLICT')
+      // A drained observer releases its job without claiming another native writer.
+      const releaseOnly = requested === current.state && fields.releaseLease === true
+        && Object.keys(fields).length === 1
       let generation = row.approval_connection_generation
       if (fields.writerFence) {
         const lane = (await publication.sql.query<{ generation: string; correlation: string | null; owner_agent_id: string }>(
@@ -229,7 +232,9 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
           // current observation. An expired job or writer still cannot do this.
           generation = lane.generation
         }
-      } else if (['submitted', 'acknowledged', 'completed'].includes(requested)) return fail('SESSION_LANE_LEASE_LOST')
+      } else if (!releaseOnly && ['submitted', 'acknowledged', 'completed'].includes(requested)) {
+        return fail('SESSION_LANE_LEASE_LOST')
+      }
       const entryProof = requested === 'submitted' && !current.submittedAt
         ? this.nativeProofs && fields.nativeCapture
           ? await this.nativeProofs.persistLocked(publication, current, fields.nativeCapture)

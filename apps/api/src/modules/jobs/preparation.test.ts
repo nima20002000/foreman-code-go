@@ -5,6 +5,7 @@ import { JobExecutionRecordSchema } from '@foreman-code/contracts/job-verificati
 import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import { ciPreparationMemory } from '../../../test/helpers/ciPreparationMemory.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
+import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 import { JobOwnership } from './ownership.js'
 import { JobQueuePreparation } from './preparation.js'
 
@@ -12,7 +13,13 @@ afterEach(() => vi.restoreAllMocks())
 
 async function fixture(publication: 'complete' | 'failed' | 'expired' | 'collecting' = 'complete', stopped = true) {
   const ci = ciFixture()
-  await ci.services.ci!.run(ci.operator, { workspaceId: ci.workspaceId, commandId: 'queue-completion', suite: 'unit' })
+  const definition = await ci.jobs.saveDefinition(ci.operator, 'mcp', ci.workspaceId, {
+    commandId: 'save-queue-completion', expectedRevision: null,
+    name: 'Queue completion', spec: verificationFixture().spec,
+  })
+  await ci.jobs.enqueue(ci.operator, 'mcp', ci.workspaceId, {
+    commandId: 'queue-completion', definitionId: definition.id, expectedRevision: definition.revision,
+  })
   let ticket = JobQueueTicketSchema.parse({ ...ci.ticket(), state: 'accepted', reservationId: ci.ticket().id,
     waitingReasons: [], revision: 2 })
   const execution = JobExecutionRecordSchema.parse({ ...jobExecution(), id: ticket.executionId,

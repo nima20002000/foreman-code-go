@@ -49,6 +49,89 @@ function silentProvider() {
   return { manager, reading, release, detached, signal: () => nativeSignal }
 }
 
+it('submits the first turn when session publication finishes under the same writer', async () => {
+  vi.useFakeTimers()
+  const provider = silentProvider()
+  const publishing = deferred()
+  const published = deferred()
+  const submitted = deferred()
+  const offered = vi.fn()
+  const coordination = nativeLanes()
+  const claim = vi.spyOn(coordination, 'claimLane')
+  const release = vi.spyOn(coordination, 'releaseLane')
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  provider.manager.startTurn = vi.fn(async function* (_session, input) {
+    expect(input).not.toHaveProperty('onSessionReady')
+    await input.onSubmitted?.('provider-turn')
+    submitted.resolve()
+    yield frame
+  })
+  const created = await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const startedAt = Date.now()
+  let publicationToken: string | undefined
+  const iterator = writer.startTurnBatches(created, {
+    prompt: 'stream', clientCorrelationId: 'stream-turn', onTurnOffered: offered,
+    onSessionReady: async () => {
+      publicationToken = writer.capturedLease(created)?.fence.token
+      publishing.resolve()
+      await published.promise
+    },
+  })[Symbol.asyncIterator]()
+  const first = iterator.next()
+  try {
+    await publishing.promise
+    expect(publicationToken).toBeDefined()
+    expect(provider.manager.startTurn).not.toHaveBeenCalled()
+    expect(offered).not.toHaveBeenCalled()
+    expect(claim).toHaveBeenCalledOnce()
+    expect(release).not.toHaveBeenCalled()
+    await expect(writer.withLane(created, 'competing-turn', undefined, async () => undefined))
+      .rejects.toMatchObject({ code: 'SESSION_LANE_BUSY' })
+    expect(claim).toHaveBeenCalledTimes(2)
+    published.resolve()
+    await submitted.promise
+    expect(Date.now()).toBe(startedAt)
+    expect(claim).toHaveBeenCalledTimes(2)
+    expect(release).not.toHaveBeenCalled()
+    expect(writer.capturedLease(created)?.fence.token).toBe(publicationToken)
+    expect((await coordination.getLane('codex', created.nativeSessionId))?.currentTurnOrMessageId)
+      .toBe('provider-turn')
+    expect(offered).toHaveBeenCalledOnce()
+    expect(await first).toEqual({ value: [frame], done: false })
+    expect((await iterator.next()).done).toBe(true)
+    expect(release).toHaveBeenCalledOnce()
+  } finally {
+    published.resolve()
+    await Promise.allSettled([first])
+    await iterator.return?.()
+  }
+})
+
+it.each(['rejected', 'aborted'] as const)('keeps native input unoffered when publication is %s', async failure => {
+  const provider = silentProvider()
+  provider.manager.startTurn = vi.fn(provider.manager.startTurn)
+  const coordination = nativeLanes()
+  const release = vi.spyOn(coordination, 'releaseLane')
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  const controller = new AbortController()
+  const error = new Error('Session publication did not complete')
+  const offered = vi.fn()
+  const created = await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const iterator = writer.startTurnBatches(created, {
+    prompt: 'stream', clientCorrelationId: 'stream-turn', onTurnOffered: offered,
+    onSessionReady: async () => {
+      expect(writer.capturedLease(created)).toBeDefined()
+      if (failure === 'rejected') throw error
+      controller.abort(error)
+    },
+  }, controller.signal)[Symbol.asyncIterator]()
+  await expect(iterator.next()).rejects.toBe(error)
+  expect(provider.manager.startTurn).not.toHaveBeenCalled()
+  expect(offered).not.toHaveBeenCalled()
+  expect(writer.isActive(created)).toBe(false)
+  expect(release).toHaveBeenCalledOnce()
+})
+
 it('retries failed disposal on the same manager while keeping native writes closed', async () => {
   const provider = silentProvider()
   const disposed = deferred()
@@ -83,6 +166,63 @@ it('retries failed disposal on the same manager while keeping native writes clos
   } finally {
     disposed.resolve()
     await Promise.allSettled([retry, concurrent])
+  }
+})
+
+it('drains a retained observer aborted during the restart ownership check before detaching', async () => {
+  const provider = silentProvider()
+  provider.manager.closeForRestart = vi.fn(async () => undefined)
+  const coordination = nativeLanes()
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
+  const controller = new AbortController()
+  const observing = deferred()
+  const checkEntered = deferred()
+  const checkFinished = deferred()
+  const releaseEntered = deferred()
+  const releaseFinished = deferred()
+  const observationFinished = deferred()
+  const observation = writer.withLane(session, 'review-turn', controller.signal, async (_manager, lease) => {
+    await coordination.bindLaneTurn(lease.fence, 'review-turn')
+    await coordination.acknowledgeLaneTurn(lease.fence, 'review-turn', 'provider-review-turn')
+    lease.providerId = 'provider-review-turn'
+    observing.resolve()
+    await observationFinished.promise
+  })
+  await observing.promise
+  const assertLease = coordination.assertLaneLease.bind(coordination)
+  vi.spyOn(coordination, 'assertLaneLease').mockImplementationOnce(async (...args) => {
+    checkEntered.resolve()
+    await checkFinished.promise
+    await assertLease(...args)
+  })
+  const releaseLane = coordination.releaseLane.bind(coordination)
+  vi.spyOn(coordination, 'releaseLane').mockImplementationOnce(async (...args) => {
+    releaseEntered.resolve()
+    await releaseFinished.promise
+    return releaseLane(...args)
+  })
+  const closing = writer.closeForRestart(session)
+  try {
+    await checkEntered.promise
+    controller.abort(new DomainError('ENGINE_RESTART', 'Main is restarting.', 409))
+    checkFinished.resolve()
+    observationFinished.resolve()
+    await releaseEntered.promise
+    expect(provider.manager.closeForRestart).not.toHaveBeenCalled()
+    releaseFinished.resolve()
+    await Promise.all([closing, observation])
+    expect(provider.manager.closeForRestart).toHaveBeenCalledExactlyOnceWith(session)
+    expect(provider.manager.cancel).not.toHaveBeenCalled()
+    expect(provider.manager.close).not.toHaveBeenCalled()
+    expect(await coordination.getLane('codex', session.nativeSessionId)).toMatchObject({
+      correlationId: 'review-turn', currentTurnOrMessageId: 'provider-review-turn', observedStatus: 'disconnected',
+    })
+    expect((await coordination.getLane('codex', session.nativeSessionId))?.leaseToken).toBeUndefined()
+  } finally {
+    checkFinished.resolve()
+    observationFinished.resolve()
+    releaseFinished.resolve()
+    await Promise.allSettled([closing, observation])
   }
 })
 

@@ -33,6 +33,7 @@ afterEach(() => {
   useConversationDraftStore.getState().clearAllDrafts()
   localStorage.clear()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 it('opens a past Run without a sidebar and restores Current Agent chat', async () => {
@@ -157,8 +158,10 @@ it.each(['Zoom In', 'Zoom Out'])('preserves a saved Run viewport adjusted with %
     expect(zoom).toBeCloseTo(expectedZoom, 5)
   })
   const adjusted = viewport.style.transform
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] })
   act(() => layout.resize(320, 480))
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+  // Cover the resize debounce and animation frames without advancing wall time.
+  await act(async () => { await vi.advanceTimersByTimeAsync(120) })
   expect(viewport.style.transform).toBe(adjusted)
 })
 

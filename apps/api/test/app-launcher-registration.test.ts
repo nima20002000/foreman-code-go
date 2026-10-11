@@ -94,7 +94,8 @@ it('waits for another process and continues after its lock owner crashes', async
     const started = new Promise<void>(resolve => { notifyStarted = resolve })
     const installation = runLauncherProcess({ kind: 'install', launcher }, runtimes[0]!, notifyStarted)
     await Promise.race([started, installation])
-    expect(await Promise.race([installation.then(() => 'finished'), delay(100, 'waiting')])).toBe('waiting')
+    // A short negative window checks that installation stays blocked by a live foreign lock.
+    expect(await Promise.race([installation.then(() => 'finished'), delay(25, 'waiting')])).toBe('waiting')
     const exited = once(owner, 'exit')
     owner.kill('SIGKILL')
     await exited

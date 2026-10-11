@@ -4,9 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { setTimeout as delay } from 'node:timers/promises'
 
-import { test, vi } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, HarnessExecutionSchema, NATIVE_INTERACTION_FIXTURES, type DurableInteraction, type NativeHarnessEvent, type NativeSessionLane, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { freezePlacement, deriveDispatch } from '../src/modules/placement/binding.js'
@@ -26,6 +25,8 @@ import type { RepeatReviewerBindings } from '../src/modules/interactions/repeatR
 import { normalizeNativeProducerEvent } from '../src/modules/run-graph/nativeProducerNormalization.js'
 import { reviewTurnEvidence } from '../src/modules/interactions/reviewerEvidence.js'
 import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
+
+afterEach(() => vi.useRealTimers())
 
 const session = { harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'reviewer-native' } satisfies NativeSessionReference
 const interaction: DurableInteraction = {
@@ -425,8 +426,19 @@ async function remoteReviewerFixture() {
     attachInteraction: async () => ({ manager, session }), attachOwnedSession: async () => ({ manager, session }),
     prepareReviewTurn: async (_executionId, reference, job) => manager.prepareReview(reference, job) }
   const dispatcher = new ReviewerDispatcher(coordination.asRepository(), runtime)
+  const dispatchers = new Set([dispatcher])
   return { state, coordination, dispatcher, get manager() { return manager }, get journal() { return journal },
     request, intent, placement, release,
+    async restartMain() {
+      await dispatcher.shutdown()
+      await manager.closeForRestart(session)
+      await manager.dispose()
+      manager = proxy()
+      await manager.attachSession(session, { request, correlationId: `execution:${intent.executionId}` })
+      const replacement = new ReviewerDispatcher(coordination.asRepository(), runtime)
+      dispatchers.add(replacement)
+      return replacement
+    },
     async restart() {
       await host.drain()
       await journal.close()
@@ -439,7 +451,7 @@ async function remoteReviewerFixture() {
     },
     async close() {
       release()
-      await dispatcher.shutdown()
+      await Promise.all([...dispatchers].map(current => current.shutdown()))
       await host.drain()
       await journal.close()
       await rm(root, { recursive: true, force: true })
@@ -461,6 +473,35 @@ test('remote workflow settlement retains its Orchestrator for an assigned review
     assert.equal(f.state.closed, true)
     const status = await f.journal.status(f.intent.operationId)
     assert.equal(status.status === 'known' && status.receipt.phase, 'confirmed_terminal')
+  } finally { await f.close() }
+})
+
+test('Main restart detaches observation while the original Worker review continues without resubmission', async () => {
+  const f = await remoteReviewerFixture()
+  try {
+    await f.dispatcher.enqueue(interaction, 'reviewer', session, f.coordination.context)
+    f.state.parked = true
+    const dispatch = f.dispatcher.dispatchNext('reviewer', 'original-observer')
+    const detached = assert.rejects(dispatch, { code: 'ENGINE_RESTART' })
+    await vi.waitFor(() => assert.equal(f.coordination.job?.state, 'acknowledged'))
+    const original = clone(f.coordination.job!)
+    const replacement = await f.restartMain()
+    await detached
+    assert.equal(f.coordination.job?.leaseToken, undefined)
+    assert.equal(f.coordination.lane.leaseToken, undefined)
+    assert.equal(f.coordination.job?.providerTurnOrMessageId, original.providerTurnOrMessageId)
+    assert.equal(f.coordination.lane.currentTurnOrMessageId, original.providerTurnOrMessageId)
+    assert.equal(f.state.closed, false)
+    assert.deepEqual([f.state.creates, f.state.workflows, f.state.reviews, f.state.decisions], [1, 1, 1, 0])
+    f.release()
+    const completed = await replacement.dispatchNext('reviewer', 'replacement-observer')
+    assert.equal(completed?.state, 'completed')
+    assert.equal(completed?.id, original.id)
+    assert.equal(completed?.nativeSessionId, original.nativeSessionId)
+    assert.equal(completed?.providerTurnOrMessageId, original.providerTurnOrMessageId)
+    assert.equal(f.coordination.delivered, true)
+    assert.deepEqual([f.state.creates, f.state.workflows, f.state.reviews, f.state.decisions], [1, 1, 1, 1])
+    assert.equal(f.state.closed, false)
   } finally { await f.close() }
 })
 
@@ -550,6 +591,59 @@ test('settles terminal review history before repeated publication expires its ph
     clock.mockRestore()
   }
 })
+
+test.each(['completion', 'restart'] as const)(
+  'recovery keeps a running retained review authorized until %s', async settlement => {
+    const f = fixture()
+    const job = await enqueue(f)
+    const now = new Date().toISOString()
+    f.coordination.job = { ...job, state: 'acknowledged', attempt: 1,
+      submittedAt: now, acknowledgedAt: now, providerTurnOrMessageId: 'native-turn' }
+    f.coordination.lane.correlationId = job.correlationId
+    Object.defineProperty(f.manager, 'retainsReviewerSession', { value: true })
+    let observing!: () => void
+    const observed = new Promise<void>(resolve => { observing = resolve })
+    let finish!: (value: NativeHistory) => void
+    const terminal = new Promise<NativeHistory>(resolve => { finish = resolve })
+    let reads = 0
+    f.manager.reconcile = async () => {
+      if (reads++ === 0) return history([startEvent(job.correlationId)])
+      observing()
+      return terminal
+    }
+    const dispatch = f.dispatcher.dispatchNext('reviewer', 'replacement-main')
+    try {
+      await Promise.race([observed, dispatch.then(() => {
+        throw new Error('The running review released its observation before terminal history.')
+      })])
+      assert.equal(f.coordination.job?.state, 'acknowledged')
+      assert.equal(f.coordination.job?.attempt, 2)
+      await f.coordination.assertReviewJobLease(job.id, f.coordination.job!.leaseToken!)
+      await f.coordination.assertLaneLease('lane', f.coordination.lane.leaseToken!)
+      assert.equal(await f.dispatcher.dispatchNext('reviewer', 'competing-main'), undefined)
+      assert.equal(f.counts().started, 0)
+      if (settlement === 'restart') {
+        await f.dispatcher.shutdown()
+        await assert.rejects(dispatch, { code: 'ENGINE_RESTART' })
+        assert.equal(f.coordination.job?.state, 'acknowledged')
+        assert.equal(f.coordination.pending, true)
+        assert.equal(f.counts().canceled, 0)
+      } else {
+        f.coordination.pending = false
+        finish(history([endEvent()]))
+        const completed = await dispatch
+        assert.equal(completed?.state, 'completed')
+        assert.equal(completed?.providerTurnOrMessageId, 'native-turn')
+      }
+      assert.equal(f.coordination.job?.leaseToken, undefined)
+      assert.equal(f.coordination.lane.leaseToken, undefined)
+      assert.equal(f.counts().started, 0)
+    } finally {
+      finish(history([endEvent()]))
+      await f.dispatcher.shutdown()
+    }
+  },
+)
 
 test('post-delivery disconnect remains recoverable and only matching terminal history completes it', async () => {
   const f = fixture(); await enqueue(f)
@@ -1004,26 +1098,88 @@ test('shutdown still reports an unexpected native capture failure', async () => 
   assert.equal(errors[0].message, 'Unexpected native capture failure')
 })
 
+for (const failure of ['dispatch', 'finalizer', 'release', 'dispatch-and-cleanup'] as const) {
+  test(`preserves ${failure} errors and attempts reviewer session release`, async () => {
+    const f = fixture()
+    await enqueue(f)
+    const steps: string[] = []
+    const dispatchError = new DomainError('REVIEW_JOB_LEASE_LOST', 'Dispatch lease lost.', 409)
+    const finalizerError = new Error('Review finalizer failed.')
+    const releaseError = new Error('Review session release failed.')
+    const dispatchFails = failure === 'dispatch' || failure === 'dispatch-and-cleanup'
+    const finalizerFails = failure === 'finalizer' || failure === 'dispatch-and-cleanup'
+    const releaseFails = failure === 'release' || failure === 'dispatch-and-cleanup'
+    if (dispatchFails) {
+      f.runtime.attachOwnedSession = async () => { throw dispatchError }
+    }
+    f.runtime.finishReview = async () => {
+      steps.push('finalize')
+      if (finalizerFails) throw finalizerError
+    }
+    f.runtime.releaseReviewSession = async () => {
+      steps.push('release')
+      if (releaseFails) throw releaseError
+    }
+    await assert.rejects(f.dispatcher.dispatchNext('reviewer', 'worker'), (error: unknown) => {
+      if (failure === 'dispatch-and-cleanup') {
+        assert.ok(error instanceof AggregateError)
+        assert.equal(error.errors.length, 3)
+        assert.ok(error.errors[0] instanceof DomainError)
+        assert.equal(error.errors[0].code, dispatchError.code)
+        assert.equal(error.errors[0].message, dispatchError.message)
+        assert.ok(error.errors[1] instanceof Error)
+        assert.equal(error.errors[1].message, finalizerError.message)
+        assert.equal(error.errors[2], releaseError)
+      } else if (dispatchFails) {
+        assert.ok(error instanceof DomainError)
+        assert.equal(error.code, dispatchError.code)
+        assert.equal(error.message, dispatchError.message)
+      } else if (finalizerFails) {
+        assert.ok(error instanceof Error)
+        assert.equal(error.message, finalizerError.message)
+      } else {
+        assert.equal(error, releaseError)
+      }
+      return true
+    })
+    assert.deepEqual(steps, ['finalize', 'release'])
+  })
+}
+
 test('reviewer and normal workflow turn share active lane; long turns renew both leases', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+  let finish!: () => void
+  const turnFinished = new Promise<void>(resolve => { finish = resolve })
   const f = fixture(150); await enqueue(f)
   let started!: () => void
   const began = new Promise<void>((resolve) => { started = resolve })
   f.manager.startTurn = async function* (_session, input) {
     yield startEvent(input.clientCorrelationId); started()
-    await delay(400); f.coordination.pending = false; yield endEvent()
+    await turnFinished; f.coordination.pending = false; yield endEvent()
   }
   const task = f.dispatcher.dispatchNext('reviewer', 'worker')
   await began
-  const ordinary = new SingleWriterSessionManager(f.manager, f.coordination.asRepository(), 'reviewer', 150)
-  await assert.rejects(async () => { for await (const _event of ordinary.startTurn(session, { clientCorrelationId: 'normal', prompt: 'normal' })) { void _event } }, { code: 'SESSION_LANE_BUSY' })
-  assert.equal(f.coordination.lane.observedStatus, 'busy')
-  assert.equal((await task)?.state, 'completed')
-  assert.ok(f.coordination.renewJobs >= 2)
-  assert.ok(f.coordination.renewLanes >= 2)
+  try {
+    const ordinary = new SingleWriterSessionManager(f.manager, f.coordination.asRepository(), 'reviewer', 150)
+    await assert.rejects(async () => { for await (const _event of ordinary.startTurn(session, { clientCorrelationId: 'normal', prompt: 'normal' })) { void _event } }, { code: 'SESSION_LANE_BUSY' })
+    assert.equal(f.coordination.lane.observedStatus, 'busy')
+    await vi.waitFor(() => {
+      assert.ok(f.coordination.renewJobs >= 2)
+      assert.ok(f.coordination.renewLanes >= 2)
+    }, { interval: 10, timeout: 400 })
+    finish()
+    assert.equal((await task)?.state, 'completed')
+    assert.ok(f.coordination.renewJobs >= 2)
+    assert.ok(f.coordination.renewLanes >= 2)
+  } finally {
+    finish()
+    await f.dispatcher.shutdown()
+  }
 })
 
 for (const lost of ['job', 'lane'] as const) {
   test(`${lost} lease loss fences subsequent reviewer transitions and ends uncooperative iterator`, async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
     const f = fixture(120); await enqueue(f)
     let nextCalls = 0
     f.manager.startTurn = (_session, input) => ({
@@ -1037,22 +1193,28 @@ for (const lost of ['job', 'lane'] as const) {
         return new Promise<IteratorResult<NativeHarnessEvent>>(() => undefined)
       } }),
     })
-    // Keep the process alive while unref'ed lease timers are the only active handles.
-    const keepAlive = delay(220)
-    await assert.rejects(f.dispatcher.dispatchNext('reviewer', 'worker'), { code: lost === 'job' ? 'REVIEW_JOB_LEASE_LOST' : 'SESSION_LANE_LEASE_LOST' })
+    const rejected = assert.rejects(f.dispatcher.dispatchNext('reviewer', 'worker'), {
+      code: lost === 'job' ? 'REVIEW_JOB_LEASE_LOST' : 'SESSION_LANE_LEASE_LOST',
+    })
+    await vi.waitFor(() => assert.equal(nextCalls, 2), { interval: 1, timeout: 100 })
+    await vi.advanceTimersByTimeAsync(120)
+    await rejected
     assert.deepEqual(f.coordination.transitions, ['submitted', 'acknowledged'])
     assert.equal(nextCalls, 2)
     assert.ok(f.coordination.lane.leaseToken)
-    await keepAlive
   })
 }
 
 test('hung renewal expires the local writer even when native iterator ignores abort', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   const guard = new LeaseGuard(90, async () => undefined, () => new Promise<string>(() => undefined))
-  const keepAlive = delay(150)
   const stream = { [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<NativeHarnessEvent>>(() => undefined) }) }
-  await assert.rejects(async () => { for await (const _event of ownedEvents(stream, guard)) { void _event } }, { code: 'SESSION_LANE_LEASE_LOST' })
-  await guard.stop(); await keepAlive
+  const rejected = assert.rejects(async () => {
+    for await (const _event of ownedEvents(stream, guard)) { void _event }
+  }, { code: 'SESSION_LANE_LEASE_LOST' })
+  await vi.advanceTimersByTimeAsync(90)
+  await rejected
+  await guard.stop()
 })
 
 test('normal turn fences new turns and attach while allowing owned approval control', async () => {

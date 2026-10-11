@@ -4,6 +4,10 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeHistory } from '../../harnesses/port.js'
 import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
+import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
+import * as codexProtocol from '../../harnesses/codexProtocol.js'
+import * as codexQualification from '../../harnesses/codexQualification.js'
+import { fixtureProtocol } from '../../../../test/fixtures/codex-test-helpers.js'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
@@ -25,6 +29,40 @@ import {
   sourceFixture,
   runningInstalledFixture,
 } from './__tests__/installedWorkflowHost.js'
+
+it('passes the qualified model inspection through the installed Worker while retaining launch authorization', async () => {
+  const f = await runningInstalledFixture()
+  const configuration = f.request.configuration.harness
+  if (configuration.harness !== 'codex') throw new Error('Expected Codex configuration')
+  const qualified: codexProtocol.QualifiedCodex = {
+    binary: join(f.root, 'codex'), identity: 'fixture-binary', protocol: fixtureProtocol,
+    providerVersion: '0.132.0', schemaManifestSha256: 'fixture-schema',
+    stableSchemaGitBlob: '', referenceSchemaManifestSha256: '',
+  }
+  const qualify = vi.spyOn(codexProtocol, 'qualifyCodex').mockResolvedValue(qualified)
+  const model = vi.spyOn(codexQualification, 'qualifyNativeCodexModel').mockResolvedValue(undefined)
+  const manager = f.create.mock.contexts[0] as CodexAppServerSessionManager
+  try {
+    await manager.qualifyConfiguration(configuration, f.request.workingDirectory)
+    expect(qualify).toHaveBeenCalledTimes(1)
+    expect(model).toHaveBeenCalledTimes(1)
+    const inspection = model.mock.calls[0]![6]
+    expect(inspection?.qualified).toBe(qualified)
+    expect(inspection?.assertUnchanged).toBeTypeOf('function')
+    expect(inspection?.runCommand).toBeTypeOf('function')
+    expect(inspection?.transportFactory).toBeTypeOf('function')
+    expect(model.mock.calls[0]![5]?.owner).toBe(`execution:${f.intent.executionId}`)
+
+    f.revoke()
+    await expect(manager.qualifyConfiguration(configuration, f.request.workingDirectory))
+      .rejects.toThrow('Launch authority revoked')
+    expect(qualify).toHaveBeenCalledTimes(1)
+    expect(model).toHaveBeenCalledTimes(1)
+  } finally {
+    f.finish('canceled')
+    await f.host.close()
+  }
+})
 
 describe('protected workflow selection without invented qualification',()=>{
   it('has no default installed selection when no explicit configuration is supplied',async()=>{

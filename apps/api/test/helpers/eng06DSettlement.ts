@@ -10,7 +10,8 @@ export interface Eng06SettlementProgress {
  * no-progress bound. Neither repeated reconcile calls nor fresh copies of the
  * same rows reset that stall deadline.
  * These are test wait limits, not native timeout, retry or repeat policies. */
-export async function waitForEng06Settlement(probe: () => Promise<Eng06SettlementProgress>): Promise<void> {
+export async function waitForEng06Settlement(probe: () => Promise<Eng06SettlementProgress>,
+  options: { pollIntervalMs?: number } = {}): Promise<void> {
   const started = performance.now()
   let changed = started, previous = ''
   for (;;) {
@@ -22,7 +23,7 @@ export async function waitForEng06Settlement(probe: () => Promise<Eng06Settlemen
     if (progress !== previous) { previous = progress; changed = now }
     if (current.state === 'completed' && current.cleanupPending === false && !current.activeStarts) return
     if (now - changed >= 20000) throw new Error(`ENG06_SETTLEMENT_STALLED: ${progress}`)
-    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(500,
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(options.pollIntervalMs ?? 500,
       120000 - (now - started), 20000 - (now - changed))))
   }
 }

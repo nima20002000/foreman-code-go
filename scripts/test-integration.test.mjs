@@ -8,6 +8,8 @@ import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities,
   supportsInstalledWorkerHost } from './integration-capabilities.mjs'
 import { readVerificationEnvironment } from '../packages/contracts/src/verificationEnvironment.mjs'
 import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl } from './test-resources.mjs'
+import { migrationContentsHash } from './test-database-template.mjs'
+import { readIntegrationStartup } from './integration-startup.mjs'
 import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog, failForSkippedCases,
   finalizeIntegrationResult, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission,
   hungContext, integrationDurationsPath, integrationEnvironment, integrationReport, measuredDurations,
@@ -17,6 +19,31 @@ import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog,
   partitionIntegrationFiles, readDurations, readIntegrationResources, reservedIntegrationShards,
   scheduleFiles, scheduleIntegrationQueue, selectFiles, selectExactFiles,
   signalOwnedChildren, vitestCommand, writeDurations } from './test-integration.mjs'
+
+const startupReporter = new URL('./integration-startup-reporter.mjs', import.meta.url).pathname
+
+test('migration template keys include ordered versions and SQL contents', () => {
+  const migrations = [{ version: 1, sql: 'first migration' }, { version: 2, sql: 'second migration' }]
+  const key = migrationContentsHash(migrations)
+  assert.equal(migrationContentsHash(migrations.map(migration => ({ ...migration }))), key)
+  assert.notEqual(migrationContentsHash([{ ...migrations[0], sql: 'changed migration' }, migrations[1]]), key)
+  assert.notEqual(migrationContentsHash([{ ...migrations[0], version: 3 }, migrations[1]]), key)
+  assert.notEqual(migrationContentsHash([...migrations].reverse()), key)
+})
+
+test('startup records retain phase timings independently of ordinary or truncated output', () => {
+  const output = 'ordinary output\n'
+    + '[integration-startup] {"phase":"worker-setup","elapsedMs":100}\n'
+    + '[integration-startup] {"phase":"schema-fixture-ready","elapsedMs":400,"migrationMs":200}\n'
+    + '[integration-startup] {"phase":"invalid","elapsedMs":-1}\n'
+    + '[integration-startup] {"phase":"truncated"\n'
+    + '[integration-startup] {"phase":"first-case-ready","elapsedMs":500}\n'
+  assert.deepEqual(readIntegrationStartup(output), [
+    { phase: 'worker-setup', elapsedMs: 100 },
+    { phase: 'schema-fixture-ready', elapsedMs: 400, migrationMs: 200 },
+    { phase: 'first-case-ready', elapsedMs: 500 },
+  ])
+})
 
 test('the installed Job environment reports its unsupported host capabilities without probing the host', async () => {
   const environment = { FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1', PATH: '/no-tools' }
@@ -66,10 +93,24 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/operator-file-delivery.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/operator-management-file-authority.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/test-database-startup.integration.test.ts', 'testDatabaseStartup'],
-    ['apps/api/test/computer-workflow-save.regression.integration.test.ts', 'installedWorkerHost'],
-    ['apps/api/test/remote-review-production.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-defaults.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-delivery.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-entry-recovery.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-main-crash.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-main-graceful.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-reserved-decision.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-worker-crash.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/historical-chat-placement-fork.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/historical-chat-placement-recovery.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/historical-chat-placement-disabled-profile.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', 'installedWorkerHost'],
-    ['apps/api/test/worker-profile-requalification.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-profile-requalification-main-restart.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/worker-profile-requalification-failed-check.integration.test.ts', 'installedWorkerHost'],
   ]
   for (const [file, capability] of requirements) {
     const environment = { schemaVersion: 1, runtime: 'host',
@@ -118,10 +159,21 @@ test('unsupported integration files remain required and prevent a complete or pa
 
 test('installed Worker suites remain unavailable and nonzero even when explicitly selected in a Job', async () => {
   const files = [
-    'apps/api/test/computer-workflow-save.regression.integration.test.ts',
-    'apps/api/test/remote-review-production.integration.test.ts',
+    'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
+    'apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts',
+    'apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts',
+    'apps/api/test/remote-review-production-defaults.integration.test.ts',
+    'apps/api/test/remote-review-production-delivery.integration.test.ts',
+    'apps/api/test/remote-review-production-entry-recovery.integration.test.ts',
+    'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+    'apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts',
+    'apps/api/test/remote-review-production-main-graceful.integration.test.ts',
+    'apps/api/test/remote-review-production-reserved-decision.integration.test.ts',
+    'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
     'apps/api/test/worker-chat-profile-qualification.integration.test.ts',
-    'apps/api/test/worker-profile-requalification.integration.test.ts',
+    'apps/api/test/worker-profile-requalification-main-restart.integration.test.ts',
+    'apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts',
+    'apps/api/test/worker-profile-requalification-failed-check.integration.test.ts',
   ]
   const environment = await integrationEnvironmentCapabilities({ FOREMAN_CODE_VERIFICATION_ENVIRONMENT: 'isolated-job-v1' })
   for (const requested of [files, ...files.map(file => [file])]) {
@@ -144,15 +196,26 @@ test('installed Worker suites remain unavailable and nonzero even when explicitl
 })
 
 test('diagnostic case selection preserves file and worker limits and passes the pattern as one argument', () => {
-  const file = 'apps/api/test/remote-review-production.integration.test.ts'
-  const unfiltered = ['run', 'test/remote-review-production.integration.test.ts', '--no-file-parallelism',
-    '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache']
-  assert.deepEqual(integrationVitestArguments(file), unfiltered)
-  const pattern = 'delivered remote decision|reserved decision'
-  assert.deepEqual(integrationVitestArguments(file, pattern), [...unfiltered, '--testNamePattern', pattern])
+  const files = [
+    'apps/api/test/remote-review-production-defaults.integration.test.ts',
+    'apps/api/test/remote-review-production-delivery.integration.test.ts',
+    'apps/api/test/remote-review-production-entry-recovery.integration.test.ts',
+    'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+    'apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts',
+    'apps/api/test/remote-review-production-main-graceful.integration.test.ts',
+    'apps/api/test/remote-review-production-reserved-decision.integration.test.ts',
+    'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
+  ]
+  for (const file of files) {
+    const unfiltered = ['run', file.slice('apps/api/'.length), '--no-file-parallelism',
+      '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', `--reporter=${startupReporter}`, '--fsModuleCache']
+    assert.deepEqual(integrationVitestArguments(file), unfiltered)
+    const pattern = 'delivered remote decision|reserved decision'
+    assert.deepEqual(integrationVitestArguments(file, pattern), [...unfiltered, '--testNamePattern', pattern])
+    assert.deepEqual(autoRetestFiles([file], { diagnostic: true, interrupted: null }), [file])
+  }
   assert.equal(failForSkippedCases({ skipped: 5 }, false), true)
   assert.equal(failForSkippedCases({ skipped: 5 }, true), false)
-  assert.deepEqual(autoRetestFiles([file], { diagnostic: true, interrupted: null }), [file])
 })
 
 test('integration discovery takes a sorted snapshot with startup included', () => {
@@ -235,13 +298,25 @@ test('failed-log selection includes only discovered failures once', () => {
 
 test('isolates bounded resource checks and retains every requested file exactly once', () => {
   const files = ['apps/api/test/ordinary.integration.test.ts',
-    'apps/api/test/operator-chat.integration.test.ts',
+    'apps/api/test/operator-chat-controls.integration.test.ts',
+    'apps/api/test/operator-chat-preferences.integration.test.ts',
+    'apps/api/test/operator-chat-compaction.integration.test.ts',
+    'apps/api/test/operator-chat-handoffs.integration.test.ts',
+    'apps/api/test/operator-chat-delegated-access.integration.test.ts',
+    'apps/api/test/operator-chat-defaults.integration.test.ts',
+    'apps/api/test/operator-chat-history.integration.test.ts',
+    'apps/api/test/operator-chat-sessions.integration.test.ts',
+    'apps/api/test/operator-chat-terminal.integration.test.ts',
+    'apps/api/test/operator-chat-stop.integration.test.ts',
+    'apps/api/test/operator-chat-streams.integration.test.ts',
     'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
-    'apps/api/test/production-lifecycle.integration.test.ts',
+    'apps/api/test/production-lifecycle-approvals.integration.test.ts',
+    'apps/api/test/production-lifecycle-continuations.integration.test.ts',
+    'apps/api/test/production-lifecycle-delivery.integration.test.ts',
     'apps/api/test/dev-startup.integration.test.ts']
   const partition = partitionIntegrationFiles(files)
   assert.deepEqual(partition.parallel, [files[0]])
-  assert.deepEqual(partition.exclusive, [files[4], files[2], files[1], files[3]])
+  assert.deepEqual(partition.exclusive, [files[16], files[12], ...files.slice(1, 12), ...files.slice(13, 16)])
   assert.deepEqual([...partition.exclusive, ...partition.parallel].sort(), [...files].sort())
   assert.deepEqual(partitionIntegrationFiles([files[0]]), { exclusive: [], parallel: [files[0]] })
 })
@@ -402,10 +477,10 @@ test('unavailable database settings retain the fallback without exposing connect
   assert.doesNotMatch(plan.reason, /private database/)
 })
 
-test('process deadlines allow long progressing files and cannot be disabled by overrides', () => {
+test('an integration file fails after three minutes and overrides cannot disable the deadlines', () => {
   const limits = integrationTimeouts({})
-  assert.equal(limits.idleTimeoutMs, 300_000)
-  assert.equal(limits.fileTimeoutMs, 3_600_000)
+  assert.equal(limits.idleTimeoutMs, 180_000)
+  assert.equal(limits.fileTimeoutMs, 180_000)
   assert.equal(integrationTimeouts({ FOREMAN_CODE_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
   for (const value of ['0', '-1', 'Infinity', 'NaN', '3600001', '1.5']) {
     assert.throws(() => integrationTimeouts({ FOREMAN_CODE_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)
@@ -717,7 +792,7 @@ test('integration files launch workspace Vitest directly with package binaries a
     const vitest = vitestCommand(environment, file, 'first case|second case', json)
     assert.deepEqual(vitest.args, ['run', 'test/dev-startup.integration.test.ts', '--no-file-parallelism',
       '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--reporter=json',
-      `--outputFile.json=${json}`, '--fsModuleCache', '--testNamePattern', 'first case|second case'])
+      `--outputFile.json=${json}`, `--reporter=${startupReporter}`, '--fsModuleCache', '--testNamePattern', 'first case|second case'])
     assert.equal(vitest.env.TEST_DATABASE_URL, slot.databaseUrl)
     assert.equal(vitest.env.HOME, environment.HOME)
     assert.equal(vitest.env.FOREMAN_CODE_TEST_OWNER, resource.token)

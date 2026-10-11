@@ -85,3 +85,56 @@ it('accepts dynamic tool responses when real bundles keep DynamicToolCallRespons
   protocol.serverResponse('item/tool/call', { success: true, contentItems: [{ type: 'inputText', text: '{}' }] })
   assert.throws(() => protocol.serverResponse('item/tool/call', { success: true }))
 })
+
+it('validates escaped and recursive references through every referenced definition', () => {
+  const value = bundle()
+  const definitions = value.definitions as JsonObject
+  const v2 = definitions.v2 as JsonObject
+  const turn = v2.Turn as JsonObject
+  const properties = turn.properties as JsonObject
+  properties.metadata = { $ref: '#/definitions/Metadata~1Label~0' }
+  definitions['Metadata/Label~'] = {
+    type: 'object', required: ['label'], properties: {
+      label: { type: 'string', minLength: 1 },
+      child: { $ref: '#/definitions/Metadata~1Label~0' },
+    },
+  }
+  const protocol = protocolFromBundle(value)
+  const result = { turn: { id: 'turn-1', items: [], status: 'completed',
+    metadata: { label: 'parent', child: { label: 'child' } } } }
+  assert.doesNotThrow(() => protocol.response('turn/start', result))
+  result.turn.metadata.child.label = ''
+  assert.throws(() => protocol.response('turn/start', result))
+})
+
+it('uses changed referenced constraints even when the schema object and provider version are reused', () => {
+  const value = bundle()
+  const original = protocolFromBundle(value, 'codex-cli 0.154.0')
+  const result = { turn: { id: 'turn-1', items: [], status: 'completed' } }
+  original.response('turn/start', result)
+  const definitions = value.definitions as JsonObject
+  const v2 = definitions.v2 as JsonObject
+  const turn = v2.Turn as JsonObject
+  const properties = turn.properties as JsonObject
+  properties.status = { enum: ['interrupted'] }
+  const replacement = protocolFromBundle(value, 'codex-cli 0.154.0')
+  assert.throws(() => replacement.response('turn/start', result), /0\.154\.0/)
+  assert.doesNotThrow(() => replacement.response('turn/start', { turn: { ...result.turn, status: 'interrupted' } }))
+  assert.doesNotThrow(() => original.response('turn/start', result))
+})
+
+it('preserves the caller provider version when reusing validators for identical schema content', () => {
+  protocolFromBundle(bundle(), 'codex-cli 0.154.0')
+  const protocol = protocolFromBundle(bundle(), 'codex-cli 0.156.1')
+  assert.throws(() => protocol.serverResponse('item/commandExecution/requestApproval', {
+    decision: 'invented-allow',
+  }), /0\.156\.1/)
+})
+
+it('rejects an unresolved referenced definition before execution', () => {
+  const value = bundle()
+  const definitions = value.definitions as JsonObject
+  const v2 = definitions.v2 as JsonObject
+  Reflect.deleteProperty(v2, 'Turn')
+  assert.throws(() => protocolFromBundle(value))
+})

@@ -106,4 +106,27 @@ describe('workspace update location projection through authenticated MCP', () =>
       expect(readback.locationRevision).toBe(1)
     } finally { await f.close() }
   }, 30_000)
+
+  it('sets, reads back and clears the public CI mirror, and denies an out-of-scope writer', async () => {
+    const f = await workspaceMcpFixture()
+    try {
+      const created = await callWorkspaceTool(f.owner.client, 'workspace_create',
+        contracts.ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Mirrored', parentPath: f.parentPath })
+      const workspaceId = created.value.workspace.id
+      const ciMirror = { provider: 'github', owner: 'octo-owner', name: 'website-ci' }
+      const denied = await f.issue([{ actions: ['workspaces:update'], scope: { workspaceIds: ['different-workspace'] } }])
+      expect((await denied.client.callTool({ name: 'workspace_update', arguments: {
+        workspaceId, commandId: randomUUID(), expectedRevision: created.value.revision, ciMirror } })).isError).toBe(true)
+      const set = await callWorkspaceTool(f.owner.client, 'workspace_update', contracts.ManagedWorkspaceCommandResultSchema,
+        { workspaceId, commandId: randomUUID(), expectedRevision: created.value.revision, ciMirror })
+      expect(set.value.workspace.ciMirror).toEqual(ciMirror)
+      expect((await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema, { workspaceId }))
+        .workspace.ciMirror).toEqual(ciMirror)
+      const cleared = await callWorkspaceTool(f.owner.client, 'workspace_update', contracts.ManagedWorkspaceCommandResultSchema,
+        { workspaceId, commandId: randomUUID(), expectedRevision: set.value.revision, ciMirror: null })
+      expect(cleared.value.workspace.ciMirror).toBeUndefined()
+      expect((await callWorkspaceTool(f.owner.client, 'workspace_get', contracts.ManagedWorkspaceSchema, { workspaceId }))
+        .workspace.ciMirror).toBeUndefined()
+    } finally { await f.close() }
+  }, 30_000)
 })

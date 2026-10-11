@@ -17,4 +17,11 @@ describe('Browser credential CLI', () => {
     expect(() => parseCredentialArguments(['issue', '--name', 'Worker', '--audience', 'worker', '--access', 'manage'])).toThrow()
     expect(() => parseCredentialArguments(['issue', '--name', 'User', '--audience', 'user', '--access', 'manage'])).toThrow()
   })
+  it('grants whole-computer telemetry only when named explicitly for an Operator', () => {
+    expect(parseCredentialArguments(['issue', '--name', 'Operator', '--access', 'manage'])).not.toHaveProperty('computerMetrics')
+    expect(parseCredentialArguments(['issue', '--name', 'Operator', '--grant', 'devices:metrics:read']))
+      .toMatchObject({ audience: 'operator', computerMetrics: true })
+    expect(() => parseCredentialArguments(['issue', '--name', 'Operator', '--grant', 'devices:provision'])).toThrow()
+    expect(() => parseCredentialArguments(['issue', '--name', 'Worker', '--audience', 'worker', '--grant', 'devices:metrics:read'])).toThrow()
+  })
 })

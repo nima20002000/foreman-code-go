@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import type { NativeSessionReference } from '@foreman-code/contracts'
+import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { afterEach, it } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
@@ -265,4 +266,52 @@ it('does not reinterpret uncertain native cleanup as expected restart cancellati
   assert.equal(f.rows().at(-1)!.closed, false)
   assert.equal(f.rows().at(-1)!.detached, false)
   assert.equal(f.state.restartCloses, 0)
+})
+
+it('hands over an interrupted ordinary remote workflow attachment before disposing its manager', async () => {
+  const placement = { hostRef: { kind: 'device' } } as AcceptedNodePlacement
+  const f = currentRestartUnit(false, placement)
+  connections.push(f.connection)
+  const first = f.cold()
+  const before = structuredClone(f.execution())
+  const attaching = deferred()
+  let attempts = 0
+  let detached = false
+  first.manager.attachSession = async (reference, input, signal) => {
+    attempts++
+    assert.deepEqual(reference, f.session)
+    assert.equal(input.correlationId, `execution:${before.id}`)
+    if (attempts > 1) {
+      assert.equal(signal?.aborted, false)
+      return reference
+    }
+    attaching.resolve()
+    return new Promise<NativeSessionReference>((_resolve, reject) => {
+      signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })
+    })
+  }
+  const closeForRestart = first.manager.closeForRestart!.bind(first.manager)
+  first.manager.closeForRestart = async reference => {
+    await closeForRestart(reference)
+    detached = true
+  }
+  first.manager.dispose = async () => {
+    assert.equal(detached, true, 'live remote work requires confirmed restart detachment')
+  }
+  const failed = startupFailure(first.attachOriginal())
+  await attaching.promise
+  await first.coordinator.closeForRestart()
+  const error = await failed
+  assert.ok(error instanceof DomainError)
+  assert.equal(error.code, 'ENGINE_RESTART')
+  assert.equal(attempts, 2)
+  await first.manager.dispose!()
+  assert.deepEqual(f.execution(), before)
+  assert.equal(f.rows().at(-1)!.detached, true)
+  assert.equal(f.rows().at(-1)!.closed, false)
+  assert.equal(f.state.creates, 0)
+  assert.equal(f.state.turns, 0)
+  assert.equal(f.state.cancels, 0)
+  assert.equal(f.state.revocations, 0)
+  assert.equal(f.state.budgetStops, 0)
 })

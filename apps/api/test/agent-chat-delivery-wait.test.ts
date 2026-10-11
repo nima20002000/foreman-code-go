@@ -68,3 +68,15 @@ it('keeps the original thirty-second deadline when startup never completes', asy
   await vi.advanceTimersByTimeAsync(30_000)
   await rejected
 })
+
+it('honors a shorter delivery deadline without polling', async () => {
+  vi.useFakeTimers()
+  const repository = { turn: vi.fn(async () => turn('submitting')), get: async () => undefined }
+  const pending = waitForDelivery({ events: new AgentChatEvents() }, repository,
+    'chat', 'first', 'completed', { timeoutMs: 1_000 })
+  const rejected = expect(pending).rejects.toThrow('No persisted completed result for first')
+  await vi.advanceTimersByTimeAsync(999)
+  expect(repository.turn).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(1)
+  await rejected
+})

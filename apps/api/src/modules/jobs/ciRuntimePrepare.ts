@@ -254,7 +254,7 @@ export async function codexBinary(image: string, output: string, env: NodeJS.Pro
   await rm(path, { force: true })
   const container = `foreman-ci-codex-${randomUUID()}`
   // The copied store and its install live in the tmpfs, which counts against the container's memory. With the
-  // 1 GiB Foreman Code store the capture peaks at 2.6 GiB (measured on Mana), so it gets 3 GiB, not 2.
+  // 1 GiB Foreman Code store the capture peaks at 2.6 GiB (measured on Laptop), so it gets 3 GiB, not 2.
   const limits = ciPreparationLimits()
   const captureMemoryBytes = Math.min(CODEX_CAPTURE_MEMORY_BYTES, limits.memoryBytes)
   const captureLimits = ciPreparationResourceArgs({ cpuCount: Math.min(2, limits.cpuCount), memoryBytes: captureMemoryBytes })

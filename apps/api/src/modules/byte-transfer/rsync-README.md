@@ -84,7 +84,7 @@ Checked official sources on 2026-10-02:
 
 PC system `/usr/bin/rsync` is `3.4.1+ds1-7ubuntu0.3`, SHA256
 `92faeb9388dc94801b6af10160f09f553dbdfe72952a90d11b686c2814b54831`.
-Dexter system `/usr/bin/rsync` is `3.2.7-1ubuntu1.5`, SHA256
+Builder system `/usr/bin/rsync` is `3.2.7-1ubuntu1.5`, SHA256
 `6b4fb867cb49d0332b72b234656311c807ab68b0537905fda7a3e7481a139f16`.
 Neither is qualified by this backend. Version suffix is not complete patch proof.
 
@@ -92,9 +92,9 @@ Packaging owner supplied official signed-source native 3.5.1/protocol33 builds,
 without replacing system packages. Backend independently rechecks both version
 outputs and binary hash pins before each transfer:
 
-- PC `/home/nima/.local/share/graphql-tools/rsync/3.5.1/bin/rsync`, SHA256
+- PC `/home/user/.local/share/graphql-tools/rsync/3.5.1/bin/rsync`, SHA256
   `ef0e0133741553921153dc42763793dd4e4e6f50477b169bca45498c96a5551c`.
-- Dexter `/home/dexter/.local/share/graphql-tools/rsync/3.5.1/bin/rsync`, SHA256
+- Builder `/home/builder/.local/share/graphql-tools/rsync/3.5.1/bin/rsync`, SHA256
   `66ea7be9ce8a03d9131794783faaa124d6cce3ea388225ecd8dffc240a2ed868`.
 
 Packaging owner retains signature/source/build provenance. This worker independently
@@ -133,7 +133,7 @@ quota/cleanup supervisor; explicit setup-bound backend selection; current revoke
 or denied app authority during actual transport; exact immutable source and
 artifact adoption/publication readback; downstream edge Run pins; duplicate/lost
 publication acknowledgments; worker/Main crash and stopped-owner lock recovery;
-ENOSPC/EIO; shared service restart/faults; full PC/Dexter Board/Job/app acceptance.
+ENOSPC/EIO; shared service restart/faults; full PC/Builder Board/Job/app acceptance.
 No shared restart, network change, new key/grant, package replacement, merge,
 deploy or additional review was performed by this worker.
 

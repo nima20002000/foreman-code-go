@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
@@ -5,7 +6,6 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { expect, it } from 'vitest'
 import { assertTestDatabase, completeTestResourceCleanup, dropFixtureSchema, provisionTestResources,
@@ -60,13 +60,13 @@ it('retains fixture rows and native state until pending qualification closure is
 }, 30_000)
 
 async function waitForFile(file: string, child: ChildProcess): Promise<void> {
-  const deadline = Date.now() + 20_000
-  while (!existsSync(file)) {
-    if (child.exitCode !== null || child.signalCode !== null || Date.now() >= deadline) {
+  await readUntil(async () => {
+    if (existsSync(file)) return true
+    if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error('Owned test child did not report readiness')
     }
-    await delay(50)
-  }
+    return false
+  }, value => value, { timeoutMs: 20_000, description: 'owned test child readiness' })
 }
 
 it.each(['same invocation', 'nested invocation'])(

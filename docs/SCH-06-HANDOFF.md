@@ -216,7 +216,7 @@ Repository tests supplied, not executed here:
 - `apps/api/test/sch06-agent-chat.test.ts`: real shared schemas/service with
   in-memory ports; removed Agent, separate Runs, explicit executions, wrong-target
   replay/control, bounded hints, live grant changes and missing-session states.
-- `apps/api/test/sch06-agent-chat.integration.test.ts`: actual isolated PostgreSQL,
+- `apps/api/test/sch06-agent-chat-manual.integration.test.ts`, `apps/api/test/sch06-agent-chat-schedule.integration.test.ts`, `apps/api/test/sch06-agent-chat-historical.integration.test.ts`, `apps/api/test/sch06-agent-chat-query.integration.test.ts`: actual isolated PostgreSQL,
   authenticated HTTP/MCP and existing deterministic native-port fixtures; persisted
   readback, removal through saved-workflow services, separate Run forks, foreign
   native receipt, controls, denial/revocation and unchanged historical SQL rows.

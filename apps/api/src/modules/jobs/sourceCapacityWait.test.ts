@@ -4,6 +4,7 @@ import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
 import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import { ciPreparationMemory } from '../../../test/helpers/ciPreparationMemory.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
+import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 import * as diagnostics from '../diagnostics/logger.js'
 import { DomainError } from '../errors.js'
 import { JobOwnership } from './ownership.js'
@@ -13,7 +14,13 @@ afterEach(() => vi.restoreAllMocks())
 
 async function fixture(code = 'SOURCE_CAPACITY') {
   const ci = ciFixture()
-  await ci.services.ci!.run(ci.operator, { workspaceId: ci.workspaceId, commandId: 'capacity-test', suite: 'unit' })
+  const definition = await ci.jobs.saveDefinition(ci.operator, 'mcp', ci.workspaceId, {
+    commandId: 'save-capacity-test', expectedRevision: null,
+    name: 'Source capacity', spec: verificationFixture().spec,
+  })
+  await ci.jobs.enqueue(ci.operator, 'mcp', ci.workspaceId, {
+    commandId: 'capacity-test', definitionId: definition.id, expectedRevision: definition.revision,
+  })
   let ticket = JobQueueTicketSchema.parse({ ...ci.ticket(), state: 'claimed', reservationId: ci.ticket().id,
     waitingReasons: [], deadlineAt: new Date(Date.parse(ci.ticket().enqueuedAt) + 600_000).toISOString(),
     definition: { ...ci.ticket().definition, spec: { ...ci.ticket().definition.spec,

@@ -46,6 +46,7 @@ export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
   jobs?: ProductionJobInfrastructure
   deviceListener?: DeviceListenerConfig
   deviceDomains?: DeviceDomainComposition
+  installationRefreshIntervalMs?: number
   inventoryDiscovery?: { launcher: typeof discoverLauncher; payloads: typeof passiveDriverPayloads; claude?: NonNullable<NonNullable<ConstructorParameters<typeof ProductionHarnessRegistry>[6]>['claude']> }
   qualificationIdentity?: {
     registry: HarnessInstallationRegistry

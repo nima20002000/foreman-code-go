@@ -1,4 +1,4 @@
-export { createFixtureDatabase, dropFixtureDatabase, createFixtureSchema, dropFixtureSchema,
+export { createFixtureDatabase, createMigratedFixtureDatabase, dropFixtureDatabase, createFixtureSchema, dropFixtureSchema,
   ownedTestDatabaseUrl, ownedTestPath, removeFixtureDirectory } from '../../../../scripts/test-resources.mjs'
 
 import type pg from 'pg'

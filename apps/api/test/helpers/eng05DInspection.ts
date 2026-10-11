@@ -62,12 +62,12 @@ export async function pairedDenial(f: InspectionHarness, r: InspectionReader, na
   expect(errorCode(await r.client.callTool({ name, arguments: input }))).toBe(code)
 }
 export async function terminal(f: InspectionHarness, runId: string, timeout = 60000) {
-  await expect.poll(async () => (await f.runs.get(runId))?.executionState, { timeout }).toBe('completed')
+  await expect.poll(async () => (await f.runs.get(runId))?.executionState, { timeout, interval: 50 }).toBe('completed')
   await expect.poll(async () => (await f.db.pool.query<{ pending: boolean }>(
     'select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as pending', [runId])).rows[0]?.pending,
-  { timeout: 20000 }).toBe(false)
+  { timeout: 20000, interval: 50 }).toBe(false)
 }
-/** The seed Run must already be terminal. This uses production HTTP Start and
+/** Any inserted seed Run must already be terminal. This uses production HTTP Start and
  * then replays its SAME command through authenticated Operator MCP. Only the
  * existing helper's external provider/filesystem qualification is synthetic. */
 export async function startThroughHttp(f: InspectionHarness, input: Record<string, unknown> = {}, locationRevision?: number) {

@@ -3,14 +3,14 @@ import { AutoVerificationJobSpecSchema, ResolvedVerificationJobSpecSchema, jobVe
   from '@foreman-code/contracts/job-verification'
 import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
-import { preparationProfile, qualifiedPreparationProfile, dexter, mana, oldImage, newImage }
+import { preparationProfile, qualifiedPreparationProfile, builder, laptop, oldImage, newImage }
   from '../../../test/helpers/ciPreparationFixture.js'
 import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import { compatibleJobComputer, orderForPlacement } from './computerSelection.js'
 import { buildComputerTarget } from '../settings/buildComputers.js'
 import { matchesRuntimePolicy } from './runtimeSelection.js'
 
-function candidate(imageDigest: string, deviceId = dexter) {
+function candidate(imageDigest: string, deviceId = builder) {
   let profile = preparationProfile('runtime', 'Runtime', deviceId, '44444444-4444-4444-8444-444444444444', ['unit'])
   profile.spec.policy.imageDigest = imageDigest
   profile = qualifiedPreparationProfile(profile)
@@ -27,7 +27,7 @@ function candidate(imageDigest: string, deviceId = dexter) {
     sourceReservation: { scopeId: 'fixture', reservedBytes: 1024 } }
 }
 
-describe('CI resolves the runtime image at admission', () => {
+describe('Jobs resolve the runtime image at admission', () => {
   it('keeps the saved ticket requirements while accepting a newly qualified image', () => {
     const before = candidate(oldImage)
     const after = candidate(newImage)
@@ -43,12 +43,15 @@ describe('CI resolves the runtime image at admission', () => {
 
   it('considers the Agent’s preferred computer with a different image and keeps the other computer for spillover', async () => {
     const ci = ciFixture()
-    const primary = candidate(oldImage, mana)
+    const primary = candidate(oldImage, laptop)
     const local = candidate(newImage)
-    ci.templates.splice(0, ci.templates.length, primary.template, primary.template, local.template)
-    ci.agentExecution.id = 'active-agent'
-    await ci.services.ci!.run(ci.worker, { suite: 'unit', commandId: 'local-first' })
-    const definition = ci.definition()
+    const request = AutoVerificationJobSpecSchema.parse({ ...local.spec, target: { kind: 'auto' },
+      policy: local.profile.spec.policy, limits: local.profile.spec.resources.limits,
+      runtimeSelection: 'qualified-profile' })
+    const definition = await ci.jobs.saveDefinition(ci.operator, 'mcp', ci.workspaceId, {
+      commandId: 'save-preferred-computer', expectedRevision: null,
+      name: 'Preferred computer', spec: request,
+    })
     local.spec.source = definition.spec.source
     primary.spec.source = definition.spec.source
     expect(definition.spec.policy.imageDigest).toBe(newImage)

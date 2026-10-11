@@ -672,6 +672,25 @@ it('rejects a cold attach that returns a different native identity', async () =>
   assert.equal(f.executions.get(f.candidate.id)?.nativeSessionId, f.manager.session.nativeSessionId)
 })
 
+it('settles an active-time timeout detected by a budget check before the timer aborts', async () => {
+  const f = fixture()
+  const startTurn = f.manager.startTurn.bind(f.manager)
+  f.manager.startTurn = async function* (session, input, signal) {
+    for await (const event of startTurn(session, input, signal)) {
+      assert.equal(signal?.aborted, false)
+      f.failBudget(new DomainError('EXECUTION_ACTIVE_TIMEOUT', 'active budget exhausted', 409))
+      yield event
+    }
+  }
+  await assert.rejects(f.coordinator.observeExact(f.input), { code: 'EXECUTION_ACTIVE_TIMEOUT' })
+  assert.equal(f.manager.turns.length, 1)
+  assert.deepEqual(f.manager.canceled, [f.manager.session])
+  assert.deepEqual(f.manager.closed, [f.manager.session])
+  assert.deepEqual(f.stops, [f.candidate.id])
+  assert.deepEqual(f.revoked, [f.candidate.id])
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+})
+
 it('stops post-approval observation when the active-time budget expires', async () => {
   const f = fixture()
   f.snapshot('request-a')
@@ -682,6 +701,9 @@ it('stops post-approval observation when the active-time budget expires', async 
   await assert.rejects(f.coordinator.observeExact(f.input), /active budget exhausted/)
   assert.notEqual(f.executions.get(f.candidate.id)?.result?.outcome, 'succeeded')
   assert.equal(f.manager.turns.length, 1)
+  assert.deepEqual(f.manager.canceled, [f.manager.session])
+  assert.deepEqual(f.manager.closed, [f.manager.session])
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
 })
 
 it('does not accept a terminal success when cancellation arrives during the history read', async () => {

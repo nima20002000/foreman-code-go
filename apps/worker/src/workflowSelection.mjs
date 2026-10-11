@@ -9,12 +9,14 @@ import { openPrivateRoot, anchored } from '../../../apps/api/src/modules/sources
 import { readInstalledWorkflowConfiguration, InstalledWorkflowConfigurationSchema }
   from '../../../apps/api/src/modules/runs/remote/installedWorkflowConfiguration.ts';
 import { passiveDriverPayloads } from '../../../apps/api/src/modules/harnesses/payloadDiscovery.ts';
+import { inventoryPayloadFingerprints } from '../../../apps/api/src/modules/harnesses/payloadFingerprintCache.ts';
 import { discoverInstalledClaudeSdk } from '../../../apps/api/src/modules/harnesses/claudeSdk/currentPin.ts';
 import { publishManagedJson, managedEntryExists } from './managedState.mjs';
 import { WorkerError } from './diagnostics.mjs';
 import { workerPath } from './harnessPath.mjs';
 
 const releaseDirectory = fileURLToPath(new URL('../', import.meta.url));
+const observedVersions = new Map();
 
 async function executable(name, environment) {
   for (const directory of (environment.PATH ?? '').split(':').filter(path => path.startsWith('/'))) {
@@ -57,12 +59,24 @@ async function codexSelection(environment, signal) {
     binary = image.paths[0];
     payloadPaths = [launcher];
   }
-  const expectedVersion = await codexVersion(binary, environment, signal);
+  const expectedVersion = await codexVersion(binary, environment, signal, payloadPaths);
   return { codexBinary: binary, expectedVersion, payloadPaths };
 }
 
-async function codexVersion(binary, environment, signal) {
-  return new Promise((resolve, reject) => {
+// Inventory polling reuses version observations; native qualification still checks the installation independently.
+async function codexVersion(binary, environment, signal, payloadPaths) {
+  const paths = [...new Set([binary, ...payloadPaths])];
+  const identity = async () => JSON.stringify({ environment,
+    payloads: await Promise.all(paths.map(async path =>
+      [path, await inventoryPayloadFingerprints.fingerprint(path, signal)])) });
+  const before = await identity();
+  const cached = observedVersions.get(binary);
+  if (cached?.identity === before) {
+    signal.throwIfAborted();
+    return cached.version;
+  }
+  observedVersions.delete(binary);
+  const version = await new Promise((resolve, reject) => {
     execFile(binary, ['--version'], { env: { ...environment, NO_COLOR: '1' }, signal,
       timeout: 15_000, maxBuffer: 4096, encoding: 'utf8' }, (error, stdout) => {
       const version = stdout.trim();
@@ -71,6 +85,11 @@ async function codexVersion(binary, environment, signal) {
       } else { resolve(version); }
     });
   });
+  signal.throwIfAborted();
+  if (await identity() !== before) throw new WorkerError('installed_codex_payload_changed');
+  if (observedVersions.size >= 512) observedVersions.delete(observedVersions.keys().next().value);
+  observedVersions.set(binary, { identity: before, version });
+  return version;
 }
 
 async function claudeSelection(environment, release, signal) {
@@ -106,18 +125,26 @@ async function retainedSelection(previous, environment, release, signal) {
   if (!previous) return null;
   const configuration = currentLauncher(previous, release);
   const binaries = [configuration.codexBinary, configuration.claude?.binary].filter(Boolean);
-  const payloads = [configuration.appMcpLauncher, ...(configuration.payloadPaths ?? []),
+  try {
+    await access(configuration.appMcpLauncher, constants.R_OK);
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
+    throw error;
+  }
+  const payloads = [...(configuration.payloadPaths ?? []),
     configuration.claude?.installedLockPath, configuration.claude?.sdkEntrypoint].filter(Boolean);
   try {
     for (const path of binaries) await access(path, constants.X_OK);
     for (const path of payloads) await access(path, constants.R_OK);
   } catch (error) {
-    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
+    // Keep the selected installation visible as unavailable during payload replacement.
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return configuration;
     throw error;
   }
   // Explicit script selections keep their separate native qualification checks.
   if (configuration.codexBinary && (await passiveDriverPayloads('codex', configuration.codexBinary)).complete) {
-    const expectedVersion = await codexVersion(configuration.codexBinary, environment, signal);
+    const expectedVersion = await codexVersion(configuration.codexBinary, environment, signal,
+      configuration.payloadPaths);
     return { ...configuration, expectedVersion };
   }
   return configuration;

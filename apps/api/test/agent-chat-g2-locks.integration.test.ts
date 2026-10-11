@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { AgentHarnessSchema } from '@foreman-code/contracts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -58,12 +59,13 @@ describe.skipIf(!postgresEnabled)('G2 A2-PF-06: acknowledgement / unknown Postgr
     }) } as unknown as pg.Pool)
   }
   async function waitForBlocker(blocker: number, blocked: number) {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      const result = await database.pool.query<{ blocked: boolean }>('select $1::int = any(pg_blocking_pids($2::int)) as blocked', [blocker, blocked])
-      if (result.rows[0]?.blocked) return
-      await new Promise<void>((done) => setTimeout(done, 10))
-    }
-    assert.fail('The second PostgreSQL session did not wait on the first transaction')
+    await readUntil(async () => {
+      const result = await database.pool.query<{ blocked: boolean }>(
+        'select $1::int = any(pg_blocking_pids($2::int)) as blocked', [blocker, blocked],
+      )
+      return result.rows[0]?.blocked ?? false
+    }, value => value, { timeoutMs: 2000, description: 'the second PostgreSQL session waiting on the first' })
+      .catch((error: unknown) => { assert.fail(error instanceof Error ? error : String(error)) })
   }
 
   for (const steer of [false, true]) {

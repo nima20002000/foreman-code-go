@@ -19,6 +19,7 @@ import { HarnessExecutionError } from '../../harnesses/errors.js'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { decodeResultCopies } from './executionResultCodec.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 
 export interface RemoteNativeTransport {
   request(method: 'prepare' | 'reattach' | 'prepare-review' | 'get-application-access' | 'start-turn'
@@ -72,10 +73,18 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   private async requestWithIntent(method: Parameters<RemoteNativeTransport['request']>[0],
     payload: unknown, intent: DispatchIntent, signal?: AbortSignal) {
-    const response = await this.options.transport.request(method, payload, signal)
-    return readRemoteReceiptResponse(response, intent, continuation => this.options.transport.request(
-      'receipt-continuation', { method: 'receipt-continuation', intent,
-        placement: this.options.placement, ...continuation }, signal), signal)
+    try {
+      const response = await this.options.transport.request(method, payload, signal)
+      return await readRemoteReceiptResponse(response, intent, continuation => this.options.transport.request(
+        'receipt-continuation', { method: 'receipt-continuation', intent,
+          placement: this.options.placement, ...continuation }, signal), signal)
+    } catch (error) {
+      // The carrier reports request cancellation without the caller's local restart reason.
+      if (error instanceof DeviceApplicationError && error.code === 'cancelled' && signal?.aborted) {
+        throw signal.reason
+      }
+      throw error
+    }
   }
   private async historyResponse(raw: unknown, signal?: AbortSignal) {
     const value = HistoryResponseSchema.parse(raw)

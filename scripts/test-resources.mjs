@@ -180,6 +180,8 @@ export function testEnvironment(environment, resource) {
   }
   clean.COREPACK_HOME = environment.COREPACK_HOME || join(homedir(), '.cache', 'node', 'corepack')
   clean.NODE_OPTIONS = `--import=${fileURLToPath(new URL('./test-postgres-guard.mjs', import.meta.url))}`
+  if (resource.template) clean.FOREMAN_CODE_TEST_DATABASE_TEMPLATE = JSON.stringify(resource.template)
+  else delete clean.FOREMAN_CODE_TEST_DATABASE_TEMPLATE
   return { ...clean, FOREMAN_CODE_TEST_ROOT: resource.directory, FOREMAN_CODE_TEST_OWNER: resource.token,
     NIM2691_POSTGRES: '1' }
 }
@@ -236,13 +238,35 @@ export async function testAdminPool() {
   }
 }
 
-export async function createTestDatabase(admin, resource) {
-  const name = `graphql_test_${randomUUID().replaceAll('-', '')}`
-  await admin.query(`create database "${name}"`)
-  await admin.query(`comment on database "${name}" is 'graphql-test:${resource.token}'`)
+export async function createTestDatabase(admin, resource, options = {}) {
+  const { template, name = `graphql_test_${randomUUID().replaceAll('-', '')}` } = options
+  assertTestRoot(resource.directory, resource.token)
+  if (template) {
+    const { assertTestDatabaseTemplate } = await import('./test-database-template.mjs')
+    await assertTestDatabaseTemplate(admin, template)
+  }
+  const clone = template ? ` template ${identifier(template.name)}` : ''
+  await admin.query(`create database ${identifier(name)}${clone}`)
+  await admin.query(`comment on database ${identifier(name)} is 'graphql-test:${resource.token}'`)
   const url = new URL(testAdminUrl)
   url.pathname = `/${name}`
-  return { ...resource, name, databaseUrl: url.toString() }
+  const database = { ...resource, name, databaseUrl: url.toString(), ...(template ? { template } : {}) }
+  if (template) {
+    const pool = new Pool({ connectionString: database.databaseUrl, max: 1 })
+    try {
+      try { await pool.query('update application_installation set id=gen_random_uuid() where singleton=true') }
+      finally { await pool.end() }
+    } catch (error) {
+      await dropTestDatabase(admin, database)
+      throw error
+    }
+  }
+  return database
+}
+
+export async function resetTestDatabase(admin, resource) {
+  await dropTestDatabase(admin, resource)
+  return createTestDatabase(admin, resource, { template: resource.template })
 }
 
 export async function assertTestDatabase(pool, resource) {
@@ -295,9 +319,17 @@ export async function provisionTestResources(environment = process.env) {
   environment = resolveProductEnvironment(environment)
   if (environment.FOREMAN_CODE_TEST_ROOT || environment.FOREMAN_CODE_TEST_OWNER) {
     const resource = { directory: environment.FOREMAN_CODE_TEST_ROOT, token: environment.FOREMAN_CODE_TEST_OWNER,
-      databaseUrl: environment.TEST_DATABASE_URL }
+      databaseUrl: environment.TEST_DATABASE_URL,
+      ...(environment.FOREMAN_CODE_TEST_DATABASE_TEMPLATE
+        ? { template: JSON.parse(environment.FOREMAN_CODE_TEST_DATABASE_TEMPLATE) } : {}) }
     const admin = await testAdminPool()
-    try { await assertTestDatabase(admin, resource) } finally { await admin.end() }
+    try {
+      await assertTestDatabase(admin, resource)
+      if (resource.template) {
+        const { assertTestDatabaseTemplate } = await import('./test-database-template.mjs')
+        await assertTestDatabaseTemplate(admin, resource.template)
+      }
+    } finally { await admin.end() }
     return { environment: testEnvironment(environment, resource), close: async () => {} }
   }
   const admin = await testAdminPool()
@@ -347,6 +379,18 @@ export async function createFixtureDatabase(sql, name, options = '') {
   }
   await sql.query(`create database ${identifier(name)} ${options}`)
   await sql.query(`comment on database ${identifier(name)} is 'graphql-test:${process.env.FOREMAN_CODE_TEST_OWNER}'`)
+}
+
+export async function createMigratedFixtureDatabase(sql, name) {
+  await assertFixtureDatabase(sql)
+  if (!process.env.FOREMAN_CODE_TEST_DATABASE_TEMPLATE) {
+    await createFixtureDatabase(sql, name, "template template0 encoding 'UTF8'")
+    return
+  }
+  const template = JSON.parse(process.env.FOREMAN_CODE_TEST_DATABASE_TEMPLATE)
+  await createTestDatabase(sql, {
+    directory: process.env.FOREMAN_CODE_TEST_ROOT, token: process.env.FOREMAN_CODE_TEST_OWNER,
+  }, { template, name })
 }
 
 export async function dropFixtureDatabase(sql, name) {

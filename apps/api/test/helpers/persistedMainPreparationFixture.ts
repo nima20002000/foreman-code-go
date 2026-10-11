@@ -80,10 +80,12 @@ export async function persistedMainPreparationFixture(database: Awaited<ReturnTy
         if (response.isError) throw new Error(JSON.stringify(response))
         return BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(response))
       }
-      const httpRead = () => fetch(`${origin}${path}`, { headers: { authorization: `Bearer ${reader.token}` } })
+      const httpRead = () => fetch(`${origin}${path}`, {
+        headers: { authorization: `Bearer ${reader.token}`, connection: 'close' },
+      })
       const httpStart = (input: { commandId: string; commit?: string }, token = writer.token) =>
         fetch(`${origin}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`,
-          'content-type': 'application/json' }, body: JSON.stringify(input) })
+          'content-type': 'application/json', connection: 'close' }, body: JSON.stringify(input) })
       return { service, app, call, read, httpRead, httpStart }
     }
     return { fixture, writer, reader, repository, commands, create,

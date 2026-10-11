@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { join, dirname, resolve, relative } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 export function committedWorkerInputPath(root, input) {
   const path = relative(root, resolve(root, input));
@@ -73,6 +74,23 @@ export function verifyPackage(name, version, index, files) {
   const licenseTable = name === '@img/sharp-libvips-linux-x64' && manifest.license === 'LGPL-3.0-or-later'
     && files.get('README.md')?.toString('utf8').includes('LGPLv3');
   if (!licenseTable && ![...files.keys()].some(path => /(?:^|\/)(?:LICENSE|LICENCE|COPYING)(?:\.|$)/i.test(path))) throw new Error(`Package license missing: ${name}`);
+}
+
+export async function copySharpPackagesFromStore({ root, output, store, lock, decode }) {
+  const indexPath = join(store, 'index.db');
+  let database;
+  try {
+    database = new DatabaseSync(indexPath, { readOnly: true });
+  } catch (error) {
+    throw new Error(`Cannot read pnpm package index at ${indexPath}. Restore the pnpm store together with node_modules `
+      + 'or reinstall dependencies before building the Worker artifact.', { cause: error });
+  }
+  try {
+    const query = database.prepare('SELECT data FROM package_index WHERE key = ?');
+    return await copySharpPackages({ root, output, lock, record: key => query.get(key)?.data, decode });
+  } finally {
+    database.close();
+  }
 }
 
 export async function copySharpPackages({ root, output, lock, record, decode }) {

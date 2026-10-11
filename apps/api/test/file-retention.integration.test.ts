@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult, OperatorCompactCapabilitiesSchema } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import assert from 'node:assert/strict'
@@ -5,7 +6,6 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { afterAll, beforeAll, describe, it } from 'vitest'
@@ -253,13 +253,11 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
       const blockerPid = (await blocker.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       saving = retention.save(owner.principal, 'http', payload(7200, 0, true))
       void saving.catch(() => undefined)
-      let waiting = false
-      for (let attempt = 0; attempt < 100 && !waiting; attempt++) {
-        waiting = (await database.pool.query<{ waiting: boolean }>(`select exists(select 1 from pg_stat_activity
+      const waiting = await readUntil(async () => {
+        return (await database.pool.query<{ waiting: boolean }>(`select exists(select 1 from pg_stat_activity
           where $1::int=any(pg_blocking_pids(pid)) and query like '%for update%'
             and wait_event_type='Lock') as waiting`, [blockerPid])).rows[0]!.waiting
-        if (!waiting) await delay(10)
-      }
+      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
       assert.equal(waiting, true, 'Save must wait on the file row, not the retention-owner lock')
       await database.pool.query("select pg_sleep(greatest(0,extract(epoch from $1::timestamptz-clock_timestamp()))+0.02)",
         [TemporaryFileSchema.parse(original.value.file).expiresAt])
@@ -476,13 +474,11 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     const saving = retention.save(owner.principal, 'http', payload(3600, 0, true))
     // Observe the real blocked PostgreSQL connection, not a timing-only assertion.
     try {
-      let waiting = false
-      for (let attempt = 0; attempt < 100 && !waiting; attempt++) {
+      const waiting = await readUntil(async () => {
         const result = await database.pool.query<{ waiting: boolean }>(`select exists(select 1 from pg_stat_activity
           where $1::int=any(pg_blocking_pids(pid)) and query like '%273640%' and wait_event_type='Lock') as waiting`, [blockerPid])
-        waiting = result.rows[0]!.waiting
-        if (!waiting) await delay(10)
-      }
+        return result.rows[0]!.waiting
+      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
       assert.equal(waiting, true, 'Save must wait for the allocation transaction before applying retention')
     } finally { unblock(); await Promise.allSettled([uploading, saving]) }
     const [allocated, saved] = await Promise.all([uploading, saving])

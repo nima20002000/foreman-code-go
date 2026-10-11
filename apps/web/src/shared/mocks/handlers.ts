@@ -251,7 +251,7 @@ export const handlers: RequestHandler[] = [
   }),
   http.post('*/api/management/computers/maintenance/start', () => HttpResponse.json({ computers: [] })),
   http.get('*/api/management/computers/activity', () => HttpResponse.json({
-    mainId: '11111111-1111-4111-8111-111111111111', computers: [], truncated: false, activityComplete: true,
+    mainId: '11111111-1111-4111-8111-111111111111', computers: [], cloud: [], truncated: false, activityComplete: true,
   })),
   ...agentChatHandlers,
   currentAuthoringHandler,

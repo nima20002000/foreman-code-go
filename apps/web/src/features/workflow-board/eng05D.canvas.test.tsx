@@ -1,10 +1,14 @@
 import { nativeNode } from '../../shared/mocks/nativeFixtureTypes'
 // @vitest-environment jsdom
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Edge, Node, ReactFlowProps } from '@xyflow/react'
 import { CurrentRunDetailsSchema, RepeatGraphCurrentV3Schema, WorkflowVersionV3Schema, repeatGraphTopologyV3 } from '@foreman-code/contracts/wave25'
 import { currentRunKey } from './currentRunQuery'
+import type { ReactNode } from 'react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { WorkflowBoardContext } from './context'
+import { useSelectedRunRecord } from './runFacts'
 import { inspectionBoardFixture } from './inspect/inspectionFixtures'
 import {
   advanceCurrentSequence, boardHref, currentIdle, installBoardTestLifecycle, intervalTick,
@@ -89,6 +93,15 @@ describe('ENG05-D real pinned canvas scale and invalidation', () => {
 
   it('regression: an activity-only current tick preserves every unchanged node data object and edge', async () => {
     const { scope, wire, cache } = await largeBoard()
+    const subscriber = renderHook(() => useSelectedRunRecord(), {
+      wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={cache}>
+        <WorkflowBoardContext.Provider value={{
+          workspaceId: scope.workspaceId, workflowId: scope.workflowId, run: scope, inspection: {}, activeRuns: 0,
+          selectRun: () => undefined, selectInspection: () => undefined,
+          openLocation: () => undefined, openRuns: () => undefined,
+        }}>{children}</WorkflowBoardContext.Provider>
+      </QueryClientProvider>,
+    })
     const board = screen.getByTestId('unified-workflow-board')
     const canvas = screen.getByLabelText('Run graph canvas')
     const before = observed.frames.at(-1)!, frameCount = observed.frames.length
@@ -97,9 +110,7 @@ describe('ENG05-D real pinned canvas scale and invalidation', () => {
     await waitFor(() => expect(wire.current()).toHaveLength(requests + 1))
     await currentIdle(cache, currentRunKey(scope))
     await waitFor(() => expect(cache.getQueryData<{ asOfSequence: string }>(currentRunKey(scope))?.asOfSequence).toBe('2'))
-    // Give Query's real batched timeout and React external-store notification a
-    // turn. A correct slice selector may avoid a new React Flow call entirely.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)) })
+    await waitFor(() => expect(subscriber.result.current?.asOfSequence).toBe('2'))
     const after = observed.frames.at(-1)!
     const byId = new Map(before.nodes.map((node) => [node.id, node]))
     const changed = after.nodes.filter((node) => node.data !== byId.get(node.id)?.data).map((node) => node.id)

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { TelemetryReadResultSchema, telemetrySelectorKey, type TelemetryReadResult, type TelemetrySelector } from '@foreman-code/contracts/resource-telemetry'
 import { resourceTelemetryFixtures as fixtures, telemetryComputerFixture, telemetryOwnedFixture, telemetrySelectionRaceFixture } from '@foreman-code/contracts/resource-telemetry-fixtures'
-import { delay, http, HttpResponse } from 'msw'
+import { http, HttpResponse } from 'msw'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { server } from '../../mocks/server'
@@ -10,6 +10,7 @@ import { resourceTelemetryKeys, useResourceTelemetryQuery } from '../../shared/a
 import { beginSessionChange, finishSessionChange, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { ResourceTelemetryPanel, ScopedResourceTelemetry } from './ResourceTelemetryCards'
 import { sampleClock } from './telemetryView'
+import { deferred } from '../runs-selector/testFixtures'
 
 const route = '*/api/management/resource-telemetry/read'
 let client: QueryClient
@@ -145,12 +146,23 @@ describe('useResourceTelemetryQuery', () => {
     const [a1, b, a2] = telemetrySelectionRaceFixture
     let aRequests = 0
     let bRequests = 0
+    const lateA = deferred<void>()
+    const lateB = deferred<void>()
+    let lateResponses = 0
     server.use(http.post(route, async ({ request }) => {
       const selector = await request.json() as TelemetrySelector
-      if (keyOf(selector) === keyOf(b!.selector as TelemetrySelector)) { bRequests += 1; await delay(b!.delayMs); return HttpResponse.json(noSample(selector)) }
+      if (keyOf(selector) === keyOf(b!.selector as TelemetrySelector)) {
+        bRequests += 1
+        await lateB.promise
+        lateResponses += 1
+        return HttpResponse.json(noSample(selector))
+      }
       aRequests += 1
-      if (aRequests === 1) { await delay(a1!.delayMs); return HttpResponse.json(a1!.response) }
-      await delay(a2!.delayMs)
+      if (aRequests === 1) {
+        await lateA.promise
+        lateResponses += 1
+        return HttpResponse.json(a1!.response)
+      }
       return HttpResponse.json(a2!.response)
     }))
     const initialProps: { selector: TelemetrySelector } = { selector: a1!.selector }
@@ -161,8 +173,12 @@ describe('useResourceTelemetryQuery', () => {
     await waitFor(() => expect(bRequests).toBe(1))
     rerender({ selector: a2!.selector })
     await waitFor(() => expect(result.current.data?.result).toEqual(a2!.response))
-    // The first A response (300 ms) and the B response (100 ms) land later and must not replace the revisit.
-    await delay(400)
+    await act(async () => {
+      lateB.resolve(undefined)
+      lateA.resolve(undefined)
+      await waitFor(() => expect(lateResponses).toBe(2))
+    })
+    await waitFor(() => expect(client.isFetching()).toBe(0))
     expect(result.current.data?.selectorKey).toBe(keyOf(a2!.selector))
     expect(result.current.data?.result.kind).toBe('no-sample')
   })

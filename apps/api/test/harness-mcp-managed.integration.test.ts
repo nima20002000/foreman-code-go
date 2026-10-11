@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+// eslint-disable-next-line no-restricted-imports -- A short observation window proves the held launcher prevents completion.
 import { setTimeout as delay } from 'node:timers/promises'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -203,7 +204,8 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     expect((await denied.callTool({ name: 'harness_mcp_managed_request', arguments: installingArgs })).isError).toBe(true)
     const pending = client.callTool({ name: 'harness_mcp_managed_request', arguments: installingArgs })
     await installing
-    expect(await Promise.race([pending.then(() => 'finished'), delay(30, 'waiting')])).toBe('waiting')
+    // eslint-disable-next-line no-restricted-syntax -- The held launcher must keep the MCP request pending throughout this observation window.
+    expect(await Promise.race([pending.then(() => 'finished'), delay(10, 'waiting')])).toBe('waiting')
     await mcp.shutdown()
     const canceled = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await pending)))
     expect(canceled).toMatchObject({ status: 'pending', managedPreset: 'graphql' })
@@ -218,7 +220,6 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     )
     expect(delivery.rows).toEqual([{ details: expect.objectContaining({ delivery: 'not_submitted' }) }])
     await held.release()
-    await delay(30)
     expect(await readFile(held.launcher, 'utf8')).toBe('original launcher')
   } finally {
     vi.restoreAllMocks()

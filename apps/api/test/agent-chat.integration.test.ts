@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
@@ -176,14 +177,8 @@ function makeService() {
 
 async function settled(service: AgentChatService, state: () => Promise<AgentChatState>, until: (value: AgentChatState) => boolean = (value) =>
   !value.activeTurn && !value.turns.some((turn) => ['queued', 'submitting'].includes(turn.delivery))) {
-  const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    const value = await state()
-    if (until(value)) return value
-    await new Promise((resolve) => setTimeout(resolve, 20))
-  }
   void service
-  throw new Error('chat did not settle')
+  return readUntil(state, until, { timeoutMs: 30_000, description: 'chat settlement' })
 }
 
 function request(node: { id: string; agentId: string }, content: string, expectedConversationId: string | null,
@@ -1076,6 +1071,8 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
           expect(read.isError === true).toBe(!matching)
           if (matching) expect(AgentChatStateSchema.parse(decodeMcpToolResult(read)).conversation?.id).toBe(id)
           const controller = new AbortController()
+          // Advance only the heartbeat interval; network I/O and credential clocks stay real.
+          vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
           try {
             const stream = await fetch(`${f.address}${path}/conversations/${id}/events`, { headers,
               signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]) })
@@ -1084,6 +1081,7 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
               const reader = stream.body!.getReader()
               try {
                 let frames = ''
+                await vi.advanceTimersByTimeAsync(5_000)
                 while (!frames.includes(': heartbeat')) {
                   const chunk = await reader.read()
                   if (chunk.done) throw new Error('Scoped stream closed before its reauthorized heartbeat.')
@@ -1092,7 +1090,10 @@ describe('F4 authenticated transport / persistence regressions', { timeout: 60_0
                 expect(frames).toContain('event: snapshot')
               } finally { await reader.cancel() }
             } else { await stream.text() }
-          } finally { controller.abort() }
+          } finally {
+            controller.abort()
+            vi.useRealTimers()
+          }
           expect(await f4Rows(id)).toEqual(before)
         }
       } finally { await f.close() }

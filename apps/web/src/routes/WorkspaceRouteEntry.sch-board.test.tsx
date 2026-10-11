@@ -306,6 +306,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
   })
 
   it('refreshes the retained draft context without replacing local edits while a Run is pinned', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     let workspaceReads = 0
     const recordWorkspaceRead = ({ request }: { request: Request }) => {
       if (new URL(request.url).pathname === `/api/workspaces/${scope.workspaceId}`) workspaceReads++
@@ -321,16 +322,16 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
       const initialWorkspaceReads = workspaceReads
       const currentReads = context.mock.calls.length
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 3_200)) })
-      expect(context.mock.calls.length).toBeGreaterThan(currentReads)
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
+      await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(currentReads))
       expect(workspaceReads).toBe(initialWorkspaceReads)
 
       await choose('run-a')
       await savedY()
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
       const historyReads = context.mock.calls.length
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 3_200)) })
-      expect(context.mock.calls.length).toBeGreaterThan(historyReads)
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
+      await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
       expect(workspaceReads).toBe(initialWorkspaceReads)
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
 
@@ -341,6 +342,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
     } finally {
       server.events.removeListener('request:start', recordWorkspaceRead)
+      vi.useRealTimers()
     }
   }, 15_000)
 

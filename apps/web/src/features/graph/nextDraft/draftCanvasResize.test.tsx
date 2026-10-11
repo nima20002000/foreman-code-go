@@ -34,7 +34,13 @@ beforeEach(() => {
   useGraphDraftStore.getState().installNextDraft(key, structuredClone(context))
   geometry.mockClear(); change.mockClear()
 })
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); useGraphDraftStore.getState().clearAllDrafts() })
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  useGraphDraftStore.getState().clearAllDrafts()
+})
 
 function Zoom() {
   const flow = useReactFlow()
@@ -73,8 +79,10 @@ it.each(['pan', 'wheel zoom'])('preserves the draft viewport after a manual %s a
   }
   await waitFor(() => expect(viewport.style.transform).not.toBe(initial))
   const adjusted = viewport.style.transform
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] })
   act(() => layout.resize(320, 480))
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+  // Cover the resize debounce and animation frames without advancing wall time.
+  await act(async () => { await vi.advanceTimersByTimeAsync(120) })
   expect(viewport.style.transform).toBe(adjusted)
   expect(geometry).not.toHaveBeenCalled()
   expect(change).not.toHaveBeenCalled()

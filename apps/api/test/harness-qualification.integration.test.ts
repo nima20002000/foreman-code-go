@@ -105,13 +105,15 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
     await compatibility.checkAll()
     const started = await writeClient.callTool({ name: 'harness_qualification_run', arguments: { harness: 'codex' } })
     expect(started.isError).not.toBe(true)
-    await viWaitFor(async () => expect((await repository.list())[0]?.status).toBe('qualified'))
+    await service.join()
+    expect((await repository.list())[0]?.status).toBe('qualified')
     const listed = HarnessQualificationListSchema.parse(decodeMcpToolResult((await readClient.callTool({ name: 'harness_qualifications_list', arguments: {} }))))
     expect(listed.qualifications[0]).toMatchObject({ harness: 'codex', version: '0.158.0', status: 'qualified', suiteRevision: 'fake-v1',
       checks: [{ id: 'static-compatibility', passed: true }, { id: 'protocol', passed: true }] })
     expect(await registry.trusted('codex', '0.158.0', listed.qualifications[0]!.binarySha256!)).toBe(true)
     const stalledBinary = join(home, 'stalled-codex')
     await writeFile(stalledBinary, `#!${process.execPath}\nsetInterval(() => {}, 1000)\n`, { mode: 0o700 })
+    // Keep a short real deadline to exercise cancellation of the spawned stalled process.
     const stalledService = new HarnessQualificationService(repository, registry, { codex: suite },
       { codex: stalledBinary }, commands, settings, staticCheck, undefined,
       () => nativeCompatibilityProbe({ codex: stalledBinary }, home, process.env, 100))
@@ -139,7 +141,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
     await writeFile(binary, '#!/bin/sh\n# another binary, same version\necho "codex-cli 0.158.0"\n')
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
     expect((await service.verify('codex')).status).toBe('qualified')
-    await viWaitFor(async () => expect((await repository.list()).filter((item) => item.suiteRevision === 'fake-v1' && item.status === 'qualified')).toHaveLength(2))
+    await service.join()
+    expect((await repository.list()).filter((item) => item.suiteRevision === 'fake-v1' && item.status === 'qualified')).toHaveLength(2)
     expect(suite.run).toHaveBeenCalledTimes(2)
     expect(staticCheck).toHaveBeenCalledTimes(2)
     await expect(requireHarnessQualification('codex', 'codex-cli 0.158.0', binary)).resolves.toBeUndefined()
@@ -150,7 +153,8 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
     const failedService = new HarnessQualificationService(repository, failedRegistry, { codex: failedSuite },
       { codex: binary }, commands, settings, staticCheck)
     await failedService.begin('codex')
-    await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v2')?.status).toBe('failed'))
+    await failedService.join()
+    expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v2')?.status).toBe('failed')
     await expect(runWithReadOnlyQualification(failedRegistry, () => requireHarnessQualification('codex', 'codex-cli 0.158.0', binary))).rejects.toMatchObject({
       result: { error: { code: 'HARNESS_UNQUALIFIED' } },
     })
@@ -160,9 +164,10 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
       { codex: skippedSuite },
       { codex: binary }, commands, settings, async () => { throw new Error('schema missing required method') })
     await staticFailure.begin('codex')
-    await viWaitFor(async () => expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v3')).toMatchObject({
+    await staticFailure.join()
+    expect((await repository.list()).find((item) => item.suiteRevision === 'fake-v3')).toMatchObject({
       status: 'failed', checks: [{ id: 'static-compatibility', passed: false, detail: 'schema missing required method' }],
-    }))
+    })
     expect(skippedSuite.run).not.toHaveBeenCalled()
     const installedSettings = new HarnessInstanceSettingsRepository(pool)
     const installedProofs = new HostHarnessProfileEvidenceRepository(pool)
@@ -217,10 +222,3 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('reads compatibility through authentic
     await admin.end()
   }
 }, 60_000)
-
-async function viWaitFor(check: () => Promise<void>): Promise<void> {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    try { await check(); return } catch { await new Promise((resolve) => setTimeout(resolve, 25)) }
-  }
-  await check()
-}

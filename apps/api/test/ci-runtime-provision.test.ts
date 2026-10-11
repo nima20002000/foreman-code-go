@@ -9,9 +9,9 @@ import { publishCommit } from '../src/modules/sources/githubPublisher.js'
 import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
 import { captureGitSource } from '../src/modules/sources/capture.js'
 import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
-import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, dexter, oldImage, newImage, commit, newPin,
+import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, builder, oldImage, newImage, commit, newPin,
   otherWorkspaceImage, mainId }
   from './helpers/ciPreparationFixture.js'
 
@@ -84,7 +84,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
     const f = await fixture()
     try {
       const base = f.profiles.get('p-unit')!
-      const profile = preparationProfile('p-integration', 'Dexter integration', dexter,
+      const profile = preparationProfile('p-integration', 'Builder integration', builder,
         base.root.binding.rootId, ['integration'])
       profile.spec.policy.executionTimeoutMs = 9_000_000
       f.profiles.set(profile.id, profile)
@@ -110,11 +110,11 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
     const refreshGate = new Promise<void>(resolve => { finish = resolve })
     const f = await fixture({ refreshGate })
     try {
-      await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-drain' })
-      for (let attempt = 0; attempt < 500 && !f.calls.refresh.length; attempt++) {
-        await new Promise(resolve => setImmediate(resolve))
-      }
-      expect(f.calls.refresh).toHaveLength(1)
+      const started = await f.call('build_computer_prepare', {
+        workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-drain',
+      })
+      expect(started.isError).not.toBe(true)
+      await vi.waitFor(() => expect(f.calls.refresh).toHaveLength(1))
       expect(await f.workerState()).toMatchObject({ state: 'refreshing', stage: 'draining', commit })
       const status = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-unit' })
       expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(status)).state).toBe('refreshing')
@@ -131,9 +131,9 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       const started = await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'prepare-1' })
       expect(started.isError).not.toBe(true)
       expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(started)))
-        .toMatchObject({ deviceId: dexter, state: 'approving' })
+        .toMatchObject({ deviceId: builder, state: 'approving' })
       const done = await f.settle('p-install')
-      expect(done).toMatchObject({ state: 'qualified', commit, deviceId: dexter, message: null })
+      expect(done).toMatchObject({ state: 'qualified', commit, deviceId: builder, message: null })
       expect(done.profiles.map(value => [value.profileId, value.status]).sort()).toEqual([['p-install', 'qualified'], ['p-unit', 'qualified']])
       // The computer keeps the images its profiles in every workspace and the qualification source its current runtime use.
       expect(f.calls.prepare).toEqual([{ repository: '/clones/octo/site', commit, installer: '/ci/managed/installer',
@@ -145,8 +145,8 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/ci/state', root: expect.objectContaining({ source: newPin }),
         resources: expect.objectContaining({ limits: expect.objectContaining({ cpuLimit: 4 }) }) })])
       expect(f.calls.qualified.sort()).toEqual(['p-install', 'p-unit'])
-      // Readback: Mana's profile was not touched; Dexter's carry the commit.
-      expect(f.profiles.get('p-mana')).toMatchObject({ revision: 3, spec: { policy: { imageDigest: oldImage } } })
+      // Readback: Laptop's profile was not touched; Builder's carry the commit.
+      expect(f.profiles.get('p-laptop')).toMatchObject({ revision: 3, spec: { policy: { imageDigest: oldImage } } })
       expect(f.profiles.get('p-small')).toMatchObject({ revision: 3, spec: { policy: { imageDigest: oldImage } } })
       expect(f.profiles.get('p-unit')).toMatchObject({ revision: 4, status: 'qualified', sourceCommit: commit })
       expect(f.audits).toContainEqual({ principalId: f.operator.id, action: 'build_computer_prepare', outcome: 'succeeded' })

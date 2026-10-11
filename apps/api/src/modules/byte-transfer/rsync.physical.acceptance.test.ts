@@ -7,24 +7,24 @@ import { NodeRsyncExecutor, RsyncStagingTransport, RSYNC_SSH_ARGS, type RsyncEnd
   type RsyncStagingPorts, type RsyncExecutor } from './rsync.js'
 import { RsyncPrivateStore } from './rsyncStore.js'
 
-it('actual PC/Dexter private staging push, pull, empty, source freeze and interrupted resume', async () => {
+it('actual PC/Builder private staging push, pull, empty, source freeze and interrupted resume', async () => {
   const binary = process.env.RSYNC_PHYSICAL_LOCAL_BINARY!, binaryHash = process.env.RSYNC_PHYSICAL_LOCAL_SHA256!
   const remoteBinary = process.env.RSYNC_PHYSICAL_REMOTE_BINARY!, remoteHash = process.env.RSYNC_PHYSICAL_REMOTE_SHA256!
   expect(binary).toBeTruthy(); expect(binaryHash).toMatch(/^[a-f0-9]{64}$/)
   const root = await mkdtemp('/tmp/graphql-rsync-physical-'), run = randomUUID()
-  const remoteRoot = `/home/dexter/.local/share/graphql-rsync-test/${run}`
-  const config: RsyncEndpoint = { user: 'dexter', host: '100.76.219.118', localBinary: binary,
+  const remoteRoot = `/home/builder/.local/share/graphql-rsync-test/${run}`
+  const config: RsyncEndpoint = { user: 'builder', host: '100.64.0.20', localBinary: binary,
     remoteBinary, localRoot: join(root, 'private'), remoteRoot, localBinarySha256: binaryHash, remoteBinarySha256: remoteHash }
   const executor = new NodeRsyncExecutor(), signal = new AbortController().signal
   const ssh = (command: string) => executor.run({ executable: '/usr/bin/ssh', args: [...RSYNC_SSH_ARGS,
-    'dexter@100.76.219.118', command] }, signal)
+    'builder@100.64.0.20', command] }, signal)
   const context = (i: TransferIntent) => ({ mainId: i.mainId, deviceId: i.deviceId,
     workerInstallationId: i.workerInstallationId, keyRevision: i.keyRevision, authorizationRevision: i.authorizationRevision,
     bootId: i.bootId, connectionEpoch: i.connectionEpoch })
   const store = new RsyncPrivateStore(config.localRoot, { reserve: async () => async () => {}, retire: async () => {} })
   const reports: unknown[] = []
   // Readiness precedes all remote test mutation. No grants/services/network configuration touched.
-  await ssh('id -u; test -d /home/dexter/.local/share; test -x ' + remoteBinary)
+  await ssh('id -u; test -d /home/builder/.local/share; test -x ' + remoteBinary)
   await ssh(`umask 077; mkdir -p -- ${remoteRoot}; test -d ${remoteRoot}`)
   try {
     for (const size of [0, 1048576, 8388608]) {

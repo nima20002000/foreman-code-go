@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { EventEmitter, once } from 'node:events'
 import { expect, it, vi } from 'vitest'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { PendingNativeInteractionSchema } from '@foreman-code/contracts'
@@ -11,6 +12,7 @@ const session = { harness: 'claude' as const, nativeSessionId: 'native-session',
 const identity = { ownerPrincipalId: 'sender', attemptId: 'model-request', nativeSessionId: session.nativeSessionId, nativeMessageId: 'input-message', clientCorrelationId: 'accepted-correlation', generation: 'sdk-generation', toolUseId: 'tool-use', nativeRequestId: 'control-request', nativeRequestType: 'can_use_tool' as const }
 /** SQL modeled existing tables/claims; no live DB, fabricated native ACK or second application store. */
 function fixture(kind: 'operator' | 'agent' = 'operator') {
+  const pending = new EventEmitter()
   const principals = new Map(['sender', 'responder'].map((id) => [id, { id, name: id, audience: 'operator', grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:respond', 'agent_chat:read', 'agent_chat:write', 'agent_chat:respond'], scope: {} }], expires_at: new Date('2099-01-01'), revoked_at: null, delegated_from: null }]))
   const row = { kind, owner_principal_id: kind === 'operator' ? 'sender' : null, workspace_id: 'workspace', workflow_id: 'workflow', origin_run_id: null,
     active_request_id: 'model-request' as string | null, native_session_id: session.nativeSessionId, provider_version: session.providerVersion, cancel_requested: false, deleted_at: null, record: { status: 'open' },
@@ -31,6 +33,7 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
       expect(values[0]).toBe('conversation'); expect(values[1]).toBe('model-request')
       row.pending_interaction = values[2] ? JSON.parse(values[2] as string) : null
       if (kind === 'operator') row.response_delivery = 'offered'
+      if (row.pending_interaction) pending.emit('offered')
       return result([], 1)
     }
     if (text.includes("set response_delivery='submitted'")) {
@@ -51,11 +54,12 @@ function fixture(kind: 'operator' | 'agent' = 'operator') {
     // Existing NativeConversationControlCommands persisted reservation fixture, including actual observed generation.
     receipts = [{ principal_id: 'responder', result: { status: 'pending', acceptedControl: { modelRequestId: 'model-request', conversationId: 'conversation', scope: { kind: kind === 'operator' ? 'operator_chat' : 'agent_chat', conversationId: 'conversation', workspaceId: 'workspace', workflowId: 'workflow' }, native: { harness: 'claude', providerVersion: session.providerVersion, sessionId: session.nativeSessionId, messageId: identity.nativeMessageId, generation, requestId: callback.nativeRequestId, requestType: identity.nativeRequestType }, choice: { optionId, semantic: optionId === 'allow_once' ? 'approve_once' : optionId === 'deny' ? 'reject' : 'cancel' } } } }]
   }
-  return { ...port, row, principals, query, claim, manager }
+  return { ...port, row, principals, query, claim, manager, waitForPending: () => once(pending, 'offered', { signal: AbortSignal.timeout(1000) }) }
 }
 async function offered(f: ReturnType<typeof fixture>) {
   const pending = f.bridge.canUseTool(identity, 'Read', { path: 'scope-owned' }, new AbortController().signal)
-  await vi.waitFor(() => expect(f.row.pending_interaction).not.toBeNull())
+  await f.waitForPending()
+  expect(f.row.pending_interaction).not.toBeNull()
   const descriptor = (await f.interactionPort.pending(session))!
   return { pending, descriptor }
 }
@@ -118,7 +122,8 @@ it('admits later permission callbacks while retaining replay protection for earl
   for (let index = 0; index < 300; index += 1) {
     const callback = { ...identity, toolUseId: `tool-${index}`, nativeRequestId: `permission-${index}` }
     const decision = f.bridge.canUseTool(callback, 'Read', { path: 'owned' }, new AbortController().signal)
-    await vi.waitFor(() => expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: callback.nativeRequestId } }))
+    await f.waitForPending()
+    expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: callback.nativeRequestId } })
     const pending = (await f.interactionPort.pending(session))!
     await f.claim('allow_once', identity.generation, callback)
     await f.interactionPort.respond(session, callback.nativeRequestId, pending.responseOptions[0]!)
@@ -126,7 +131,8 @@ it('admits later permission callbacks while retaining replay protection for earl
   }
   const extra = { ...identity, toolUseId: 'overflow-tool', nativeRequestId: 'overflow-permission' }
   const next = f.bridge.canUseTool(extra, 'Read', { path: 'owned' }, new AbortController().signal)
-  await vi.waitFor(() => expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: extra.nativeRequestId } }))
+  await f.waitForPending()
+  expect(f.row.pending_interaction).toMatchObject({ turn: { nativeRequestId: extra.nativeRequestId } })
   const pending = (await f.interactionPort.pending(session))!
   await f.claim('allow_once', identity.generation, extra)
   await f.interactionPort.respond(session, extra.nativeRequestId, pending.responseOptions[0]!)

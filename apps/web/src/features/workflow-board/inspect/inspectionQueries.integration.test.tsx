@@ -33,7 +33,7 @@ beforeEach(async () => {
 })
 afterEach(() => {
   cleanup(); cache.clear(); focusManager.setFocused(undefined)
-  vi.restoreAllMocks(); vi.unstubAllGlobals()
+  vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers()
 })
 
 async function manyExecutions(count: number) {
@@ -104,9 +104,9 @@ describe('explicit paged inspection Query ownership', () => {
     expect(calls('/executions')).toHaveLength(1)
     await act(async () => {
       focusManager.setFocused(false); focusManager.setFocused(true)
-      await new Promise((resolve) => setTimeout(resolve, 30))
     })
     rerender({ enabled: true })
+    await waitFor(() => expect(cache.isFetching()).toBe(0))
     expect(calls('/executions')).toHaveLength(1)
   })
 
@@ -216,15 +216,20 @@ describe('explicit paged inspection Query ownership', () => {
     const scope = fixture.runs.before.scope, current = fixture.mock.currents.get(scope.runId)!
     current.state.run = { ...current.state.run, executionState: 'running', outcome: 'pending' }
     current.asOfSequence = '1'
-    const { result } = renderHook(() => ({
-      current: useCurrentRunQuery(scope),
+    const { result, rerender } = renderHook(({ live }) => ({
+      current: useCurrentRunQuery(scope, live),
       pages: useExecutionPages(scope, {}, true),
-    }), { wrapper })
+    }), { wrapper, initialProps: { live: false } })
     await waitFor(() => expect(result.current.current.isSuccess && result.current.pages.isSuccess).toBe(true))
     const pages = result.current.pages.data
     const firstCurrentCount = calls('/current').length
     expect(firstCurrentCount).toBeGreaterThan(0)
-    await waitFor(() => expect(calls('/current').length).toBeGreaterThan(firstCurrentCount), { timeout: 4000 })
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    rerender({ live: true })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    vi.useRealTimers()
+    await waitFor(() => expect(calls('/current').length).toBeGreaterThan(firstCurrentCount))
+    await waitFor(() => expect(result.current.current.fetchStatus).toBe('idle'))
     expect(calls('/executions')).toHaveLength(1)
     expect(calls('/events')).toHaveLength(0)
     expect(calls('/bindings')).toHaveLength(0)

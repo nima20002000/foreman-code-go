@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import type { ReviewJob } from '@foreman-code/contracts'
 import { assertSameRepeatExecution, assertSameReviewJob, reviewPhysicallySettled } from '../src/modules/interactions/repeatObservation.js'
 import { repeatReviewerOccurrence } from '../src/modules/interactions/repeatReviewer.js'
@@ -114,4 +114,43 @@ test('NATIVE-2 missing physical review proof cannot close or revoke the captured
   await assert.rejects(f.coordinator.captureReviewFinalizer(f.get().id, f.session, f.job)!(f.job),
     { code: 'REPEAT_CLEANUP_PENDING' })
   assert.ok(!f.calls.some((call) => /close:|revoke:/.test(call)))
+})
+
+test('restart drains a captured reviewer finalizer before detaching its native lifetime', async () => {
+  const f = reviewFixture()
+  const order: string[] = []
+  let entered!: () => void
+  let release!: () => void
+  const reading = new Promise<void>(resolve => { entered = resolve })
+  const held = new Promise<void>(resolve => { release = resolve })
+  const readRun = f.runs.get
+  f.runs.get = async () => {
+    entered()
+    await held
+    return readRun()
+  }
+  Object.assign(f.manager, {
+    retainsReviewerSession: true,
+    closeForRestart: async () => { order.push('detach') },
+  })
+  Object.assign(f.closures, { recordDetached: async () => { order.push('detached') } })
+  const finish = f.coordinator.captureReviewFinalizer(f.get().id, f.session, f.job)!
+  const finalizing = finish(f.job).then(() => { order.push('finalized') })
+  // Model the dispatcher's public drain boundary with the running real finalizer.
+  const shutdown = vi.spyOn(f.coordinator.reviewers, 'shutdown').mockImplementation(() => finalizing)
+  await reading
+  const closing = f.coordinator.closeForRestart()
+  try {
+    assert.deepEqual(order, [])
+    release()
+    await closing
+    await finalizing
+    assert.deepEqual(order, ['finalized', 'detach', 'detached'])
+    assert.ok(!f.calls.some(call => call.startsWith('revoke:')))
+  } finally {
+    release()
+    await Promise.allSettled([closing, finalizing])
+    shutdown.mockRestore()
+    await f.connection.close()
+  }
 })

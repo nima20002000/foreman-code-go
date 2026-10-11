@@ -8,7 +8,7 @@ import { AcceptedWorkflowRunV3Schema, WorkflowVersionV3Schema } from '@foreman-c
 import type { GraphSqlClient } from '../run-graph/connection.js'
 
 import { DomainError } from '../errors.js'
-import { assertRepeatReviewerBinding } from './repeatReviewer.js'
+import { assertRepeatReviewerBinding, PostgresRepeatReviewerBindings } from './repeatReviewer.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../workflows/approvalRoutes.js'
 
 type RequestIdentity = Pick<DurableInteraction,
@@ -87,6 +87,12 @@ export async function assertOrchestratorGraphAuthority(
   // A reviewer credential belongs to one execution occurrence, not every node
   // using that Agent. Existing authentication still checks its live eligibility.
   if (reviewer.executionId || reviewer.principalId || reviewer.nativeSessionId) {
+    let executionId = reviewer.executionId
+    if (!executionId && !reviewer.principalId && reviewer.nativeSessionId) {
+      // Business activations can share a native session; select the request's owner first.
+      const binding = await new PostgresRepeatReviewerBindings(client).select(interaction, connection.orchestratorNodeId)
+      executionId = binding.execution.id
+    }
     const owner = await client.query<{ id: string; record: unknown }>(
       `select e.id,e.record from harness_executions e
        where e.run_id=$1 and e.agent_id=$2 and e.workflow_node_id=$3
@@ -96,7 +102,7 @@ export async function assertOrchestratorGraphAuthority(
              and b.execution_id=e.id and b.run_id=e.run_id and b.agent_id=e.agent_id
              and b.revoked_at is null))
          and ($6::text is null or e.record->>'nativeSessionId'=$6)`,
-      [r.id, reviewerId, connection.orchestratorNodeId, reviewer.executionId ?? null,
+      [r.id, reviewerId, connection.orchestratorNodeId, executionId ?? null,
         reviewer.principalId ?? null, reviewer.nativeSessionId ?? null],
     )
     const bound = HarnessExecutionSchema.safeParse(owner.rows[0]?.record)

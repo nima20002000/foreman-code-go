@@ -11,6 +11,7 @@ export default defineConfig({
     globalSetup: ['../../scripts/vitest-heavy-setup.mjs'],
     // Leave CPU headroom for the Vitest coordinator and application processes.
     maxWorkers,
+    fsModuleCache: true,
     // Ignore compiled tests left by older builds.
     exclude: [...configDefaults.exclude, '**/dist/**'],
   },

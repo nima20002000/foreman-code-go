@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
+import { setImmediate } from 'node:timers/promises'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, it } from 'vitest'
+import { afterEach, describe, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { AgentConfigurationVersion, ExecutionResult, NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
 import type { AgentChatContext, AgentChatTurn, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
@@ -40,11 +41,7 @@ function gate() {
   return { promise, release }
 }
 async function eventually(check: () => boolean) {
-  const deadline = Date.now() + 3_500
-  while (!check()) {
-    assert.ok(Date.now() < deadline, 'recovery did not make progress')
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
+  await vi.waitFor(() => assert.ok(check(), 'recovery did not make progress'), { interval: 1, timeout: 3_500 })
 }
 
 /** Storage fixture for SERVICE control-flow tests; real repository SQL boundaries are tested separately. */
@@ -377,7 +374,8 @@ describe('G1 cancellation and reconciliation', () => {
     await eventually(() => f.repository.bound === 1)
     let stopped = false
     const shutdown = f.service.shutdown().then(() => { stopped = true })
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Drain shutdown's immediate fixture work while binding remains held.
+    await setImmediate()
     assert.equal(stopped, false); assert.equal(f.native.disposed, 0)
     hold.release(); await running; await shutdown
     assert.equal(f.native.disposed, 1)

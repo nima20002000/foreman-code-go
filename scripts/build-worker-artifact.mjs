@@ -13,8 +13,10 @@ const { build } = require('esbuild');
 const { parse } = require('yaml');
 const { Unpackr } = require('msgpackr');
 const unpacker = new Unpackr({ useRecords: true, moreTypes: true });
-import { copySharpPackages, artifactFiles, assertWorkerDependency, committedWorkerInputPath, workerReleaseVersion, validateWorkerTarget } from './worker-artifact-files.mjs';
-import { DatabaseSync } from 'node:sqlite';
+import {
+  copySharpPackagesFromStore, artifactFiles, assertWorkerDependency,
+  committedWorkerInputPath, workerReleaseVersion, validateWorkerTarget,
+} from './worker-artifact-files.mjs';
 const [targetFile, outputDirectory, runtimeFile] = process.argv.slice(2);
 if (!targetFile || !outputDirectory) throw new Error('Usage: build-worker-artifact.mjs apps/worker/artifacts/approved-target.json /new-output-directory [apps/worker/artifacts/reviewed-runtime.json]');
 const requestedCommit = readProductEnvironment(process.env, 'WORKER_BUILD_COMMIT');
@@ -130,13 +132,13 @@ if (verificationScripts.every(path => committedScripts.has(path))) {
 await writeFile(join(output, 'install'), snapshotSource('apps/worker/artifacts/install.sh.in').toString('utf8').replaceAll('@NODE_VERSION@', target.node), { mode: 0o700 });
 if (runtime) await writeFile(join(output, 'artifacts/node-runtime.json'), snapshotSource(runtimeInput.path), { mode: 0o600 });
 const { storeDir: store } = parse(await readFile(join(root, 'node_modules/.modules.yaml'), 'utf8'));
-const database = new DatabaseSync(join(store, 'index.db'), { readOnly: true });
-let nativePackages;
-try {
-  nativePackages = await copySharpPackages({ root, output, lock: parse(snapshotSource('pnpm-lock.yaml').toString('utf8')),
-    record: key => database.prepare('SELECT data FROM package_index WHERE key = ?').get(key)?.data,
-    decode: blob => unpacker.unpack(blob) });
-} finally { database.close(); }
+const nativePackages = await copySharpPackagesFromStore({
+  root,
+  output,
+  store,
+  lock: parse(snapshotSource('pnpm-lock.yaml').toString('utf8')),
+  decode: blob => unpacker.unpack(blob),
+});
 const files = await artifactFiles(output);
 const releaseVersion = workerReleaseVersion(JSON.parse(snapshotSource('package.json').toString('utf8')));
 const manifest = { format: 1, version: releaseVersion, commit, lockfileSha256: hash(snapshotSource('pnpm-lock.yaml')), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, nativePackages, workerApiModules: Object.keys(built.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), rsyncWriterApiModules: Object.keys(writer.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), sourceSnapshot: { commit, files: [...snapshot.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, { gitBlobSha1, sha256 }]) => ({ path, gitBlobSha1, sha256 })) },

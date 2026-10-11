@@ -7,7 +7,7 @@ import { readTelemetry, RESOURCE_TELEMETRY_READ_TOOL, type TelemetryDenialAudit 
 export function registerResourceTelemetryTools(server: McpServer, principal: ManagementPrincipal,
   reads: TelemetryReadService<ManagementPrincipal>, audit: TelemetryDenialAudit): void {
   server.registerTool(RESOURCE_TELEMETRY_READ_TOOL, {
-    description: 'Read ResourceTelemetry v1 for one exact computer or owned workflow/CI/conversation selector. Requires a live explicit whole-computer telemetry grant or the exact role-specific owned-scope grant; Agent/Run access never implies computer permission. Passive bounded CPU/RAM; freshness expires at six seconds; denied exposes no cached values. This never starts collectors, providers, processes or pairing.',
+    description: 'Read ResourceTelemetry v1 for one exact computer or owned workflow/CI/conversation selector. Requires a live explicit whole-computer telemetry grant or the exact role-specific owned-scope grant; Agent/Run access never implies computer permission. Passive bounded CPU/RAM, plus free disk space on computer reads; freshness expires at six seconds; denied exposes no cached values. This never starts collectors, providers, processes or pairing.',
     inputSchema: TelemetrySelectorSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input, extra) => {

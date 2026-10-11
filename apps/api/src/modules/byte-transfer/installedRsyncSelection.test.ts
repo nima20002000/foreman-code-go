@@ -25,18 +25,18 @@ async function fixture() {
   let registration: DeviceRegistration = { mainId: original.mainId, deviceId: original.deviceId, workerInstallationId: original.workerInstallationId,
     keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] }
   let consent: TrustedConnectionConsent = { mainId: original.mainId, deviceId: original.deviceId, workerInstallationId: original.workerInstallationId,
-    keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), revision: 1, endpoint: { transport: 'tailscale', host: '100.76.219.118', port: 22, osUser: 'dexter' },
+    keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), revision: 1, endpoint: { transport: 'tailscale', host: '100.64.0.20', port: 22, osUser: 'builder' },
     hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true, approvedBy: 'human-owner', approvalId: randomUUID(), approvedAt: new Date().toISOString(),
     privilege: 'selected-os-user', automaticSudo: false, grantsAgentPermissions: false }
   const intent = TransferIntentSchema.parse({ ...transferContextForBinding(original), version: 1, transferId: randomUUID(), operationId: randomUUID(), executionId: randomUUID(), attemptId: randomUUID(),
     placementHash: 'a'.repeat(64), rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-worker', byteClass: 'source', sha256: 'c'.repeat(64),
     byteSize: 2, manifestDigest: 'd'.repeat(64), chunkBytes: 2, expiresAt: new Date(Date.now() + 120000).toISOString() })
   let selected: InstalledRsyncSelection | undefined = { formatVersion: 1, backend: 'rsync', registration: structuredClone(registration), consentRevision: 1,
-    endpoint: { user: 'dexter', host: '100.76.219.118', localRoot: join(root, 'main-stage'), remoteRoot: '/home/dexter/.local/state/graphql-worker/rsync-stage' },
+    endpoint: { user: 'builder', host: '100.64.0.20', localRoot: join(root, 'main-stage'), remoteRoot: '/home/builder/.local/state/graphql-worker/rsync-stage' },
     localBinary: { path: localBinary, sha256: createHash('sha256').update('fixture app-private rsync bytes').digest('hex'), version: '3.5.1' },
-    remoteBinary: { path: '/home/dexter/.local/share/graphql-tools/rsync/3.5.1/bin/rsync', sha256: 'e'.repeat(64), version: '3.5.1' },
-    nodeBinary: { path: '/home/dexter/.local/share/graphql-worker/node/bin/node', sha256: '2'.repeat(64) },
-    entryPoint: { path: '/home/dexter/.local/share/graphql-worker/src/rsync-writer.mjs', sha256: '3'.repeat(64) },
+    remoteBinary: { path: '/home/builder/.local/share/graphql-tools/rsync/3.5.1/bin/rsync', sha256: 'e'.repeat(64), version: '3.5.1' },
+    nodeBinary: { path: '/home/builder/.local/share/graphql-worker/node/bin/node', sha256: '2'.repeat(64) },
+    entryPoint: { path: '/home/builder/.local/share/graphql-worker/src/rsync-writer.mjs', sha256: '3'.repeat(64) },
     sourceProvenance: { sourceSha256: 'f'.repeat(64), releaseSignerFingerprint: 'A'.repeat(40) } }
   const file = join(root, 'installed-selection.json')
   await writeFile(file, JSON.stringify(selected), { mode: 0o600 })
@@ -163,7 +163,7 @@ describe('protected explicit installed rsync selection', () => {
     if (change === 'registration') f.updateRegistration({ keyRevision: 2 })
     if (change === 'host') f.updateSelection({ endpoint: { ...f.selected.endpoint, host: 'different.example' } })
     if (change === 'os-user') f.updateSelection({ endpoint: { ...f.selected.endpoint, user: 'root' } })
-    if (change === 'port') f.updateConsent({ endpoint: { transport: 'tailscale', host: '100.76.219.118', osUser: 'dexter', port: 2222 } })
+    if (change === 'port') f.updateConsent({ endpoint: { transport: 'tailscale', host: '100.64.0.20', osUser: 'builder', port: 2222 } })
     if (change === 'revoked') f.updateConsent({ allowOwnerCommands: false })
     await expect(f.provider.selection(f.intent, new AbortController().signal)).rejects.toThrow()
     expect(f.executor.run).not.toHaveBeenCalled()
@@ -177,8 +177,8 @@ describe('protected explicit installed rsync selection', () => {
   })
   it('rejects installed selection changes during the final trusted probe', async () => {
     const f = await fixture()
-    f.probe.mockImplementationOnce(async () => ({ state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'dexter', uid: 1000, hostname: 'worker', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync version 3.2.7', tailscaleVersion: '1.102.4' }))
-    f.probe.mockImplementationOnce(async () => { f.updateSelection({ consentRevision: 2 }); return { state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'dexter', uid: 1000, hostname: 'worker', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync version 3.2.7', tailscaleVersion: '1.102.4' } })
+    f.probe.mockImplementationOnce(async () => ({ state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'builder', uid: 1000, hostname: 'worker', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync version 3.2.7', tailscaleVersion: '1.102.4' }))
+    f.probe.mockImplementationOnce(async () => { f.updateSelection({ consentRevision: 2 }); return { state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'builder', uid: 1000, hostname: 'worker', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync version 3.2.7', tailscaleVersion: '1.102.4' } })
     await expect(f.provider.selection(f.intent, new AbortController().signal)).rejects.toThrow('during final trusted check')
   })
   it('checks remote bytes before remote version and rejects changed digest or unqualified version', async () => {

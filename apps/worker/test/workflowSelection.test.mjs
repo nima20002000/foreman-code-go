@@ -38,10 +38,14 @@ async function fixture(t) {
   return { root, bin, release, stateDirectory, options, path: join(stateDirectory, 'workflow-runtime.json') };
 }
 
-async function nativeCodex(binary, version = '0.162.0') {
+async function nativeCodex(binary, version = '0.162.0', probeLog) {
   await mkdir(dirname(binary), { recursive: true, mode: 0o700 });
+  const recordProbe = probeLog ? `FILE *log = fopen(${JSON.stringify(probeLog)}, "a");
+    if (!log) return 1;
+    fputs("version\\n", log);
+    fclose(log);` : '';
   execFileSync('/usr/bin/cc', ['-x', 'c', '-o', binary, '-'], {
-    input: `#include <stdio.h>\nint main(void) { puts("codex-cli ${version}"); return 0; }\n`,
+    input: `#include <stdio.h>\nint main(void) { ${recordProbe} puts("codex-cli ${version}"); return 0; }\n`,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 }
@@ -109,13 +113,14 @@ for (const ambientHarness of ['absent', 'different']) {
       ...selection, expectedVersion: 'codex-cli 0.164.0',
     });
     await rm(binary);
-    if (ambientHarness === 'different') {
-      await refreshWorkflowSelection(f.options);
-      assert.equal(JSON.parse(await readFile(f.path, 'utf8')).codexBinary, join(f.bin, 'codex'));
-    } else {
-      assert.equal(await refreshWorkflowSelection(f.options), null);
-      await assert.rejects(readFile(f.path), { code: 'ENOENT' });
-    }
+    const unavailable = { ...selection, expectedVersion: 'codex-cli 0.164.0' };
+    assert.deepEqual(await refreshWorkflowSelection(f.options), { path: f.path, ownerUid: process.getuid() });
+    assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), unavailable);
+    await nativeCodex(binary, '0.165.0');
+    await refreshWorkflowSelection(f.options);
+    assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), {
+      ...selection, expectedVersion: 'codex-cli 0.165.0',
+    });
   });
 }
 
@@ -136,7 +141,7 @@ test('a retained selection follows the running release launcher after a Worker u
   assert.equal(selection.appMcpLauncher, join(current, 'artifacts/graphql-mcp.mjs'));
 });
 
-test('an absent or removed harness is not selected and retired launchers are replaced', async t => {
+test('an absent harness is not selected and retired application launchers are replaced', async t => {
   const f = await fixture(t);
   assert.equal(await refreshWorkflowSelection(f.options), null);
   await assert.rejects(readFile(f.path), { code: 'ENOENT' });
@@ -144,10 +149,68 @@ test('an absent or removed harness is not selected and retired launchers are rep
     expectedVersion: 'codex-cli 0.154.0', payloadPaths: [], appMcpLauncher: '/retired/launcher.mjs' }), { mode: 0o600 });
   await nativeCodex(join(f.bin, 'codex'));
   await refreshWorkflowSelection(f.options);
-  assert.equal(JSON.parse(await readFile(f.path, 'utf8')).appMcpLauncher, join(f.release, 'artifacts/graphql-mcp.mjs'));
+  const selection = JSON.parse(await readFile(f.path, 'utf8'));
+  assert.equal(selection.appMcpLauncher, join(f.release, 'artifacts/graphql-mcp.mjs'));
   await rm(join(f.bin, 'codex'));
+  assert.deepEqual(await refreshWorkflowSelection(f.options), { path: f.path, ownerUid: process.getuid() });
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), selection);
+  await rm(join(f.release, 'artifacts/graphql-mcp.mjs'));
   assert.equal(await refreshWorkflowSelection(f.options), null);
   await assert.rejects(readFile(f.path), { code: 'ENOENT' });
+});
+
+test('reuses version observations only while the selected binary, payloads and environment are unchanged', async t => {
+  const f = await fixture(t);
+  const binary = join(f.bin, 'codex');
+  const probeLog = join(f.root, 'version-probes.txt');
+  await nativeCodex(binary, '0.162.0', probeLog);
+  await refreshWorkflowSelection(f.options);
+  for (let index = 0; index < 5; index++) await refreshWorkflowSelection(f.options);
+  assert.equal(await readFile(probeLog, 'utf8'), 'version\n');
+
+  const payload = join(f.root, 'payload.json');
+  await writeFile(payload, '{}');
+  const selection = JSON.parse(await readFile(f.path, 'utf8'));
+  await writeFile(f.path, JSON.stringify({ ...selection, payloadPaths: [payload] }), { mode: 0o600 });
+  await refreshWorkflowSelection(f.options);
+  await refreshWorkflowSelection(f.options);
+  assert.equal(await readFile(probeLog, 'utf8'), 'version\nversion\n');
+  await writeFile(payload, '{"revision":2}');
+  await refreshWorkflowSelection(f.options);
+  assert.equal(await readFile(probeLog, 'utf8'), 'version\nversion\nversion\n');
+
+  await nativeCodex(binary, '0.163.0', probeLog);
+  await refreshWorkflowSelection(f.options);
+  assert.equal(JSON.parse(await readFile(f.path, 'utf8')).expectedVersion, 'codex-cli 0.163.0');
+  const environment = { ...f.options.environment, LANG: 'C' };
+  await refreshWorkflowSelection({ ...f.options, environment });
+  assert.equal(await readFile(probeLog, 'utf8'), 'version\n'.repeat(5));
+  await nativeCodex(binary, 'invalid', probeLog);
+  await assert.rejects(refreshWorkflowSelection(f.options), { code: 'installed_codex_version_unavailable' });
+  assert.equal(JSON.parse(await readFile(f.path, 'utf8')).expectedVersion, 'codex-cli 0.163.0');
+  await nativeCodex(binary, '0.164.0', probeLog);
+  await refreshWorkflowSelection(f.options);
+  assert.equal(JSON.parse(await readFile(f.path, 'utf8')).expectedVersion, 'codex-cli 0.164.0');
+  assert.equal(await readFile(probeLog, 'utf8'), 'version\n'.repeat(7));
+});
+
+test('keeps a selected installation through missing declared payloads without admitting an ambient replacement', async t => {
+  const f = await fixture(t);
+  const binary = join(f.root, 'selected/codex');
+  await nativeCodex(binary);
+  await nativeCodex(join(f.bin, 'codex'), '0.163.0');
+  const payload = join(f.root, 'selected/payload.json');
+  const selection = { schemaVersion: 1, codexBinary: binary, expectedVersion: 'codex-cli 0.162.0',
+    payloadPaths: [payload], appMcpLauncher: join(f.release, 'artifacts/graphql-mcp.mjs') };
+  await writeFile(f.path, JSON.stringify(selection), { mode: 0o600 });
+  assert.deepEqual(await refreshWorkflowSelection(f.options), { path: f.path, ownerUid: process.getuid() });
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), selection);
+  await writeFile(payload, '{}');
+  await nativeCodex(binary, '0.164.0');
+  await refreshWorkflowSelection(f.options);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), {
+    ...selection, expectedVersion: 'codex-cli 0.164.0',
+  });
 });
 
 test('selects installed Claude with its actual SDK integrity metadata without requiring Codex', async t => {

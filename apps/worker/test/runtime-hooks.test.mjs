@@ -62,13 +62,17 @@ for (const mode of ['failure', 'timeout', 'startup-failure']) test(`worker retai
   const script = `import assert from 'node:assert/strict';
     const { startWorker, acquireWorkerLock } = await import(process.argv[1]);
     const stateDirectory = process.argv[2], mode = process.argv[3];
-    let finish; const pending = new Promise(resolve => { finish = resolve; });
+    let finish, drained; const drainFinished = new Promise(resolve => { drained = resolve; });
+    const pending = new Promise(resolve => { finish = resolve; });
     const options = { stateDirectory, loadIdentity: async () => ({}), shutdownMs: 20,
       createConnection: async () => ({ start: async () => { if (mode === 'startup-failure') throw new Error('connection start failed'); }, stop: async () => {} }),
-      beforeUnlock: async () => { if (mode === 'timeout') await pending; else throw new Error('domain drain failed'); } };
+      beforeUnlock: async () => {
+        try { if (mode === 'timeout') await pending; else throw new Error('domain drain failed'); }
+        finally { drained(); }
+      } };
     if (mode === 'startup-failure') await assert.rejects(startWorker(options), error => error instanceof AggregateError && error.errors.length === 2);
     else { const worker = await startWorker(options); await assert.rejects(worker.stop(), mode === 'timeout' ? /shutdown_timeout/ : /domain drain failed/); }
-    finish(); await new Promise(resolve => setTimeout(resolve, 40));
+    finish(); await drainFinished;
     await assert.rejects(acquireWorkerLock(stateDirectory), /worker_already_running/);
     process.exit(0);`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script, runtimeUrl, stateDirectory, mode], { encoding: 'utf8', timeout: 5000 });

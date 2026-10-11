@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CiHostReplySchema, CiRunRecordSchema, WorkspaceSchema,
-  type CiDurations, type CiHostRequest, type CiHostReply, type CiPartition, type CiRunRecord, type CiSuite } from '@foreman-code/contracts'
+  type CiDurations, type CiHostRequest, type CiHostReply, type CiRunRecord, type CiRunInput } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
+import { ciGroupState, planCiParts, type CiUnitInventory } from './parts.js'
 
 type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
 export interface HostCiComputer { key: string; hostRef: HostRef; label: string; priority: number }
@@ -18,6 +19,7 @@ export interface HostCiEndpoint {
 }
 /** Resolves the commit to test and makes sure GitHub has it, so build computers can fetch it. */
 export interface CiCommits {
+  unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
     snapshot: { baseCommit: string; commit: string; bundle: Buffer } | null): Promise<string>
 }
@@ -25,8 +27,7 @@ export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: stri
 
 const log = componentLogger('jobs')
 
-/** CI runs directly on build computers: Main resolves the commit, makes sure GitHub has it, queues one run per
- * suite or integration partition and hands each to an idle computer, which fetches and runs it. */
+/** Main resolves and publishes the commit, then queues suite parts and integration partitions for idle CI computers. */
 export class HostCiService {
   private dispatching: Promise<void> | undefined
   private timer: NodeJS.Timeout | undefined
@@ -42,14 +43,18 @@ export class HostCiService {
 
   close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
 
-  async run(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; suite: CiSuite; commit?: string | undefined
-    commandId: string; partitions?: number | undefined }) {
-    const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
-    const outcome = await this.commands.execute({ principal: caller, source: 'mcp', operation: 'ci.run',
+  async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
+    const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS).catch(async error => {
+      if (source === 'http' && error instanceof DomainError && [401, 403, 404].includes(error.status)) {
+        await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
+      }
+      throw error
+    })
+    const outcome = await this.commands.execute({ principal: caller, source, operation: 'ci.run',
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input,
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
-      perform: async () => {
-        const workspace = WorkspaceSchema.parse((await this.pool.query<{ record: unknown }>(
+      perform: async client => {
+        const workspace = WorkspaceSchema.parse((await client.query<{ record: unknown }>(
           'select record from workspaces where id=$1', [scope.workspaceId])).rows[0]?.record)
         if (!workspace.repository) throw new DomainError('SOURCE_REPOSITORY_REQUIRED',
           'CI runs on build computers from GitHub. Set the workspace GitHub repository (workspace_update).', 409)
@@ -58,27 +63,33 @@ export class HostCiService {
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
         const commit = await this.commits.resolve(repository, workspace.repository.defaultBranch, input.commit, snapshot)
         const groupId = randomUUID(), now = new Date().toISOString()
-        // Every partition of the run splits and times its files by the same snapshot of learned durations.
-        const durations = input.suite === 'integration' ? await this.learnedDurations(repository) : null
-        const partitions: (CiPartition | null)[] = input.partitions
-          ? Array.from({ length: input.partitions }, (_, index) => ({ index, count: input.partitions! })) : [null]
-        const runs = partitions.map(partition => CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: scope.workspaceId,
-          suite: input.suite, commit, repository, partition, groupId, state: 'queued', computer: null, step: null,
-          exitCode: null, message: null, queuedAt: now, startedAt: null, finishedAt: null,
+        const inventory = input.suite === 'unit' ? await this.commits.unitInventory?.(repository, commit) : undefined
+        const learned = ['unit', 'integration'].includes(input.suite) ? await this.learnedDurations(repository) : null
+        const durations = input.suite === 'integration' ? learned : null
+        const unitDurations = { ...inventory?.durations, ...learned }
+        const selectionScope = input.scope ?? 'full'
+        const empty = selectionScope === 'affected' && !input.files?.length
+        const parts = planCiParts(input, unitDurations, inventory)
+        const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
+          id: randomUUID(), workspaceId: scope.workspaceId,
+          suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,
+          state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
+          exitCode: empty ? 0 : null, message: empty ? 'No affected files for this suite.' : null,
+          queuedAt: now, startedAt: empty ? now : null, finishedAt: empty ? now : null,
           initiator: { principalId: caller.id, executionId: scope.executionId ?? null } }))
         for (const run of runs) {
-          await this.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
-            values($1,$2,$3,'queued',$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, JSON.stringify(run),
-            durations ? JSON.stringify(durations) : null])
+          await client.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
+            values($1,$2,$3,$6,$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, JSON.stringify(run),
+            durations ? JSON.stringify(durations) : null, run.state])
         }
-        return { ticketId: runs[0]!.id, ...(input.partitions ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
+        return { ticketId: runs[0]!.id, ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
       },
     })
     void this.dispatch()
     return outcome.value
   }
 
-  /** The repository's learned integration file durations, most recently measured first, within the start request's
+  /** The repository's learned test file durations, most recently measured first, within the start request's
    * bound. Files no run has measured fall back to the commit's committed durations on the build computer. */
   private async learnedDurations(repository: string): Promise<CiDurations | null> {
     const rows = (await this.pool.query<{ file: string; duration_ms: number }>(`select file,duration_ms from ci_file_durations
@@ -86,7 +97,7 @@ export class HostCiService {
     return rows.length ? Object.fromEntries(rows.map(row => [row.file, row.duration_ms])) : null
   }
 
-  /** Folds a finished integration run's measured file durations into the repository's history: an exponential moving
+  /** Folds a finished run's measured file durations into the repository's history: an exponential moving
    * average per file, so one slow run moves the expectation only halfway. Files not measured for 30 days are dropped. */
   private async learnDurations(repository: string, durations: CiDurations) {
     const files = Object.keys(durations)
@@ -106,7 +117,7 @@ export class HostCiService {
   private async weighPartitions(queued: CiRunRecord[], free: HostCiComputer[]): Promise<CiRunRecord[]> {
     const groups = new Map<string, CiRunRecord[]>()
     for (const run of queued) {
-      if (run.partition && !run.partition.weights) groups.set(run.groupId, [...groups.get(run.groupId) ?? [], run])
+      if (run.suite === 'integration' && run.partition && !run.partition.weights) groups.set(run.groupId, [...groups.get(run.groupId) ?? [], run])
     }
     if (!groups.size) return queued
     const speed = await this.throughput(free)
@@ -140,7 +151,7 @@ export class HostCiService {
     const speed = new Map<string, number>()
     for (const run of rows) {
       const key = computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(run.computer?.hostRef))?.key
-      if (!key || speed.has(key) || !run.startedAt || !run.finishedAt || run.step !== 'integration') continue
+      if (!key || speed.has(key) || !run.startedAt || !run.finishedAt || run.step !== 'integration' || run.scope === 'affected') continue
       const seconds = (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000
       // Fail-fast runs say nothing about speed.
       if (seconds < 120) continue
@@ -176,22 +187,39 @@ export class HostCiService {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
     await this.dispatch()
     const run = await this.read(input.ticketId, scope.workspaceId)
-    const group = (await this.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1 order by created_at,id',
-      [run.groupId])).rows.map(row => CiRunRecordSchema.parse(row.record))
+    const group = (await this.pool.query<{ record: unknown }>(
+      'select record from ci_runs where group_id=$1 and workspace_id=$2 order by created_at,id',
+      [run.groupId, scope.workspaceId])).rows.map(row => CiRunRecordSchema.parse(row.record))
     let logTail = ''
     if (run.computer && run.state !== 'queued') {
       const tail = await this.logs(caller, { ...input, afterOffset: undefined, maxBytes: 32_768 }).catch(() => null)
       logTail = tail?.text ?? ''
     }
-    return { run, partitions: group.length > 1 ? group : undefined, logTail }
+    return { run, partitions: group.length > 1 ? group : undefined, logTail,
+      group: { groupId: run.groupId, state: ciGroupState(group) } }
   }
 
   /** Reads the run's log from its computer; without afterOffset it returns the last maxBytes. */
   async logs(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; ticketId: string
-    afterOffset?: number | undefined; maxBytes?: number | undefined }) {
+    afterOffset?: number | undefined; maxBytes?: number | undefined; group?: boolean | undefined }) {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
     const run = await this.read(input.ticketId, scope.workspaceId)
+    if (input.group) {
+      const group = (await this.pool.query<{ record: unknown }>(
+        'select record from ci_runs where group_id=$1 and workspace_id=$2 order by created_at,id',
+        [run.groupId, scope.workspaceId])).rows.map(row => CiRunRecordSchema.parse(row.record))
+      const maxBytes = Math.max(1, Math.floor((input.maxBytes ?? 65_536) / group.length))
+      const parts = await Promise.all(group.map(async part => ({ run: part,
+        ...await this.readLog(part, { afterOffset: input.afterOffset, maxBytes }) })))
+      const own = parts.find(part => part.run.id === run.id)!
+      return { text: own.text, nextOffset: own.nextOffset, logBytes: own.logBytes, parts }
+    }
     if (!run.computer) throw new DomainError('CI_NOT_STARTED', 'This CI run is still queued.', 409)
+    return this.readLog(run, input)
+  }
+
+  private async readLog(run: CiRunRecord, input: { afterOffset?: number | undefined; maxBytes?: number | undefined }) {
+    if (!run.computer) return { text: '', nextOffset: 0, logBytes: 0 }
     const computer = await this.computer(run.computer.hostRef)
     const maxBytes = input.maxBytes ?? 65_536
     let afterOffset = input.afterOffset
@@ -258,20 +286,21 @@ export class HostCiService {
     const computers = await this.endpoint.computers()
     const active = (await this.pool.query<{ record: unknown; host_key: string }>(
       `select record,host_key from ci_runs where state in ('starting','running')`)).rows
-    for (const row of active) {
+    // Every run is read at once: a cloud read waits on the service's API, and a run's parts finish together.
+    await Promise.all(active.map(async row => {
       const run = CiRunRecordSchema.parse(row.record)
       const computer = computers.find(value => value.key === row.host_key)
-      if (!computer) continue
+      if (!computer) return
       const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
-        ...(run.suite === 'integration' ? { durations: true } : {}) }).catch(() => null)
-      if (reply?.operation !== 'read') continue
+        ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }).catch(() => null)
+      if (reply?.operation !== 'read') return
       await this.settle(run, computer, reply.run)
       // A run is read here until it finishes, so its measured durations are learned once.
       if (reply.durations && !['starting', 'running'].includes(reply.run.state)) {
         await this.learnDurations(run.repository, reply.durations)
           .catch(error => log.warn({ err: error, runId: run.id }, 'CI durations not recorded'))
       }
-    }
+    }))
     const busy = new Set((await this.pool.query<{ host_key: string }>(
       `select host_key from ci_runs where state in ('starting','running')`)).rows.map(row => row.host_key))
     const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
@@ -279,30 +308,33 @@ export class HostCiService {
     let queued = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
     const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
     queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
-    for (const run of queued) {
+    // Runs start at once, in queue order: each claims its computer before waiting, so none is given twice.
+    await Promise.all(queued.map(async run => {
+      // Typecheck, lint, build and unit suites are CPU- and memory-hungry and need no host capabilities, so they go
+      // to GitHub Actions first and leave the build computers to integration work.
+      const cloudFirst = (computer: HostCiComputer) => Number(run.suite !== 'integration' && computer.hostRef.kind === 'cloud')
       const order = [...computers].sort((left, right) => Number(right.key === run.plannedHostKey)
-        - Number(left.key === run.plannedHostKey) || right.priority - left.priority)
+        - Number(left.key === run.plannedHostKey) || cloudFirst(right) - cloudFirst(left) || right.priority - left.priority)
       for (const computer of order) {
         if (busy.has(computer.key)) continue
+        busy.add(computer.key)
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
-            repository: run.repository, commit: run.commit, suite: run.suite, ...(run.partition ? { partition: run.partition } : {}),
+            repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
+            scope: run.scope, ...(run.scope === 'affected' ? { files: run.files } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
-          if (reply.operation !== 'start') continue
+          if (reply.operation !== 'start') { busy.delete(computer.key); continue }
           await this.settle({ ...run, computer: { hostRef: computer.hostRef, label: computer.label } }, computer, reply.run)
-          busy.add(computer.key)
-          break
+          return
         } catch (error) {
           // A busy or unready computer is skipped; the run stays queued for the next free one.
           const code = (error as { code?: unknown } | null)?.code
-          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED') {
-            if (code === 'CI_HOST_BUSY') busy.add(computer.key)
-            continue
-          }
+          if (code !== 'CI_HOST_BUSY') busy.delete(computer.key)
+          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE') continue
           log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')
         }
       }
-    }
+    }))
   }
 }
 

@@ -1,7 +1,9 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import {
+  AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION, HarnessExecutionSchema,
+} from '@foreman-code/contracts'
 import {
   RUN_INSPECTION_TOOLS, RunAcceptedInputValueSchema, RunExecutionDetailSchema,
   RunExecutionsPageSchema, RunRecordDetailSchema, RunStartV3InputSchema, WorkflowRunV3Schema,
@@ -139,6 +141,16 @@ async function openTransport(base: Base, runtime: Runtime, errors: unknown[]): P
 
 export async function recoveryFixture(form: Form, plan: (input: Submission) => Fault = () => 'success', budget = 12) {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), form)
+  // This provider models a separate native session for every execution attempt.
+  fixture.configurations = fixture.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({
+    ...configuration,
+    harness: { ...configuration.harness, advanced: {
+      ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never', sessionPersistence: 'ephemeral',
+    } },
+  }))
+  fixture.version.approval = { handler: 'native' }
+  fixture.version.definition.approval = { handler: 'native' }
+  fixture.run.approval = { handler: 'native' }
   fixture.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: budget }
   fixture.run.input = { instruction: 'Preserve the accepted input across attempts and recovery' }
   const base = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
@@ -173,7 +185,7 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
       runtime = composeRuntime(base, provider, errors, activeStarts); runtimes.push(runtime)
       transport = await openTransport(base, runtime, errors)
     },
-    async settled(runId = base.f.run.id) {
+    async settled(runId = base.f.run.id, options: { pollIntervalMs?: number } = {}) {
       try {
         await waitForEng06Settlement(async () => {
           await runtime.engine.reconcile((error) => errors.push(error))
@@ -182,7 +194,7 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
             "select id,record->>'state' as state,accepted from harness_executions where run_id=$1 order by id", [runId])).rows
           return { state: snapshot.run.executionState, cleanupPending: snapshot.cleanupPending,
             activeStarts: activeStarts.size, executions }
-        })
+        }, options)
       } catch (error) {
         // Preserve the real error behind HTTP INTERNAL_ERROR / a generic timeout.
         // No catch converts a failed convergence assertion into a passing test.

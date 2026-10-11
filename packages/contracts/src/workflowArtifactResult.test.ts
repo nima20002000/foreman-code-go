@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
   WorkflowArtifactOutputsV1Schema, WorkflowArtifactInputsV1Schema, WorkflowArtifactResultV1Schema,
@@ -110,11 +110,16 @@ describe('saved original workflow artifact declarations and result association',
     expect(WorkflowArtifactResultV1Schema.parse(artifacts)).toEqual(artifacts)
     expect(WorkflowArtifactResultV1Schema.safeParse({ ...artifacts, transferReceipt: {} }).success).toBe(false)
   })
-  it('loads declaration/result and existing shape modules as fresh first ESM imports', () => {
-    for (const name of ['workflowArtifactDeclarations', 'workflowArtifactResult', 'wave25/workflowShape', 'wave25/currentResult', 'index']) {
+  // Five cold Node starts: run them together, and allow for a loaded CI machine.
+  it('loads declaration/result and existing shape modules as fresh first ESM imports', async () => {
+    const names = ['workflowArtifactDeclarations', 'workflowArtifactResult', 'wave25/workflowShape', 'wave25/currentResult', 'index']
+    const results = await Promise.all(names.map(name => new Promise<{ code: number | null; stderr: string }>(resolve => {
       const url = new URL(`../dist/${name}.js`, import.meta.url).href
-      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`], { encoding: 'utf8', timeout: 10_000 })
-      expect(result.status, result.stderr).toBe(0)
-    }
-  })
+      const child = spawn(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`])
+      let stderr = ''
+      child.stderr.on('data', chunk => { stderr += String(chunk) })
+      child.on('close', code => resolve({ code, stderr }))
+    })))
+    for (const result of results) expect(result.code, result.stderr).toBe(0)
+  }, 30_000)
 })

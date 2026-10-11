@@ -8,6 +8,18 @@ const running = (): Eng06SettlementProgress => ({ state: 'running', cleanupPendi
 
 // Pure test-wait logic. No fake Run result, native receipt or retry admission.
 describe('ENG06-D bounded settlement wait', () => {
+  it('uses the configured polling interval without waiting for the default pause', async () => {
+    const task = waitForEng06Settlement(async () => ({ ...running(),
+      state: performance.now() >= 50 ? 'completed' : 'running' }), { pollIntervalMs: 50 })
+    let done = false
+    void task.then(() => { done = true })
+    await vi.advanceTimersByTimeAsync(49)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(task).resolves.toBeUndefined()
+    expect(performance.now()).toBe(50)
+  })
+
   it('requires completed AND cleanup settled, not just a terminal state', async () => {
     const task = waitForEng06Settlement(async () => ({ ...running(), state: 'completed',
       cleanupPending: performance.now() < 1000 }))

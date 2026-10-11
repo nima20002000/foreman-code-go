@@ -16,5 +16,9 @@ export default defineConfig({
     // Many cases start real processes, Postgres sessions or MCP servers; under a full gate the 5 s default
     // times out heavy cases at random (2026-10-09 gates).
     testTimeout: 20_000,
+    // Every integration file runs in its own Vitest process; sharing compiled modules on disk skips most of each
+    // process's cold transform. CI computers point it at a cache that outlives the run's worktree.
+    fsModuleCache: true,
+    ...(env.FOREMAN_CODE_VITEST_CACHE ? { fsModuleCachePath: env.FOREMAN_CODE_VITEST_CACHE } : {}),
   },
 })

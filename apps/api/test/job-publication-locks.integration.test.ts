@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
@@ -18,6 +19,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Concurrent Job publication auth
     try {
       await admin.query(`create schema ${schema}`)
       pool = new pg.Pool({ connectionString: url.toString(), max: 12,
+        application_name: schema,
         options: `-c search_path=${schema} -c statement_timeout=5000 -c lock_timeout=4000` })
       await pool.query(`
         create table job_executions(id text primary key,workspace_id text,record jsonb,accepted_spec jsonb,accepted_by text);
@@ -39,18 +41,39 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Concurrent Job publication auth
       await pool.query('insert into job_dispatch_intents values($1,$2)', [execution.id, JSON.stringify(intent)])
       await pool.query("insert into management_principals values('owner','Owner','operator',$1,'2099-01-01',null,null)",
         [JSON.stringify([{ actions: ['jobs:start'], scope: { workspaceIds: [execution.workspaceId] } }])])
-      // Accepted-source closure validation retains a shared execution lock in the transaction.
-      // Delay that read to exercise overlapping requests through independent PostgreSQL sessions.
+      const publicationSessions = new Set<pg.PoolClient>()
+      let releasePublications!: () => void
+      const overlapping = new Promise<void>(resolve => { releasePublications = resolve })
+      // Publication takes an exclusive lock first, so overlapping requests queue behind the first publisher.
       const requireAcceptedSource = async (sql: pg.PoolClient) => {
         await sql.query('select record from job_executions where id=$1 for share', [execution.id])
-        await new Promise(resolve => setTimeout(resolve, 25))
+        publicationSessions.add(sql)
+        await overlapping
       }
       const dispatch = { require: requireAcceptedSource, requireLaunch: requireAcceptedSource,
         requireControl: requireAcceptedSource, requireEvidence: requireAcceptedSource, observeReceipt: async () => {} }
       const authority = new JobPublicationAuthority(dispatch, { revalidateAccepted: async () => {} })
       const bridge = new JobApplicationBridge(pool, dispatch, { appendLog: async () => { throw new Error('Unexpected log') } }, authority)
       const frame = { method: 'job-authorize', intent, action: 'publish' }
-      const results = await Promise.allSettled(Array.from({ length: 12 }, () => bridge.handle(frame, binding)))
+      const clients: pg.PoolClient[] = []
+      try {
+        for (let index = 0; index < 12; index++) clients.push(await pool.connect())
+      } finally {
+        for (const client of clients) client.release()
+      }
+      const publications = Promise.allSettled(Array.from({ length: 12 }, () => bridge.handle(frame, binding)))
+      try {
+        await readUntil(async () => {
+          const waiting = await admin.query<{ count: number }>(`select count(*)::integer as count
+            from pg_stat_activity where application_name=$1 and wait_event_type='Lock'`, [schema])
+          return { publishers: publicationSessions.size, waiting: waiting.rows[0]!.count }
+        }, state => state.publishers === 1 && state.waiting === 11,
+        { timeoutMs: 1000, description: 'eleven publications to queue behind the first publisher' })
+      } finally {
+        releasePublications()
+        await publications
+      }
+      const results = await publications
       expect(results.map(result => result.status === 'fulfilled' ? result.value : String(result.reason)))
         .toEqual(Array.from({ length: 12 }, () => ({ authorized: true, operationId: intent.operationId,
           attemptId: intent.attemptId, bindingHash: intent.bindingHash, owner: intent.owner })))

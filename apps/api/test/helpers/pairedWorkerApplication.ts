@@ -425,7 +425,7 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
     while (Date.now() < deadline && workerExit === undefined) {
       inventory = HarnessRegistryReadbackSchema.parse(await tool('harness_registry_get', hostRef))
       if (inventory.hostMetadata?.connection?.phase === 'ready') break
-      await delay(250)
+      await delay(50)
     }
     assert.equal(inventory?.hostMetadata?.connection?.phase, 'ready', 'The installed Worker did not connect.')
     assert.equal(inventory.hostMetadata.applicationInstallationId, pairing.workerInstallationId)
@@ -448,7 +448,7 @@ export async function pairedWorkerApplication(options: { harnesses?: readonly Ag
           assert.equal(connected.hostMetadata.connection.binding.workerInstallationId, pairing.workerInstallationId)
           return
         }
-        await delay(250)
+        await delay(50)
       }
       throw new Error('The installed Worker did not reconnect after Main restarted.')
     }

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { EventEmitter, once } from 'node:events'
+import { CodexHarnessConfigurationSchema } from '@foreman-code/contracts'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { assertWave25WorkerBinding } from '../src/modules/interactions/wave25/credentialAuthority.js'
@@ -18,9 +20,11 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
     const issuance = vi.spyOn(PostgresAccessService.prototype, 'issue')
     const f = await recoveryFixture(form, ({ attempt }) => attempt === 1 ? 'retryable_failure' : 'park')
     try {
+      const parked = once(f.provider.events, 'parked', { signal: AbortSignal.timeout(20000) })
       f.launch()
-      await expect.poll(async () => (await executionRows(f)).some((row) => row.execution.attempt === 2
-        && row.execution.state === 'running' && f.provider.atBarrier(row.execution.id)), { timeout: 20000 }).toBe(true)
+      await parked
+      expect((await executionRows(f)).some((row) => row.execution.attempt === 2
+        && row.execution.state === 'running' && f.provider.atBarrier(row.execution.id))).toBe(true)
       const rows = (await executionRows(f)).sort((a, b) => a.execution.attempt - b.execution.attempt)
       expect(rows.map((row) => row.execution.attempt), JSON.stringify(f.diagnostics())).toEqual([1, 2])
       const first = rows[0]!, retry = rows[1]!
@@ -29,6 +33,12 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
       expect(f.provider.originalResult(first.execution.id)).toEqual(first.execution.result)
       expect(retry.execution.id).not.toBe(first.execution.id)
       expect(retry.execution.nativeSessionId).not.toBe(first.execution.nativeSessionId)
+      expect(retry.execution.sessionContinuation).toBeUndefined()
+      const configuration = await f.runtime.runs.getExecutionConfiguration(retry.execution.agentConfigurationVersionId)
+      const harness = CodexHarnessConfigurationSchema.parse(configuration?.harness)
+      expect(harness.sandbox).toBe('read-only')
+      expect(harness.advanced).toMatchObject({ approvalPolicy: 'never', sessionPersistence: 'ephemeral' })
+      expect((await readback(f)).record.run.approval).toEqual({ handler: 'native' })
       expect(retry.slot_id).toBe(first.slot_id)
       expect(retry.input_json).toBe(first.input_json); expect(retry.input_digest).toBe(first.input_digest)
       expect(retry.execution.agentConfigurationVersionId).toBe(first.execution.agentConfigurationVersionId)
@@ -136,20 +146,24 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
     let releaseDisposal!: () => void
     const disposal = new Promise<void>(resolve => { releaseDisposal = resolve })
     let disposalStarted = false
+    const disposalEvents = new EventEmitter()
     const connection = f.provider.connection.bind(f.provider)
     vi.spyOn(f.provider, 'connection').mockImplementation(() => {
       const manager = connection()
       const dispose = manager.dispose!.bind(manager)
       manager.dispose = async () => {
         disposalStarted = true
+        disposalEvents.emit('started')
         await disposal
         await dispose()
       }
       return manager
     })
     try {
+      const disposing = once(disposalEvents, 'started', { signal: AbortSignal.timeout(20000) })
       f.launch()
-      await expect.poll(() => disposalStarted, { timeout: 20000 }).toBe(true)
+      await disposing
+      expect(disposalStarted).toBe(true)
       expect(publicationRejected).toBe(true)
       expect(bindingObserved).toBe(true)
       const rows = await executionRows(f)

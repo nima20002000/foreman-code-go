@@ -13,7 +13,8 @@ import type { ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDe
 import { nativeCompleted, nativeFixture, nativeStored, nativeAt } from './eng04-native-fixtures.js'
 
 /** Doubles only. These tests never start a provider, DB, native process or browser. */
-export function native2Fixture(completed = true) {
+export function native2Fixture(completed = true,
+  validateContinuation: (executionId: string, signal?: AbortSignal) => Promise<void> = async () => undefined) {
   const fixture = nativeFixture()
   const base = makeCurrentWorkflowFixture('eng04-native')
   const configuration = AgentConfigurationVersionSchema.parse({ ...base.configurations[0],
@@ -156,7 +157,7 @@ export function native2Fixture(completed = true) {
     },
   }
   const coordinator = new ApprovalExecutionCoordinator(runs as never, interactions as never, budgets as never,
-    managers as never, 60_000, credentials as never, async () => undefined, closures, undefined, captureChannel.capture)
+    managers as never, 60_000, credentials as never, validateContinuation, closures, undefined, captureChannel.capture)
   const history = () => ({ correlationId: `execution:${execution.id}`, nativeTurnId: 'turn-native2-exact',
     terminalTurn: { correlationId: `execution:${execution.id}`, providerId: 'turn-native2-exact', result: nativeCompleted(execution).result! },
     pendingInteractions: [], events: [], responseDeliveries: [] } as unknown as NativeHistory)

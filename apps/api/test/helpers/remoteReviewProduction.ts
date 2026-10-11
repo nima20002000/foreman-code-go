@@ -1,3 +1,4 @@
+import { readUntil } from './observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { createHash, randomUUID, sign, X509Certificate } from 'node:crypto'
@@ -10,8 +11,9 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
-import { HarnessOptionsResultSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
+import { HarnessOptionsResultSchema, ManagedWorkspaceSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
+import { ComputerSyncStatusSchema } from '@foreman-code/contracts/computer-accounts'
 import { DevicePairingGrantResultSchema, DevicePairingResultSchema, MainDeviceIdentityPublicSchema,
   WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { loadOrCreateWorkerIdentity, persistWorkerPairing, pairingProof } from '@foreman-code/contracts/device-identity-node'
@@ -24,31 +26,33 @@ import { WorkspaceBoundLocationSetResultSchema,
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
   ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { loadConfig } from '../../src/config.js'
-import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
-import { appLauncherPath } from '../../src/modules/harnesses/appMcpLauncher.js'
+import { installManagedLauncher } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
 import { qualifyApprovedRootAllowlist } from '../../src/modules/sources/rootAttestation.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { InstalledWorkflowRecovery } from '../../src/modules/runs/remote/installedWorkflowRecovery.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
-import { agent3Database, seedAgent3 } from './wave25Agent3.js'
+import { seedAgent3 } from './wave25Agent3.js'
+import { migratedDatabase } from './migratedDatabase.js'
 import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls,
   createRemoteReviewClaudeInventory } from './remoteReviewProvider.js'
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
+import { gitFixtureEnvironment } from './gitFixture.js'
+import { remoteReviewEnvironment } from './remoteReviewEnvironment.js'
+import { configureRemoteReviewGitHub } from './remoteReviewGitHub.js'
+import { waitForChildReady } from './remoteReviewReadiness.js'
+import { measureIntegrationPhase, reportIntegrationPhase } from './integrationPhase.js'
+import { remoteReviewWorkerArtifacts } from './remoteReviewWorkerArtifacts.js'
+import { remoteReviewChanges } from './remoteReviewChanges.js'
+import type { RuntimeTimingRecord } from '../../src/modules/diagnostics/runtimeTiming.js'
 
 const execute = promisify(execFile)
 const tsxLoader = createRequire(import.meta.url).resolve('tsx')
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
-  description: string): Promise<T> {
-  const deadline = Date.now() + 90_000
-  for (;;) {
-    const value = await read()
-    if (accept(value)) return value
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}.`)
-    await new Promise(resolve => setTimeout(resolve, 25))
-  }
+  description: string, subscribe?: (changed: () => void) => () => void): Promise<T> {
+  return readUntil(read, accept, { timeoutMs: 90_000, description, ...(subscribe ? { subscribe } : {}) })
 }
 
 async function freePort() {
@@ -84,8 +88,22 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
  * shipped installed domains in a separate process with its own native owners. */
 export async function remoteReviewProduction(options: {
   workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
-  claudeInventory?: boolean
+  claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean
+  workerRelease?: string | Promise<string>
+  installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
+  reportPhase?: (phase: string, elapsedMs: number) => void
 } = {}) {
+  const reportPhase = (phase: string, elapsedMs: number) => {
+    reportIntegrationPhase(phase, elapsedMs)
+    options.reportPhase?.(phase, elapsedMs)
+  }
+  let phase = 'fixture resources'
+  let phaseStarted = performance.now()
+  const beginPhase = (next: string) => {
+    reportPhase(phase, performance.now() - phaseStarted)
+    phase = next
+    phaseStarted = performance.now()
+  }
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
     const errors: unknown[] = []
@@ -95,16 +113,46 @@ export async function remoteReviewProduction(options: {
     if (errors.length) throw new AggregateError(errors, 'Remote review fixture cleanup failed.')
   }
   try {
-    const db = await agent3Database()
-    closes.push(db.close)
     const directory = await privateFixtureDirectory('remote-review-production-')
     closes.push(() => rm(directory, { recursive: true, force: true }))
-    const workerRelease = await buildRemoteReviewWorkerRelease(directory)
-    const provider = await createRemoteReviewProvider(join(directory, 'provider'))
-    const claudeInventory = options.claudeInventory
-      ? await createRemoteReviewClaudeInventory(join(directory, 'claude-inventory')) : undefined
+    const launcher = join(directory, 'app-mcp', 'launcher.mjs')
+    const claudeDirectory = join(directory, 'claude-inventory')
+    const setupDatabase = () => measureIntegrationPhase('fixture database', async () => {
+      const db = await migratedDatabase()
+      closes.push(db.close)
+      return db
+    })
+    const setupProvider = () => measureIntegrationPhase('provider fixture', async () => {
+      await installManagedLauncher(new URL('../../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
+      return createRemoteReviewProvider(join(directory, 'provider'), launcher)
+    })
+    const workerReleaseResult = Promise.allSettled([
+      options.workerRelease ?? buildRemoteReviewWorkerRelease(directory),
+    ] as const)
+    closes.push(async () => { await workerReleaseResult })
+    const setupClaude = () => measureIntegrationPhase('Claude fixture',
+      () => createRemoteReviewClaudeInventory(claudeDirectory))
+    const setupTls = () => measureIntegrationPhase('fixture TLS', () => createRemoteReviewTls(join(directory, 'tls')))
+    const setup = async () => {
+      if (!options.parallelSetup) {
+        return [await setupDatabase(), await setupProvider(),
+          await setupClaude(), await setupTls()] as const
+      }
+      const tasks = [setupDatabase(), setupProvider(), setupClaude(), setupTls()] as const
+      try {
+        return await Promise.all(tasks)
+      } catch (error) {
+        // Setup processes must settle before cleanup removes their working directories.
+        await Promise.allSettled(tasks)
+        throw error
+      }
+    }
+    const [db, provider, claudeCommands, tls] = await setup()
+    const changes = await remoteReviewChanges(db.pool)
+    closes.push(changes.close)
+    beginPhase('source repository and workflow seed')
+    const claudeInventory = options.claudeInventory ? claudeCommands : undefined
     if (options.modelCatalog) await provider.hideModels()
-    const tls = await createRemoteReviewTls(join(directory, 'tls'))
     const certificate = await readFile(tls.certificateFile)
     const project = join(directory, 'projects', 'project')
     const runtime = join(directory, 'main-runtime')
@@ -112,8 +160,18 @@ export async function remoteReviewProduction(options: {
     const workerProject = join(directory, 'worker-projects', 'project')
     const workerRuntime = join(directory, 'worker-runtime')
     const claudeProfile = join(directory, 'claude-profile')
+    const logEnvironment = remoteReviewEnvironment(claudeDirectory, claudeProfile, launcher)
+    if (options.reportPhase) logEnvironment.LOG_LEVEL = 'debug'
+    const workerEnvironment = remoteReviewEnvironment(join(directory, 'worker-home'), claudeProfile, launcher,
+      logEnvironment)
     for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime, claudeProfile]) {
       await mkdir(path, { recursive: true, mode: 0o700 })
+    }
+    for (const environment of [logEnvironment, workerEnvironment]) {
+      for (const key of ['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+        'XDG_STATE_HOME', 'XDG_RUNTIME_DIR']) {
+        await mkdir(environment[key]!, { recursive: true, mode: 0o700 })
+      }
     }
     // The Codex fixture never chooses an ambient Claude model during startup.
     const claude = ClaudeHarnessConfigurationSchema.parse({ harness: 'claude', model: 'claude-haiku-4-5-20251001',
@@ -122,11 +180,17 @@ export async function remoteReviewProduction(options: {
     await db.pool.query(`insert into application_settings(key,record,revision)
       values('harness-defaults',$1::jsonb,1)`, [JSON.stringify({ claude })])
     await writeFile(join(project, 'README.md'), '# Remote review fixture\n', { mode: 0o600 })
-    await execute('git', ['init', '--quiet', project])
-    await execute('git', ['-C', project, 'add', 'README.md'])
+    const gitOptions = { env: gitFixtureEnvironment() }
+    await execute('git', ['init', '--quiet', '--initial-branch=main', project], gitOptions)
+    await execute('git', ['-C', project, 'add', 'README.md'], gitOptions)
     await execute('git', ['-C', project, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-      'commit', '--quiet', '-m', 'Source fixture'])
-    const commit = (await execute('git', ['-C', project, 'rev-parse', 'HEAD'])).stdout.trim()
+      'commit', '--quiet', '-m', 'Source fixture'], gitOptions)
+    const commit = (await execute('git', ['-C', project, 'rev-parse', 'HEAD'], gitOptions)).stdout.trim()
+    const repository = { provider: 'github', owner: 'remote-review-fixture',
+      name: randomUUID(), defaultBranch: 'main' }
+    const repositoryName = `${repository.owner}/${repository.name}`
+    await configureRemoteReviewGitHub({ project, origin: join(directory, 'github.git'), repository: repositoryName,
+      homes: [logEnvironment.HOME!, workerEnvironment.HOME!] })
     const shape = options.workflow ?? 'approval'
     const seed = makeCurrentWorkflowFixture(randomUUID(), shape)
     seed.configurations = seed.configurations.map((configuration, index) => AgentConfigurationVersionSchema.parse({
@@ -135,32 +199,28 @@ export async function remoteReviewProduction(options: {
       harness: { ...configuration.harness, model: 'test-model' },
     }))
     const saved = await seedAgent3(db.pool, project, seed, { run: false })
-    const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, PORT: String(await freePort()),
+    const config = loadConfig({ DATABASE_URL: db.databaseUrl, PORT: String(await freePort()),
       HARNESS_WORKSPACE_ROOT: runtime, FILE_STORAGE_ROOT: join(directory, 'files'),
       CODEX_BINARY: provider.binary,
       DATABASE_QUERY_TIMEOUT_MS: '10000', FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '1' })
     config.workspaceStorageRoot = join(directory, 'projects')
-    const checkpointSchema = `${db.schema}_checkpoints`
-    config.checkpoints.schema = checkpointSchema
-    const databaseUrl = new URL(config.database.connectionString)
-    databaseUrl.searchParams.set('options', `-c search_path=${db.schema},public`)
-    config.database.connectionString = databaseUrl.toString()
-    const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, checkpointSchema, config.database)
-    await checkpoints.setup()
-    closes.push(async () => {
-      await checkpoints.close()
-      await db.pool.query(`drop schema "${checkpointSchema}" cascade`)
-    })
     const access = new PostgresAccessService(db.pool)
     const writer = await access.issue({ name: 'Remote review owner', audience: 'operator',
       expiresAt: new Date(Date.now() + 900_000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
     const devicePort = await freePort()
     const deviceEndpoint = `wss://127.0.0.1:${devicePort}/device/connect`
     const infrastructure = { mode: 'native' as const,
+      installationRefreshIntervalMs: options.installationRefreshIntervalMs,
       deviceListener: { ...tls, host: '127.0.0.1', port: devicePort, advertisedEndpoint: deviceEndpoint } }
     const mainConfiguration = join(directory, 'main-configuration.json')
     await writeFile(mainConfiguration, JSON.stringify({ config, infrastructure, claudeInventory: claudeInventory?.sdk }),
       { mode: 0o600 })
+    const [release] = await workerReleaseResult
+    if (release.status === 'rejected') throw release.reason
+    const workerRelease = release.value
+    logEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY = await measureIntegrationPhase(
+      'Worker update artifacts', () => remoteReviewWorkerArtifacts(workerRelease))
+    workerEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY = logEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY
     let main: ChildProcess | undefined
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
@@ -179,9 +239,7 @@ export async function remoteReviewProduction(options: {
       })
     }
     closes.push(stopMain)
-    // Vitest silences the product logger; Main and Worker warnings carry the failure codes read here.
-    const logEnvironment = { ...process.env, LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn' }
-    const collectFailures = (child: ChildProcess) => {
+    const collectFailures = (child: ChildProcess, role: 'Main' | 'Worker') => {
       let pendingLog = ''
       child.stdout!.on('data', chunk => {
         pendingLog = `${pendingLog}${String(chunk)}`.slice(-65536)
@@ -191,6 +249,19 @@ export async function remoteReviewProduction(options: {
           let parsed: unknown
           try { parsed = JSON.parse(line) } catch { continue }
           if (!parsed || typeof parsed !== 'object') continue
+          if ('diagnostic' in parsed && parsed.diagnostic === 'runtime-timing' && options.reportPhase) {
+            const timing = parsed as RuntimeTimingRecord & { diagnostic: 'runtime-timing' }
+            // Per-query logging fills the runner's log cap before native failures are reported.
+            if (timing.component === 'db') continue
+            console.info(`[remote-review] ${role} timing`, {
+              component: timing.component, phase: timing.phase, operation: timing.operation,
+              startedAt: timing.startedAt, finishedAt: timing.finishedAt, durationMs: timing.durationMs,
+              intervalMs: timing.intervalMs, reused: timing.reused, count: timing.count,
+              runId: timing.runId, executionId: timing.executionId, nativeSessionId: timing.nativeSessionId,
+              laneId: timing.laneId, correlationId: timing.correlationId, ownerId: timing.ownerId,
+              nativeTurnId: timing.nativeTurnId, eventType: timing.eventType, success: timing.success,
+            })
+          }
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
             namespace?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
             phase?: unknown; errorType?: unknown; errorLocation?: unknown }
@@ -226,7 +297,7 @@ export async function remoteReviewProduction(options: {
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
       })
       main = started
-      collectFailures(started)
+      collectFailures(started, 'Main')
       started.stderr!.on('data', chunk => { mainFailure = `${mainFailure}${String(chunk)}`.slice(-16384) })
       started.on('message', message => {
         if (message && typeof message === 'object' && 'kind' in message && message.kind === 'ready'
@@ -235,14 +306,13 @@ export async function remoteReviewProduction(options: {
           ready = true
         }
       })
-      await waitForRemoteReview(async () => {
-        if (started.exitCode !== null || started.signalCode !== null) {
-          throw new Error(`Production Main exited: ${mainFailure}`)
-        }
-        return ready
-      }, value => value, 'production Main startup')
+      await waitForChildReady(started, () => ready, 'production Main startup',
+        () => `Production Main exited: ${mainFailure}`)
     }
+    beginPhase('Main startup')
     await startMain()
+    beginPhase('startup model catalog')
+    const clients = new Map<string, Promise<Client>>()
     let startupCatalog: ReturnType<typeof HarnessOptionsResultSchema.parse> | undefined
     if (options.modelCatalog) {
       await waitForRemoteReview(async () => (await db.pool.query<{ record: unknown }>(
@@ -253,13 +323,18 @@ export async function remoteReviewProduction(options: {
       await provider.showModels()
     }
     async function call(name: string, args: Record<string, unknown>, token = writer.token) {
-      const client = new Client({ name: 'Production remote review integration', version: '1' })
-      try {
-        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
+      let connected = clients.get(token)
+      if (!connected) {
+        // One SDK counter per credential keeps parallel calls distinct on the stateless endpoint.
+        const client = new Client({ name: 'Production remote review integration', version: '1' })
+        closes.push(() => client.close())
+        connected = client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
           authProvider: { token: async () => token },
-        }))
-        return await client.callTool({ name, arguments: args })
-      } finally { await client.close() }
+        })).then(() => client)
+        clients.set(token, connected)
+      }
+      const client = await connected
+      return client.callTool({ name, arguments: args })
     }
     async function value(name: string, args: Record<string, unknown>) {
       const response = await call(name, args)
@@ -269,33 +344,74 @@ export async function remoteReviewProduction(options: {
       return decodeMcpToolResult(response)
     }
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    beginPhase('source approval and Worker pairing')
     const mainHost = { kind: 'main' as const, mainId }
-    const mainChoices = WorkspaceRootListResultSchema.parse(await value('workspace_root_choices_list', {
-      workspaceId: saved.scope.workspaceId,
-    }))
-    const mainAllowlist = mainChoices.allowlists.find(allowlist => allowlist.hostRef.kind === 'main')!
-    const mainLocation = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
-      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef: mainHost,
-      allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: mainAllowlist.configurationRevision,
-      relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
-    })).value
-    const approved = SourceApproveResultSchema.parse(await value('source_approve', {
-      workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
-      expectedLocationRevision: mainLocation.locationRevision, commit,
-      approvedPaths: ['README.md'], executablePolicy: 'strip',
-    })).value
-    const identity = await loadOrCreateWorkerIdentity(stateDirectory)
-    const grant = DevicePairingGrantResultSchema.parse(await value('device_pairing_grant_create', {
-      commandId: randomUUID(), workerInstallationId: identity.workerInstallationId,
-      publicKey: identity.publicKey, expectedFingerprint: identity.publicKeyFingerprint, scopes: ['connect', 'heartbeat'],
-    }))
-    const publicMain = MainDeviceIdentityPublicSchema.parse(await value('device_main_identity_get', {}))
-    const unsignedPairing = { mainId, workerInstallationId: identity.workerInstallationId,
-      publicKey: identity.publicKey, grant: grant.grant, requestId: randomUUID() }
-    const pairingRequest = { ...unsignedPairing, signature: sign(null, Buffer.from(pairingProof(unsignedPairing)),
-      identity.privateKey).toString('base64url') }
-    const paired = DevicePairingResultSchema.parse(await postDeviceJson(
-      `https://127.0.0.1:${devicePort}/device/pair`, certificate, pairingRequest))
+    // This fixture exercises native review and source transfer without installing shared-file services.
+    const syncTarget = { hostRef: mainHost, applicationInstallationId: mainId,
+      keyRevision: null, authorizationRevision: null }
+    await value('computer_sync_update', {
+      commandId: randomUUID(), workspaceId: saved.scope.workspaceId, expectedRevision: 0, enabled: false,
+      target: syncTarget,
+    })
+    const sync = ComputerSyncStatusSchema.parse(await value('computer_sync_status', { target: syncTarget }))
+    if (!sync.folders.some(folder => folder.workspaceId === saved.scope.workspaceId && !folder.enabled)) {
+      throw new Error('Remote review fixture shared-file sync was not disabled.')
+    }
+    const approveSource = async () => {
+      const mainChoices = WorkspaceRootListResultSchema.parse(await value('workspace_root_choices_list', {
+        workspaceId: saved.scope.workspaceId,
+      }))
+      const mainAllowlist = mainChoices.allowlists.find(allowlist => allowlist.hostRef.kind === 'main')!
+      const mainLocation = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
+        workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef: mainHost,
+        allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: mainAllowlist.configurationRevision,
+        relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
+      })).value
+      const workspace = ManagedWorkspaceSchema.parse(await value('workspace_get', {
+        workspaceId: saved.scope.workspaceId,
+      }))
+      await value('workspace_update', { workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
+        expectedRevision: workspace.revision, repository })
+      const configured = ManagedWorkspaceSchema.parse(await value('workspace_get', {
+        workspaceId: saved.scope.workspaceId,
+      }))
+      const persistedRepository = configured.workspace.repository
+      if (!persistedRepository || `${persistedRepository.owner}/${persistedRepository.name}` !== repositoryName) {
+        throw new Error('Remote review workspace GitHub repository was not persisted.')
+      }
+      const approved = SourceApproveResultSchema.parse(await value('source_approve', {
+        workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
+        expectedLocationRevision: mainLocation.locationRevision, commit,
+        approvedPaths: ['README.md'], executablePolicy: 'strip',
+      })).value
+      return { mainLocation, approved }
+    }
+    const pairWorker = async () => {
+      const identity = await loadOrCreateWorkerIdentity(stateDirectory)
+      const grant = DevicePairingGrantResultSchema.parse(await value('device_pairing_grant_create', {
+        commandId: randomUUID(), workerInstallationId: identity.workerInstallationId,
+        publicKey: identity.publicKey, expectedFingerprint: identity.publicKeyFingerprint, scopes: ['connect', 'heartbeat'],
+      }))
+      const publicMain = MainDeviceIdentityPublicSchema.parse(await value('device_main_identity_get', {}))
+      const unsignedPairing = { mainId, workerInstallationId: identity.workerInstallationId,
+        publicKey: identity.publicKey, grant: grant.grant, requestId: randomUUID() }
+      const pairingRequest = { ...unsignedPairing, signature: sign(null, Buffer.from(pairingProof(unsignedPairing)),
+        identity.privateKey).toString('base64url') }
+      const paired = DevicePairingResultSchema.parse(await postDeviceJson(
+        `https://127.0.0.1:${devicePort}/device/pair`, certificate, pairingRequest))
+      return { identity, publicMain, paired }
+    }
+    // Both chains use the real endpoint; neither depends on the other's persisted result.
+    const [sourceResult, pairingResult] = await Promise.allSettled([
+      measureIntegrationPhase('source approval', approveSource),
+      measureIntegrationPhase('Worker pairing', pairWorker),
+    ])
+    if (sourceResult.status === 'rejected' || pairingResult.status === 'rejected') {
+      const errors = [sourceResult, pairingResult].flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      throw new AggregateError(errors, 'Remote source approval or Worker pairing failed.')
+    }
+    const { mainLocation, approved } = sourceResult.value
+    const { identity, publicMain, paired } = pairingResult.value
     let denyReservedResponse = false
     let pausedDiscovery: { entered(): void; release(): void; waiting: Promise<void> } | undefined
     const releaseWorkerDiscovery = async () => {
@@ -343,11 +459,18 @@ export async function remoteReviewProduction(options: {
       bases: [{ baseId: randomUUID(), canonicalPath: join(directory, 'worker-projects'), accessModes: ['read-only'] }],
       managedRuntimeRoot: workerRuntime })
     await writeFile(join(stateDirectory, 'approved-roots.json'), JSON.stringify(roots), { mode: 0o600 })
+    // Harness replacement fixtures leave Node identity to the installed Worker's runtime validation.
+    const payloadPaths = options.includeNodeRuntimePayload === false
+      ? provider.payloadPaths.filter(path => path !== process.execPath) : provider.payloadPaths
     await writeFile(join(stateDirectory, 'workflow-runtime.json'), JSON.stringify({ schemaVersion: 1,
       codexBinary: provider.binary, expectedVersion: 'codex-cli 0.154.0',
-      appMcpLauncher: appLauncherPath(), payloadPaths: provider.payloadPaths }), { mode: 0o600 })
+      appMcpLauncher: launcher, payloadPaths }), { mode: 0o600 })
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
-    await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'])
+    beginPhase('Worker release readiness')
+    beginPhase('installed Worker initialization')
+    await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
+      env: workerEnvironment,
+    })
     let worker: ChildProcess | undefined
     let ready = false
     let workerStateRevision = 0
@@ -357,10 +480,10 @@ export async function remoteReviewProduction(options: {
       workerFailure = ''
       const started = spawn(process.execPath, [workerEntrypoint, stateDirectory, workerRelease], {
         cwd: fileURLToPath(new URL('../../../..', import.meta.url)),
-        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: logEnvironment,
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: workerEnvironment,
       })
       worker = started
-      collectFailures(started)
+      collectFailures(started, 'Worker')
       started.stderr!.on('data', chunk => { workerFailure = `${workerFailure}${String(chunk)}`.slice(-16384) })
       started.on('message', message => {
         if (message && typeof message === 'object' && 'view' in message) {
@@ -369,12 +492,8 @@ export async function remoteReviewProduction(options: {
           if (!ready) workerStateRevision++
         }
       })
-      await waitForRemoteReview(async () => {
-        if (started.exitCode !== null || started.signalCode !== null) {
-          throw new Error(`Installed Worker exited: ${workerFailure}`)
-        }
-        return ready
-      }, value => value, 'authenticated installed Worker connection')
+      await waitForChildReady(started, () => ready, 'authenticated installed Worker connection',
+        () => `Installed Worker exited: ${workerFailure}`)
     }
     const stopWorker = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (!worker || worker.exitCode !== null || worker.signalCode !== null) return
@@ -390,13 +509,16 @@ export async function remoteReviewProduction(options: {
     }
     // Main closes its native sessions while the Worker transport is still available.
     closes.splice(closes.indexOf(stopMain), 0, () => stopWorker())
+    beginPhase('Worker connection')
     await startWorker()
+    beginPhase('Worker inventory')
     const executionHostRef = options.executionHost === 'main' ? mainHost : hostRef
     const inventory = await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
       await value('harness_registry_get', executionHostRef)), value => value.installations.some(
       installation => installation.driverId === 'codex' && installation.installationFingerprint !== null), 'remote Codex inventory')
     const installation = inventory.installations.find(installation => installation.driverId === 'codex')!
     if (options.executionHost === 'main') {
+      beginPhase('Main native qualification')
       await value('harness_qualification_run', { harness: 'codex' })
       await waitForRemoteReview(async () => (await db.pool.query<{ status: string }>(
         'select status from harness_qualifications order by started_at desc limit 1')).rows[0]?.status,
@@ -405,8 +527,7 @@ export async function remoteReviewProduction(options: {
     const target = { hostRef: executionHostRef,
       applicationInstallationId: options.executionHost === 'main' ? mainId : identity.workerInstallationId,
       harnessInstallationId: installation.harnessInstallationId, installationFingerprint: installation.installationFingerprint! }
-    const profiles = []
-    for (const configuration of saved.configurations) {
+    const qualifyProfile = async (configuration: typeof saved.configurations[number]) => {
       const profile = HostHarnessOverrideSaveResultSchema.parse(await value('harness_instance_save', {
         commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0, target,
         presetId: 'remote-review-fixture', enabled: true, configuration: configuration.harness,
@@ -415,9 +536,34 @@ export async function remoteReviewProduction(options: {
         commandId: randomUUID(), instanceId: profile.instanceId, expectedRevision: profile.revision, target,
       }))
       if (!checked.proof.qualified) throw new Error(`Remote profile qualification failed: ${JSON.stringify(checked.proof)}`)
-      profiles.push(checked.value)
+      return checked.value
+    }
+    const matchingProfiles = new Map<string, ReturnType<typeof qualifyProfile>>()
+    const prepareProfile = (configuration: typeof saved.configurations[number]) => {
+      if (!options.reuseMatchingProfiles) return qualifyProfile(configuration)
+      const key = JSON.stringify(configuration.harness)
+      let profile = matchingProfiles.get(key)
+      if (!profile) {
+        profile = qualifyProfile(configuration)
+        matchingProfiles.set(key, profile)
+      }
+      return profile
+    }
+    const profiles = []
+    beginPhase('native profile qualification')
+    if (options.parallelProfileChecks) {
+      // Drain every native check before setup cleanup can stop Main or Worker.
+      const results = await Promise.allSettled(saved.configurations.map(prepareProfile))
+      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      if (errors.length) throw new AggregateError(errors, 'Remote profile qualification failed.')
+      for (const result of results) {
+        if (result.status === 'fulfilled') profiles.push(result.value)
+      }
+    } else {
+      for (const configuration of saved.configurations) profiles.push(await prepareProfile(configuration))
     }
     let location = mainLocation
+    beginPhase('root binding and workflow save')
     if (options.executionHost !== 'main') {
       const adopted = WorkspaceRootConfigurationAdoptResultSchema.parse(await value('workspace_root_configuration_adopt', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef,
@@ -464,7 +610,7 @@ export async function remoteReviewProduction(options: {
         expectedLocationRevision: location.locationRevision, input: {},
       }))
     }
-    const reconcile = () => new Promise<void>((resolve, reject) => {
+    const requestReconciliation = (kind: 'reconcile' | 'reconcile-reviews') => new Promise<void>((resolve, reject) => {
       if (!main || !main.connected) {
         reject(new Error('Production Main reconciliation is disconnected.'))
         return
@@ -503,8 +649,10 @@ export async function remoteReviewProduction(options: {
       const timer = setTimeout(() => finish(new Error('Production Main reconciliation timed out.')), 30_000)
       child.on('message', settled)
       child.once('exit', exited)
-      child.send({ kind: 'reconcile', requestId }, error => { if (error) finish(error) })
+      child.send({ kind, requestId }, error => { if (error) finish(error) })
     })
+    const reconcile = () => requestReconciliation('reconcile')
+    const reconcileReviews = () => requestReconciliation('reconcile-reviews')
     async function details(runId: string) {
       const response = await fetch(`${origin}/api/management/workspaces/${saved.scope.workspaceId}/runs/${runId}`, {
         headers: { authorization: `Bearer ${writer.token}` } })
@@ -513,9 +661,12 @@ export async function remoteReviewProduction(options: {
     }
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
     closes.push(() => stopMain())
-    return { db, directory, stateDirectory, provider, claudeInventory, access, writer,
+    reportPhase(phase, performance.now() - phaseStarted)
+    return { db, directory, stateDirectory, provider, claudeInventory, access, writer, repositoryName,
+      sourceManifest: approved.manifest,
       hostRef: executionHostRef, profiles, version, startupCatalog,
-      start, call, value, details, reconcile, registry, close, origin: () => origin,
+      start, call, value, details, reconcile, reconcileReviews, registry, close, origin: () => origin,
+      subscribeNativeChanges: changes.subscribe,
       failures: () => structuredClone(failures),
       async workerWorkflowStartup() {
         const journal = JSON.parse(await readFile(join(stateDirectory, 'workflow-operations.json'), 'utf8')) as {
@@ -567,11 +718,23 @@ export async function remoteReviewProduction(options: {
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },
       async restartWorker(afterCrash?: () => void) {
+        const previous = HarnessRegistryReadbackSchema.parse(await value('harness_registry_get', hostRef))
+          .hostMetadata!.connection!.binding.connectionEpoch
         await stopWorker('SIGKILL')
         afterCrash?.()
+        await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
+          await value('harness_registry_get', hostRef)),
+        inventory => inventory.hostMetadata?.connection?.phase === 'offline'
+          || inventory.hostMetadata?.connection === null, 'Main observing the stopped Worker connection')
         await startWorker()
+        await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
+          await value('harness_registry_get', hostRef)), inventory => {
+          const connection = inventory.hostMetadata?.connection
+          return connection?.phase === 'ready' && connection.binding.connectionEpoch !== previous
+        }, 'Main observing the replacement Worker connection')
       },
       async pending(runId: string) {
+        changes.assertHealthy()
         const rows = await db.pool.query<{ record: unknown }>(
           "select record from durable_interactions where run_id=$1 and status='pending' order by id", [runId])
         return rows.rows.map(row => DurableInteractionSchema.parse(row.record))
@@ -582,6 +745,7 @@ export async function remoteReviewProduction(options: {
       },
     }
   } catch (error) {
+    reportPhase(phase, performance.now() - phaseStarted)
     try { await close() } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Remote review setup and cleanup failed.', { cause: cleanupError })
     }

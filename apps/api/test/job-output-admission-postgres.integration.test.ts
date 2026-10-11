@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { buildComputersMigration } from '../src/infrastructure/buildComputersMigration.js'
 import { buildComputerRoleMigration } from '../src/infrastructure/buildComputerRoleMigration.js'
 import { buildComputerPriorityMigration } from '../src/infrastructure/buildComputerPriorityMigration.js'
@@ -112,9 +113,10 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     incoming.push(JSON.stringify({type:'hello',protocolVersion:1,appVersion:'fixture',mainId,deviceId:paired.registration.deviceId,workerInstallationId,keyRevision:1,authorizationRevision:1,bootId:randomUUID(),connectionEpoch:randomUUID(),connectionGeneration:1,nonce:randomBytes(32).toString('base64url'),extensions:[{namespace:'byte-transfer-v1',version:1,role:'client',maxJsonBytes:16384,maxBinaryBytes:8192}]}))
     const welcome=JSON.parse((await outgoing.next()).value!);expect(welcome.type).toBe('welcome');expect(welcome.mainIdentityProof.request.negotiationHash).toBe(deviceNegotiationHash(welcome.capabilities.extensions))
     incoming.push(JSON.stringify({type:'ready',connectionEpoch:welcome.connectionEpoch}))
-    const readyDeadline=Date.now()+10000
-    while(Date.now()<readyDeadline&&!endpoint.currentBinding(paired.registration.deviceId,'byte-transfer-v1'))await new Promise(resolve=>setTimeout(resolve,10))
-    binding=endpoint.currentBinding(paired.registration.deviceId,'byte-transfer-v1')!
+    binding = (await readUntil(
+      async () => endpoint.currentBinding(paired.registration.deviceId, 'byte-transfer-v1'),
+      value => value !== undefined, { timeoutMs: 10_000, description: 'the byte-transfer session binding' },
+    ))!
     expect(binding).toBeDefined()
     ownership=await JobOwnership.acquire(pool,job.id,()=>{});expect(ownership).toBeDefined()
     const ownerFence=await ownership!.connection.transaction(sql=>ownership!.readFence(sql))

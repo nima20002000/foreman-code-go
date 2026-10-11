@@ -146,4 +146,21 @@ describe('workspace settings actions', () => {
     expect(screen.getByRole('textbox', { name: 'Repository' })).toHaveValue('octo-owner/website')
     expect(bodies).toHaveLength(1)
   })
+
+  it('shows the public CI mirror the workspace runs GitHub Actions in, or how to set one up', async () => {
+    const workspace: ManagedWorkspace = {
+      workspace: { id: 'workspace-1', name: 'Website', ciMirror: { provider: 'github', owner: 'octo-owner', name: 'website-ci' } },
+      revision: 1, archivedAt: null, executionLocation: null, locationRevision: 0, locationValidation: { status: 'unconfigured' },
+    }
+    server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json(workspace)))
+    const { unmount } = renderWithRouter(<WorkspaceDetailPage workspaceId="workspace-1" section="settings" />)
+    const section = await screen.findByRole('region', { name: 'GitHub Actions CI' })
+    expect(section).toHaveTextContent('octo-owner/website-ci')
+    unmount()
+    server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json({
+      ...workspace, workspace: { id: 'workspace-1', name: 'Website' } })))
+    renderWithRouter(<WorkspaceDetailPage workspaceId="workspace-1" section="settings" />)
+    expect(await screen.findByRole('region', { name: 'GitHub Actions CI' }))
+      .toHaveTextContent('Ask the Operator to set a public CI mirror')
+  })
 })

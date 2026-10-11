@@ -9,7 +9,7 @@ import { ComputerGitHubService } from '../src/modules/computers/github.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { COMPUTER_GITHUB_NAMESPACE } from '@foreman-code/contracts/computer-accounts'
-import { DevicePresenceSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import { DevicePresenceSchema, type DevicePresence, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { deviceNegotiationHash, type DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { generateKeyPairSync, createHash, sign } from 'node:crypto'
 import { mainIdentityProofMessage } from '@foreman-code/contracts/device-identity-node'
@@ -18,6 +18,7 @@ import WebSocket, { WebSocketServer } from 'ws'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { EventEmitter } from 'node:events'
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { signMainEnrollmentProof } from '../src/modules/devices/mainIdentity.js'
 import { deviceHttpHandler } from '../src/modules/devices/deviceHttp.js'
@@ -333,9 +334,29 @@ describe('device-only HTTP bootstrap', () => {
 
 
 it('refuses a GitHub mutation on a replacement authenticated installation after target validation', async () => {
+  // Transport deadlines advance only when this test advances time, independent of runner scheduling.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+  const withTransportProgress = async <T>(operation: Promise<T>): Promise<T> => {
+    let settled = false
+    void operation.then(
+      () => { settled = true },
+      () => { settled = true },
+    )
+    while (!settled) {
+      await nextEventLoopTurn()
+      // The HTTP adapter flushes responses on a zero-delay timer; device deadlines stay frozen.
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    return operation
+  }
   const extension: DeviceExtensionRegistration = { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1,
     role: 'client', maxJsonBytes: 2048, maxBinaryBytes: 0 }
-  const { endpoint, auth } = makeEndpoint([extension], 2000)
+  const { endpoint, auth, presence } = makeEndpoint([extension], 2000)
+  const waitForReady = (installationId: string) => new Promise<void>(resolve => {
+    presence.mockImplementation((view: DevicePresence) => {
+      if (view.phase === 'ready' && view.binding.workerInstallationId === installationId) resolve()
+    })
+  })
   const server = createServer()
   const carrier = new WebSocketServer({ noServer: true, maxPayload: 16384, perMessageDeflate: false })
   server.on('upgrade', deviceUpgradeHandler(endpoint, carrier))
@@ -377,7 +398,8 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
   }
   const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
   const commands = { recordAudit: vi.fn(async () => {}), recordDenied: vi.fn(async () => {}) } as unknown as PostgresCommandCoordinator
-  const service = new ComputerGitHubService(pool, identity.mainId, () => endpoint, commands)
+  const local = { handle: vi.fn(async () => { throw new Error('Device requests must use the captured remote handler.') }) }
+  const service = new ComputerGitHubService(pool, identity.mainId, () => endpoint, commands, { local })
   const access = new PostgresAccessService(pool)
   const authenticate = vi.spyOn(access, 'authenticate').mockImplementation(async token => token === 'writer'
     ? caller : { ...caller, grants: [{ actions: ['settings:read'], scope: {} }] })
@@ -392,46 +414,54 @@ it('refuses a GitHub mutation on a replacement authenticated installation after 
     const connectMcp = async (token: string) => {
       const client = new Client({ name: 'github-device-test', version: '1' })
       clients.push(client)
-      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', url), {
+      await withTransportProgress(client.connect(new StreamableHTTPClientTransport(new URL('/mcp', url), {
         authProvider: { token: async () => token },
-      }))
+      })))
       return client
     }
     const writer = await connectMcp('writer')
     const reader = await connectMcp('reader')
+    const originalReady = waitForReady(identity.workerInstallationId)
     original.start()
-    await vi.waitFor(() => expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined())
+    await originalReady
+    expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined()
     const args = { target, expectedAccount: 'owner' }
-    expect((await reader.callTool({ name: 'computer_github_logout', arguments: args })).isError).toBe(true)
+    const denied = await withTransportProgress(reader.callTool({ name: 'computer_github_logout', arguments: args }))
+    expect(denied.isError).toBe(true)
     expect(mutate).not.toHaveBeenCalled()
-    const pending = writer.callTool({ name: 'computer_github_logout', arguments: args })
-    await reached
+    const pending = withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: args }))
+    await Promise.race([reached, pending.then(() => {
+      throw new Error('GitHub mutation returned before target validation.')
+    })])
     await original.stop()
     auth.authenticateDevice.mockResolvedValue({ ...principal, ...replacementIdentity })
     registrationIdentity = replacementIdentity
+    const replacementReady = waitForReady(replacementIdentity.workerInstallationId)
     replacement.start()
-    await vi.waitFor(() => expect(endpoint.currentBinding(identity.deviceId))
-      .toMatchObject({ workerInstallationId: replacementIdentity.workerInstallationId }))
-    await vi.waitFor(() => expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined())
+    await replacementReady
+    expect(endpoint.currentBinding(identity.deviceId))
+      .toMatchObject({ workerInstallationId: replacementIdentity.workerInstallationId })
+    expect(endpoint.captureRequest(identity.deviceId, COMPUTER_GITHUB_NAMESPACE)).toBeDefined()
     release()
     expect((await pending).isError).toBe(true)
     expect(mutate).not.toHaveBeenCalled()
-    const stale = await writer.callTool({ name: 'computer_github_logout', arguments: args })
+    const stale = await withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: args }))
     expect(stale.isError).toBe(true)
     expect(JSON.stringify(stale)).toContain('COMPUTER_NOT_FOUND')
-    const fresh = await writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
-      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } })
+    const fresh = await withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
+      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } }))
     expect(decodeMcpToolResult(fresh)).toMatchObject({ state: 'signed-out' })
     expect(mutate).toHaveBeenCalledOnce()
     mutate.mockRejectedValueOnce(new DomainError('GITHUB_ACCOUNT_CHANGED', 'Account changed.', 409))
-    const retry = await writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
-      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } })
+    const retry = await withTransportProgress(writer.callTool({ name: 'computer_github_logout', arguments: { ...args, target: { ...target,
+      applicationInstallationId: replacementIdentity.workerInstallationId, keyRevision: 2, authorizationRevision: 2 } } }))
     expect(retry.isError).toBe(true)
     expect(JSON.stringify(retry)).toContain('GITHUB_ACCOUNT_CHANGED')
+    expect(local.handle).not.toHaveBeenCalled()
   } finally {
     release()
     await Promise.allSettled(clients.map(client => client.close()))
-    await app.close()
+    await withTransportProgress(app.close())
     authenticate.mockRestore()
     await original.stop()
     await replacement.stop()

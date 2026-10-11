@@ -30,13 +30,13 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
     manifestDigest: hash(bytes), chunkBytes: 8, expiresAt: new Date(Date.now() + 120000).toISOString() })
   const registration = { mainId: original.mainId, deviceId: original.deviceId, workerInstallationId: original.workerInstallationId,
     keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), status: 'paired' as const, scopes: ['connect' as const, 'heartbeat' as const] }
-  const endpoint = { user: 'dexter', host: '100.76.219.118', localBinary: binary, remoteBinary: '/private/rsync', localRoot, remoteRoot,
+  const endpoint = { user: 'builder', host: '100.64.0.20', localBinary: binary, remoteBinary: '/private/rsync', localRoot, remoteRoot,
     localBinarySha256: hash(Buffer.from('fixture binary')), remoteBinarySha256: 'b'.repeat(64) }
   const check: TrustedConnectionCheck = { registration, consent: { ...registration, revision: 1, endpoint: { transport: 'tailscale',
     host: endpoint.host, port: 22, osUser: endpoint.user }, hostKeyFingerprint: `SHA256:${'c'.repeat(43)}`, allowOwnerCommands: true,
     approvedBy: 'human-owner', approvalId: randomUUID(), approvedAt: new Date().toISOString(), privilege: 'selected-os-user',
     automaticSudo: false, grantsAgentPermissions: false }, state: 'ready', checkedAt: new Date().toISOString(),
-    probe: { state: 'connected', hostKeyFingerprint: `SHA256:${'c'.repeat(43)}`, osUser: 'dexter', uid: 1000,
+    probe: { state: 'connected', hostKeyFingerprint: `SHA256:${'c'.repeat(43)}`, osUser: 'builder', uid: 1000,
       hostname: 'worker', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync 3.5.1', tailscaleVersion: '1.102.4' } }
   // Consent schema is strict: registration scopes/status are not owner-approval fields.
   delete (check.consent as unknown as Record<string, unknown>).scopes; delete (check.consent as unknown as Record<string, unknown>).status
@@ -106,7 +106,7 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
   const copy = async (command: RsyncCommand, signal: AbortSignal) => {
     signal.throwIfAborted()
     if (!command.owner) throw new Error('Fixture byte command lacks actual owner')
-    const [sourcePath, destinationPath] = command.args.slice(-2).map(path => path.replace('dexter@100.76.219.118:', ''))
+    const [sourcePath, destinationPath] = command.args.slice(-2).map(path => path.replace('builder@100.64.0.20:', ''))
     if (!sourcePath || !destinationPath) throw new Error('Missing fixture transfer paths')
     // Rsync completes by rename, including replacement of a verified read-only private part.
     const temporary = `${destinationPath}.fixture-temp`

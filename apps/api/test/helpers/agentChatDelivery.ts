@@ -4,7 +4,8 @@ import type { PostgresAgentChatRepository } from '../../src/modules/conversation
 
 export function waitForDelivery(chat: Pick<AgentChatService, 'events'>,
   repository: Pick<PostgresAgentChatRepository, 'turn' | 'get'>,
-  id: string, requestId: string, delivery: AgentChatTurn['delivery']): Promise<void> {
+  id: string, requestId: string, delivery: AgentChatTurn['delivery'],
+  options: { timeoutMs?: number } = {}): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false
     let reading = false
@@ -41,7 +42,7 @@ export function waitForDelivery(chat: Pick<AgentChatService, 'events'>,
         finish(new Error(`No persisted ${delivery} result for ${requestId}: `
           + JSON.stringify({ turn, state: conversation?.turn_state, error: conversation?.last_error })))
       }).catch(finish)
-    }, 30_000)
+    }, options.timeoutMs ?? 30_000)
     // Subscribe before the snapshot; a commit during that read must trigger another read.
     const unsubscribe = chat.events.subscribe(id, (event) => {
       if (event.data.requestId === requestId && typeof event.data.delivery === 'string') void check()

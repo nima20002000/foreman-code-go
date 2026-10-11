@@ -2,10 +2,8 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { expect, vi } from 'vitest'
-import {
-  AgentConfigurationVersionSchema, type HarnessExecution, type NativeSessionReference,
-} from '@foreman-code/contracts'
+import { expect } from 'vitest'
+import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import {
   AgentChatHistoryPageSchema, AgentChatTurnPageSchema, SendAgentChatMessageResponseSchema,
 } from '@foreman-code/contracts/agent-chat'
@@ -31,7 +29,6 @@ import { WorkspaceLocationService } from '../../src/modules/workspaces/location.
 import { AgentChatF5Native, eventually } from './agentChatF5.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { waitForSuccessfulRunCleanup } from './runSettlement.testSupport.js'
-import * as approvalFixtureModule from './wave25ApprovalFixture.js'
 
 export type HistoricalFixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 export type HistoricalApi = Awaited<ReturnType<typeof openHistoricalApi>>
@@ -39,33 +36,17 @@ export type RunTarget = Pick<SelectedRunChatTarget, 'workspaceId' | 'workflowId'
 
 /** Normal migrations, typed Save, common Run insertion and real engine; native ports
  * are the existing deterministic fixtures, not live harness qualification. */
-export async function historicalFixture(form: 'sequential' | 'repeat' = 'sequential', ephemeral = false) {
+export async function historicalFixture(form: 'sequential' | 'repeat' = 'sequential') {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), form)
   const x = fixture.version.definition.nodes[0]!, y = fixture.version.definition.nodes[1]!
   x.name = 'Agent X'; x.position = { x: -48.5, y: 120 }; x.width = 256; x.height = 144
   y.name = 'Agent Y'; y.position = { x: 415, y: 276.25 }; y.width = 312; y.height = 160
 
-  // checkpointRuntimeFixture takes its harness from this test-only generator.
-  // Configure ephemeral persistence BEFORE its immutable configuration is saved;
-  // do not rewrite configuration_versions or mock a product configuration read.
-  const configured = approvalFixtureModule.approvalFixture()
-  if (ephemeral) {
-    configured.configurations = configured.configurations.map((configuration) => {
-      if (configuration.harness.harness !== 'codex') throw new Error('SCH-12 requires the Codex fixture')
-      return AgentConfigurationVersionSchema.parse({ ...configuration, harness: {
-        ...configuration.harness, advanced: { ...configuration.harness.advanced, sessionPersistence: 'ephemeral' },
-      } })
-    })
-  }
-  const generator = ephemeral ? vi.spyOn(approvalFixtureModule, 'approvalFixture').mockReturnValue(configured) : undefined
-  let f: HistoricalFixture
-  try {
-    f = await currentOperatorIntegration({ fixture, approvalNodeIds: [], outputFor: (nodeId) =>
-      form === 'repeat' && nodeId === y.id
-        ? { routing: { outcome: 'issues' }, data: { latestDeliverable: 'SCH-12 retained Run output', remainingFindings: ['repeat'] } }
-        : { node: nodeId, resultMarker: 'SCH-12 original Run result' },
-    })
-  } finally { generator?.mockRestore() }
+  const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [], outputFor: (nodeId) =>
+    form === 'repeat' && nodeId === y.id
+      ? { routing: { outcome: 'issues' }, data: { latestDeliverable: 'SCH-12 retained Run output', remainingFindings: ['repeat'] } }
+      : { node: nodeId, resultMarker: 'SCH-12 original Run result' },
+  })
   try {
     // Tests drive the real dispatcher explicitly with an injected clock; avoid
     // racing the fixture app's wall-clock timer against those controlled scans.

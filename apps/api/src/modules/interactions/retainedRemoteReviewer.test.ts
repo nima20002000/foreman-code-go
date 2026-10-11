@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { HarnessExecutionSchema, ReviewJobSchema, type ReviewJob } from '@foreman-code/contracts'
-import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { HarnessExecutionSchema, HarnessExecutionRequestSchema, ReviewJobSchema, type ReviewJob } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture, WorkActivationInputSchema } from '@foreman-code/contracts/wave25'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { ExclusiveGraphConnection } from '../run-graph/connection.js'
 import { readExecutionPlacement } from '../placement/persistence.js'
@@ -15,6 +15,9 @@ import type { RunOwnership } from '../runs/ownership.js'
 import { RemoteNativeSessionManager } from '../runs/remote/nativeManagerProxy.js'
 import { pageNativeHistory } from '../runs/remote/nativeHistoryPage.js'
 import { nativeLanes } from '../../../test/helpers/nativeLanes.js'
+import { DomainError } from '../errors.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
+import { workflowExecutionRequest } from '../runs/workflowExecutionRequest.js'
 
 vi.mock('../placement/persistence.js', () => ({ readExecutionPlacement: vi.fn() }))
 vi.mock('../placement/remoteReviewerAuthority.js', () => ({
@@ -28,6 +31,7 @@ beforeEach(() => vi.resetAllMocks())
 function fixture() {
   const base = makeCurrentWorkflowFixture('reviewer-retention', 'approval')
   const node = base.version.definition.nodes.find(node => node.id === base.version.entryNodeId)!
+  node.initialPrompt = 'Keep the saved workflow startup instructions.'
   const execution = HarnessExecutionSchema.parse({ id: 'execution', runId: base.run.id,
     workflowNodeId: node.id, agentId: node.agentId,
     agentConfigurationVersionId: base.version.agentConfigurationVersionIds[node.agentId],
@@ -57,7 +61,7 @@ function fixture() {
   vi.mocked(readReconciledDispatchIntent).mockResolvedValue(receipt.intent)
   const state = { finalized: false, purpose: 'workflow', committed: false, revoked: false,
     terminal: true, lane: true, live: true, detached: false, closed: false,
-    generation: '1', drift: false, lifetimeReads: 0 }
+    generation: '1', drift: false, lifetimeReads: 0, reviewJobs: [] as ReviewJob[] }
   const principal = { id: 'original-principal', name: 'Reviewer', audience: 'worker', agent_id: execution.agentId,
     expires_at: new Date(Date.now() + 60_000), revoked_at: null,
     grants: [{ actions: ['interactions:read', 'interactions:respond'],
@@ -82,7 +86,9 @@ function fixture() {
     if (text.startsWith('select 1 from workflow_native_proofs')) return result(state.terminal ? [{}] : [])
     if (text.startsWith('select b.principal_id')) return result(state.revoked ? [] : [{ principal_id: principal.id }])
     if (text.startsWith('select id,name,audience')) return result([principal])
-    if (text.includes('from review_jobs where execution_id=$1')) return result([])
+    if (text.includes('from review_jobs where execution_id=$1')) {
+      return result(state.reviewJobs.map(record => ({ record })))
+    }
     if (text.startsWith('update execution_native_sessions')) {
       expect(values).toEqual([execution.id, JSON.stringify(session)])
       state.finalized = true
@@ -101,8 +107,17 @@ function fixture() {
   return { base, placement, session, execution, receipt, state, principal, connection, retain }
 }
 
-async function recoveryFixture() {
+async function recoveryFixture(options: { handoff?: boolean } = {}) {
   const f = fixture()
+  if (options.handoff) {
+    f.base.version.definition.handoffs = { contractVersion: 1 }
+    const input = WorkActivationInputSchema.parse({ executionSemanticsVersion: 3, runInput: {},
+      occurrence: null, entry: null, predecessors: [], work: { kind: 'entry', activation: {
+        scope: f.base.scope, activationId: 'original-activation', workflowNodeId: f.execution.workflowNodeId,
+        lineageId: 'original-lineage', cause: { kind: 'entry' },
+      } } })
+    f.execution.input = HarnessExecutionSchema.shape.input.parse(input)
+  }
   const coordination = nativeLanes()
   await coordination.bindWorkflowSession(f.execution.id, f.session)
   await coordination.finalizeWorkflowSession(f.execution.id)
@@ -110,11 +125,21 @@ async function recoveryFixture() {
     runId: f.execution.runId, assertOwned() {}, oneShotConnection: () => f.connection,
     retain: () => async () => {}, release: async () => {},
   } as unknown as RunOwnership
+  const acquireOwnership = vi.fn(async (): Promise<RunOwnership | undefined> => owner)
+  const originalRequest = workflowExecutionRequest({ execution: f.execution, version: f.base.version,
+    configuration: f.base.configurations[0]!, workspaceId: f.base.run.workspaceId,
+    ...(options.handoff ? { executionContext: { parentRequest: null } } : {}) })
+  const beforeReattach: (signal?: AbortSignal) => Promise<void> = async () => {}
   const worker = { receipt: structuredClone(f.receipt), authenticated: true, session: f.session,
-    principalId: f.principal.id }
+    principalId: f.principal.id, beforeApplicationAccess: () => {},
+    beforeReattach }
   const requests: string[] = []
-  const credentials = { bindReviewerJob: vi.fn(async () => {
+  const proxies: RemoteNativeSessionManager[] = []
+  const credentials = { bindReviewerJob: vi.fn(async (_executionId: string, _credential: unknown, job: ReviewJob) => {
     if (!f.state.live || f.state.detached) throw new Error('Worker recovery must refresh its receipt before binding a review job')
+    if (!job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) <= Date.now()) {
+      throw new DomainError('REVIEWER_AUTHORITY_LOST', 'The review lease expired.', 409)
+    }
   }), recoverRemote: vi.fn(async () => ({ principalId: worker.principalId,
     expiresAt: f.principal.expires_at.toISOString(),
     environment: { agentId: f.execution.agentId, variables: { GRAPHQL_MCP_TOKEN: 'original-token' } } })) }
@@ -131,17 +156,25 @@ async function recoveryFixture() {
   const coordinator = () => {
     const manager = new RemoteNativeSessionManager({ intent: f.receipt.intent, placement: f.placement,
       harness: 'codex', configuration: f.base.configurations[0]!,
-      transport: { async request(method) {
+      transport: { async request(method, raw, signal) {
         requests.push(method)
         if (!worker.authenticated) throw new Error('Authenticated Worker connection unavailable')
         const status = { status: 'known', receipt: structuredClone(worker.receipt) }
-        if (method === 'reattach') return { session: worker.session, status }
-        if (method === 'get-application-access') return { status, applicationAccess: {
-          kind: 'scoped-worker-mcp',
-          executionId: f.execution.id, operationId: f.receipt.intent.operationId,
-          attemptId: f.receipt.intent.attemptId, bindingHash: f.receipt.intent.bindingHash,
-          agentId: f.execution.agentId, token: 'original-token',
-        } }
+        if (method === 'reattach') {
+          const request = HarnessExecutionRequestSchema.parse((raw as { request: unknown }).request)
+          expect(request).toEqual(originalRequest)
+          await worker.beforeReattach(signal)
+          return { session: worker.session, status }
+        }
+        if (method === 'get-application-access') {
+          worker.beforeApplicationAccess()
+          return { status, applicationAccess: {
+            kind: 'scoped-worker-mcp',
+            executionId: f.execution.id, operationId: f.receipt.intent.operationId,
+            attemptId: f.receipt.intent.attemptId, bindingHash: f.receipt.intent.bindingHash,
+            agentId: f.execution.agentId, token: 'original-token',
+          } }
+        }
         if (method === 'history') return { ...pageNativeHistory({ events: [], pendingInteractions: [] }), status }
         throw new Error(`Unexpected recovery request: ${method}`)
       } },
@@ -151,11 +184,14 @@ async function recoveryFixture() {
       },
       controlFor: async () => { throw new Error('Recovery cannot start or stop native work') },
     })
+    proxies.push(manager)
     type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
     return new ApprovalExecutionCoordinator({ getExecution: async () => f.execution,
       getExecutionConfiguration: async () => f.base.configurations[0],
+      getRepeatVersion: async () => f.base.version,
+      repeat: async () => ({ readWorkExecutionContext: async () => ({ parentRequest: null }) }),
       get: async () => ({ ...f.base.run, executionState: 'running', outcome: 'pending' }),
-      acquireOwnership: async () => owner,
+      acquireOwnership,
     } as unknown as Args[0], { coordination } as Args[1], {} as Args[2],
     { resolve: () => ({ manager, processState: 'resident', markResident: resident }) }, 60_000,
     credentials as unknown as Args[5], undefined, closures as unknown as Args[7],
@@ -167,10 +203,61 @@ async function recoveryFixture() {
     workingDirectory: f.execution.workingDirectory!, purpose: 'reviewer',
     ...(job ? { reviewJob: job } : {}),
   }, f.session)
-  return { ...f, worker, requests, credentials, closures, resident, coordinator, attach }
+  return { ...f, worker, coordination, requests, proxies, originalRequest, credentials, closures, resident,
+    owner, acquireOwnership, coordinator, attach }
 }
 
 describe('atomic original remote reviewer retention', () => {
+  it('retains the engine Run owner before a cold reviewer has a resident session', async () => {
+    const f = await recoveryFixture()
+    const main = f.coordinator()
+    f.acquireOwnership.mockResolvedValue(undefined)
+    const releaseReviewOwner = vi.fn(async () => {})
+    const retain = vi.spyOn(f.owner, 'retain').mockReturnValue(releaseReviewOwner)
+    const release = vi.spyOn(f.owner, 'release')
+    const stopSharingOwner = main.shareRunOwner(f.owner)
+    try {
+      expect((await f.attach(main)).session).toEqual(f.session)
+      expect(f.acquireOwnership).not.toHaveBeenCalled()
+      expect(retain).toHaveBeenCalledTimes(1)
+      expect(releaseReviewOwner).not.toHaveBeenCalled()
+      stopSharingOwner()
+      await main.releaseReviewSession(f.execution.id)
+      expect(releaseReviewOwner).toHaveBeenCalledTimes(1)
+      expect(release).not.toHaveBeenCalled()
+      expect(f.credentials.recoverRemote).toHaveBeenCalledTimes(1)
+      expect(f.requests).toEqual(['reattach', 'get-application-access'])
+      await main.closeForRestart()
+    } finally {
+      stopSharingOwner()
+      await f.connection.close()
+    }
+  })
+
+  it.each(['finished', 'another Run', 'lost'] as const)(
+    'does not reuse a shared engine owner from %s for cold reviewer recovery', async scope => {
+      const f = await recoveryFixture()
+      const main = f.coordinator()
+      f.acquireOwnership.mockResolvedValue(undefined)
+      let owner = f.owner
+      if (scope === 'another Run') owner = { ...f.owner, runId: 'unrelated-run' } as RunOwnership
+      const stopSharingOwner = main.shareRunOwner(owner)
+      if (scope === 'finished') stopSharingOwner()
+      if (scope === 'lost') vi.spyOn(owner, 'assertOwned').mockImplementation(() => {
+        throw new DomainError('RUN_OWNERSHIP_LOST', 'The engine owner disconnected.', 409)
+      })
+      try {
+        await expect(f.attach(main)).rejects.toMatchObject({ code: 'SESSION_LANE_BUSY' })
+        expect(f.acquireOwnership).toHaveBeenCalledTimes(1)
+        expect(f.requests).toEqual([])
+        expect(f.credentials.recoverRemote).not.toHaveBeenCalled()
+      } finally {
+        stopSharingOwner()
+        await f.connection.close()
+      }
+    },
+  )
+
   it('commits finalized session and reviewer purpose together for the same Worker credential', async () => {
     const f = fixture()
     // Completed workflow-purpose credentials are ineligible until retention commits.
@@ -202,6 +289,104 @@ describe('atomic original remote reviewer retention', () => {
 })
 
 describe('retained remote reviewer recovery', () => {
+  it('reconstructs saved startup instructions and work context when recovering the original reviewer', async () => {
+    const f = await recoveryFixture({ handoff: true })
+    try {
+      const main = f.coordinator()
+      expect((await f.attach(main)).session).toEqual(f.session)
+      expect(f.originalRequest.initialPrompt).toContain('Keep the saved workflow startup instructions.')
+      expect(f.originalRequest.initialPrompt).toContain('Foreman Code work-handoff result contract')
+      expect(f.originalRequest.executionContext).toEqual({ parentRequest: null })
+      expect(f.requests).toEqual(['reattach', 'get-application-access'])
+      await main.closeForRestart()
+      await f.proxies[0]!.dispose()
+      expect(f.worker.receipt.terminal).toBeUndefined()
+      expect(f.worker.receipt.stopFence).toBe(false)
+    } finally { await f.connection.close() }
+  })
+
+  it.each([false, true])('hands over an interrupted remote attachment with a reconnect failure=%s', async reconnectFailure => {
+    const f = await recoveryFixture()
+    const reviewTurn = { assignment: { jobId: 'original-review', interactionId: 'pending-interaction',
+      reviewerAgentId: f.execution.agentId, correlationId: 'original-review-turn', session: f.session },
+      promptDigest: 'a'.repeat(64), afterSequence: -1, providerId: 'original-review-provider', entered: true, settled: false }
+    f.worker.receipt.reviewTurns = [reviewTurn]
+    f.receipt.reviewTurns = [structuredClone(reviewTurn)]
+    await f.coordination.ensureLane({ id: 'original-review-lane', harness: f.session.harness,
+      nativeSessionId: f.session.nativeSessionId, ownerAgentId: f.execution.agentId,
+      correlationId: reviewTurn.assignment.correlationId, currentTurnOrMessageId: reviewTurn.providerId,
+      observedStatus: 'disconnected', connectionGeneration: 1, revision: 1, observedAt: f.base.createdAt })
+    let entered!: () => void
+    const attaching = new Promise<void>(resolve => { entered = resolve })
+    let interrupted = false
+    f.worker.beforeReattach = async signal => {
+      if (!signal || interrupted) return
+      interrupted = true
+      entered()
+      await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DeviceApplicationError('cancelled')), { once: true })
+      })
+    }
+    const first = f.coordinator()
+    const opening = expect(f.attach(first)).rejects.toMatchObject({ code: 'ENGINE_RESTART' })
+    try {
+      await attaching
+      if (reconnectFailure) {
+        f.worker.authenticated = false
+        await expect(first.closeForRestart()).rejects.toThrow('Native restart closure was incomplete')
+        expect(f.closures.recordDetached).not.toHaveBeenCalled()
+        expect(f.state).toMatchObject({ detached: false, closed: false, generation: '1' })
+        f.worker.authenticated = true
+      }
+      await first.closeForRestart()
+      await opening
+      await f.proxies[0]!.dispose()
+      expect(f.state).toMatchObject({ detached: true, closed: false, generation: '1', revoked: false })
+      expect(f.worker.receipt.native).toEqual(f.receipt.native)
+      expect(f.worker.receipt.reviewTurns).toEqual([reviewTurn])
+      expect(f.worker.receipt.terminal).toBeUndefined()
+      expect(f.worker.receipt.stopFence).toBe(false)
+      expect(f.credentials.recoverRemote).not.toHaveBeenCalled()
+      f.worker.beforeReattach = async () => {}
+      const replacement = f.coordinator()
+      expect((await f.attach(replacement)).session).toEqual(f.session)
+      expect(f.state).toMatchObject({ detached: false, closed: false, generation: '2' })
+      expect(f.credentials.recoverRemote).toHaveBeenCalledTimes(1)
+      expect(await f.coordination.getLane(f.session.harness, f.session.nativeSessionId)).toMatchObject({
+        correlationId: reviewTurn.assignment.correlationId, currentTurnOrMessageId: reviewTurn.providerId,
+      })
+      await replacement.closeForRestart()
+      await f.proxies[1]!.dispose()
+      expect(f.requests.every(method => ['reattach', 'history', 'get-application-access'].includes(method))).toBe(true)
+    } finally { await f.connection.close() }
+  })
+
+  it('recovers the original process when the crashed Main review lease expires during attachment', async () => {
+    const f = await recoveryFixture()
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      f.state.reviewJobs = [ReviewJobSchema.parse({ id: 'crashed-review', interactionId: 'pending-interaction',
+        reviewerAgentId: f.execution.agentId, attempt: 1, state: 'acknowledged', provider: f.session.harness,
+        nativeSessionId: f.session.nativeSessionId, correlationId: 'original-review-turn',
+        createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(),
+        leaseOwner: 'crashed-main', leaseToken: 'old-review-lease',
+        leaseExpiresAt: new Date(now + 1_000).toISOString() })]
+      f.worker.beforeApplicationAccess = () => { clock.mockReturnValue(now + 2_000) }
+      const main = f.coordinator()
+      expect((await f.attach(main)).session).toEqual(f.session)
+      expect(f.credentials.bindReviewerJob).not.toHaveBeenCalled()
+      expect(f.state.purpose).toBe('reviewer')
+      expect(f.resident).toHaveBeenCalledTimes(1)
+      expect(f.credentials.recoverRemote).toHaveBeenCalledWith(f.execution.id,
+        expect.objectContaining({ token: 'original-token' }), undefined)
+      await main.closeForRestart()
+    } finally {
+      clock.mockRestore()
+      await f.connection.close()
+    }
+  })
+
   it.each(['expired', 'detached'] as const)('requires Worker recovery before authorizing a %s reviewer', async state => {
     const f = fixture()
     try {

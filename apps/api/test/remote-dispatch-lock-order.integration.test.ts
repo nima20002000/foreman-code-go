@@ -1,6 +1,6 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
@@ -59,14 +59,11 @@ describe.skipIf(!postgresEnabled)('remote dispatch and worker credential lock or
         return value
       })()
       void pending.catch(() => undefined) // Joined below before either connection is released.
-      let waiting = false
-      for (let attempt = 0; attempt < 100; attempt++) {
-        waiting = (await database.pool.query<{ waiting: boolean }>(
+      const waiting = await readUntil(async () => {
+        return (await database.pool.query<{ waiting: boolean }>(
           'select cardinality(pg_blocking_pids($1))>0 as waiting', [readerPid],
         )).rows[0]!.waiting
-        if (waiting) break
-        await delay(10)
-      }
+      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
       expect(waiting).toBe(true)
       expect(await readReconciledDispatchIntent(credentials, intent.operationId, true)).toEqual(intent)
       await credentials.query('commit')
@@ -115,14 +112,11 @@ describe.skipIf(!postgresEnabled)('remote dispatch and worker credential lock or
           placementHash: 'e'.repeat(64), keyRevision: null, authorizationRevision: null },
       })
       void pending.catch(() => undefined) // Joined before either transaction is released.
-      let waiting = false
-      for (let attempt = 0; attempt < 100; attempt++) {
-        waiting = (await database.pool.query<{ waiting: boolean }>(
+      const waiting = await readUntil(async () => {
+        return (await database.pool.query<{ waiting: boolean }>(
           'select cardinality(pg_blocking_pids($1))>0 as waiting', [readerPid],
         )).rows[0]!.waiting
-        if (waiting) break
-        await delay(10)
-      }
+      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
       expect(waiting).toBe(true)
       await credentials.query('select id from harness_executions where id=$1 for update', ['unallocated-execution'])
       await credentials.query('commit')

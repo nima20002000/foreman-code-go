@@ -62,6 +62,15 @@ describe('captured process sets', () => {
   it('enforces identity budget and deduplicates shared roots', async () => { const result = await collect({ stat: async pid => stat(pid), children: async () => [43, 44] }, [root], 1); expect(result.identities).toHaveLength(1); expect(result.limitations).toContain('limit-exceeded') })
 })
 describe('owned/host sampler', () => {
+  it('reports host storage for the computer and none when the host cannot report it', async () => {
+    const p = ports(); p.storage = async () => ({ totalBytes: 1000, availableBytes: 250 })
+    expect((await new LinuxSampler(p).capture(identity, signal())).host?.storage).toEqual({ totalBytes: 1000, availableBytes: 250 })
+    p.storage = async () => { throw Object.assign(new Error(), { code: 'EACCES' }) }
+    const failed = await new LinuxSampler(p).capture(identity, signal())
+    expect(failed.host?.storage).toBeNull(); expect(failed.host?.memory.state).toBe('ok')
+    p.wholeHostVisible = false
+    expect((await new LinuxSampler(p).capture(identity, signal())).host?.storage).toBeUndefined()
+  })
   it('initial CPU warms while RAM is independently usable', async () => { const p = ports(); const sample = await new LinuxSampler(p).capture(identity, signal()); expect(sample.host?.cpu.state).toBe('warmup'); expect(sample.host?.memory).toMatchObject({ state: 'ok', value: { bytes: 61440 } }); expect(sample.owned[0]?.memory).toMatchObject({ state: 'ok', value: { kind: 'rss-sum', sharedPagesMayDoubleCount: true } }) })
   it('process CPU uses only common exact generations and real elapsed', async () => { const p = ports(); const sampler = new LinuxSampler(p); await sampler.capture(identity, signal()); p.advance(2_500_000_000n); const result = await sampler.capture(identity, signal()); expect(result.owned[0]?.cpu).toMatchObject({ state: 'ok', intervalDeltaNs: '40000000', windowStartMonoNs: '1000000000', windowEndMonoNs: '3500000000' }) })
   it('process exit does not create a negative lifetime-sum delta', async () => { const p = ports(); let child = true; p.process = { stat: async pid => stat(pid), children: async pid => pid === 42 && child ? [43] : [] }; const sampler = new LinuxSampler(p); await sampler.capture(identity, signal()); child = false; p.process.stat = async pid => { if (pid === 43) throw Object.assign(new Error(), { code: 'ENOENT' }); return stat(pid) }; p.advance(2_000_000_000n); expect((await sampler.capture(identity, signal())).owned[0]?.cpu).toMatchObject({ state: 'ok', intervalDeltaNs: '0' }) })

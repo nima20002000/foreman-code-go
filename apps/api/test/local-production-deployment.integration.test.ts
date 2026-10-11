@@ -18,7 +18,8 @@ it('keeps source development commands usable after successful and failed product
   const api = join(source, 'apps/api')
   const contracts = join(source, 'packages/contracts')
   const destination = join(directory, 'deployed')
-  const environment = { ...process.env }
+  // The repository install already populated the store; registry retries add no deployment coverage.
+  const environment: NodeJS.ProcessEnv = { ...process.env, npm_config_offline: 'true' }
   delete environment.CI
   delete environment.NODE_ENV
   const run = (command: string, args: string[]) => execute(command, args, {
@@ -92,23 +93,35 @@ it('loads the compiled API using only its deployed production dependencies', asy
   const source = join(directory, 'workspace')
   const release = join(directory, 'release')
   const destination = join(release, 'apps/api')
+  const environment: NodeJS.ProcessEnv = { ...process.env, npm_config_offline: 'true' }
   const run = (command: string, args: string[]) => execute(command, args, {
-    cwd: source, env: process.env, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+    cwd: source, env: environment, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
   })
   try {
-    const compiledApi = await compileApiFixture(directory)
-    await mkdir(join(source, 'scripts'), { recursive: true })
-    for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
-      await cp(join(repository, name), join(source, name))
+    const installSource = async () => {
+      await mkdir(join(source, 'scripts'), { recursive: true })
+      for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
+        await cp(join(repository, name), join(source, name))
+      }
+      await cp(join(repository, 'scripts/require-pnpm.mjs'), join(source, 'scripts/require-pnpm.mjs'))
+      for (const project of ['apps/api', 'packages/contracts']) {
+        await mkdir(join(source, project), { recursive: true })
+        await cp(join(repository, project, 'package.json'), join(source, project, 'package.json'))
+      }
+      await cp(join(repository, 'packages/contracts/dist'), join(source, 'packages/contracts/dist'), { recursive: true })
+      await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
     }
-    await cp(join(repository, 'scripts/require-pnpm.mjs'), join(source, 'scripts/require-pnpm.mjs'))
-    for (const project of ['apps/api', 'packages/contracts']) {
-      await mkdir(join(source, project), { recursive: true })
-      await cp(join(repository, project, 'package.json'), join(source, project, 'package.json'))
-      const compiled = project === 'apps/api' ? compiledApi : join(repository, project, 'dist')
-      await cp(compiled, join(source, project, 'dist'), { recursive: true })
+    const setup = [compileApiFixture(directory), installSource()] as const
+    let compiledApi: string
+    try {
+      const [output] = await Promise.all(setup)
+      compiledApi = output
+    } catch (error) {
+      // Both tasks own fixture files until they settle, including on failure.
+      await Promise.allSettled(setup)
+      throw error
     }
-    await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
+    await cp(compiledApi, join(source, 'apps/api/dist'), { recursive: true })
     await deployProductionApi(run, destination)
     await copyVerificationRuntime(repository, release)
     await mkdir(join(release, 'apps/worker/src'), { recursive: true })

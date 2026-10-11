@@ -14,7 +14,7 @@ import { DomainError } from '../errors.js'
 import { PostgresAppInteractionService } from '../interactions/app.js'
 import { ComputerSyncService } from './sync.js'
 import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
-import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
+import { DeviceApplicationError, deviceApplicationFailure } from '../devices/deviceApplicationError.js'
 import type { DeviceApplicationRequestOptions } from '../devices/deviceApplicationChannel.js'
 import { fakeSyncthing, mainSyncId, workerSyncId } from '../../../test/helpers/syncthing.js'
 
@@ -183,6 +183,35 @@ it('omits an unavailable optional shared folder and preserves unexpected failure
   handle.mockRejectedValue(new Error('Unexpected configuration error'))
   await expect(f.service.sharedFolder('workspace-a', { kind: 'main' }))
     .rejects.toThrow('Unexpected configuration error')
+})
+
+it('omits unavailable remote shared files across the device error boundary and preserves denied access', async () => {
+  const f = await fixture()
+  const request = vi.spyOn(f.endpoint, 'request').mockImplementation(async () => {
+    const failure = deviceApplicationFailure(new DomainError('SYNC_UNAVAILABLE', 'Setup is unavailable.', 502))
+    throw new DeviceApplicationError(failure.code)
+  })
+  await expect(f.service.sharedFolder('workspace-a', { kind: 'device', deviceId: f.devices[0]!.deviceId }))
+    .resolves.toBeNull()
+  request.mockRejectedValue(new DeviceApplicationError('permission'))
+  await expect(f.service.sharedFolder('workspace-a', { kind: 'device', deviceId: f.devices[0]!.deviceId }))
+    .rejects.toThrow('permission')
+})
+
+it('pairs without preparing shared-file services when every workspace disables sync', async () => {
+  const f = await fixture()
+  for (const server of f.rest) {
+    vi.spyOn(server.ports, 'available').mockResolvedValue({ installed: false, running: false })
+  }
+  for (const workspace of f.workspaces) {
+    await f.service.update(f.writer, 'mcp', { target: f.targets[0], workspaceId: workspace.id,
+      enabled: false, expectedRevision: 0, commandId: randomUUID() })
+  }
+  const preparation = f.rest.map(server => vi.spyOn(server.ports, 'prepare'))
+  await f.service.paired(f.targets[1]!)
+  for (const prepare of preparation) expect(prepare).not.toHaveBeenCalled()
+  expect(await f.service.sharedFolder('workspace-a', { kind: 'device', deviceId: f.devices[0]!.deviceId }))
+    .toBeNull()
 })
 
 it('stops offering a disabled workspace folder while a computer has not applied the change', async () => {

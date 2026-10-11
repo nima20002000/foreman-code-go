@@ -114,8 +114,10 @@ export async function retainRemoteReviewerCredential(sql: GraphSqlClient, execut
     from native_session_lanes where harness=$1 and native_session_id=$2 and owner_agent_id=$3 for share`,
   [retained.session.harness, retained.session.nativeSessionId, execution.agentId])).rows[0]
   if (!lane) throw new DomainError('REMOTE_REVIEWER_DENIED', 'The original reviewer writer lane is required.', 409)
+  // Process recovery precedes the dispatcher's binding to a claimed review job.
   const result = await sql.query(`update worker_credential_bindings set purpose='reviewer',
-    approval_native_session_id=$4,approval_connection_generation=$5::bigint
+    approval_native_session_id=$4,approval_connection_generation=$5::bigint,
+    approval_review_job_id=null,approval_review_lease_fence=null
     where principal_id=$1 and execution_id=$2 and agent_id=$3 and revoked_at is null`,
   [retained.principalId, execution.id, execution.agentId, retained.session.nativeSessionId, lane.generation])
   if (result.rowCount !== 1) throw new DomainError('REMOTE_REVIEWER_DENIED', 'The process lease changed during retention.', 409)

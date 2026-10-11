@@ -25,10 +25,10 @@ function fixture() {
     return { rows, rowCount: rows.length, fields: [], oid: 0, command: 'SELECT' }
   })
   const pool = { connect: async () => ({ query, release: vi.fn() }), query } as unknown as pg.Pool
-  const probe = vi.fn(async (): Promise<ConnectionProbe> => ({ state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'dexter', uid: 1000, hostname: 'laptop', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync  version 3.2.7', tailscaleVersion: '1.102.4' }))
+  const probe = vi.fn(async (): Promise<ConnectionProbe> => ({ state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'builder', uid: 1000, hostname: 'laptop', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync  version 3.2.7', tailscaleVersion: '1.102.4' }))
   const verifyOwnerApproval = vi.fn(async () => { if (!approvalAllowed) throw new Error('OWNER_APPROVAL_REQUIRED'); return { ownerId: 'human-owner' } })
   const service = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval, probe })
-  const input: TrustedConnectionConfigure = { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { transport: 'tailscale', host: '100.76.219.118', port: 22, osUser: 'dexter' }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true, approvalId: randomUUID() }
+  const input: TrustedConnectionConfigure = { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { transport: 'tailscale', host: '100.64.0.20', port: 22, osUser: 'builder' }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true, approvalId: randomUUID() }
   return { service, principal, input, probe, query, verifyOwnerApproval, receipts, revokePrincipal: () => { revoked = true }, denyApproval: () => { approvalAllowed = false }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } } }
 }
 describe('trusted connection consent and readiness', () => {
@@ -75,7 +75,7 @@ describe('trusted connection consent and readiness', () => {
   })
   it('revocation during SSH check fences successful result', async () => {
     const f = fixture(); await f.service.configure(f.principal, f.input)
-    f.probe.mockImplementationOnce(async () => { f.updateDevice({ status: 'revoked' }); return { state: 'connected', hostKeyFingerprint: f.input.hostKeyFingerprint, osUser: 'dexter', uid: 1000, hostname: 'host', sshVersion: 'OpenSSH', rsyncVersion: 'rsync', tailscaleVersion: '1.102.4' } })
+    f.probe.mockImplementationOnce(async () => { f.updateDevice({ status: 'revoked' }); return { state: 'connected', hostKeyFingerprint: f.input.hostKeyFingerprint, osUser: 'builder', uid: 1000, hostname: 'host', sshVersion: 'OpenSSH', rsyncVersion: 'rsync', tailscaleVersion: '1.102.4' } })
     expect(await f.service.check(f.principal, f.input.deviceId)).toMatchObject({ state: 'revoked', probe: null })
   })
   it('retains authentication/offline states and rejects a different trusted SSH key or missing tools', async () => {

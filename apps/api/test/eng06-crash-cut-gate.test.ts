@@ -25,6 +25,22 @@ describe('ENG06 abrupt crash-cut barrier', () => {
     cut.release(); await task
   })
 
+  it('propagates the engine abort reason instead of a separate injected restart error', async () => {
+    const injected = new Error('ENGINE_RESTART')
+    const reason = new Error('ENGINE_RESTART')
+    const controller = new AbortController()
+    const cut = holdCrashCut<string>(injected)
+    const task = observeCrashTask(cut.hold('original', controller.signal))
+    await cut.wait(task)
+    // Closure releases the cut synchronously before the engine aborts its drive.
+    cut.release()
+    controller.abort(reason)
+    const outcome = await task
+    assert.equal(outcome.status, 'rejected')
+    if (outcome.status === 'rejected') assert.equal(outcome.reason, reason)
+    assert.equal(cut.visits, 1)
+  })
+
   it('reports an early product failure instead of timing out or replacing it with teardown', async () => {
     const cut = holdCrashCut<string>(new Error('ENGINE_RESTART')), failure = new Error('actual product failure')
     await assert.rejects(cut.wait(observeCrashTask(Promise.reject(failure))), (error) => error === failure)

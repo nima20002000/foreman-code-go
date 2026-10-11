@@ -54,12 +54,12 @@ export function ToolkitShowcase() {
         <NavItem href="#/settings" active={view === 'settings'} icon="settings">Settings</NavItem>
         <p className="d-nav-label d-nav-label--spaced">Your workflows</p><a href="#/studio" className="d-workflow-link"><span className="d-small-dot" />Website workflow<Badge tone="accent">4</Badge></a>
       </nav><div className="d-sidebar-bottom"><div className="d-local-status"><span className="d-small-dot" /><span>Preview environment</span><Icon name="info" size={14} /></div>
-        <div className="d-profile"><Avatar name="Nima" /><span>Nima<small>Workspace owner</small></span><Badge>Local</Badge></div></div></>
+        <div className="d-profile"><Avatar name="Alex" /><span>Alex<small>Workspace owner</small></span><Badge>Local</Badge></div></div></>
   }
   return <div className="n-theme d-app"><a className="d-skip" href="#demo-main" onClick={(event) => { event.preventDefault(); document.getElementById('demo-main')?.focus() }}>Skip to content</a>
     <aside className="d-sidebar">{navigation()}</aside><div className="d-main-wrap"><header className="d-topbar"><div className="d-topbar-start"><IconButton className="d-mobile-menu" label="Open navigation" variant="ghost" onClick={() => setMobileOpen(true)}><Icon name="menu" /></IconButton>
       <Breadcrumbs items={[{ label: 'Personal workspace', href: '#/studio' }, { label: view === 'studio' ? 'Workflows' : view === 'components' ? 'Design system' : view === 'settings' ? 'Settings' : view === 'lab' ? 'Execution lab' : view === 'overlays' ? 'Dialogs & menus' : 'Workspace patterns' }]} /></div>
-      <div className="n-actions"><span className="d-preview-label"><span className="d-small-dot" />Demo data · no backend</span><Tooltip content="Search the preview with Command K or Control K."><IconButton label="Open command center" variant="ghost" onClick={() => setCommandOpen(true)}><Icon name="command" /></IconButton></Tooltip><Avatar name="Nima" size="sm" /></div></header>
+      <div className="n-actions"><span className="d-preview-label"><span className="d-small-dot" />Demo data · no backend</span><Tooltip content="Search the preview with Command K or Control K."><IconButton label="Open command center" variant="ghost" onClick={() => setCommandOpen(true)}><Icon name="command" /></IconButton></Tooltip><Avatar name="Alex" size="sm" /></div></header>
       <main id="demo-main" className="d-main" tabIndex={-1}>
         {view === 'lab' && <ExecutionLab />}
         {view === 'overlays' && <OverlayGallery />}

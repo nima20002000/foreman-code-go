@@ -11,7 +11,7 @@ import { mockRuntimeIdentity } from '../shared/mocks/handlers'
 it('opens General settings from the settings directory and keeps the route linkable', async () => {
   server.use(
     http.get('*/api/management/computers/activity', () => HttpResponse.json({
-      mainId: mockRuntimeIdentity.installationId, activityComplete: true, truncated: false, computers: [],
+      mainId: mockRuntimeIdentity.installationId, activityComplete: true, truncated: false, computers: [], cloud: [],
     })),
     http.get('*/api/management/file-retention', () => HttpResponse.json({
       preference: { ownerPrincipalId: 'retention-owner', durationSeconds: 604_800, revision: 0 },

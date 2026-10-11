@@ -75,19 +75,30 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       assert.equal(evidence.schemaVerification, 'installed-contract-validation')
       assert.equal(evidence.productionSupported, false)
       const session = await manager.createSession(input, signal)
+      const requestedApproval = deferred<PendingNativeInteraction>()
       const approval = (async () => {
         for await (const event of manager.startTurn(session, {
           prompt: `Run this exact shell command until it succeeds: set -e; stamp=$(date +%s%N); printf "$stamp" > ${JSON.stringify(marker)}; printf "$stamp". Request native command approval when the read-only sandbox blocks it. Do not simulate success. Return its stdout verbatim.`,
           clientCorrelationId: 'nim2598-live-approval',
-        }, signal)) void event
+        }, signal)) {
+          if (event.type === 'interaction.pending') {
+            const interaction = await manager.pending(session)
+            if (interaction) requestedApproval.resolve(interaction)
+          }
+        }
       })()
-      void approval.catch(() => undefined)
-      let pending: PendingNativeInteraction | undefined
-      for (let attempt = 0; attempt < 240; attempt += 1) {
-        pending = await manager.pending(session)
-        if (pending) break
-        signal.throwIfAborted()
-        await new Promise((resolve) => setTimeout(resolve, 250))
+      void approval.then(
+        () => requestedApproval.reject(new Error('The native turn ended before requesting approval.')),
+        error => requestedApproval.reject(error),
+      )
+      const deadline = setTimeout(() => {
+        requestedApproval.reject(new Error('The native approval request did not arrive within 60 seconds.'))
+      }, 60_000)
+      let pending: PendingNativeInteraction
+      try {
+        pending = await requestedApproval.promise
+      } finally {
+        clearTimeout(deadline)
       }
       assert.equal(pending?.nativeRequestType, 'item/commandExecution/requestApproval')
       const option = pending!.responseOptions.find((entry) => entry.semantic === 'approve_once')
@@ -105,7 +116,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       const started = deferred<string>()
       const interrupt = (async () => {
         for await (const event of manager.startTurn(session, {
-          prompt: 'Run this exact shell command and wait for it to finish before answering: sleep 120. Do not simulate the command.',
+          prompt: 'Run this exact shell command and wait for it to finish before answering: tail -f /dev/null. Do not simulate the command.',
           clientCorrelationId: 'interrupt',
         }, signal)) {
           if (event.type === 'turn.started' && event.payload.clientCorrelationId === 'interrupt') {

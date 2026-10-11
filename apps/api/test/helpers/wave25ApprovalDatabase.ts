@@ -45,6 +45,7 @@ export async function approvalDatabase(options: { command?: string } = {}) {
     return { ...runtime, pool: runtime.db.pool, close, interaction, reviewer, requester, job, credential, principal,
       commands: new PostgresCommandCoordinator(runtime.db.pool),
       version: runtime.f.version, run: runtime.f.run, scope: runtime.f.scope,
+      resumeObservation: () => release.resolve(),
       async settle() {
         const provider = runtime.providers.get(reviewer.id)!
         provider.completeReview(job.correlationId, job.nativeSessionId)

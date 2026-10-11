@@ -13,7 +13,7 @@ import { withExclusiveGraphConnection } from '../src/modules/run-graph/connectio
 import { BuildComputerSettings, readBuildComputerPreference } from '../src/modules/settings/buildComputers.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { ciMigrationFixture } from './helpers/ciMigrationFixture.js'
-import { dexter, mainId } from './helpers/ciPreparationFixture.js'
+import { builder, mainId } from './helpers/ciPreparationFixture.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 
 const ledger = async (database: Awaited<ReturnType<typeof currentDatabase>>) =>
@@ -194,7 +194,7 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
         await createPreparation(database, replacement)
         const device = seeded.record()
         await createPreparation(database, device)
-        await database.pool.query('delete from device_registrations where id=$1', [dexter])
+        await database.pool.query('delete from device_registrations where id=$1', [builder])
         expect(await repository.get(device.id)).toEqual(device)
         expect(await repository.latestForDevice(mainId)).toEqual(replacement)
         expect(await repository.get(original.id)).toEqual(finished)

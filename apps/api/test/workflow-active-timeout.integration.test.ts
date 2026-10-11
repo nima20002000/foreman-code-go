@@ -7,7 +7,7 @@ import { currentOperatorIntegration } from './helpers/currentOperatorIntegration
 it.each(['normal cleanup', 'retried cleanup', 'Stop during cleanup'] as const)(
   'persists an active-time timeout through %s and discloses it through authorized MCP reads', async mode => {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
-  fixture.version.definition.executionPolicy!.agentActiveTimeoutMs = 1500
+  fixture.version.definition.executionPolicy!.agentActiveTimeoutMs = 600_000
   const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
   let failureInjected = false
   if (mode !== 'normal cleanup') {
@@ -27,16 +27,20 @@ it.each(['normal cleanup', 'retried cleanup', 'Stop during cleanup'] as const)(
     })
   }
   const startTurn = f.provider.startTurn.bind(f.provider)
-  vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input, signal?: AbortSignal) {
+  vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {
     const events = startTurn(session, input)[Symbol.asyncIterator]()
     try {
       const first = await events.next()
+      expect(first.done).toBe(false)
+      expect(f.provider.startedExecutions).toHaveLength(1)
+      const executionId = f.provider.startedExecutions[0]!
+      // Expire only after native Start so database load cannot consume the budget before this boundary.
+      const expired = await f.db.pool.query(
+        'update approval_execution_state set active_elapsed_ms=active_timeout_ms where execution_id=$1',
+        [executionId],
+      )
+      expect(expired.rowCount).toBe(1)
       if (!first.done) yield first.value
-      await new Promise<void>((_resolve, reject) => {
-        const abort = () => reject(new DOMException('The native stream was aborted.', 'AbortError'))
-        if (signal?.aborted) abort()
-        else signal?.addEventListener('abort', abort, { once: true })
-      })
     } finally {
       await events.return?.()
     }

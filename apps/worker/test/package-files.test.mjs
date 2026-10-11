@@ -1,10 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { regularFiles, verifyPackage, artifactFiles, copySharpPackages, sharpPackages, assertWorkerDependency } from '../../../scripts/worker-artifact-files.mjs';
+import {
+  regularFiles, verifyPackage, artifactFiles, copySharpPackages, copySharpPackagesFromStore,
+  sharpPackages, assertWorkerDependency,
+} from '../../../scripts/worker-artifact-files.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { validateManifest } from '../src/installation.mjs';
 import { committedWorkerInputPath, workerReleaseVersion, validateWorkerTarget } from '../../../scripts/worker-artifact-files.mjs';
 
@@ -73,19 +78,37 @@ test('installer accepts scoped native paths while rejecting traversal and duplic
 });
 
 
-test('locked native packages use exact TAB keys and copy deterministic verified buffers as siblings', async t => {
-  const directory = await mkdtemp('/tmp/worker-native-copy-');
+async function nativePackageFixture(t) {
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-native-copy-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const root = join(directory, 'root'), lock = { packages: {} }, records = new Map();
+  const root = join(directory, 'root');
+  const lock = { packages: {} };
+  const records = new Map();
   const integrity = `sha512-${Buffer.alloc(64, 1).toString('base64')}`;
   for (const [name, version] of Object.entries(sharpPackages)) {
     const source = join(root, 'node_modules/.pnpm', `${name.replace('/', '+')}@${version}`, 'node_modules', name);
     await mkdir(source, { recursive: true });
-    const files = new Map([['package.json', Buffer.from(JSON.stringify({ name, version }))], ['LICENSE', Buffer.from('license')]]);
+    const files = new Map([
+      ['package.json', Buffer.from(JSON.stringify({ name, version }))],
+      ['LICENSE', Buffer.from('license')],
+    ]);
     for (const [path, bytes] of files) await writeFile(join(source, path), bytes);
     lock.packages[`${name}@${version}`] = { resolution: { integrity } };
-    records.set(`${integrity}\t${name}@${version}`, { requiresBuild: false, manifest: { name, version }, algo: 'sha512', files: new Map([...files].map(([path, bytes]) => [path, { size: bytes.length, digest: createHash('sha512').update(bytes).digest('hex') }])) });
+    records.set(`${integrity}\t${name}@${version}`, {
+      requiresBuild: false,
+      manifest: { name, version },
+      algo: 'sha512',
+      files: new Map([...files].map(([path, bytes]) => [path, {
+        size: bytes.length,
+        digest: createHash('sha512').update(bytes).digest('hex'),
+      }])),
+    });
   }
+  return { directory, root, lock, records, integrity };
+}
+
+test('locked native packages use exact TAB keys and copy deterministic verified buffers as siblings', async t => {
+  const { directory, root, lock, records, integrity } = await nativePackageFixture(t);
   const first = join(directory, 'first'), second = join(directory, 'second');
   const requested = [];
   const blobs = new Map([...records].map(([key, index]) => [key, packer.pack(index)]));
@@ -103,6 +126,39 @@ test('locked native packages use exact TAB keys and copy deterministic verified 
   await assert.rejects(copySharpPackages({ root, output: join(directory, 'bad'), lock, record, decode }), /integrity/);
   await assert.rejects(copySharpPackages({ root, output: join(directory, 'missing'), lock, record: () => undefined, decode }), /index/);
   await assert.rejects(copySharpPackages({ root, output: join(directory, 'malformed'), lock, record: () => Buffer.from([0xc1]), decode }));
+});
+
+test('restored installed packages require their cached pnpm index and retain integrity verification', async t => {
+  const { directory, root, lock, records } = await nativePackageFixture(t);
+  const store = join(root, 'node_modules/.pnpm-store/v11');
+  const decode = blob => unpacker.unpack(blob);
+  const blobs = new Map([...records].map(([key, index]) => [key, packer.pack(index)]));
+  await assert.rejects(copySharpPackagesFromStore({ root, output: join(directory, 'missing'), store, lock, decode }),
+    /Restore the pnpm store together with node_modules/);
+  await mkdir(store, { recursive: true });
+  const database = new DatabaseSync(join(store, 'index.db'));
+  try {
+    database.exec('CREATE TABLE package_index (key TEXT PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID');
+    const insert = database.prepare('INSERT INTO package_index (key, data) VALUES (?, ?)');
+    for (const [key, blob] of blobs) insert.run(key, blob);
+  } finally {
+    database.close();
+  }
+  const restoredRoot = join(directory, 'restored');
+  await cp(join(root, 'node_modules'), join(restoredRoot, 'node_modules'), { recursive: true });
+  await rm(root, { recursive: true });
+  const restoredStore = join(restoredRoot, 'node_modules/.pnpm-store/v11');
+  const output = join(directory, 'release');
+  const packages = await copySharpPackagesFromStore({ root: restoredRoot, output, store: restoredStore, lock, decode });
+  assert.equal(packages.length, Object.keys(sharpPackages).length);
+  for (const entry of packages) {
+    const blob = blobs.get(`${entry.integrity}\t${entry.name}@${entry.version}`);
+    assert.equal(entry.indexBlobSha256, createHash('sha256').update(blob).digest('hex'));
+  }
+  await writeFile(join(restoredRoot, 'node_modules/.pnpm', `sharp@${sharpPackages.sharp}`, 'node_modules/sharp/LICENSE'),
+    'changed');
+  await assert.rejects(copySharpPackagesFromStore({ root: restoredRoot, output: join(directory, 'changed'),
+    store: restoredStore, lock, decode }), /integrity/);
 });
 
 

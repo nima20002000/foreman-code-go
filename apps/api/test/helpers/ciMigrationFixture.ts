@@ -3,7 +3,7 @@ import { CiPreparationRecordSchema } from '../../src/modules/jobs/ciPreparationR
 import { buildComputerKey, buildComputerTarget } from '../../src/modules/settings/buildComputers.js'
 import { graphFixture } from '../eng04-graph-composition-fixture.js'
 import { currentDatabase } from './eng04CurrentDatabase.js'
-import { commit, dexter, mainId, preparationProfile, qualifiedPreparationProfile } from './ciPreparationFixture.js'
+import { commit, builder, mainId, preparationProfile, qualifiedPreparationProfile } from './ciPreparationFixture.js'
 
 export async function ciMigrationFixture(database: Awaited<ReturnType<typeof currentDatabase>>) {
   const workflow = await graphFixture(database, { form: 'sequential' })
@@ -11,7 +11,7 @@ export async function ciMigrationFixture(database: Awaited<ReturnType<typeof cur
     await database.pool.query('update application_installation set id=$1 where singleton=true', [mainId])
     await database.pool.query(`insert into device_registrations
       (id,main_id,worker_installation_id,public_key,record) values($1,$2,$1,'fixture-key',$3::jsonb)`,
-    [dexter, mainId, JSON.stringify({ mainId, deviceId: dexter, workerInstallationId: dexter,
+    [builder, mainId, JSON.stringify({ mainId, deviceId: builder, workerInstallationId: builder,
       publicKeyFingerprint: 'a'.repeat(64), keyRevision: 1, authorizationRevision: 1,
       status: 'paired', scopes: ['connect', 'heartbeat'] })])
     const workspaceId = workflow.scope.workspaceId
@@ -22,7 +22,7 @@ export async function ciMigrationFixture(database: Awaited<ReturnType<typeof cur
       profile.root.binding.workspaceId = workspaceId
       return qualifiedPreparationProfile(profile)
     }
-    const device = makeProfile(dexter)
+    const device = makeProfile(builder)
     const main = makeProfile(null)
     const record = (profile = device, commandId: string = randomUUID()) => {
       const now = new Date().toISOString()

@@ -1,3 +1,4 @@
+import { readUntil } from './helpers/observableCondition.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
@@ -87,8 +88,7 @@ class AttachmentNative implements NativeHarnessSessionManager {
 
 const pin = (value: FileWithRevision): MessageAttachmentRef => ({ fileId: value.file.fileId, revisionId: value.revision.revisionId })
 async function waitFor(check: () => Promise<boolean>) {
-  for (let n = 0; n < 500; n++) { if (await check()) return; await new Promise((done) => setTimeout(done, 20)) }
-  throw new Error('Chat did not settle')
+  await readUntil(check, value => value, { timeoutMs: 10_000, description: 'chat settlement' })
 }
 
 describe.skipIf(!postgresEnabled)('FIL-10 real chat attachments', { timeout: 60_000 }, () => {

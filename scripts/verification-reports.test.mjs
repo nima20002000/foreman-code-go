@@ -60,32 +60,49 @@ test('ordinary suites run their full root commands', () => {
     '--offline', '--prod=false', '--store-dir', '/mutable/store'])
 })
 
-test('unit package commands honor configured worker limits and local defaults', () => {
-  const resolveWorkers = `
-    import { readFileSync } from 'node:fs'
-    import { createRequire } from 'node:module'
-    import { pathToFileURL } from 'node:url'
-    const [project, script] = process.argv.slice(1)
-    const require = createRequire(project + '/package.json')
-    const { parseCLI, resolveConfig } = await import(pathToFileURL(require.resolve('vitest/node')))
-    const { scripts } = JSON.parse(readFileSync(project + '/package.json', 'utf8'))
-    const { options } = parseCLI(scripts[script].split(' -- ').at(-1))
-    const config = await resolveConfig({ ...options, root: project })
-    process.stdout.write(String(config.test.maxWorkers))
-  `
+test('unit package commands honor configured worker limits and local defaults', t => {
+  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'unit-worker-config-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  writeFileSync(join(directory, 'vitest'), `#!${process.execPath}
+    (async () => {
+      const { createRequire } = await import('node:module')
+      const { pathToFileURL } = await import('node:url')
+      const project = process.cwd()
+      const require = createRequire(project + '/package.json')
+      const { parseCLI, resolveConfig } = await import(pathToFileURL(require.resolve('vitest/node')))
+      const { options } = parseCLI(['vitest', ...process.argv.slice(2)])
+      const config = await resolveConfig({ ...options, root: project })
+      console.log(JSON.stringify({ phase: process.env.FOREMAN_WEB_TEST_PHASE ?? null,
+        maxWorkers: config.test.maxWorkers }))
+    })().catch(error => {
+      console.error(error)
+      process.exitCode = 1
+    })
+  `, { mode: 0o755 })
+  const wrapper = new URL('./ci-remote.mjs', import.meta.url).pathname
   const projects = [
-    ['apps/api', 'test', 4],
-    ['apps/web', 'test:unit', 4],
-    ['packages/contracts', 'test', 12],
+    ['apps/api', 'test', [{ phase: null, maxWorkers: 4 }]],
+    ['apps/web', 'test:unit', [{ phase: 'fast', maxWorkers: 4 }, { phase: 'heavy', maxWorkers: 4 }]],
+    ['packages/contracts', 'test', [{ phase: null, maxWorkers: 12 }]],
   ]
-  for (const [project, script, defaultWorkers] of projects) {
-    for (const configuredWorkers of [undefined, '1']) {
-      const env = { ...process.env }
+  for (const [project, script, defaults] of projects) {
+    const cwd = join(new URL('..', import.meta.url).pathname, project)
+    const { scripts } = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
+    // Run the test payload through CI's wrapper; the probe resolves config without running test files.
+    const command = scripts[script].split(' -- ').at(-1)
+    for (const configuredWorkers of [undefined, '1', '8']) {
+      const env = { ...process.env, CI: 'true', PATH: `${directory}:${process.env.PATH}` }
+      delete env.FOREMAN_WEB_TEST_PHASE
       if (configuredWorkers === undefined) delete env.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS
       else env.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS = configuredWorkers
-      const output = execFileSync(process.execPath, ['--input-type=module', '-e', resolveWorkers,
-        join(new URL('..', import.meta.url).pathname, project), script], { env, encoding: 'utf8' })
-      assert.equal(Number(output), configuredWorkers === undefined ? defaultWorkers : Number(configuredWorkers), project)
+      const output = execFileSync(process.execPath, [wrapper, 'unit', '--', 'sh', '-c', command],
+        { cwd, env, encoding: 'utf8' })
+      const expected = defaults.map(({ phase, maxWorkers }) => {
+        if (configuredWorkers === undefined) return { phase, maxWorkers }
+        const workers = Number(configuredWorkers)
+        return { phase, maxWorkers: phase === 'heavy' ? Math.min(workers, maxWorkers) : workers }
+      })
+      assert.deepEqual(output.trim().split('\n').map(line => JSON.parse(line)), expected, project)
     }
   }
 })

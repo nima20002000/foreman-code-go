@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { setImmediate } from 'node:timers/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -38,6 +39,7 @@ test('desktop activation waits for release switching and serializes duplicate la
     openDashboard: async () => { opened.push(running) },
   })
   const launches = [launch(), launch()]
+  // A short negative window proves launches stay blocked while migration owns the lock.
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.deepEqual(starts, [])
   switchRelease.resolve()
@@ -64,11 +66,27 @@ test('activation retries both service startup and identity lookup before one bro
   let starts = 0
   let reads = 0
   let opens = 0
-  await launchProduction({ lockPath: join(directory, 'install.lock'), timeoutMs: 5000,
-    start: async () => { if (++starts === 1) throw new Error('Dependency unavailable') },
+  const attempts = [deferred(), deferred()]
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const launching = launchProduction({ lockPath: join(directory, 'install.lock'), timeoutMs: 5000,
+    start: async () => {
+      starts++
+      attempts[starts - 1]?.resolve()
+      if (starts === 1) throw new Error('Dependency unavailable')
+    },
     ready: async () => { if (++reads === 1) throw new Error('Database identity unavailable') },
     openDashboard: async () => { opens++ },
   })
+  try {
+    for (const attempt of attempts) {
+      await attempt.promise
+      await setImmediate()
+      t.mock.timers.tick(500)
+    }
+    await launching
+  } finally {
+    t.mock.timers.reset()
+  }
   assert.equal(starts, 3)
   assert.equal(reads, 2)
   assert.equal(opens, 1)
@@ -79,10 +97,20 @@ for (const reason of ['Docker unavailable', 'Port is serving a different release
     const directory = await mkdtemp(join(tmpdir(), 'desktop-refusal-'))
     t.after(() => rm(directory, { recursive: true, force: true }))
     let opens = 0
-    await assert.rejects(launchProduction({ lockPath: join(directory, 'install.lock'), timeoutMs: 20,
-      start: async () => {}, ready: async () => { throw new Error(reason) },
-      openDashboard: async () => { opens++ },
-    }), new RegExp(reason))
+    const attempted = deferred()
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+    try {
+      const rejected = assert.rejects(launchProduction({ lockPath: join(directory, 'install.lock'), timeoutMs: 20,
+        start: async () => {}, ready: async () => { attempted.resolve(); throw new Error(reason) },
+        openDashboard: async () => { opens++ },
+      }), new RegExp(reason))
+      await attempted.promise
+      await setImmediate()
+      t.mock.timers.tick(20)
+      await rejected
+    } finally {
+      t.mock.timers.reset()
+    }
     assert.equal(opens, 0)
   })
 }

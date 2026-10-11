@@ -4,7 +4,6 @@ import { appendFile, chmod, mkdtemp, readFile, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import { setTimeout as delay } from 'node:timers/promises'
 import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { nativeCompatibilityProbe, type CompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
@@ -20,6 +19,17 @@ vi.mock('../src/modules/harnesses/payloadDiscovery.js', async original => {
   const payloads = await original<typeof import('../src/modules/harnesses/payloadDiscovery.js')>()
   return { ...payloads, passiveDriverPayloads: vi.fn(payloads.passiveDriverPayloads) }
 })
+
+function virtualNativeDeadlines() {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  // Node's AbortSignal.timeout uses internal timers, so bridge it to the fake clock.
+  return vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+      milliseconds)
+    return controller.signal
+  })
+}
 
 function gate() {
   let resolve!: () => void
@@ -42,7 +52,7 @@ function service(binary: string, factory: (timeoutMs: number) => CompatibilityPr
 
 async function binaryFixture(program: string) {
   const directory = await mkdtemp(join(tmpdir(), 'qualification-version-'))
-  const binary = join(directory, 'native-cli')
+  const binary = join(directory, 'native-cli.cjs')
   await writeFile(binary, `#!${process.execPath}\n${program}\n`, { mode: 0o700 })
   await chmod(binary, 0o700)
   return { directory, binary }
@@ -67,7 +77,7 @@ it('keeps installation verification and closure outside the native version-comma
       return result
     } }
   })
-  vi.useFakeTimers()
+  const deadlines = virtualNativeDeadlines()
   const admitted = instance.qualification.begin('codex')
   const result = admitted.then(value => ({ value }), error => ({ error }))
   try {
@@ -87,6 +97,7 @@ it('keeps installation verification and closure outside the native version-comma
     closed.release()
     await result
     vi.useRealTimers()
+    deadlines.mockRestore()
     await instance.qualification.shutdown()
     await removeFixtureDirectory(f.directory)
   }
@@ -139,10 +150,11 @@ it('qualifies after slow payload hashing and still detects payload replacement',
       yield* fs.createReadStream(path, options)
     })()) as ReturnType<typeof createReadStream>
   })
+  const deadlines = virtualNativeDeadlines()
   const result = instance.qualification.begin('codex').then(value => ({ value }), error => ({ error }))
   try {
     await hashing.promise
-    await delay(6000)
+    await vi.advanceTimersByTimeAsync(6000)
     hashed.release()
     expect(await result).toMatchObject({ value: { version: '0.154.0', status: 'qualifying' } })
     await instance.qualification.join()
@@ -161,6 +173,8 @@ it('qualifies after slow payload hashing and still detects payload replacement',
   } finally {
     hashed.release()
     await result
+    vi.useRealTimers()
+    deadlines.mockRestore()
     vi.mocked(createReadStream).mockImplementation(fs.createReadStream)
     await instance.qualification.shutdown()
     await removeFixtureDirectory(f.directory)
@@ -168,36 +182,61 @@ it('qualifies after slow payload hashing and still detects payload replacement',
 })
 
 it('still stops a stalled version command at the native deadline without admitting a suite', async () => {
-  const f = await binaryFixture('setInterval(() => {}, 1000)')
+  const f = await binaryFixture(`
+    require('node:fs').writeFileSync(require('node:path').join(__dirname, 'ready'), '')
+    setInterval(() => {}, 1000)
+  `)
   const instance = service(f.binary, timeoutMs => nativeCompatibilityProbe(
     { codex: f.binary }, f.directory, process.env, timeoutMs))
+  const deadlines = virtualNativeDeadlines()
   try {
-    await expect(instance.qualification.begin('codex')).rejects.toMatchObject({
+    const rejected = expect(instance.qualification.begin('codex')).rejects.toMatchObject({
       name: 'DomainError', code: 'HARNESS_CHECK_TIMEOUT', status: 503,
       message: 'The native check timed out. Try again.',
     })
+    await vi.waitFor(async () => { await readFile(join(f.directory, 'ready')) }, { interval: 1 })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await rejected
     await instance.qualification.join()
     expect(instance.run).not.toHaveBeenCalled()
     expect(instance.save).not.toHaveBeenCalled()
   } finally {
+    vi.useRealTimers()
+    deadlines.mockRestore()
     await instance.qualification.shutdown()
     await removeFixtureDirectory(f.directory)
   }
 }, 40_000)
 
 it('allows a cold native version command to load beyond five seconds', async () => {
-  const f = await binaryFixture("setTimeout(() => console.log('codex-cli 0.154.0'), 6000)")
+  const f = await binaryFixture(`
+    const fs = require('node:fs')
+    const path = require('node:path')
+    const watcher = fs.watch(__dirname, () => {
+      if (!fs.existsSync(path.join(__dirname, 'release'))) return
+      watcher.close()
+      console.log('codex-cli 0.154.0')
+    })
+    fs.writeFileSync(path.join(__dirname, 'ready'), '')
+  `)
   const instance = service(f.binary, timeoutMs => nativeCompatibilityProbe(
     { codex: f.binary }, f.directory, process.env, timeoutMs))
+  const deadlines = virtualNativeDeadlines()
   try {
-    await expect(instance.qualification.begin('codex')).resolves.toMatchObject({
+    const admitted = expect(instance.qualification.begin('codex')).resolves.toMatchObject({
       version: '0.154.0', status: 'qualifying',
     })
+    await vi.waitFor(async () => { await readFile(join(f.directory, 'ready')) }, { interval: 1 })
+    await vi.advanceTimersByTimeAsync(6000)
+    await writeFile(join(f.directory, 'release'), '')
+    await admitted
     await instance.qualification.join()
     expect(instance.run).toHaveBeenCalledOnce()
     expect(instance.save).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'qualified' }),
       expect.any(Object))
   } finally {
+    vi.useRealTimers()
+    deadlines.mockRestore()
     await instance.qualification.shutdown()
     await removeFixtureDirectory(f.directory)
   }
@@ -222,19 +261,30 @@ it('reports inventory refresh timeouts as domain errors before admitting a suite
 
 it('finishes the pre-launch identity check before starting the version-command deadline', async () => {
   const f = await binaryFixture("console.log('codex-cli 0.154.0')")
+  const checking = gate()
+  const checked = gate()
   const beforeCommand = vi.fn(async (_binary: string, signal: AbortSignal) => {
-    await delay(100)
+    checking.release()
+    await checked.promise
     signal.throwIfAborted()
     throw new Error('Installation changed before launch')
   })
   const probe = nativeCompatibilityProbe({ codex: f.binary }, f.directory, process.env, 25, {
     recovery: { root: f.directory, owner: 'identity-check' }, beforeCommand,
   })
+  const deadlines = virtualNativeDeadlines()
   try {
-    await expect(probe.inspect('codex', new AbortController().signal))
+    const rejected = expect(probe.inspect('codex', new AbortController().signal))
       .rejects.toThrow('Installation changed before launch')
+    await checking.promise
+    await vi.advanceTimersByTimeAsync(100)
+    checked.release()
+    await rejected
     expect(beforeCommand).toHaveBeenCalledOnce()
   } finally {
+    checked.release()
+    vi.useRealTimers()
+    deadlines.mockRestore()
     await probe.close?.()
     await removeFixtureDirectory(f.directory)
   }

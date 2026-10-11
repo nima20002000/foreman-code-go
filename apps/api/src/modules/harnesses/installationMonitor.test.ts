@@ -17,14 +17,15 @@ it('detects a new payload at the same launcher and schedules one automatic check
   }
   const report = vi.fn()
   const monitor = new HarnessInstallationMonitor(registry as never, { recheckInstallation } as never,
-    () => ({} as never), async () => {}, async () => {}, report)
+    () => ({} as never), async () => {}, async () => {}, report, 100)
+  vi.useFakeTimers()
   try {
     monitor.start('main')
     expect(recheckInstallation).toHaveBeenCalledTimes(1)
     await monitor.refresh()
     expect(recheckInstallation).toHaveBeenCalledTimes(1)
     fingerprint = 'updated-payload'
-    await monitor.refresh()
+    await vi.advanceTimersByTimeAsync(100)
     expect(recheckInstallation).toHaveBeenCalledTimes(2)
     const first = recheckInstallation.mock.calls[0]![0]
     const updated = recheckInstallation.mock.calls[1]![0]
@@ -35,7 +36,10 @@ it('detects a new payload at the same launcher and schedules one automatic check
     await monitor.refresh()
     expect(recheckInstallation).toHaveBeenCalledTimes(2)
     expect(report).not.toHaveBeenCalled()
-  } finally { await monitor.close() }
+  } finally {
+    await monitor.close()
+    vi.useRealTimers()
+  }
   expect(listener).toBeUndefined()
 })
 

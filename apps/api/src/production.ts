@@ -15,6 +15,7 @@ import { GitCiCommits } from './modules/ci-host/commits.js'
 import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
 import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
 import { HostCiRunner } from './modules/ci-host/runner.js'
+import { cloudCis, workspaceMirrors } from './modules/ci-host/cloud.js'
 import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
@@ -82,6 +83,7 @@ import { repeatRuntimeDirectory, type RepeatRepositoryServices } from './modules
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import { BYTE_TRANSFER_NAMESPACE } from './modules/byte-transfer/carrier.js'
 import { retainInstalledHarnessInventory } from './modules/harnesses/installedCodexInspection.js'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { RESOURCE_TELEMETRY_CAPABILITY, type TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 import { createResourceTelemetryRuntime, type ResourceTelemetryRuntime } from './modules/resource-telemetry/runtime.js'
@@ -887,7 +889,8 @@ export function buildProductionApp(
       const result = await harnessQualifications.verify('codex', { force: true })
       if (result.status !== 'qualified') throw new DomainError('HARNESS_REQUALIFICATION_FAILED',
         result.failureReason ?? 'The updated Codex installation failed its native checks.', 409)
-    }, error => app.log.error({ err: error }, 'Automatic harness installation checks failed'))
+    }, error => app.log.error({ err: error }, 'Automatic harness installation checks failed'),
+    infrastructure?.installationRefreshIntervalMs)
   const claudeMetadata = infrastructure?.mode === 'replay' ? undefined : productionClaudeMetadata({ registry: harnessRegistry,
     accounts: providerAccounts,
     ...(selectedAccounts.selectAccount ? { selectAccount: selectedAccounts.selectAccount } : {}),
@@ -1763,16 +1766,14 @@ export function buildProductionApp(
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
       { name: 'Foreman Code MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
-        // Ordinary restart must persist the exact retained Worker/reviewer
-        // closes before raw disposal loses their manager lifetime identities.
-        // Still dispose all allocations after a receipt failure, but propagate
-        // that failure so shutdown cannot release runtime ownership.
-        const errors: unknown[] = []
-        try { await approvals.closeForRestart() } catch (error) { errors.push(error) }
-        try { await managers.dispose() } catch (error) { errors.push(error) }
-        // Remote session disposition still needs the authenticated device channels.
-        try { await deviceRuntime.drain() } catch (error) { errors.push(error) }
-        if (errors.length) throw new AggregateError(errors, 'Execution native manager disposal was incomplete.')
+        // Preserve the manager and authenticated channels until every restart detach commits, including retries.
+        try {
+          await approvals.closeForRestart()
+          await managers.dispose()
+          await deviceRuntime.drain()
+        } catch (error) {
+          throw new AggregateError([error], 'Execution native manager disposal was incomplete.', { cause: error })
+        }
       } },
       { name: 'remaining Operator native managers', run: async () => {
         // Snapshot only after all producers have drained. Keep failed disposals
@@ -1986,8 +1987,9 @@ export function buildProductionApp(
         runtimeServices.workspaces, runtimeServices.workspaceRoots, jobRuntime.policies, jobRuntime.sources,
         machine.installationId, projectRoot)
       registerWorkspaceRepositoryRoutes(app, runtimeServices.workspaceRepositories)
+      const clouds = cloudCis(machine.installationId, workspaceMirrors(database.pool))
       runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
-        id => deviceRuntime.presenceFor(id), commands)
+        id => deviceRuntime.presenceFor(id), commands, clouds)
       registerComputerActivityRoutes(app, runtimeServices.computerActivity)
       runtimeServices.computerAccounts = new ComputerAccountsService(database.pool, machine.installationId,
         () => deviceRuntime.endpointForDomains(), commands)
@@ -2059,7 +2061,8 @@ export function buildProductionApp(
       }
       // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
       const hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),
-        new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner()),
+        new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner(),
+          undefined, clouds),
         agentSnapshots(database.pool, readAgentFiles))
       hostCi.start()
       app.addHook('onClose', async () => { await hostCi.close() })
@@ -2107,7 +2110,8 @@ export function buildProductionApp(
             return captured ? [{ execution: owned.execution, session: owned.session, writer: owned.writer, generation:owned.generation, assertCurrent: owned.assertCurrent, nativeOwner: captured.owner }] : []
           }) })
         telemetry = await createResourceTelemetryRuntime({ localContext: mainTelemetryContext, registry, ...authorities,
-          wholeHostVisible: false, signal: telemetryLifetime.signal })
+          // A Main inside a container sees only its namespace, never the whole computer.
+          wholeHostVisible: !existsSync('/.dockerenv') && !existsSync('/run/.containerenv'), signal: telemetryLifetime.signal })
         runtimeServices.resourceTelemetry = { reads: telemetry.service, selectors: telemetry.selectors }
         const audit = { record: (principalId: string, source: 'http' | 'mcp', selectorKey: string) =>
           commands.recordDenied(principalId, source, 'resource_telemetry_read', selectorKey) }

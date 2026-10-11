@@ -65,6 +65,7 @@ function fixture() {
         execution_attempt: state.forgedAttempt ? 2 : execution.attempt, technical_attempt: execution.attempt,
         execution_occurrence_id: f.occurrence.identity.occurrenceId, identity_occurrence_id: f.occurrence.identity.occurrenceId }])
     }
+    if (q.startsWith('select e.record,c.record as configuration from harness_executions e')) return rows([])
     if (q.startsWith('select record,input_json,input_digest from run_repeat_occurrences')) return rows([{
       record: f.occurrence, input_json: JSON.stringify(entry), input_digest: repeatDigest(entry),
     }])

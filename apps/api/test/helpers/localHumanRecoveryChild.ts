@@ -36,8 +36,8 @@ async function start(input: LocalHumanRecoveryInput): Promise<void> {
       const manager = new CodexAppServerSessionManager(input.binary, undefined, undefined, registry.scope(id))
       const attach = manager.attachSession.bind(manager)
       manager.attachSession = async (...arguments_: Parameters<CodexAppServerSessionManager['attachSession']>) => {
-        // Exercise cold startup latency before performing the real native attachment.
-        await delay(6_000, undefined, { signal: arguments_[2] })
+        // Attachment must survive beyond the separate 5s observation budget during cold startup.
+        await delay(5_100, undefined, { signal: arguments_[2] })
         return attach(...arguments_)
       }
       const reconcile = manager.reconcile.bind(manager)

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { applyApplicationMigrations, migrations } from '../../src/infrastructure/migrations.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+import { recordIntegrationStartup } from '../../../../scripts/integration-startup.mjs'
 
 export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 /** The existing disposable loopback test gate, without importing retired
@@ -10,6 +11,7 @@ export const postgresEnabled = Boolean(process.env.TEST_DATABASE_URL)
 export async function currentDatabase(options: {
   beforeMigration?: number; deferMigration?: number; databaseUrl?: string
 } = {}) {
+  const started = performance.now()
   const url = options.databaseUrl ?? process.env.TEST_DATABASE_URL
   if (!url) throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const parsed = new URL(url)
@@ -22,6 +24,7 @@ export async function currentDatabase(options: {
   const pool = new pg.Pool({ connectionString: url, max: 10,
     options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const directory = await privateFixtureDirectory('eng04-b-')
+  const beforeMigration = performance.now()
   try {
     const pendingMigration = options.beforeMigration ?? options.deferMigration
     if (pendingMigration === undefined) {
@@ -51,6 +54,9 @@ export async function currentDatabase(options: {
     await pool.end(); await dropFixtureSchema(admin, schema); await admin.end()
     await removeFixtureDirectory(directory); throw error
   }
+  recordIntegrationStartup('schema-fixture-ready', {
+    setupMs: beforeMigration - started, migrationMs: performance.now() - beforeMigration,
+  })
   return { pool, schema, directory, async close() {
     await pool.end()
     try { await dropFixtureSchema(admin, schema) } finally { await admin.end() }

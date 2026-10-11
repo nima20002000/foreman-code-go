@@ -59,6 +59,17 @@ result is not a full integration gate. The original protected test inventory and
 publication completeness checks still apply. Operators can read these diagnostics
 from the published logs archive using the existing scoped artifact tools.
 
+Host integration runs started from an ordinary SSH session may have a supported
+Worker packaging target and no delegated cgroup. Use
+`corepack pnpm test:integration:delegated --files <integration files...>` on hosts
+with an available systemd user manager. This explicit entry point runs the existing
+runner in a transient user scope with `Delegate=yes`; systemd collects the scope
+after the invocation. It changes no persistent service, ownership or permission
+settings. Hosts already running the suite in a delegated service can use the
+ordinary entry point. Native containment remains required in both cases. A refused
+guardian launch reports `NATIVE_CONTAINMENT_UNAVAILABLE`; an uncontained CLI command
+succeeding by hand does not establish native qualification.
+
 Each ordinary suite closes its original container before reports are finalized
 and published through the canonical Job file store. Publication verifies the
 declared byte limits and reads retained bytes back by file ID, revision and hash.

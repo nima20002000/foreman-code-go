@@ -2,7 +2,7 @@ import type pg from 'pg'
 import { z } from 'zod'
 import {
   COMPUTER_ACTIVITY_LIMIT, ComputerActivityListSchema, computerDisplayName, ComputerAgentActivitySchema, ComputerJobActivitySchema,
-  type ComputerActivity, type ComputerActivityList,
+  type CloudCiActivity, type ComputerActivity, type ComputerActivityList,
 } from '@foreman-code/contracts/computer-activity'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { DeviceProvisioningTargetSchema, sameDeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -16,12 +16,19 @@ import { buildComputerKey } from '../settings/buildComputers.js'
 const jobRow = z.object({ target: DeviceProvisioningTargetSchema, activity: ComputerJobActivitySchema })
 const agentRow = z.object({ target: DeviceProvisioningTargetSchema, activity: ComputerAgentActivitySchema })
 
+/** A cloud CI service as Main's CI dispatcher sees it. */
+export interface CloudCiService {
+  readonly provider: { readonly id: CloudCiActivity['provider']; readonly label: string; readonly slots: number }
+  ready(): Promise<boolean>
+}
+
 export class ComputerActivityService {
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
     private readonly presence: (deviceId: string) => DevicePresence | null,
     private readonly commands: PostgresCommandCoordinator,
+    private readonly clouds: readonly CloudCiService[] = [],
   ) {}
 
   async list(principal: ManagementPrincipal, source: 'http' | 'mcp' = 'http'): Promise<ComputerActivityList> {
@@ -73,6 +80,7 @@ export class ComputerActivityService {
           if (computer && sameDeviceProvisioningTarget(computer.target, target)) computer.agents.push(activity)
         }
       }
+      const cloud = await readCloud(sql, this.mainId, this.clouds)
       const truncated = registrations.rows.length > 100 || jobs.rows.length > COMPUTER_ACTIVITY_LIMIT
         || agents.rows.length > COMPUTER_ACTIVITY_LIMIT
       const latest = await readLiveManagementPrincipal(sql, principal.id)
@@ -85,7 +93,7 @@ export class ComputerActivityService {
       const activityComplete = !truncated && [principal, live, latest].every(caller =>
         isAuthorized(caller, 'jobs:read') && isAuthorized(caller, 'runs:read'))
       await sql.query('commit')
-      return ComputerActivityListSchema.parse({ mainId: this.mainId, computers, truncated, activityComplete })
+      return ComputerActivityListSchema.parse({ mainId: this.mainId, computers, cloud, truncated, activityComplete })
     } catch (error) {
       await sql.query('rollback')
       throw error
@@ -93,6 +101,23 @@ export class ComputerActivityService {
       sql.release()
     }
   }
+}
+
+async function readCloud(sql: pg.PoolClient, mainId: string, clouds: readonly CloudCiService[]) {
+  if (!clouds.length) return []
+  const counts = await sql.query<{ provider: string; running: number }>(`select split_part(host_key, ':', 3) as provider,
+    count(*)::int as running from ci_runs where state in ('starting','running') and host_key like $1
+    group by 1`, [`${mainId}:cloud:%`])
+  const running = new Map(counts.rows.map(row => [row.provider, row.running]))
+  const listed: CloudCiActivity[] = []
+  for (const cloud of clouds) {
+    const ready = await cloud.ready().catch(() => false)
+    const count = running.get(cloud.provider.id) ?? 0
+    // A service Main is not logged in to and that runs nothing is not part of this installation.
+    if (ready || count > 0) listed.push({ provider: cloud.provider.id, name: cloud.provider.label, ready,
+      slots: cloud.provider.slots, running: count })
+  }
+  return listed
 }
 
 function readJobs(sql: pg.PoolClient, mainId: string) {

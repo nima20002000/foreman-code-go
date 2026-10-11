@@ -170,7 +170,9 @@ test('NATIVE-2 first launch and terminal replay use one exact session and one tu
   f.set({ ...f.get(), nativeSessionId: undefined })
   let creates = 0, turns = 0, permits = 0
   f.store.consumeLaunch = () => ++permits === 1
-  const startTurn = async function* (_session: unknown, input: { clientCorrelationId: string }) {
+  const startTurn = async function* (session: unknown, input: { clientCorrelationId: string }) {
+    assert.deepEqual(session, f.session)
+    assert.equal(f.get().nativeSessionId, f.session.nativeSessionId)
     assert.equal(input.clientCorrelationId, `execution:${f.get().id}`)
     turns++
     yield { executionId: f.get().id, connectionId: 'connection-first-occurrence', sequence: 1,
@@ -179,8 +181,14 @@ test('NATIVE-2 first launch and terminal replay use one exact session and one tu
   const physical = { ...f.manager,
     createSession: async () => { creates++; return f.session },
     startTurn,
-    startTurnBatches: (session: unknown, input: { clientCorrelationId: string }) =>
-      nativeEventBatches(startTurn(session, input)),
+    async *startTurnBatches(session: unknown, input: {
+      clientCorrelationId: string; onSessionReady?(): Promise<void>; onTurnOffered?(): void
+    }) {
+      assert.ok(input.onSessionReady)
+      await input.onSessionReady()
+      input.onTurnOffered?.()
+      yield* nativeEventBatches(startTurn(session, input))
+    },
   }
   f.internals.resolveManager = () => ({ manager: physical as never, processState: 'needs_start',
     beginStart: () => { f.calls.push('begin-start') }, markResident: () => { f.calls.push('resident') } })
@@ -195,9 +203,10 @@ test('NATIVE-2 first launch and terminal replay use one exact session and one tu
       runnerId: 'runner-native2', workingDirectory: input.workingDirectory,
       providerVersion: f.session.providerVersion, nativeFilters: {} }) }
   }
-  await f.coordinator.observeExact({ execution: f.get(), request: liveRequest(f), approval: f.run.approval, store: f.store,
+  const observed = await f.coordinator.observeExact({ execution: f.get(), request: liveRequest(f), approval: f.run.approval, store: f.store,
     owner: f.owner as never, workflowId: f.run.workflowId, graphThreadId: f.run.id, signal: new AbortController().signal })
-  await f.observe()
+  assert.equal(observed.state, 'completed')
+  assert.equal((await f.observe()).state, 'completed')
   assert.equal(creates, 1); assert.equal(turns, 1); assert.equal(permits, 1)
   assert.equal(f.persisted.length, 1)
   assert.ok(f.persisted[0]?.evidence)

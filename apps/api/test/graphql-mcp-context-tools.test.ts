@@ -62,9 +62,9 @@ it('tells the Agent where its workspace synced folder is available on its own co
   const mounts: unknown[] = []
   const service = Object.assign(new PostgresAppInteractionService({ query } as unknown as pg.Pool, {} as never, {} as never), {
     syncedFolder: async (workspaceId: string, hostRef: unknown) => { mounts.push({ workspaceId, hostRef });
-      return mounts.length === 1 ? '/home/dexter/shared/workspace-folder' : null } })
+      return mounts.length === 1 ? '/home/builder/shared/workspace-folder' : null } })
   expect((await service.context(worker) as { sharedFiles?: unknown }).sharedFiles).toEqual({ provider: 'syncthing',
-    path: '/home/dexter/shared/workspace-folder' })
+    path: '/home/builder/shared/workspace-folder' })
   expect(mounts).toEqual([{ workspaceId: 'workspace', hostRef: { kind: 'device', deviceId } }])
   // No sync configured on that computer: no shared folder is offered.
   expect(await service.context(worker)).not.toHaveProperty('sharedFiles')

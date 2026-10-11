@@ -11,7 +11,7 @@ import {
 import { Settings } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
-import { ComputerActivityIcons } from '../../features/computers/ComputerActivity'
+import { SidebarComputers } from '../../features/computers/ComputerActivity'
 import { ThemeToggle } from '../../features/theme'
 import { HarnessStatusMenu } from '../../features/settings/HarnessStatusMenu'
 import { useWorkspacePages } from '../api/query'
@@ -257,7 +257,7 @@ export function WorkspaceShell({
         </nav>
 
         <div className="sidebar-footer">
-          <ComputerActivityIcons />
+          <SidebarComputers />
           <HarnessStatusMenu />
           <div className="sidebar-preferences-row">
             <Link

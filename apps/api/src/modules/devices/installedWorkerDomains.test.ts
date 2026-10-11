@@ -115,11 +115,19 @@ describe('actual installed worker mount availability, no physical acceptance', (
     let finishJob!: () => void
     const job = new Promise<void>(resolve => { finishJob = resolve })
     let agentOpen = true
+    let observeQuiescence!: () => void
+    const quiescence = new Promise<void>(resolve => { observeQuiescence = resolve })
+    let finishAgent!: () => void
+    const agentClosed = new Promise<void>(resolve => { finishAgent = resolve })
     let jobOutcome = 'running'
     let scheduled = false
     const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal, active: () => [],
       drainJobs: async () => { await job; jobOutcome = 'succeeded' },
-      drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => !agentOpen })
+      drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => {
+        observeQuiescence()
+        await agentClosed
+        return !agentOpen
+      } })
     const refresh = drain.run().then(() => { scheduled = true })
     expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).toThrow('waiting for active work')
     expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.open' })).toThrow()
@@ -131,10 +139,12 @@ describe('actual installed worker mount availability, no physical acceptance', (
     expect(scheduled).toBe(false)
     expect(jobOutcome).toBe('running')
     finishJob()
-    await new Promise(resolve => setTimeout(resolve, 10))
+    await quiescence
+    await new Promise<void>(resolve => setImmediate(resolve))
     expect(jobOutcome).toBe('succeeded')
     expect(scheduled).toBe(false)
     agentOpen = false
+    finishAgent()
     await refresh
     expect(scheduled).toBe(true)
     expect(jobOutcome).toBe('succeeded')
@@ -238,24 +248,26 @@ describe('actual installed worker mount availability, no physical acceptance', (
       expect(mounted.rsyncAvailable).toBe(false)
       expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
       expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual([
-        'agent-snapshot-v1', 'ci-runtime-v1', 'computer-accounts-v1', 'computer-github-v1',
-        'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1',
+        'agent-snapshot-v1', 'ci-host-v1', 'ci-runtime-v1', 'computer-accounts-v1', 'computer-github-v1',
+        'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1', 'resource-telemetry',
       ])
-      const ci = mounted.extensions.find(extension => extension.namespace === 'ci-runtime-v1')!
-      await expect(ci.handle!({ operation: 'status' }, {
-        signal: AbortSignal.timeout(1000),
-        binding: {
-          mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
-          keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(),
-          connectionEpoch: randomUUID(), connectionGeneration: 1,
-        },
-      })).rejects.toMatchObject({ code: 'WORKER_DOMAIN_UNAVAILABLE' })
+      for (const namespace of ['ci-runtime-v1', 'ci-host-v1']) {
+        const ci = mounted.extensions.find(extension => extension.namespace === namespace)!
+        await expect(ci.handle!({ operation: 'status' }, {
+          signal: AbortSignal.timeout(1000),
+          binding: {
+            mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
+            keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(),
+            connectionEpoch: randomUUID(), connectionGeneration: 1,
+          },
+        })).rejects.toMatchObject({ code: 'WORKER_DOMAIN_UNAVAILABLE' })
+      }
     } finally {
       await mounted.close()
       await mounted.close()
     }
   })
-  it('advertises the actual Job input client on the existing channel only with an explicit Job installation',async()=>{
+  it('advertises the Job input client only with a Job installation and computer telemetry without one',async()=>{
     const pairing=WorkerPairingConfigurationSchema.parse({formatVersion:1,mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),
       keyRevision:1,authorizationRevision:1,endpoint:'wss://unconnected.example/device/connect',mainPublicKeyFingerprint:'a'.repeat(64),credential:'b'.repeat(64),expiresAt:new Date(Date.now()+60000).toISOString()})
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-input-client-'))
@@ -277,14 +289,15 @@ describe('actual installed worker mount availability, no physical acceptance', (
     expect(absent.extensions.some(value=>value.namespace==='job-inputs-v1')).toBe(false)
     expect(extensionDescriptors(absent.extensions).filter(value => value.namespace === 'byte-transfer-v1'))
       .toEqual([{ namespace: 'byte-transfer-v1', version: 1, role: 'duplex', maxJsonBytes: 16384, maxBinaryBytes: 1048576 }])
-    expect(absent.extensions.some(value => value.namespace === resourceTelemetryExtension.namespace)).toBe(false)
-    await absent.close()
     const configured=await createInstalledWorkerDomains({...input,jobConfiguration:{path:'/uncreated-job-selection.json',ownerUid:process.getuid!()}})
     expect(extensionDescriptors(configured.extensions).filter(value=>value.namespace==='job-inputs-v1')).toEqual([{namespace:'job-inputs-v1',version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192}])
     expect(extensionDescriptors(configured.extensions).filter(value => value.namespace === 'byte-transfer-v1'))
       .toEqual([{ namespace: 'byte-transfer-v1', version: 1, role: 'duplex', maxJsonBytes: 16384, maxBinaryBytes: 1048576 }])
+    expect(configured.extensions.some(value => value.namespace === resourceTelemetryExtension.namespace)).toBe(true)
+    await configured.close()
     try {
-      const telemetry = configured.extensions.find(value => value.namespace === resourceTelemetryExtension.namespace)!
+      // A computer that runs only CI or agents still reports its CPU, memory and disk.
+      const telemetry = absent.extensions.find(value => value.namespace === resourceTelemetryExtension.namespace)!
       const identity = { mainId: pairing.mainId, host: { hostRef: approved.hostRef, deviceId: pairing.deviceId,
         applicationInstallationId: pairing.workerInstallationId, bootId, runtimeEpoch: binding.connectionEpoch,
         keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1, collectorGeneration: 'installed-controller' } }
@@ -304,6 +317,6 @@ describe('actual installed worker mount availability, no physical acceptance', (
       await expect(telemetry.handle!({ ...payload, challenge: { ...payload.challenge,
         challengeId: randomUUID(), identity: { ...identity, host: { ...identity.host, bootId: randomUUID() } } } }, context))
         .rejects.toThrow()
-    } finally { await configured.close() }
+    } finally { await absent.close() }
   })
 })
