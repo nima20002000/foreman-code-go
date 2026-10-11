@@ -2,7 +2,6 @@ import { z } from 'zod'
 import { CiRunRecordSchema, CiSuiteSchema } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
-import { JobLogPageSchema, JobExecutionSchema } from './jobs.js'
 import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
