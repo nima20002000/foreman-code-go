@@ -408,7 +408,8 @@ export async function waitForProductionReady({ origin, expected, timeoutMs = 90_
 export async function copyVerificationRuntime(source, release) {
   const paths = ['scripts/verification-runner.mjs', 'scripts/verification-reports.mjs',
     'scripts/integration-process.mjs', 'scripts/integration-capabilities.mjs',
-    'apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs']
+    'apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs',
+    'packages/contracts/src/integrationScheduling.mjs']
   for (const path of paths) {
     const destination = join(release, path)
     await mkdir(dirname(destination), { recursive: true })

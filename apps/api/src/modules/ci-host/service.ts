@@ -272,13 +272,16 @@ export class HostCiService {
 
   private async computer(hostRef: HostRef) {
     const computer = (await this.endpoint.computers()).find(value => JSON.stringify(value.hostRef) === JSON.stringify(hostRef))
+    if (computer) return computer
     // Disabling future builds does not prevent reading or cancelling an assigned run.
-    if (!computer && hostRef.kind !== 'cloud') {
-      return { key: `${hostRef.mainId}:${hostRef.kind === 'main' ? 'main' : hostRef.deviceId}`, hostRef,
-        label: hostRef.kind === 'main' ? 'Main computer' : `Computer ${hostRef.deviceId.slice(0, 8)}`, priority: 0 }
+    if (hostRef.kind === 'main') {
+      return { key: `${hostRef.mainId}:main`, hostRef, label: 'Main computer', priority: 0 }
     }
-    if (!computer) throw new DomainError('CI_COMPUTER_OFFLINE', 'The build computer running this CI run is offline.', 409)
-    return computer
+    if (hostRef.kind === 'device' && hostRef.deviceId) {
+      return { key: `${hostRef.mainId}:${hostRef.deviceId}`, hostRef,
+        label: `Computer ${hostRef.deviceId.slice(0, 8)}`, priority: 0 }
+    }
+    throw new DomainError('CI_COMPUTER_OFFLINE', 'The build computer running this CI run is offline.', 409)
   }
 
   private async settle(run: CiRunRecord, computer: HostCiComputer, state: { state: string; step: string | null

@@ -367,6 +367,7 @@ it('persists the heavy-file partition plan through authenticated MCP and denies 
     'apps/api/test/local-human-native.integration.test.ts',
   ]
   const files = [...heavy, 'apps/api/test/first.integration.test.ts', 'apps/api/test/second.integration.test.ts']
+  const expectedFiles = [...files].sort()
   const durations = { [heavy[0]!]: 168_000, [heavy[1]!]: 100_000,
     [files[2]!]: 1_000_000, [files[3]!]: 200_000 }
   try {
@@ -385,6 +386,7 @@ it('persists the heavy-file partition plan through authenticated MCP and denies 
     const slices = f.started.map(({ request }) => {
       expect(request.operation).toBe('start')
       if (request.operation !== 'start') throw new Error('Expected a start request')
+      expect(request.files).toEqual(expectedFiles)
       expect(request.durations).toEqual(durations)
       return integrationPartition(request.files!, request.durations!, request.partition!)
     })
@@ -393,7 +395,7 @@ it('persists the heavy-file partition plan through authenticated MCP and denies 
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(read.partitions).toHaveLength(2)
     for (const run of read.partitions!) {
-      expect(run).toMatchObject({ scope: 'affected', files, partition: { count: 2, weights: [1, 1] } })
+      expect(run).toMatchObject({ scope: 'affected', files: expectedFiles, partition: { count: 2, weights: [1, 1] } })
       const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])
       expect(stored.rows[0]!.record).toEqual(run)
     }

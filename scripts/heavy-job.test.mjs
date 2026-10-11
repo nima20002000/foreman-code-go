@@ -840,6 +840,7 @@ test('verification builds execute each time and return machine-readable command 
       'scripts/integration-capabilities.mjs',
       'apps/worker/src/diagnostics.mjs',
       'packages/contracts/src/verificationEnvironment.mjs',
+      'packages/contracts/src/integrationScheduling.mjs',
     ]) {
       const destination = join(f.first, path)
       mkdirSync(dirname(destination), { recursive: true })

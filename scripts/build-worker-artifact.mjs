@@ -123,7 +123,8 @@ if (verificationScripts.every(path => committedScripts.has(path))) {
   for (const path of verificationScripts) {
     await writeFile(join(output, 'artifacts/verification', path.slice('scripts/'.length)), snapshotSource(path), { mode: 0o600 });
   }
-  for (const path of ['apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs']) {
+  for (const path of ['apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs',
+    'packages/contracts/src/integrationScheduling.mjs']) {
     const destination = join(output, 'artifacts', path);
     await mkdir(dirname(destination), { recursive: true });
     await writeFile(destination, snapshotSource(path), { mode: 0o600 });

@@ -14,6 +14,7 @@ export async function copyApiRuntime(repository, output) {
     ...verification.map(name => `scripts/${name}`),
     'apps/worker/src/diagnostics.mjs',
     'packages/contracts/src/verificationEnvironment.mjs',
+    'packages/contracts/src/integrationScheduling.mjs',
   ]
   for (const path of paths) {
     const destination = join(runtime, path)

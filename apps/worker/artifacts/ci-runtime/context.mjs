@@ -24,7 +24,8 @@ async function installedRuntimeFiles(offlineSeed) {
   for (const name of ['verification-runner.mjs', 'verify-repository.mjs', 'verification-reports.mjs', 'integration-process.mjs', 'integration-capabilities.mjs']) {
     entries.push({ root: scripts, name, destination: `verification/${name}` });
   }
-  for (const path of ['apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs']) {
+  for (const path of ['apps/worker/src/diagnostics.mjs', 'packages/contracts/src/verificationEnvironment.mjs',
+    'packages/contracts/src/integrationScheduling.mjs']) {
     entries.push({ root: join(scripts, '..', dirname(path)), name: basename(path), destination: path });
   }
   return Promise.all(entries.map(async entry => ({ ...entry,
