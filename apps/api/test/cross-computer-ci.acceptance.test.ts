@@ -39,7 +39,8 @@ async function verifyPrerequisites(client: Client, input: CrossComputerCiInput) 
     const listed = CiComputersOutputSchema.parse(await callCiTool(client, 'ci_computers_list', {
       workspaceId: workspace.workspaceId,
     }))
-    const required = [...workspace.computers.map(computer => computer.hostRef), ...workspace.ciComputers]
+    // Agent computers need not build: the owner keeps Main out of the CI lane, so only listed CI computers are required.
+    const required = workspace.ciComputers
     for (const host of required) {
       const computer = listed.computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(host))
       expect(computer?.ready, 'Every configured scenario CI computer must be ready').toBe(true)
