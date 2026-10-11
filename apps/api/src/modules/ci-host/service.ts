@@ -27,6 +27,14 @@ export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: stri
 
 const log = componentLogger('jobs')
 
+/** Runs work over every item with at most `limit` in flight. */
+async function inBatches<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>) {
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await work(items[next++]!)
+  }))
+}
+
 /** Main resolves and publishes the commit, then queues suite parts and integration partitions for idle CI computers. */
 export class HostCiService {
   private dispatching: Promise<void> | undefined
@@ -286,8 +294,9 @@ export class HostCiService {
     const computers = await this.endpoint.computers()
     const active = (await this.pool.query<{ record: unknown; host_key: string }>(
       `select record,host_key from ci_runs where state in ('starting','running')`)).rows
-    // Every run is read at once: a cloud read waits on the service's API, and a run's parts finish together.
-    await Promise.all(active.map(async row => {
+    // Runs are read concurrently, a few at a time: a cloud read waits on the service's API, and each read also
+    // writes, so reading every part at once would exhaust the database pool.
+    await inBatches(active, 8, async row => {
       const run = CiRunRecordSchema.parse(row.record)
       const computer = computers.find(value => value.key === row.host_key)
       if (!computer) return
@@ -300,7 +309,7 @@ export class HostCiService {
         await this.learnDurations(run.repository, reply.durations)
           .catch(error => log.warn({ err: error, runId: run.id }, 'CI durations not recorded'))
       }
-    }))
+    })
     const busy = new Set((await this.pool.query<{ host_key: string }>(
       `select host_key from ci_runs where state in ('starting','running')`)).rows.map(row => row.host_key))
     const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(

@@ -63,6 +63,9 @@ async function mcpClient() {
   }
 }
 
+/** A suite part by its name (typecheck-api), an integration partition by its number. */
+const partName = run => run.part ?? (run.partition ? `part ${run.partition.index + 1} of ${run.partition.count}` : run.suite)
+
 async function remote(suite, args) {
   if (args.length) console.error('[ci] Selecting affected files from the snapshot; command arguments apply to local runs only.')
   const call = await mcpClient()
@@ -94,17 +97,22 @@ async function remote(suite, args) {
   console.error(`[ci] ${suite} of ${commit.slice(0, 12)} on ${tickets.length} CI ${tickets.length === 1 ? 'machine' : 'machines'}`)
   const startedAt = Date.now(), states = new Map()
   for (;;) {
-    const runs = await Promise.all(tickets.map(ticketId => call('ci_get', { workspaceId, ticketId }).then(value => value.run)))
+    // A few reads at a time keep Main's database pool free for the runs themselves.
+    const runs = []
+    for (let index = 0; index < tickets.length; index += 4) {
+      runs.push(...await Promise.all(tickets.slice(index, index + 4)
+        .map(ticketId => call('ci_get', { workspaceId, ticketId }).then(value => value.run))))
+    }
     for (const run of runs) {
       const line = `${run.state}${run.computer ? ` on ${run.computer.label}` : ''}`
-      if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s part ${(run.partition?.index ?? 0) + 1}: ${line}`) }
+      if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s ${partName(run)}: ${line}`) }
     }
     if (runs.every(run => !['queued', 'starting', 'running'].includes(run.state))) {
       const failed = runs.filter(run => run.state !== 'passed')
       for (const run of failed) {
         const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => ({ text: '' }))
         const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS|  error  |Error:|×|AssertionError/.test(line))
-        console.log(`\n[ci] part ${(run.partition?.index ?? 0) + 1} ${run.state}${run.message ? `: ${run.message}` : ''}`)
+        console.log(`\n[ci] ${partName(run)} ${run.state}${run.message ? `: ${run.message}` : ''}`)
         console.log(lines.slice(-60).join('\n') || log.text.slice(-4000))
       }
       console.error(`[ci] ${suite} ${failed.length ? 'FAILED' : 'passed'} in ${Math.round((Date.now() - startedAt) / 1000)}s`)
