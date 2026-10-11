@@ -57,7 +57,8 @@ function fakeComputers(github: Record<string, boolean> = {}) {
   const finish = (runId: string, exitCode: number, log: string, durations?: Record<string, number>) => {
     const entry = runs.get(runId)!
     entry.log = log
-    entry.durations = durations
+    if (durations) entry.durations = durations
+    else delete entry.durations
     entry.run = { ...entry.run, state: exitCode === 0 ? 'passed' : 'failed', exitCode, step: entry.request.operation === 'start'
       ? entry.request.suite : null, finishedAt: new Date().toISOString(), logBytes: Buffer.byteLength(log) }
   }
