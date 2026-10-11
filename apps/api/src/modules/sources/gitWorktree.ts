@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { SourceError } from './manifest.js'
 import { DomainError } from '../errors.js'
+import { gitFailure } from './gitErrors.js'
 
 export interface WorktreeRequest { repository: string; branch: string }
 export interface GitWorktreePorts {
@@ -34,8 +35,7 @@ export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeR
   const clone = await ensureCommit(ports, request.repository, commit, signal)
   const run = async (args: string[], cwd?: string) => {
     const result = await ports.git(args, { ...(cwd ? { cwd } : {}), signal })
-    if (result.code !== 0) throw new SourceError('SOURCE_WORKTREE_FAILED',
-      `git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1)?.slice(0, 300) ?? 'unknown error'}`)
+    if (result.code !== 0) throw gitFailure('SOURCE_WORKTREE_FAILED', args[0])
     return result.stdout
   }
   // Worktrees whose Run directory was retired leave stale entries; their branches and commits stay in the clone.
@@ -158,8 +158,7 @@ export async function ensureClone(ports: GitWorktreePorts, repository: string, s
 }
 async function runGit(ports: GitWorktreePorts, args: string[], cwd: string | undefined, signal: AbortSignal) {
   const result = await ports.git(args, { ...(cwd ? { cwd } : {}), signal })
-  if (result.code !== 0) throw new SourceError('SOURCE_WORKTREE_FAILED',
-    `git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1)?.slice(0, 300) ?? 'unknown error'}`)
+  if (result.code !== 0) throw gitFailure('SOURCE_WORKTREE_FAILED', args[0])
   return result.stdout
 }
 

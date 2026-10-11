@@ -193,14 +193,14 @@ export class PostgresOperatorConversationRepository {
       id: string; title: string | null; turn_state: OperatorConversationSummary['turnState'];
       revision: string | number; active_request_id: string | null; needs_attention: boolean; background_activity?: 'running' | 'unknown' | null;
     }>(`select id,record->>'title' as title,turn_state,revision,active_request_id,
-      coalesce(active_request_id is not null and pending_interaction is not null
+      coalesce(pending_interaction is not null
         and response_delivery='offered' and not cancel_requested and record->>'status'='open', false) as needs_attention,
       case when exists(select 1 from operator_conversation_activity a where a.conversation_id=c.id
         and a.record->>'kind'<>'thinking' and a.record->>'status'='unknown') then 'unknown'
         when exists(select 1 from operator_conversation_activity a where a.conversation_id=c.id
         and a.record->>'kind'<>'thinking' and a.record->>'status' in ('pending','running')) then 'running' else null end as background_activity
       from operator_conversations c where c.deleted_at is null and c.owner_principal_id=$1
-        and (not $3::boolean or (active_request_id is not null and pending_interaction is not null
+        and (not $3::boolean or (pending_interaction is not null
           and response_delivery='offered' and not cancel_requested and record->>'status'='open'))
         order by (select max(m.sequence) from operator_conversation_messages m where m.conversation_id=c.id) desc nulls last,
           c.created_at desc,id limit $2`, [ownerId, limit ?? null, attentionOnly])

@@ -297,7 +297,7 @@ export function createProductionWorkerConversations(input: {
           effectSignal.throwIfAborted()
           if (request.phase === 'file') {
             if (!claudeFiles || identity.nativeTurnId !== undefined) unavailable('This native file callback is unavailable.')
-            return claudeFiles.call(request, identity)
+            return claudeFiles.call(request, identity, effectSignal)
           }
           return { authorized: true }
         } } : {}),

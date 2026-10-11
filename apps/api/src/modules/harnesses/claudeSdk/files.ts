@@ -30,8 +30,10 @@ export class ClaudeFileBridge {
     return accepted
   }
 
-  async call(tool: FileToolOperation, input: unknown): Promise<unknown> {
+  async call(tool: FileToolOperation, input: unknown, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted()
     const accepted = await this.accepted(tool)
+    signal?.throwIfAborted()
     if (this.closed) throw new HarnessExecutionError('CLAUDE_FILE_CONTEXT_DENIED', 'The file bridge closed before issuance.')
     this.issue ??= this.service.sessions.issueForAcceptedSession(accepted.context, accepted.expiresAt).then(async (token) => {
       this.token = token
@@ -39,7 +41,10 @@ export class ClaudeFileBridge {
       return token
     })
     const token = await this.issue
+    signal?.throwIfAborted()
     await this.accepted(tool)
+    signal?.throwIfAborted()
+    // Once dispatched, the file service owns mutation completion and its commit.
     switch (tool) {
       case 'files.list': return this.service.list(token, input)
       case 'files.read': return this.service.read(token, input)

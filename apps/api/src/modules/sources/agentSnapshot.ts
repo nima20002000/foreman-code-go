@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SourceError } from './manifest.js'
 import type { GitWorktreePorts } from './gitWorktree.js'
+import { gitFailure } from './gitErrors.js'
 
 /** Bundles of an Agent's own changes are small; larger work belongs on GitHub. */
 export const AGENT_SNAPSHOT_MAX_BYTES = 700 * 1024
@@ -19,8 +20,7 @@ export async function snapshotAgentWorktree(ports: Pick<GitWorktreePorts, 'git'>
   const scratch = await mkdtemp(join(tmpdir(), 'foreman-ci-snapshot-'))
   const git = async (args: string[], env: Record<string, string> = {}) => {
     const result = await ports.git(args, { cwd: input.path, signal, env })
-    if (result.code !== 0) throw new SourceError('SOURCE_SNAPSHOT_FAILED',
-      `git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1)?.slice(0, 300) ?? 'unknown error'}`)
+    if (result.code !== 0) throw gitFailure('SOURCE_SNAPSHOT_FAILED', args[0])
     return result.stdout.trim()
   }
   try {
