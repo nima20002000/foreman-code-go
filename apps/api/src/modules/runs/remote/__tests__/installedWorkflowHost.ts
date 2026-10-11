@@ -11,7 +11,7 @@ import {
   type NativeSessionReference,
 } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import type { NativeHistory } from '../../../harnesses/port.js'
+import type { NativeHistory, NativeSessionStart } from '../../../harnesses/port.js'
 import type { ExecutionResult } from '@foreman-code/contracts'
 import * as installedQualification from '../../../harnesses/installedCodexQualification.js'
 import * as workerMcpEndpoint from '../workerMcpEndpoint.js'
@@ -37,6 +37,7 @@ import { writeRecord } from '../../../harnesses/recovery/storage.js'
 import { InstalledWorkflowRecovery } from '../installedWorkflowRecovery.js'
 import { remoteWorkflowProcessDigest } from '../workflowPhysicalReadout.js'
 import { RemoteOperationJournal } from '../operationJournal.js'
+import { RemoteNativeSessionManager } from '../nativeManagerProxy.js'
 import {
   captureInstalledWorkflowNativeOwner,
   createInstalledWorkflowHost,
@@ -56,7 +57,8 @@ import type { SourceOperationOwner } from '@foreman-code/contracts/source-operat
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
-import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
+import { WORKER_MCP_EXTENSION, WorkerMcpRelayRequestSchema } from '@foreman-code/contracts/worker-mcp-relay'
+import type { WorkerMcpRelay } from '../workerMcpEndpoint.js'
 import type { HarnessExecution } from '@foreman-code/contracts'
 import type pg from 'pg'
 import {
@@ -151,7 +153,8 @@ export async function sourceFixture(relativeCwd='', options: {
 }
 
 export async function runningInstalledFixture(phase: 'generation' | 'approval wait' = 'generation',
-  fixtureOptions: { retainReviewer?: boolean; artifactOutputKeys?: string[] } = {}) {
+  fixtureOptions: { retainReviewer?: boolean; artifactOutputKeys?: string[];
+    mcp?: { request: WorkerMcpRelay['request']; onSessionStart(input: NativeSessionStart): Promise<void> } } = {}) {
   const { artifactOutputKeys } = fixtureOptions
   const f = await sourceFixture('', artifactOutputKeys
     ? { artifactOutputKeys, attemptId: randomUUID(), operationId: randomUUID() } : {})
@@ -182,7 +185,7 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
   vi.spyOn(installedQualification, 'createInstalledCodexQualificationReader').mockReturnValue({
     capture: vi.fn(async () => capture), repository: { find: async () => null, list: async () => [] },
   })
-  vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => {
+  if (!fixtureOptions.mcp) vi.spyOn(workerMcpEndpoint, 'createWorkerMcpEndpoint').mockImplementation(async ({ relay }) => {
     let closed = false
     return { endpoint: 'http://unit.invalid/mcp', close: vi.fn(async () => { closed = true }), bindRelay: async () => {},
       refreshLease: () => {
@@ -233,6 +236,10 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
   const turnEnded = new Promise<void>(resolve => { release = resolve })
   const turnEntered = new Promise<void>(resolve => { entered = resolve })
   const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(session)
+  if (fixtureOptions.mcp) create.mockImplementation(async start => {
+    await fixtureOptions.mcp!.onSessionStart(start)
+    return session
+  })
   const attach = vi.spyOn(CodexAppServerSessionManager.prototype, 'attachSession')
   const turns = vi.spyOn(CodexAppServerSessionManager.prototype, 'startTurn').mockImplementation(async function* (_session, turn) {
     await turn.onSubmitted?.('original-turn')
@@ -307,6 +314,12 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
         }
         if (mcpDenied) throw new Error('App binding requires recovery')
         if (launchDenied) throw new Error('Original MCP lease revoked')
+        if (fixtureOptions.mcp && namespace === WORKER_MCP_EXTENSION.namespace) {
+          const request = WorkerMcpRelayRequestSchema.parse(payload)
+          if (request.operation === 'worker-mcp.request') {
+            return { payload: await fixtureOptions.mcp.request(request.body, request.protocolVersion, requestOptions?.signal) }
+          }
+        }
         if (outputMain && namespace === 'byte-transfer-v1') {
           return outputMain.handleBytes(payload, binding, requestOptions?.bytes)
         }
@@ -336,7 +349,28 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
   }
   const applicationAccess = { kind: 'scoped-worker-mcp', token: 'original-token', executionId: f.intent.executionId,
     agentId: 'agent', operationId: f.intent.operationId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash }
-  const prepared = await call('prepare', { request: f.request, executionPlacement: f.nativePlacement, applicationAccess })
+  let prepared: DeviceApplicationResult
+  try {
+    if (fixtureOptions.mcp) {
+      const proxy = new RemoteNativeSessionManager({ intent: f.intent, placement: f.placement,
+        harness: 'codex', configuration: f.request.configuration,
+        observeReceipt: async () => {}, controlFor: async () => { throw new Error('No native controls in startup') },
+        transport: { request: async (method, raw) => {
+          const result = await call(method, {
+            ...(raw as Record<string, unknown>), executionPlacement: f.nativePlacement,
+          })
+          return result.payload
+        } } })
+      const session = await proxy.createSession({ request: f.request, correlationId: `execution:${f.intent.executionId}`,
+        environment: { agentId: 'agent', variables: { GRAPHQL_MCP_TOKEN: applicationAccess.token } } })
+      prepared = { payload: { session, status: await log.status(f.intent.operationId) } }
+    } else {
+      prepared = await call('prepare', { request: f.request, executionPlacement: f.nativePlacement, applicationAccess })
+    }
+  } catch (error) {
+    await host.close()
+    throw error
+  }
   await call('start-turn', { prompt: 'original prompt', correlationId: 'execution:execution' })
   await turnEntered
   const initialStatus = await log.status(f.intent.operationId)

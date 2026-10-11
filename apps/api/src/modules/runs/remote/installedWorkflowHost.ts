@@ -3,6 +3,7 @@ import { assertWorkerProviderAccountBinding } from '../../provider-accounts/work
 import { managedProviderEnvironment, resolveRuntimeProviderAccount } from '../../harnesses/providerAccountRuntime.js'
 import { constants } from 'node:fs'
 import { componentLogger } from '../../diagnostics/logger.js'
+import { appLauncherPath } from '../../harnesses/appMcpLauncher.js'
 import { open, realpath } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -643,24 +644,43 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           rememberEntry(resident)
           return runtimeLeaf
         },
-        preflight:async(nativeRequest,access)=>{
-          const resident=operations.get(nativeRequest.executionId)
-          if(!resident||!access)unavailable('original_main_lease_required')
-          const actual=resident!
-          await authorize(actual.intent,actual.placement,'start');actual.capture=await actual.reader.capture()
-          if(!isDeepStrictEqual(nativeRequest.configuration,actual.capture.facts.configuration))unavailable('accepted_configuration_conflict')
-          const relay=await prepareWorkerApplicationAccess({request:async(namespace,payload,options)=>
-            forBinding(actual.context.binding)(namespace,payload,options)},actual.intent,actual.placement,access,signal,
-          { currentIntent: () => actual.intent })
-          actual.applicationAccess=structuredClone(access)
-          actual.relay=relay
-          actual.leaseExpiresAt=relay.expiresAt
-          const nativeStart:NativeSessionStart={request:structuredClone(nativeRequest),correlationId:`execution:${actual.intent.executionId}`,environment:relay.environment}
-          if(actual.nativeStart&&!isDeepStrictEqual(actual.nativeStart,nativeStart))unavailable('original_native_start_changed')
-          actual.nativeStart??=nativeStart
-          if(!actual.mcp)actual.mcp=await createWorkerMcpEndpoint({relay,launcher:configuration.appMcpLauncher,signal})
-          rememberEntry(actual)
-          return relay.environment
+        preflight: async (nativeRequest, access) => {
+          const log = componentLogger('harness')
+          let launcher: string | undefined
+          try {
+            launcher = appLauncherPath()
+            log.info({ executionId: nativeRequest.executionId, launcher }, 'Preparing worker workflow MCP route')
+            const resident = operations.get(nativeRequest.executionId)
+            if (!resident || !access) unavailable('original_main_lease_required')
+            const actual = resident!
+            await authorize(actual.intent, actual.placement, 'start')
+            actual.capture = await actual.reader.capture()
+            if (!isDeepStrictEqual(nativeRequest.configuration, actual.capture.facts.configuration)) {
+              unavailable('accepted_configuration_conflict')
+            }
+            const relay = await prepareWorkerApplicationAccess({ request: async (namespace, payload, options) =>
+              forBinding(actual.context.binding)(namespace, payload, options) }, actual.intent, actual.placement,
+            access, signal, { currentIntent: () => actual.intent })
+            const nativeStart: NativeSessionStart = { request: structuredClone(nativeRequest),
+              correlationId: `execution:${actual.intent.executionId}`, environment: relay.environment }
+            if (actual.nativeStart && !isDeepStrictEqual(actual.nativeStart, nativeStart)) {
+              unavailable('original_native_start_changed')
+            }
+            // Native MCP inspection accepts the managed launcher, which reads routes beside itself.
+            if (!actual.mcp) actual.mcp = await createWorkerMcpEndpoint({ relay, launcher, signal })
+            else await actual.mcp.bindRelay(relay)
+            actual.applicationAccess = structuredClone(access)
+            actual.relay = relay
+            actual.leaseExpiresAt = relay.expiresAt
+            actual.nativeStart ??= nativeStart
+            rememberEntry(actual)
+            return relay.environment
+          } catch (error) {
+            log.error({ executionId: nativeRequest.executionId, launcher,
+              code: error instanceof Error && 'code' in error ? error.code : undefined,
+              errorType: error instanceof Error ? error.name : typeof error }, 'Worker workflow MCP preparation failed')
+            throw error
+          }
         },
         nativeEvidence:async(intent,session,nativeContext)=>{const resident=operation(intent)
           if(!resident.manager||!nativeContext||nativeContext.manager!==resident.manager

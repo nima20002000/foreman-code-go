@@ -7,6 +7,7 @@ import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, type AgentFi
 import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
 import { WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import { z } from 'zod'
+import { componentLogger } from '../../diagnostics/logger.js'
 
 const PublicationCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.literal('files.publish_transferred_result'),
@@ -55,6 +56,12 @@ export async function createWorkerMcpEndpoint(input: WorkerMcpEndpointOptions & 
 /** Inspection keeps a stable native URL; requests remain unauthorized until Main supplies its scoped lease. */
 export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOptions) {
   input.signal.throwIfAborted()
+  const log = componentLogger('harness')
+  const logFailure = (operation: string, error: unknown) => {
+    log.error({ operation, launcher: input.launcher,
+      code: error instanceof Error && 'code' in error ? error.code : undefined,
+      errorType: error instanceof Error ? error.name : typeof error }, 'Worker MCP relay failed')
+  }
   let bound: { relay: WorkerMcpRelay; digest: Buffer; expiresAt: string } | undefined
   const active = new Set<Promise<void>>()
   let closing = false, shutdown: Promise<void> | undefined
@@ -93,7 +100,11 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
         response.writeHead(result.statusCode, result.contentType === 'empty' ? {} : { 'content-type': result.contentType })
         response.end(result.body)
       } finally { request.removeListener('aborted', disconnected); response.removeListener('close', disconnected) }
-    })().catch(() => { if (!response.headersSent) response.writeHead(502); response.end() })
+    })().catch(error => {
+      logFailure('request', error)
+      if (!response.headersSent) response.writeHead(502)
+      response.end()
+    })
     active.add(task)
     void task.then(() => active.delete(task))
   })
@@ -130,6 +141,11 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       }
       unregister = release
       bound = { relay, digest: createHash('sha256').update(`Bearer ${token}`).digest(), expiresAt: relay.expiresAt }
+      log.info({ agentId: relay.environment.agentId, launcher: input.launcher, expiresAt: relay.expiresAt },
+        'Worker MCP launcher route registered')
+    }).catch(error => {
+      logFailure('register', error)
+      throw error
     })
     updates = task.then(() => undefined, () => undefined)
     return task
@@ -142,10 +158,18 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       const renewedExpiry = await lease.relay.refresh(input.signal)
       input.signal.throwIfAborted()
       if (closing || bound !== lease) throw new Error('The original worker MCP endpoint is closing.')
+      if (!Number.isFinite(Date.parse(renewedExpiry)) || Date.parse(renewedExpiry) <= Date.now()) {
+        throw new Error('The renewed Main MCP lease is unavailable.')
+      }
       const token = readProductEnvironment(lease.relay.environment.variables, 'MCP_TOKEN')!
       unregister = await registerAppRoute(token, endpoint, renewedExpiry, input.launcher)
       lease.expiresAt = renewedExpiry
+      log.debug({ agentId: lease.relay.environment.agentId, launcher: input.launcher, expiresAt: renewedExpiry },
+        'Worker MCP launcher route renewed')
       return renewedExpiry
+    }).catch(error => {
+      logFailure('renew', error)
+      throw error
     })
     updates = task.then(() => undefined, () => undefined)
     return task

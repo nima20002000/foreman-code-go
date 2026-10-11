@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createUnboundWorkerMcpEndpoint, createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
+import * as diagnostics from '../../diagnostics/logger.js'
 
 const roots: string[] = []
 const endpoints: Awaited<ReturnType<typeof createWorkerMcpEndpoint>>[] = []
 afterEach(async () => { await Promise.all(endpoints.splice(0).map(endpoint => endpoint.close())); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+afterEach(() => vi.restoreAllMocks())
 async function setup(tokenName = 'GRAPHQL_MCP_TOKEN') {
   const root = await mkdtemp(join(tmpdir(), 'worker-private-mcp-')); roots.push(root)
   const token = 'actual-test-scoped-worker-token', expiresAt = new Date(Date.now() + 60_000).toISOString()
@@ -20,6 +22,38 @@ async function setup(tokenName = 'GRAPHQL_MCP_TOKEN') {
     route: join(root, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`) }
 }
 describe('actual worker-private HTTP relay with Main authorization double, no paired/native proof', () => {
+  it('reports a route registration failure and rejects startup without exposing the credential', async () => {
+    const log = diagnostics.componentLogger('harness')
+    const error = vi.spyOn(log, 'error')
+    vi.spyOn(diagnostics, 'componentLogger').mockReturnValue(log)
+    const root = await mkdtemp(join(tmpdir(), 'worker-mcp-registration-'))
+    roots.push(root)
+    const parent = join(root, 'occupied')
+    await writeFile(parent, '')
+    const token = 'registration-test-credential'
+    await expect(createWorkerMcpEndpoint({ launcher: join(parent, 'launcher.mjs'),
+      signal: new AbortController().signal, relay: {
+        environment: { agentId: 'agent', variables: { GRAPHQL_MCP_TOKEN: token } },
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        request: async () => { throw new Error('Unregistered route cannot forward') },
+      } })).rejects.toMatchObject({ code: 'ENOTDIR' })
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ operation: 'register', code: 'ENOTDIR' }),
+      'Worker MCP relay failed')
+    expect(JSON.stringify(error.mock.calls)).not.toContain(token)
+  })
+  it('rejects and logs an expired renewal while preserving the live route', async () => {
+    const log = diagnostics.componentLogger('harness')
+    const error = vi.spyOn(log, 'error')
+    vi.spyOn(diagnostics, 'componentLogger').mockReturnValue(log)
+    const f = await setup()
+    f.refresh.mockResolvedValueOnce(new Date(Date.now() - 60_000).toISOString())
+    await expect(f.endpoint.refreshLease()).rejects.toThrow('renewed Main MCP lease is unavailable')
+    const response = await fetch(f.endpoint.endpoint, { method: 'POST',
+      headers: { authorization: `Bearer ${f.token}` }, body: '{"method":"tools/list"}' })
+    expect(response.status).toBe(200)
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ operation: 'renew' }), 'Worker MCP relay failed')
+    expect(JSON.stringify(error.mock.calls)).not.toContain(f.token)
+  })
   it('keeps inspection unauthorized and the native URL stable when the actual Main lease arrives', async () => {
     const root = await mkdtemp(join(tmpdir(), 'worker-unbound-mcp-'))
     roots.push(root)
