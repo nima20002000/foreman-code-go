@@ -118,10 +118,14 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
   private async captureTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     await this.reconcileCaptures()
+    return this.capacityTransaction(work)
+  }
+  private async capacityTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     try {
       return await this.transaction(work)
     } catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'SOURCE_CAPACITY') throw error
+      await this.reconcileCaptures()
       await this.releaseUnusedSnapshots(undefined, true)
       return this.transaction(work)
     }
@@ -451,8 +455,6 @@ export class PostgresSourceService implements SourceAdmissionPort {
   async prepareExecution(input: { principal: ManagementPrincipal; workspaceId: string; rootId: string; bindingRevision: number;
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord> {
     requireAuthorization(input.principal, 'sources:read', { workspaceId: input.workspaceId })
-    await this.reconcileCaptures()
-    await this.releaseUnusedSnapshots()
     let capacity: SourceStorageCapacity | undefined
     if (this.executions.storageCapacity) {
       const root = await this.transaction(async sql => {
@@ -463,7 +465,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       // Worker authorization calls Main back; release allocation row locks before requesting its measurement.
       capacity = await this.executions.storageCapacity(root, input.attempt)
     }
-    const state = await this.transaction(async sql => {
+    const state = await this.capacityTransaction(async sql => {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
       await requireUnreclaimedSourceOperation(sql, input.operationId)
       const root = await this.resolveRootBinding(sql, input.principal, input)

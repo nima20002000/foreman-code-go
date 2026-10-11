@@ -5,115 +5,128 @@ import type { PrivateSourceSnapshotStore } from './store.js'
 
 export const SOURCE_RETENTION_SECONDS = 3600
 
-/** Current profiles retain their source so qualification can still be requested. */
-/** Under storage pressure, a snapshot that nothing actively uses is released before its retention window ends:
- * otherwise a busy day of commits fills Main's capture budget and blocks every new CI request. */
-async function releasable(sql: GraphSqlClient, snapshotId: string, underPressure = false): Promise<boolean> {
-  const result = await sql.query<{ releasable: boolean }>(`with uses(active,used_at,retention) as (
-    select e.record#>>'{process,phase}' is distinct from 'terminal'
+/** Pressure can shorten retention, but cannot release a source that is still in use. */
+async function releasableSnapshots(sql: GraphSqlClient, snapshotIds: string[],
+  underPressure: boolean): Promise<Set<string>> {
+  const result = await sql.query<{ snapshot_id: string }>(`with candidates as (
+    select snapshot_id::text,(record->>'approvedAt')::timestamptz as approved_at,availability
+    from source_snapshots where snapshot_id=any($1::uuid[])
+  ), uses(snapshot_id,active,used_at,retention) as (
+    select candidate.snapshot_id,e.record#>>'{process,phase}' is distinct from 'terminal'
         or e.record#>>'{process,processStopped}' is distinct from 'true'
         or e.record->>'publication' in ('pending','collecting'),
       greatest((e.record->>'updatedAt')::timestamptz,(e.record->>'finishedAt')::timestamptz),
       (e.accepted_spec#>>'{policy,retentionSeconds}')::integer
-    from job_executions e where e.accepted_spec#>>'{source,snapshotId}'=$1
+    from job_executions e join candidates candidate on e.accepted_spec#>>'{source,snapshotId}'=candidate.snapshot_id
     union all
-    select q.record->>'state' is distinct from 'terminal' or q.record->>'cleanupStatus'='pending',
+    select candidate.snapshot_id,q.record->>'state' is distinct from 'terminal' or q.record->>'cleanupStatus'='pending',
       coalesce((q.record->>'finishedAt')::timestamptz,(q.record->>'enqueuedAt')::timestamptz),
       (q.record#>>'{definition,spec,policy,retentionSeconds}')::integer
-    from job_admission_queue q where q.record#>>'{definition,spec,source,snapshotId}'=$1
+    from job_admission_queue q join candidates candidate
+      on q.record#>>'{definition,spec,source,snapshotId}'=candidate.snapshot_id
     union all
-    select e.id is null and c.status is distinct from 'closed',
+    select candidate.snapshot_id,e.id is null and c.status is distinct from 'closed',
       greatest(p.created_at,(c.closure->>'observedAt')::timestamptz),
       (p.definition#>>'{spec,policy,retentionSeconds}')::integer
     from job_preparations p left join job_executions e on e.id=p.execution_id
       left join source_preparation_reconciliations c on c.operation_id=p.operation_id
-    where p.definition#>>'{spec,source,snapshotId}'=$1
+      join candidates candidate on p.definition#>>'{spec,source,snapshotId}'=candidate.snapshot_id
     union all
-    select s.released_at is null,s.released_at,(s.spec#>>'{policy,retentionSeconds}')::integer
-    from job_computer_selections s where s.spec#>>'{source,snapshotId}'=$1
+    select candidate.snapshot_id,s.released_at is null,s.released_at,(s.spec#>>'{policy,retentionSeconds}')::integer
+    from job_computer_selections s join candidates candidate on s.spec#>>'{source,snapshotId}'=candidate.snapshot_id
     union all
-    select true,null::timestamptz,null::integer
+    select candidate.snapshot_id,true,null::timestamptz,null::integer
     from source_storage_reservations s
       left join job_preparations p on p.operation_id=s.owner_id
       left join job_computer_selections c on c.operation_id=s.owner_id
       left join execution_dispatch_intents i on i.operation_id=s.owner_id
       left join run_node_placements n on n.run_id=i.run_id and n.node_id=i.node_id
+      join candidates candidate on p.definition#>>'{spec,source,snapshotId}'=candidate.snapshot_id
+        or c.spec#>>'{source,snapshotId}'=candidate.snapshot_id
+        or n.record#>>'{source,snapshotId}'=candidate.snapshot_id
+        or s.record#>>'{preparation,source,snapshotId}'=candidate.snapshot_id
     where s.owner_kind='materialization' and s.state in ('preparing','owned','uncertain')
-      and (p.definition#>>'{spec,source,snapshotId}'=$1 or c.spec#>>'{source,snapshotId}'=$1
-        or n.record#>>'{source,snapshotId}'=$1 or s.record#>>'{preparation,source,snapshotId}'=$1)
     union all
-    select m.state<>'closed',
+    select candidate.snapshot_id,m.state<>'closed',
       greatest((m.record#>>'{receipt,verifiedAt}')::timestamptz,m.cleanup_lease_expires_at),null::integer
     from source_execution_materializations m
-    where m.record#>>'{receipt,binding,snapshotId}'=$1
+      join candidates candidate on m.record#>>'{receipt,binding,snapshotId}'=candidate.snapshot_id
     union all
-    select c.status<>'closed',
+    select candidate.snapshot_id,c.status<>'closed',
       greatest(c.created_at,(c.closure->>'observedAt')::timestamptz),null::integer
-    from source_preparation_reconciliations c where c.owner#>>'{source,snapshotId}'=$1
+    from source_preparation_reconciliations c
+      join candidates candidate on c.owner#>>'{source,snapshotId}'=candidate.snapshot_id
     union all
-    select r.execution_state<>'completed' or exists(
+    select candidate.snapshot_id,r.execution_state<>'completed' or exists(
         select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending),
       coalesce((r.record->>'finishedAt')::timestamptz,(r.record->>'createdAt')::timestamptz),null::integer
     from run_node_placements p join runs r on r.id=p.run_id
-    where p.record#>>'{source,snapshotId}'=$1 or p.record#>>'{source,revisionId}'=$1
+      join candidates candidate on p.record#>>'{source,snapshotId}'=candidate.snapshot_id
+        or p.record#>>'{source,revisionId}'=candidate.snapshot_id
     union all
-    select r.execution_state<>'completed' or exists(
+    select candidate.snapshot_id,r.execution_state<>'completed' or exists(
         select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending),
       coalesce((r.record->>'finishedAt')::timestamptz,(r.record->>'createdAt')::timestamptz),
       (d.record#>>'{spec,policy,retentionSeconds}')::integer
     from runs r join workflow_versions v on v.id=r.workflow_version_id
       cross join lateral jsonb_array_elements(v.record#>'{definition,nodes}') n
       join job_definition_versions d on d.id=n->>'jobDefinitionVersionId'
-    where d.record#>>'{spec,source,snapshotId}'=$1
+      join candidates candidate on d.record#>>'{spec,source,snapshotId}'=candidate.snapshot_id
     union all
-    select true,(p.record->>'updatedAt')::timestamptz,null::integer
-    from job_runtime_profiles p where p.record#>>'{root,source,snapshotId}'=$1
+    select candidate.snapshot_id,true,(p.record->>'updatedAt')::timestamptz,null::integer
+    from job_runtime_profiles p join candidates candidate
+      on p.record#>>'{root,source,snapshotId}'=candidate.snapshot_id
     union all
-    select a.record->>'status' in ('qualifying','recovery-required')
+    select candidate.snapshot_id,a.record->>'status' in ('qualifying','recovery-required')
         or (a.record->>'status' in ('captured','awaiting-approval','approved')
           and (a.record->>'expiresAt')::timestamptz>clock_timestamp()),
       greatest((a.record->>'requestedAt')::timestamptz,(a.record->>'expiresAt')::timestamptz),null::integer
-    from job_runtime_qualification_approvals a where a.record#>>'{fingerprint,root,source,snapshotId}'=$1
+    from job_runtime_qualification_approvals a join candidates candidate
+      on a.record#>>'{fingerprint,root,source,snapshotId}'=candidate.snapshot_id
     union all
-    select true,null::timestamptz,null::integer
+    select candidate.snapshot_id,true,null::timestamptz,null::integer
     from workspace_repository_imports i join workspaces w on w.id=i.workspace_id
+      join candidates candidate on i.results#>>'{approvedSource,manifest,snapshotId}'=candidate.snapshot_id
     where i.phase='ready' and w.archived_at is null
-      and i.results#>>'{approvedSource,manifest,snapshotId}'=$1
       and w.record->'repository'=i.input->'repository'
       and w.location_revision::text=i.results#>>'{location,locationRevision}'
     union all
-    select true,null::timestamptz,null::integer
+    select candidate.snapshot_id,true,null::timestamptz,null::integer
     from workflows w join workspaces workspace on workspace.id=w.workspace_id
       join workflow_versions v on v.id=w.current_version_id
       join source_root_bindings b
         on b.workspace_id=w.workspace_id
         and b.root_id::text=v.record#>>'{definition,defaultWorktree,rootBinding,rootId}'
         and b.binding_revision::text=v.record#>>'{definition,defaultWorktree,rootBinding,bindingRevision}'
-    where b.snapshot_id::text=$1 and w.archived_at is null and workspace.archived_at is null
+      join candidates candidate on b.snapshot_id::text=candidate.snapshot_id
+    where w.archived_at is null and workspace.archived_at is null
     union all
-    select true,null::timestamptz,null::integer
+    select candidate.snapshot_id,true,null::timestamptz,null::integer
     from workflows w join workspaces workspace on workspace.id=w.workspace_id
       join workflow_versions v on v.id=w.current_version_id
       cross join lateral jsonb_array_elements(v.record#>'{definition,nodes}') node
       join source_root_bindings b on b.workspace_id=w.workspace_id
         and b.root_id::text=node#>>'{placement,rootBinding,rootId}'
         and b.binding_revision::text=node#>>'{placement,rootBinding,bindingRevision}'
-    where b.snapshot_id::text=$1 and w.archived_at is null and workspace.archived_at is null
+      join candidates candidate on b.snapshot_id::text=candidate.snapshot_id
+    where w.archived_at is null and workspace.archived_at is null
     union all
-    select true,null::timestamptz,null::integer
+    select candidate.snapshot_id,true,null::timestamptz,null::integer
     from source_root_catalog c
       join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
       join workspaces w on w.id=c.workspace_id
-    where b.snapshot_id::text=$1 and w.archived_at is null
+      join candidates candidate on b.snapshot_id::text=candidate.snapshot_id
+    where w.archived_at is null
     union all
-    select false,(b.record->>'boundAt')::timestamptz,null::integer
-    from source_root_bindings b where b.snapshot_id::text=$1
-  ) select not coalesce(bool_or(active),false)
-      and ($3::boolean or greatest(max(used_at),(s.record->>'approvedAt')::timestamptz)
-        + make_interval(secs=>coalesce(max(retention),$2)) < clock_timestamp()) as releasable
-    from source_snapshots s left join uses on true where s.snapshot_id::text=$1 group by s.record`,
-  [snapshotId, SOURCE_RETENTION_SECONDS, underPressure])
-  return result.rows[0]?.releasable === true
+    select candidate.snapshot_id,false,(b.record->>'boundAt')::timestamptz,null::integer
+    from source_root_bindings b join candidates candidate on b.snapshot_id::text=candidate.snapshot_id
+  ) select s.snapshot_id from candidates s left join uses on uses.snapshot_id=s.snapshot_id
+    group by s.snapshot_id,s.approved_at,s.availability
+    having s.availability='unavailable' or (not coalesce(bool_or(active),false)
+      and ($3::boolean or greatest(max(used_at),s.approved_at)
+        + make_interval(secs=>coalesce(max(retention),$2)) < clock_timestamp()))`,
+  [snapshotIds, SOURCE_RETENTION_SECONDS, underPressure])
+  return new Set(result.rows.map(row => row.snapshot_id))
 }
 
 type Candidate = { snapshot_id: string; requested_by: string; command_id: string }
@@ -140,7 +153,8 @@ async function releaseSnapshot(pool: pg.Pool, store: Pick<PrivateSourceSnapshotS
   try {
     await sql.query('begin')
     const snapshot = await lockSnapshot(sql, candidate, scopeId)
-    if (!snapshot || (snapshot.availability === 'retained' && !await releasable(sql, candidate.snapshot_id, underPressure))) {
+    if (!snapshot || (snapshot.availability === 'retained'
+      && !(await releasableSnapshots(sql, [candidate.snapshot_id], underPressure)).has(candidate.snapshot_id))) {
       await sql.query('commit')
       return
     }
@@ -163,19 +177,62 @@ async function releaseSnapshot(pool: pg.Pool, store: Pick<PrivateSourceSnapshotS
   } finally { sql.release() }
 }
 
-export async function releaseUnusedSourceSnapshots(pool: pg.Pool,
+async function scanUnusedSourceSnapshots(pool: pg.Pool,
   store: Pick<PrivateSourceSnapshotStore, 'remove'>, scopeId: string,
-  report?: (error: unknown) => void, underPressure = false): Promise<void> {
+  underPressure: boolean): Promise<unknown[]> {
   const candidates = await pool.query<Candidate>(`select a.snapshot_id,a.requested_by,a.command_id
     from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
     join source_storage_reservations r on r.owner_kind='capture' and r.owner_id=a.snapshot_id::text
     where a.state='approved' and r.state='retained' and r.scope_id=$1 order by a.created_at`, [scopeId])
+  if (!candidates.rows.length) return []
+  // Scan without the storage lock; only eligible snapshots need a locked recheck.
+  const releasable = await releasableSnapshots(pool, candidates.rows.map(row => row.snapshot_id), underPressure)
+  const errors: unknown[] = []
   for (const candidate of candidates.rows) {
+    if (!releasable.has(candidate.snapshot_id)) continue
     try {
       await releaseSnapshot(pool, store, scopeId, candidate, underPressure)
     } catch (error) {
-      if (!report) throw error
-      report(error)
+      errors.push(error)
     }
+  }
+  return errors
+}
+
+type ReleaseScan = { pressure: { requested: boolean }; result: Promise<unknown[]> }
+const releaseScans = new WeakMap<pg.Pool, Map<string, ReleaseScan>>()
+
+export async function releaseUnusedSourceSnapshots(pool: pg.Pool,
+  store: Pick<PrivateSourceSnapshotStore, 'remove'>, scopeId: string,
+  report?: (error: unknown) => void, underPressure = false): Promise<void> {
+  let scopes = releaseScans.get(pool)
+  if (!scopes) {
+    scopes = new Map()
+    releaseScans.set(pool, scopes)
+  }
+  let scan = scopes.get(scopeId)
+  if (scan) {
+    scan.pressure.requested ||= underPressure
+  } else {
+    const pressure = { requested: underPressure }
+    const activeScopes = scopes
+    const result = (async () => {
+      try {
+        const errors = await scanUnusedSourceSnapshots(pool, store, scopeId, underPressure)
+        // A capacity failure joining periodic maintenance still needs a pressure pass.
+        if (!underPressure && pressure.requested) {
+          errors.push(...await scanUnusedSourceSnapshots(pool, store, scopeId, true))
+        }
+        return errors
+      } finally {
+        activeScopes.delete(scopeId)
+      }
+    })()
+    scan = { pressure, result }
+    scopes.set(scopeId, scan)
+  }
+  for (const error of await scan.result) {
+    if (!report) throw error
+    report(error)
   }
 }
