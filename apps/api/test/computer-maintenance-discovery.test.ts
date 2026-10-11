@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ComputerMaintenance, systemMaintenancePorts } from '../src/modules/computers/maintenance.js'
 
@@ -14,8 +14,12 @@ async function installation() {
   homes.push(home)
   const local = join(home, '.local/bin')
   const system = join(home, 'system/bin')
+  const nodeBin = join(home, 'node/bin')
   await mkdir(local, { recursive: true })
   await mkdir(system, { recursive: true })
+  await mkdir(nodeBin, { recursive: true })
+  // Keep the interpreter available without exposing its sibling global CLI launchers.
+  await symlink(process.execPath, join(nodeBin, 'node'))
   const payload = join(home, '.local/lib/node_modules/@openai/codex/bin/codex.js')
   await mkdir(dirname(payload), { recursive: true })
   await writeFile(payload, '#!/usr/bin/env node\nthrow new Error("Missing optional dependency @openai/codex-linux-x64");',
@@ -24,7 +28,11 @@ async function installation() {
   await symlink(payload, broken)
   const working = join(system, 'codex')
   await writeFile(working, '#!/bin/sh\nprintf "codex-cli 0.157.0\\n"\n', { mode: 0o755 })
-  const environment = { HOME: home, PATH: `${dirname(process.execPath)}:${system}` }
+  const environment = {
+    HOME: home,
+    PATH: [nodeBin, system].join(delimiter),
+    npm_config_prefix: join(home, '.local'),
+  }
   return { home, broken, working, environment }
 }
 

@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { persistentFixtureRoot } from './helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import * as fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults } from '@foreman-code/contracts'
@@ -192,6 +192,18 @@ describe('actual Main and installed Codex qualification read capability', () => 
   it('accepts producer-shaped identity-qualified proof through the shipped worker mount and keeps exact revision checks', async () => {
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'graphql-codex-revision-'))
     try {
+      const codexBinary = join(stateDirectory, 'codex')
+      const appMcpLauncher = join(stateDirectory, 'graphql-mcp.mjs')
+      await writeFile(codexBinary, '#!/bin/sh\nprintf "codex-cli 0.132.0\\n"\n', { mode: 0o700 })
+      await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), appMcpLauncher)
+      // Retain an explicit fixture selection instead of discovering host CLIs or a built release.
+      await writeFile(join(stateDirectory, 'workflow-runtime.json'), JSON.stringify({
+        schemaVersion: 1,
+        codexBinary,
+        expectedVersion: 'codex-cli 0.132.0',
+        payloadPaths: [],
+        appMcpLauncher,
+      }), { mode: 0o600 })
       const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory])
       mount.manifest = { format: 1, version: '0.1.0', commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
         protocolVersion: 1, identityFormat: 1, packageManager: 'pnpm@11.27.0',
