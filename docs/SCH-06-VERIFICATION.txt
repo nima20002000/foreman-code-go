@@ -30,7 +30,11 @@ PASS apps/api/src/modules/conversations/agentChat.ts
 PASS apps/api/src/modules/conversations/selectedRunChat.ts
 PASS apps/api/src/routes/agentChat.ts
 PASS apps/api/src/routes/selectedRunChat.ts
-PASS apps/api/test/sch06-agent-chat.integration.test.ts
+PASS combined predecessor (historical syntax check; split files have not been checked):
+  apps/api/test/sch06-agent-chat-manual.integration.test.ts
+  apps/api/test/sch06-agent-chat-schedule.integration.test.ts
+  apps/api/test/sch06-agent-chat-historical.integration.test.ts
+  apps/api/test/sch06-agent-chat-query.integration.test.ts
 PASS apps/api/test/sch06-agent-chat.test.ts
 PASS packages/contracts/src/selectedRunChat.ts
 PASS packages/contracts/test/selected-run-chat.test.ts
