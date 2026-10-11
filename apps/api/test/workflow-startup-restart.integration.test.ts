@@ -190,7 +190,7 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
       let disposals = 0
       let restartCloses = 0
       let shutdown: Promise<unknown> | undefined
-      const pause = async () => {
+      const holdAtBoundary = async () => {
         pauseNext = false
         paused.resolve()
         await release.promise
@@ -208,7 +208,7 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
             const session = await createSession(...args)
             observed = session
             executionId = args[0].request.executionId
-            if (boundary === 'created' && pauseNext) await pause()
+            if (boundary === 'created' && pauseNext) await holdAtBoundary()
             return session
           },
           dispose: async () => {
@@ -224,9 +224,9 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
       const updateExecution = runtime.runs.updateExecution.bind(runtime.runs)
       const publication = vi.spyOn(runtime.runs, 'updateExecution').mockImplementation(async (...args) => {
         const firstBinding = pauseNext && args[0].nativeSessionId !== undefined && args[0].state === 'running'
-        if (firstBinding && boundary === 'binding') await pause()
+        if (firstBinding && boundary === 'binding') await holdAtBoundary()
         await updateExecution(...args)
-        if (firstBinding && boundary === 'bound') await pause()
+        if (firstBinding && boundary === 'bound') await holdAtBoundary()
       })
       const closeForRestart = runtime.native.closeForRestart.bind(runtime.native)
       const close = vi.spyOn(runtime.native, 'closeForRestart').mockImplementation(() => {
