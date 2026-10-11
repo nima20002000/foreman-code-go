@@ -10,7 +10,7 @@ import { ManualRunStartResultSchema, SavedRunDetailsSchema } from '@foreman-code
 import { expect, it } from 'vitest'
 import { readCrossComputerCiInput, type CrossComputerCiInput } from './helpers/crossComputerCiInput.js'
 import { listCiToolNames } from './helpers/crossComputerCiTools.js'
-import { callCiTool, connectCiOperator, expectCiDenied, prepareCiWorkflow, qualifyCiProfile,
+import { callCiTool, connectCiOperator, disableCiProfiles, expectCiDenied, prepareCiWorkflow, qualifyCiProfile,
   type PreparedCiWorkflow } from './helpers/crossComputerCiSetup.js'
 import { createScenarioObservation, pollCiScenario, type RunningCiWorkflow,
   type ScenarioObservation } from './helpers/crossComputerCiObservation.js'
@@ -33,7 +33,7 @@ async function verifyPrerequisites(client: Client, input: CrossComputerCiInput) 
     'workspace_get', 'workflow_create', 'workflow_edit_v3', 'workflow_edits_get_v3', 'workflow_saved_get_v3',
     'run_start', 'run_stop', 'run_get', 'run_executions_list', 'run_events_list', 'run_activities_get_v1',
     'run_node_placement_get', 'workflow_node_placement_choices',
-    'harness_registry_get', 'harness_instance_save', 'harness_instance_check',
+    'harness_registry_get', 'harness_instance_save', 'harness_instance_check', 'harness_instances_list',
   ]))
   for (const workspace of input.workspaces) {
     const listed = CiComputersOutputSchema.parse(await callCiTool(client, 'ci_computers_list', {
@@ -167,13 +167,13 @@ it('runs concurrent projects through Agent Host CI with isolated readback twice 
   await mkdir(input.evidenceDirectory, { recursive: true, mode: 0o700 })
   const invocationId = randomUUID()
   const clients: Client[] = []
+  let profiles = new Map<string, HarnessProfileSelection>()
   const redact = (text: string) => text.replaceAll(input.token, '[redacted]').replaceAll(input.deniedToken, '[redacted]')
   try {
     const writer = await connectCiOperator(input.endpoint, input.token)
     clients.push(writer)
     const denied = await connectCiOperator(input.endpoint, input.deniedToken)
     clients.push(denied)
-    let profiles = new Map<string, HarnessProfileSelection>()
     for (const round of [1, 2]) {
       const workflows: RunningCiWorkflow[] = []
       const observation = createScenarioObservation()
@@ -227,6 +227,7 @@ it('runs concurrent projects through Agent Host CI with isolated readback twice 
       }
     }
   } finally {
+    if (clients[0] && profiles.size) await disableCiProfiles(clients[0], profiles.values())
     const closed = await Promise.allSettled(clients.map(client => client.close()))
     expect(closed.every(result => result.status === 'fulfilled'), 'Close every scenario MCP client').toBe(true)
   }

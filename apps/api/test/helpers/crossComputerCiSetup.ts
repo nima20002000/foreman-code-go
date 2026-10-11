@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { ApiErrorSchema, withAdvancedDefaults, type Agent } from '@foreman-code/contracts'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { HarnessRegistryReadbackSchema, HostHarnessOverrideSaveResultSchema,
-  HostHarnessInstanceCheckResultSchema, type HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
+  HostHarnessInstanceCheckResultSchema, HostHarnessOverrideListSchema, type HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import { NodePlacementChoicesResultSchema } from '@foreman-code/contracts/placement-readback'
 import { CurrentEditReadResultSchema, CurrentWorkflowReadResultSchema, SavedManagedWorkflowCommandResultSchema,
   type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
@@ -98,6 +98,22 @@ export async function qualifyCiProfile(client: Client, computer: ScenarioCompute
   expect(checked.proof.qualified, `${computer.name} Codex profile qualification`).toBe(true)
   expect(checked.value.configuration).toEqual(withAdvancedDefaults(ciHarness))
   return { instanceId: checked.value.instanceId, instanceRevision: checked.value.instanceRevision, target }
+}
+
+/** Disables the invocation's profiles so later restarts do not recheck every scenario profile ever created. */
+export async function disableCiProfiles(client: Client, profiles: Iterable<HarnessProfileSelection>) {
+  for (const profile of profiles) {
+    const { target } = profile
+    const listed = HostHarnessOverrideListSchema.parse(await callCiTool(client, 'harness_instances_list', {
+      hostRef: target.hostRef, applicationInstallationId: target.applicationInstallationId,
+    }))
+    const saved = listed.overrides.find(value => value.instanceId === profile.instanceId)
+    if (!saved?.enabled) continue
+    await callCiTool(client, 'harness_instance_save', {
+      commandId: randomUUID(), instanceId: saved.instanceId, expectedRevision: saved.revision,
+      target: saved.target, presetId: saved.presetId, enabled: false, configuration: saved.configuration,
+    })
+  }
 }
 
 async function saveGraph(client: Client, input: {
