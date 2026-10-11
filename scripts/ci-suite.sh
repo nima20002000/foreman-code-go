@@ -9,7 +9,8 @@ case "$SUITE" in
   typecheck|lint|build) pnpm "$SUITE" ;;
   integration)
     # Harness tests check the installed Codex and Claude CLIs, as on our build computers.
-    npm install --global --silent @openai/codex @anthropic-ai/claude-code &
+    # Same 48-hour package age rule as the repository install.
+    npm install --global --silent --before="$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ)" @openai/codex @anthropic-ai/claude-code &
     pnpm db:up
     wait
     export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$DURATIONS_OUTPUT"
