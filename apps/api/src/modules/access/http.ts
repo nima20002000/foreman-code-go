@@ -116,9 +116,8 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     const principal = await authenticate()
     request.operatorPrincipal = principal
     request.operatorAuthentication = headerToken ? 'bearer' : 'local-human'
-    // Agent-chat resources live in the validated query/body or persisted conversation,
-    // not these workspace-only route params. The shared chat service checks the full
-    // resource before reads/mutations; SSE repeats that check after authenticating.
+    // Account and chat services resolve persisted resources before checking their full scopes.
+    const providerAccounts = path === '/api/provider-accounts' || path.startsWith('/api/provider-accounts/')
     const agentChat = /^\/api\/workspaces\/[^/]+\/agent-chat(?:\/|$)/.test(path)
     const selfReadback = path === '/api/local-human' || path === '/api/runtime/identity'
     const params = request.params as Record<string, string | undefined>
@@ -130,10 +129,10 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     request.reauthorizeOperator = async () => {
       const current = await authenticate()
       // Re-check against the same route resource; scoped grants never match an empty resource.
-      if (!agentChat && !selfReadback) requireAuthorization(current, actionFor(request), resource)
+      if (!agentChat && !selfReadback && !providerAccounts) requireAuthorization(current, actionFor(request), resource)
       return current
     }
-    if (!agentChat && !selfReadback && !request.url.startsWith('/api/management/')) {
+    if (!agentChat && !selfReadback && !providerAccounts && !request.url.startsWith('/api/management/')) {
       requireAuthorization(principal, actionFor(request), resource)
       if (request.method === 'GET' && /^\/api\/workspaces\/[^/]+\/runs\/[^/]+(?:\?.*)?$/.test(request.url)) {
         requireAuthorization(principal, 'workspace_locations:read', resource)
