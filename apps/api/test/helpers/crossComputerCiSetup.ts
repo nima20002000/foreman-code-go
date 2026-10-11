@@ -58,7 +58,8 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
       attempt--
       continue
     }
-    expect(result.isError, `Public MCP operation ${name} failed${code ? ` (${code})` : ''}`).not.toBe(true)
+    const detail = result.isError ? JSON.stringify(result.structuredContent ?? result.content).slice(0, 2000) : ''
+    expect(result.isError, `Public MCP operation ${name} failed${code ? ` (${code})` : ''}: ${detail}`).not.toBe(true)
     return decodeMcpToolResult(result)
   }
   throw new Error('The activity read retry budget was exhausted.')
