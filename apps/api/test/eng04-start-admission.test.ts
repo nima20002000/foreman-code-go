@@ -27,7 +27,7 @@ describe('ENG04 NATIVE-3 Start — real G1 with PostgreSQL-shaped rows, NOT a Po
     expect(f.database().succeededAudit).toBe(true)
     expect(f.calls.at(-1)?.sql).toBe('commit')
     expect(f.state.filesystemCalls).toBe(1)
-    const locks = f.calls.filter((call) => call.sql.includes('pg_advisory_xact_lock')).map((call) => call.values[0])
+    const locks = f.calls.filter((call) => call.sql.includes('pg_try_advisory_xact_lock')).map((call) => call.values[0])
     expect(locks).toEqual([`command:${f.principal.id}:run.start:${f.request.commandId}`,
       `command:${f.principal.id}:run.start:${f.request.commandId}`, `admission:runner:${f.location.runnerId}`,
       `admission:workspace:${f.run.workspaceId}`, `admission:workspace:${f.run.workspaceId}`])

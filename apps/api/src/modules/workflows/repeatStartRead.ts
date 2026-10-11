@@ -11,6 +11,7 @@ import type pg from 'pg'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
+import { waitForRunStartLock } from '../runs/startLocks.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import {
   readImmutableWorkflowVersion, readImmutableAgentConfiguration, IMMUTABLE_WORKFLOW_VERSION_COLUMNS,
@@ -42,7 +43,7 @@ export async function readLockedRepeatStartSnapshot(
   const caller = await readLiveManagementPrincipal(client, principal.id)
   requireAuthorization(caller, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
   requireAuthorization(caller, 'workspace_locations:read', { workspaceId: input.workspaceId })
-  await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+  await waitForRunStartLock(client, `admission:workspace:${input.workspaceId}`)
   const workspaceRows = await client.query<LocationRow>(`select id,execution_location,execution_location_identity,
     location_revision::text,archived_at from workspaces where id=$1 for update`, [input.workspaceId])
   const workspace = workspaceRows.rows[0]

@@ -33,6 +33,7 @@ import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { validateReviewerBootstrap } from '../workflows/reviewerBootstrap.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { prepareRunStart } from './startPreparation.js'
+import { RUN_START_LOCK_WAIT_MS, waitForRunStartLock, type RunStartLockWait } from './startLocks.js'
 import type { AcceptedProviderAccountBindings } from '../provider-accounts/acceptedBindings.js'
 import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 
@@ -300,15 +301,17 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       [new Date(Math.min(Date.parse(principal.expiresAt), Date.parse(live.expiresAt))).toISOString()])
     if (valid.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'Start authority expired before commit.', 403)
   }
-  const commandLock = async (sql: GraphTransactionSql) => {
-    await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`command:${principal.id}:run.start:${input.commandId}`])
+  const commandLock = async (sql: GraphTransactionSql, wait: RunStartLockWait) => {
+    await waitForRunStartLock(sql, `command:${principal.id}:run.start:${input.commandId}`, wait)
     await liveAuthority(sql)
     beforeGraphCommit(sql, () => liveAuthority(sql))
   }
+  const lockWait: RunStartLockWait = { deadline: performance.now() + RUN_START_LOCK_WAIT_MS,
+    ...(options.schedule?.signal ? { signal: options.schedule.signal } : {}) }
   let admissionBegan = false
   try {
     const replay = await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
-      await commandLock(sql)
+      await commandLock(sql, lockWait)
       return readStartReceipt(sql, principal.id, input, hash, target)
     }))
     if (replay) return { value: replay, replayed: true }
@@ -321,11 +324,11 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
       options.schedule?.signal?.throwIfAborted()
       if (options.schedule?.signal) beforeGraphCommit(sql, async () => options.schedule!.signal!.throwIfAborted())
-      await commandLock(sql)
+      await commandLock(sql, lockWait)
       const replayed = await readStartReceipt(sql, principal.id, input, hash, target)
       if (replayed) return { value: replayed, replayed: true }
-      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:runner:${prepared.location.runnerId}`])
-      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.workspaceId}`])
+      await waitForRunStartLock(sql, `admission:runner:${prepared.location.runnerId}`, lockWait)
+      await waitForRunStartLock(sql, `admission:workspace:${input.workspaceId}`, lockWait)
       const client = sql as unknown as pg.PoolClient // Existing SQL-only helpers; never expose a raw transaction.
       await assertWorkflowRecovered(client, input.workspaceId, input.workflowId)
       const live = await sql.query<{ count: string }>(`select count(*)::text as count from runs r where r.runner_id=$1

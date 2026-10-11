@@ -15,7 +15,7 @@ beforeEach(() => vi.resetAllMocks())
 function startSetup() {
   const t = sharedFixture()
   const query = vi.fn(async (sql: string) => {
-    if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 }
+    if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ locked: true }], rowCount: 1 }
     if (sql.includes('from workspaces where')) return { rows: [t.locationRow], rowCount: 1 }
     if (sql.includes('from workflows where')) return { rows: [t.workflow], rowCount: 1 }
     if (sql.includes('from workflow_versions where')) return { rows: [t.versionRow], rowCount: 1 }
