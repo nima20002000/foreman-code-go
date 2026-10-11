@@ -43,4 +43,3 @@ export async function within<T>(promise: Promise<T>): Promise<T> {
     })])
   } finally { if (timer) clearTimeout(timer) }
 }
-
