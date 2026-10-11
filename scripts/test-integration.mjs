@@ -12,6 +12,7 @@ import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatab
   resetTestDatabase, testAdminPool, testEnvironment } from './test-resources.mjs'
 import { createTestDatabaseTemplate, dropTestDatabaseTemplate } from './test-database-template.mjs'
 import { readIntegrationStartup } from './integration-startup.mjs'
+import { integrationPhaseForwarder } from './integration-phase.mjs'
 import { adaptiveDeadlineMs, groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
@@ -685,21 +686,27 @@ export async function runIntegration(argv = [], {
       mkdirSync(dirname(log), { recursive: true })
       const output = boundedLog(log, logBytes)
       const json = `${log}.json`
-      const environment = { ...integrationEnvironment(env, slot), FOREMAN_CODE_TEST_FILE_STARTED_AT: String(Date.now()) }
+      const environment = { ...integrationEnvironment(env, slot), FOREMAN_CODE_TEST_FILE_STARTED_AT: String(Date.now()),
+        FOREMAN_CODE_TEST_FILE: file, FOREMAN_CODE_TEST_CACHE_ROOT: join(tempRoot.directory, 'fixture-cache') }
       const vitest = vitestCommand(environment, file, testNamePattern, json)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
       const child = spawn(vitest.command, vitest.args,
         { cwd: vitest.cwd, env: vitest.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const progress = integrationProcessProgress()
+      const phaseOutput = integrationPhaseForwarder(line => console.log(line))
       const recordOutput = (chunk) => {
         progress.bytes += chunk.length
         progress.lastOutputAt = Date.now()
         output.write(chunk)
       }
-      child.stdout.on('data', recordOutput)
+      child.stdout.on('data', chunk => {
+        recordOutput(chunk)
+        phaseOutput.push(chunk)
+      })
       child.stderr.on('data', recordOutput)
       let outputResult
       const closeOutput = () => {
+        phaseOutput.finish()
         outputResult ??= output.close()
         return outputResult
       }
