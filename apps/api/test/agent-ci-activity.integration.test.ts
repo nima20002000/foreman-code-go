@@ -288,7 +288,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const ticketB = await f.submit()
       const initial = await f.activity()
       const before = (await f.database.pool.query<{ sequence: string }>(
-        'select sequence::text from run_activity where run_id=$1 order by sequence', [f.graph.run.id])).rows
+        'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence', [f.graph.run.id])).rows
       await first.query('begin')
       await second.query('begin')
       const holder = (await first.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
@@ -328,7 +328,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(BigInt(delivered[1]!.sequence)).toBeGreaterThan(BigInt(delivered[0]!.sequence))
       expect((await f.activity({ cursor: afterSecond.nextCursor })).items).toEqual([])
       expect((await f.database.pool.query<{ sequence: string }>(
-        'select sequence::text from run_activity where run_id=$1 order by sequence limit $2',
+        'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence limit $2',
         [f.graph.run.id, before.length])).rows).toEqual(before)
       const denied = await f.call(f.denied.token, 'run_activities_get_v1', { ...f.request, cursor: initial.nextCursor })
       expect(denied.error || denied.result?.isError).toBeTruthy()
