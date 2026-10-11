@@ -114,6 +114,19 @@ export async function admitWorkflowStopIntent(pool: pg.Pool, supplied: CurrentSt
  * retry reads the same intent and continues cleanup, never submits a new Stop. */
 export async function stopCurrentWorkflow(pool: pg.Pool, runs: PostgresRunRepository,
   engine: LangGraphWorkflowEngine, context: CurrentStopContext): Promise<CurrentStopReceipt> {
+  try {
+    return await completeWorkflowStop(pool, runs, engine, context)
+  } catch (error) {
+    if (error instanceof DomainError) throw error
+    const failure = new DomainError('WORKFLOW_STOP_SETTLEMENT_PENDING',
+      'Stop could not confirm cleanup. Retry with the same command ID and input.', 409, { retryable: true })
+    failure.cause = error
+    throw failure
+  }
+}
+
+async function completeWorkflowStop(pool: pg.Pool, runs: PostgresRunRepository,
+  engine: LangGraphWorkflowEngine, context: CurrentStopContext): Promise<CurrentStopReceipt> {
   const intent = await admitWorkflowStopIntent(pool, context)
   if (!await engine.cancel(intent.runId)) return uncertain()
   const owner = await runs.acquireOwnership(intent.runId, () => undefined)

@@ -428,9 +428,15 @@ async function recoveryTarget(sql: GraphTransactionSql, owner: RunOwnership, exe
  * response is created here. SQL locks are never held over native IO. */
 export async function recoverWorkflowNativeClosure(owner: RunOwnership, execution: HarnessExecution,
   closeProcesses: ((executionId: string, signal: AbortSignal, owner: RunOwnership) => Promise<boolean>) | undefined,
-  signal: AbortSignal, purpose: WorkflowRecoveryPurpose = 'cleanup'): Promise<void> {
+  signal: AbortSignal, options: { purpose?: WorkflowRecoveryPurpose; generation?: string } = {}): Promise<void> {
   signal.throwIfAborted()
-  const target = await owner.oneShotConnection().transaction((sql) => recoveryTarget(sql, owner, execution, purpose))
+  const purpose = options.purpose ?? 'cleanup'
+  const target = await owner.oneShotConnection().transaction(async (sql) => {
+    const target = await recoveryTarget(sql, owner, execution, purpose)
+    if (options.generation !== undefined
+      && (await latest(sql, execution.id))?.generation !== options.generation) return conflict()
+    return target
+  })
   if (!target) return
   owner.assertOwned(); signal.throwIfAborted()
   if (!closeProcesses || !await closeProcesses(execution.id, signal, owner)) throw new DomainError(

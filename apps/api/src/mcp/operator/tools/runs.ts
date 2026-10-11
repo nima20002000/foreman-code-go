@@ -74,7 +74,7 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_start', () => context.services.runs.start(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'run_stop')) server.registerTool('run_stop', {
-    description: 'Request ownership-aware Stop for an exact authorized Run. V3 Stop remains unavailable until its native occurrence lifecycle is qualified; it never falls through to legacy cleanup. A receipt or terminal record is not process-exit proof; processStopped remains false.', inputSchema: RunStopInputSchema,
+    description: 'Stop an authorized Run, including recovery after an API or worker restart when the original native lifetime has positive closure evidence. Live or unconfirmed owners remain fenced. If cleanup cannot be confirmed, retry the same commandId and input using the returned domain error. A receipt or terminal record is not process-exit proof; processStopped remains false.', inputSchema: RunStopInputSchema,
     outputSchema: RunStopResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'run_stop', () => context.services.runs.stop(context.principal, 'mcp', input)))
