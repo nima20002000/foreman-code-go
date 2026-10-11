@@ -1,32 +1,16 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
-import { rm } from 'node:fs/promises'
-import { afterAll, beforeAll, expect } from 'vitest'
+import { expect } from 'vitest'
 import { HostHarnessOverrideListSchema, HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
 import { remoteReviewProduction, waitForRemoteReview } from './remoteReviewProduction.js'
 import { AcceptedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
 import { expectMcpAccessDenied } from './deniedMcpTool.js'
-import { buildRemoteReviewWorkerRelease } from './remoteReviewProvider.js'
-import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
-let releaseDirectory: string | undefined
-let workerRelease: string
-
-beforeAll(async () => {
-  releaseDirectory = await privateFixtureDirectory('installation-update-release-')
-  workerRelease = await buildRemoteReviewWorkerRelease(releaseDirectory)
-}, 60_000)
-
-afterAll(async () => {
-  if (releaseDirectory) await rm(releaseDirectory, { recursive: true, force: true })
-})
-
 export function installationUpdateFixture(options: Parameters<typeof remoteReviewProduction>[0] = {}) {
-  return remoteReviewProduction({ ...options, workerRelease, installationRefreshIntervalMs: 100,
-    parallelSetup: true, parallelProfileChecks: true, includeNodeRuntimePayload: false,
-    reportPhase: (phase, elapsedMs) => console.info(`[installation-update] ${phase}: ${Math.round(elapsedMs)} ms`) })
+  return remoteReviewProduction({ ...options, installationRefreshIntervalMs: 100,
+    parallelSetup: true, parallelProfileChecks: true, includeNodeRuntimePayload: false })
 }
 
 export async function profiles(fixture: Fixture, token = fixture.writer.token) {

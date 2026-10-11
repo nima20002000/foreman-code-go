@@ -41,6 +41,7 @@ import { createRemoteReviewTransport } from './remoteReviewTransport.js'
 import { gitFixtureEnvironment } from './gitFixture.js'
 import { remoteReviewEnvironment } from './remoteReviewEnvironment.js'
 import { waitForChildReady } from './remoteReviewReadiness.js'
+import { measureIntegrationPhase, reportIntegrationPhase } from './integrationPhase.js'
 
 const execute = promisify(execFile)
 const tsxLoader = createRequire(import.meta.url).resolve('tsx')
@@ -88,15 +89,17 @@ export async function remoteReviewProduction(options: {
   installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
   reportPhase?: (phase: string, elapsedMs: number) => void
 } = {}) {
+  const reportPhase = (phase: string, elapsedMs: number) => {
+    reportIntegrationPhase(phase, elapsedMs)
+    options.reportPhase?.(phase, elapsedMs)
+  }
   let phase = 'fixture resources'
   let phaseStarted = performance.now()
   const beginPhase = (next: string) => {
-    options.reportPhase?.(phase, performance.now() - phaseStarted)
+    reportPhase(phase, performance.now() - phaseStarted)
     phase = next
     phaseStarted = performance.now()
-    options.reportPhase?.(`${phase} started`, 0)
   }
-  options.reportPhase?.(`${phase} started`, 0)
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
     const errors: unknown[] = []
@@ -110,21 +113,22 @@ export async function remoteReviewProduction(options: {
     closes.push(() => rm(directory, { recursive: true, force: true }))
     const launcher = join(directory, 'app-mcp', 'launcher.mjs')
     const claudeDirectory = join(directory, 'claude-inventory')
-    const setupDatabase = async () => {
+    const setupDatabase = () => measureIntegrationPhase('fixture database', async () => {
       const db = await agent3Database()
       closes.push(db.close)
       return db
-    }
-    const setupProvider = async () => {
+    })
+    const setupProvider = () => measureIntegrationPhase('provider fixture', async () => {
       await installManagedLauncher(new URL('../../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
       return createRemoteReviewProvider(join(directory, 'provider'), launcher)
-    }
+    })
     const workerReleaseResult = Promise.allSettled([
       options.workerRelease ?? buildRemoteReviewWorkerRelease(directory),
     ] as const)
     closes.push(async () => { await workerReleaseResult })
-    const setupClaude = () => createRemoteReviewClaudeInventory(claudeDirectory)
-    const setupTls = () => createRemoteReviewTls(join(directory, 'tls'))
+    const setupClaude = () => measureIntegrationPhase('Claude fixture',
+      () => createRemoteReviewClaudeInventory(claudeDirectory))
+    const setupTls = () => measureIntegrationPhase('fixture TLS', () => createRemoteReviewTls(join(directory, 'tls')))
     const setup = async () => {
       if (!options.parallelSetup) {
         return [await setupDatabase(), await setupProvider(),
@@ -466,6 +470,7 @@ export async function remoteReviewProduction(options: {
       installation => installation.driverId === 'codex' && installation.installationFingerprint !== null), 'remote Codex inventory')
     const installation = inventory.installations.find(installation => installation.driverId === 'codex')!
     if (options.executionHost === 'main') {
+      beginPhase('Main native qualification')
       await value('harness_qualification_run', { harness: 'codex' })
       await waitForRemoteReview(async () => (await db.pool.query<{ status: string }>(
         'select status from harness_qualifications order by started_at desc limit 1')).rows[0]?.status,
@@ -606,7 +611,7 @@ export async function remoteReviewProduction(options: {
     }
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
     closes.push(() => stopMain())
-    options.reportPhase?.(phase, performance.now() - phaseStarted)
+    reportPhase(phase, performance.now() - phaseStarted)
     return { db, directory, stateDirectory, provider, claudeInventory, access, writer, repositoryName,
       sourceManifest: approved.manifest,
       hostRef: executionHostRef, profiles, version, startupCatalog,
@@ -688,7 +693,7 @@ export async function remoteReviewProduction(options: {
       },
     }
   } catch (error) {
-    options.reportPhase?.(`${phase} failed`, performance.now() - phaseStarted)
+    reportPhase(phase, performance.now() - phaseStarted)
     try { await close() } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Remote review setup and cleanup failed.', { cause: cleanupError })
     }
