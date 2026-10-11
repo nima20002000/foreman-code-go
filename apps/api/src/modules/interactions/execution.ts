@@ -33,7 +33,7 @@ import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './review
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError, NativeDeliveryError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
-import { attemptCleanup } from './cleanup.js'
+import { attemptCleanup, withCleanupDeadline } from './cleanup.js'
 import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { maintainCredential } from '../harnesses/credentialHeartbeat.js'
@@ -104,6 +104,7 @@ interface OwnedNativeSession {
   releaseReviewOwner?: () => Promise<void>
   runOwner?: RunOwnership
   stopReviewerRenewal?: () => Promise<void>
+  reviewerRenewal?: Promise<void>
   retainedObservationError?: unknown
 }
 
@@ -995,27 +996,35 @@ export class ApprovalExecutionCoordinator {
     owned.stopReviewerRenewal = maintainCredential({
       signal: owned.controller.signal,
       expiresAt: () => this.managerCredentials.get(owned.manager)?.expiresAt,
-      refresh: async () => {
-        const credential = this.managerCredentials.get(owned.manager)
-        if (!credential || this.ownedSessions.get(owned.execution.id) !== owned)
-          throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process lease changed.', 409)
-        const expiresAt = await this.credentials!.renew!(owned.execution.id, credential)
-        if (this.ownedSessions.get(owned.execution.id) !== owned || owned.controller.signal.aborted)
-          throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
-        this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
-        if (!owned.reviewOwner && owned.session) {
-          try {
-            const retained = await this.retainRunOwner(owned.execution, () => {})
-            try {
-              this.adoptRunOwner(retained.owner)
-              await owned.manager.observeBoundary(owned.session, owned.controller.signal)
-              delete owned.retainedObservationError
-            } finally { await retained.release() }
-          } catch (error) { owned.retainedObservationError = error }
-        }
+      refresh: () => {
+        const renewal = this.renewRetainedReviewer(owned).finally(() => {
+          if (owned.reviewerRenewal === renewal) delete owned.reviewerRenewal
+        })
+        owned.reviewerRenewal = renewal
+        return renewal
       },
       onFailure: error => owned.controller.abort(error),
     })
+  }
+
+  private async renewRetainedReviewer(owned: OwnedNativeSession): Promise<void> {
+    const credential = this.managerCredentials.get(owned.manager)
+    if (!credential || this.ownedSessions.get(owned.execution.id) !== owned)
+      throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process lease changed.', 409)
+    const expiresAt = await this.credentials!.renew!(owned.execution.id, credential)
+    if (this.ownedSessions.get(owned.execution.id) !== owned || owned.controller.signal.aborted)
+      throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
+    this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
+    if (!owned.reviewOwner && owned.session) {
+      try {
+        const retained = await this.retainRunOwner(owned.execution, () => {})
+        try {
+          this.adoptRunOwner(retained.owner)
+          await owned.manager.observeBoundary(owned.session, owned.controller.signal)
+          delete owned.retainedObservationError
+        } finally { await retained.release() }
+      } catch (error) { owned.retainedObservationError = error }
+    }
   }
 
   private recoverRetainedReviewer(execution: HarnessExecution, owner: RunOwnership,
@@ -1142,12 +1151,6 @@ export class ApprovalExecutionCoordinator {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
         const failures: Error[] = []
         await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
-          // Startup errors belong to their caller; shutdown still needs to drain
-          // the captured manager and any cleanup started by the failed startup.
-          await Promise.allSettled([
-            this.reviewerRecoveries.get(owned.execution.id), owned.starting, owned.preparing, owned.opening,
-          ])
-          await owned.cleanup
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
           if (owned.restartAttachment && !owned.failed
@@ -1178,14 +1181,26 @@ export class ApprovalExecutionCoordinator {
         runs.set(owned.execution.runId, siblings)
       }
       const results = await Promise.allSettled([...runs.values()].map(async siblings => {
-        const remote = siblings.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device')
+        // Aborting renewal stops its timer, but an observation can still be
+        // acquiring or releasing the Run lock. Join it before selecting an owner.
+        await withCleanupDeadline(async () => Promise.all(siblings.map(async owned => {
+          // Startup errors belong to their caller; its manager and cleanup must still drain.
+          await Promise.allSettled([
+            this.reviewerRecoveries.get(owned.execution.id), owned.starting, owned.preparing, owned.opening,
+            owned.stopReviewerRenewal?.(), owned.reviewerRenewal,
+          ])
+          await owned.cleanup
+        })))
+        const resident = siblings.filter(owned => this.ownedSessions.get(owned.execution.id) === owned
+          && !this.closedExecutions.has(owned.execution.id))
+        const remote = resident.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device')
         const retained = remote && await this.retainRunOwner(remote.execution, () => {
           for (const owned of siblings) owned.controller.abort()
         })
         try {
           // Sibling closes share one Run lock until every remote receipt has committed.
           if (retained) this.adoptRunOwner(retained.owner)
-          return (await Promise.all(siblings.map(closeSession))).flat()
+          return (await Promise.all(resident.map(closeSession))).flat()
         } finally { if (retained) await retained.release() }
       }))
       const safe = nativePersistenceRedactor(sessions.flatMap(owned =>
