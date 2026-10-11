@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.60] - 2026-10-11
+
+### CI
+
+- Integration partitions are sized by each computer's measured speed so they finish together.
+- Hung integration files are stopped at an adaptive deadline from their usual duration and reported as HUNG with the last case and output.
+- Main learns per-file durations from every run and uses them for partitioning and deadlines.
+- Exclusive integration files run after the parallel work instead of idling slots mid-run; dedicated CI computers fill every slot.
+
+### Fixes
+
+- Git error output no longer reaches public errors (F160); Worker Claude file calls keep per-tool cancellation (F179); send recovery survives a post-admission 401/403 (F193); attention summaries include standalone native requests (F207).
+
 ## [0.0.59] - 2026-10-10
 
 ### CI
