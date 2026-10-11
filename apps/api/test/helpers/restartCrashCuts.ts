@@ -153,6 +153,12 @@ export async function recoverEnteredLaunch(
   const t = await checkpointRuntimeFixture(1, 1, { database, fixture, approvalNodeIds: [] })
   const interrupted = new DomainError('ENGINE_RESTART', 'Injected abrupt API restart at entered COMMIT.', 409)
   const barrier = holdCrashCut<string>(interrupted)
+  let launchSignal: AbortSignal | undefined
+  const observeExact = t.native.observeExact.bind(t.native)
+  vi.spyOn(t.native, 'observeExact').mockImplementation((input) => {
+    launchSignal = input.signal
+    return observeExact(input)
+  })
   // Shutdown commits cleanup before closing native sessions and aborting the drive.
   // Keep the launch parked until that abort, without manufacturing a closure.
   const restartClose = vi.spyOn(t.native, 'closeForRestart').mockImplementation(async () => {
@@ -181,7 +187,8 @@ export async function recoverEnteredLaunch(
         await authorize.call(this, id, prepared)
         // Do not throw REPEAT_CLEANUP_PENDING: the LIVE graph would retry
         // the starting/no-session attempt and leave this exact crash cut.
-        return barrier.hold(id) // Known COMMIT; no preflight or dispatch.
+        if (!launchSignal) throw new Error('The held launch has no engine signal.')
+        return barrier.hold(id, launchSignal) // Known COMMIT; no preflight or dispatch.
       })
     restore = () => fault.mockRestore()
     const started = observeCrashTask(t.engine.start(t.f.run.id))
@@ -201,7 +208,9 @@ export async function recoverEnteredLaunch(
     expect(await originalProofs(t, cut)).toEqual([])
     await stopOld()
     expect(restartClose).toHaveBeenCalledTimes(1)
-    expect(await started).toMatchObject({ status: 'rejected', reason: { code: 'ENGINE_RESTART' } })
+    const outcome = await started
+    expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'ENGINE_RESTART' } })
+    if (outcome.status === 'rejected') expect(outcome.reason).toBe(launchSignal?.reason)
     expect(barrier.visits).toBe(1)
     expect(await t.runs.getExecution(cut)).toEqual(original)
     expect((await t.db.pool.query('select closed_at from execution_native_closures where execution_id=$1', [cut])).rows)

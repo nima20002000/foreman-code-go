@@ -9,7 +9,7 @@ export function observeCrashTask(task: Promise<unknown>): Promise<CrashTaskOutco
 
 /** Park the ORIGINAL call at an exact durability boundary. Throwing a normal
  * settlement wait here would let the live engine retry before it is replaced.
- * The test must abort the old engine with ENGINE_RESTART before release().
+ * The test must abort the old engine with ENGINE_RESTART before the call resumes.
  * This helper has no SQL, provider, receipt or production-owner capability. */
 export function holdCrashCut<T>(interrupted: Error) {
   let report!: (value: T) => void, release!: () => void
@@ -18,11 +18,13 @@ export function holdCrashCut<T>(interrupted: Error) {
   let visits = 0
   return {
     get visits() { return visits },
-    async hold(value: T): Promise<never> {
+    async hold(value: T, signal?: AbortSignal): Promise<never> {
       visits++
       if (visits !== 1) throw new Error('The old runtime retried the held crash boundary.')
       report(structuredClone(value))
       await released
+      // Restart cancellation is identified by the engine's abort reason.
+      signal?.throwIfAborted()
       throw interrupted
     },
     async wait(task: Promise<CrashTaskOutcome>, timeoutMs = 10_000): Promise<T> {
