@@ -546,7 +546,7 @@ it('keeps the accepted Claude account and real HOME through exact idle rollover 
     expect(f.query).toHaveBeenCalledTimes(2)
     for (const [query] of f.query.mock.calls) {
       expect(query.options).toMatchObject({ resume: saved.nativeSessionId,
-        env: { HOME: '/human-context', CLAUDE_CONFIG_DIR: scope.profilePath } })
+        env: { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: scope.profilePath } })
     }
     expect(resolve).toHaveBeenCalledTimes(1)
     expect(resolve.mock.calls[0]?.[1]).toBe(accountId)

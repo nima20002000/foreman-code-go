@@ -127,7 +127,8 @@ describe('accepted accounts through native factory and adapter recovery', () => 
     const manager = test.allocate()
     const session = await manager.createSession(test.accepted)
     const events = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'accepted-turn' }))
-    await until(async () => Boolean((await manager.history(session)).nativeTurnId))
+    await until(async () => (await manager.history(session)).events.some(event =>
+      event.type === 'turn.started' && event.payload.clientCorrelationId === 'accepted-turn'))
     const original = captureOriginalCodexSession(manager, session, test.accepted, () => undefined)
     assert(original)
     test.changeDefault()

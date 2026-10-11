@@ -1,4 +1,7 @@
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -6,6 +9,11 @@ import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistr
 import type { WorkerConversationHostPorts, WorkerConversationAllocation } from './workerHost.js'
 import { createInstalledWorkerConversations } from './installedWorkerConversations.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
+
+const roots: string[] = []
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
+})
 
 vi.mock('../runs/remote/installedWorkflowConfiguration.js', () => ({
   readInstalledWorkflowConfiguration: async () => ({ appMcpLauncher: '/fixture/mcp-launcher' }),
@@ -53,13 +61,16 @@ it.each([
   const f = workerConversationFixture(role, harness)
   const systemPrompt = { value: { text: 'Accepted app instructions' }, revision: 3, versionId: 'prompt-version-3' }
   const binding = role === 'agent' ? { ...f.binding, systemPrompt } : f.binding
+  const stateDirectory = await mkdtemp(join(tmpdir(), 'installed-conversation-'))
+  roots.push(stateDirectory)
   const registry = {
-    scope: (owner: string) => ({ owner }), reserveLaunch: () => ({ launchId: 'fixture-launch' }),
+    scope: (owner: string) => ({ owner, root: join(stateDirectory, 'processes') }),
+    reserveLaunch: () => ({ launchId: 'fixture-launch' }),
     abandonReservedLaunch: async () => {}, closeOwner: async () => true,
   } as unknown as NativeProcessRegistry
   const journal = { conversations: { claudeCallbackJournal: () => undefined } } as unknown as RemoteOperationJournal
   const host = await createInstalledWorkerConversations({
-    stateDirectory: '/fixture/state', configuration: null, registry, journal: async () => journal,
+    stateDirectory, configuration: null, registry, journal: async () => journal,
     current: () => f.connection, capture: () => undefined,
     request: async () => { throw new Error('Startup composition must not send a remote request') },
     approvedRoots: async () => { throw new Error('Directory admission is supplied by this fixture') },

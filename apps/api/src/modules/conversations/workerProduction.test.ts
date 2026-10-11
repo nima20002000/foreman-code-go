@@ -11,6 +11,7 @@ import { workerConversationFixture } from './workerFixtures.test-support.js'
 import { workerOperatorDirectory } from './workerOperatorDirectory.js'
 import { nativeCorrelation } from './operatorChatRepository.js'
 import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
+import { legacyProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 
 it('admits a thinking-only next turn through the production Worker channel without replacing saved execution ownership', async () => {
   const f = workerConversationFixture()
@@ -18,7 +19,8 @@ it('admits a thinking-only next turn through the production Worker channel witho
   const accepted = OperatorConfigurationVersionSchema.parse({ ...f.configuration, id: randomUUID(), version: 2,
     contentHash: `sha256:${'b'.repeat(64)}`, showThinking: true })
   const root = '/approved/runtime'
-  const binding = { ...f.binding, workingDirectory: workerOperatorDirectory(root, f.binding.owner) }
+  const binding = { ...f.binding, workingDirectory: workerOperatorDirectory(root, f.binding.owner),
+    accountBinding: legacyProviderAccountBinding(f.configuration.harness, f.configuration.harnessProfileSelection)! }
   const first = { correlationId: 'first-turn',
     inputHash: commandInputHash({ prompt: 'First turn', mode: 'regular', preferences: null }),
     status: 'completed' as const,
@@ -36,6 +38,7 @@ it('admits a thinking-only next turn through the production Worker channel witho
     payload: { ownerPrincipalId: owner.id }, worker_conversation_binding: binding }
   const pool = { query: vi.fn(async (sql: string) => {
     if (sql.includes('from management_principals')) return { rows: [owner] }
+    if (sql.includes('from provider_account_accepted_bindings')) return { rows: [{ binding: binding.accountBinding }] }
     return { rows: [conversation], rowCount: 1 }
   }) } as unknown as pg.Pool
   const frames: WorkerConversationRpcRequest[] = []

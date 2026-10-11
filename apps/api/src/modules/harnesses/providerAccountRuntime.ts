@@ -107,7 +107,7 @@ export async function resolveRuntimeProviderAccount(accounts: ProviderAccountRes
   const selection: RuntimeAccountRecord = accepted ?? { accountId: binding?.accountId ?? accountId ?? null }
   if (binding) selection.binding = binding
   const selected = await selectedAccount(accounts, provider, selection)
-  if (!recovery || stored) return selected
+  if (!recovery || stored || !selected && !binding) return selected
   const record = { format: 2, provider, owner: recovery.owner, accountId: selected?.accountId ?? null,
     ...(selected ? { homePath: selected.homePath, authMode: selected.authMode } : {}),
     ...((binding ?? selected?.binding) ? { binding: binding ?? selected?.binding } : {}) }

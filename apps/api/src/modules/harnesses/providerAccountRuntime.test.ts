@@ -39,6 +39,14 @@ describe('accepted provider account runtime', () => {
     expect(await resolveRuntimeProviderAccount({ resolve }, 'codex', undefined, first)).toBeNull()
     expect(resolve).not.toHaveBeenCalled()
   })
+  it('rejects a saved managed account when its resolver is unavailable', async () => {
+    const account = bound()
+    const { first } = await scopes()
+    await resolveRuntimeProviderAccount({ resolve: async () => account }, 'codex', account.accountId,
+      first, undefined, account.binding)
+    await expect(resolveRuntimeProviderAccount(undefined, 'codex', undefined, first))
+      .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_UNAVAILABLE' })
+  })
   it('rejects explicit conflicts with stored and source bindings before a lookup', async () => {
     const account = bound()
     const resolve = vi.fn().mockResolvedValue(account)
