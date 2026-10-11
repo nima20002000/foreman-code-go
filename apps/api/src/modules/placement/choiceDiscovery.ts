@@ -22,6 +22,9 @@ type DiscoveryServices = {
   registry: Pick<ProductionHarnessRegistry, 'installations' | 'profileEvidence'>
 }
 
+type PlacementRootPolicy = Pick<WorkspaceRootPolicy, 'hostRef' | 'applicationInstallationId'
+  | 'rootPolicyId' | 'rootPolicyRevision' | 'locationRevision' | 'canonicalProjectRoot'>
+
 function matchesConfiguration(profile: HostHarnessOverride, configuration: AgentConfigurationVersion): boolean {
   const requested = configuration.harnessProfileSelection
   if (requested && (profile.instanceId !== requested.instanceId
@@ -50,22 +53,28 @@ export class ProductionPlacementChoiceDiscovery implements PlacementChoiceDiscov
       const roots = await this.sourceRoots(sql, input.workspaceId)
       const choices: NodePlacementChoice[] = []
       for (const root of roots) {
+        let policy: PlacementRootPolicy = { ...root.selection,
+          applicationInstallationId: root.binding.workerInstallationId ?? root.binding.mainId,
+          canonicalProjectRoot: root.binding.canonicalPath }
+        let rootUnavailableReason: string | null = null
         try {
           // Location changes do not replace an existing host's approved source namespace.
-          const policy = await services.roots.resolve(sql, principal, {
+          policy = await services.roots.resolve(sql, principal, {
             workspaceId: input.workspaceId, ...root.selection,
           })
           await services.sources.resolveRootBinding(sql, principal, {
             workspaceId: input.workspaceId, rootId: root.binding.rootId,
             bindingRevision: root.binding.bindingRevision, source: root.source,
           })
-          const profiles = await services.profiles.list(policy.hostRef, policy.applicationInstallationId, sql)
-          for (const profile of profiles.filter(value => matchesConfiguration(value, configuration))) {
-            choices.push(await this.choice(sql, services, policy, root, profile))
-          }
         } catch (error) {
-          // A stale root or revoked host cannot authorize a choice on that computer.
           if (!(error instanceof DomainError) || ![403, 404, 409, 410].includes(error.status)) throw error
+          rootUnavailableReason = error.code === 'SOURCE_UNAVAILABLE'
+            ? 'The approved source was released. Approve and bind the source again.'
+            : error.message
+        }
+        const profiles = await services.profiles.list(policy.hostRef, policy.applicationInstallationId, sql)
+        for (const profile of profiles.filter(value => matchesConfiguration(value, configuration))) {
+          choices.push(await this.choice(sql, services, policy, root, profile, rootUnavailableReason))
         }
       }
       await sql.query('commit')
@@ -85,26 +94,28 @@ export class ProductionPlacementChoiceDiscovery implements PlacementChoiceDiscov
     return rows.rows.map(row => SourceRootRecordSchema.parse(row.record))
   }
 
-  private async choice(sql: pg.PoolClient, services: DiscoveryServices, policy: WorkspaceRootPolicy,
-    root: SourceRootRecord, profile: HostHarnessOverride): Promise<NodePlacementChoice> {
+  private async choice(sql: pg.PoolClient, services: DiscoveryServices, policy: PlacementRootPolicy,
+    root: SourceRootRecord, profile: HostHarnessOverride, rootUnavailableReason: string | null): Promise<NodePlacementChoice> {
     const placement = SavedNodePlacementSchema.parse({ schemaVersion: 1, hostRef: policy.hostRef,
       rootPolicyId: policy.rootPolicyId, rootPolicyRevision: policy.rootPolicyRevision,
       locationRevision: policy.locationRevision, projectRoot: policy.canonicalProjectRoot,
       cwdPolicy: 'project-root', relativeCwd: '', instanceId: profile.instanceId,
       instanceRevision: profile.instanceRevision, harnessInstallationId: profile.target.harnessInstallationId,
       source: root.source, rootBinding: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision } })
-    const installed = services.registry.installations.list().some(installation => installation.installed
-      && sameWorkflowValue(installation.hostRef, policy.hostRef)
-      && installation.harnessInstallationId === profile.target.harnessInstallationId
-      && installation.installationFingerprint === profile.target.installationFingerprint)
-    const supportedDriver = profile.driverId === 'codex'
-      || profile.driverId === 'claude' && policy.hostRef.kind === 'main'
-    const qualified = supportedDriver && installed && await services.registry.profileEvidence(profile, sql)
-    let reason: string | null = null
-    if (!supportedDriver) {
-      reason = 'This harness does not support workflow execution on this computer.'
-    } else if (!qualified) {
-      reason = 'The matching harness profile needs qualification on this computer.'
+    let reason = rootUnavailableReason
+    if (reason === null) {
+      const installed = services.registry.installations.list().some(installation => installation.installed
+        && sameWorkflowValue(installation.hostRef, policy.hostRef)
+        && installation.harnessInstallationId === profile.target.harnessInstallationId
+        && installation.installationFingerprint === profile.target.installationFingerprint)
+      const supportedDriver = profile.driverId === 'codex'
+        || profile.driverId === 'claude' && policy.hostRef.kind === 'main'
+      const qualified = supportedDriver && installed && await services.registry.profileEvidence(profile, sql)
+      if (!supportedDriver) {
+        reason = 'This harness does not support workflow execution on this computer.'
+      } else if (!qualified) {
+        reason = 'The matching harness profile needs qualification on this computer.'
+      }
     }
     const hostLabel = policy.hostRef.kind === 'main' ? 'Main' : `Computer ${policy.hostRef.deviceId}`
     return { id: commandInputHash(placement), label: `${hostLabel} · ${profile.driverId} · ${policy.canonicalProjectRoot}`,

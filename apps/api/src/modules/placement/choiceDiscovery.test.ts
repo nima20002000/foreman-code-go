@@ -144,14 +144,21 @@ it('uses the retained binding policy after the workspace selects a newer locatio
   })
 })
 
-it('keeps an unqualified installation unavailable and omits roots whose host authority is revoked', async () => {
+it('keeps unqualified installations and revoked root authority unavailable with their reasons', async () => {
   const f = fixture()
   f.installations.mockReturnValue([])
   expect((await f.service.list(f.principal, f.input))[0]).toMatchObject({ availability: 'unavailable',
     reason: 'The matching harness profile needs qualification on this computer.' })
   expect(f.evidence).not.toHaveBeenCalled()
   f.resolve.mockRejectedValue(new DomainError('ROOT_DEVICE_CONFLICT', 'Host was revoked.', 403))
-  expect(await f.service.list(f.principal, f.input)).toEqual([])
+  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({
+    availability: 'unavailable', reason: 'Host was revoked.', placement: expect.objectContaining({
+      hostRef: f.root.selection.hostRef, projectRoot: f.root.binding.canonicalPath,
+      source: f.root.source,
+    }),
+  })])
+  expect(f.resolveSource).toHaveBeenCalledTimes(1)
+  expect(f.evidence).not.toHaveBeenCalled()
 })
 
 it('propagates unexpected discovery failures', async () => {
@@ -171,10 +178,27 @@ it.each([403, 404, 409, 410])('keeps valid sibling sources when one binding retu
 
   const choices = await f.service.list(f.principal, f.input)
 
-  expect(choices).toHaveLength(1)
-  expect(choices[0]).toMatchObject({ availability: 'ready', placement: {
+  expect(choices).toHaveLength(2)
+  expect(choices[0]).toMatchObject({ availability: 'unavailable',
+    reason: 'The approved source was released. Approve and bind the source again.', placement: {
+      source: unavailable.source,
+      rootBinding: { rootId: unavailable.binding.rootId, bindingRevision: unavailable.binding.bindingRevision },
+    } })
+  expect(choices[1]).toMatchObject({ availability: 'ready', placement: {
     source: f.root.source,
     rootBinding: { rootId: f.root.binding.rootId, bindingRevision: f.root.binding.bindingRevision },
   } })
   expect(f.resolveSource).toHaveBeenCalledTimes(2)
+  expect(f.evidence).toHaveBeenCalledOnce()
+})
+
+it('reports a missing binding without hiding its computer', async () => {
+  const f = fixture({ host: 'device' })
+  f.resolveSource.mockRejectedValue(new DomainError('SOURCE_ROOT_NOT_FOUND', 'The root binding was not found.', 404))
+
+  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({
+    availability: 'unavailable', reason: 'The root binding was not found.',
+    placement: expect.objectContaining({ hostRef: f.policy.hostRef }),
+  })])
+  expect(f.evidence).not.toHaveBeenCalled()
 })
