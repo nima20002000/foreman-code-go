@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.74] - 2026-10-11
+
+### Fixed
+
+- A transient failure refreshing an Agent's App credential is retried while the credential is valid instead of stopping the Agent.
+- Reconciliation closes executions whose native owner is gone and backs off per Run instead of retrying in a hot loop.
+- Paired Workers reconnect by themselves after Main restarts and retry an interrupted self-update.
+
 ## [0.0.73] - 2026-10-11
 
 ### Fixed
