@@ -15,6 +15,7 @@ import type { RunOwnership } from '../runs/ownership.js'
 import { RemoteNativeSessionManager } from '../runs/remote/nativeManagerProxy.js'
 import { pageNativeHistory } from '../runs/remote/nativeHistoryPage.js'
 import { nativeLanes } from '../../../test/helpers/nativeLanes.js'
+import { DomainError } from '../errors.js'
 
 vi.mock('../placement/persistence.js', () => ({ readExecutionPlacement: vi.fn() }))
 vi.mock('../placement/remoteReviewerAuthority.js', () => ({
@@ -57,7 +58,7 @@ function fixture() {
   vi.mocked(readReconciledDispatchIntent).mockResolvedValue(receipt.intent)
   const state = { finalized: false, purpose: 'workflow', committed: false, revoked: false,
     terminal: true, lane: true, live: true, detached: false, closed: false,
-    generation: '1', drift: false, lifetimeReads: 0 }
+    generation: '1', drift: false, lifetimeReads: 0, reviewJobs: [] as ReviewJob[] }
   const principal = { id: 'original-principal', name: 'Reviewer', audience: 'worker', agent_id: execution.agentId,
     expires_at: new Date(Date.now() + 60_000), revoked_at: null,
     grants: [{ actions: ['interactions:read', 'interactions:respond'],
@@ -82,7 +83,9 @@ function fixture() {
     if (text.startsWith('select 1 from workflow_native_proofs')) return result(state.terminal ? [{}] : [])
     if (text.startsWith('select b.principal_id')) return result(state.revoked ? [] : [{ principal_id: principal.id }])
     if (text.startsWith('select id,name,audience')) return result([principal])
-    if (text.includes('from review_jobs where execution_id=$1')) return result([])
+    if (text.includes('from review_jobs where execution_id=$1')) {
+      return result(state.reviewJobs.map(record => ({ record })))
+    }
     if (text.startsWith('update execution_native_sessions')) {
       expect(values).toEqual([execution.id, JSON.stringify(session)])
       state.finalized = true
@@ -111,10 +114,13 @@ async function recoveryFixture() {
     retain: () => async () => {}, release: async () => {},
   } as unknown as RunOwnership
   const worker = { receipt: structuredClone(f.receipt), authenticated: true, session: f.session,
-    principalId: f.principal.id }
+    principalId: f.principal.id, beforeApplicationAccess: () => {} }
   const requests: string[] = []
-  const credentials = { bindReviewerJob: vi.fn(async () => {
+  const credentials = { bindReviewerJob: vi.fn(async (_executionId: string, _credential: unknown, job: ReviewJob) => {
     if (!f.state.live || f.state.detached) throw new Error('Worker recovery must refresh its receipt before binding a review job')
+    if (!job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) <= Date.now()) {
+      throw new DomainError('REVIEWER_AUTHORITY_LOST', 'The review lease expired.', 409)
+    }
   }), recoverRemote: vi.fn(async () => ({ principalId: worker.principalId,
     expiresAt: f.principal.expires_at.toISOString(),
     environment: { agentId: f.execution.agentId, variables: { GRAPHQL_MCP_TOKEN: 'original-token' } } })) }
@@ -136,12 +142,15 @@ async function recoveryFixture() {
         if (!worker.authenticated) throw new Error('Authenticated Worker connection unavailable')
         const status = { status: 'known', receipt: structuredClone(worker.receipt) }
         if (method === 'reattach') return { session: worker.session, status }
-        if (method === 'get-application-access') return { status, applicationAccess: {
-          kind: 'scoped-worker-mcp',
-          executionId: f.execution.id, operationId: f.receipt.intent.operationId,
-          attemptId: f.receipt.intent.attemptId, bindingHash: f.receipt.intent.bindingHash,
-          agentId: f.execution.agentId, token: 'original-token',
-        } }
+        if (method === 'get-application-access') {
+          worker.beforeApplicationAccess()
+          return { status, applicationAccess: {
+            kind: 'scoped-worker-mcp',
+            executionId: f.execution.id, operationId: f.receipt.intent.operationId,
+            attemptId: f.receipt.intent.attemptId, bindingHash: f.receipt.intent.bindingHash,
+            agentId: f.execution.agentId, token: 'original-token',
+          } }
+        }
         if (method === 'history') return { ...pageNativeHistory({ events: [], pendingInteractions: [] }), status }
         throw new Error(`Unexpected recovery request: ${method}`)
       } },
@@ -202,6 +211,32 @@ describe('atomic original remote reviewer retention', () => {
 })
 
 describe('retained remote reviewer recovery', () => {
+  it('recovers the original process when the crashed Main review lease expires during attachment', async () => {
+    const f = await recoveryFixture()
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      f.state.reviewJobs = [ReviewJobSchema.parse({ id: 'crashed-review', interactionId: 'pending-interaction',
+        reviewerAgentId: f.execution.agentId, attempt: 1, state: 'acknowledged', provider: f.session.harness,
+        nativeSessionId: f.session.nativeSessionId, correlationId: 'original-review-turn',
+        createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(),
+        leaseOwner: 'crashed-main', leaseToken: 'old-review-lease',
+        leaseExpiresAt: new Date(now + 1_000).toISOString() })]
+      f.worker.beforeApplicationAccess = () => { clock.mockReturnValue(now + 2_000) }
+      const main = f.coordinator()
+      expect((await f.attach(main)).session).toEqual(f.session)
+      expect(f.credentials.bindReviewerJob).not.toHaveBeenCalled()
+      expect(f.state.purpose).toBe('reviewer')
+      expect(f.resident).toHaveBeenCalledTimes(1)
+      expect(f.credentials.recoverRemote).toHaveBeenCalledWith(f.execution.id,
+        expect.objectContaining({ token: 'original-token' }), undefined)
+      await main.closeForRestart()
+    } finally {
+      clock.mockRestore()
+      await f.connection.close()
+    }
+  })
+
   it.each(['expired', 'detached'] as const)('requires Worker recovery before authorizing a %s reviewer', async state => {
     const f = fixture()
     try {

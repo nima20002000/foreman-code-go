@@ -20,7 +20,6 @@ import {
   type PendingNativeInteraction,
   type ReviewJob,
   HarnessExecutionRequestSchema,
-  ReviewJobSchema,
 } from '@foreman-code/contracts'
 
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS,
@@ -61,7 +60,9 @@ import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.j
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import { workflowExecutionRequest } from '../runs/workflowExecutionRequest.js'
-import { readRecoverableRemoteReviewer, readRetainedRemoteReviewer } from './retainedRemoteReviewer.js'
+import { readRecoverableRemoteReviewer, readRetainedRemoteReviewer,
+  retainRemoteReviewerCredential } from './retainedRemoteReviewer.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import type { RepeatReviewerBindings } from './repeatReviewer.js'
 import { assertSameRepeatExecution, assertSameReviewJob, repeatPhysicalSettlementPending,
@@ -1055,14 +1056,8 @@ export class ApprovalExecutionCoordinator {
       const current = await owner.oneShotConnection().transaction(sql => readRecoverableRemoteReviewer(sql, execution))
       if (!isDeepStrictEqual(current, retained)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
         'The retained reviewer changed while its original writer lease expired.', 409)
-      const jobs = job ? [job] : (await owner.oneShotConnection().query<{ record: unknown }>(`select record
-        from review_jobs where execution_id=$1 and lease_expires_at>clock_timestamp()
-          and state in ('leased','submitted','acknowledged','uncertain') limit 2`, [execution.id])).rows
-        .map(row => ReviewJobSchema.parse(row.record))
-      if (jobs.length > 1) throw new DomainError('REVIEWER_AUTHORITY_AMBIGUOUS',
-        'Multiple live review jobs reference the retained process.', 409)
-      const currentJob = jobs[0]
-      if (currentJob) {
+      // Only the dispatcher supplies a claimed, heartbeating job. A saved lease can belong to the crashed Main.
+      if (job) {
         if (!this.credentials.bindReviewerJob) throw new DomainError('REVIEWER_CREDENTIAL_LOST',
           'The original reviewer credential cannot bind its current job.', 409)
       }
@@ -1081,20 +1076,23 @@ export class ApprovalExecutionCoordinator {
         'The original remote reviewer lifetime has already closed.', 409)
       const access = await resolved.manager.originalApplicationAccess(session, signal)
       const expected = { generation: owned.closureGeneration, principalId: retained.principalId, session: retained.session }
-      const assertRetainedReviewer = () => owner.oneShotConnection().transaction(async sql => {
+      const assertRetainedReviewer = async (sql: GraphSqlClient) => {
         const current = await readRetainedRemoteReviewer(sql, execution)
         if (!isDeepStrictEqual(current, expected)) throw new DomainError('REVIEWER_AUTHORITY_LOST',
           'The retained reviewer no longer matches its original terminal and process lease.', 409)
-      })
-      await assertRetainedReviewer()
-      if (currentJob) {
-        await this.credentials.bindReviewerJob!(execution.id, { principalId: retained.principalId }, currentJob)
       }
-      const credential = await this.credentials.recoverRemote(execution.id, access, currentJob)
+      await owner.oneShotConnection().transaction(async sql => {
+        await assertRetainedReviewer(sql)
+        if (!job) await retainRemoteReviewerCredential(sql, execution, expected)
+      })
+      if (job) {
+        await this.credentials.bindReviewerJob!(execution.id, { principalId: retained.principalId }, job)
+      }
+      const credential = await this.credentials.recoverRemote(execution.id, access, job)
       if (credential.principalId !== retained.principalId) throw new DomainError('REVIEWER_AUTHORITY_LOST',
         'The original reviewer credential changed during recovery.', 409)
       this.managerCredentials.set(owned.manager, credential)
-      await assertRetainedReviewer()
+      await owner.oneShotConnection().transaction(assertRetainedReviewer)
       resolved.markResident?.()
       this.maintainRetainedReviewer(owned)
       return true

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { RETIRED_OPENCODE_MESSAGE, ReviewJobSchema, type DurableInteraction, type PendingNativeInteraction, type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 
@@ -347,55 +348,66 @@ export class ReviewerDispatcher {
             }
           }
           submitting = false
-          // Submitted/unknown work is observation-only. Missing evidence is not permission to resend.
-          await check()
-          workSignal.throwIfAborted()
-          const history = await lane.guard.wait(manager.reconcile(session, job.correlationId, workSignal), workSignal)
-          await check()
-          workSignal.throwIfAborted()
-          const originalHistory = safe.value(history)
-          const normalizedEvents = originalHistory.events.map((event) => normalizeNativeProducerEvent(
-            { ...safe.value(event), executionId: executionId! }).event)
-          const trackedHistory = { ...originalHistory, events: normalizedEvents }
-          delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
-          tracker.observeHistory(trackedHistory)
-          const historyEvidence = tracker.snapshot()
-          const pending = history.pendingInteraction ?? history.pendingInteractions[0]
-          const requests = new Map<string, PendingNativeInteraction>()
-          for (const request of [...(pending ? [pending] : []), ...history.pendingInteractions]) {
-            requests.set(JSON.stringify([request.session, request.turn, request.nativeRequestType]), request)
+          for (;;) {
+            // Submitted/unknown work is observation-only. Missing evidence is not permission to resend.
+            await check()
+            workSignal.throwIfAborted()
+            const history = await lane.guard.wait(manager.reconcile(session, job.correlationId, workSignal), workSignal)
+            await check()
+            workSignal.throwIfAborted()
+            const originalHistory = safe.value(history)
+            const normalizedEvents = originalHistory.events.map((event) => normalizeNativeProducerEvent(
+              { ...safe.value(event), executionId: executionId! }).event)
+            const trackedHistory = { ...originalHistory, events: normalizedEvents }
+            delete trackedHistory.terminalTurn; delete trackedHistory.terminalResult
+            tracker.observeHistory(trackedHistory)
+            const historyEvidence = tracker.snapshot()
+            const pending = history.pendingInteraction ?? history.pendingInteractions[0]
+            const requests = new Map<string, PendingNativeInteraction>()
+            for (const request of [...(pending ? [pending] : []), ...history.pendingInteractions]) {
+              requests.set(JSON.stringify([request.session, request.turn, request.nativeRequestType]), request)
+            }
+            // An unbound recovered lane can report an unsupported approval, but
+            // its historical observation cannot establish native control ownership.
+            if (pending && recovering && !lane.previous.correlationId && !historyEvidence.identityConflict) {
+              return await approvalFailure(pending, [...requests.values()])
+            }
+            const observedProviderId = historyEvidence.providerId
+            if (observedProviderId) await recordProviderTurn(observedProviderId)
+            const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
+              { type: 'history', history: originalHistory })
+            await check()
+            workSignal.throwIfAborted()
+            await this.coordination.appendReviewNativeHistory(job, normalizedEvents, {
+              writer: lane.fence, live: false, terminalReady: false, nativeCapture,
+            })
+            await this.nativeRuntime.afterReviewCommit?.(executionId!)
+            const evidence = tracker.snapshot()
+            if (evidence.providerId) lane.providerId = evidence.providerId
+            if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
+              message: 'Native history conflicts with the durable review identity. No further native response will be sent.' })
+            if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
+            if (pending) return await approvalFailure(pending, [...requests.values()])
+            if (evidence.terminal && await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
+              return await failReview({ code: 'REVIEW_NO_DECISION',
+                message: 'The Orchestrator finished its review without responding to the assigned interaction.' })
+            }
+            lane.observedStatus = evidence.nativeIdle ? 'idle' : evidence.nativeBusy || evidence.acknowledged ? 'busy' : 'uncertain'
+            if (recovering && manager.retainsReviewerSession && evidence.acknowledged && evidence.nativeBusy) {
+              // Keep the original process authorized while its running turn is observed, without resubmitting it.
+              await transition('acknowledged', { releaseLease: false })
+              await delay(100, undefined, { signal: workSignal }).catch(error => {
+                workSignal.throwIfAborted()
+                throw error
+              })
+              continue
+            }
+            await maintenance?.stop()
+            return await transition(evidence.terminal ? 'completed' : evidence.acknowledged ? 'acknowledged' : 'uncertain', {
+              ...(evidence.providerId ? { providerTurnOrMessageId: evidence.providerId } : {}),
+              releaseLease: true,
+            })
           }
-          // An unbound recovered lane can report an unsupported approval, but
-          // its historical observation cannot establish native control ownership.
-          if (pending && recovering && !lane.previous.correlationId && !historyEvidence.identityConflict) {
-            return await approvalFailure(pending, [...requests.values()])
-          }
-          const observedProviderId = historyEvidence.providerId
-          if (observedProviderId) await recordProviderTurn(observedProviderId)
-          const nativeCapture = this.nativeRuntime.captureReviewNative(executionId!, session, job, lane,
-            { type: 'history', history: originalHistory })
-          await check()
-          workSignal.throwIfAborted()
-          await this.coordination.appendReviewNativeHistory(job, normalizedEvents, {
-            writer: lane.fence, live: false, terminalReady: false, nativeCapture,
-          })
-          await this.nativeRuntime.afterReviewCommit?.(executionId!)
-          const evidence = tracker.snapshot()
-          if (evidence.providerId) lane.providerId = evidence.providerId
-          if (evidence.identityConflict) return await failReview({ code: 'REVIEW_JOB_IDENTITY_CONFLICT',
-            message: 'Native history conflicts with the durable review identity. No further native response will be sent.' })
-          if (evidence.providerId && evidence.acknowledged) await acknowledge(evidence.providerId)
-          if (pending) return await approvalFailure(pending, [...requests.values()])
-          if (evidence.terminal && await this.coordination.isReviewPending(job.interactionId, job.reviewerAgentId)) {
-            return await failReview({ code: 'REVIEW_NO_DECISION',
-              message: 'The Orchestrator finished its review without responding to the assigned interaction.' })
-          }
-          lane.observedStatus = evidence.nativeIdle ? 'idle' : evidence.nativeBusy || evidence.acknowledged ? 'busy' : 'uncertain'
-          await maintenance?.stop()
-          return await transition(evidence.terminal ? 'completed' : evidence.acknowledged ? 'acknowledged' : 'uncertain', {
-            ...(evidence.providerId ? { providerTurnOrMessageId: evidence.providerId } : {}),
-            releaseLease: true,
-          })
         } catch (rawError) {
           const error = safe.error(rawError)
           if (isLeaseLost(rawError) || guard.signal.aborted || lane.guard.signal.aborted) throw error

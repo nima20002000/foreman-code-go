@@ -552,6 +552,59 @@ test('settles terminal review history before repeated publication expires its ph
   }
 })
 
+test.each(['completion', 'restart'] as const)(
+  'recovery keeps a running retained review authorized until %s', async settlement => {
+    const f = fixture()
+    const job = await enqueue(f)
+    const now = new Date().toISOString()
+    f.coordination.job = { ...job, state: 'acknowledged', attempt: 1,
+      submittedAt: now, acknowledgedAt: now, providerTurnOrMessageId: 'native-turn' }
+    f.coordination.lane.correlationId = job.correlationId
+    Object.defineProperty(f.manager, 'retainsReviewerSession', { value: true })
+    let observing!: () => void
+    const observed = new Promise<void>(resolve => { observing = resolve })
+    let finish!: (value: NativeHistory) => void
+    const terminal = new Promise<NativeHistory>(resolve => { finish = resolve })
+    let reads = 0
+    f.manager.reconcile = async () => {
+      if (reads++ === 0) return history([startEvent(job.correlationId)])
+      observing()
+      return terminal
+    }
+    const dispatch = f.dispatcher.dispatchNext('reviewer', 'replacement-main')
+    try {
+      await Promise.race([observed, dispatch.then(() => {
+        throw new Error('The running review released its observation before terminal history.')
+      })])
+      assert.equal(f.coordination.job?.state, 'acknowledged')
+      assert.equal(f.coordination.job?.attempt, 2)
+      await f.coordination.assertReviewJobLease(job.id, f.coordination.job!.leaseToken!)
+      await f.coordination.assertLaneLease('lane', f.coordination.lane.leaseToken!)
+      assert.equal(await f.dispatcher.dispatchNext('reviewer', 'competing-main'), undefined)
+      assert.equal(f.counts().started, 0)
+      if (settlement === 'restart') {
+        await f.dispatcher.shutdown()
+        await assert.rejects(dispatch, { code: 'ENGINE_RESTART' })
+        assert.equal(f.coordination.job?.state, 'acknowledged')
+        assert.equal(f.coordination.pending, true)
+        assert.equal(f.counts().canceled, 0)
+      } else {
+        f.coordination.pending = false
+        finish(history([endEvent()]))
+        const completed = await dispatch
+        assert.equal(completed?.state, 'completed')
+        assert.equal(completed?.providerTurnOrMessageId, 'native-turn')
+      }
+      assert.equal(f.coordination.job?.leaseToken, undefined)
+      assert.equal(f.coordination.lane.leaseToken, undefined)
+      assert.equal(f.counts().started, 0)
+    } finally {
+      finish(history([endEvent()]))
+      await f.dispatcher.shutdown()
+    }
+  },
+)
+
 test('post-delivery disconnect remains recoverable and only matching terminal history completes it', async () => {
   const f = fixture(); await enqueue(f)
   let submissions = 0
