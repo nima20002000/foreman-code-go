@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest'
 import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
   type CiHostRun, type CiRunInput } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
-import { RunActivitiesPageSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkflowFixture,
+  type AcceptedRepeatStartV1 } from '@foreman-code/contracts/wave25'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
 import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
@@ -16,13 +18,35 @@ import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave2
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { hostCiActivityMigration } from '../src/infrastructure/hostCiActivityMigration.js'
-import { graphFixture, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
+import { changeRunState, graphFixture, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
+import { acceptRunAuthority, bindRunAuthority } from '../src/modules/access/runAuthority.js'
+import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
+import { insertRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
+
+async function admitCiRun(pool: pg.Pool, input: AcceptedRepeatStartV1, principal: ManagementPrincipal) {
+  return withExclusiveGraphConnection(pool, connection => connection.transaction(async sql => {
+    const client = sql as unknown as pg.PoolClient
+    const authority = await acceptRunAuthority(client, principal)
+    const accepted = AcceptedRepeatStartV1Schema.parse({
+      run: { ...input.run, authorizationPrincipalId: authority.principal.id },
+      snapshot: { ...input.snapshot, authorizationPrincipalId: authority.principal.id },
+    })
+    await insertRepeatRun(sql, accepted, repeatStartPublication)
+    await bindRunAuthority(client, accepted.run.id, authority)
+    return accepted
+  }))
+}
 
 async function fixture(options: { deferMigration?: number } = {}) {
   const database = await currentDatabase(options)
-  const graph = await graphFixture(database, { form: 'single', qualifiedReads: true })
+  const graph = await graphFixture(database, { form: 'single', qualifiedReads: true, insert: false })
+  graph.accepted = await admitCiRun(database.pool, graph.accepted, graph.writer.principal)
+  graph.run = graph.accepted.run
+  graph.f.run = graph.run
+  await changeRunState(database, graph, 'running')
   const node = agentWorkflowNode(graph.version.definition.nodes[0])
   const executionId = randomUUID()
   const insertExecution = async (id: string, runId: string) => database.pool.query(`insert into harness_executions
@@ -125,8 +149,12 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
     graph: definition,
   })).value
   const next = makeCurrentWorkflowFixture(randomUUID(), 'single')
-  return insertCurrentRunFixture(f.database.pool, { ...next, configurations: f.graph.f.configurations,
-    run: { ...f.graph.f.run, id: next.run.id } }, saved, f.graph.writer.principal.id)
+  const foreign = await insertCurrentRunFixture(f.database.pool, { ...next, configurations: f.graph.f.configurations,
+    run: { ...f.graph.f.run, id: next.run.id } }, saved, f.graph.writer.principal.id, { insert: false })
+  const accepted = await admitCiRun(f.database.pool, foreign.accepted, f.graph.writer.principal)
+  const admitted = { ...foreign, accepted, run: accepted.run }
+  await changeRunState(f.database, { ...f.graph, ...admitted }, 'running')
+  return admitted
 }
 
 const ciRef = (ticketId: string, executionId: string) => expect.objectContaining({ kind: 'ci', ticketId, executionId })

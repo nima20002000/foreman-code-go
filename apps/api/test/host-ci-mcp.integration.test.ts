@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
+import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
   integrationPartition, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -13,10 +14,18 @@ import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint
 import type { CiUnitInventory } from '../src/modules/ci-host/parts.js'
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { DomainError } from '../src/modules/errors.js'
-import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema,
+  makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { acceptRunAuthority, bindRunAuthority, currentOperatorAuthority } from '../src/modules/access/runAuthority.js'
 import { genericCiRepository } from './helpers/genericCiRepository.js'
+import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
+import { insertRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
+
+// CircleCI's Bash startup prepends its real package managers ahead of the fixture shims.
+beforeEach(() => { vi.stubEnv('BASH_ENV', '') })
+afterEach(() => { vi.unstubAllEnvs() })
 
 /** Two build computers that answer the host CI protocol from memory; tests finish their runs. */
 function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { github: number; circleci: number } = false) {
@@ -127,32 +136,55 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     return client
   }
   const operator = await connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS, 'jobs:cancel'])
+  const close = async () => {
+    await Promise.all(clients.map(client => client.close()))
+    await ci.close()
+    await app.close()
+    await runtime.close()
+  }
   let agent: Client | undefined
   if (options.agent) {
-    await runtime.db.pool.query(`update management_principals set grants=grants || $2::jsonb where id=$1`,
-      [runtime.authorizationPrincipalId, JSON.stringify([{ actions: [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS],
-        scope: { workspaceIds: [workspaceId] } }])])
-    const client = await runtime.db.pool.connect()
     try {
-      await client.query('begin')
-      const owner = await currentOperatorAuthority(client, runtime.authorizationPrincipalId)
-      const authority = await acceptRunAuthority(client, owner.principal)
-      await bindRunAuthority(client, runtime.f.run.id, authority)
-      await client.query(`update runs set record=jsonb_set(record,'{authorizationPrincipalId}',to_jsonb($2::text))
-        where id=$1`, [runtime.f.run.id, authority.principal.id])
-      await client.query('commit')
+      await runtime.db.pool.query(`update management_principals set grants=grants || $2::jsonb where id=$1`,
+        [runtime.authorizationPrincipalId, JSON.stringify([{ actions: [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS],
+          scope: { workspaceIds: [workspaceId] } }])])
+      runtime.f.run = await withExclusiveGraphConnection(runtime.db.pool, connection => connection.transaction(async sql => {
+        const client = sql as unknown as pg.PoolClient
+        const owner = await currentOperatorAuthority(sql, runtime.authorizationPrincipalId)
+        const authority = await acceptRunAuthority(client, owner.principal)
+        const version = runtime.f.version
+        const workflow = (await sql.query<{ revision: string }>(
+          'select revision::text from workflows where id=$1', [version.workflowId])).rows[0]!
+        const run = AcceptedWorkflowRunV3Schema.parse({ ...runtime.f.run, id: randomUUID(),
+          authorizationPrincipalId: authority.principal.id })
+        const accepted = AcceptedRepeatStartV1Schema.parse({ run, snapshot: {
+          request: { workspaceId, workflowId: version.workflowId, workflowVersionId: version.id,
+            executionSemanticsVersion: 3, commandId: randomUUID(), expectedWorkflowRevision: Number(workflow.revision),
+            expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
+            expectedLocationRevision: run.executionLocation.locationRevision, input: run.input },
+          authorizationPrincipalId: authority.principal.id,
+          executable: { version, configurations: runtime.f.configurations },
+          workflow: { id: version.workflowId, workspaceId, revision: Number(workflow.revision),
+            currentVersionId: version.id, archived: false, definition: version.definition },
+          workspace: { id: workspaceId, archived: false, location: run.executionLocation }, draft: null,
+        } })
+        const admitted = await insertRepeatRun(sql, accepted, repeatStartPublication)
+        await bindRunAuthority(client, admitted.id, authority)
+        return admitted
+      }))
+      runtime.f.scope.runId = runtime.f.run.id
+      await runtime.engine.start(runtime.f.run.id)
+      const [interaction] = await runtime.pending()
+      if (!interaction) throw new Error('Expected an active Agent')
+      const issued = await runtime.credentials.issueForExecution(interaction.executionId)
+      agent = new Client({ name: 'ci-agent-test', version: '1' })
+      clients.push(agent)
+      await agent.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+        { requestInit: { headers: { authorization: `Bearer ${issued.environment.variables.GRAPHQL_MCP_TOKEN!}` } } }))
     } catch (error) {
-      await client.query('rollback')
+      await close()
       throw error
-    } finally { client.release() }
-    await runtime.engine.start(runtime.f.run.id)
-    const [interaction] = await runtime.pending()
-    if (!interaction) throw new Error('Expected an active Agent')
-    const issued = await runtime.credentials.issueForExecution(interaction.executionId)
-    agent = new Client({ name: 'ci-agent-test', version: '1' })
-    clients.push(agent)
-    await agent.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
-      { requestInit: { headers: { authorization: `Bearer ${issued.environment.variables.GRAPHQL_MCP_TOKEN!}` } } }))
+    }
   }
   const call = async (client: Client, name: string, input: Record<string, unknown>) =>
     client.callTool({ name, arguments: { workspaceId, ...input } })
@@ -163,13 +195,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
   }
   return { ...computers, ci, app, credential, workspaceId, operator, agent,
     authorizationPrincipalId: runtime.authorizationPrincipalId,
-    connect, call, value, published, pool: runtime.db.pool,
-    async close() {
-      await Promise.all(clients.map(client => client.close()))
-      await ci.close()
-      await app.close()
-      await runtime.close()
-    } }
+    connect, call, value, published, pool: runtime.db.pool, close }
 }
 
 it.each([
@@ -219,6 +245,7 @@ it('runs generic integration once despite requested partitions and falls back fr
     expect(read.run).toMatchObject({ part: null, partition: null, state: 'passed',
       computer: { hostRef: { kind: 'main' } } })
     expect(read.logTail).toContain('npm run integration')
+    expect(read.logTail.split('\n').filter(line => line === 'npm run integration')).toHaveLength(1)
     expect(read.logTail).toContain('fixture integration passed')
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
       [read.run.groupId])).rows.map(row => row.record)).toEqual([read.run])
@@ -328,7 +355,7 @@ it('runs generic install without an install script and persists a package-script
 })
 
 it.each([
-  ['unit', 10], ['lint', 2], ['typecheck', 2], ['build', 2],
+  ['unit', 11], ['lint', 2], ['typecheck', 2], ['build', 2],
 ] as const)('persists and dispatches all %s parts through authenticated MCP', async (suite, count) => {
   const f = await fixture()
   try {
@@ -343,6 +370,15 @@ it.each([
     expect(read.partitions).toHaveLength(count)
     expect(read.partitions!.every(run => run.suite === suite && run.part?.startsWith(`${suite}-`)
       && run.groupId === read.run.groupId)).toBe(true)
+    if (suite === 'unit') {
+      const expectedShards = { 'unit-api': 5, 'unit-web': 3, 'unit-web-heavy': 2, 'unit-other': 1 }
+      for (const [part, shards] of Object.entries(expectedShards)) {
+        const runs = read.partitions!.filter(run => run.part === part)
+        expect(runs).toHaveLength(shards)
+        expect(runs.map(run => run.partition).sort((left, right) => (left?.index ?? 0) - (right?.index ?? 0)))
+          .toEqual(shards === 1 ? [null] : Array.from({ length: shards }, (_, index) => ({ index, count: shards })))
+      }
+    }
     const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
       [read.run.groupId])).rows
     expect(stored).toHaveLength(count)
