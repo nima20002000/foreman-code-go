@@ -11,7 +11,9 @@ afterEach(async () => { while (closes.length) await closes.pop()!() })
 
 describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback through selected Main', () => {
   it('retrieves an oversized persisted list and individual request, and denies out-of-scope chunks', async () => {
-    const f = await approvalDatabase({ command: '😀"\\\n'.repeat(150_000) })
+    // Stay above the relay limit without multiplying full-record reads for dense escaping.
+    const command = `${'x'.repeat(4_000)}😀"\\\n`.repeat(250)
+    const f = await approvalDatabase({ command })
     closes.push(f.close)
     const interaction = f.interaction
     expect(Buffer.byteLength(JSON.stringify(interaction), 'utf8')).toBeGreaterThan(1_000_000)
@@ -47,15 +49,24 @@ describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback th
       interactionId: interaction.id,
     })).structuredContent)
     const firstCursor = page.content!.nextCursor!
+    expect(firstCursor).toEqual(expect.any(String))
+    const totalCharacters = page.content!.totalCharacters
+    const digest = page.content!.sha256
     let json = ''
     do {
+      expect(page.content!.text.length).toBeGreaterThan(0)
+      expect(page.content!.totalCharacters).toBe(totalCharacters)
+      expect(page.content!.sha256).toBe(digest)
       json += page.content!.text
+      expect(json.length).toBeLessThanOrEqual(totalCharacters)
       const contentCursor = page.content!.nextCursor
       if (!contentCursor) break
       page = AppInteractionGetOutputSchema.parse((await call('interaction_get', {
         interactionId: interaction.id, contentCursor,
       })).structuredContent)
     } while (json.length < page.content!.totalCharacters)
+    expect(page.content!.nextCursor).toBeNull()
+    expect(json).toHaveLength(totalCharacters)
     expect(JSON.parse(json).interaction).toEqual(interaction)
     expect(await f.repository.get(interaction.id)).toEqual(interaction)
     const outsider = await f.credentials.issueForReviewer(f.reviewer.id)
