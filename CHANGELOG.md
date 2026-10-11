@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.67] - 2026-10-11
+
+### Fixed
+
+- Agent preparation no longer scans every retained source snapshot under the shared storage lock; release runs only under storage pressure or in maintenance, so many concurrent Agents no longer time out Main's database.
+- Integration test slots are reused only after their database cleanup is confirmed.
+
+### Tests
+
+- The live CI scenario disables its Codex profiles when it finishes; host CI MCP coverage shares one database per file.
+
 ## [0.0.66] - 2026-10-11
 
 ### Fixed
