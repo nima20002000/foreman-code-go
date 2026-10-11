@@ -189,7 +189,8 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
 }
 
 export async function managementEndpoint(token = 'synthetic-scoped-token') {
-  const app = Fastify()
+  // MCP client close aborts fetch without joining its socket shutdown.
+  const app = Fastify({ forceCloseConnections: true })
   const list = vi.fn(async () => ({ items: [], pageInfo: { nextCursor: null } }))
   const principal = { id: 'sender', name: 'Sender', audience: 'operator' as const,
     grants: [{ actions: ['workspaces:read' as const], scope: {} }], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }

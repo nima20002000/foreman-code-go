@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { once } from 'node:events'
+import { Socket } from 'node:net'
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import { Client as FileClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -53,6 +55,29 @@ async function approveTool(f: ReturnType<typeof productionClaudeFixture>, call: 
 }
 
 describe('production Claude approval composition', () => {
+  it('closes management connections that have not sent an HTTP request', async () => {
+    const endpoint = await managementEndpoint()
+    const socket = new Socket()
+    try {
+      const address = new URL(endpoint.url)
+      const accepted = once(endpoint.app.server, 'connection')
+      const connected = once(socket, 'connect')
+      socket.connect({ host: address.hostname, port: Number(address.port) })
+      await Promise.all([accepted, connected])
+      socket.resume()
+
+      // Attach before shutdown so an immediate socket close is also observed.
+      const closed = once(socket, 'close')
+      await endpoint.app.close()
+      await closed
+      expect(socket.destroyed).toBe(true)
+      expect(endpoint.list).not.toHaveBeenCalled()
+    } finally {
+      socket.destroy()
+      await endpoint.app.close()
+    }
+  })
+
   it('admits an authenticated management manifest through runner, manager, policy callbacks and a real MCP handler', async () => {
     const endpoint = await managementEndpoint()
     const f = productionClaudeFixture('operator', undefined, endpoint.url)
