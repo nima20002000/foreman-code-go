@@ -99,3 +99,28 @@ describe('provider account chat settings', () => {
     expect(selected.accountId).toBe('10000000-0000-4000-8000-000000000001')
   })
 })
+
+describe('account discovery and full model contracts', () => {
+  it('preserves native reasoning, variants, service tiers and catalog provenance', async () => {
+    const { ProviderAccountModelsSchema } = await import('./providerAccounts.js')
+    const model = { id: 'selected-model', name: 'Selected model', providerId: 'native-provider',
+      reasoningEfforts: ['high'], variants: ['fast'], serviceTiers: ['priority'], releasedAt: '2026-01-01', defaultPriority: 1 }
+    expect(ProviderAccountModelsSchema.parse({ binding, generation: 2, observedAt: '2026-01-01T00:00:00.000Z', models: [model] }).models)
+      .toEqual([model])
+  })
+
+  it('rejects paths and secrets in selectable profiles and ordinary discovery/readback', async () => {
+    const { ProviderAccountProfilesSchema, ProviderAccountNativeDiscoverySchema, ProviderAccountWorkerRequestSchema } =
+      await import('./providerAccounts.js')
+    const profile = { provider: 'codex', profileRef: 'qualified-profile', qualificationId: 'storage-proof',
+      authMode: 'subscription', label: 'Native profile' }
+    expect(ProviderAccountProfilesSchema.safeParse({ target: binding.target, profiles: [{ ...profile, profileRef: '/arbitrary/path' }] }).success)
+      .toBe(false)
+    expect(ProviderAccountProfilesSchema.safeParse({ target: binding.target, profiles: [{ ...profile, token: 'secret' }] }).success)
+      .toBe(false)
+    expect(ProviderAccountNativeDiscoverySchema.safeParse({ generation: 1, providers: [], profiles: [profile], deviceCode: 'challenge' }).success)
+      .toBe(false)
+    expect(ProviderAccountWorkerRequestSchema.safeParse({ version: 1, target: binding.target,
+      request: { kind: 'shell', command: 'unsupported' } }).success).toBe(false)
+  })
+})

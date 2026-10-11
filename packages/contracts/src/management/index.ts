@@ -625,6 +625,7 @@ export const OperatorToolNameSchema = z.enum([
   "agent_chat_read", "agent_chat_send", "agent_chat_interrupt", "agent_chat_cancel_queued", "agent_chat_respond",
   "workspace_defaults_get",
   'general_settings_get', 'general_settings_update',
+  'provider_account_targets', 'provider_account_profiles', 'provider_account_eligibility', 'provider_account_auth_list',
   'provider_accounts_list', 'provider_account_create', 'provider_account_rename',
   'provider_account_default_set', 'provider_account_login', 'provider_account_logout', 'provider_account_refresh',
   'provider_accounts_page', 'provider_account_get', 'provider_account_register', 'provider_account_remove',

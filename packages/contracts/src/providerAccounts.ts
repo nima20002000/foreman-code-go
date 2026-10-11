@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { HarnessModelOptionSchema, HarnessOptionsResultSchema } from './harnessOptions.js'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 
@@ -104,6 +105,7 @@ export const ProviderAccountListInputSchema = z.object({
   includeRemoved: z.boolean().default(false),
 }).strict()
 export const ProviderAccountPageSchema = z.object({
+  target: DeviceProvisioningTargetSchema.optional(),
   revision: Revision,
   accounts: z.array(ProviderAccountSchema).max(100),
   defaults: z.array(ProviderAccountDefaultSchema).max(200),
@@ -164,17 +166,84 @@ export const ProviderAccountNativeAuthenticationObservationSchema = z.object({
   account: ProviderAccountObservationSchema.optional(),
 }).strict()
 export const ProviderAccountModelsInputSchema = ProviderAccountGetInputSchema
+const AccountModelOptionSchema = HarnessModelOptionSchema.extend({
+  id: Reference, providerId: Reference.optional(), name: Reference,
+  reasoningEfforts: z.array(Reference).max(100).default([]),
+  variants: z.array(Reference).max(100).default([]), serviceTiers: z.array(Reference).max(100).default([]),
+  releasedAt: z.string().max(200).optional(),
+})
 export const ProviderAccountModelsSchema = z.object({
   binding: ProviderAccountBindingSchema,
   generation: Revision.min(1), observedAt: z.string().datetime(),
-  models: z.array(z.object({ id: Reference, name: Reference }).strict()).max(500),
+  models: z.array(AccountModelOptionSchema).max(500),
+  options: HarnessOptionsResultSchema.extend({
+    providerVersion: Reference, models: z.array(HarnessModelOptionSchema).max(500),
+    nativeAgents: z.array(Reference).max(100), settings: HarnessOptionsResultSchema.shape.settings.max(100),
+    restrictions: z.array(z.string().max(500)).max(100),
+  }).optional(),
+}).strict().refine(value => !value.options || value.options.harness === value.binding.provider, {
+  message: 'Native model options must name the selected account provider.',
+})
+export const ProviderAccountDiscoveryInputSchema = z.object({
+  target: DeviceProvisioningTargetSchema.optional(), provider: AccountProviderSchema.optional(),
 }).strict()
+export const ProviderAccountCapabilitySchema = z.object({
+  provider: AccountProviderSchema,
+  actions: z.array(z.enum(['create', 'register', 'status', 'models', 'sign-in', 'sign-out', 'cancel', 'human-handoff'])),
+  qualified: z.boolean(), reason: z.string().min(1).max(500).nullable(),
+}).strict()
+export const ProviderAccountTargetSchema = z.object({
+  target: DeviceProvisioningTargetSchema, label: z.string().min(1).max(200),
+  generation: Revision.min(1), connected: z.boolean(), canRead: z.boolean(), canManage: z.boolean(),
+  providers: z.array(ProviderAccountCapabilitySchema).max(2),
+}).strict()
+export const ProviderAccountTargetsSchema = z.object({ targets: z.array(ProviderAccountTargetSchema).max(200) }).strict()
+export const ProviderAccountProfileChoiceSchema = z.object({
+  profileRef: ProfileReference, qualificationId: Reference, provider: AccountProviderSchema,
+  authMode: ProviderAccountAuthModeSchema, label: z.string().min(1).max(200),
+}).strict()
+export const ProviderAccountNativeDiscoverySchema = z.object({
+  generation: Revision.min(1), providers: z.array(ProviderAccountCapabilitySchema).max(2),
+  profiles: z.array(ProviderAccountProfileChoiceSchema).max(100),
+}).strict()
+export const ProviderAccountProfilesSchema = z.object({
+  target: DeviceProvisioningTargetSchema, profiles: z.array(ProviderAccountProfileChoiceSchema).max(100),
+}).strict()
+export const ProviderAccountEligibilitySchema = z.object({
+  accountId: ProviderAccountIdSchema, target: DeviceProvisioningTargetSchema,
+  canManage: z.boolean(), canReauthenticate: z.boolean(), reason: z.string().max(500).nullable(),
+}).strict()
+export const ProviderAccountAuthenticationListInputSchema = ProviderAccountGetInputSchema.extend({
+  cursor: z.uuid().optional(), limit: z.coerce.number().int().min(1).max(100).default(50),
+}).strict()
+export const ProviderAccountAuthenticationPageSchema = z.object({
+  target: DeviceProvisioningTargetSchema, accountId: ProviderAccountIdSchema,
+  currentOperation: ProviderAccountAuthenticationOperationSchema.nullable(),
+  operations: z.array(ProviderAccountAuthenticationOperationSchema).max(100), nextCursor: z.uuid().nullable(),
+}).strict()
+/** Ephemeral local human response. Never an MCP result or persisted account record. */
+export const ProviderAccountHumanHandoffSchema = z.object({
+  operationId: z.uuid(), kind: z.literal('local-browser'), expiresAt: z.string().datetime(),
+  message: z.string().min(1).max(500),
+}).strict()
+export type ProviderAccountCapability = z.infer<typeof ProviderAccountCapabilitySchema>
+export type ProviderAccountProfileChoice = z.infer<typeof ProviderAccountProfileChoiceSchema>
+export type ProviderAccountTarget = z.infer<typeof ProviderAccountTargetSchema>
+export type ProviderAccountHumanHandoff = z.infer<typeof ProviderAccountHumanHandoffSchema>
+export const ProviderAccountWorkerAuthorityRequestSchema = z.discriminatedUnion('kind', [
+  z.object({ version: z.literal(1), kind: z.literal('authorize'), operation: ProviderAccountAuthenticationOperationSchema }).strict(),
+  z.object({ version: z.literal(1), kind: z.literal('binding'), binding: ProviderAccountBindingSchema }).strict(),
+])
 export const PROVIDER_ACCOUNT_WORKER_NAMESPACE = 'provider-accounts-v1'
 export const PROVIDER_ACCOUNT_WORKER_VERSION = 1
 export const ProviderAccountWorkerRequestSchema = z.object({
   version: z.literal(1), target: DeviceProvisioningTargetSchema,
   connection: DeviceConnectionIdentitySchema,
   request: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('discover'), provider: AccountProviderSchema.optional() }).strict(),
+    z.object({ kind: z.literal('provision'), account: ProviderAccountSchema }).strict(),
+    z.object({ kind: z.literal('register'), provider: AccountProviderSchema, authMode: ProviderAccountAuthModeSchema, profileRef: ProfileReference,
+      qualificationId: Reference }).strict(),
     z.object({ kind: z.literal('status'), binding: ProviderAccountBindingSchema }).strict(),
     z.object({ kind: z.literal('models'), binding: ProviderAccountBindingSchema }).strict(),
     z.object({ kind: z.literal('prepare'), operation: ProviderAccountAuthenticationOperationSchema }).strict(),
@@ -202,6 +271,7 @@ export const PROVIDER_ACCOUNT_TOOLS = [
   'provider_account_default_set', 'provider_account_login', 'provider_account_logout', 'provider_account_refresh',
   'provider_accounts_page', 'provider_account_get', 'provider_account_register', 'provider_account_remove',
   'provider_account_auth_prepare', 'provider_account_auth_status', 'provider_account_auth_cancel', 'provider_account_models',
+  'provider_account_targets', 'provider_account_profiles', 'provider_account_eligibility', 'provider_account_auth_list',
 ] as const
 
 export type AccountProvider = z.infer<typeof AccountProviderSchema>
