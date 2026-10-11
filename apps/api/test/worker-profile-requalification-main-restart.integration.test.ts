@@ -4,7 +4,8 @@ import { latestEvidence, refreshedEvidence, startWhenReady, assertMcpReadback } 
 
 describe('automatic Worker profile qualification', () => {
   it('checks previously qualified Worker profiles after Main restarts before admitting a new Run', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true })
+    const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true,
+      parallelSetup: true })
     try {
       const before = await latestEvidence(fixture)
       await fixture.restartMain()
