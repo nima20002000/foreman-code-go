@@ -5,7 +5,9 @@ import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { ProviderAccountUpdateResultSchema, ProviderAccountsSnapshotSchema } from '@foreman-code/contracts/provider-accounts'
+import { ProviderAccountUpdateResultSchema, ProviderAccountsSnapshotSchema,
+  ProviderAccountPageSchema, ProviderAccountSchema, ProviderAccountAuthenticationResultSchema,
+  ProviderAccountAuthenticationOperationSchema, type ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, ownedTestPath } from '../../../test/helpers/testResources.js'
 import { applyApplicationMigrations } from '../../infrastructure/migrations.js'
@@ -14,9 +16,9 @@ import type { OperatorServices } from '../../mcp/operator/types.js'
 import { PostgresAccessService } from '../access/postgres.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { LocalProviderCredentials } from './localCredentials.js'
-import { NativeProviderAccountCommands, type AccountCommandInvocation, type ProviderAccountNativePort } from './nativeCommands.js'
+import { NativeProviderAccountCommands, type AccountCommandInvocation } from './nativeCommands.js'
 import { ProviderAccountsRepository } from './repository.js'
-import { ProviderAccountsService } from './service.js'
+import { ProviderAccountsService, type ProviderAccountOperationNativePort } from './service.js'
 import { providerAccountEnvironment } from './environment.js'
 
 const schema = `provider_accounts_${randomUUID().replaceAll('-', '')}`
@@ -45,21 +47,39 @@ afterAll(async () => {
 async function fixture() {
   const access = new PostgresAccessService(pool)
   const owner = await access.issue({ name: 'Owner', audience: 'operator', expiresAt: new Date('2099-01-01'),
-    grants: [{ actions: ['settings:read', 'settings:update', 'capabilities:read'], scope: {} }] })
+    grants: [{ actions: ['settings:read', 'settings:update', 'capabilities:read',
+      'provider_accounts:read', 'provider_accounts:manage'], scope: {} }] })
   const reader = await access.issue({ name: 'Reader', audience: 'operator', expiresAt: new Date('2099-01-01'),
-    grants: [{ actions: ['settings:read'], scope: {} }] })
+    grants: [{ actions: ['settings:read', 'provider_accounts:read'], scope: {} }] })
   const scoped = await access.issue({ name: 'Scoped', audience: 'operator', expiresAt: new Date('2099-01-01'),
-    grants: [{ actions: ['settings:read', 'settings:update'], scope: { workspaceIds: ['one'] } }] })
+    grants: [{ actions: ['settings:read', 'settings:update', 'provider_accounts:read',
+      'provider_accounts:manage'], scope: { workspaceIds: ['one'] } }] })
   const root = ownedTestPath(join(process.env.FOREMAN_CODE_TEST_ROOT!, `accounts-${randomUUID()}`))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
   const credentials = new LocalProviderCredentials(root)
   const commands = new PostgresCommandCoordinator(pool)
   const statuses = new Map<string, 'signed-in' | 'signed-out' | 'login-pending'>()
-  const native: ProviderAccountNativePort = {
+  const native: ProviderAccountOperationNativePort = {
     status: vi.fn(async ({ account }) => ({ status: statuses.get(account.id) ?? 'signed-out', identity: null })),
     login: vi.fn(async ({ account }) => { statuses.set(account.id, 'login-pending') }),
     logout: vi.fn(async ({ account }) => { statuses.set(account.id, 'signed-out') }),
     cancelLogin: vi.fn(async accountId => { statuses.delete(accountId) }), close: vi.fn(async () => {}),
+    prepareAuthentication: vi.fn(async input => {
+      if (input.operation.intent === 'sign-in') await native.login(input)
+      else await native.logout(input)
+      return { operationId: input.operation.id, binding: input.operation.binding,
+        generation: input.operation.generation, sequence: input.operation.nativeSequence + 1,
+        state: input.operation.intent === 'sign-in' ? 'awaiting-human' : 'completed',
+        nativeClosed: input.operation.intent === 'sign-out' }
+    }),
+    observeAuthentication: vi.fn(async input => ({ operationId: input.operation.id,
+      binding: input.operation.binding, generation: input.operation.generation,
+      sequence: input.operation.nativeSequence + 1,
+      state: statuses.get(input.account.id) === 'signed-in' ? 'completed' : 'awaiting-human',
+      nativeClosed: statuses.get(input.account.id) === 'signed-in' })),
+    cancelAuthentication: vi.fn(async input => ({ operationId: input.operation.id,
+      binding: input.operation.binding, generation: input.operation.generation,
+      sequence: input.operation.nativeSequence + 1, state: 'canceled', nativeClosed: true })),
   }
   const createService = () => new ProviderAccountsService(pool,
     new ProviderAccountsRepository(pool, () => credentials.hostId()), credentials, native, commands)
@@ -204,12 +224,15 @@ it.each(['save', 'logout'] as const)('serializes %s compensation before a concur
   await f.service.provisionApiKey(f.owner.principal, accountId,
     { ...command(1), apiKey: `sk-original-${randomUUID()}` })
   const repository = new ProviderAccountsRepository(pool, () => f.credentials.hostId())
-  vi.spyOn(repository, 'write').mockRejectedValue(new Error('fixture persistence failure'))
   const failingService = new ProviderAccountsService(pool, repository, f.credentials, f.native, f.commands)
   let releaseRestore!: () => void
   let enteredRestore!: () => void
   const restoreEntered = new Promise<void>(resolve => { enteredRestore = resolve })
   const restoreGate = new Promise<void>(resolve => { releaseRestore = resolve })
+  vi.spyOn(repository, 'write').mockImplementation(async () => {
+    if (action === 'logout') { enteredRestore(); await restoreGate }
+    throw new Error('fixture persistence failure')
+  })
   const restore = f.credentials.restore.bind(f.credentials)
   vi.spyOn(f.credentials, 'restore').mockImplementation(async backup => {
     enteredRestore()
@@ -250,34 +273,265 @@ it.each(['save', 'logout'] as const)('serializes %s compensation before a concur
     releaseRestore()
   }
   expect(await failed).toBeInstanceOf(Error)
+  if (action === 'logout') expect(f.native.logout).not.toHaveBeenCalled()
   expect((await contender).value.revision).toBe(3)
   expect((await f.createService().resolve('claude', accountId))?.apiKey).toBe(committedKey)
   expect((await f.service.list(f.reader.principal)).revision).toBe(3)
 })
 
 it('invokes native login/status in the selected home and sanitizes provider output', async () => {
-  const account = { id: randomUUID(), provider: 'claude' as const, name: 'Personal', authMode: 'subscription' as const,
+  const mainId = randomUUID()
+  const binding: ProviderAccountBinding = { kind: 'slot', accountId: randomUUID(), provider: 'claude',
+    target: { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId,
+      keyRevision: null, authorizationRevision: null }, profileRef: 'qualified-profile', bindingRevision: 1, subject: null }
+  const account = { binding, id: binding.accountId, provider: 'claude' as const, name: 'Personal', authMode: 'subscription' as const,
     isDefault: true, status: 'signed-out' as const, identity: null, revision: 1 }
   const invocations: AccountCommandInvocation[] = []
-  const native = new NativeProviderAccountCommands({ codex: 'fixture-codex', claude: 'fixture-claude' }, input => {
+  const native = new NativeProviderAccountCommands({ selected: async input => ({ binding: input.account.binding!,
+    binary: '/qualified/provider', profilePath: input.homePath, qualificationId: 'isolation-check', generation: 1,
+    isolation: true, status: true, login: true, logout: true }) }, input => {
     invocations.push(input)
     return { completion: Promise.resolve({ code: 0,
       stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'user@example.com', token: 'must-not-escape' }) }),
     stop: async () => {} }
   })
   const input = { account, homePath: '/owned/account/home', userHome: '/owned/account' }
-  expect(await native.status(input)).toEqual({ status: 'signed-in', identity: 'user@example.com' })
-  await native.login(input)
-  await native.close()
+  expect(await native.status(input)).toEqual({ status: 'signed-in', identity: 'user@example.com', subject: null })
+  const operation = { id: randomUUID(), commandId: randomUUID(), inputHash: `sha256:${'a'.repeat(64)}`,
+    binding, intent: 'sign-in' as const, state: 'reserved' as const, revision: 1, generation: 1, nativeSequence: 0,
+    cancelRequested: false, nativeClosed: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    expiresAt: '2099-01-01T00:00:00.000Z', humanActionRequired: true }
+  const login = await native.dispatch({ ...input, operation }, 'login', {
+    recovery: { root: '/fixture/process-registry', owner: 'fixture-operation', launchId: randomUUID() },
+  })
+  await login.completion
   expect(invocations[1]?.args).toEqual(['auth', 'login'])
   expect(invocations[1]?.environment.CLAUDE_CONFIG_DIR).toBe(input.homePath)
-  expect(invocations[1]?.environment.HOME).toBe(input.userHome)
-  await native.status({ ...input, account: { ...account, provider: 'codex' } })
-  expect(invocations[2]?.args).toEqual(['-c', 'cli_auth_credentials_store="file"', 'login', 'status'])
+  expect(invocations[1]?.environment.HOME).toBe(process.env.HOME)
+  await native.status({ ...input, account: { ...account, provider: 'codex',
+    binding: { ...binding, provider: 'codex' } } })
+  expect(invocations[2]?.args).toEqual(['login', 'status'])
+  await native.close()
   const environment = providerAccountEnvironment('claude', input.homePath, input.userHome, {
     OPENAI_API_KEY: 'ambient', ANTHROPIC_API_KEY: 'ambient', ANTHROPIC_AUTH_TOKEN: 'ambient',
     CLAUDE_CODE_OAUTH_TOKEN: 'ambient', CLAUDE_CODE_USE_BEDROCK: '1', AWS_PROFILE: 'ambient', DISPLAY: ':0',
   })
   expect(Object.keys(environment).filter(key => /API_KEY|TOKEN|BEDROCK|AWS_/.test(key))).toEqual([])
   expect(environment.DISPLAY).toBe(':0')
+})
+
+it('reads paginated accounts, registers a qualified profile and removes a default through authenticated MCP and HTTP', async () => {
+  const f = await fixture()
+  const client = await f.connect(f.owner.token)
+  const first = await add(f.service, f.owner.principal, 'codex', 'subscription')
+  const accountId = first.value.accounts[0]!.id
+  await add(f.service, f.owner.principal, 'codex', 'subscription', 1)
+  const page = ProviderAccountPageSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_accounts_page', arguments: { provider: 'codex', limit: 1 },
+  })))
+  expect(page.accounts).toHaveLength(1)
+  expect(page.nextCursor).not.toBeNull()
+  const next = await f.service.page(f.reader.principal, { provider: 'codex', limit: 1, cursor: page.nextCursor })
+  expect(next.accounts).toHaveLength(1)
+  expect(next.accounts[0]!.id).not.toBe(page.accounts[0]!.id)
+  const http = await f.app.inject({ method: 'GET', url: `/api/provider-accounts/${accountId}`,
+    headers: { authorization: `Bearer ${f.reader.token}` } })
+  const read = ProviderAccountSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_get', arguments: { accountId },
+  })))
+  expect(http.statusCode).toBe(200)
+  expect(http.json()).toEqual(read)
+  f.native.registerProfile = vi.fn(async input => ({ profileRef: input.profileRef }))
+  const registered = ProviderAccountUpdateResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_register', arguments: { ...command(2), provider: 'claude', authMode: 'subscription',
+      name: 'Existing profile', profileRef: 'qualified-existing-profile', qualificationId: 'profile-check' },
+  })))
+  expect(registered.value.accounts.at(-1)?.binding?.profileRef).toBe('qualified-existing-profile')
+  const removed = ProviderAccountUpdateResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_remove', arguments: { ...command(3), accountId },
+  })))
+  expect(removed.value.accounts.find(account => account.id === accountId)).toMatchObject({ isDefault: false })
+  expect(removed.value.defaults?.find(value => value.provider === 'codex')?.accountId).toBeNull()
+  expect((await f.createService().get(f.reader.principal, { accountId })).removedAt).toEqual(expect.any(String))
+  await expect(f.createService().resolve('codex', accountId)).rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_UNAVAILABLE' })
+  expect((await f.service.page(f.reader.principal, { provider: 'codex' })).accounts.map(account => account.id))
+    .not.toContain(accountId)
+})
+
+it('prepares, rechecks and cancels one authentication operation through MCP with HTTP persisted readback', async () => {
+  const f = await fixture()
+  const client = await f.connect(f.owner.token)
+  const created = await add(f.service, f.owner.principal, 'claude', 'subscription')
+  const accountId = created.value.accounts[0]!.id
+  const input = { ...command(1), accountId, intent: 'sign-in' }
+  const prepared = ProviderAccountAuthenticationResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_auth_prepare', arguments: input,
+  })))
+  expect(prepared.value.state).toBe('awaiting-human')
+  const replay = ProviderAccountAuthenticationResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_auth_prepare', arguments: input,
+  })))
+  expect(replay.replayed).toBe(true)
+  expect(replay.value.id).toBe(prepared.value.id)
+  expect(f.native.prepareAuthentication).toHaveBeenCalledTimes(1)
+  const status = ProviderAccountAuthenticationOperationSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_auth_status', arguments: { operationId: prepared.value.id },
+  })))
+  const canceled = ProviderAccountAuthenticationResultSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_auth_cancel', arguments: { ...command(status.revision), operationId: status.id },
+  })))
+  expect(canceled.value).toMatchObject({ id: status.id, state: 'canceled', cancelRequested: true, nativeClosed: true })
+  const http = await f.app.inject({ method: 'POST', url: '/api/provider-accounts/authentication/status',
+    headers: { authorization: `Bearer ${f.reader.token}` }, payload: { operationId: status.id } })
+  expect(http.statusCode).toBe(200)
+  expect(http.json()).toEqual(canceled.value)
+  expect(await f.createService().authenticationStatus(f.reader.principal, { operationId: status.id })).toEqual(canceled.value)
+  await expect(f.service.prepareAuthentication(f.owner.principal, 'mcp', accountId,
+    { ...input, intent: 'sign-out' })).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+})
+
+it('audits each denied HTTP and guessed MCP mutation without changing persisted state', async () => {
+  const f = await fixture()
+  const created = await add(f.service, f.owner.principal, 'codex', 'subscription')
+  const accountId = created.value.accounts[0]!.id
+  const prepared = await f.service.prepareAuthentication(f.owner.principal, 'http', accountId,
+    { ...command(1), intent: 'sign-in' })
+  const client = await f.connect(f.reader.token)
+  const operations = [
+    { tool: 'provider_account_remove', url: `/api/provider-accounts/${accountId}/remove`,
+      input: { ...command(2), accountId } },
+    { tool: 'provider_account_auth_prepare', url: `/api/provider-accounts/${accountId}/authentication`,
+      input: { ...command(2), accountId, intent: 'sign-in' } },
+    { tool: 'provider_account_auth_cancel', url: '/api/provider-accounts/authentication/cancel',
+      input: { ...command(prepared.value.revision), operationId: prepared.value.id } },
+    { tool: 'provider_account_register', url: '/api/provider-accounts/register',
+      input: { ...command(2), provider: 'codex', authMode: 'subscription', name: 'Denied',
+        profileRef: 'qualified-profile', qualificationId: 'qualified-proof' } },
+  ]
+  for (const operation of operations) {
+    expect((await client.callTool({ name: operation.tool, arguments: operation.input })).isError).toBe(true)
+    const payload = Object.fromEntries(Object.entries(operation.input).filter(([key]) => key !== 'accountId'))
+    expect((await f.app.inject({ method: 'POST', url: operation.url,
+      headers: { authorization: `Bearer ${f.reader.token}` }, payload })).statusCode).toBe(403)
+  }
+  const audits = await pool.query<{ outcome: string }>(
+    'select outcome from management_audit where principal_id=$1', [f.reader.principal.id])
+  expect(audits.rows.filter(row => row.outcome === 'denied')).toHaveLength(operations.length * 2)
+  expect((await f.service.get(f.reader.principal, { accountId })).removedAt).toBeNull()
+})
+
+it('keeps scoped-default CAS independent from label edits and rejects another canonical installation', async () => {
+  const f = await fixture()
+  const first = await add(f.service, f.owner.principal, 'codex', 'subscription')
+  const second = await add(f.service, f.owner.principal, 'codex', 'subscription', 1)
+  const accountId = second.value.accounts[1]!.id
+  const defaultRevision = second.value.defaults!.find(value => value.provider === 'codex')!.revision
+  await f.service.rename(f.owner.principal, 'http', first.value.accounts[0]!.id, { ...command(2), name: 'Renamed' })
+  const changed = await f.service.setDefault(f.owner.principal, 'mcp', accountId,
+    { ...command(2), expectedDefaultRevision: defaultRevision })
+  expect(changed.value.defaults!.find(value => value.provider === 'codex')).toMatchObject({
+    accountId, revision: defaultRevision + 1,
+  })
+  await expect(f.service.setDefault(f.owner.principal, 'http', accountId,
+    { ...command(4), expectedDefaultRevision: defaultRevision })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
+  const target = { ...second.value.accounts[1]!.binding!.target, applicationInstallationId: randomUUID() }
+  await expect(f.service.get(f.owner.principal, { accountId, target }))
+    .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_TARGET_CONFLICT' })
+})
+
+it('detects reliable same-scope duplicates without merging and protects a used principal from replacement', async () => {
+  const f = await fixture()
+  const first = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const second = (await add(f.service, f.owner.principal, 'codex', 'subscription', 1)).value.accounts[1]!
+  let subject: string | null = 'qualified-provider-subject'
+  let sequence = 0
+  f.native.observeAccount = async input => ({ bindingRevision: input.account.binding!.bindingRevision,
+    generation: 1, sequence: ++sequence, observedAt: new Date().toISOString(), status: 'signed-in',
+    identity: 'display@example.test', readiness: 'ready', subject: subject ? { subject,
+      provenance: 'qualified-native', qualificationId: 'native-identity-check', observedAt: new Date().toISOString() } : null })
+  const observedFirst = await f.service.refresh(f.owner.principal, 'http', first.id, command(2))
+  const observedSecond = await f.service.refresh(f.owner.principal, 'mcp', second.id, command(3))
+  expect(observedSecond.value.accounts[1]!.possibleDuplicateAccountIds).toEqual([first.id])
+  expect(observedSecond.value.accounts).toHaveLength(2)
+  expect(observedSecond.value.accounts[1]!.binding!.profileRef).not.toBe(observedFirst.value.accounts[0]!.binding!.profileRef)
+  const third = (await add(f.service, f.owner.principal, 'codex', 'subscription', 4)).value.accounts[2]!
+  subject = null
+  const emailOnly = await f.service.refresh(f.owner.principal, 'http', third.id, command(5))
+  expect(emailOnly.value.accounts[2]!.binding!.subject).toBeNull()
+  expect(emailOnly.value.accounts[2]!.possibleDuplicateAccountIds).toEqual([])
+  const sql = await pool.connect()
+  try {
+    await sql.query('begin')
+    const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
+    await f.service.acceptedBindings.accept(sql, 'run-node', `accepted:${randomUUID()}`,
+      { ...DEFAULT_HARNESS_DEFAULTS.codex, accountId: first.id })
+    await sql.query('commit')
+  } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+  subject = 'different-provider-subject'
+  await expect(f.service.refresh(f.owner.principal, 'http', first.id, command(6)))
+    .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_PRINCIPAL_LOCKED' })
+  await expect(f.service.prepareAuthentication(f.owner.principal, 'mcp', first.id,
+    { ...command(6), intent: 'sign-in' })).rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_PRINCIPAL_LOCKED' })
+  expect((await f.createService().get(f.reader.principal, { accountId: first.id })).observation!.subject!.subject)
+    .toBe('qualified-provider-subject')
+})
+
+it('returns distinct account-scoped models and rejects unqualified or mismatched catalogs without fallback', async () => {
+  const f = await fixture()
+  const first = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const second = (await add(f.service, f.owner.principal, 'codex', 'subscription', 1)).value.accounts[1]!
+  f.native.models = async input => ({ binding: input.account.binding!, generation: 1,
+    observedAt: new Date().toISOString(), models: input.account.id === first.id ? [{ id: 'model-a', name: 'Model A' }] : [] })
+  const client = await f.connect(f.reader.token)
+  const { ProviderAccountModelsSchema } = await import('@foreman-code/contracts/provider-accounts')
+  const models = ProviderAccountModelsSchema.parse(decodeMcpToolResult(await client.callTool({
+    name: 'provider_account_models', arguments: { accountId: first.id },
+  })))
+  expect(models.models.map(model => model.id)).toEqual(['model-a'])
+  const http = await f.app.inject({ method: 'GET', url: `/api/provider-accounts/${second.id}/models`,
+    headers: { authorization: `Bearer ${f.reader.token}` } })
+  expect(http.statusCode).toBe(200)
+  expect(ProviderAccountModelsSchema.parse(http.json()).models).toEqual([])
+  f.native.models = async () => ({ ...models, binding: second.binding! })
+  await expect(f.service.models(f.reader.principal, { accountId: first.id }))
+    .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_BINDING_CONFLICT' })
+})
+
+it('enforces target restrictions at every delegation link through authenticated HTTP and MCP', async () => {
+  const f = await fixture()
+  const first = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const second = (await add(f.service, f.owner.principal, 'codex', 'subscription', 1)).value.accounts[1]!
+  const access = new PostgresAccessService(pool)
+  const parent = await access.issue({ name: 'Scoped account owner', audience: 'operator', expiresAt: new Date('2099-01-01'),
+    grants: [{ actions: ['provider_accounts:read', 'provider_accounts:manage'], scope: { providerAccountIds: [first.id] } }] })
+  const child = await access.issue({ name: 'Delegated account caller', audience: 'operator', expiresAt: new Date('2099-01-01'),
+    grants: [{ actions: ['provider_accounts:read', 'provider_accounts:manage'], scope: {} }] })
+  await pool.query('update management_principals set delegated_from=$2 where id=$1', [child.principal.id, parent.principal.id])
+  const client = await f.connect(child.token)
+  const permitted = await f.app.inject({ method: 'GET', url: `/api/provider-accounts/${first.id}`,
+    headers: { authorization: `Bearer ${child.token}` } })
+  expect(permitted.statusCode).toBe(200)
+  expect(permitted.json().id).toBe(first.id)
+  const denied = await f.app.inject({ method: 'POST', url: `/api/provider-accounts/${second.id}/remove`,
+    headers: { authorization: `Bearer ${child.token}` }, payload: command(2) })
+  expect(denied.statusCode).toBe(403)
+  expect((await client.callTool({ name: 'provider_account_remove', arguments: { ...command(2), accountId: second.id } })).isError)
+    .toBe(true)
+  expect((await f.createService().get(f.reader.principal, { accountId: second.id })).removedAt).toBeNull()
+  const audits = await pool.query<{ outcome: string }>(
+    'select outcome from management_audit where principal_id=$1', [child.principal.id])
+  expect(audits.rows.filter(row => row.outcome === 'denied')).toHaveLength(2)
+})
+
+it('does not adopt prior slot records after an application reinstall even when the native root is unchanged', async () => {
+  const f = await fixture()
+  const account = (await add(f.service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const otherMain = randomUUID()
+  const recreated = f.createService()
+  recreated.bindTarget(async () => ({ hostRef: { kind: 'main', mainId: otherMain },
+    applicationInstallationId: otherMain, keyRevision: null, authorizationRevision: null }))
+  await expect(recreated.get(f.owner.principal, { accountId: account.id }))
+    .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_TARGET_CONFLICT' })
+  await expect(recreated.resolve('codex', account.id)).rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_TARGET_CONFLICT' })
+  expect((await f.createService().get(f.owner.principal, { accountId: account.id })).binding).toEqual(account.binding)
 })

@@ -5,6 +5,7 @@ import { ClaudeHarnessConfigurationSchema } from './claude.js'
 import { AcceptedProviderAccountBindingSchema, ProviderAccountBindingSchema, ProviderAccountListInputSchema,
   ProviderAccountAuthenticationOperationSchema, ProviderAccountNativeAuthenticationObservationSchema,
   ProviderAccountSchema } from './providerAccounts.js'
+import { ProviderAccountDefaultSchema, ProviderAccountRegisterInputSchema } from './providerAccounts.js'
 
 const binding = {
   kind: 'slot' as const, accountId: '10000000-0000-4000-8000-000000000001', provider: 'codex' as const,
@@ -15,6 +16,15 @@ const binding = {
 }
 
 describe('accepted account contracts', () => {
+  it('validates independently revisioned defaults and requires opaque qualified profile references', () => {
+    expect(ProviderAccountDefaultSchema.parse({ target: binding.target, provider: 'codex',
+      accountId: binding.accountId, revision: 3 }).revision).toBe(3)
+    expect(ProviderAccountDefaultSchema.safeParse({ target: binding.target, provider: 'codex',
+      accountId: binding.accountId, revision: -1 }).success).toBe(false)
+    expect(ProviderAccountRegisterInputSchema.safeParse({ commandId: 'register-profile-command', expectedRevision: 0,
+      provider: 'claude', authMode: 'subscription', name: 'Profile', profileRef: '/caller/profile',
+      qualificationId: 'qualified-reference' }).success).toBe(false)
+  })
   it('requires a canonical slot binding and keeps historical identity unknown', () => {
     expect(ProviderAccountBindingSchema.parse(binding)).toEqual(binding)
     expect(ProviderAccountBindingSchema.safeParse({ ...binding, bindingRevision: 0 }).success).toBe(false)
