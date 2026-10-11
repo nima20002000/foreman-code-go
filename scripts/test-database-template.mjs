@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { assertTestRoot, createTestDatabase, dropTestDatabase, requireTestServerUrl } from './test-resources.mjs'
+import { createTestPool } from '../apps/api/test/helpers/testPool.mjs'
 
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const templates = new Map()
@@ -52,8 +53,7 @@ async function migrateTemplate(admin, resource, { hash, importMs, applyApplicati
   const started = performance.now()
   const name = `graphql_test_template_${hash.slice(0, 12)}_${resource.token.replaceAll('-', '').slice(0, 12)}`
   const database = await createTestDatabase(admin, resource, { name })
-  const { Pool } = require('pg')
-  const pool = new Pool({ connectionString: database.databaseUrl, max: 1,
+  const pool = createTestPool({ connectionString: database.databaseUrl, max: 1,
     options: '-c statement_timeout=60000 -c lock_timeout=10000' })
   const migrationStarted = performance.now()
   try {
