@@ -66,6 +66,20 @@ async function mcpClient() {
 /** A suite part by its name (typecheck-api), an integration partition by its number. */
 const partName = run => run.part ?? (run.partition ? `part ${run.partition.index + 1} of ${run.partition.count}` : run.suite)
 
+/** Pushes the snapshot for Main's CI. Several commands often push the same commit at once (an agent running test
+ * and lint together); GitHub refuses all but one ref update, and the branch then already holds the commit. */
+async function publish(commit) {
+  const ref = `refs/heads/foreman/ci/${commit}`
+  for (let attempt = 1; ; attempt++) {
+    try { git(['push', '--quiet', 'origin', `${commit}:${ref}`]); return } catch (error) {
+      const published = (() => { try { return git(['ls-remote', 'origin', ref]).split(/\s/)[0] } catch { return '' } })()
+      if (published === commit) return
+      if (attempt >= 4) throw error
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+    }
+  }
+}
+
 async function remote(suite, args) {
   if (args.length) console.error('[ci] Selecting affected files from the snapshot; command arguments apply to local runs only.')
   const call = await mcpClient()
@@ -88,7 +102,7 @@ async function remote(suite, args) {
     selection.reason = 'Selection exceeds the CI request limit.'
   }
   console.error(`[ci] ${selection.scope}: ${selection.reason} ${selection.files.length} selected files.`)
-  git(['push', '--quiet', 'origin', `${commit}:refs/heads/foreman/ci/${commit}`])
+  await publish(commit)
   const partitions = suite === 'integration' ? Number(environment.FOREMAN_CODE_CI_PARTITIONS ?? 32) : undefined
   const started = await call('ci_run', { workspaceId, suite, commit, scope: selection.scope,
     ...(selection.scope === 'affected' ? { files: selection.files } : {}),
