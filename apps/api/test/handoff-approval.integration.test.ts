@@ -65,11 +65,15 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, previousReviewerId
   const binding = await new PostgresRepeatReviewerBindings(f.db.pool).select(interaction, f.f.version.entryNodeId)
   if (previousReviewerId) {
     expect(binding.execution.id).not.toBe(previousReviewerId)
+    const previousReviewer = await runtime.runs.getExecution(previousReviewerId)
+    expect(previousReviewer?.nativeSessionId).toBe(binding.execution.nativeSessionId)
     await expect(assertOrchestratorGraphAuthority(f.db.pool, interaction, { executionId: previousReviewerId }))
       .rejects.toMatchObject({ code: 'REPEAT_REVIEW_IDENTITY_CONFLICT' })
   }
   await expect(assertOrchestratorGraphAuthority(f.db.pool, interaction,
     { nativeSessionId: binding.execution.nativeSessionId! })).resolves.toBeDefined()
+  await expect(assertOrchestratorGraphAuthority(f.db.pool, interaction,
+    { nativeSessionId: `unrelated-${interaction.id}` })).rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
   const live = deferred<void>()
   const issuance = vi.spyOn(runtime.credentials, 'issueForReviewer')
   const append = runtime.repository.coordination.appendReviewNativeEvent.bind(runtime.repository.coordination)
