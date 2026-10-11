@@ -213,7 +213,7 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
     }
   }
 
-  /** The caller has persisted unavailability and holds the snapshot and storage locks. */
+  /** The caller has persisted unavailability and excludes capture writers until deletion completes. */
   async remove(snapshotId: string): Promise<void> {
     SourceManifestSchema.shape.snapshotId.parse(snapshotId)
     const root = await openPrivateRoot(this.canonicalRoot)
@@ -223,7 +223,7 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
     } finally { await root.close() }
   }
 
-  /** Call only after holding the failed capture's command lock. Files remain quarantined. */
+  /** Measure while capture writers are excluded. Files remain quarantined. */
   async retainedCaptureBytes(snapshotId: string): Promise<number> {
     return measureRetainedSourceDirectory(this.canonicalRoot, snapshotId)
   }
