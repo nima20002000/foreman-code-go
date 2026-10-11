@@ -23,7 +23,16 @@ const requirements = new Map([
   ['apps/api/test/worker-profile-requalification-main-restart.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/worker-profile-requalification-failed-check.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/harness-installation-update.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-discovery-main.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-discovery-worker.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-claude-inventory.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-unavailable-main.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-unavailable-worker.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-qualification-drain.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-rollback.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-profiles-main.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-profiles-worker.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/harness-installation-update-failed-check.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/job-qualification-native-faults.integration.test.ts', ['nativeCgroupDelegation']],
 ])
 

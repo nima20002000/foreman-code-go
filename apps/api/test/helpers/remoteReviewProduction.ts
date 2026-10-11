@@ -88,7 +88,7 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
 export async function remoteReviewProduction(options: {
   workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
   claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean; workerRelease?: string
-  installationRefreshIntervalMs?: number; parallelSetup?: boolean
+  installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
 } = {}) {
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
@@ -394,9 +394,12 @@ export async function remoteReviewProduction(options: {
       bases: [{ baseId: randomUUID(), canonicalPath: join(directory, 'worker-projects'), accessModes: ['read-only'] }],
       managedRuntimeRoot: workerRuntime })
     await writeFile(join(stateDirectory, 'approved-roots.json'), JSON.stringify(roots), { mode: 0o600 })
+    // Harness replacement fixtures leave Node identity to the installed Worker's runtime validation.
+    const payloadPaths = options.includeNodeRuntimePayload === false
+      ? provider.payloadPaths.filter(path => path !== process.execPath) : provider.payloadPaths
     await writeFile(join(stateDirectory, 'workflow-runtime.json'), JSON.stringify({ schemaVersion: 1,
       codexBinary: provider.binary, expectedVersion: 'codex-cli 0.154.0',
-      appMcpLauncher: launcher, payloadPaths: provider.payloadPaths }), { mode: 0o600 })
+      appMcpLauncher: launcher, payloadPaths }), { mode: 0o600 })
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
     await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
       env: logEnvironment,
