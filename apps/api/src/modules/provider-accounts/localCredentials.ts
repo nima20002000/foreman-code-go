@@ -1,19 +1,19 @@
 import { constants } from 'node:fs'
-import { chmod, lstat, mkdir, open, rm } from 'node:fs/promises'
+import { lstat, mkdir, open, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   ProviderAccountIdSchema, ProviderAccountApiKeyInputSchema, type ProviderAccount,
 } from '@foreman-code/contracts/provider-accounts'
 import { DomainError } from '../errors.js'
+import { privateDirectory } from '../harnesses/recovery/storage.js'
 
 async function secureDirectory(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 })
-  const info = await lstat(directory)
-  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.()) {
+  try {
+    privateDirectory(directory)
+  } catch {
     throw new DomainError('ACCOUNT_HOME_UNSAFE', 'The managed account directory is not private.', 409)
   }
-  await chmod(directory, 0o700)
 }
 
 async function privateFile(path: string): Promise<Buffer | null> {
@@ -52,8 +52,11 @@ async function writePrivateFile(path: string, value: Buffer | string): Promise<v
 /** Only the local runtime receives paths and credentials from this storage. */
 export class LocalProviderCredentials {
   private hostIdentity?: Promise<string>
+  private readonly root: string
 
-  constructor(private readonly root: string) {}
+  constructor(root: string) {
+    this.root = resolve(root)
+  }
 
   hostId(): Promise<string> {
     this.hostIdentity ??= this.loadHostId()
@@ -81,11 +84,14 @@ export class LocalProviderCredentials {
   async create(account: ProviderAccount): Promise<void> {
     await this.hostId()
     const { userHome, homePath } = this.paths(account.id)
+    try {
+      await mkdir(userHome, { mode: 0o700 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      throw new DomainError('ACCOUNT_HOME_REUSED', 'The account directory already belongs to another slot.', 409)
+    }
     await secureDirectory(userHome)
     await secureDirectory(homePath)
-    if (account.provider === 'codex') {
-      await writePrivateFile(join(homePath, 'config.toml'), 'cli_auth_credentials_store = "file"\n')
-    }
   }
 
   async assertAvailable(accountId: string): Promise<void> {
@@ -100,6 +106,7 @@ export class LocalProviderCredentials {
         throw new DomainError('ACCOUNT_HOME_UNSAFE', 'The managed account directory is not private.', 409)
       }
     }
+    await secureDirectory(homePath)
   }
 
   async apiKey(accountId: string): Promise<string | undefined> {

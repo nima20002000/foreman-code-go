@@ -7,8 +7,6 @@ import { ClaudeFullAccessConfigurationSchema, type ClaudeHarnessConfiguration } 
 import { inheritedAgentEnvironment } from '../secrets.js'
 import { HarnessExecutionError } from '../errors.js'
 import type { SandboxSettings } from '@anthropic-ai/claude-agent-sdk'
-import { dirname } from 'node:path'
-import { providerAccountEnvironment } from '../../provider-accounts/environment.js'
 
 /** Only the existing HRT repository/producer supplies this exact accepted host-profile proof. */
 export interface ClaudePolicyQualification {
@@ -58,12 +56,10 @@ export interface ClaudeCompiledConfiguration {
 
 /** Secret stripping is a delivery boundary, not host filesystem or shell isolation. */
 export function claudeEnvironment(configuration: ClaudeHarnessConfiguration, source: NodeJS.ProcessEnv, apiKey?: string): NodeJS.ProcessEnv {
-  let env = inheritedAgentEnvironment(source)
+  const env = inheritedAgentEnvironment(source)
   for (const key of Object.keys(env)) {
     if (['BASH_ENV', 'ENV', 'NODE_OPTIONS', 'NODE_PATH', 'PYTHONPATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'SSH_AUTH_SOCK'].includes(key) || /(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)(?:_|$)/.test(key) || /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$|OPENAI_|CODEX_|GOOGLE_|GEMINI_|AWS_|AZURE_|VERTEX_|BEDROCK_)/.test(key)) delete env[key]
   }
-  if (configuration.accountId) env = providerAccountEnvironment('claude', configuration.configDirectory,
-    dirname(configuration.configDirectory), env)
   env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1'
   env.CLAUDE_CONFIG_DIR = configuration.configDirectory
   if (configuration.authMode === 'api-key') {

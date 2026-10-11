@@ -1,19 +1,36 @@
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { dirname, join, resolve } from 'node:path'
-import { ProviderAccountIdSchema } from '@foreman-code/contracts/provider-accounts'
-import type { AccountProvider } from '@foreman-code/contracts/provider-accounts'
+import { AcceptedProviderAccountBindingSchema, ProviderAccountIdSchema } from '@foreman-code/contracts/provider-accounts'
+import type { AcceptedProviderAccountBinding, AccountProvider } from '@foreman-code/contracts/provider-accounts'
 import type { ProviderAccountResolver, ResolvedProviderAccount } from '../provider-accounts/service.js'
+import { providerAccountEnvironment } from '../provider-accounts/environment.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { readRecord, recordObject, writeRecord } from './recovery/storage.js'
 import { DomainError } from '../errors.js'
 
-function pinnedAccount(value: unknown, provider: AccountProvider, owner: string): string | null {
+interface RuntimeAccountRecord {
+  accountId: string | null
+  homePath?: string
+  authMode?: ResolvedProviderAccount['authMode']
+  binding?: AcceptedProviderAccountBinding
+}
+
+function pinnedAccount(value: unknown, provider: AccountProvider, owner: string): RuntimeAccountRecord {
   const record = recordObject(value)
-  if (record.format !== 1 || record.provider !== provider || record.owner !== owner
+  if ((record.format !== 1 && record.format !== 2) || record.provider !== provider || record.owner !== owner
     || record.accountId !== null && !ProviderAccountIdSchema.safeParse(record.accountId).success) {
     throw new DomainError('PROVIDER_ACCOUNT_BINDING_INVALID', 'The saved runtime account selection is invalid.', 409)
   }
-  return record.accountId as string | null
+  if (record.format === 2 && record.accountId !== null
+    && (typeof record.homePath !== 'string' || !['subscription', 'api-key'].includes(String(record.authMode)))) {
+    throw new DomainError('PROVIDER_ACCOUNT_BINDING_INVALID', 'The saved runtime account profile is invalid.', 409)
+  }
+  if (record.binding !== undefined) {
+    const binding = AcceptedProviderAccountBindingSchema.parse(record.binding)
+    if (binding.provider !== provider || binding.kind === 'slot' && binding.accountId !== record.accountId) conflict()
+  }
+  return record as unknown as RuntimeAccountRecord
 }
 
 function bindingPath(provider: AccountProvider, recovery: NativeProcessRecovery): string {
@@ -22,46 +39,102 @@ function bindingPath(provider: AccountProvider, recovery: NativeProcessRecovery)
   return join(dirname(registryRoot), 'provider-account-bindings', `${key}.json`)
 }
 
-async function selectedAccount(accounts: ProviderAccountResolver, provider: AccountProvider,
-  accountId: string): Promise<ResolvedProviderAccount> {
-  const account = await accounts.resolve(provider, accountId)
-  if (!account || account.accountId !== accountId) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
-    'The saved provider account is unavailable.', 409)
+function conflict(): never {
+  throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'The account differs from the accepted session account.', 409)
+}
+
+async function selectedAccount(accounts: ProviderAccountResolver | undefined, provider: AccountProvider,
+  saved: RuntimeAccountRecord): Promise<ResolvedProviderAccount | null> {
+  if (saved.accountId === null) return null
+  if (!accounts) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The saved provider account is unavailable.', 503)
+  const account = await accounts.resolve(provider, saved.accountId, {
+    allowDefault: false, ...(saved.binding ? { acceptedBinding: saved.binding } : {}),
+  })
+  if (!account || account.accountId !== saved.accountId || resolve(account.homePath) !== account.homePath) {
+    throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The saved provider account is unavailable.', 409)
+  }
+  if (saved.homePath !== undefined && (saved.homePath !== account.homePath || saved.authMode !== account.authMode)) {
+    conflict()
+  }
+  if (saved.binding?.kind === 'slot' && !isDeepStrictEqual(saved.binding, account.binding)) conflict()
   return account
 }
 
-/** Runtime recovery stores identity only, independently of immutable workflow and run records. */
+/** Sidecars record native readback; only an accepted selection can choose a managed account. */
 export async function resolveRuntimeProviderAccount(accounts: ProviderAccountResolver | undefined,
   provider: AccountProvider, accountId?: string, recovery?: NativeProcessRecovery,
-  sourceRecovery?: NativeProcessRecovery): Promise<ResolvedProviderAccount | null> {
-  if (accountId && !accounts) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
-    'Managed provider account execution is unavailable.', 503)
-  if (accountId) return selectedAccount(accounts!, provider, accountId)
-  if (!recovery) return accounts ? accounts.resolve(provider) : null
-  const path = bindingPath(provider, recovery)
-  const stored = readRecord(path)
-  if (stored !== undefined) {
-    const selected = pinnedAccount(stored, provider, recovery.owner)
-    if (selected === null) return null
-    if (!accounts) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The saved provider account is unavailable.', 503)
-    return selectedAccount(accounts, provider, selected)
+  sourceRecovery?: NativeProcessRecovery,
+  binding?: AcceptedProviderAccountBinding): Promise<ResolvedProviderAccount | null> {
+  if (accountId !== undefined) ProviderAccountIdSchema.parse(accountId)
+  if (binding) {
+    binding = AcceptedProviderAccountBindingSchema.parse(binding)
+    if (binding.provider !== provider) conflict()
+    if (accountId !== undefined && (binding.kind !== 'slot' || binding.accountId !== accountId)) conflict()
   }
-  const source = sourceRecovery ? readRecord(bindingPath(provider, sourceRecovery)) : undefined
-  let sourceId: string | null | undefined
-  if (sourceRecovery) sourceId = source === undefined ? null : pinnedAccount(source, provider, sourceRecovery.owner)
-  if (sourceId && !accounts) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
-    'The source session provider account is unavailable.', 503)
-  if (!accounts) return null
-  let selected: ResolvedProviderAccount | null = null
-  if (sourceId !== null) {
-    selected = sourceId ? await selectedAccount(accounts, provider, sourceId) : await accounts.resolve(provider)
+  const storedValue = recovery ? readRecord(bindingPath(provider, recovery)) : undefined
+  const stored = storedValue === undefined ? undefined : pinnedAccount(storedValue, provider, recovery!.owner)
+  const sourceValue = sourceRecovery ? readRecord(bindingPath(provider, sourceRecovery)) : undefined
+  let source: RuntimeAccountRecord | undefined
+  if (sourceRecovery) {
+    if (sourceValue !== undefined) source = pinnedAccount(sourceValue, provider, sourceRecovery.owner)
+    else if (binding) source = { accountId: binding.kind === 'slot' ? binding.accountId : null, binding }
+    else source = { accountId: null }
   }
+  if (stored && source && (stored.accountId !== source.accountId
+    || stored.binding && source.binding && !isDeepStrictEqual(stored.binding, source.binding)
+    || stored.homePath !== undefined && source.homePath !== undefined && !isDeepStrictEqual(
+      [stored.homePath, stored.authMode], [source.homePath, source.authMode]))) conflict()
+  const accepted = stored ?? source
+  if (accountId !== undefined && accepted && accountId !== accepted.accountId) conflict()
+  if (binding && accepted) {
+    const bindingId = binding.kind === 'slot' ? binding.accountId : null
+    if (accepted.accountId !== bindingId || accepted.binding && !isDeepStrictEqual(accepted.binding, binding)) conflict()
+  }
+  const selection: RuntimeAccountRecord = accepted ?? { accountId: binding?.kind === 'slot'
+    ? binding.accountId : accountId ?? null }
+  if (binding) selection.binding = binding
+  const selected = await selectedAccount(accounts, provider, selection)
+  if (!recovery || stored) return selected
+  const record = { format: 2, provider, owner: recovery.owner, accountId: selected?.accountId ?? null,
+    ...(selected ? { homePath: selected.homePath, authMode: selected.authMode } : {}),
+    ...((binding ?? selected?.binding) ? { binding: binding ?? selected?.binding } : {}) }
   try {
-    writeRecord(path, { format: 1, provider, owner: recovery.owner, accountId: selected?.accountId ?? null }, true)
-    return selected
+    writeRecord(bindingPath(provider, recovery), record, true)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-    const accepted = pinnedAccount(readRecord(path), provider, recovery.owner)
-    return accepted === null ? null : selectedAccount(accounts, provider, accepted)
+    const prior = pinnedAccount(readRecord(bindingPath(provider, recovery)), provider, recovery.owner)
+    if (prior.accountId !== selection.accountId) conflict()
+    return selectedAccount(accounts, provider, prior)
+  }
+  return selected
+}
+
+export function managedProviderEnvironment(source: NodeJS.ProcessEnv, account: ResolvedProviderAccount,
+  provider: AccountProvider): NodeJS.ProcessEnv {
+  const selected = providerAccountEnvironment(provider, account.homePath, dirname(account.homePath), source)
+  if (provider === 'claude' && account.authMode === 'api-key') {
+    if (!account.apiKey) throw new DomainError('CLAUDE_API_KEY_REQUIRED', 'The selected account has no API key.', 409)
+    selected.ANTHROPIC_API_KEY = account.apiKey
+  }
+  return selected
+}
+
+export function pinnedCodexAccountEnvironment(accounts: ProviderAccountResolver | undefined, accountId: string | undefined,
+  recovery?: NativeProcessRecovery, sourceRecovery?: NativeProcessRecovery,
+  binding?: AcceptedProviderAccountBinding) {
+  let selected: ResolvedProviderAccount | null | undefined
+  let pending: Promise<void> | undefined
+  return {
+    prepare(): Promise<void> {
+      pending ??= Promise.resolve().then(async () => {
+        selected = await resolveRuntimeProviderAccount(accounts, 'codex', accountId, recovery, sourceRecovery, binding)
+      })
+      return pending
+    },
+    environment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+      if (selected === undefined) throw new DomainError('PROVIDER_ACCOUNT_NOT_RESOLVED',
+        'Resolve the selected account before starting the harness.', 500)
+      return selected ? managedProviderEnvironment(source, selected, 'codex') : source
+    },
   }
 }

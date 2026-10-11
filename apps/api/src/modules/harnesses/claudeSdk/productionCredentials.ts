@@ -20,7 +20,7 @@ export async function requireClaudeProductionCredentialDelivery(configuration: H
     requireClaudeApiKey(configuration)
     return undefined
   }
-  const account = await accounts?.resolve(configuration.harness, configuration.accountId)
+  const account = configuration.accountId ? await accounts?.resolve(configuration.harness, configuration.accountId) : null
   if (configuration.accountId && !account) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE',
     'The selected managed provider account is unavailable.', 409)
   if (configuration.harness === 'claude' && account
