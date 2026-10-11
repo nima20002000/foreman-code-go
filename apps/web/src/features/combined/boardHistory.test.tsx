@@ -13,10 +13,13 @@ import { RunActivitiesPageSchema, type RunGraphScope } from '@foreman-code/contr
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
+import { getWorkspaceDetails } from '../../shared/api/client'
+import { queryKeys } from '../../shared/api/query'
 import { agentChatFixtureFor } from '../../shared/mocks/agentChatHandlers'
 import { bindMockInstallation } from '../../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../../shared/mocks/scenarios'
 import { useGraphDraftStore } from '../graph/store'
+import { nextDraftApi } from '../graph/nextDraft/transport'
 import { installFlowLayout } from '../run-board/testFlowLayout'
 import { deferred, pinnedRunHandlers, reply, runsUrl, versionReply } from '../run-board/testFixtures'
 import { page, runA, runB } from '../runs-selector/testFixtures'
@@ -26,6 +29,7 @@ import { useSelectedRun, type SelectedRunState } from '../runs-selector/useSelec
 import { RunBoard } from '../run-board/RunBoard'
 import { AgentChatPanel } from '../graph/AgentPanels'
 import { Activities } from '../workflow-board/Activities'
+import { boardDraftContextKey } from '../workflow-board/keys'
 import { installChatSource } from '../conversations/agentChat/testSupport'
 import { configuredOperatorSetup } from '../operator-chat/operatorSetupTestFixture'
 import { operatorState } from '../operator-chat/pr17-test-fixtures'
@@ -49,6 +53,18 @@ let selected: SelectedRunState
 async function mountBoard(entry = runsUrl('run-a', scope)) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } })
   clients.push(client)
+  // These interaction tests start with loaded data; router.load() only waits for routing.
+  // Read through MSW so cold workspace/draft hydration cannot consume the element wait.
+  await Promise.all([
+    client.fetchQuery({
+      queryKey: queryKeys.workspaceDetails(scope.workspaceId),
+      queryFn: ({ signal }) => getWorkspaceDetails({ workspaceId: scope.workspaceId }, { signal }),
+    }),
+    client.fetchQuery({
+      queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId),
+      queryFn: ({ signal }) => nextDraftApi.context(scope.workspaceId, scope.workflowId, { signal }),
+    }),
+  ])
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [entry] }), defaultPendingMinMs: 0 })
   await router.load()
   return { ...render(<><style>{boardStyles}</style>
