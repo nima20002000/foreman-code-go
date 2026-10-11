@@ -6,7 +6,7 @@ import { installManagedLauncher, writeLauncherInstallation } from './appMcpLaunc
 async function installedFile(path: string): Promise<Buffer | undefined> {
   try {
     const info = await lstat(path)
-    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022)) return undefined
+    if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o022)) return undefined
     return await readFile(path)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
