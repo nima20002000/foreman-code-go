@@ -18,6 +18,55 @@ function value(result: { isError?: boolean | undefined; structuredContent?: unkn
 }
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('Operator MCP current PostgreSQL integration', () => {
+  it('keeps persisted edits and denial auditing fresh for a warmed caller after its grants change', async () => {
+    const f = await currentOperatorIntegration()
+    try {
+      const created = value(await f.client.callTool({ name: 'workspace_create', arguments: {
+        commandId: randomUUID(), name: 'Registration cache fixture',
+      } })).value as { workspace: { id: string }; revision: number }
+      const workspaceId = created.workspace.id
+      const credential = await f.access.issue({
+        name: 'Scoped editor', audience: 'operator', expiresAt: new Date(Date.now() + 600000),
+        grants: [{ actions: ['workspaces:read', 'workspaces:update', 'workspace_locations:read'],
+          scope: { workspaceIds: [workspaceId] } }],
+      })
+      const editor = await f.connect(credential.token)
+      expect((await editor.listTools()).tools.map(tool => tool.name)).toContain('workspace_update')
+      const updated = value(await editor.callTool({ name: 'workspace_update', arguments: {
+        workspaceId, commandId: randomUUID(), expectedRevision: created.revision, name: 'Persisted edit',
+      } })).value as { workspace: { id: string; name: string }; revision: number }
+      expect(value(await editor.callTool({ name: 'workspace_get', arguments: { workspaceId } })))
+        .toMatchObject(updated)
+      const before = (await f.db.pool.query('select record,revision from workspaces where id=$1', [workspaceId])).rows[0]
+      expect(before.record.name).toBe('Persisted edit')
+      const scopeDenial = await editor.callTool({ name: 'workspace_get', arguments: { workspaceId: f.f.scope.workspaceId } })
+      expect(scopeDenial.isError).toBe(true)
+      await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [
+        credential.principal.id,
+        JSON.stringify([{ actions: ['workspaces:read', 'workspace_locations:read'], scope: { workspaceIds: [workspaceId] } }]),
+      ])
+      const denied = await editor.callTool({ name: 'workspace_update', arguments: {
+        workspaceId, commandId: randomUUID(), expectedRevision: updated.revision, name: 'Denied edit',
+      } })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
+      expect((await f.db.pool.query('select record,revision from workspaces where id=$1', [workspaceId])).rows[0])
+        .toEqual(before)
+      expect(value(await editor.callTool({ name: 'workspace_get', arguments: { workspaceId } })))
+        .toMatchObject(updated)
+      const audits = await f.db.pool.query(
+        "select action,source,target_key from management_audit where principal_id=$1 and outcome='denied' order by sequence",
+        [credential.principal.id],
+      )
+      expect(audits.rows).toEqual([
+        { action: 'workspace_get', source: 'mcp', target_key: 'mcp:workspace_get' },
+        { action: 'workspace_update', source: 'mcp', target_key: 'mcp:workspace_update' },
+      ])
+    } finally {
+      await f.close()
+    }
+  }, 60000)
+
   it('creates available default workspace names through authenticated MCP, replays and reads them back, and denies provisioning without grants', async () => {
     const f = await currentOperatorIntegration()
     try {

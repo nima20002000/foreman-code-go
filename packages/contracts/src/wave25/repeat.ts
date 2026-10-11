@@ -81,6 +81,14 @@ export const ExecutableRepeatWorkflowV1Schema = z.object({
 }).strict().superRefine(validateCurrentWorkflowConfigurations)
 export type ExecutableRepeatWorkflowV1 = z.infer<typeof ExecutableRepeatWorkflowV1Schema>
 
+const executableWorkflowPinsSchema = z.custom<ExecutableRepeatWorkflowV1>()
+  .superRefine(validateCurrentWorkflowConfigurations)
+
+/** Checks execution compatibility after the version and configurations have been parsed. */
+export function assertExecutableWorkflow(snapshot: ExecutableRepeatWorkflowV1): void {
+  executableWorkflowPinsSchema.parse(snapshot)
+}
+
 /** Same current Run lifecycle schema for ordinary work and real configured blocks.
  * The V1 suffix versions only the repeat contract, never execution semantics. */
 export const RepeatWorkflowRunV1Schema = CurrentWorkflowRunSchema

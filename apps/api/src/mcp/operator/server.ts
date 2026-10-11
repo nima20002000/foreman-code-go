@@ -42,6 +42,7 @@ import { registerAgentChatTools } from './tools/agentChat.js'
 import { registerWorkspaceDefaultsTools } from './tools/workspaceDefaults.js'
 import { registerFileRetentionTools } from './tools/fileRetention.js'
 import { registerBugReportTools } from './tools/bugReports.js'
+import { authorizationPrincipal } from '../../modules/access/policy.js'
 
 export function createOperatorMcpServer(context: OperatorRequestContext): McpServer {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
@@ -53,6 +54,7 @@ export function createOperatorMcpServer(context: OperatorRequestContext): McpSer
 }
 
 export function registerOperatorTools(server: McpServer, context: OperatorRequestContext, catalog?: OperatorCatalog): void {
+  context = { ...context, principal: authorizationPrincipal(context.principal) }
   registerBugReportTools(server, context)
   if (context.services.resourceTelemetry) {
     const audit = (tool: string) => ({ record: (principalId: string, source: 'http' | 'mcp', selectorKey: string) =>

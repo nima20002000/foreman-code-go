@@ -23,6 +23,24 @@ function includesOrUnscoped(values: string[] | undefined, value: string | undefi
   return value !== undefined && values.includes(value)
 }
 
+const validatedPrincipals = new WeakSet<ManagementPrincipal>()
+
+/** Reuse validation only for an immutable snapshot; mutable callers are parsed afresh. */
+export function authorizationPrincipal(input: ManagementPrincipal): ManagementPrincipal {
+  if (validatedPrincipals.has(input)) return input
+  const principal = ManagementPrincipalSchema.parse(input)
+  for (const grant of principal.grants) {
+    Object.freeze(grant.actions)
+    for (const ids of Object.values(grant.scope)) Object.freeze(ids)
+    Object.freeze(grant.scope)
+    Object.freeze(grant)
+  }
+  Object.freeze(principal.grants)
+  Object.freeze(principal)
+  validatedPrincipals.add(principal)
+  return principal
+}
+
 export function isAuthorized(
   input: ManagementPrincipal,
   action: ManagementAction,
@@ -31,7 +49,7 @@ export function isAuthorized(
 ): boolean {
   // Worker/App principals are intentionally outside the Operator management policy.
   if (input.audience !== 'operator') return false
-  const principal = ManagementPrincipalSchema.parse(input)
+  const principal = authorizationPrincipal(input)
   if (principal.audience !== 'operator' || principal.revokedAt || Date.parse(principal.expiresAt) <= now.getTime()) return false
   return principal.grants.some((grant) => grant.actions.includes(action)
     && includesOrUnscoped(grant.scope.workspaceIds, resource.workspaceId)
@@ -45,7 +63,7 @@ export function isAuthorized(
 
 export function hasAction(principal: ManagementPrincipal, action: ManagementAction): boolean {
   if (principal.audience !== 'operator') return false
-  const parsed = ManagementPrincipalSchema.parse(principal)
+  const parsed = authorizationPrincipal(principal)
   return parsed.audience === 'operator' && !parsed.revokedAt && Date.parse(parsed.expiresAt) > Date.now()
     && parsed.grants.some((grant) => grant.actions.includes(action))
 }

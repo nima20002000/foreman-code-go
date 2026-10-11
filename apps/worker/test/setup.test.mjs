@@ -71,6 +71,10 @@ test('setup holds the installation lock until its launchers and proposed service
     syncBuiltinESMExports();
   }
   const installed = await setupCompanion(second);
+  const previousUnit = await readFile(`${installed.proposedService}.previous`, 'utf8');
+  assert.equal(previousUnit.match(/^ExecStart=(\S+) /m)[1], first.node);
+  await setupCompanion(second);
+  assert.equal(await readFile(`${installed.proposedService}.previous`, 'utf8'), previousUnit);
   const unit = await readFile(installed.proposedService, 'utf8');
   const [, serviceNode, entrypoint] = unit.match(/^ExecStart=(\S+) (\S+)/m);
   for (const [command, args] of [[installed.launcher, ['capture-env']], [serviceNode, [entrypoint, 'capture-env']]]) {

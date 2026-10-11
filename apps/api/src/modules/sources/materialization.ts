@@ -33,16 +33,16 @@ export async function withClaimLock<T>(root: FileHandle, work: () => Promise<T>,
   }, options)
 }
 export async function materializationDirectory(root: FileHandle, receipt: Pick<MaterializationReceipt, 'materializationId' | 'quota'>): Promise<FileHandle> {
-  let directory = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
+  let directory = root
   try {
     for (const part of sourceMaterializationComponents(receipt)) {
       const child = await openChildDirectory(directory, part)
-      await directory.close()
+      if (directory !== root) await directory.close()
       directory = child
     }
     return directory
   } catch (error) {
-    await directory.close()
+    if (directory !== root) await directory.close()
     throw error
   }
 }

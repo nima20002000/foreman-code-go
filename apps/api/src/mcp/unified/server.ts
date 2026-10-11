@@ -13,7 +13,7 @@ import type { PostgresCommandCoordinator } from '../../modules/commands/postgres
 import { registerAppTools } from '../app/server.js'
 import { registerCiTools } from '../shared/ciTools.js'
 import { registerOperatorTools } from '../operator/server.js'
-import { installOperatorPresentation } from '../operator/presentation.js'
+import { installOperatorPresentation, type OperatorCatalog } from '../operator/presentation.js'
 import type { OperatorServices } from '../operator/types.js'
 import { toolFailure } from '../shared/results.js'
 import { cacheToolSchemaConversions } from '../shared/schemaCache.js'
@@ -31,13 +31,19 @@ export interface GraphqlMcpContext {
   signal?: AbortSignal
 }
 
-interface ToolDefinition { name: string; description: string }
+interface ToolDefinition {
+  name: string
+  description: string
+  register(server: McpServer): void
+}
 
 /** Records every registerTool call. Handlers are never invoked while collecting. */
 async function collectTools(register: (server: McpServer) => unknown): Promise<ToolDefinition[]> {
   const tools: ToolDefinition[] = []
-  const collector = { registerTool: (name: string, config: { description?: string }) => {
-    tools.push({ name, description: config.description ?? '' })
+  const collector = { registerTool: (name: string, config: { description?: string }, ...rest: unknown[]) => {
+    tools.push({ name, description: config.description ?? '', register(server) {
+      Reflect.apply(server.registerTool, server, [name, config, ...rest])
+    } })
   } } as unknown as McpServer
   await register(collector)
   return tools
@@ -58,15 +64,41 @@ function operatorCatalog(services: OperatorServices): Promise<ToolDefinition[]> 
   }
   return catalog
 }
-function agentCatalog(): ToolDefinition[] {
+function agentCatalog(): Array<{ name: string; description: string }> {
   return Object.entries(GRAPHQL_AGENT_TOOLS).map(([name, definition]) => ({ name, description: definition.description }))
+}
+
+interface OperatorRequestTools {
+  tools: ToolDefinition[]
+  catalog?: OperatorCatalog
+}
+export interface McpRequestRegistration {
+  operator?: Promise<OperatorRequestTools>
+}
+
+/** Definitions and handlers live for one request, including its current grants. */
+function requestOperatorTools(context: GraphqlMcpContext, registration: McpRequestRegistration): Promise<OperatorRequestTools> {
+  let pending = registration.operator
+  if (!pending) {
+    const registered: OperatorRequestTools = { tools: [] }
+    pending = collectTools(server => registerOperatorTools(server, {
+      principal: context.principal, services: context.operator!,
+    }, callbackContext => registered.catalog?.(callbackContext) ?? Promise.resolve([])))
+      .then(tools => {
+        registered.tools = tools
+        return registered
+      })
+    registration.operator = pending
+  }
+  return pending
 }
 
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.string() }).passthrough() }).passthrough()
 
 /** Known tools hidden by role, Agent configuration or Operator grants still receive an audited denial. */
-export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unknown) {
+export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unknown,
+  registration: McpRequestRegistration = {}) {
   const call = ToolCall.safeParse(body)
   if (!call.success) return undefined
   const name = call.data.params.name
@@ -87,10 +119,8 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
   } else if (roleAllowed && enabled) {
     const services = context.operator
     if (!services) return undefined
-    const available = await collectTools((server) => registerOperatorTools(server, {
-      principal: context.principal, services,
-    }))
-    if (available.some((tool) => tool.name === name)) return undefined
+    const available = await requestOperatorTools(context, registration)
+    if (available.tools.some((tool) => tool.name === name)) return undefined
     error = new DomainError('ACCESS_DENIED', 'The caller is not authorized for this operation and resource.', 403)
   } else if (roleAllowed) {
     error = new DomainError('TOOL_NOT_ENABLED',
@@ -107,14 +137,23 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
 }
 
 /** One server for every role. Each caller lists only its enabled tools: the existing, grant-checked implementations. */
-export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promise<McpServer> {
+export async function createGraphqlMcpServer(context: GraphqlMcpContext, requestBody?: unknown,
+  registration: McpRequestRegistration = {}): Promise<McpServer> {
+  const call = ToolCall.safeParse(requestBody)
+  const requestedTool = call.success && call.data.params.name !== 'operator_tool_schema_get'
+    && call.data.params.name !== 'operator_get_capabilities'
+    ? call.data.params.name : undefined
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' }, { instructions: roleInstructions(context.role) })
   cacheToolSchemaConversions(server, 'unified')
   paginateToolLists(server)
   if (context.role === 'operator') {
     if (context.operator) {
-      const catalog = installOperatorPresentation(server)
-      registerOperatorTools(server, { principal: context.principal, services: context.operator }, catalog)
+      const registered = await requestOperatorTools(context, registration)
+      registered.catalog = installOperatorPresentation(server)
+      const selected = requestedTool !== undefined && registered.tools.some(tool => tool.name === requestedTool)
+      for (const tool of registered.tools) {
+        if (!selected || tool.name === requestedTool) tool.register(server)
+      }
     }
   } else if (context.interactions) {
     const tools = context.tools

@@ -23,8 +23,8 @@ const clients: Client[] = []
 afterEach(async () => { await Promise.all(clients.splice(0).map((client) => client.close())); recordDenied.mockClear() })
 const context = (role: McpRole, tools?: string[]) => ({ role, principal: role === 'operator' ? operator : worker,
   operator: services, interactions: interactions(role === 'orchestrator'), ...(tools ? { tools } : {}) })
-async function connect(role: McpRole, tools?: string[]) {
-  const server = await createGraphqlMcpServer(context(role, tools))
+async function connect(role: McpRole, tools?: string[], requestBody?: unknown) {
+  const server = await createGraphqlMcpServer(context(role, tools), requestBody)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: `graphql-${role}`, version: '1' }); clients.push(client)
@@ -40,6 +40,28 @@ async function deniedText(role: McpRole, name: string, tools?: string[]): Promis
 }
 
 describe('one Foreman Code MCP server scoped by role', () => {
+  it('registers only the requested Operator operation while keeping schema lookup and unknown calls complete', async () => {
+    const selected = await connect('operator', undefined, call('workspace_get'))
+    expect((await selected.listTools()).tools.map(tool => tool.name)).toEqual(['workspace_get'])
+    const complete = await connect('operator')
+    const completeTools = (await complete.listTools()).tools
+    const schemaLookup = await connect('operator', undefined, call('operator_tool_schema_get'))
+    expect((await schemaLookup.listTools()).tools).toEqual(completeTools)
+    const result = await schemaLookup.callTool({ name: 'operator_tool_schema_get', arguments: { name: 'workspace_get' } })
+    expect(result.isError).not.toBe(true)
+    expect(JSON.stringify(result)).toContain('workspace_get')
+    const capabilities = await connect('operator', undefined, call('operator_get_capabilities'))
+    expect(await capabilities.callTool({ name: 'operator_get_capabilities', arguments: {} }))
+      .toEqual(await complete.callTool({ name: 'operator_get_capabilities', arguments: {} }))
+    const unknown = await connect('operator', undefined, call('no_such_tool'))
+    expect((await unknown.listTools()).tools).toEqual(completeTools)
+    const [actual, expected] = await Promise.allSettled([
+      unknown.callTool({ name: 'no_such_tool', arguments: {} }),
+      complete.callTool({ name: 'no_such_tool', arguments: {} }),
+    ])
+    expect(actual).toEqual(expected)
+  })
+
   it('lists only the tools each role may use and tells the model its role', async () => {
     const [op, orchestrator, coder] = await Promise.all([connect('operator'), connect('orchestrator'), connect('coder')])
     const names = async (client: Client) => (await client.listTools()).tools.map((tool) => tool.name).sort()
