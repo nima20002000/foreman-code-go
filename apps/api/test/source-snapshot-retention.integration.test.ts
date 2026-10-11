@@ -297,11 +297,11 @@ it('coalesces concurrent pressure scans and allows retry after a deletion failur
   const first = releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, undefined, true)
   const started = first.then(() => entered.reject(new Error('Release did not remove its candidate')), entered.reject)
   const report = vi.fn()
-  let callers: Promise<void>[] = [first]
+  const callers: Promise<void>[] = [first]
   try {
     await entered.promise
-    callers = [first, ...Array.from({ length: 15 }, () =>
-      releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, undefined, true))]
+    callers.push(...Array.from({ length: 15 }, () =>
+      releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, undefined, true)))
     callers.push(releaseUnusedSourceSnapshots(f.pool, f.store, scopeId, report, true))
   } finally {
     resume.resolve()
