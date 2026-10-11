@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import pg from 'pg'
+import type pg from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { migrations } from '../src/infrastructure/migrations.js'
 import { createTestDatabaseTemplate, dropTestDatabaseTemplate, migrationContentsHash } from '../../../scripts/test-database-template.mjs'
 import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, resetTestDatabase,
   testAdminPool, testEnvironment } from '../../../scripts/test-resources.mjs'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
+import { createTestPool } from './helpers/testPool.mjs'
 
 let admin: Awaited<ReturnType<typeof testAdminPool>>
 let root: ReturnType<typeof createTestRoot>
@@ -27,7 +28,7 @@ afterAll(async () => {
 async function fixture() {
   const resource = createTestRoot(root.directory)
   const database = await createTestDatabase(admin, resource, { template })
-  const pool = new pg.Pool({ connectionString: database.databaseUrl, max: 1 })
+  const pool = createTestPool({ connectionString: database.databaseUrl, max: 1 })
   return { database, pool, async close() {
     await pool.end()
     await dropTestDatabase(admin, database)
@@ -38,7 +39,7 @@ async function fixture() {
 it('reuses one content-keyed migrated template and prevents connections to it', async () => {
   expect((await createTestDatabaseTemplate(admin, root)).name).toBe(template.name)
   expect(template.hash).toBe(migrationContentsHash(migrations))
-  const pool = new pg.Pool({ connectionString: template.databaseUrl, max: 1 })
+  const pool = createTestPool({ connectionString: template.databaseUrl, max: 1 })
   try { await expect(pool.query('select 1')).rejects.toMatchObject({ code: '55000' }) }
   finally { await pool.end() }
 })
@@ -78,7 +79,7 @@ it('resets a used slot by cloning a clean database with a fresh installation ide
     await first.pool.query('insert into template_probe values ($1)', ['discarded'])
     await first.pool.end()
     reset = await resetTestDatabase(admin, first.database)
-    pool = new pg.Pool({ connectionString: reset.databaseUrl, max: 1 })
+    pool = createTestPool({ connectionString: reset.databaseUrl, max: 1 })
     expect(reset.name).not.toBe(first.database.name)
     expect((await pool.query("select to_regclass('template_probe') as relation")).rows[0].relation).toBeNull()
     expect((await pool.query('select id from application_installation')).rows[0].id).not.toBe(previousId)

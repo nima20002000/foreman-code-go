@@ -1,14 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import { createTestPool } from '../apps/api/test/helpers/testPool.mjs'
 
-const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
-const { Pool } = require('pg')
 export const testAdminUrl = 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres'
 const serverMarker = 'graphql-disposable-test-server'
 const rootMarker = '.graphql-test-owner.json'
@@ -225,7 +223,7 @@ export function referenceTestAuthenticationFile(resource, filename, destination)
 }
 
 export async function testAdminPool() {
-  const pool = new Pool({ connectionString: testAdminUrl, max: 1,
+  const pool = createTestPool({ connectionString: testAdminUrl, max: 1,
     connectionTimeoutMillis: 10_000, query_timeout: 35_000,
     options: '-c statement_timeout=30000 -c lock_timeout=10000' })
   try {
@@ -252,7 +250,7 @@ export async function createTestDatabase(admin, resource, options = {}) {
   url.pathname = `/${name}`
   const database = { ...resource, name, databaseUrl: url.toString(), ...(template ? { template } : {}) }
   if (template) {
-    const pool = new Pool({ connectionString: database.databaseUrl, max: 1 })
+    const pool = createTestPool({ connectionString: database.databaseUrl, max: 1 })
     try {
       try { await pool.query('update application_installation set id=gen_random_uuid() where singleton=true') }
       finally { await pool.end() }
