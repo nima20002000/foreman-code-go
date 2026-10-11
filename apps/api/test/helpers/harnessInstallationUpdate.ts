@@ -25,7 +25,8 @@ afterAll(async () => {
 
 export function installationUpdateFixture(options: Parameters<typeof remoteReviewProduction>[0] = {}) {
   return remoteReviewProduction({ ...options, workerRelease, installationRefreshIntervalMs: 100,
-    parallelSetup: true, parallelProfileChecks: true, includeNodeRuntimePayload: false })
+    parallelSetup: true, parallelProfileChecks: true, includeNodeRuntimePayload: false,
+    reportPhase: (phase, elapsedMs) => console.info(`[installation-update] ${phase}: ${Math.round(elapsedMs)} ms`) })
 }
 
 export async function profiles(fixture: Fixture, token = fixture.writer.token) {

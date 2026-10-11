@@ -159,6 +159,33 @@ const serverResponseTypes: Record<string, string> = {
   'mcpServer/elicitation/request': 'McpServerElicitationRequestResponse',
 }
 
+const compiledSchemas = new Map<string, z.ZodType>()
+
+function referencedDefinitions(schema: JsonObject, definitions: JsonObject): JsonObject {
+  const selected: JsonObject = {}
+  const pending: unknown[] = [schema]
+  const visited = new Set<object>()
+  while (pending.length) {
+    const value = pending.pop()
+    if (value === null || typeof value !== 'object' || visited.has(value)) continue
+    visited.add(value)
+    if (Array.isArray(value)) {
+      pending.push(...value)
+      continue
+    }
+    const entry = value as JsonObject
+    if (typeof entry.$ref === 'string' && entry.$ref.startsWith('#/definitions/')) {
+      const name = entry.$ref.slice('#/definitions/'.length).replace(/~1/g, '/').replace(/~0/g, '~')
+      if (!Object.hasOwn(selected, name) && Object.hasOwn(definitions, name)) {
+        Object.defineProperty(selected, name, { value: definitions[name], enumerable: true })
+        pending.push(definitions[name])
+      }
+    }
+    pending.push(...Object.values(entry))
+  }
+  return selected
+}
+
 /** Validation consumes the installation's generated schemas, not loose object casts. */
 export function protocolFromBundle(bundle: JsonObject, providerVersion = 'unknown version'): CodexProtocol {
   const definitions = object(bundle.definitions, 'CODEX_SCHEMA_INVALID')
@@ -199,7 +226,17 @@ export function protocolFromBundle(bundle: JsonObject, providerVersion = 'unknow
     // Zod resolves a single JSON Pointer segment after `definitions`; Codex's
     // generated bundle nests v2 schemas one level deeper. Flatten that namespace
     // without weakening the generated schema or changing its meaning.
-    const value = z.fromJSONSchema({ ...rewriteRefs(schema) as JsonObject, $schema: schemaDialect, definitions: flattenedDefinitions })
+    const rewritten = rewriteRefs(schema) as JsonObject
+    // Zod JSON-round-trips each input; unrelated definitions multiply startup work for every RPC validator.
+    const document = { ...rewritten, $schema: schemaDialect,
+      definitions: referencedDefinitions(rewritten, flattenedDefinitions) }
+    const identity = createHash('sha256').update(JSON.stringify(document)).digest('hex')
+    let value = compiledSchemas.get(identity)
+    if (!value) {
+      value = z.fromJSONSchema(document)
+      if (compiledSchemas.size >= 256) compiledSchemas.delete(compiledSchemas.keys().next().value!)
+      compiledSchemas.set(identity, value)
+    }
     compiled.set(key, value)
     return value
   }

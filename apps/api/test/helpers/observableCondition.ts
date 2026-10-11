@@ -1,5 +1,3 @@
-import { setImmediate } from 'node:timers/promises'
-
 export async function readUntil<T>(
   read: () => Promise<T>,
   accept: (value: T) => boolean,
@@ -9,6 +7,7 @@ export async function readUntil<T>(
   let expire!: () => void
   const expired = new Promise<void>(resolve => { expire = resolve })
   const timer = setTimeout(expire, options.timeoutMs)
+  let pollTimer: ReturnType<typeof setTimeout> | undefined
   try {
     for (;;) {
       let changed!: () => void
@@ -20,12 +19,17 @@ export async function readUntil<T>(
         if (accept(value)) return value
         if (performance.now() >= deadline) throw new Error(`Timed out waiting for ${options.description}.`)
         if (unsubscribe) await Promise.race([notification, expired])
-        else await setImmediate()
+        else {
+          // Native fixtures share runner CPUs with their API and Worker processes.
+          const polling = new Promise<void>(resolve => { pollTimer = setTimeout(resolve, 25) })
+          await Promise.race([polling, expired])
+        }
       } finally {
         unsubscribe?.()
       }
     }
   } finally {
     clearTimeout(timer)
+    clearTimeout(pollTimer)
   }
 }
