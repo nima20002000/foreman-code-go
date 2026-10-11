@@ -1,4 +1,4 @@
-import { readFile, rm } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect } from 'vitest'
 import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, ReviewJobSchema,
@@ -9,8 +9,6 @@ import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { hasRetainedRemoteReviewerSource } from '../../src/modules/interactions/retainedRemoteReviewer.js'
 import { HostHarnessProfileEvidenceRepository } from '../../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { remoteReviewProduction, waitForRemoteReview as waitForProduction } from './remoteReviewProduction.js'
-import { buildRemoteReviewWorkerRelease } from './remoteReviewProvider.js'
-import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
@@ -25,50 +23,33 @@ export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (va
   }
 }
 
-let releaseDirectory: string | undefined
-let workerRelease: Promise<string>
-
-beforeAll(async () => {
-  releaseDirectory = await privateFixtureDirectory('remote-review-release-')
-  const started = performance.now()
-  console.info('[remote-review] packaging Worker release')
-  workerRelease = buildRemoteReviewWorkerRelease(releaseDirectory).then(release => {
-    console.info(`[remote-review] Worker release: ${Math.round(performance.now() - started)} ms`)
-    return release
-  })
-  // Setup awaits this same promise; report an early failure while Main is starting.
-  void workerRelease.catch(error => console.error('Remote review Worker packaging failed', error))
-}, 60_000)
-
-afterAll(async () => {
-  await Promise.allSettled([workerRelease])
-  if (releaseDirectory) await rm(releaseDirectory, { recursive: true, force: true })
-})
-
-export async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>,
-  options: Parameters<typeof remoteReviewProduction>[0] = {}) {
-  const started = performance.now()
-  const progress = setInterval(() => {
-    console.info(`[remote-review] fixture active: ${Math.round(performance.now() - started)} ms`)
-  }, 10_000)
-  progress.unref()
-  try {
-    await checkRemoteReviewFixture(check, options)
-  } finally {
-    clearInterval(progress)
+/** Keep pairing and qualified profiles alive for the file's scenarios. */
+export function useRemoteReviewFixture(options: Parameters<typeof remoteReviewProduction>[0] = {}) {
+  let fixture: Fixture | undefined
+  beforeAll(async () => {
+    const started = performance.now()
+    fixture = await remoteReviewProduction({
+      ...options, parallelProfileChecks: true, reuseMatchingProfiles: true,
+      // Reconnects still refresh immediately; avoid periodic payload hashing during native checks.
+      parallelSetup: true, installationRefreshIntervalMs: 60_000,
+      reportPhase: (phase, elapsedMs) => console.info(`[remote-review] ${phase}: ${Math.round(elapsedMs)} ms`),
+    })
+    console.info(`[remote-review] fixture ready: ${Math.round(performance.now() - started)} ms`)
+  }, 60_000)
+  afterAll(async () => {
+    if (!fixture) return
+    const cleanupStarted = performance.now()
+    await fixture.close()
+    console.info(`[remote-review] cleanup: ${Math.round(performance.now() - cleanupStarted)} ms`)
+  }, 60_000)
+  return async (check: (fixture: Fixture) => Promise<void>) => {
+    if (!fixture) throw new Error('Remote review fixture setup did not complete.')
+    await checkRemoteReviewFixture(check, fixture)
   }
 }
 
-async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>,
-  options: Parameters<typeof remoteReviewProduction>[0]) {
+async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>, fixture: Fixture) {
   const started = performance.now()
-  const fixture = await remoteReviewProduction({
-    ...options, workerRelease, parallelProfileChecks: true, reuseMatchingProfiles: true,
-    // Reconnects still refresh immediately; avoid periodic payload hashing during native checks.
-    parallelSetup: true, installationRefreshIntervalMs: 60_000,
-    reportPhase: (phase, elapsedMs) => console.info(`[remote-review] ${phase}: ${Math.round(elapsedMs)} ms`),
-  })
-  console.info(`[remote-review] fixture ready: ${Math.round(performance.now() - started)} ms`)
   try {
     await check(fixture)
     console.info(`[remote-review] case complete: ${Math.round(performance.now() - started)} ms`)
@@ -102,16 +83,8 @@ async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<voi
       reviewDecisionError: call.reviewDecisionError, approvalResponse: call.approvalResponse,
       reviewDecision: call.reviewDecision,
     })))
-    try {
-      await fixture.close()
-    } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'Remote review and fixture cleanup failed.', { cause: cleanupError })
-    }
     throw error
   }
-  const cleanupStarted = performance.now()
-  await fixture.close()
-  console.info(`[remote-review] cleanup: ${Math.round(performance.now() - cleanupStarted)} ms`)
 }
 
 export async function reviewInProgress(fixture: Fixture) {

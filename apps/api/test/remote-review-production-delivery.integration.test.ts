@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import { deliveredReview, receipts, reviewInProgress, withRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { deliveredReview, receipts, reviewInProgress, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+
+const withRemoteReviewFixture = useRemoteReviewFixture()
 
 describe('production remote review and native recovery through authenticated MCP', () => {
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {

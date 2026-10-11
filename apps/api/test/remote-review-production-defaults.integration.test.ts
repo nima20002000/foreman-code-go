@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { HarnessCatalogEntrySchema, HarnessCatalogResultSchema, HarnessDefaultsUpdateResultSchema,
   HarnessOptionsResultSchema, ManagementHarnessDefaultsSchema } from '@foreman-code/contracts/management'
-import { withRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+
+const withRemoteReviewFixture = useRemoteReviewFixture({ modelCatalog: 'empty-at-startup', claudeInventory: true })
 
 describe('production remote review and native recovery through authenticated MCP', () => {
   it('keeps unavailable native defaults until an explicit choice through authenticated HTTP and MCP', async () => {
@@ -62,6 +64,6 @@ describe('production remote review and native recovery through authenticated MCP
         .then(result => ({ result }), (error: unknown) => ({ error }))
       if ('error' in deniedSave) expect(deniedSave.error).toMatchObject({ code: -32602 })
       else expect(deniedSave.result.isError).toBe(true)
-    }, { modelCatalog: 'empty-at-startup', claudeInventory: true })
+    })
   }, 240_000)
 })

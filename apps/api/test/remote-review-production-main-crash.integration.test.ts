@@ -1,5 +1,7 @@
 import { describe, it } from 'vitest'
-import { retainedReviewRecovery, withRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { retainedReviewRecovery, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+
+const withRemoteReviewFixture = useRemoteReviewFixture()
 
 describe('production remote review and native recovery through authenticated MCP', () => {
   it.each(['crash'] as const)(

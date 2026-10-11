@@ -27,7 +27,7 @@ export async function migratedDatabase() {
     if (!process.env.FOREMAN_CODE_TEST_DATABASE_TEMPLATE) await applyApplicationMigrations(pool)
     recordIntegrationStartup('database-fixture-ready', { setupMs: performance.now() - started })
     const fixturePool = pool
-    return { pool: fixturePool, schema: 'public', directory, async close() {
+    return { pool: fixturePool, databaseUrl: url.toString(), schema: 'public', directory, async close() {
       await fixturePool.end()
       try {
         assertFixtureResourcesSettled(directory)

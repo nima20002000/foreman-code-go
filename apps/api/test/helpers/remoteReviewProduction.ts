@@ -25,7 +25,6 @@ import { WorkspaceBoundLocationSetResultSchema,
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
   ManualRunStartResultSchema, SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { loadConfig } from '../../src/config.js'
-import { createCheckpointStore } from '../../src/infrastructure/checkpoints.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { installManagedLauncher } from '../../src/modules/harnesses/appMcpLauncher.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
@@ -34,7 +33,8 @@ import { systemGitWorktreePorts } from '../../src/modules/sources/gitWorktree.js
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { InstalledWorkflowRecovery } from '../../src/modules/runs/remote/installedWorkflowRecovery.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
-import { agent3Database, seedAgent3 } from './wave25Agent3.js'
+import { seedAgent3 } from './wave25Agent3.js'
+import { migratedDatabase } from './migratedDatabase.js'
 import { buildRemoteReviewWorkerRelease, createRemoteReviewProvider, createRemoteReviewTls,
   createRemoteReviewClaudeInventory } from './remoteReviewProvider.js'
 import { createRemoteReviewTransport } from './remoteReviewTransport.js'
@@ -114,7 +114,7 @@ export async function remoteReviewProduction(options: {
     const launcher = join(directory, 'app-mcp', 'launcher.mjs')
     const claudeDirectory = join(directory, 'claude-inventory')
     const setupDatabase = () => measureIntegrationPhase('fixture database', async () => {
-      const db = await agent3Database()
+      const db = await migratedDatabase()
       closes.push(db.close)
       return db
     })
@@ -191,22 +191,11 @@ export async function remoteReviewProduction(options: {
       harness: { ...configuration.harness, model: 'test-model' },
     }))
     const saved = await seedAgent3(db.pool, project, seed, { run: false })
-    const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, PORT: String(await freePort()),
+    const config = loadConfig({ DATABASE_URL: db.databaseUrl, PORT: String(await freePort()),
       HARNESS_WORKSPACE_ROOT: runtime, FILE_STORAGE_ROOT: join(directory, 'files'),
       CODEX_BINARY: provider.binary,
       DATABASE_QUERY_TIMEOUT_MS: '10000', FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '1' })
     config.workspaceStorageRoot = join(directory, 'projects')
-    const checkpointSchema = `${db.schema}_checkpoints`
-    config.checkpoints.schema = checkpointSchema
-    const databaseUrl = new URL(config.database.connectionString)
-    databaseUrl.searchParams.set('options', `-c search_path=${db.schema},public`)
-    config.database.connectionString = databaseUrl.toString()
-    const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, checkpointSchema, config.database)
-    await checkpoints.setup()
-    closes.push(async () => {
-      await checkpoints.close()
-      await db.pool.query(`drop schema "${checkpointSchema}" cascade`)
-    })
     const access = new PostgresAccessService(db.pool)
     const writer = await access.issue({ name: 'Remote review owner', audience: 'operator',
       expiresAt: new Date(Date.now() + 900_000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
@@ -330,37 +319,54 @@ export async function remoteReviewProduction(options: {
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
     beginPhase('source approval and Worker pairing')
     const mainHost = { kind: 'main' as const, mainId }
-    const mainChoices = WorkspaceRootListResultSchema.parse(await value('workspace_root_choices_list', {
-      workspaceId: saved.scope.workspaceId,
-    }))
-    const mainAllowlist = mainChoices.allowlists.find(allowlist => allowlist.hostRef.kind === 'main')!
-    const mainLocation = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
-      workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef: mainHost,
-      allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: mainAllowlist.configurationRevision,
-      relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
-    })).value
-    const workspace = ManagedWorkspaceSchema.parse(await value('workspace_get', {
-      workspaceId: saved.scope.workspaceId,
-    }))
-    await value('workspace_update', { workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
-      expectedRevision: workspace.revision, repository })
-    const approved = SourceApproveResultSchema.parse(await value('source_approve', {
-      workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
-      expectedLocationRevision: mainLocation.locationRevision, commit,
-      approvedPaths: ['README.md'], executablePolicy: 'strip',
-    })).value
-    const identity = await loadOrCreateWorkerIdentity(stateDirectory)
-    const grant = DevicePairingGrantResultSchema.parse(await value('device_pairing_grant_create', {
-      commandId: randomUUID(), workerInstallationId: identity.workerInstallationId,
-      publicKey: identity.publicKey, expectedFingerprint: identity.publicKeyFingerprint, scopes: ['connect', 'heartbeat'],
-    }))
-    const publicMain = MainDeviceIdentityPublicSchema.parse(await value('device_main_identity_get', {}))
-    const unsignedPairing = { mainId, workerInstallationId: identity.workerInstallationId,
-      publicKey: identity.publicKey, grant: grant.grant, requestId: randomUUID() }
-    const pairingRequest = { ...unsignedPairing, signature: sign(null, Buffer.from(pairingProof(unsignedPairing)),
-      identity.privateKey).toString('base64url') }
-    const paired = DevicePairingResultSchema.parse(await postDeviceJson(
-      `https://127.0.0.1:${devicePort}/device/pair`, certificate, pairingRequest))
+    const approveSource = async () => {
+      const mainChoices = WorkspaceRootListResultSchema.parse(await value('workspace_root_choices_list', {
+        workspaceId: saved.scope.workspaceId,
+      }))
+      const mainAllowlist = mainChoices.allowlists.find(allowlist => allowlist.hostRef.kind === 'main')!
+      const mainLocation = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
+        workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef: mainHost,
+        allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: mainAllowlist.configurationRevision,
+        relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
+      })).value
+      const workspace = ManagedWorkspaceSchema.parse(await value('workspace_get', {
+        workspaceId: saved.scope.workspaceId,
+      }))
+      await value('workspace_update', { workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
+        expectedRevision: workspace.revision, repository })
+      const approved = SourceApproveResultSchema.parse(await value('source_approve', {
+        workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
+        expectedLocationRevision: mainLocation.locationRevision, commit,
+        approvedPaths: ['README.md'], executablePolicy: 'strip',
+      })).value
+      return { mainLocation, approved }
+    }
+    const pairWorker = async () => {
+      const identity = await loadOrCreateWorkerIdentity(stateDirectory)
+      const grant = DevicePairingGrantResultSchema.parse(await value('device_pairing_grant_create', {
+        commandId: randomUUID(), workerInstallationId: identity.workerInstallationId,
+        publicKey: identity.publicKey, expectedFingerprint: identity.publicKeyFingerprint, scopes: ['connect', 'heartbeat'],
+      }))
+      const publicMain = MainDeviceIdentityPublicSchema.parse(await value('device_main_identity_get', {}))
+      const unsignedPairing = { mainId, workerInstallationId: identity.workerInstallationId,
+        publicKey: identity.publicKey, grant: grant.grant, requestId: randomUUID() }
+      const pairingRequest = { ...unsignedPairing, signature: sign(null, Buffer.from(pairingProof(unsignedPairing)),
+        identity.privateKey).toString('base64url') }
+      const paired = DevicePairingResultSchema.parse(await postDeviceJson(
+        `https://127.0.0.1:${devicePort}/device/pair`, certificate, pairingRequest))
+      return { identity, publicMain, paired }
+    }
+    // Both chains use the real endpoint; neither depends on the other's persisted result.
+    const [sourceResult, pairingResult] = await Promise.allSettled([
+      measureIntegrationPhase('source approval', approveSource),
+      measureIntegrationPhase('Worker pairing', pairWorker),
+    ])
+    if (sourceResult.status === 'rejected' || pairingResult.status === 'rejected') {
+      const errors = [sourceResult, pairingResult].flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      throw new AggregateError(errors, 'Remote source approval or Worker pairing failed.')
+    }
+    const { mainLocation, approved } = sourceResult.value
+    const { identity, publicMain, paired } = pairingResult.value
     let denyReservedResponse = false
     let pausedDiscovery: { entered(): void; release(): void; waiting: Promise<void> } | undefined
     const releaseWorkerDiscovery = async () => {

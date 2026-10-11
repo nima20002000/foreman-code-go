@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { waitForRemoteReview, receipts, reviewInProgress,
-  withRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+  useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+
+const withRemoteReviewFixture = useRemoteReviewFixture()
 
 describe('production remote review and native recovery through authenticated MCP', () => {
   it('settles the original native owners after an installed Worker crash without launching a replacement', async () => {

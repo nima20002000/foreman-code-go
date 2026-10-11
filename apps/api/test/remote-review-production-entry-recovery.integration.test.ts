@@ -6,7 +6,9 @@ import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-exe
 import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { SourcePreparationSchema } from '@foreman-code/contracts/source-admission'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
-import { waitForRemoteReview, receipts, withRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { waitForRemoteReview, receipts, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+
+const withRemoteReviewFixture = useRemoteReviewFixture()
 
 describe('production remote review and native recovery through authenticated MCP', () => {
   it('closes a requester entry interrupted before session acknowledgment through installed recovery and authenticated Stop', async () => {

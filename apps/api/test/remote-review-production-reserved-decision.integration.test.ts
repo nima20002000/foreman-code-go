@@ -5,7 +5,9 @@ import { DurableInteractionSchema } from '@foreman-code/contracts'
 import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { waitForRemoteReview, deliveredReview, receipts, reviewInProgress,
-  withRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+  useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+
+const withRemoteReviewFixture = useRemoteReviewFixture()
 
 describe('production remote review and native recovery through authenticated MCP', () => {
   it('retries the same reserved decision through authenticated MCP after a post-reservation authorization failure', async () => {
