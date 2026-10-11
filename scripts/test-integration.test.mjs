@@ -254,11 +254,13 @@ test('isolates bounded resource checks and retains every requested file exactly 
     'apps/api/test/operator-chat-stop.integration.test.ts',
     'apps/api/test/operator-chat-streams.integration.test.ts',
     'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
-    'apps/api/test/production-lifecycle.integration.test.ts',
+    'apps/api/test/production-lifecycle-approvals.integration.test.ts',
+    'apps/api/test/production-lifecycle-continuations.integration.test.ts',
+    'apps/api/test/production-lifecycle-delivery.integration.test.ts',
     'apps/api/test/dev-startup.integration.test.ts']
   const partition = partitionIntegrationFiles(files)
   assert.deepEqual(partition.parallel, [files[0]])
-  assert.deepEqual(partition.exclusive, [files[14], files[12], ...files.slice(1, 12), files[13]])
+  assert.deepEqual(partition.exclusive, [files[16], files[12], ...files.slice(1, 12), ...files.slice(13, 16)])
   assert.deepEqual([...partition.exclusive, ...partition.parallel].sort(), [...files].sort())
   assert.deepEqual(partitionIntegrationFiles([files[0]]), { exclusive: [], parallel: [files[0]] })
 })
