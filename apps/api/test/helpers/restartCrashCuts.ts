@@ -153,13 +153,17 @@ export async function recoverEnteredLaunch(
   const t = await checkpointRuntimeFixture(1, 1, { database, fixture, approvalNodeIds: [] })
   const interrupted = new DomainError('ENGINE_RESTART', 'Injected abrupt API restart at entered COMMIT.', 409)
   const barrier = holdCrashCut<string>(interrupted)
-  // Install before launch so even a failing assertion cannot let teardown
-  // invent an unbound manager close and mask the real failure.
-  vi.spyOn(t.native, 'closeForRestart').mockResolvedValue(undefined)
+  // Shutdown commits cleanup before closing native sessions and aborting the drive.
+  // Keep the launch parked until that abort, without manufacturing a closure.
+  const restartClose = vi.spyOn(t.native, 'closeForRestart').mockImplementation(async () => {
+    barrier.release()
+  })
   const stopOld = async () => {
-    const stopped = t.engine.shutdown() // fences admission; cleanup COMMIT precedes abort
-    barrier.release() // release the injected restart error, never a native dispatch
-    await stopped
+    try {
+      await t.engine.shutdown()
+    } finally {
+      barrier.release()
+    }
   }
   let restore: () => void = () => undefined
   try {
@@ -196,6 +200,7 @@ export async function recoverEnteredLaunch(
     expect(await effects(t, 'result.accept')).toEqual([])
     expect(await originalProofs(t, cut)).toEqual([])
     await stopOld()
+    expect(restartClose).toHaveBeenCalledTimes(1)
     expect(await started).toMatchObject({ status: 'rejected', reason: { code: 'ENGINE_RESTART' } })
     expect(barrier.visits).toBe(1)
     expect(await t.runs.getExecution(cut)).toEqual(original)
