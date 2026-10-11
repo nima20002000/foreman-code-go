@@ -15,11 +15,9 @@ it('saves a completed computer workflow using each accepted native directory and
     const details = await waitForRemoteReview(async () => {
       const current = await fixture.details(started.run.id)
       if (current.run.executionState === 'completed' && !current.cleanupPending) return current
-      if (current.run.executionState === 'completed' && current.cleanupPending) {
-        await fixture.reconcile()
-        return fixture.details(started.run.id)
-      }
-      return current
+      // Active Runs can yield after bounded settlement retries and need another engine pass.
+      await fixture.reconcile()
+      return fixture.details(started.run.id)
     }, value => value.run.executionState === 'completed' && !value.cleanupPending, 'completed remote workflow cleanup')
     expect(details.run.outcome).toBe('succeeded')
     expect(details.executions).toHaveLength(2)

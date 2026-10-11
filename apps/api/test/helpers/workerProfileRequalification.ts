@@ -35,27 +35,34 @@ export async function startWhenReady(fixture: Fixture) {
 }
 
 export async function assertMcpReadback(fixture: Fixture, evidence: Awaited<ReturnType<typeof latestEvidence>>) {
+  // Evidence commits before the inventory refresh finishes and clears the pending check.
+  const profiles = await waitForRemoteReview(async () => HostHarnessOverrideListSchema.parse(
+    await fixture.value('harness_instances_list', {
+      hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
+    })), profiles => profiles.overrides.length === fixture.profiles.length
+      && profiles.overrides.every(profile => profile.qualification !== 'qualifying'),
+  'automatic profile checks completing through MCP')
+  expect(profiles.overrides).toHaveLength(fixture.profiles.length)
+  expect(profiles.overrides.every(profile => profile.qualification === 'qualified')).toBe(true)
+  const completed = evidence.map(proof => proof.completedNativeQualification!)
   const reads = await Promise.allSettled([
-    // Evidence commits before the inventory refresh finishes and clears the pending check.
-    waitForRemoteReview(async () => HostHarnessOverrideListSchema.parse(
-      await fixture.value('harness_instances_list', {
-        hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
-      })), profiles => profiles.overrides.every(profile => profile.qualification !== 'qualifying'),
-    'automatic profile checks completing through MCP'),
     fixture.value('harness_qualifications_list', {}),
     fixture.inventory(),
+    fixture.db.pool.query<{ check_id: string }>(`select evidence->>'checkId' as check_id
+      from harness_qualifications where evidence->>'checkId'=any($1::text[])`,
+    [completed.map(receipt => receipt.checkId)]),
   ])
-  const [profilesRead, qualificationsRead, inventoryRead] = reads
-  if (profilesRead.status === 'rejected' || qualificationsRead.status === 'rejected'
-    || inventoryRead.status === 'rejected') {
+  const [qualificationsRead, inventoryRead, retainedRead] = reads
+  if (qualificationsRead.status === 'rejected' || inventoryRead.status === 'rejected'
+    || retainedRead.status === 'rejected') {
     const errors = reads.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
     throw new AggregateError(errors, 'Worker profile readback failed.')
   }
-  const profiles = HostHarnessOverrideListSchema.parse(profilesRead.value)
-  expect(profiles.overrides).toHaveLength(fixture.profiles.length)
-  expect(profiles.overrides.every(profile => profile.qualification === 'qualified')).toBe(true)
   const qualifications = HarnessQualificationListSchema.parse(qualificationsRead.value)
-  expect(qualifications.qualifications).toContainEqual(evidence.at(-1)!.completedNativeQualification!.record)
+  // Profiles are ordered by instance ID; the shared suite row is overwritten in commit order.
+  expect(retainedRead.value.rows).toHaveLength(1)
+  const retained = completed.find(receipt => receipt.checkId === retainedRead.value.rows[0]!.check_id)!
+  expect(qualifications.qualifications).toContainEqual(retained.record)
   const inventory = inventoryRead.value
   const generation = inventory.installations.find(installation => installation.driverId === 'codex')!.connectionGeneration
   expect(evidence.every(proof => proof.connectionGeneration === generation)).toBe(true)
