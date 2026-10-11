@@ -145,7 +145,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Known issues
 
-- `computer-workflow-save.regression` can time out in full parallel integration runs: a second remote Codex execution stays in `starting` after Worker qualification. It passes in isolation; a fix is planned for the next release.
+- `computer-workflow-save.regression-directories` and `computer-workflow-save.regression-reservation-cleanup` can time out in full parallel integration runs: a second remote Codex execution stays in `starting` after Worker qualification. It passes in isolation; a fix is planned for the next release.
 
 ## [0.0.55] - 2026-10-09
 
@@ -283,7 +283,7 @@ Released as is at the owner's request; these are open and will be fixed later.
   - `job-queue-configuration`: duplicate key (23505) when restoring persisted runtime profiles.
   - `handoff-approval`: review resumes return `blocked_disconnected REVIEW_SESSION_DISCONNECTED` before the publication cut.
   - `remote-review-production`: times out waiting for the routed native interaction.
-  - `computer-workflow-save.regression`: production runtime shutdown leaves runtime ownership unreleased.
+  - `computer-workflow-save.regression-directories` and `computer-workflow-save.regression-reservation-cleanup`: production runtime shutdown leaves runtime ownership unreleased.
   - `job-admission-queue` (five concurrent requests on one heavy slot) and `agent-chat-f5` (A-R15) time out.
 - `scripts/test-integration.test.mjs` (part of `pnpm test:scripts`) fails to load: it imports `adminDatabaseUrl`, which `scripts/test-integration.mjs` no longer exports.
 - The full integration suite and acceptance tests were not rerun after the last PR 59 review-fix merges.

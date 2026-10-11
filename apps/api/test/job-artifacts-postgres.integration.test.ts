@@ -378,11 +378,13 @@ describe.skipIf(!databaseUrl).each(['fixed', 'auto', 'verification'] as const)('
     }])
     expect(summary).toMatchObject({ environment: { runtime: 'isolated-job',
       capabilities: { nativeCgroupDelegation: false, dockerCompose: false, installedWorkerHost: false } },
-      outcome: 'incomplete', completeness: 'partial', expectedPortions: 7, completedPortions: 0,
+      outcome: 'incomplete', completeness: 'partial', expectedPortions: 9, completedPortions: 0,
       totals: { total: 0, passed: 0, failed: 0, skipped: 0 },
       files: [
         { complete: false, requiredCapabilities: ['nativeCgroupDelegation'] },
         { complete: false, requiredCapabilities: ['testDatabaseStartup'] },
+        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
+        { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
         { complete: false, requiredCapabilities: ['installedWorkerHost'] },
