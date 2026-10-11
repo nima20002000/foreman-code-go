@@ -26,7 +26,7 @@ const readAnnotations = {
 
 export async function createAppMcpServer(context: AppRequestContext): Promise<McpServer> {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
-  cacheToolSchemaConversions(server)
+  cacheToolSchemaConversions(server, 'app')
   await registerAppTools(server, context)
   return server
 }

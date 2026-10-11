@@ -26,7 +26,7 @@ it('reuses input and output conversions across servers while preserving defaults
   async function connect(cached: boolean) {
     const server = new McpServer({ name: 'schema-fixture', version: '1' })
     servers.push(server)
-    if (cached) cacheToolSchemaConversions(server)
+    if (cached) cacheToolSchemaConversions(server, 'test')
     server.registerTool('echo', { inputSchema: schema, outputSchema: schema }, async input => ({
       content: [], structuredContent: input,
     }))

@@ -109,7 +109,7 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
 /** One server for every role. Each caller lists only its enabled tools: the existing, grant-checked implementations. */
 export async function createGraphqlMcpServer(context: GraphqlMcpContext): Promise<McpServer> {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' }, { instructions: roleInstructions(context.role) })
-  cacheToolSchemaConversions(server)
+  cacheToolSchemaConversions(server, 'unified')
   paginateToolLists(server)
   if (context.role === 'operator') {
     if (context.operator) {
