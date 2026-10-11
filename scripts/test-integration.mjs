@@ -21,7 +21,10 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 // These files measure bounded startup/latency while exercising shared host resources.
 const exclusiveFiles = [startupFile,
-  'apps/api/test/test-startup-isolation.integration.test.ts',
+  'apps/api/test/test-startup-isolation-environment.integration.test.ts',
+  'apps/api/test/test-startup-isolation-native-storage.integration.test.ts',
+  'apps/api/test/test-startup-isolation-workspace-storage.integration.test.ts',
+  'apps/api/test/test-startup-isolation-smoke.integration.test.ts',
   'apps/api/test/entrypoints-source-approval-profile.integration.test.ts',
   'apps/api/test/operator-chat-controls.integration.test.ts',
   'apps/api/test/operator-chat-preferences.integration.test.ts',
