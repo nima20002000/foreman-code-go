@@ -29,12 +29,16 @@ it('automatically restores Main Codex admission after deployment and cold-start 
     expect(changed.launcher.resolvedLauncher).toBe(installation.launcher.resolvedLauncher)
     expect(changed.environmentGeneration).not.toBe(installation.environmentGeneration)
     expect(changed.connectionGeneration).not.toBe(installation.connectionGeneration)
-    await waitForRemoteReview(async () => HarnessCompatibilityListSchema.parse(
+    const timedOut = await waitForRemoteReview(async () => HarnessCompatibilityListSchema.parse(
       await fixture.value('harness_compatibility_list', {})), result => result.harnesses.some(report =>
       report.status === 'unavailable' && report.reason?.code === 'CHECK_TIMEOUT' && report.installedVersion === null),
     'startup compatibility timeout')
-    // Keep the CLI stalled beyond restoration's first version-command deadline.
-    await new Promise(resolve => setTimeout(resolve, 31_000))
+    const firstCheckId = timedOut.harnesses.find(report => report.reason?.code === 'CHECK_TIMEOUT')!.checkId
+    await waitForRemoteReview(async () => HarnessCompatibilityListSchema.parse(
+      await fixture.value('harness_compatibility_list', {})), result => result.harnesses.some(report =>
+      report.checkId !== firstCheckId && report.status === 'unavailable'
+        && report.reason?.code === 'CHECK_TIMEOUT' && report.installedVersion === null),
+    'automatic compatibility retry timeout while version commands remain blocked')
     await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_CHECK_PENDING')
     await fixture.provider.releaseVersions()
     versionsBlocked = false

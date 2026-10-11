@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
@@ -9,15 +13,23 @@ import { DomainError } from '../src/modules/errors.js'
 
 vi.mock('node:timers/promises', () => ({ setTimeout: vi.fn(async () => undefined) }))
 
-afterEach(() => {
+const directories: string[] = []
+
+afterEach(async () => {
   vi.mocked(delay).mockReset()
   vi.mocked(delay).mockResolvedValue(undefined)
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
 })
 
-function fixture(previousStatus: 'qualified' | 'failed' | null = 'qualified') {
-  const binary = '/fixture/native-cli'
+async function fixture(previousStatus: 'qualified' | 'failed' | null = 'qualified') {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-qualification-restoration-'))
+  directories.push(directory)
+  const binary = join(directory, 'native-cli')
+  const bytes = Buffer.from('qualification binary identity fixture; never executed')
+  await writeFile(binary, bytes, { mode: 0o700 })
+  const binarySha256 = createHash('sha256').update(bytes).digest('hex')
   const record: HarnessQualification = {
-    harness: 'codex', version: '0.162.1', binarySha256: 'a'.repeat(64),
+    harness: 'codex', version: '0.162.1', binarySha256,
     suiteRevision: 'restoration-suite', profile: 'codex-0.156', status: 'qualified',
     checks: [{ id: 'native-turn', passed: true, detail: null }], failureReason: null,
     startedAt: '2026-10-01T00:00:00.000Z', checkedAt: '2026-10-01T00:00:01.000Z',
@@ -44,7 +56,7 @@ it.each([
   new CompatibilityCheckError('CHECK_TIMEOUT', 'Version check timed out'),
   new DomainError('HARNESS_CHECK_TIMEOUT', 'Inventory check timed out', 503),
 ])('restores a qualified binary after transient startup inspection failures: $name', async error => {
-  const f = fixture()
+  const f = await fixture()
   f.inspect.mockRejectedValueOnce(error).mockRejectedValueOnce(error)
   try {
     expect(await f.qualification.restore('codex')).toMatchObject({ status: 'qualifying', version: '0.162.1' })
@@ -63,7 +75,7 @@ it.each([
 })
 
 it.each(['failed', null] as const)('does not restore an unqualified binary after a timeout: %s', async status => {
-  const f = fixture(status)
+  const f = await fixture(status)
   f.inspect.mockRejectedValueOnce(new DOMException('Version check timed out', 'TimeoutError'))
   try {
     expect(await f.qualification.restore('codex')).toBeNull()
@@ -75,7 +87,7 @@ it.each(['failed', null] as const)('does not restore an unqualified binary after
 })
 
 it('keeps automatic Main profile verification pending through startup inspection timeouts', async () => {
-  const f = fixture()
+  const f = await fixture()
   f.refresh.mockRejectedValueOnce(new DOMException('Inventory timed out', 'TimeoutError'))
   f.inspect.mockRejectedValueOnce(new CompatibilityCheckError('CHECK_TIMEOUT', 'Version check timed out'))
   try {
@@ -89,7 +101,7 @@ it('keeps automatic Main profile verification pending through startup inspection
 })
 
 it('coalesces restart restoration and cancels the retry wait on shutdown', async () => {
-  const f = fixture()
+  const f = await fixture()
   f.inspect.mockRejectedValue(new DOMException('Version check timed out', 'TimeoutError'))
   vi.mocked(delay).mockImplementation((_milliseconds, _value, options) => new Promise((_resolve, reject) => {
     options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true })
@@ -107,7 +119,7 @@ it('coalesces restart restoration and cancels the retry wait on shutdown', async
 })
 
 it('does not retry an inspection whose native cleanup is unconfirmed', async () => {
-  const f = fixture()
+  const f = await fixture()
   f.inspect.mockRejectedValueOnce(new DOMException('Version check timed out', 'TimeoutError'))
   f.close.mockRejectedValueOnce(new Error('Unconfirmed cleanup'))
   try {
