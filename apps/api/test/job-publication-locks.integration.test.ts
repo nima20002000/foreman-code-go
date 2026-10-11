@@ -19,6 +19,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Concurrent Job publication auth
     try {
       await admin.query(`create schema ${schema}`)
       pool = new pg.Pool({ connectionString: url.toString(), max: 12,
+        application_name: schema,
         options: `-c search_path=${schema} -c statement_timeout=5000 -c lock_timeout=4000` })
       await pool.query(`
         create table job_executions(id text primary key,workspace_id text,record jsonb,accepted_spec jsonb,accepted_by text);
@@ -43,7 +44,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Concurrent Job publication auth
       const publicationSessions = new Set<pg.PoolClient>()
       let releasePublications!: () => void
       const overlapping = new Promise<void>(resolve => { releasePublications = resolve })
-      // Each publisher holds its shared lock until all twelve sessions reach this boundary.
+      // Publication takes an exclusive lock first, so overlapping requests queue behind the first publisher.
       const requireAcceptedSource = async (sql: pg.PoolClient) => {
         await sql.query('select record from job_executions where id=$1 for share', [execution.id])
         publicationSessions.add(sql)
@@ -54,10 +55,20 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Concurrent Job publication auth
       const authority = new JobPublicationAuthority(dispatch, { revalidateAccepted: async () => {} })
       const bridge = new JobApplicationBridge(pool, dispatch, { appendLog: async () => { throw new Error('Unexpected log') } }, authority)
       const frame = { method: 'job-authorize', intent, action: 'publish' }
+      const clients: pg.PoolClient[] = []
+      try {
+        for (let index = 0; index < 12; index++) clients.push(await pool.connect())
+      } finally {
+        for (const client of clients) client.release()
+      }
       const publications = Promise.allSettled(Array.from({ length: 12 }, () => bridge.handle(frame, binding)))
       try {
-        await readUntil(async () => publicationSessions.size, count => count === 12,
-          { timeoutMs: 1000, description: 'all publication sessions to hold shared locks' })
+        await readUntil(async () => {
+          const waiting = await admin.query<{ count: number }>(`select count(*)::integer as count
+            from pg_stat_activity where application_name=$1 and wait_event_type='Lock'`, [schema])
+          return { publishers: publicationSessions.size, waiting: waiting.rows[0]!.count }
+        }, state => state.publishers === 1 && state.waiting === 11,
+        { timeoutMs: 1000, description: 'eleven publications to queue behind the first publisher' })
       } finally {
         releasePublications()
         await publications
