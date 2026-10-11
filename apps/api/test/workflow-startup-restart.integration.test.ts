@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
+import { WorkspaceLocationSetResultSchema } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema, RunStartV3InputSchema,
   RunStartV3ResultSchema, makeCurrentWorkflowFixture,
 } from '@foreman-code/contracts/wave25'
 import { PostgresWorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
+import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 
@@ -81,15 +83,22 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
           return closing
         })
         try {
+          // Start validates filesystem identity; the seeded synthetic location is insufficient.
+          const locationResponse = await runtime.client.callTool({ name: 'workspace_location_set', arguments: {
+            workspaceId: runtime.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
+            runnerId: LOCAL_RUNNER_ID, rootPath: runtime.db.directory,
+          } })
+          expect(locationResponse.isError, JSON.stringify(decodeMcpToolResult(locationResponse))).not.toBe(true)
+          const location = WorkspaceLocationSetResultSchema.parse(decodeMcpToolResult(locationResponse)).value
           const savedResponse = await runtime.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save,
-            arguments: await runtime.create() })
+            arguments: { ...await runtime.create(), expectedLocationRevision: location.locationRevision } })
           expect(savedResponse.isError).not.toBe(true)
           const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(savedResponse)).value
           const input = RunStartV3InputSchema.parse({
             workspaceId: saved.workspaceId, workflowId: saved.workflowId, workflowVersionId: saved.version.id,
             commandId: randomUUID(), executionSemanticsVersion: 3, expectedWorkflowRevision: saved.revision,
             expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-            expectedLocationRevision: 1, input: {},
+            expectedLocationRevision: location.locationRevision, input: {},
           })
           const reader = await runtime.access.issue({
             name: 'Startup read-only caller', audience: 'operator',
@@ -106,9 +115,20 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
           expect(deniedReceipts.rows).toEqual([])
 
           const startedResponse = await runtime.client.callTool({ name: 'run_start', arguments: input })
-          expect(startedResponse.isError).not.toBe(true)
-          const started = RunStartV3ResultSchema.parse(decodeMcpToolResult(startedResponse))
+          const startedResult = decodeMcpToolResult(startedResponse)
+          expect(startedResponse.isError, JSON.stringify(startedResult)).not.toBe(true)
+          const started = RunStartV3ResultSchema.parse(startedResult)
+          expect(started).toMatchObject({ accepted: true, replayed: false, run: {
+            outcome: 'pending', executionLocation: { locationRevision: location.locationRevision },
+          } })
           await paused.promise
+          expect(startupFailure).toBeUndefined()
+          expect(runtime.provider.counts).toMatchObject({ sessions: 0, starts: 0 })
+          const receipt = await runtime.db.pool.query(`select r.id from runs r join management_command_receipts c
+            on c.operation='run.start' and c.result->>'id'=r.id
+            where r.id=$1 and c.principal_id=$2 and c.command_id=$3`,
+          [started.run.id, runtime.writer.principal.id, input.commandId])
+          expect(receipt.rows).toEqual([{ id: started.run.id }])
           shutdown = runtime.engine.shutdown().then(() => undefined, (error: unknown) => error)
           await restarting.promise
           const cleanup = await runtime.db.pool.query(
