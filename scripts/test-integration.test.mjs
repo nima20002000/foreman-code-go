@@ -69,6 +69,7 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-reservation-cleanup.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/remote-review-production.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/historical-chat-placement.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/worker-chat-profile-qualification.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/worker-profile-requalification-main-restart.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts', 'installedWorkerHost'],
