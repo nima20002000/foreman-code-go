@@ -50,7 +50,7 @@ export async function readCiManagedSetup(stateDirectory: string) {
   return record.status
 }
 
-/** Moves the idle adopted quota slots, preserving their kernel project IDs and inode identities. */
+/** Moves idle quota slots without changing their project IDs or inodes; null means relocation was skipped. */
 export async function relocateCiQuotaSlots(configuration: InstalledVerificationRuntimeConfiguration,
   root: SourceRootRecord) {
   const runtime = configuration.descriptor.runtimeRoot
@@ -66,6 +66,10 @@ export async function relocateCiQuotaSlots(configuration: InstalledVerificationR
     if (!isDeepStrictEqual(observed, root.binding.filesystem)) {
       throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED', 'The new CI source directory changed.', 409)
     }
+    const source = await identity(previous)
+    // Copying to another filesystem would discard kernel project quotas and inode identities.
+    if (configuration.descriptor.quotaPool
+      && (source.device !== observed.device || source.mountId !== observed.mountId)) return null
     const slots = []
     for (const slot of configuration.descriptor.quotaPool?.slots ?? []) {
       const to = anchored(destination, slot.namespace)
@@ -77,7 +81,12 @@ export async function relocateCiQuotaSlots(configuration: InstalledVerificationR
             || current.device !== observed.device || current.mountId !== observed.mountId) {
             throw new DomainError('JOB_QUOTA_CHANGED', 'The adopted quota directory changed.', 409)
           }
-          await rename(anchored(previous, slot.namespace), to)
+          try {
+            await rename(anchored(previous, slot.namespace), to)
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'EXDEV') return null
+            throw error
+          }
         } finally { await from.close() }
       }
       const moved = await openChildDirectory(destination, slot.namespace)

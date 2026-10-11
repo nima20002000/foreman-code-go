@@ -10,9 +10,10 @@ import { currentCiRuntimePaths, hostDeviceLimits, nextCaptureInput, recaptureCiT
   pruneCiRuntimeRefreshFiles, scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { refreshMainJobRuntime } from '../../cli/refreshMainJobRuntime.js'
 import { identity, openPrivateRoot } from '../sources/privateFilesystem.js'
+import * as privateFilesystem from '../sources/privateFilesystem.js'
 import { relocateCiQuotaSlots } from './ciRuntimeInstallation.js'
 
-const commands = vi.hoisted(() => ({ run: vi.fn() }))
+const commands = vi.hoisted(() => ({ run: vi.fn(), beforeRename: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   const execFile = Object.assign(() => {}, {
@@ -24,7 +25,10 @@ vi.mock('node:child_process', async importOriginal => {
 })
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
-  return { ...actual, readFile: (path: string, ...options: unknown[]) => path === '/proc/self/cgroup'
+  return { ...actual, rename: async (...args: Parameters<typeof actual.rename>) => {
+    await commands.beforeRename(...args)
+    return actual.rename(...args)
+  }, readFile: (path: string, ...options: unknown[]) => path === '/proc/self/cgroup'
     ? Promise.resolve('0::/user.slice/worker.service\n')
     : actual.readFile(path, ...(options as [])) }
 })
@@ -38,6 +42,7 @@ vi.mock('./installedRuntimeHost.js', async importOriginal => ({
 const roots: string[] = []
 afterEach(async () => {
   commands.run.mockReset()
+  commands.beforeRename.mockReset()
   for (const directory of roots.splice(0)) await rm(directory, { recursive: true, force: true })
 })
 
@@ -78,6 +83,39 @@ function fixture() {
     unitCodex: { executable: '/opt/graphql-ci/tools/codex', sourceExecutable: '/ci/prepared-codex',
       version: 'new-codex', binarySha256: '7'.repeat(64) } }
   return { current, prepared }
+}
+
+async function quotaRelocationFixture() {
+  const f = fixture()
+  const directory = await privateFixtureDirectory('ci-quota-adoption-')
+  roots.push(directory)
+  const runtimeRoot = join(directory, 'runtime')
+  const oldPolicyId = randomUUID()
+  const newPolicyId = randomUUID()
+  const oldSource = join(runtimeRoot, 'source-materializations', oldPolicyId)
+  const newSource = join(runtimeRoot, 'source-materializations', newPolicyId)
+  for (const path of [oldSource, newSource]) await mkdir(path, { recursive: true, mode: 0o700 })
+  const filesystem = async (path: string) => {
+    const handle = await openPrivateRoot(path)
+    try { return await identity(handle) } finally { await handle.close() }
+  }
+  const pool = f.current.descriptor.quotaPool!
+  const slots = []
+  for (const slot of pool.slots) {
+    const path = join(oldSource, slot.namespace)
+    await mkdir(path, { mode: 0o700 })
+    await writeFile(join(path, 'retained'), slot.namespace)
+    slots.push({ ...slot, filesystem: await filesystem(path) })
+  }
+  const quotaPool = { ...pool, slots }
+  const current = { ...f.current,
+    root: { ...f.current.root, selection: { ...f.current.root.selection, rootPolicyId: oldPolicyId },
+      binding: { ...f.current.root.binding, canonicalPath: oldSource, filesystem: await filesystem(oldSource) } },
+    descriptor: { ...f.current.descriptor, runtimeRoot, quotaPool },
+    machine: { ...f.current.machine, quotaPool } }
+  const root = { ...current.root, selection: { ...current.root.selection, rootPolicyId: newPolicyId },
+    binding: { ...current.root.binding, canonicalPath: newSource, filesystem: await filesystem(newSource) } }
+  return { current, root, slots, oldSource, newSource, directory }
 }
 
 describe('CI runtime refresh', () => {
@@ -133,35 +171,7 @@ describe('CI runtime refresh', () => {
   })
 
   it('moves adopted quota directories to the new source binding and resumes an interrupted move', async () => {
-    const f = fixture()
-    const directory = await privateFixtureDirectory('ci-quota-adoption-')
-    roots.push(directory)
-    const runtimeRoot = join(directory, 'runtime')
-    const oldPolicyId = randomUUID()
-    const newPolicyId = randomUUID()
-    const oldSource = join(runtimeRoot, 'source-materializations', oldPolicyId)
-    const newSource = join(runtimeRoot, 'source-materializations', newPolicyId)
-    for (const path of [oldSource, newSource]) await mkdir(path, { recursive: true, mode: 0o700 })
-    const filesystem = async (path: string) => {
-      const handle = await openPrivateRoot(path)
-      try { return await identity(handle) } finally { await handle.close() }
-    }
-    const pool = f.current.descriptor.quotaPool!
-    const slots = []
-    for (const slot of pool.slots) {
-      const path = join(oldSource, slot.namespace)
-      await mkdir(path, { mode: 0o700 })
-      await writeFile(join(path, 'retained'), slot.namespace)
-      slots.push({ ...slot, filesystem: await filesystem(path) })
-    }
-    const quotaPool = { ...pool, slots }
-    const current = { ...f.current,
-      root: { ...f.current.root, selection: { ...f.current.root.selection, rootPolicyId: oldPolicyId },
-        binding: { ...f.current.root.binding, canonicalPath: oldSource, filesystem: await filesystem(oldSource) } },
-      descriptor: { ...f.current.descriptor, runtimeRoot, quotaPool },
-      machine: { ...f.current.machine, quotaPool } }
-    const root = { ...current.root, selection: { ...current.root.selection, rootPolicyId: newPolicyId },
-      binding: { ...current.root.binding, canonicalPath: newSource, filesystem: await filesystem(newSource) } }
+    const { current, root, slots, oldSource, newSource, directory } = await quotaRelocationFixture()
     const moved = await relocateCiQuotaSlots(current, root)
     expect(moved?.slots).toEqual(slots)
     for (const slot of slots) {
@@ -172,6 +182,70 @@ describe('CI runtime refresh', () => {
     await expect(relocateCiQuotaSlots(current, { ...root,
       binding: { ...root.binding, canonicalPath: directory } })).rejects.toMatchObject({ code: 'JOB_RUNTIME_CONTEXT_CHANGED' })
   })
+  it.each(['device', 'mountId'] as const)('skips a move to another %s before touching quota directories', async field => {
+    const { current, root, slots, oldSource, newSource } = await quotaRelocationFixture()
+    const destination = root.binding.filesystem
+    const changed = { ...destination, [field]: String(BigInt(destination[field]) + 1n) }
+    const observedIdentity = privateFilesystem.identity
+    const readIdentity = vi.spyOn(privateFilesystem, 'identity').mockImplementation(async handle => {
+      const observed = await observedIdentity(handle)
+      return observed.inode === destination.inode ? changed : observed
+    })
+    try {
+      expect(await relocateCiQuotaSlots(current, { ...root, binding: { ...root.binding, filesystem: changed } }))
+        .toBeNull()
+      expect(commands.beforeRename).not.toHaveBeenCalled()
+      for (const slot of slots) {
+        expect(await readFile(join(oldSource, slot.namespace, 'retained'), 'utf8')).toBe(slot.namespace)
+        await expect(stat(join(newSource, slot.namespace))).rejects.toMatchObject({ code: 'ENOENT' })
+      }
+    } finally {
+      readIdentity.mockRestore()
+    }
+  })
+
+  it('skips an EXDEV move without losing quota directories and can retry on the same filesystem', async () => {
+    const { current, root, slots, oldSource, newSource } = await quotaRelocationFixture()
+    commands.beforeRename.mockRejectedValueOnce(Object.assign(new Error('Cross-device move'), { code: 'EXDEV' }))
+    expect(await relocateCiQuotaSlots(current, root)).toBeNull()
+    for (const slot of slots) {
+      expect(await readFile(join(oldSource, slot.namespace, 'retained'), 'utf8')).toBe(slot.namespace)
+      await expect(stat(join(newSource, slot.namespace))).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    expect(await relocateCiQuotaSlots(current, root)).toEqual(current.descriptor.quotaPool)
+    for (const slot of slots) {
+      expect(await readFile(join(newSource, slot.namespace, 'retained'), 'utf8')).toBe(slot.namespace)
+      await expect(stat(join(oldSource, slot.namespace))).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+  })
+
+  it('preserves unexpected relocation errors and the original quota data', async () => {
+    const { current, root, slots, oldSource } = await quotaRelocationFixture()
+    commands.beforeRename.mockRejectedValueOnce(Object.assign(new Error('Move denied'), { code: 'EACCES' }))
+    await expect(relocateCiQuotaSlots(current, root)).rejects.toMatchObject({ code: 'EACCES' })
+    for (const slot of slots) {
+      expect(await readFile(join(oldSource, slot.namespace, 'retained'), 'utf8')).toBe(slot.namespace)
+    }
+  })
+
+  it('does not schedule a restart or replace the configuration when quota relocation is skipped', async () => {
+    const { current, root, slots, oldSource, directory } = await quotaRelocationFixture()
+    const configurationPath = join(directory, 'job-runtime.json')
+    const bytes = JSON.stringify(current)
+    await writeFile(configurationPath, bytes, { mode: 0o600 })
+    const prepared = { ...fixture().prepared, seedReceiptPath: join(directory, 'prepared-seed.json') }
+    await writeFile(prepared.seedReceiptPath, '{}')
+    commands.beforeRename.mockRejectedValueOnce(Object.assign(new Error('Cross-device move'), { code: 'EXDEV' }))
+    await expect(scheduleCiRuntimeRefresh({ operationId: randomUUID(), stateDirectory: directory, prepared,
+      root, manifest: current.qualificationSource.manifest, resources: current.machine.resources,
+      drain: async () => {} })).rejects.toMatchObject({ code: 'CI_RUNTIME_RELOCATION_REQUIRED' })
+    expect(commands.run).not.toHaveBeenCalled()
+    expect(await readFile(configurationPath, 'utf8')).toBe(bytes)
+    for (const slot of slots) {
+      expect(await readFile(join(oldSource, slot.namespace, 'retained'), 'utf8')).toBe(slot.namespace)
+    }
+  })
+
   it('captures the new pairing target from its fresh source binding without relabelling historical inputs', () => {
     const f = fixture()
     const mainId = randomUUID()

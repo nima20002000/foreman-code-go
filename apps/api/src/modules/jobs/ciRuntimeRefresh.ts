@@ -89,6 +89,11 @@ export async function scheduleCiRuntimeRefresh(input: {
   const original = await readCiRuntimeTemplate(input.stateDirectory)
   if (!original) throw new DomainError('CI_RUNTIME_INSTALLATION_MISSING', 'No installed CI runtime is available.', 409)
   const quotaPool = await relocateCiQuotaSlots(original, input.root)
+  if (quotaPool === null) {
+    throw new DomainError('CI_RUNTIME_RELOCATION_REQUIRED',
+      'Legacy CI quota storage cannot move across filesystems. Reinstall it before refreshing; Host CI needs no refresh.',
+      409)
+  }
   const configuration = InstalledVerificationRuntimeConfigurationSchema.parse({ ...original,
     descriptor: { ...original.descriptor, quotaPool }, machine: { ...original.machine, quotaPool } })
   const toolSources = await recaptureCiTools(configuration.machine.tools, input.prepared, base, environment)
