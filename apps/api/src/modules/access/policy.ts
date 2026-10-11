@@ -1,3 +1,4 @@
+import type pg from 'pg'
 import {
   ManagementPrincipalSchema,
   type ManagementAction,
@@ -77,7 +78,7 @@ export async function requireLiveAccountAuthorization(sql: GraphSqlClient, princ
   while (id) {
     if (seen.has(id) || seen.size >= 16) throw new DomainError('AUTH_INVALID', 'The delegation chain is invalid.', 403)
     seen.add(id)
-    const result = await sql.query<AccountAuthorityRow>(
+    const result: pg.QueryResult<AccountAuthorityRow> = await sql.query<AccountAuthorityRow>(
       'select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1 for share',
       [id])
     const row: AccountAuthorityRow | undefined = result.rows[0]

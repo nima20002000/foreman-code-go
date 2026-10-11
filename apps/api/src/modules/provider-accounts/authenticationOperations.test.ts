@@ -11,7 +11,8 @@ import { DomainError } from '../errors.js'
 import { LocalProviderCredentials } from './localCredentials.js'
 import { ProviderAccountsRepository } from './repository.js'
 import { ProviderAccountsService, type ProviderAccountOperationNativePort } from './service.js'
-import type { ProviderAccountNativeAuthenticationObservation } from '@foreman-code/contracts/provider-accounts'
+import type { ProviderAccountNativeAuthenticationObservation,
+  ProviderAccountObservation } from '@foreman-code/contracts/provider-accounts'
 
 const schema = `account_operations_${randomUUID().replaceAll('-', '')}`
 let admin: pg.Pool
@@ -74,8 +75,16 @@ it('retains the original command after lost acknowledgement and excludes a secon
   expect(f.native.prepareAuthentication).toHaveBeenCalledTimes(1)
 })
 
-it('commits reservations before a native wait and permits a separate slot to progress', async () => {
+it.each([false, true])(
+  'commits reservations before a native wait and permits a separate slot to progress (observations: %s)',
+  async observations => {
   const f = await fixture()
+  if (observations) {
+    f.native.observeAccount = vi.fn(async (): Promise<ProviderAccountObservation> => ({
+      bindingRevision: 1, generation: 1, sequence: 1,
+      observedAt: new Date().toISOString(), status: 'signed-out', identity: null, subject: null,
+      readiness: 'sign-in-required' }))
+  }
   let release!: () => void
   let entered!: () => void
   const blocked = new Promise<void>(resolve => { release = resolve })
@@ -93,8 +102,16 @@ it('commits reservations before a native wait and permits a separate slot to pro
     const second = await f.service.prepareAuthentication(f.owner.principal, 'mcp', other.id, { ...command(3), intent: 'sign-in' })
     expect(second.value.binding.accountId).toBe(other.id)
     expect((await f.createService().get(f.owner.principal, { accountId: f.account.id })).status).toBe('login-pending')
+    expect(f.native.status).not.toHaveBeenCalled()
+    if (f.native.observeAccount) expect(f.native.observeAccount).not.toHaveBeenCalled()
   } finally { release() }
-  expect((await first).value.binding.accountId).toBe(f.account.id)
+  const prepared = (await first).value
+  expect(prepared.binding.accountId).toBe(f.account.id)
+  f.setState('canceled', true)
+  await f.service.cancelAuthentication(f.owner.principal, 'http', {
+    ...command(prepared.revision), operationId: prepared.id,
+  })
+  expect((await f.createService().get(f.owner.principal, { accountId: f.account.id })).status).toBe('signed-out')
 })
 
 it('keeps an uncertain native dispatch reserved across service restart without retrying login', async () => {

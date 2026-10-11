@@ -5,6 +5,7 @@ import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { ProviderAccountUpdateResultSchema, ProviderAccountsSnapshotSchema,
   ProviderAccountPageSchema, ProviderAccountSchema, ProviderAccountAuthenticationResultSchema,
   ProviderAccountAuthenticationOperationSchema, type ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
@@ -105,6 +106,37 @@ async function add(service: ProviderAccountsService, principal: ManagementPrinci
   provider: 'codex' | 'claude', authMode: 'subscription' | 'api-key', expectedRevision = 0) {
   return service.create(principal, 'http', { ...command(expectedRevision), provider, authMode, name: `${provider} account` })
 }
+
+it('creates and accepts an account with database target reads on a one-slot pool', async () => {
+  const f = await fixture()
+  const oneSlot = new pg.Pool({ connectionString: ownedTestDatabaseUrl(), max: 1,
+    connectionTimeoutMillis: 1000, options: `-c search_path=${schema}` })
+  cleanups.push(() => oneSlot.end())
+  const mainId = await f.credentials.hostId()
+  const service = new ProviderAccountsService(oneSlot,
+    new ProviderAccountsRepository(oneSlot, () => f.credentials.hostId()), f.credentials, f.native,
+    new PostgresCommandCoordinator(oneSlot))
+  service.bindTarget(async sql => {
+    const row = (await sql.query<{ id: string }>('select $1::text as id', [mainId])).rows[0]!
+    return { hostRef: { kind: 'main', mainId: row.id }, applicationInstallationId: row.id,
+      keyRevision: null, authorizationRevision: null }
+  })
+  const account = (await add(service, f.owner.principal, 'codex', 'subscription')).value.accounts[0]!
+  const configuration = { ...DEFAULT_HARNESS_DEFAULTS.codex, accountId: account.id }
+  const prepared = await service.acceptedBindings.prepare(configuration)
+  const conversationId = randomUUID()
+  const client = await oneSlot.connect()
+  try {
+    await client.query('begin')
+    expect(await service.acceptedBindings.accept(client, 'agent-conversation', conversationId,
+      configuration, undefined, { prepared })).toEqual(account.binding)
+    await client.query('commit')
+  } catch (error) {
+    await client.query('rollback')
+    throw error
+  } finally { client.release() }
+  expect(await service.runtimeBinding('agent-conversation', conversationId, configuration)).toEqual(account.binding)
+})
 
 it('supports the complete authenticated MCP account workflow with PostgreSQL readback after recreation', async () => {
   const f = await fixture()
@@ -866,7 +898,6 @@ it('routes the complete authenticated MCP Worker lifecycle to its owning slot an
     ['provider_account_remove', { ...command(2), target, accountId: account.id }],
   ] as const) expect((await denied.callTool({ name, arguments: arguments_ })).isError).toBe(true)
   expect(launches).toBe(1)
-  const access = new PostgresAccessService(pool)
   const excluded = await access.issue({ name: 'Other device account reader', audience: 'operator', expiresAt: new Date('2099-01-01'),
     grants: [{ actions: ['provider_accounts:read'], scope: { deviceIds: [randomUUID()] } }] })
   const excludedClient = await f.connect(excluded.token)

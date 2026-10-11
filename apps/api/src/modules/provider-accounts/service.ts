@@ -112,7 +112,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
         manage ? 'provider_accounts:manage' : 'provider_accounts:read', accountId))
   }
 
-  bindTarget(reader: () => Promise<DeviceProvisioningTarget>): void { this.repository.bindTarget(reader) }
+  bindTarget(reader: (sql: GraphSqlClient) => Promise<DeviceProvisioningTarget>): void { this.repository.bindTarget(reader) }
 
   async runtimeBinding(kind: AccountBindingOwner, id: string, configuration: HarnessConfiguration,
     selection?: HarnessProfileSelection): Promise<AcceptedProviderAccountBinding | undefined> {
@@ -147,7 +147,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     action: 'provider_accounts:read' | 'provider_accounts:manage' = 'provider_accounts:read',
     accountId?: string): Promise<void> {
     if (this.targetAuthorization) return this.targetAuthorization(sql, principal, action === 'provider_accounts:manage', accountId)
-    const target = await this.repository.target()
+    const target = await this.repository.target(sql)
     const resource = { mainId: target.hostRef.mainId,
       applicationInstallationId: target.applicationInstallationId,
       ...(target.hostRef.kind === 'device' ? { deviceId: target.hostRef.deviceId } : {}),
@@ -223,6 +223,15 @@ export class ProviderAccountsService implements ProviderAccountResolver {
 
   private async observe(principal: ManagementPrincipal, account: ProviderAccount): Promise<void> {
     await this.authorize(this.pool, principal, 'provider_accounts:read', account.id)
+    const pending = await this.pool.query('select 1 from provider_account_authentication_operations '
+      + "where account_id=$1 and target_key=$2 and not native_closed and record->>'intent'='sign-in' limit 1",
+    [account.id, await this.repository.key()])
+    if (pending.rowCount) {
+      // A committed sign-in reservation owns status until native closure is reconciled.
+      account.status = 'login-pending'
+      account.identity = null
+      return
+    }
     if (!this.native.observeAccount) {
       Object.assign(account, await this.status(account))
       return
@@ -496,13 +505,13 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     const remote = await this.remote(principal, input.target)
     if (remote) return remote.create(principal, source, raw)
     let createdId: string | undefined
-    const result = await this.change(principal, source, 'provider.account.create', input, input, async snapshot => {
+    const result = await this.change(principal, source, 'provider.account.create', input, input, async (snapshot, sql) => {
       if (snapshot.accounts.length >= 100) throw new DomainError('ACCOUNT_LIMIT', 'The account limit has been reached.', 409)
       const account: ProviderAccount = { id: randomUUID(), provider: input.provider, name: input.name,
         authMode: input.authMode, isDefault: !snapshot.accounts.some(value => value.provider === input.provider),
         status: 'unavailable', identity: null, revision: 1 }
       account.binding = ProviderAccountBindingSchema.parse({ kind: 'slot', accountId: account.id,
-        provider: account.provider, target: await this.repository.target(), profileRef: account.id,
+        provider: account.provider, target: await this.repository.target(sql), profileRef: account.id,
         bindingRevision: 1, subject: null })
       account.removedAt = null
       await this.credentials.create(account)
@@ -769,7 +778,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     if (accepted && (accepted.provider !== provider || (accountId && accepted.accountId !== accountId))) {
       throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'Accepted work names another account.', 409)
     }
-    if (accepted?.kind === 'slot' && !sameDeviceProvisioningTarget(accepted.target, await this.repository.target())) {
+    if (accepted?.kind === 'slot' && !sameDeviceProvisioningTarget(accepted.target, await this.repository.target(options?.sql))) {
       if (!this.routing?.resolve) throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT',
         'The owning Worker account resolver is unavailable.', 409)
       return this.routing.resolve(accepted, options?.sql)
@@ -795,7 +804,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
       account = snapshot.accounts.find(value => value.provider === provider && value.isDefault && !value.removedAt)
     }
     if (!account) return null
-    if (!account.binding || !sameDeviceProvisioningTarget(account.binding.target, await this.repository.target())) {
+    if (!account.binding || !sameDeviceProvisioningTarget(account.binding.target, await this.repository.target(options?.sql))) {
       throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT', 'The original account installation is unavailable.', 409)
     }
     if (account.removedAt) throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The saved account was removed from selection.', 409)

@@ -35,7 +35,7 @@ export class ProviderAccountWorkerCarrier {
       || connection.workerInstallationId !== target.applicationInstallationId
       || connection.keyRevision !== target.keyRevision
       || connection.authorizationRevision !== target.authorizationRevision) {
-      throw new DomainError('PROVIDER_ACCOUNT_WORKER_BINDING_CONFLICT', 'The Worker installation or authority changed.', 409)
+      throw new DomainError('PROVIDER_ACCOUNT_WORKER_BINDING_CONFLICT', 'The Worker installation or authority changed.', 403)
     }
     let binding: ProviderAccountBinding | undefined
     if ('binding' in request) binding = request.binding

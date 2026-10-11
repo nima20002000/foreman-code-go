@@ -9,13 +9,13 @@ import { DeviceProvisioningTargetSchema, sameDeviceProvisioningTarget,
   type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 
 export class ProviderAccountsRepository {
-  private targetReader?: () => Promise<DeviceProvisioningTarget>
+  private targetReader?: (sql: GraphSqlClient) => Promise<DeviceProvisioningTarget>
   constructor(private readonly pool: pg.Pool, private readonly hostId: () => Promise<string>) {}
 
-  bindTarget(reader: () => Promise<DeviceProvisioningTarget>): void { this.targetReader = reader }
+  bindTarget(reader: (sql: GraphSqlClient) => Promise<DeviceProvisioningTarget>): void { this.targetReader = reader }
 
-  async target(): Promise<DeviceProvisioningTarget> {
-    if (this.targetReader) return DeviceProvisioningTargetSchema.parse(await this.targetReader())
+  async target(sql: GraphSqlClient = this.pool): Promise<DeviceProvisioningTarget> {
+    if (this.targetReader) return DeviceProvisioningTargetSchema.parse(await this.targetReader(sql))
     const id = await this.hostId()
     return DeviceProvisioningTargetSchema.parse({ hostRef: { kind: 'main', mainId: id },
       applicationInstallationId: id, keyRevision: null, authorizationRevision: null })
@@ -33,7 +33,7 @@ export class ProviderAccountsRepository {
     const snapshot = row
       ? ProviderAccountsSnapshotSchema.parse({ ...(row.record as object), revision: Number(row.revision) })
       : { revision: 0, accounts: [] } as ProviderAccountsSnapshot
-    const target = await this.target()
+    const target = await this.target(sql)
     const foreignAccount = snapshot.accounts.some(account => account.binding
       && !sameDeviceProvisioningTarget(account.binding.target, target))
     const foreignDefault = snapshot.defaults?.some(value => !sameDeviceProvisioningTarget(value.target, target))

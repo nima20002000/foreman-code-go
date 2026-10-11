@@ -18,9 +18,10 @@ it.each(['slot', 'legacy-profile'] as const)('passes the accepted %s binding int
       keyRevision: null, authorizationRevision: null },
   } : { kind, accountId, provider: 'codex', target: null, profileRef: null, historicalSubject: 'unknown' }
   const manager = {} as NativeHarnessSessionManager
-  const allocate = vi.fn((_allocation: NativeHarnessAllocation) => ({ harness: 'codex', manager }))
+  const allocate = vi.fn<(allocation: NativeHarnessAllocation) => { harness: 'codex'; manager: NativeHarnessSessionManager }>(
+    () => ({ harness: 'codex', manager }))
   const configuration = OperatorConfigurationVersionSchema.parse({ id: randomUUID(), operatorId: randomUUID(),
-    version: 1, harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, accountId }, contentHash: 'accepted-config',
+    version: 1, harness: { ...DEFAULT_HARNESS_DEFAULTS.codex, accountId }, contentHash: 'sha256:' + '1'.repeat(64),
     createdAt: '2026-01-01T00:00:00.000Z' })
   const resolver = productionOperatorManagers({ app: () => { throw new Error('No file access was requested') },
     pool: {} as pg.Pool, config: { harnesses: { workspaceRoot: '/fixture/workflows', timeoutMs: 1000,

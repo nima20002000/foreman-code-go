@@ -47,7 +47,7 @@ export function registerProviderAccountTools(server: McpServer, context: Operato
     if (!operatorToolAvailable(context, name)) continue
     server.registerTool(name, { description: description + ' Requires target-specific provider_accounts:read.',
       inputSchema, outputSchema, annotations: readAnnotations },
-    input => invokeOperatorTool(context, name, () => read(input)))
+    (input: unknown) => invokeOperatorTool(context, name, () => read(input)))
   }
   if (operatorToolAvailable(context, 'provider_account_register')) server.registerTool('provider_account_register', {
     description: 'Register an explicitly selected qualified native profile by opaque reference. No paths or credentials. Requires provider_accounts:read/manage.',

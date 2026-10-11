@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
@@ -64,6 +65,14 @@ it('pins queued Start and both fresh and source-Run conversation admissions befo
     const entry = fixture.version.definition.nodes[0]!
     expect(snapshot.providerAccountBindings?.[entry.id]).toEqual(first.binding)
     const configuration = fixture.configurations.find(value => value.agentId === ('agentId' in entry ? entry.agentId : ''))!
+    const sourceExecution = HarnessExecutionSchema.parse({ id: randomUUID(), runId: accepted.value.id,
+      workflowNodeId: entry.id, agentId: configuration.agentId, agentConfigurationVersionId: configuration.id,
+      attempt: 1, input: {}, state: 'completed', result: { outcome: 'succeeded' },
+      nativeSessionId: 'source-native-session', workingDirectory: db.directory,
+      createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
+    await db.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
+      values($1,$2,$3,$4,$5,$6::jsonb)`, [sourceExecution.id, sourceExecution.runId, sourceExecution.workflowNodeId,
+      sourceExecution.agentId, sourceExecution.attempt, JSON.stringify(sourceExecution)])
     expect(await service().runtimeBinding('run-node', `${accepted.value.id}:${entry.id}`, configuration.harness))
       .toEqual(first.binding)
     const conversations = new PostgresAgentChatRepository(db.pool, accounts.acceptedBindings)
@@ -74,7 +83,7 @@ it('pins queued Start and both fresh and source-Run conversation admissions befo
       const row = await conversations.ensureForControls(agentChatKey(selected), { context: selected,
         agentConfigurationVersionId: configuration.id, harness: 'codex', workingDirectory: db.directory,
         runtimeDirectory: db.directory, origin: source ? { kind: 'run_execution', runId: accepted.value.id,
-          executionId: 'source-execution', sourceNativeSessionId: 'source-native-session' } : { kind: 'fresh' } },
+          executionId: sourceExecution.id, sourceNativeSessionId: sourceExecution.nativeSessionId! } : { kind: 'fresh' } },
       async () => {})
       const publicConversation = agentConversation((await conversations.get(row.id))!)
       expect(publicConversation.providerAccountBinding).toEqual(first.binding)

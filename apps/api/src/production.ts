@@ -561,8 +561,8 @@ export function buildProductionApp(
   const providerAccounts: ProviderAccountsService = new ProviderAccountsService(database.pool,
     new ProviderAccountsRepository(database.pool, () => accountCredentials.hostId()), accountCredentials,
     accountNative, commands)
-  providerAccounts.bindTarget(async () => {
-    const row = (await database.pool.query<{ id: string }>(
+  providerAccounts.bindTarget(async sql => {
+    const row = (await sql.query<{ id: string }>(
       'select id from application_installation where singleton=true')).rows[0]
     if (!row) throw new DomainError('PROVIDER_ACCOUNT_TARGET_UNAVAILABLE', 'The canonical Main installation is unavailable.', 503)
     return { hostRef: { kind: 'main', mainId: row.id }, applicationInstallationId: row.id,

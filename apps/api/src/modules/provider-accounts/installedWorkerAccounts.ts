@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import { ProviderAccountSchema, ProviderAccountIdSchema, ProviderAccountBindingSchema,
+import { ProviderAccountSchema, ProviderAccountIdSchema,
   type ProviderAccount, type ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { HarnessConfigurationSchema } from '@foreman-code/contracts'
 import { HarnessOptionsResultSchema, type HarnessOptions } from '@foreman-code/contracts/management'
@@ -84,7 +84,8 @@ export function createInstalledWorkerAccounts(input: {
         instanceRevision: record.override.instanceRevision, driverId: record.provider,
         enabled: record.override.enabled, configuration: record.override.configuration })
       instances.reload([...configured.values()])
-      const installed: HarnessInstallationRecord = installation
+      const installed: HarnessInstallationRecord = { ...installation,
+        launcher: { ...installation.launcher, payloadFingerprints: installation.launcher.payloadFingerprints ?? [] } }
       installations.refresh([...installations.list().filter(value => value.harnessInstallationId !== installed.harnessInstallationId), installed])
       selections.set(record.qualificationId, installations.pin({ instanceId: record.override.instanceId,
         hostRef: installation.hostRef, harnessInstallationId: installation.harnessInstallationId,
