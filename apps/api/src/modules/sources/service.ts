@@ -120,13 +120,15 @@ export class PostgresSourceService implements SourceAdmissionPort {
     await this.reconcileCaptures()
     return this.capacityTransaction(work)
   }
-  private async capacityTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
+  private async capacityTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>,
+    beforeRetry?: () => Promise<void>): Promise<T> {
     try {
       return await this.transaction(work)
     } catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'SOURCE_CAPACITY') throw error
       await this.reconcileCaptures()
       await this.releaseUnusedSnapshots(undefined, true)
+      await beforeRetry?.()
       return this.transaction(work)
     }
   }
@@ -456,7 +458,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
     source: ApprovedSourcePin; attempt: MaterializationAttempt; operationId: string }): Promise<SourceMaterializationRecord> {
     requireAuthorization(input.principal, 'sources:read', { workspaceId: input.workspaceId })
     let capacity: SourceStorageCapacity | undefined
-    if (this.executions.storageCapacity) {
+    const measureCapacity = async () => {
+      if (!this.executions.storageCapacity) return
       const root = await this.transaction(async sql => {
         const root = await this.resolveRootBinding(sql, input.principal, input)
         await this.executions.authorize(sql, input.principal, { ...input, root })
@@ -465,6 +468,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       // Worker authorization calls Main back; release allocation row locks before requesting its measurement.
       capacity = await this.executions.storageCapacity(root, input.attempt)
     }
+    await measureCapacity()
     const state = await this.capacityTransaction(async sql => {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${input.operationId}`])
       await requireUnreclaimedSourceOperation(sql, input.operationId)
@@ -502,7 +506,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         ...(workflow.rowCount === 1 ? { preparationKind: 'workflow' as const } : {}) },
       }, capacity ? { capacity } : {})
       return { root, source, record: null, reservation, sharedWritableTree, worktree }
-    })
+    }, measureCapacity)
     if (state.record) {
       await this.executions.verify(state.record)
       await this.lifecycle.adopted?.(state.record)

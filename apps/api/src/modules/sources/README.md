@@ -97,6 +97,10 @@ window only if no source snapshot references them. The failed approval fence is
 committed before deletion, and the reservation is released only after physical
 removal succeeds. Approved snapshots use the existing reference-aware retention
 policy, preserving active Runs, workflow source bindings and qualified profiles.
+Both cleanup paths release storage and row locks before filesystem removal, then
+reclaim the reservation and write the audit in a short transaction. Interrupted
+removal or accounting leaves bytes charged for maintenance to retry. Capacity
+retries join in-flight releases and refresh execution capacity after reclamation.
 
 Job preparation cleanup requires the original installed worker closure journal.
 Already-admitted Jobs use their original execution cancellation/reconciliation path.

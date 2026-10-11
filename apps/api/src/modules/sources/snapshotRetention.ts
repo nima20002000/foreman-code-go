@@ -4,6 +4,7 @@ import { PostgresSourceReservations, type SourceReservation } from './reservatio
 import type { PrivateSourceSnapshotStore } from './store.js'
 
 export const SOURCE_RETENTION_SECONDS = 3600
+type SnapshotStore = Pick<PrivateSourceSnapshotStore, 'remove' | 'withCaptureLock'>
 
 /** Pressure can shorten retention, but cannot release a source that is still in use. */
 async function releasableSnapshots(sql: GraphSqlClient, snapshotIds: string[],
@@ -147,38 +148,41 @@ async function lockSnapshot(sql: pg.PoolClient, candidate: Candidate, scopeId: s
   return reservation ? { ...snapshot, reservation: reservation.record } : null
 }
 
-async function releaseSnapshot(pool: pg.Pool, store: Pick<PrivateSourceSnapshotStore, 'remove'>,
+async function releaseSnapshot(pool: pg.Pool, store: SnapshotStore,
   scopeId: string, candidate: Candidate, underPressure: boolean): Promise<void> {
-  const sql = await pool.connect()
-  try {
-    await sql.query('begin')
-    const snapshot = await lockSnapshot(sql, candidate, scopeId)
-    if (!snapshot || (snapshot.availability === 'retained'
-      && !(await releasableSnapshots(sql, [candidate.snapshot_id], underPressure)).has(candidate.snapshot_id))) {
+  // The directory lock excludes other removers without database locks spanning deletion.
+  await store.withCaptureLock(candidate.snapshot_id, async () => {
+    const sql = await pool.connect()
+    try {
+      await sql.query('begin')
+      const snapshot = await lockSnapshot(sql, candidate, scopeId)
+      if (!snapshot || (snapshot.availability === 'retained'
+        && !(await releasableSnapshots(sql, [candidate.snapshot_id], underPressure)).has(candidate.snapshot_id))) {
+        await sql.query('commit')
+        return
+      }
+      await sql.query("update source_snapshots set availability='unavailable' where snapshot_id=$1", [candidate.snapshot_id])
+      // A crash leaves charged bytes, never usable missing bytes.
       await sql.query('commit')
-      return
-    }
-    await sql.query("update source_snapshots set availability='unavailable' where snapshot_id=$1", [candidate.snapshot_id])
-    // Persist the fence before I/O: a crash or rollback can leave charged bytes, never usable missing bytes.
-    await sql.query('commit')
-    await sql.query('begin')
-    const fenced = await lockSnapshot(sql, candidate, scopeId)
-    if (fenced?.availability === 'unavailable') {
       await store.remove(candidate.snapshot_id)
-      await new PostgresSourceReservations().reclaimed(sql, fenced.reservation, async () => true)
-      await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-        values($1,'system','source.snapshot.release',$2,'succeeded',$3::jsonb)`,
-      [candidate.requested_by, fenced.workspace_id, JSON.stringify({ snapshotId: candidate.snapshot_id })])
-    }
-    await sql.query('commit')
-  } catch (error) {
-    await sql.query('rollback')
-    throw error
-  } finally { sql.release() }
+      await sql.query('begin')
+      const fenced = await lockSnapshot(sql, candidate, scopeId)
+      if (fenced?.availability === 'unavailable') {
+        await new PostgresSourceReservations().reclaimed(sql, fenced.reservation, async () => true)
+        await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+          values($1,'system','source.snapshot.release',$2,'succeeded',$3::jsonb)`,
+        [candidate.requested_by, fenced.workspace_id, JSON.stringify({ snapshotId: candidate.snapshot_id })])
+      }
+      await sql.query('commit')
+    } catch (error) {
+      await sql.query('rollback')
+      throw error
+    } finally { sql.release() }
+  })
 }
 
 async function scanUnusedSourceSnapshots(pool: pg.Pool,
-  store: Pick<PrivateSourceSnapshotStore, 'remove'>, scopeId: string,
+  store: SnapshotStore, scopeId: string,
   underPressure: boolean): Promise<unknown[]> {
   const candidates = await pool.query<Candidate>(`select a.snapshot_id,a.requested_by,a.command_id
     from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
@@ -203,7 +207,7 @@ type ReleaseScan = { pressure: { requested: boolean }; result: Promise<unknown[]
 const releaseScans = new WeakMap<pg.Pool, Map<string, ReleaseScan>>()
 
 export async function releaseUnusedSourceSnapshots(pool: pg.Pool,
-  store: Pick<PrivateSourceSnapshotStore, 'remove'>, scopeId: string,
+  store: SnapshotStore, scopeId: string,
   report?: (error: unknown) => void, underPressure = false): Promise<void> {
   let scopes = releaseScans.get(pool)
   if (!scopes) {

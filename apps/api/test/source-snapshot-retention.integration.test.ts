@@ -101,6 +101,24 @@ async function setup() {
       return { input, source: SourceApproveResultSchema.parse(decodeMcpToolResult(response)).value }
     } finally { vi.useRealTimers() }
   }
+  async function failedCapture() {
+    const input = { ...approval, commandId: randomUUID() }
+    const write = store.write.bind(store)
+    const interrupted = vi.spyOn(store, 'write').mockImplementationOnce(async (...args) => {
+      await write(...args)
+      throw new Error('Capture interrupted')
+    })
+    try {
+      const response = await client.callTool({ name: 'source_approve', arguments: input })
+      expect(response.isError).toBe(true)
+    } finally { interrupted.mockRestore() }
+    const capture = (await pool.query<{ snapshot_id: string; state: string }>(
+      'select snapshot_id,state from source_approvals where command_id=$1', [input.commandId])).rows[0]!
+    expect(capture.state).toBe('failed')
+    await pool.query(`update source_approvals set created_at=clock_timestamp()-make_interval(secs=>$2)
+      where snapshot_id=$1`, [capture.snapshot_id, SOURCE_RETENTION_SECONDS * 2])
+    return { snapshotId: capture.snapshot_id, input }
+  }
   function sourcePin(source: ApprovedSource) {
     return { approvedSourceId: source.manifest.approvedSourceId,
       snapshotId: source.manifest.snapshotId, manifestDigest: source.manifest.manifestDigest }
@@ -108,10 +126,13 @@ async function setup() {
   function pin(source: ApprovedSource) {
     return { workspaceId, ...sourcePin(source) }
   }
-  async function reservation(source: ApprovedSource) {
+  async function captureReservation(snapshotId: string) {
     return (await pool.query<{ state: string; reserved_bytes: string; record: SourceReservation }>(
       "select state,reserved_bytes,record from source_storage_reservations where owner_kind='capture' and owner_id=$1",
-      [source.manifest.snapshotId])).rows[0]!
+      [snapshotId])).rows[0]!
+  }
+  async function reservation(source: ApprovedSource) {
+    return captureReservation(source.manifest.snapshotId)
   }
   async function read(source: ApprovedSource) {
     const response = await client.callTool({ name: 'source_get', arguments: pin(source) })
@@ -183,7 +204,7 @@ async function setup() {
       bindingRevision: root.binding.bindingRevision, source: root.source, operationId, attempt }
   }
   return { pool, store, sources, executions, client, access, owner, workspaceId, canonical, mainId, app,
-    approve, approval, sourcePin, pin, reservation, read, seedJob, finishJob, connect,
+    approve, failedCapture, approval, sourcePin, pin, reservation, captureReservation, read, seedJob, finishJob, connect,
     executionRoot, preparation,
     async close() {
       await Promise.allSettled(clients.map(value => value.close()))
@@ -191,6 +212,94 @@ async function setup() {
       await database.close()
     } }
 }
+
+it.each(['approved', 'failed'] as const)(
+  'reserves capacity within a short database timeout while %s capture removal is paused', async kind => {
+    fixture = await setup()
+    const f = fixture
+    const snapshotId = kind === 'approved'
+      ? (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source.manifest.snapshotId
+      : (await f.failedCapture()).snapshotId
+    const held = await f.captureReservation(snapshotId)
+    const entered = deferred()
+    const resume = deferred()
+    const remove = f.store.remove.bind(f.store)
+    vi.spyOn(f.store, 'remove').mockImplementation(async id => {
+      if (id === snapshotId) {
+        entered.resolve()
+        await resume.promise
+      }
+      await remove(id)
+    })
+    const cleanup = kind === 'approved' ? f.sources.releaseUnusedSnapshots() : f.sources.reconcileCaptures()
+    const started = cleanup.then(() => entered.reject(new Error('Cleanup did not reach removal')), entered.reject)
+    try {
+      await entered.promise
+      const capacity = sourceStorageCapacityFixture({ filesystem: await f.store.storageIdentity() })
+      const sql = await f.pool.connect()
+      let reservation: SourceReservation
+      try {
+        await sql.query('begin')
+        await sql.query("set local statement_timeout='250ms'")
+        const heldRow = await sql.query<{ state: string }>(`select state from source_storage_reservations
+          where reservation_id=$1 for update`, [held.record.reservationId])
+        expect(heldRow.rows[0]?.state).toBe('retained')
+        reservation = await f.sources.reservations.reserve(sql, { scopeId: held.record.scopeId,
+          ownerKind: 'capture', ownerId: randomUUID(), reservedBytes: 1 }, { capacity })
+        await sql.query('commit')
+      } finally {
+        await sql.query('rollback')
+        sql.release()
+      }
+      expect((await f.captureReservation(reservation.ownerId)).state).toBe('preparing')
+      const approved = await f.approve()
+      expect((await f.read(approved.source)).manifest).toEqual(approved.source.manifest)
+    } finally {
+      resume.resolve()
+      await Promise.allSettled([cleanup, started])
+    }
+    await cleanup
+    expect((await f.captureReservation(snapshotId)).state).toBe('reclaimed')
+  }, 60_000)
+
+it.each(['approved', 'failed'] as const)(
+  'reconciles %s capture removal interrupted before reservation reclaim after restart', async kind => {
+    fixture = await setup()
+    const f = fixture
+    const approved = kind === 'approved' ? await f.approve(SOURCE_RETENTION_SECONDS * 3) : undefined
+    const failed = kind === 'failed' ? await f.failedCapture() : undefined
+    const snapshotId = approved?.source.manifest.snapshotId ?? failed!.snapshotId
+    const held = await f.captureReservation(snapshotId)
+    const action = kind === 'approved' ? 'source.snapshot.release' : 'source.capture.release'
+    const audit = async () => (await f.pool.query<{ count: string }>(`select count(*) from management_audit
+      where action=$1 and details->>'snapshotId'=$2`, [action, snapshotId])).rows[0]!.count
+    let chargedBytes = ''
+    const remove = f.store.remove.bind(f.store)
+    const interrupted = vi.spyOn(f.store, 'remove').mockImplementationOnce(async id => {
+      chargedBytes = (await f.captureReservation(id)).reserved_bytes
+      await remove(id)
+      throw new Error('Interrupted after physical removal')
+    })
+    const cleanup = () => kind === 'approved' ? f.sources.releaseUnusedSnapshots() : f.sources.reconcileCaptures()
+    await expect(cleanup()).rejects.toThrow('Interrupted after physical removal')
+    interrupted.mockRestore()
+    await expect(stat(join(f.canonical, snapshotId))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(Number(chargedBytes)).toBeGreaterThan(0)
+    expect(await f.captureReservation(snapshotId)).toMatchObject({ state: 'retained', reserved_bytes: chargedBytes })
+    expect(await audit()).toBe('0')
+    const restarted = new PrivateSourceSnapshotStore(f.canonical)
+    const maintain = () => kind === 'approved'
+      ? releaseUnusedSourceSnapshots(f.pool, restarted, held.record.scopeId)
+      : reconcileFailedCaptures(f.pool, restarted, error => { throw error }, held.record.scopeId)
+    await maintain()
+    await maintain()
+    expect((await f.captureReservation(snapshotId)).state).toBe('reclaimed')
+    expect(await restarted.retainedCaptureBytes(snapshotId)).toBe(0)
+    expect(await audit()).toBe('1')
+    const retry = await f.client.callTool({ name: 'source_approve', arguments: approved?.input ?? failed!.input })
+    expect(retry.isError).toBe(true)
+    expect(JSON.stringify(retry.content)).toContain(kind === 'approved' ? 'SOURCE_UNAVAILABLE' : 'SOURCE_CAPTURE_FAILED')
+  }, 60_000)
 
 it('prepares sixteen executions concurrently without releasing unused snapshots', async () => {
   fixture = await setup()
@@ -254,6 +363,60 @@ it('retries preparation under capacity pressure while keeping current roots and 
   const unavailable = await f.client.callTool({ name: 'source_get', arguments: f.pin(unused) })
   expect(unavailable.isError).toBe(true)
   expect(JSON.stringify(unavailable.content)).toContain('SOURCE_UNAVAILABLE')
+}, 60_000)
+
+it('waits for an in-flight pressure release and refreshes capacity before retrying preparation', async () => {
+  fixture = await setup()
+  const f = fixture
+  const unused = (await f.approve()).source
+  const source = (await f.approve()).source
+  const root = await f.executionRoot(source)
+  const held = await f.reservation(unused)
+  await f.sources.reservations.retain(f.pool, held.record, 'retained',
+    sourceStorageLimits(sourceStorageCapacityFixture()).bytes)
+  const entered = deferred()
+  const resume = deferred()
+  const remove = f.store.remove.bind(f.store)
+  vi.spyOn(f.store, 'remove').mockImplementation(async snapshotId => {
+    if (snapshotId === unused.manifest.snapshotId) {
+      entered.resolve()
+      await resume.promise
+    }
+    await remove(snapshotId)
+  })
+  const maintenance = f.sources.releaseUnusedSnapshots(undefined, true)
+  const started = maintenance.then(() => entered.reject(new Error('Release did not reach removal')), entered.reject)
+  let preparation: ReturnType<PostgresSourceService['prepareExecution']> | undefined
+  let joined: Promise<void> | undefined
+  try {
+    await entered.promise
+    const waiting = deferred()
+    const release = f.sources.releaseUnusedSnapshots.bind(f.sources)
+    vi.spyOn(f.sources, 'releaseUnusedSnapshots').mockImplementation(async (...args) => {
+      waiting.resolve()
+      return release(...args)
+    })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const now = Date.now()
+    preparation = f.sources.prepareExecution(f.preparation(root))
+    joined = preparation.then(() => waiting.reject(new Error('Preparation did not wait for release')), waiting.reject)
+    await waiting.promise
+    expect(f.executions.storageCapacity).toHaveBeenCalledTimes(1)
+    expect((await f.reservation(unused)).state).toBe('retained')
+    vi.setSystemTime(now + 14_000)
+  } finally {
+    resume.resolve()
+    await Promise.allSettled([maintenance, started, ...(preparation ? [preparation] : []), ...(joined ? [joined] : [])])
+  }
+  await maintenance
+  const record = await preparation!
+  expect(record.state).toBe('prepared')
+  expect(f.executions.storageCapacity).toHaveBeenCalledTimes(2)
+  expect((await f.reservation(unused)).state).toBe('reclaimed')
+  expect((await f.read(source)).availability).toBe('retained')
+  const persisted = await f.pool.query<{ state: string }>(
+    'select state from source_execution_materializations where materialization_id=$1', [record.receipt.materializationId])
+  expect(persisted.rows[0]?.state).toBe('prepared')
 }, 60_000)
 
 it('scans protected snapshots without waiting for the storage lock', async () => {
