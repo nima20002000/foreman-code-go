@@ -54,13 +54,21 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
       operator: { access, services: { agentChat: chat, commands: new PostgresCommandCoordinator(db.pool) } as never } })
     const query = { workflowId: seeded.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId }
     let id: string | null = null
-    for (let index = 0; index < 256; index++) {
-      const requestId = `completed-${index}`
-      const admitted = await chat.send(owner.principal, seeded.scope.workspaceId, {
-        requestId, content: requestId, intent: 'next_turn', expectedConversationId: id, context: query,
-      })
-      id = admitted.state.conversation!.id
-      await vi.waitFor(async () => expect((await repository.turn(id!, requestId))?.delivery).toBe('completed'))
+    // Overlap admission with execution while staying below the unfinished-turn limit.
+    for (let offset = 0; offset < 256; offset += 8) {
+      const requestIds: string[] = []
+      for (let index = offset; index < offset + 8; index++) {
+        const requestId = `completed-${index}`
+        const admitted = await chat.send(owner.principal, seeded.scope.workspaceId, {
+          requestId, content: requestId, intent: 'next_turn', expectedConversationId: id, context: query,
+        })
+        id = admitted.state.conversation!.id
+        requestIds.push(requestId)
+      }
+      await Promise.all(requestIds.map(requestId => vi.waitFor(
+        async () => expect((await repository.turn(id!, requestId))?.delivery).toBe('completed'),
+        { interval: 5 },
+      )))
     }
     const nativeId = (await repository.get(id!))!.native_session_id
     expect(transport!.offers).toHaveLength(256)
@@ -72,14 +80,16 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     const failed = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_send',
       arguments: { workspaceId: seeded.scope.workspaceId, request: input } })
     expect(failed.result?.isError).not.toBe(true)
-    await vi.waitFor(async () => expect((await repository.turn(id!, input.requestId))?.delivery).toBe('failed'))
+    await vi.waitFor(async () => expect((await repository.turn(id!, input.requestId))?.delivery).toBe('failed'),
+      { interval: 5 })
     expect((await repository.get(id!))?.active_request_id).toBeNull()
     expect((await repository.turn(id!, input.requestId))?.nativeSubmission).toBeUndefined()
     expect(transport!.offers).toHaveLength(256)
     const retry = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_send',
       arguments: { workspaceId: seeded.scope.workspaceId, request: { ...input, requestId: 'retry-unoffered' } } })
     expect(retry.result?.isError).not.toBe(true)
-    await vi.waitFor(async () => expect((await repository.turn(id!, 'retry-unoffered'))?.delivery).toBe('completed'))
+    await vi.waitFor(async () => expect((await repository.turn(id!, 'retry-unoffered'))?.delivery).toBe('completed'),
+      { interval: 5 })
     const read = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_read',
       arguments: { workspaceId: seeded.scope.workspaceId, query } })
     expect(read.result?.isError).not.toBe(true)
