@@ -233,7 +233,7 @@ function ActivityFeed({ scope, selection, address, focusAgentId }: { scope: RunA
 /** Consecutive identical rows (for example 20 finished shell commands) read as one row with a count. */
 function groupRepeats(items: readonly RunActivityPublic[]) {
   const groups: { item: RunActivityPublic; count: number }[] = []
-  const same = (a: RunActivityPublic, b: RunActivityPublic) => !a.workResult && !b.workResult && !a.usage && !b.usage
+  const same = (a: RunActivityPublic, b: RunActivityPublic) => !a.ci && !b.ci && !a.workResult && !b.workResult && !a.usage && !b.usage
     && a.summary === b.summary && a.detail === b.detail && a.status === b.status && JSON.stringify(a.actor ?? a.subject) === JSON.stringify(b.actor ?? b.subject)
   for (const item of items) {
     const last = groups.at(-1)
@@ -257,6 +257,13 @@ function ActivityRow({ item, count = 1, showActor = true }: { item: RunActivityP
       <div className="board-activity-line"><p>{item.summary}{count > 1 ? <span className="board-activity-count"> ×{count}</span> : null}</p>
         <span className={`board-activity-status is-${item.severity}`}>{item.status.replaceAll('_', ' ')}</span></div>
       {item.detail ? <p className="board-activity-detail">{item.detail}</p> : null}
+      {item.ci ? <p className="board-activity-detail">
+        {item.ci.part ? `${item.ci.part} · ` : ''}
+        {item.ci.partition ? `Partition ${item.ci.partition.index + 1} of ${item.ci.partition.count} · ` : ''}
+        {item.ci.computer?.label ?? (item.ci.state === 'queued' ? 'Waiting for a computer' : 'No computer assigned')}
+        {item.ci.step ? ` · ${item.ci.step}` : ''}
+        {item.ci.exitCode !== null ? ` · Exit code ${item.ci.exitCode}` : ''}
+      </p> : null}
       {item.workResult ? <div className="board-activity-work-result">
         <p>Outcome: {item.workResult.outcome}</p>
         <strong>Result summary</strong>

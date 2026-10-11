@@ -3,6 +3,7 @@ import { GraphIdSchema, IdSchema, TimestampSchema } from "./schemaPrimitives.js"
 import { CurrentWorkflowRelationshipSchema } from "./wave25/workflowShape.js";
 import type { RunExecutionState, RunOutcome } from "./index.js";
 import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js';
+import { ActivitySnapshotV1Schema } from './activity.js';
 
 const Workflow = { workspaceId: IdSchema, workflowId: IdSchema };
 const Run = { ...Workflow, runId: IdSchema };
@@ -95,7 +96,17 @@ export const RunBoardSnapshotSchema = z.discriminatedUnion("kind", [
 ]).readonly();
 export type RunBoardSnapshot = z.infer<typeof RunBoardSnapshotSchema>;
 export const RunBoardSnapshotGetInputSchema = z.object({ ...Run }).strict();
-export const RunBoardSnapshotGetResultSchema = z.object({ snapshot: RunBoardSnapshotSchema }).strict();
+export const RunBoardSnapshotGetResultSchema = z.object({ snapshot: RunBoardSnapshotSchema,
+  activitySnapshot: ActivitySnapshotV1Schema.optional() }).strict().superRefine((result, context) => {
+  const activity = result.activitySnapshot;
+  if (!activity) return;
+  const saved = result.snapshot;
+  if (saved.kind !== 'available' || activity.scope.kind !== 'workflow_run'
+    || activity.scope.workspaceId !== saved.workspaceId || activity.scope.workflowId !== saved.workflowId
+    || activity.scope.runId !== saved.runId || activity.scope.workflowVersionId !== saved.workflowVersionId) {
+    context.addIssue({ code: 'custom', path: ['activitySnapshot'], message: 'ACTIVITY_SNAPSHOT_SCOPE_CONFLICT' });
+  }
+});
 export type RunBoardSnapshotGetInput = z.infer<typeof RunBoardSnapshotGetInputSchema>;
 export type RunBoardSnapshotGetResult = z.infer<typeof RunBoardSnapshotGetResultSchema>;
 

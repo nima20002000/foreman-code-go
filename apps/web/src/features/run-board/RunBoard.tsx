@@ -39,7 +39,8 @@ export function RunBoard({ selection }: RunBoardProps) {
       : snapshot?.kind === 'available' ? <>
         <span className="run-board-label">Read only</span>
         <RunDefaultWorktree selection={selection} workflowVersionId={snapshot.workflowVersionId} />
-        {snapshot.nodes.length ? <RunBoardCanvas key={selection.generation.id} snapshot={snapshot} onInspectNode={inspection.inspect} /> : <p role="status">No nodes</p>}
+        {snapshot.nodes.length ? <RunBoardCanvas key={selection.generation.id} snapshot={snapshot}
+          activitySnapshot={query.activitySnapshot} onInspectNode={inspection.inspect} /> : <p role="status">No nodes</p>}
         {inspection.nodeId ? <RunNodeInspector key={`inspector:${selection.generation.id}:${inspection.nodeId}`}
           selection={selection} snapshot={snapshot} nodeId={inspection.nodeId}
           executionId={inspection.executionId} onInspect={inspection.inspect} /> : null}

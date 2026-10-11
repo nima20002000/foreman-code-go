@@ -39,7 +39,7 @@ export function registerRunHistoryTools(server: McpServer, context: OperatorRequ
     inputSchema: RunDropdownListInputSchema, outputSchema: RunDropdownPageSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_HISTORY_TOOLS.list, () => reads.list(context.principal, input)))
   server.registerTool(RUN_HISTORY_TOOLS.snapshot, {
-    description: 'Read an immutable admission-time Run Board snapshot in an exact workspace/workflow/Run scope. Requires live runs:read. Includes saved node names, Agent/configuration-version IDs, layout and edges only. Old Runs without capture return unavailable/legacy_run, never today\'s graph. Does not require access to live Agents or start/modify a Run.',
+    description: 'Read an immutable admission-time Run Board snapshot in a workspace/workflow/Run scope. Requires live runs:read. Includes saved node names, Agent/configuration-version IDs, layout and edges. Runs with Agent-requested Host CI also return a separate activitySnapshot with persisted CI state, originating execution, part, partition and computer. Old Runs without capture return unavailable/legacy_run. Does not require access to live Agents or start/modify a Run.',
     inputSchema: RunBoardSnapshotGetInputSchema, outputSchema: RunBoardSnapshotGetResultSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_HISTORY_TOOLS.snapshot, () => reads.snapshot(context.principal, input)))
 }

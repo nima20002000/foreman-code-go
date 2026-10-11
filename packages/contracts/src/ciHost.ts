@@ -107,3 +107,13 @@ export const CiRunRecordSchema = z.object({
   plannedHostKey: z.string().nullable().optional(),
 }).strict().refine(validCiPart, 'The part and partition must belong to the requested suite.')
 export type CiRunRecord = z.infer<typeof CiRunRecordSchema>
+
+/** Bounded lifecycle facts shared by Run history and activity snapshots. */
+export const CiActivitySchema = z.object(CiRunRecordSchema.shape).pick({
+  id: true, groupId: true, suite: true, part: true, partition: true, state: true,
+  queuedAt: true, startedAt: true, finishedAt: true, exitCode: true,
+}).extend({
+  computer: CiRunRecordSchema.shape.computer.unwrap().extend({ label: z.string().max(100) }).nullable(),
+  step: z.string().max(80).nullable(),
+}).strict().refine(validCiPart, 'The part and partition must belong to the requested suite.')
+export type CiActivity = z.infer<typeof CiActivitySchema>

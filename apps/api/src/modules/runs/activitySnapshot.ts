@@ -1,10 +1,11 @@
 import type pg from 'pg'
-import { ActivitySnapshotV1Schema, type ActivitySnapshotV1, type ActivitySourceRevision, type InteractionSummary, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
+import { ActivitySnapshotV1Schema, type ActivitySnapshotV1, type ActivitySourceRevision,
+  type InteractionSummary, type WorkRef, type WorkSummary, type CiActivity } from '@foreman-code/contracts'
 import { REPEAT_GRAPH_LIMITS, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from './activities.js'
 import { readNativeActivityFacts, projectNativeActivityFacts } from './nativeActivitySnapshot.js'
-import { AGENT_CI_SNAPSHOT_SQL } from './agentCiSnapshot.js'
+import { AGENT_CI_SNAPSHOT_SQL, ciActivityFromRecord } from './agentCiSnapshot.js'
 import { publicRunActivity, type ActivityReadRow } from './activityProjection.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
@@ -15,9 +16,10 @@ interface ExecutionFact { id: string; attempt: number; revision: string; state: 
   started_at: string | null; created_at: string; native_session_id: string | null; harness: string | null; native_revision: string }
 interface JobFact { id: string; attempt_id: string; operation_id: string; revision: string; node_id: string;
   definition_id: string; definition_revision: number; definition_version_id: string; pinned: boolean;
-  ci_agent_id?: string | null; ci_agent_execution_id?: string | null;
   phase: string; outcome: string | null; stopped: boolean; publication: string;
   started_at: string | null; finished_at: string | null; created_at: string }
+interface CiFact { id: string; revision: string; execution_id: string; agent_id: string;
+  node_id: string; pinned: boolean; ci: CiActivity }
 interface InteractionFact { id: string; revision: string; execution_id: string; status: string; delivery: string | null;
   answer_recorded: boolean; harness: string; native_session_id: string; native_request_id: string; worker_acknowledged: boolean; acknowledgment_revision: string | null }
 
@@ -39,7 +41,6 @@ async function facts(sql: Queryable, scope: RunActivityScope) {
   const jobs = (await sql.query<JobFact>(`select j.id,j.attempt_id,j.operation_id,j.activity_record_revision::text as revision,
     j.record#>>'{workflow,nodeId}' as node_id,j.accepted_spec->>'definitionId' as definition_id,
     (j.accepted_spec->>'definitionRevision')::integer as definition_revision,j.accepted_spec->>'definitionVersionId' as definition_version_id,
-    null::text as ci_agent_id,null::text as ci_agent_execution_id,
     j.record#>>'{process,phase}' as phase,j.record#>>'{process,outcome}' as outcome,
     (j.record#>>'{process,processStopped}')::boolean as stopped,j.record->>'publication' as publication,
     j.record->>'startedAt' as started_at,j.record->>'finishedAt' as finished_at,
@@ -69,9 +70,12 @@ async function facts(sql: Queryable, scope: RunActivityScope) {
     left join run_repeat_executions x on x.run_id=w.run_id and x.execution_id=w.node_execution_id
     left join run_repeat_slots s on s.slot_id=x.slot_id and s.run_id=w.run_id
     left join workflow_job_preparations p on p.slot_id=s.slot_id and p.run_id=w.run_id
-    where w.run_id=$1 union all ${AGENT_CI_SNAPSHOT_SQL}
+    where w.run_id=$1
     order by created_at,id limit 16001`,
   [scope.runId, scope.workspaceId, scope.workflowId, scope.workflowVersionId])).rows
+  const ciRows = (await sql.query<Omit<CiFact, 'ci'> & { record: unknown }>(AGENT_CI_SNAPSHOT_SQL,
+    [scope.runId, scope.workspaceId, scope.workflowId, scope.workflowVersionId])).rows
+  const cis = ciRows.map(({ record, ...row }) => ({ ...row, ci: ciActivityFromRecord(record) }))
   const interactions = (await sql.query<InteractionFact>(`select i.id,i.revision::text,i.execution_id,i.status,
     i.record->>'deliveryState' as delivery,(i.record->>'decidedAt') is not null as answer_recorded,
     i.harness,i.native_session_id,i.native_request_id,
@@ -80,7 +84,7 @@ async function facts(sql: Queryable, scope: RunActivityScope) {
     (select g.revision::text from interaction_graph_resumes g where g.interaction_id=i.id and g.run_id=i.run_id and g.execution_id=i.execution_id) as acknowledgment_revision
     from durable_interactions i where i.run_id=$1 and i.workspace_id=$2 and i.workflow_id=$3 order by i.id limit 2001`,
   [scope.runId, scope.workspaceId, scope.workflowId])).rows
-  if (executions.length + jobs.length > REPEAT_GRAPH_LIMITS.executions || interactions.length > REPEAT_GRAPH_LIMITS.decisions) {
+  if (executions.length + jobs.length + cis.length > REPEAT_GRAPH_LIMITS.executions || interactions.length > REPEAT_GRAPH_LIMITS.decisions) {
     throw new DomainError('ACTIVITY_SNAPSHOT_TOO_LARGE', 'Use the bounded canonical graph for this Run.', 409)
   }
   const bounds = (await sql.query<{ high_water: string; retained_from: string; observed: number }>(RUN_ACTIVITIES_BOUNDS_SQL, [scope.runId])).rows[0]!
@@ -89,9 +93,10 @@ async function facts(sql: Queryable, scope: RunActivityScope) {
     ...executions.flatMap((execution) => [{ source: 'execution' as const, id: execution.id, revision: execution.revision },
       { source: 'native_events' as const, id: execution.id, revision: execution.native_revision }]),
     ...jobs.map((job) => ({ source: 'execution' as const, id: job.id, revision: job.revision })),
+    ...cis.map((ci) => ({ source: 'ci_run' as const, id: ci.id, revision: ci.revision })),
     ...interactions.flatMap((interaction) => [{ source: 'interaction' as const, id: interaction.id, revision: interaction.revision },
       ...(interaction.acknowledgment_revision !== null ? [{ source: 'interaction' as const, id: `ack:${interaction.id}`, revision: interaction.acknowledgment_revision }] : [])])]
-  return { run, executions, jobs, interactions, bounds, revisions }
+  return { run, executions, jobs, cis, interactions, bounds, revisions }
 }
 
 /** Read on the existing authorized Run transaction. A validated revision vector protects READ COMMITTED callers. */
@@ -102,16 +107,35 @@ export async function readRunActivitySnapshot(sql: Queryable, scope: RunActivity
   const before = await facts(sql, scope)
   for (const job of before.jobs) {
     const node = version.definition.nodes.find((node) => node.id === job.node_id)
-    const agentCi = job.ci_agent_execution_id && node && node.kind !== 'job'
-      && node.agentId === job.ci_agent_id && before.executions.some(execution => execution.id === job.ci_agent_execution_id)
     const graphJob = node?.kind === 'job' && node.jobDefinitionId === job.definition_id
       && node.jobDefinitionRevision === job.definition_revision && node.jobDefinitionVersionId === job.definition_version_id
-    const owned = job.ci_agent_execution_id ? agentCi : graphJob
-    if (!job.pinned || !owned || !['queued', 'preparing', 'running', 'terminal'].includes(job.phase)) {
+    if (!job.pinned || !graphJob || !['queued', 'preparing', 'running', 'terminal'].includes(job.phase)) {
       throw new DomainError('ACTIVITY_OWNER_CONFLICT', 'Job activity lost its exact accepted Run identity.', 409)
     }
   }
   const ref = (execution: ExecutionFact): WorkRef => ({ kind: 'execution', ...scope, executionId: execution.id, attemptKey: String(execution.attempt) })
+  const ciRef = (ci: CiFact): WorkRef => {
+    const execution = before.executions.find(entry => entry.id === ci.execution_id)
+    const node = version.definition.nodes.find(entry => entry.id === ci.node_id)
+    if (!ci.pinned || !execution || !node || node.kind === 'job' || node.agentId !== ci.agent_id) {
+      throw new DomainError('ACTIVITY_OWNER_CONFLICT', 'CI activity lost its originating Agent execution.', 409)
+    }
+    return { kind: 'ci', ...scope, executionId: execution.id, attemptKey: String(execution.attempt),
+      nodeId: ci.node_id, agentId: ci.agent_id, ticketId: ci.id }
+  }
+  const ciSummaries: WorkSummary[] = before.cis.map(ci => {
+    let phase: WorkSummary['phase'] = 'terminal'
+    if (ci.ci.state === 'queued') phase = 'waiting'
+    else if (ci.ci.state === 'starting') phase = 'preparing'
+    else if (ci.ci.state === 'running') phase = 'active'
+    const outcomes: Record<CiActivity['state'], WorkSummary['outcome']> = {
+      queued: null, starting: null, running: null, passed: 'succeeded', failed: 'failed',
+      canceled: 'canceled', lost: 'unknown',
+    }
+    const outcome = outcomes[ci.ci.state]
+    return { ref: ciRef(ci), phase, outcome, evidence: ci.ci.state === 'lost' ? 'unknown' : 'confirmed',
+      delivery: null, startedAt: ci.ci.startedAt, ci: ci.ci }
+  })
   if (before.executions.some((execution) => !['queued', 'starting', 'running', 'waiting', 'completed'].includes(execution.state))) {
     throw new DomainError('ACTIVITY_OWNER_CONFLICT', 'An execution has no authoritative lifecycle state.', 409)
   }
@@ -149,12 +173,18 @@ export async function readRunActivitySnapshot(sql: Queryable, scope: RunActivity
     const execution = before.executions.find((entry) => entry.id === row.harness_execution_id)
     // Run-level audit rows retain their genuine Run owner; never borrow the latest execution.
     const job = before.jobs.find((entry) => entry.id === row.job_execution_id)
-    const owner: WorkRef = execution ? ref(execution) : job ? jobRef(job) : { kind: 'run', ...scope }
+    const ci = before.cis.find(entry => entry.id === publicItem.refs.ciTicketId)
+    let owner: WorkRef = { kind: 'run', ...scope }
+    if (ci) owner = ciRef(ci)
+    else if (execution) owner = ref(execution)
+    else if (job) owner = jobRef(job)
     return [{ kind: 'diagnostic' as const, id: publicItem.id, revision: '0', order: row.sequence, orderSource: 'run_activity', owner,
       source: { schemaVersion: 1, system: 'run_activity', eventId: publicItem.id, sequence: row.sequence, observedAt: row.occurred_at.toISOString() },
       evidence: publicItem.status === 'unknown' ? 'unknown' : 'confirmed', code: publicItem.kind,
       message: row.kind === 'harness_output' && publicItem.detail
-        ? `${publicItem.summary}: ${publicItem.detail}` : publicItem.summary }]
+        ? `${publicItem.summary}: ${publicItem.detail}` : publicItem.summary,
+      ...(publicItem.ci ? { ci: publicItem.ci } : {}),
+      ...(ci && execution ? { parent: ref(execution) } : {}) }]
   })
   const nativeWork = projectNativeActivityFacts(await readNativeActivityFacts(sql, scope.runId), (executionId) => {
     const execution = before.executions.find((entry) => entry.id === executionId)
@@ -166,20 +196,26 @@ export async function readRunActivitySnapshot(sql: Queryable, scope: RunActivity
     'Activity source revisions changed during read. Refresh this exact Run.', 409)
   const activeExecutions = summaries.filter((summary, index) => before.executions[index]!.state !== 'queued' && summary.phase !== 'terminal')
   const activeJobs = jobSummaries.filter((summary, index) => before.jobs[index]!.phase !== 'queued' && summary.phase !== 'terminal')
+  const activeCi = ciSummaries.filter(summary => summary.phase !== 'terminal')
   const runRef: WorkRef = { kind: 'run', ...scope }
   const lastExecution = before.executions.at(-1), lastJob = before.jobs.at(-1)
-  const latest = lastJob && (!lastExecution || lastJob.created_at > lastExecution.created_at
+  let latest = lastJob && (!lastExecution || lastJob.created_at > lastExecution.created_at
     || lastJob.created_at === lastExecution.created_at && lastJob.id > lastExecution.id) ? jobRef(lastJob)
     : lastExecution ? ref(lastExecution) : runRef
-  const runWork: WorkSummary[] = activeExecutions.length === 0 && activeJobs.length === 0 && ['running', 'waiting', 'interrupted'].includes(before.run.execution_state)
+  const lastCi = before.cis.at(-1)
+  if (lastCi && (!lastExecution || lastCi.ci.queuedAt >= lastExecution.created_at)
+    && (!lastJob || lastCi.ci.queuedAt >= lastJob.created_at)) latest = ciRef(lastCi)
+  const runWork: WorkSummary[] = activeExecutions.length === 0 && activeJobs.length === 0 && activeCi.length === 0 && ['running', 'waiting', 'interrupted'].includes(before.run.execution_state)
     ? [{ ref: runRef, phase: before.run.stopped ? 'interrupting' : before.run.execution_state === 'waiting' ? 'waiting' : 'preparing',
       outcome: null, delivery: null, evidence: before.run.execution_state === 'interrupted' ? 'reconciling' : 'confirmed', startedAt: before.run.started_at ?? null }] : []
   return ActivitySnapshotV1Schema.parse({ schemaVersion: 1, scope: { kind: 'workflow_run', ...scope }, revision: before.run.revision,
     sourceRevisions: before.revisions,
-    active: [...activeExecutions, ...activeJobs, ...runWork, ...nativeWork.active],
+    active: [...activeExecutions, ...activeJobs, ...activeCi, ...runWork, ...nativeWork.active],
     ...(nativeWork.hasMore ? { hasMoreActiveWork: true } : {}),
-    queued: before.executions.length === 0 && before.jobs.length === 0 && before.run.execution_state === 'queued' ? [runRef]
-      : [...before.executions.filter((execution) => execution.state === 'queued').map(ref), ...before.jobs.filter((job) => job.phase === 'queued').map(jobRef)],
+    queued: before.executions.length === 0 && before.jobs.length === 0 && before.cis.length === 0 && before.run.execution_state === 'queued' ? [runRef]
+      : [...before.executions.filter((execution) => execution.state === 'queued').map(ref),
+        ...before.jobs.filter((job) => job.phase === 'queued').map(jobRef),
+        ...before.cis.filter(ci => ci.ci.state === 'queued').map(ciRef)],
     latest,
     pendingInteractions, activities: [...activities, ...nativeWork.activities],
     // This scoped cursor is an audit sequence, never a cross-scope/browser cursor.

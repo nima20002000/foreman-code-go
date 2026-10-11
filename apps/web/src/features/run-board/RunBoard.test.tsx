@@ -496,3 +496,35 @@ it('withdraws inspector branch facts after delayed permission loss', async () =>
   expect(screen.queryByText('foreman/coder')).toBeNull()
   expect(screen.queryByRole('button', { name: /Attempt 1/ })).toBeNull()
 })
+
+it('refreshes the originating Agent CI from queued to running to terminal without changing saved names', async () => {
+  const ref = { kind: 'ci' as const, workspaceId: runA.workspaceId, workflowId: runA.workflowId,
+    runId: runA.runId, workflowVersionId: runA.workflowVersionId, nodeId: 'node-x', agentId: 'agent-x',
+    executionId: 'execution-x', attemptKey: '1', ticketId: '00000000-0000-4000-8000-000000000001' }
+  const ci = { id: ref.ticketId, groupId: '00000000-0000-4000-8000-000000000002',
+    suite: 'build' as const, part: 'build-api' as const, partition: null, state: 'queued' as const,
+    computer: null, step: null, exitCode: null, queuedAt: '2026-10-01T00:00:00.000Z', startedAt: null, finishedAt: null }
+  let state: 'queued' | 'running' | 'passed' = 'queued'
+  server.use(http.get(snapshotRoute, () => {
+    const current = { ...ci, state }
+    const activitySnapshot = { schemaVersion: 1, scope: { kind: 'workflow_run', workspaceId: runA.workspaceId,
+      workflowId: runA.workflowId, runId: runA.runId, workflowVersionId: runA.workflowVersionId }, revision: '1',
+      active: state === 'passed' ? [] : [{ ref, phase: state === 'queued' ? 'waiting' : 'active', outcome: null,
+        delivery: null, evidence: 'confirmed', startedAt: null, ci: current }], queued: state === 'queued' ? [ref] : [],
+      latest: ref, pendingInteractions: [], activities: [{ kind: 'diagnostic', id: 'ci-activity', revision: '0',
+        order: '1', owner: ref, source: { schemaVersion: 1, system: 'run_activity', observedAt: ci.queuedAt },
+        evidence: 'confirmed', code: 'job_work', message: `CI build ${state}`, ci: current }],
+      page: { before: null, nextCursor: null, hasMore: false } }
+    return HttpResponse.json({ snapshot: runA, activitySnapshot })
+  }))
+  const { client } = await mount()
+  const owner = await savedNode('X before rename')
+  expect(await within(owner).findByRole('status')).toHaveTextContent('CI build-api · queued')
+  expect(within(await savedNode('Y')).queryByText(/CI build/)).toBeNull()
+  for (const next of ['running', 'passed'] as const) {
+    state = next
+    await act(async () => { await client.refetchQueries({ queryKey: runsSelectorKeys.snapshot(latest!) }) })
+    await waitFor(() => expect(within(owner).getByRole('status')).toHaveTextContent(`CI build-api · ${next}`))
+  }
+  expect(await savedNode('X before rename')).toBeInTheDocument()
+})

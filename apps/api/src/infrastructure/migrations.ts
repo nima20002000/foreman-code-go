@@ -6,6 +6,7 @@ import { workspaceRepositoryImportsMigration } from './workspaceRepositoryImport
 import { retiredHarnessCredentialsMigration } from './retiredHarnessCredentialsMigration.js'
 import { bugReportsMigration } from './bugReportsMigration.js'
 import { hostCiRunsMigration } from './hostCiRunsMigration.js'
+import { hostCiActivityMigration } from './hostCiActivityMigration.js'
 import { ciFileDurationsMigration } from './ciFileDurationsMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
@@ -911,6 +912,7 @@ export const migrations = [
   ciFileDurationsMigration,
   providerAccountsMigration,
   providerAccountObservationsMigration,
+  hostCiActivityMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

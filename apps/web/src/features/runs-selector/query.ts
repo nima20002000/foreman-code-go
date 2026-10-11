@@ -63,6 +63,8 @@ export function useSelectedRunSnapshot(selection: SelectedRunState) {
     },
     enabled: selection.active && !selection.invalid && identity.runId !== null,
     retry: (count, error) => !(error instanceof Error && error.name === 'AbortError') && retry(count, error),
+    // An Agent can request CI after the immutable Board capture was first read.
+    refetchInterval: query => isRunAccessError(query.state.error) ? false : 3000,
     staleTime: 0,
     gcTime: 0,
     placeholderData: () => undefined,
@@ -70,5 +72,6 @@ export function useSelectedRunSnapshot(selection: SelectedRunState) {
   const current = selection.isCurrent(generation)
   // Do not render cached data after *any* failed authorization/validation read.
   const snapshot = current && !query.isError ? query.data?.snapshot : undefined
-  return { ...query, data: snapshot ? { snapshot } : undefined, snapshot }
+  const activitySnapshot = snapshot ? query.data?.activitySnapshot : undefined
+  return { ...query, data: snapshot ? { snapshot, activitySnapshot } : undefined, snapshot, activitySnapshot }
 }

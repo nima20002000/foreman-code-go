@@ -18,7 +18,7 @@ import { useGraphDraftStore } from '../../graph/store'
 import { nextDraftKey } from '../../graph/nextDraft/state'
 import { inspectionBoardFixture } from './inspectionFixtures'
 import { useInspectionPresentation } from './presentation'
-import { executionPagesKey } from './queries'
+import { executionPagesKey, runInspectionQueryKey } from './queries'
 import { currentRunKey } from '../currentRunQuery'
 import { base as childRoute, child, detail, message, tool } from '../../run-subagents/testFixtures'
 import { clearBoardStopStorage, readBoardStop, recordBoardStopReceipt, reserveBoardStop, type BoardStopJournal } from '../stopOutbox'
@@ -105,6 +105,40 @@ afterEach(() => {
 })
 
 describe('Run inspection inside the one mounted Board', () => {
+  it('shows the originating Agent CI lifecycle on the pinned canvas', async () => {
+    const scope = fixture.runs.before.scope
+    const ref = { kind: 'ci', workspaceId: scope.workspaceId, workflowId: scope.workflowId,
+      runId: scope.runId, workflowVersionId: scope.workflowVersionId, nodeId: fixture.first.id,
+      agentId: fixture.first.agentId, executionId: 'ci-owner', attemptKey: '1',
+      ticketId: '00000000-0000-4000-8000-000000000001' }
+    let state: 'queued' | 'running' | 'passed' = 'queued'
+    const route = `/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/${scope.runId}/snapshot`
+    server.use(http.get(route, () => {
+      const ci = { id: ref.ticketId, groupId: '00000000-0000-4000-8000-000000000002',
+        suite: 'build', part: 'build-api', partition: null, state, computer: null, step: null, exitCode: null,
+        queuedAt: '2026-10-01T00:00:00.000Z', startedAt: null, finishedAt: null }
+      return HttpResponse.json({ snapshot: { workspaceId: scope.workspaceId, workflowId: scope.workflowId,
+        runId: scope.runId, workflowVersionId: scope.workflowVersionId,
+        kind: 'available', capturedAt: ci.queuedAt, nodes: [{ id: ref.nodeId, agentId: ref.agentId,
+          name: 'CI Agent', agentConfigurationVersionId: fixture.before.agentConfigurationVersionIds[ref.agentId],
+          position: { x: 0, y: 0 }, size: { width: 212, height: 212 } }], edges: [] },
+        activitySnapshot: { schemaVersion: 1, scope: { kind: 'workflow_run', workspaceId: scope.workspaceId,
+          workflowId: scope.workflowId, runId: scope.runId, workflowVersionId: scope.workflowVersionId },
+        revision: '1', active: state === 'passed' ? [] : [{ ref, phase: state === 'queued' ? 'waiting' : 'active',
+          evidence: 'confirmed', outcome: null, delivery: null, startedAt: null, ci }], queued: [], latest: ref,
+        pendingInteractions: [], activities: [{ kind: 'diagnostic', id: 'ci-state', revision: '0', order: '1',
+          owner: ref, source: { schemaVersion: 1, system: 'run_activity', observedAt: ci.queuedAt },
+          evidence: 'confirmed', code: 'job_work', message: `CI build ${state}`, ci }],
+        page: { before: null, nextCursor: null, hasMore: false } } })
+    }))
+    const { cache } = await mount(href(scope))
+    expect(await within(pinnedCanvas()).findByText(/CI build-api · queued/)).toBeVisible()
+    for (const next of ['running', 'passed'] as const) {
+      state = next
+      await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'board-activity'] }) })
+      expect(await within(pinnedCanvas()).findByText(new RegExp(`CI build-api · ${next}`))).toBeVisible()
+    }
+  })
   it('shows nested native children on Start-pinned Run links and pages their own recorded items', async () => {
     const scope = fixture.runs.before.scope
     const { workspaceId, workflowId, workflowVersionId, runId } = scope

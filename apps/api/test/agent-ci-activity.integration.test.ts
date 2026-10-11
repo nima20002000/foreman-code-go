@@ -2,17 +2,21 @@ import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
+import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
+  type CiHostRun, type CiRunInput } from '@foreman-code/contracts'
+import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { RunActivitiesPageSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
+import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
+import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
-import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
-import { withCurrentRunRead } from '../src/modules/runs/currentRead.js'
+import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
-import { agentCiActivityMigration } from '../src/infrastructure/agentCiActivityMigration.js'
+import { hostCiActivityMigration } from '../src/infrastructure/hostCiActivityMigration.js'
 import { graphFixture, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
-import { buildQueueFixture } from './helpers/buildComputerFixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
 
@@ -21,48 +25,86 @@ async function fixture(options: { deferMigration?: number } = {}) {
   const graph = await graphFixture(database, { form: 'single', qualifiedReads: true })
   const node = agentWorkflowNode(graph.version.definition.nodes[0])
   const executionId = randomUUID()
-  await database.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-    values($1,$2,$3,$4,1,$5::jsonb)`, [executionId, graph.run.id, node.id, node.agentId, JSON.stringify({
-    id: executionId, runId: graph.run.id, workflowNodeId: node.id, agentId: node.agentId, attempt: 1,
-    agentConfigurationVersionId: graph.version.agentConfigurationVersionIds[node.agentId],
-    state: 'running', input: {}, createdAt: graph.run.createdAt, startedAt: graph.run.createdAt,
-  })])
-  const settings = await graph.credential([{ actions: ['settings:read', 'settings:update'], scope: {} }])
-  const jobs = await buildQueueFixture(database.pool, graph.writer.principal, {
-    workspaceId: graph.scope.workspaceId, settingsPrincipal: settings.principal,
-  })
+  const insertExecution = async (id: string, runId: string) => database.pool.query(`insert into harness_executions
+    (id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)`,
+  [id, runId, node.id, node.agentId, JSON.stringify({ id, runId, workflowNodeId: node.id,
+    agentId: node.agentId, attempt: 1, agentConfigurationVersionId: graph.version.agentConfigurationVersionIds[node.agentId],
+    state: 'starting', input: {}, createdAt: graph.run.createdAt })])
+  await insertExecution(executionId, graph.run.id)
+  await database.pool.query(`update workspaces set record=record||$2::jsonb where id=$1`,
+    [graph.scope.workspaceId, JSON.stringify({ repository: { provider: 'github', owner: 'example',
+      name: 'project', defaultBranch: 'main' } })])
+  let online = false
+  const computer: HostCiComputer = { key: 'synthetic-build', hostRef: { kind: 'main', mainId: randomUUID() },
+    label: 'Build computer', priority: 1 }
+  const hostRuns = new Map<string, CiHostRun>()
+  const endpoint: HostCiEndpoint = {
+    computers: async () => online ? [computer] : [],
+    request: async (_computer, request) => {
+      if (request.operation === 'status') return { operation: 'status', ready: true, reasons: [],
+        cpuCount: 4, memoryBytes: 8 * 2 ** 30, runs: [...hostRuns.values()] }
+      if (request.operation === 'start') {
+        const run: CiHostRun = { runId: request.runId, state: 'running', step: request.suite,
+          exitCode: null, startedAt: new Date().toISOString(), finishedAt: null, logBytes: 0, message: null }
+        hostRuns.set(run.runId, run)
+        return { operation: 'start', run }
+      }
+      const run = hostRuns.get(request.runId)!
+      if (request.operation === 'cancel') {
+        const canceled = { ...run, state: 'canceled' as const, finishedAt: new Date().toISOString() }
+        hostRuns.set(run.runId, canceled)
+        return { operation: 'cancel', run: canceled }
+      }
+      return { operation: 'read', run, text: '', nextOffset: 0 }
+    },
+  }
+  const ci = new HostCiService(database.pool, graph.commands, new RunCiAuthority(database.pool), {
+    capabilities: async () => ({ parts: true, integrationPartitions: true, affected: true }),
+    resolve: async () => 'a'.repeat(40),
+  }, endpoint)
   const locations = new WorkspaceLocationService(database.pool, graph.commands)
   const runs = new RunManagementService(database.pool, graph.commands, {} as never, {} as never, locations)
+  const credentials = new Wave25WorkerCredentialService(database.pool, graph.access)
+  const worker = await credentials.issueForExecution(executionId)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    operator: { access: graph.access, services: { commands: graph.commands, workflows: graph.workflows, runs } as never } })
+    appMcp: { access: graph.access, interactions: new PostgresAppInteractionService(database.pool, {} as never, graph.commands) },
+    operator: { access: graph.access, services: { commands: graph.commands, workflows: graph.workflows, runs, ci } as never } })
   const reader = await graph.credential([{ actions: ['runs:read'], scope: { runIds: [graph.run.id] } }])
   const denied = await graph.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
-  const origin = { workflowId: graph.scope.workflowId, runId: graph.run.id, agentId: node.agentId, executionId }
   const request = { workspaceId: graph.scope.workspaceId, runId: graph.run.id, limit: 100 }
-  const snapshotScope = { workspaceId: graph.scope.workspaceId, workflowId: graph.scope.workflowId,
-    runId: graph.run.id, workflowVersionId: graph.version.id }
-  async function activity(page: { cursor?: string; limit?: number } = {}) {
-    const response = await graphRpc(app, reader.token, 'tools/call', {
-      name: 'run_activities_get_v1', arguments: { ...request, ...page },
-    })
+  async function call(token: string, name: string, args: Record<string, unknown>) {
+    return graphRpc(app, token, 'tools/call', { name, arguments: args })
+  }
+  async function value(token: string, name: string, args: Record<string, unknown>) {
+    const response = await call(token, name, args)
+    expect(response.error).toBeUndefined()
     expect(response.result?.isError).not.toBe(true)
-    return RunActivitiesPageSchema.parse(graphRpcValue(response.result))
+    return graphRpcValue(response.result)
   }
-  const snapshot = () => withCurrentRunRead(database.pool, reader.principal, graph.scope.workspaceId,
-    graph.run.id, 'runs:read', (sql, accepted) => readRunActivitySnapshot(
-      sql as unknown as Pick<pg.PoolClient, 'query'>, snapshotScope, accepted.version))
-  async function submit() {
-    const definition = await jobs.save()
-    const admitted = await jobs.jobs.enqueue(graph.writer.principal, 'mcp', graph.scope.workspaceId, {
-      commandId: randomUUID(), definitionId: definition.id, expectedRevision: definition.revision,
-    }, { initiatingAgent: origin })
-    if (admitted.kind !== 'pending-admission') throw new Error('The fixture begins with unavailable capacity.')
-    await jobs.jobs.wakeQueue()
-    return jobs.jobs.getQueueTicket(graph.writer.principal, graph.scope.workspaceId, admitted.ticket.id)
+  const workerToken = worker.environment.variables.GRAPHQL_MCP_TOKEN!
+  const submit = async (input: Partial<CiRunInput> = {}) => {
+    const started = CiRunOutputSchema.parse(await value(workerToken, 'ci_run', {
+      suite: 'integration', commandId: randomUUID(), ...input,
+    }))
+    await ci.dispatch()
+    return started
   }
-  return { database, graph, node, executionId, jobs, app, reader, denied, request, activity, snapshot, submit,
+  const activity = async (page: { cursor?: string; limit?: number } = {}) =>
+    RunActivitiesPageSchema.parse(await value(reader.token, 'run_activities_get_v1', { ...request, ...page }))
+  const boardInput = { workspaceId: graph.scope.workspaceId, workflowId: graph.scope.workflowId, runId: graph.run.id }
+  const board = async () => RunBoardSnapshotGetResultSchema.parse(
+    await value(reader.token, 'run_board_snapshot_get', boardInput))
+  const get = async (ticketId: string) => CiGetOutputSchema.parse(await value(workerToken, 'ci_get', { ticketId }))
+  const finish = (ticketId: string, state: 'passed' | 'failed' | 'lost') => {
+    const run = hostRuns.get(ticketId)!
+    hostRuns.set(ticketId, { ...run, state, exitCode: state === 'passed' ? 0 : 1,
+      finishedAt: new Date().toISOString() })
+  }
+  return { database, graph, node, executionId, ci, app, reader, denied, request, boardInput, activity, board,
+    submit, get, finish, call, value, workerToken, credentials, insertExecution, computer,
+    online() { online = true },
     async close() {
-      await jobs.jobs.closeQueue()
+      await ci.close()
       await app.close()
       await graph.app.close()
       await database.close()
@@ -87,8 +129,128 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
     run: { ...f.graph.f.run, id: next.run.id } }, saved, f.graph.writer.principal.id)
 }
 
-describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
-  it('serializes same-Run CI commits so incremental cursors see both events exactly once', async () => {
+const ciRef = (ticketId: string, executionId: string) => expect.objectContaining({ kind: 'ci', ticketId, executionId })
+
+describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => {
+  it('publishes queued, running and completed CI through authenticated MCP and HTTP with persisted readback', async () => {
+    const f = await fixture()
+    try {
+      const deniedStart = await f.call(f.reader.token, 'ci_run', { workspaceId: f.request.workspaceId,
+        suite: 'integration', commandId: randomUUID() })
+      expect(deniedStart.error || deniedStart.result?.isError).toBeTruthy()
+      expect((await f.database.pool.query('select count(*)::int as count from ci_runs')).rows[0]!.count).toBe(0)
+      const ticket = await f.submit()
+      const queued = await f.activity()
+      expect(queued.items).toContainEqual(expect.objectContaining({ kind: 'job_work', status: 'queued',
+        actor: expect.objectContaining({ agentId: f.node.agentId, nodeId: f.node.id }),
+        refs: expect.objectContaining({ executionId: f.executionId, ciTicketId: ticket.ticketId }) }))
+      const initialBoard = await f.board()
+      expect(initialBoard.activitySnapshot?.queued).toContainEqual(ciRef(ticket.ticketId, f.executionId))
+      expect(initialBoard.activitySnapshot?.active).toContainEqual(expect.objectContaining({
+        ref: ciRef(ticket.ticketId, f.executionId), phase: 'waiting', ci: expect.objectContaining({ state: 'queued' }) }))
+      f.online()
+      const running = await f.get(ticket.ticketId)
+      expect(running.run.state).toBe('running')
+      expect((await f.board()).activitySnapshot?.active).toContainEqual(expect.objectContaining({
+        ref: ciRef(ticket.ticketId, f.executionId), phase: 'active', evidence: 'confirmed',
+        ci: expect.objectContaining({ state: 'running', computer: expect.objectContaining({ label: 'Build computer' }) }) }))
+      f.finish(ticket.ticketId, 'passed')
+      const done = await f.get(ticket.ticketId)
+      const stored = (await f.database.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+        [ticket.ticketId])).rows[0]!
+      expect(CiRunRecordSchema.parse(stored.record)).toEqual(done.run)
+      const history = await f.activity()
+      expect(history.items.filter(item => item.refs.ciTicketId === ticket.ticketId).map(item => item.ci?.state))
+        .toEqual(['queued', 'running', 'passed'])
+      const finishedBoard = await f.board()
+      expect(finishedBoard.snapshot).toEqual(initialBoard.snapshot)
+      expect(finishedBoard.activitySnapshot?.active.some(work => work.ref.kind === 'ci')).toBe(false)
+      expect(finishedBoard.activitySnapshot?.activities).toContainEqual(expect.objectContaining({
+        owner: ciRef(ticket.ticketId, f.executionId), parent: expect.objectContaining({ executionId: f.executionId }),
+        ci: expect.objectContaining({ state: 'passed', exitCode: 0 }) }))
+      const headers = { authorization: `Bearer ${f.reader.token}` }
+      const base = `/api/management/workspaces/${f.request.workspaceId}`
+      const http = await f.app.inject({ method: 'GET', headers,
+        url: `${base}/runs/${f.request.runId}/activities?limit=100` })
+      expect(http.statusCode).toBe(200)
+      expect(RunActivitiesPageSchema.parse(http.json())).toEqual(history)
+      const boardHttp = await f.app.inject({ method: 'GET', headers,
+        url: `${base}/workflows/${f.boardInput.workflowId}/runs/${f.request.runId}/snapshot` })
+      expect(boardHttp.statusCode).toBe(200)
+      expect(RunBoardSnapshotGetResultSchema.parse(boardHttp.json())).toEqual(finishedBoard)
+      expect((await f.activity()).items).toEqual(history.items)
+      for (const [tool, args] of [['run_activities_get_v1', f.request], ['run_board_snapshot_get', f.boardInput]] as const) {
+        const blocked = await f.call(f.denied.token, tool, args)
+        expect(blocked.error || blocked.result?.isError).toBeTruthy()
+        expect(JSON.stringify(blocked)).not.toContain(ticket.ticketId)
+      }
+    } finally { await f.close() }
+  }, 120000)
+
+  it('keeps CI parts and partitions scoped to their Agent execution and workflow', async () => {
+    const f = await fixture()
+    try {
+      const split = await f.submit({ partitions: 2 })
+      const parts = await f.submit({ suite: 'build' })
+      expect(split.partitions).toHaveLength(2)
+      expect(parts.partitions).toHaveLength(2)
+      const queued = await f.activity()
+      const splitGroup = (await f.get(split.ticketId)).run.groupId
+      expect(queued.items.filter(item => item.ci?.groupId === splitGroup)
+        .map(item => item.ci?.partition?.index).sort()).toEqual([0, 1])
+      expect(queued.items.filter(item => parts.partitions!.some(part => part.ticketId === item.refs.ciTicketId))
+        .map(item => item.ci?.part).sort()).toEqual(['build-api', 'build-other'])
+      const foreign = await anotherWorkflow(f)
+      const foreignExecutionId = randomUUID()
+      await f.insertExecution(foreignExecutionId, foreign.run.id)
+      const foreignCredential = await f.credentials.issueForExecution(foreignExecutionId)
+      const token = foreignCredential.environment.variables.GRAPHQL_MCP_TOKEN!
+      const foreignTicket = CiRunOutputSchema.parse(await f.value(token, 'ci_run', {
+        suite: 'install', commandId: randomUUID() }))
+      await f.ci.dispatch()
+      const foreignPage = RunActivitiesPageSchema.parse(await f.value(f.graph.writer.token, 'run_activities_get_v1', {
+        workspaceId: foreign.scope.workspaceId, runId: foreign.run.id }))
+      expect(foreignPage.items.filter(item => item.ci).map(item => item.refs.ciTicketId)).toEqual([foreignTicket.ticketId])
+      expect((await f.activity()).items.some(item => item.refs.ciTicketId === foreignTicket.ticketId)).toBe(false)
+      const foreignBoard = RunBoardSnapshotGetResultSchema.parse(await f.value(f.graph.writer.token,
+        'run_board_snapshot_get', { workspaceId: foreign.scope.workspaceId,
+          workflowId: foreign.scope.workflowId, runId: foreign.run.id }))
+      expect(foreignBoard.activitySnapshot?.active.filter(work => work.ref.kind === 'ci').map(work => work.ref))
+        .toEqual([expect.objectContaining({ executionId: foreignExecutionId, ticketId: foreignTicket.ticketId })])
+      for (const tool of ['ci_get', 'ci_logs_read', 'ci_cancel']) {
+        const blocked = await f.call(token, tool, { ticketId: split.ticketId })
+        expect(blocked.error || blocked.result?.isError).toBeTruthy()
+        expect(JSON.stringify(blocked)).not.toContain(split.ticketId)
+      }
+      expect((await f.get(split.ticketId)).run.state).toBe('queued')
+      await expect(f.database.pool.query(`update ci_runs set record=jsonb_set(record,
+        '{initiator,executionId}',to_jsonb($2::text)) where id=$1`, [split.ticketId, foreignExecutionId]))
+        .rejects.toThrow('CI run ownership cannot change')
+      expect((await f.get(split.ticketId)).run.initiator.executionId).toBe(f.executionId)
+    } finally { await f.close() }
+  }, 120000)
+
+  it.each(['passed', 'failed', 'lost', 'canceled'] as const)('retains the %s terminal result and queued cancellation', async terminal => {
+    const f = await fixture()
+    try {
+      const waiting = await f.submit()
+      await f.value(f.workerToken, 'ci_cancel', { ticketId: waiting.ticketId })
+      expect((await f.activity()).items).toContainEqual(expect.objectContaining({ status: 'canceled',
+        refs: expect.objectContaining({ ciTicketId: waiting.ticketId }) }))
+      const ticket = await f.submit()
+      f.online()
+      await f.get(ticket.ticketId)
+      if (terminal === 'canceled') await f.value(f.workerToken, 'ci_cancel', { ticketId: ticket.ticketId })
+      else f.finish(ticket.ticketId, terminal)
+      expect((await f.get(ticket.ticketId)).run.state).toBe(terminal)
+      const events = (await f.activity()).items.filter(item => item.refs.ciTicketId === ticket.ticketId)
+      expect(events.map(item => item.ci?.state)).toEqual(['queued', 'running', terminal])
+      expect(events.at(-1)?.status).toBe({ passed: 'completed', failed: 'failed', lost: 'unknown', canceled: 'canceled' }[terminal])
+      expect((await f.board()).activitySnapshot?.active.some(work => work.ref.kind === 'ci')).toBe(false)
+    } finally { await f.close() }
+  }, 120000)
+
+  it('serializes same-Run CI commits so incremental cursors see both events once', async () => {
     const f = await fixture()
     const first = await f.database.pool.connect()
     const second = await f.database.pool.connect()
@@ -98,19 +260,16 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
       const ticketB = await f.submit()
       const initial = await f.activity()
       const before = (await f.database.pool.query<{ sequence: string }>(
-        'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence',
-        [f.graph.run.id])).rows
+        'select sequence::text from run_activity where run_id=$1 order by sequence', [f.graph.run.id])).rows
       await first.query('begin')
       await second.query('begin')
       const holder = (await first.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       const waiter = (await second.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       const canceledAt = new Date().toISOString()
-      const cancel = `update job_admission_queue set record=record||jsonb_build_object(
-        'revision',(record->>'revision')::bigint+1,
-        'state','terminal','terminalReason','cancelled',
-        'cancelRequestedAt',$2::text,'finishedAt',$2::text) where id=$1`
-      await first.query(cancel, [ticketA.id, canceledAt])
-      secondUpdate = second.query(cancel, [ticketB.id, canceledAt])
+      const cancel = `update ci_runs set state='canceled',record=record||jsonb_build_object(
+        'state','canceled','finishedAt',$2::text) where id=$1`
+      await first.query(cancel, [ticketA.ticketId, canceledAt])
+      secondUpdate = second.query(cancel, [ticketB.ticketId, canceledAt])
       const pending = secondUpdate.then(() => ({ error: null }), error => ({ error }))
       const deadline = Date.now() + 4000
       let blocked = false
@@ -126,35 +285,27 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
       const settled = await pending
       if (settled.error) throw settled.error
       const afterFirst = await f.activity({ cursor: during.nextCursor, limit: 1 })
-      expect(afterFirst.items).toMatchObject([{ status: 'canceled', refs: { jobExecutionId: ticketA.executionId } }])
+      expect(afterFirst.items).toMatchObject([{ status: 'canceled', refs: { ciTicketId: ticketA.ticketId } }])
       await second.query('commit')
-      const canceledTickets = await f.database.pool.query<{ record: Record<string, unknown> }>(
-        'select record from job_admission_queue where id=any($1::uuid[])', [[ticketA.id, ticketB.id]])
-      expect(canceledTickets.rows).toHaveLength(2)
-      for (const ticket of [ticketA, ticketB]) {
-        const saved = canceledTickets.rows.find(row => row.record.id === ticket.id)?.record
-        expect(saved).toMatchObject({
-          id: ticket.id, revision: ticket.revision + 1, state: 'terminal', terminalReason: 'cancelled',
-          cancelRequestedAt: canceledAt, finishedAt: canceledAt,
-        })
-      }
+      const records = (await f.database.pool.query<{ record: unknown }>(
+        'select record from ci_runs where id=any($1::uuid[])', [[ticketA.ticketId, ticketB.ticketId]])).rows
+      expect(records.map(row => CiRunRecordSchema.parse(row.record))).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: ticketA.ticketId, state: 'canceled', finishedAt: canceledAt }),
+        expect.objectContaining({ id: ticketB.ticketId, state: 'canceled', finishedAt: canceledAt }),
+      ]))
       const afterSecond = await f.activity({ cursor: afterFirst.nextCursor, limit: 1 })
-      expect(afterSecond.items).toMatchObject([{ status: 'canceled', refs: { jobExecutionId: ticketB.executionId } }])
+      expect(afterSecond.items).toMatchObject([{ status: 'canceled', refs: { ciTicketId: ticketB.ticketId } }])
       const delivered = [...afterFirst.items, ...afterSecond.items]
       expect(new Set(delivered.map(item => item.id)).size).toBe(2)
       expect(BigInt(delivered[1]!.sequence)).toBeGreaterThan(BigInt(delivered[0]!.sequence))
       expect((await f.activity({ cursor: afterSecond.nextCursor })).items).toEqual([])
-      const retained = (await f.database.pool.query<{ sequence: string }>(
-        'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence limit $2',
-        [f.graph.run.id, before.length])).rows
-      expect(retained).toEqual(before)
-      const denied = await graphRpc(f.app, f.denied.token, 'tools/call', {
-        name: 'run_activities_get_v1', arguments: { ...f.request, cursor: initial.nextCursor },
-      })
+      expect((await f.database.pool.query<{ sequence: string }>(
+        'select sequence::text from run_activity where run_id=$1 order by sequence limit $2',
+        [f.graph.run.id, before.length])).rows).toEqual(before)
+      const denied = await f.call(f.denied.token, 'run_activities_get_v1', { ...f.request, cursor: initial.nextCursor })
       expect(denied.error || denied.result?.isError).toBeTruthy()
     } finally {
       await first.query('rollback')
-      // Drain the blocked query before releasing its connection after a failed assertion.
       if (secondUpdate) await Promise.allSettled([secondUpdate])
       await second.query('rollback')
       first.release()
@@ -163,95 +314,17 @@ describe.skipIf(!postgresEnabled)('Agent CI in public Run activity', () => {
     }
   }, 120000)
 
-  it('publishes queued, running and completed CI with its initiating Agent through authenticated MCP', async () => {
-    const f = await fixture()
-    try {
-      const ticket = await f.submit()
-      const queued = await f.activity()
-      expect(queued.items).toContainEqual(expect.objectContaining({
-        kind: 'job_work', status: 'queued', actor: expect.objectContaining({ agentId: f.node.agentId, nodeId: f.node.id }),
-        refs: expect.objectContaining({ executionId: f.executionId, jobExecutionId: ticket.executionId }),
-      }))
-      expect((await f.snapshot()).queued).toContainEqual(expect.objectContaining({ executionId: ticket.executionId }))
-      f.jobs.online()
-      await f.jobs.jobs.wakeQueue()
-      await f.jobs.jobs.closeQueue()
-      const execution = await f.jobs.jobs.getExecution(f.graph.writer.principal, f.graph.scope.workspaceId, ticket.executionId)
-      const fence = { attemptId: execution.attemptId, owner: execution.owner }
-      await f.jobs.worker.settleProcess(f.graph.scope.workspaceId, execution.id, fence, {
-        process: { phase: 'running', outcome: null, exitCode: null, signal: null, processStopped: false },
-        startedAt: execution.createdAt, finishedAt: null,
-      })
-      expect((await f.activity()).items).toContainEqual(expect.objectContaining({
-        kind: 'job_work', status: 'running', refs: expect.objectContaining({ jobExecutionId: execution.id }),
-      }))
-      expect((await f.snapshot()).active).toContainEqual(expect.objectContaining({
-        ref: expect.objectContaining({ executionId: execution.id }), phase: 'active', evidence: 'confirmed',
-      }))
-      await f.jobs.complete(execution.id)
-      const finished = await f.activity()
-      expect(finished.items).toContainEqual(expect.objectContaining({
-        kind: 'job_work', status: 'completed', refs: expect.objectContaining({ jobExecutionId: execution.id }),
-      }))
-      expect((await f.snapshot()).active.some(item => item.ref.kind === 'execution'
-        && item.ref.executionId === execution.id)).toBe(false)
-      const reread = await f.activity()
-      expect(reread.items).toEqual(finished.items)
-      const blocked = await graphRpc(f.app, f.denied.token, 'tools/call', {
-        name: 'run_activities_get_v1', arguments: f.request,
-      })
-      expect(blocked.error || blocked.result?.isError).toBeTruthy()
-      expect(JSON.stringify(blocked)).not.toContain(execution.id)
-    } finally { await f.close() }
-  }, 120000)
-
-  it('retains queue cancellation and failed process outcomes without mixing Runs', async () => {
-    const f = await fixture()
-    try {
-      const cancelled = await f.submit()
-      await f.jobs.jobs.cancelQueued(f.graph.writer.principal, 'mcp', f.graph.scope.workspaceId, {
-        ticketId: cancelled.id, expectedRevision: cancelled.revision, commandId: randomUUID(),
-      })
-      expect((await f.activity()).items).toContainEqual(expect.objectContaining({
-        kind: 'job_work', status: 'canceled', refs: expect.objectContaining({ jobExecutionId: cancelled.executionId }),
-      }))
-      const failed = await f.submit()
-      f.jobs.online()
-      await f.jobs.jobs.wakeQueue()
-      await f.jobs.jobs.closeQueue()
-      const execution = await f.jobs.jobs.getExecution(f.graph.writer.principal, f.graph.scope.workspaceId, failed.executionId)
-      await f.jobs.worker.settleProcess(f.graph.scope.workspaceId, execution.id,
-        { attemptId: execution.attemptId, owner: execution.owner }, {
-          process: { phase: 'terminal', outcome: 'build_failed', exitCode: 1, signal: null, processStopped: true },
-          startedAt: execution.createdAt, finishedAt: new Date().toISOString(),
-        })
-      const page = await f.activity()
-      expect(page.items).toContainEqual(expect.objectContaining({
-        kind: 'job_work', status: 'failed', severity: 'error', refs: expect.objectContaining({ jobExecutionId: execution.id }),
-      }))
-      const foreign = await anotherWorkflow(f)
-      const response = await graphRpc(f.app, f.graph.writer.token, 'tools/call', {
-        name: 'run_activities_get_v1', arguments: { workspaceId: foreign.scope.workspaceId, runId: foreign.run.id },
-      })
-      const foreignPage = RunActivitiesPageSchema.parse(graphRpcValue(response.result))
-      expect(foreignPage.items.every(item => item.refs.jobExecutionId !== failed.executionId
-        && item.refs.jobExecutionId !== cancelled.executionId)).toBe(true)
-      expect(page.items.every(item => item.scope.runId === f.graph.run.id)).toBe(true)
-    } finally { await f.close() }
-  }, 120000)
-
-  it('adds a present-state observation for retained tickets without inventing earlier CI transitions', async () => {
-    // Current queue services need the other migrations while activity backfill remains pending.
-    const f = await fixture({ deferMigration: agentCiActivityMigration.version })
+  it('observes retained Host CI once without inventing earlier transitions', async () => {
+    const f = await fixture({ deferMigration: hostCiActivityMigration.version })
     try {
       const ticket = await f.submit()
       expect((await f.activity()).items.filter(item => item.kind === 'job_work')).toEqual([])
       await applyApplicationMigrations(f.database.pool)
-      const ci = (await f.activity()).items.filter(item => item.refs.jobExecutionId === ticket.executionId)
+      const ci = (await f.activity()).items.filter(item => item.refs.ciTicketId === ticket.ticketId)
       expect(ci).toHaveLength(1)
-      expect(ci[0]?.status).toBe('queued')
+      expect(ci[0]?.ci?.state).toBe('queued')
       await applyApplicationMigrations(f.database.pool)
-      expect((await f.activity()).items.filter(item => item.refs.jobExecutionId === ticket.executionId)).toEqual(ci)
+      expect((await f.activity()).items.filter(item => item.refs.ciTicketId === ticket.ticketId)).toEqual(ci)
     } finally { await f.close() }
   }, 120000)
 })

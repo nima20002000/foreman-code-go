@@ -7,6 +7,7 @@ import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, integrationP
   CiScopeSchema, CiSelectedFilesSchema, validCiSelection,
   type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
+import { ciRepositoryCapabilities } from './repository.js'
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -262,24 +263,35 @@ export class HostCiRunner {
     const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
     const manifest = JSON.parse(await readFile(join(source, 'package.json'), 'utf8')) as { scripts?: Record<string, string> }
     const scripts = manifest.scripts ?? {}
+    const capabilities = ciRepositoryCapabilities(['scripts/ci-suite.sh', 'scripts/ci-files.mjs',
+      'scripts/ci-affected-run.mjs'].filter(file => existsSync(join(source, file))))
+    const pm = this.packageManager(source)
     const suiteScript: Record<CiSuite, string | null> = { install: null, typecheck: 'typecheck', lint: 'lint',
       unit: 'test', build: 'build', integration: 'test:integration' }
-    const name = suiteScript[meta.suite]
+    let name: string | null = null
+    if (capabilities.parts) name = suiteScript[meta.suite]
+    else if (meta.suite !== 'install') name = meta.suite
     if (!meta.part && name && !scripts[name]) throw new Error(`The repository has no "${name}" script for the ${meta.suite} suite.`)
+    if (meta.part && !capabilities.parts) throw new Error('The repository does not support CI suite parts.')
+    if (meta.partition && !meta.part && !capabilities.integrationPartitions) {
+      throw new Error('The repository does not support integration partitions.')
+    }
     let command = ''
     if (meta.part) command = this.partCommand(meta, quote)
-    else if (name) command = `corepack pnpm ${name}`
-    if (meta.scope === 'affected' && meta.suite !== 'integration') {
+    else if (name) command = capabilities.parts ? `${pm} ${name}` : `${pm} run ${name}`
+    const supportsSelection = meta.suite === 'integration' ? capabilities.integrationPartitions : capabilities.affected
+    const affected = meta.scope === 'affected' && supportsSelection
+    if (affected && meta.suite !== 'integration') {
       const selectedPath = join(this.runDirectory(meta.runId), 'selected-files.json')
       await writeFile(selectedPath, JSON.stringify(meta.files ?? []), { mode: 0o600 })
       command = meta.files?.length ? `node scripts/ci-affected-run.mjs ${meta.suite} --files-from ${quote(selectedPath)}` : 'true'
     }
     const apiUnit = meta.suite === 'unit' && (meta.part === 'unit-api'
-      || (meta.scope === 'affected' && meta.files?.some(file => file.startsWith('apps/api/'))))
+      || (affected && meta.files?.some(file => file.startsWith('apps/api/'))))
     const prerequisiteSuite = apiUnit ? 'unit-api' : meta.part ?? meta.suite
     const run = this.runDirectory(meta.runId)
     let integrationEnvironment = ''
-    if (meta.suite === 'integration') {
+    if (meta.suite === 'integration' && capabilities.integrationPartitions) {
       // Main's learned durations, with the commit's committed ones for files it has not measured yet.
       const durationsPath = join(source, 'scripts/integration-durations.json')
       const committed = existsSync(durationsPath) ? JSON.parse(await readFile(durationsPath, 'utf8')) as Record<string, number> : {}
@@ -288,11 +300,11 @@ export class HostCiRunner {
       // The repository's integration runner uses them for per-file hang deadlines and reports what it measured.
       integrationEnvironment = ` FOREMAN_CODE_INTEGRATION_DURATIONS=${quote(join(run, 'expected-durations.json'))}`
         + ` FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT=${quote(join(run, 'measured-durations.json'))}`
-      if (meta.partition || meta.scope === 'affected') {
+      if (meta.partition || affected) {
         const tests = join(source, 'apps/api/test')
         const files = existsSync(tests) ? (await readdir(tests)).filter(file => file.endsWith('.integration.test.ts'))
           .map(file => `apps/api/test/${file}`).sort() : []
-        const selected = meta.scope === 'affected' ? meta.files ?? [] : files
+        const selected = affected ? meta.files ?? [] : files
         if (selected.some(file => !files.includes(file))) throw new Error('Selected integration files are absent from the commit.')
         const slice = meta.partition ? integrationPartition(selected, durations, meta.partition) : selected
         if (!slice.length && meta.partition && meta.scope !== 'affected' && !meta.deriveFiles) {
@@ -305,56 +317,33 @@ export class HostCiRunner {
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       // The repository's own integration runner sizes its shards to this computer.
       // Compiled test modules outlive the run's worktree, so the next run on this computer starts warm.
-      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true FOREMAN_CODE_CI_DEDICATED=1 NODE_OPTIONS=--max-old-space-size=6144`
-        + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(this.root, 'vitest-cache'))}${integrationEnvironment}`,
+      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=6144`
+        + (capabilities.parts ? ` CI_HOST_RUNNER=1 FOREMAN_CODE_CI_DEDICATED=1`
+          + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(this.root, 'vitest-cache'))}` : '') + integrationEnvironment,
       'mkdir -p "$TMPDIR"',
       `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
       ...(meta.message ? [`echo ${quote(meta.message)}`] : []),
-      'step install', 'corepack pnpm install --frozen-lockfile || finish $?',
+      'step install', `${pm} install${existsSync(join(source, 'pnpm-lock.yaml')) ? ' --frozen-lockfile' : ''} || finish $?`,
       ...(command ? [`step ${meta.part ?? meta.suite}`,
-        ...(command !== 'true' && existsSync(join(source, 'scripts/ci-suite.sh'))
+        ...(command !== 'true' && capabilities.parts
           ? [`SUITE=${quote(prerequisiteSuite)} bash scripts/ci-suite.sh prepare || finish $?`] : []),
         `${command} || finish $?`] : []),
       'finish 0', ''].join('\n')
   }
 
-  /** The same package commands and unit selector used by ci-suite.sh, without cloud machine setup. */
+  private packageManager(source: string): string {
+    if (existsSync(join(source, 'pnpm-lock.yaml'))) return 'corepack pnpm'
+    if (existsSync(join(source, 'package-lock.json')) || existsSync(join(source, 'npm-shrinkwrap.json'))) return 'npm'
+    if (existsSync(join(source, 'yarn.lock'))) return 'corepack yarn'
+    return 'npm'
+  }
+
   private partCommand(meta: RunMeta, quote: (value: string) => string): string {
-    const contracts = 'corepack pnpm --filter @foreman-code/contracts build'
-    const part = meta.part!
-    if (part === 'unit-api' || part === 'unit-web') {
-      const run = this.runDirectory(meta.runId)
-      const output = join(run, 'measured-durations.json')
-      const report = `${output}.vitest.json`
-      const list = quote(join(run, 'unit-files'))
-      const slice = meta.partition ? `${meta.partition.index + 1}/${meta.partition.count}` : ''
-      const project = part === 'unit-api' ? 'apps/api' : 'apps/web'
-      const test = part === 'unit-api' ? 'corepack pnpm test' : 'FOREMAN_WEB_TEST_PHASE=fast corepack pnpm exec vitest run'
-      return ['(', `${contracts} || exit $?`,
-        `node scripts/ci-unit-files.mjs select ${part} ${quote(slice)} > ${list} || exit $?`,
-        `mapfile -d '' -t files < ${list} || exit $?`,
-        `code=0; (cd ${project} && ${test} "\${files[@]}" --reporter=default --reporter=json`
-          + ` --outputFile.json=${quote(report)}) || code=$?`,
-        `if [ -f ${quote(report)} ]; then node scripts/ci-unit-files.mjs record ${part} ${quote(report)} ${quote(output)}`
-          + ' || exit $?; fi', 'exit "$code"', ')'].join('\n')
-    }
-    const commands: Record<Exclude<CiPart, 'unit-api' | 'unit-web'>, string> = {
-      // The run-graph smoke runs once, in the first shard of the heavy phase.
-      'unit-web-heavy': `${contracts}`
-        + (!meta.partition || meta.partition.index === 0 ? ' && corepack pnpm --filter @foreman-code/web test:run-graph-smoke' : '')
-        + ' && (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy corepack pnpm exec vitest run'
-        + `${meta.partition ? ` --shard=${meta.partition.index + 1}/${meta.partition.count}` : ''})`,
-      'unit-other': `${contracts} && corepack pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test`
-        + ' && corepack pnpm test:scripts',
-      'lint-api': `${contracts} && corepack pnpm --filter @foreman-code/api lint`,
-      'lint-other': `${contracts} && corepack pnpm -r --no-bail --filter '!@foreman-code/api' --if-present lint`,
-      'typecheck-api': `${contracts} && corepack pnpm --filter @foreman-code/api typecheck`,
-      'typecheck-other': `${contracts} && corepack pnpm -r --filter '!@foreman-code/api' --if-present typecheck`,
-      'build-api': `${contracts} && corepack pnpm --filter @foreman-code/api build`,
-      'build-other': 'corepack pnpm -r --filter \'!@foreman-code/api\' --if-present build',
-    }
-    return commands[part]
+    const output = join(this.runDirectory(meta.runId), 'measured-durations.json')
+    const slice = meta.partition ? `${meta.partition.index + 1}/${meta.partition.count}` : ''
+    // The runner already chose the scope; the hook must not derive its own selection.
+    return `SUITE=${quote(meta.part!)} SCOPE=full SLICE=${quote(slice)} DURATIONS_OUTPUT=${quote(output)} bash scripts/ci-suite.sh`
   }
 
   private async finish(runId: string, state: CiHostRun['state'], exitCode: number | null, message: string | null) {

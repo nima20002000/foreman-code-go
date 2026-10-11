@@ -16,7 +16,8 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 
 /** A private repository and its public mirror as local bare repositories standing in for GitHub, with a gh that
  * records dispatches and replays the run states a test sets. */
-async function fixture(files: Record<string, string> = {}, options: { mirror?: boolean; provider?: 'github' | 'circleci' } = {}) {
+async function fixture(files: Record<string, string> = {}, options: { mirror?: boolean; provider?: 'github' | 'circleci'
+  mirrorWorkflows?: boolean; sourceWorkflows?: boolean } = {}) {
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? '/tmp', 'cloud-ci-'))
   roots.push(root)
   const environment = gitFixtureEnvironment()
@@ -27,6 +28,13 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   run(root, 'init', '-q', '--bare', origin); run(root, 'init', '-q', '--bare', mirror)
   // The mirror starts from one import commit without the private history.
   run(mirrorWork, 'init', '-q', '-b', 'main'); await writeFile(join(mirrorWork, 'README.md'), 'import\n')
+  const workflows = { '.github/workflows/ci.yml': 'name: CI\non: workflow_dispatch\n',
+    '.circleci/config.yml': 'version: 2.1\n' }
+  for (const [path, text] of Object.entries(workflows)) {
+    if (options.mirrorWorkflows === false) continue
+    await mkdir(join(mirrorWork, path, '..'), { recursive: true })
+    await writeFile(join(mirrorWork, path), text)
+  }
   run(mirrorWork, 'add', '.'); run(mirrorWork, 'commit', '-qm', 'Initial import'); run(mirrorWork, 'push', '-q', mirror, 'main')
   run(work, 'init', '-q', '-b', 'main')
   await writeFile(join(work, 'secret-history.txt'), 'old\n'); run(work, 'add', '.'); run(work, 'commit', '-qm', 'private history')
@@ -35,6 +43,11 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   for (const name of ['a', 'b', 'c', 'd']) await writeFile(join(work, `apps/api/test/${name}.integration.test.ts`), '')
   await writeFile(join(work, 'scripts/integration-durations.json'), JSON.stringify({ 'apps/api/test/a.integration.test.ts': 400,
     'apps/api/test/b.integration.test.ts': 300, 'apps/api/test/c.integration.test.ts': 200, 'apps/api/test/d.integration.test.ts': 100 }))
+  for (const [path, text] of Object.entries(workflows)) {
+    if (options.sourceWorkflows === false) continue
+    await mkdir(join(work, path, '..'), { recursive: true })
+    await writeFile(join(work, path), text)
+  }
   for (const [path, text] of Object.entries(files)) await writeFile(join(work, path), text)
   run(work, 'add', '-A'); run(work, 'commit', '-qm', 'change'); run(work, 'push', '-q', origin, 'main')
   const commit = run(work, 'rev-parse', 'HEAD')
@@ -155,6 +168,31 @@ describe('GitHub Actions CI on a public mirror', () => {
       .toMatchObject({ scope: 'full', reason: 'The commit is the workspace default branch head.' })
   })
 
+  it.each(['github', 'circleci'] as const)('declines %s when its mirror lacks workflow files without publishing', async provider => {
+    const f = await fixture({}, { provider, mirrorWorkflows: false })
+    const head = f.mirrorGit('rev-parse', 'main')
+    await expect(f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+      commit: f.commit, suite: 'integration' })).rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
+    expect(f.dispatched).toHaveLength(0)
+    expect(f.circle.triggered).toHaveLength(0)
+    expect(f.mirrorGit('rev-parse', 'main')).toBe(head)
+  })
+
+  it.each(['github', 'circleci'] as const)('preserves both mirror workflows for a repository without them on %s', async provider => {
+    const manifest = JSON.stringify({ scripts: { build: 'node build.mjs', lint: 'node lint.mjs', unit: 'node unit.mjs' } })
+    const f = await fixture({ 'package.json': manifest }, { provider, sourceWorkflows: false })
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+      commit: f.commit, suite: provider === 'github' ? 'build' : 'integration' })
+    const commands = provider === 'github' ? f.dispatched : f.circle.triggered
+    expect(commands).toHaveLength(1)
+    expect(commands[0]).toContain(`suite=${provider === 'github' ? 'build' : 'integration'}`)
+    expect(commands[0]).toContain('slice=')
+    expect(f.mirrorGit('show', 'main:package.json')).toBe(manifest)
+    expect(f.mirrorGit('show', 'main:.github/workflows/ci.yml')).toBe('name: CI\non: workflow_dispatch')
+    expect(f.mirrorGit('show', 'main:.circleci/config.yml')).toBe('version: 2.1')
+    expect(() => f.mirrorGit('cat-file', '-e', f.commit)).toThrow()
+  })
+
   it.each(['github', 'circleci'] as const)('spreads heavy integration files across every %s slice', async provider => {
     const heavy = [
       'apps/api/test/remote-review-production-main-crash.integration.test.ts',
@@ -196,7 +234,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(command).toContain('suite=unit-api')
     expect(command).toContain('slice=')
     expect(command).toContain('scope=affected')
-    expect(command).toContain('files=s:4')
+    expect(command).toContain('files=s:6')
   })
 
   it.each(['github'] as const)('reads measured unit durations from %s artifacts', async provider => {
@@ -230,7 +268,7 @@ describe('GitHub Actions CI on a public mirror', () => {
       suite: 'unit', scope: 'affected', files })
     const command = provider === 'github' ? f.dispatched[0]! : f.circle.triggered[0]!
     expect(command).toContain('scope=affected')
-    expect(command).toContain('files=s:4')
+    expect(command).toContain('files=s:6')
   })
   it('publishes only the commit files, then dispatches one run with its partition slice', async () => {
     const f = await fixture()

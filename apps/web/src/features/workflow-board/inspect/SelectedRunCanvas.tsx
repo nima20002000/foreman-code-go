@@ -1,6 +1,7 @@
 import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
+import type { CiActivity } from '@foreman-code/contracts'
 import { createContext, useContext, memo, useMemo, useRef, useState } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
 import { Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { RepeatGraphScopeV3, WorkflowNodeV3, WorkflowRelationship } from '@foreman-code/contracts/wave25'
 import { AgentNodeView, AgentPopover, Dialog, Alert, Button, type AgentNodeState, type AgentNodeTransition } from '../../../shared/ui/nocturne'
@@ -18,6 +19,10 @@ import { useSelectedRunQueryState, useSelectedRunRecord } from '../runFacts'
 import { useRunHandoffsQuery } from '../runHandoffsQuery'
 import { runInspectionQueryKey, useRunVersionQuery } from './queries'
 import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
+import { runsSelectorApi } from '../../runs-selector/client'
+import { isRunAccessError } from '../../runs-selector/query'
+import { runBoardCi } from '../../run-board/model'
+import { ciNodePresentation } from '../../run-board/ciPresentation'
 import { useRunChoreography } from './runChoreography'
 import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
 import type { SubagentLayoutNode } from '../../run-subagents/layout'
@@ -118,6 +123,18 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   const handoffsDenied = useProtectedAccessError(handoffsQuery)
   const handoffs = !handoffsDenied && !handoffsQuery.isError ? handoffsQuery.data : undefined
   const record = useSelectedRunRecord()
+  const ciQuery = useQuery({
+    queryKey: [...runInspectionQueryKey(scope), 'board-activity'],
+    queryFn: ({ signal }) => runsSelectorApi.snapshot({ workspaceId: scope.workspaceId,
+      workflowId: scope.workflowId, runId: scope.runId }, { signal }),
+    enabled: Boolean(version && record && !canonicalDenied), retry: false, staleTime: 0,
+    refetchInterval: query => isRunAccessError(query.state.error) ? false : 1500,
+  })
+  const cis = useMemo(() => {
+    const data = ciQuery.isError ? undefined : ciQuery.data
+    return data?.snapshot.kind === 'available' && data.snapshot.workflowVersionId === scope.workflowVersionId
+      ? runBoardCi(data.snapshot, data.activitySnapshot) : new Map<string, CiActivity>()
+  }, [ciQuery.data, ciQuery.isError, scope.workflowVersionId])
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
   const states = useMemo(() => pinnedNodeStates(record), [record])
   const choreography = useRunChoreography(record, topology?.edges)
@@ -185,7 +202,10 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       const recorded = !record ? 'Current status unavailable' : !state ? 'No activation in the bounded current cut' :
         `${state.label}${state.occurrenceIndex ? ` · repetition ${state.occurrenceIndex}` : ''}${state.attempt ? ` · attempt ${state.attempt}` : ''}`
       const nodeFacts:Facts = node.kind==='job'?{...unknownFacts,harness:undefined,harnessLabel:'Job',roleLabel:'Job',model:undefined,meta:[{label:'Revision',value:String(node.jobDefinitionRevision)}]}:facts.get(node.configurationId)??unknownFacts
-      const view = !record ? { state: 'unavailable' as const, label: 'Unavailable' } : choreography.nodes.get(node.id) ?? { state: 'idle' as const, label: 'Not started' }
+      const baseView = !record ? { state: 'unavailable' as const, label: 'Unavailable' }
+        : choreography.nodes.get(node.id) ?? { state: 'idle' as const, label: 'Not started' }
+      const ci = cis.get(node.id)
+      const view = ci ? { ...baseView, label: `${baseView.label} · ${ciNodePresentation(ci).label}` } : baseView
       const shown = `${view.state}:${view.label}:${'transition' in view ? `${view.transition}@${view.transitionKey}` : ''}`
       const cached = previous.current.get(node.id)
       const execution = node.kind === 'job' ? jobExecutions.get(node.id) : undefined
@@ -198,7 +218,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     }) ?? []
     previous.current = next
     return result
-  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes])
+  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis])
   const layoutById = useMemo(() => new Map(layout?.map((node) => [node.id, node])), [layout])
   const pinnedById = useMemo(() => new Map(version?.definition.nodes.map((node) => [node.id, node])), [version])
   const presented = useRef(new Map<string, { source: RunNode; node: RunNode }>())

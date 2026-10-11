@@ -8,7 +8,8 @@ import { test } from 'node:test'
 
 const script = fileURLToPath(new URL('./ci-suite.sh', import.meta.url))
 
-function runSuite(t, suite, failCommand = '', scope = 'full', action = '', installedClis = true, selection = undefined) {
+function runSuite(t, suite, failCommand = '', scope = 'full', action = '', installedClis = true, selection = undefined,
+  hostRunner = false) {
   const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-suite-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const callsFile = join(directory, 'calls.jsonl')
@@ -61,6 +62,7 @@ if (process.argv[2] === 'rev-parse') console.log('false')
     env: { ...process.env, SUITE: suite, SCOPE: selection?.omitScope ? undefined : scope,
       SELECTED_FILES: selection ? '' : 's:1', DEFAULT_BRANCH: 'release/stable', CI_STATE: join(directory, 'state'),
       RUNNER_SELECTION: JSON.stringify(selection),
+      CI_HOST_RUNNER: hostRunner ? '1' : '0',
       PATH: installedClis ? `${directory}${delimiter}${process.env.PATH}` : directory,
       CALLS_FILE: callsFile, FAIL_COMMAND: failCommand },
   })
@@ -101,6 +103,13 @@ test('explicit full scope bypasses runner selection and runs the complete cloud 
     { scope: 'affected', files: ['apps/api/src/value.ts'] })
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(calls, [contractsBuild, ['--filter', '@foreman-code/api', 'typecheck']])
+})
+test('a host CI part uses Corepack and the already delegated host service', t => {
+  const { result, calls } = runSuite(t, 'unit-api', '', 'full', '', true, undefined, true)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(calls[0], ['pnpm', ...contractsBuild])
+  assert.deepEqual(calls[1], ['scripts/ci-unit-files.mjs', 'select', 'unit-api', ''])
+  assert.deepEqual(calls[2].slice(0, 2), ['pnpm', 'test'])
 })
 test('host preparation installs missing harness CLIs with the cloud package age policy', t => {
   const { result, calls } = runSuite(t, 'unit-api', '', 'full', 'prepare', false)

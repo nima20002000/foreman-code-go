@@ -9,6 +9,8 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { ciGroupState, planCiParts, type CiUnitInventory } from './parts.js'
+import { assertCiReadAccess } from './runAccess.js'
+import type { CiRepositoryCapabilities } from './repository.js'
 
 type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
 export interface HostCiComputer { key: string; hostRef: HostRef; label: string; priority: number }
@@ -19,6 +21,7 @@ export interface HostCiEndpoint {
 }
 /** Resolves the commit to test and makes sure GitHub has it, so build computers can fetch it. */
 export interface CiCommits {
+  capabilities(repository: string, commit: string): Promise<CiRepositoryCapabilities>
   unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
     snapshot: { baseCommit: string; commit: string; bundle: Buffer } | null): Promise<string>
@@ -75,14 +78,20 @@ export class HostCiService {
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
         const commit = await this.commits.resolve(repository, workspace.repository.defaultBranch, input.commit, snapshot)
         const groupId = randomUUID(), now = new Date().toISOString()
-        const inventory = input.suite === 'unit' ? await this.commits.unitInventory?.(repository, commit) : undefined
+        const capabilities = await this.commits.capabilities(repository, commit)
+        const inventory = capabilities.parts && input.suite === 'unit'
+          ? await this.commits.unitInventory?.(repository, commit) : undefined
         const learned = ['unit', 'integration'].includes(input.suite) ? await this.learnedDurations(repository) : null
         const durations = input.suite === 'integration' ? learned : null
         const unitDurations = { ...inventory?.durations, ...learned }
-        const selectionScope = input.scope ?? 'affected'
+        const supportsSelection = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.affected
+        const selectionScope = supportsSelection ? input.scope ?? 'affected' : 'full'
         const deriveFiles = selectionScope === 'affected' && input.files === undefined
+        const selection = { ...input, scope: selectionScope, files: selectionScope === 'affected' ? input.files : [] }
         const empty = selectionScope === 'affected' && input.files?.length === 0
-        const parts = planCiParts(input, unitDurations, inventory)
+        const split = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.parts
+        const parts = split ? planCiParts(selection, unitDurations, inventory)
+          : [{ part: null, partition: null, files: selection.files ?? [] }]
         const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,
@@ -200,11 +209,14 @@ export class HostCiService {
 
   async get(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; ticketId: string }) {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
+    const authorized = await this.read(input.ticketId, scope.workspaceId)
+    assertCiReadAccess(caller, scope.executionId, authorized)
     await this.dispatch()
     const run = await this.read(input.ticketId, scope.workspaceId)
     const group = (await this.pool.query<{ record: unknown }>(
-      'select record from ci_runs where group_id=$1 and workspace_id=$2 order by created_at,id',
-      [run.groupId, scope.workspaceId])).rows.map(row => CiRunRecordSchema.parse(row.record))
+      `select record from ci_runs where group_id=$1 and workspace_id=$2
+        and record->'initiator'=$3::jsonb order by created_at,id`,
+      [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
     let logTail = ''
     if (run.computer && run.state !== 'queued') {
       const tail = await this.logs(caller, { ...input, afterOffset: undefined, maxBytes: 32_768 }).catch(() => null)
@@ -219,10 +231,12 @@ export class HostCiService {
     afterOffset?: number | undefined; maxBytes?: number | undefined; group?: boolean | undefined }) {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
     const run = await this.read(input.ticketId, scope.workspaceId)
+    assertCiReadAccess(caller, scope.executionId, run)
     if (input.group) {
       const group = (await this.pool.query<{ record: unknown }>(
-        'select record from ci_runs where group_id=$1 and workspace_id=$2 order by created_at,id',
-        [run.groupId, scope.workspaceId])).rows.map(row => CiRunRecordSchema.parse(row.record))
+        `select record from ci_runs where group_id=$1 and workspace_id=$2
+          and record->'initiator'=$3::jsonb order by created_at,id`,
+        [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
       const maxBytes = Math.max(1, Math.floor((input.maxBytes ?? 65_536) / group.length))
       const parts = await Promise.all(group.map(async part => ({ run: part,
         ...await this.readLog(part, { afterOffset: input.afterOffset, maxBytes }) })))
@@ -250,6 +264,7 @@ export class HostCiService {
   async cancel(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; ticketId: string }) {
     const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:cancel'])
     const run = await this.read(input.ticketId, scope.workspaceId)
+    assertCiReadAccess(caller, scope.executionId, run)
     if (run.state === 'queued') {
       const canceled = { ...run, state: 'canceled' as const, finishedAt: new Date().toISOString(), message: 'Canceled.' }
       await this.save(canceled, null)

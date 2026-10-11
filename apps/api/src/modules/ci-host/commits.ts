@@ -3,11 +3,20 @@ import { importAgentSnapshot } from '../sources/agentSnapshot.js'
 import { publishCommit } from '../sources/githubPublisher.js'
 import type { CiCommits } from './service.js'
 import { CiDurationsSchema } from '@foreman-code/contracts'
+import { ciRepositoryCapabilities } from './repository.js'
 
 /** Main's clone of the workspace repository: the requested commit, an Agent's files as a commit on its base, or the
  * default branch head; whatever GitHub lacks is pushed so build computers can fetch it. */
 export class GitCiCommits implements CiCommits {
   constructor(private readonly git: GitWorktreePorts = systemGitWorktreePorts()) {}
+
+  async capabilities(repository: string, commit: string) {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(this.git, repository, commit, signal)
+    const tree = await this.git.git(['ls-tree', '-r', '--name-only', commit], { cwd: clone, signal })
+    if (tree.code !== 0) throw new Error('Could not read the CI repository capabilities.')
+    return ciRepositoryCapabilities(tree.stdout.trim().split('\n'))
+  }
 
   async unitInventory(repository: string, commit: string) {
     const signal = AbortSignal.timeout(30_000)

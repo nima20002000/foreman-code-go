@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest'
 import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
 import { projectNativeActivityFacts } from '../src/modules/runs/nativeActivitySnapshot.js'
+import { CiRunRecordSchema } from '@foreman-code/contracts'
 
 const scope = { workspaceId: 'ws', workflowId: 'wf', runId: 'run', workflowVersionId: 'version' }
 const version = { id: 'version', workspaceId: 'ws', workflowId: 'wf', definition: { nodes: [], edges: [] } } as unknown as WorkflowVersionV3
-function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob = false) {
+function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob = false,
+  cis: Record<string, unknown>[] = [], movingCi = false) {
   let reads = 0
   const sql = { query: async (text: string) => {
     if (text.includes('from runs where')) { reads++; return { rows: [{ revision: moving && reads > 1 ? '4' : '3', stopped: false, outcome: 'pending', execution_state: 'running' }] } }
@@ -15,6 +17,8 @@ function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob
       { id: 'C', attempt: 2, revision: '2', native_revision: '0', state: 'waiting', outcome: null, started_at: '2026-10-01T00:00:01.000Z', native_session_id: 'native-C', harness: 'codex' },
       { id: 'B', attempt: 1, revision: '0', native_revision: '0', state: 'queued', outcome: null, started_at: null, native_session_id: null, harness: 'codex' }] }
     if (text.includes('from durable_interactions')) return { rows: [] }
+    if (text.includes('from ci_runs')) return { rows: cis.map(ci => ({ ...ci,
+      revision: movingCi && reads > 1 ? '4' : ci.revision })) }
     if (text.includes('from workflow_job_executions w join job_executions')) return { rows: jobs.map((job) => ({ ...job,
       revision: movingJob && reads > 1 ? '10' : job.revision })) }
     if (text.includes('as high_water')) return { rows: [{ high_water: '9007199254740993', retained_from: '1', observed: 1 }] }
@@ -24,6 +28,37 @@ function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob
   return sql
 }
 describe('Run activity snapshot', () => {
+  it('keeps Host CI owned by its Agent execution through waiting, running and terminal states', async () => {
+    const record = CiRunRecordSchema.parse({ id: '00000000-0000-4000-8000-000000000001',
+      groupId: '00000000-0000-4000-8000-000000000002', workspaceId: scope.workspaceId,
+      suite: 'install', repository: 'example/project', commit: 'a'.repeat(40), part: null, partition: null,
+      state: 'queued', computer: null, step: null, exitCode: null, message: null,
+      queuedAt: '2026-10-01T00:00:02.000Z', startedAt: null, finishedAt: null,
+      initiator: { principalId: 'worker', executionId: 'A' } })
+    const ci = { id: record.id, revision: '3', execution_id: 'A', agent_id: 'agent', node_id: 'node',
+      pinned: true, record }
+    const ownedVersion = { ...version, definition: { ...version.definition,
+      nodes: [{ id: 'node', kind: 'agent' as const, agentId: 'agent' }] } } as WorkflowVersionV3
+    const queued = await readRunActivitySnapshot(fixture(false, [], false, [ci]), scope, ownedVersion)
+    expect(queued.queued).toContainEqual(expect.objectContaining({ kind: 'ci', executionId: 'A', ticketId: record.id }))
+    expect(queued.active).toContainEqual(expect.objectContaining({ phase: 'waiting',
+      ref: expect.objectContaining({ kind: 'ci', executionId: 'A', agentId: 'agent' }),
+      ci: expect.objectContaining({ state: 'queued' }) }))
+    for (const state of ['starting', 'running', 'passed', 'failed', 'canceled', 'lost'] as const) {
+      const read = await readRunActivitySnapshot(fixture(false, [], false, [{ ...ci,
+        record: { ...record, state } }]), scope, ownedVersion)
+      const active = read.active.find(work => work.ref.kind === 'ci')
+      if (state === 'starting' || state === 'running') {
+        expect(active).toMatchObject({ phase: state === 'starting' ? 'preparing' : 'active', ci: { state } })
+      } else expect(active).toBeUndefined()
+      expect(read.queued.some(ref => ref.kind === 'ci')).toBe(false)
+    }
+    expect(queued.sourceRevisions).toContainEqual({ source: 'ci_run', id: record.id, revision: '3' })
+    await expect(readRunActivitySnapshot(fixture(false, [], false, [ci], true), scope, ownedVersion))
+      .rejects.toMatchObject({ code: 'ACTIVITY_SNAPSHOT_CONFLICT' })
+    await expect(readRunActivitySnapshot(fixture(false, [], false, [{ ...ci, agent_id: 'foreign' }]), scope, ownedVersion))
+      .rejects.toMatchObject({ code: 'ACTIVITY_OWNER_CONFLICT' })
+  })
   it('keeps two active executions, queued newest B, and independent exact source revisions', async () => {
     const value = await readRunActivitySnapshot(fixture(), scope, version)
     expect(value.active.map((entry) => entry.ref)).toMatchObject([{ executionId: 'A', attemptKey: '1' }, { executionId: 'C', attemptKey: '2' }])

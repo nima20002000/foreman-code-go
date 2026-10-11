@@ -8,8 +8,13 @@
 # build-api, build-other. For unit-api and unit-web, SLICE is
 # a duration-balanced shard such as 2/3 (scripts/ci-unit-files.mjs). SLICE: an integration partition's file indexes
 # (scripts/ci-files.mjs); empty runs every file. DURATIONS_OUTPUT: where measured file durations go.
+# Host CI uses this hook for named parts; ci-files.mjs opts into integration partitions.
 set -euo pipefail
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
+
+if [ "${CI_HOST_RUNNER:-0}" = 1 ]; then
+  pnpm() { corepack pnpm "$@"; }
+fi
 
 if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
   case "$SUITE" in unit|unit-api|integration) ;; *) exit 0 ;; esac
@@ -32,6 +37,8 @@ fi
 
 # Native process tests need a delegated cgroup, as a systemd user service gets on our build computers.
 delegate_cgroup() {
+  # Host CI already runs inside a delegated systemd unit.
+  [ "${CI_HOST_RUNNER:-0}" != 1 ] || return 0
   local cgroup=/sys/fs/cgroup/foreman-ci
   sudo mkdir -p "$cgroup" && sudo chown -R "$(id -u):$(id -g)" "$cgroup"
   echo $$ | sudo tee "$cgroup/cgroup.procs" >/dev/null
