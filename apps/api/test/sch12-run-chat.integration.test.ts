@@ -269,8 +269,16 @@ describe.skipIf(!postgresEnabled)('SCH-12 historical Run-scoped chat PostgreSQL 
       } finally { try { await api?.close() } finally { await f.close() } }
     }, 120_000)
 
-  it('[SCH-12-C05] routed workflow rejects an ephemeral Codex configuration before admission', async () => {
-    await expect(historicalFixture('sequential', true)).rejects.toMatchObject({ code: 'WORKFLOW_HARNESS_APPROVAL_CONFLICT' })
+  it('routed workflow rejects an ephemeral Codex configuration before admission', async () => {
+    let f: Awaited<ReturnType<typeof historicalFixture>> | undefined
+    try {
+      const admission = async () => {
+        f = await historicalFixture('sequential', true)
+      }
+      await expect(admission()).rejects.toMatchObject({ code: 'WORKFLOW_HARNESS_APPROVAL_CONFLICT' })
+    } finally {
+      await f?.close()
+    }
   }, 120_000)
 
   it('[SCH-12-C04] forged/foreign Runs and Run-limited/revoked callers cannot read or mutate another historical chat', async () => {
