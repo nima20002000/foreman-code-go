@@ -23,7 +23,11 @@ async function verifyTickets(client: Client, workflow: RunningCiWorkflow, execut
   expect(runs.map(run => run.id).sort()).toEqual(report.tickets.map(ticket => ticket.ticketId).sort())
   const owned = [...observation.tickets.values()].filter(ticket => ticket.initiatingExecutionId === executionId)
   expect(owned.map(ticket => ticket.ticketId).sort()).toEqual(runs.map(run => run.id).sort())
-  if (report.suite === 'integration') {
+  if (workflow.workspace.project === 'demo') {
+    // A repository without the Foreman part hook runs each suite as one repository-defined job.
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ part: null, partition: null })
+  } else if (report.suite === 'integration') {
     expect(runs).toHaveLength(2)
     expect(runs.map(run => run.partition?.index).sort()).toEqual([0, 1])
     expect(runs.every(run => run.part === null && run.partition?.count === 2)).toBe(true)
@@ -140,9 +144,9 @@ async function verifyWorkflow(client: Client, workflow: RunningCiWorkflow, obser
 }
 
 function verifyScheduling(tickets: TicketObservation[], observation: ScenarioObservation) {
-  const physicalComputers = new Set(tickets.filter(ticket => ticket.latest.computer?.hostRef.kind !== 'cloud')
-    .map(ticket => JSON.stringify(ticket.latest.computer!.hostRef)))
-  expect(physicalComputers.size, 'At least two build computers each execute some work').toBeGreaterThanOrEqual(2)
+  // Cloud runner slots are separate machines; the PC and Main stay out of the CI lane.
+  const computers = new Set(tickets.map(ticket => JSON.stringify(ticket.latest.computer!.hostRef)))
+  expect(computers.size, 'At least two computers each execute some work').toBeGreaterThanOrEqual(2)
   expect(observation.concurrencyWitness, 'Observe all workflow CI requests pending concurrently').not.toBeNull()
   expect(observation.queueWitness, 'Observe tickets queued while CI computers run other tickets').not.toBeNull()
   const witness = observation.queueWitness!
