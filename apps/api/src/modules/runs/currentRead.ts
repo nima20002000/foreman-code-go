@@ -8,30 +8,32 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { RunWorktreeSchema, SavedRunDetailsSchema, REPEAT_GRAPH_LIMITS, graphJsonBytes, RUN_GRAPH_LIMITS } from '@foreman-code/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
-import { DomainError } from '../errors.js'
+import { DomainError, databaseReadFailure } from '../errors.js'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
-import { readAcceptedRepeatRunLocked, readRecordedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
+import { readAcceptedRepeatRunLocked, readRecordedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { readRepeatExecutionLocked } from './repeatPostgres.js'
 
-/** Same primary-pool immutable V3 reader as Start/owner recovery. This is Run
- * detail composition, not another graph projection, graph head or execution
- * admission. Public graph metadata stays on the canonical graph reader. */
+/** Readback uses one unlocked snapshot; mutation callers retain admission locks. */
 export async function withCurrentRunRead<T>(pool: pg.Pool, principal: ManagementPrincipal,
   workspaceId: string, runId: string, action: 'runs:read' | 'runs:stop',
   work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, live: ManagementPrincipal) => Promise<T>,
-  readAcceptedRun = action === 'runs:read' ? readRecordedRepeatRunLocked : readAcceptedRepeatRunLocked): Promise<T> {
-  return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
-    const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(
-      'select workspace_id,workflow_id from runs where id=$1 and workspace_id=$2', [runId, workspaceId])).rows[0]
-    if (!row) throw new DomainError('RUN_NOT_FOUND', 'The Run was not found in this workspace.', 404)
-    const live = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, principal.id)
-    requireAuthorization(live, action, { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId })
-    const snapshot = await readAcceptedRun(sql, runId)
-    if (snapshot.run.workspaceId !== workspaceId || snapshot.run.workflowId !== row.workflow_id) {
-      throw new DomainError('RUN_PIN_CONFLICT', 'The Run changed its exact scope.', 409)
-    }
-    return work(sql, snapshot, live)
-  }))
+  readAcceptedRun = action === 'runs:read' ? readRecordedRepeatRunSnapshot : readAcceptedRepeatRunLocked): Promise<T> {
+  try {
+    return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
+      const row = (await sql.query<{ workspace_id: string; workflow_id: string }>(
+        'select workspace_id,workflow_id from runs where id=$1 and workspace_id=$2', [runId, workspaceId])).rows[0]
+      if (!row) throw new DomainError('RUN_NOT_FOUND', 'The Run was not found in this workspace.', 404)
+      const live = await readLiveManagementPrincipal(sql, principal.id)
+      requireAuthorization(live, action, { workspaceId: row.workspace_id, workflowId: row.workflow_id, runId })
+      const snapshot = await readAcceptedRun(sql, runId)
+      if (snapshot.run.workspaceId !== workspaceId || snapshot.run.workflowId !== row.workflow_id) {
+        throw new DomainError('RUN_PIN_CONFLICT', 'The Run changed its exact scope.', 409)
+      }
+      return work(sql, snapshot, live)
+    }, action === 'runs:read'))
+  } catch (error) {
+    throw action === 'runs:read' ? databaseReadFailure(error) : error
+  }
 }
 export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrincipal, workspaceId: string, runId: string) {
   return withCurrentRunRead(pool, principal, workspaceId, runId, 'runs:read', async (sql, snapshot, live) => {
@@ -84,7 +86,7 @@ export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrinci
     const detail = { run, ...(worktrees.length ? { worktrees } : {}), executions, activity, activitySnapshot, activityPageInfo: { hasEarlier: activityRows.length > 100 }, cleanupPending: cleanup.pending }
     if (graphJsonBytes(detail) > RUN_GRAPH_LIMITS.snapshotBytes) throw new DomainError('RUN_DETAIL_TOO_LARGE', 'Use bounded graph metadata and activity pages for this Run.', 409)
     const parsed = SavedRunDetailsSchema.parse(detail)
-    // Redaction uses the live grants locked on this same read, not the possibly
+    // Redaction uses the live grants in this same snapshot, not the possibly
     // older principal snapshot captured by the transport before a grant change.
     delete parsed.run.authorizationPrincipalId
     if (!isAuthorized(live, 'workspace_locations:read', { workspaceId })) {

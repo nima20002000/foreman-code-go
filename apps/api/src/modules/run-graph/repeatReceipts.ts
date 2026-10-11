@@ -4,8 +4,11 @@ import {
   RepeatMetadataScopeV1Schema, type GraphEvidence,
 } from '@foreman-code/contracts/wave25'
 
-import { DomainError } from '../errors.js'
-import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphSqlClient, type GraphTransactionSql } from './connection.js'
+import { DomainError, databaseReadFailure } from '../errors.js'
+import {
+  assertGraphTransaction, beforeGraphCommit, isReadOnlyGraphTransaction, poisonGraphTransaction,
+  type GraphSqlClient, type GraphTransactionSql,
+} from './connection.js'
 import type { RepeatScope } from '../runs/repeatResolution.js'
 
 /** A private assertion about the EXISTING canonical source/effect tables. This
@@ -88,6 +91,8 @@ export async function assertRepeatCanonicalReceipt(sql: GraphSqlClient,
     assertRepeatCanonicalReceiptRows(rows.rows, receipt)
   } catch (error) {
     if (error instanceof DomainError) throw error
+    const failure = databaseReadFailure(error)
+    if (failure !== error) throw isReadOnlyGraphTransaction(sql) ? failure : error
     return conflict()
   }
 }

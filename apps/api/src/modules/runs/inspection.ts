@@ -22,7 +22,7 @@ import type { GraphTransactionSql } from '../run-graph/connection.js'
 import { canonicalRepeatEffectReceipt } from '../run-graph/repeatPublication.js'
 import { assertRepeatCanonicalReceiptLocked } from '../run-graph/repeatReceipts.js'
 import { withCurrentRunRead } from './currentRead.js'
-import { readRecordedRepeatRunLocked, readRecordedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
+import { readRecordedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import {
   readRecordedExecutionResultLocked, readRepeatDecision, readRepeatExecutionLocked,
   type StoredRepeatExecution,
@@ -155,10 +155,14 @@ export class RunInspectionService {
 
   private async read<T>(principal: ManagementPrincipal, input: { workspaceId: string; runId: string },
     work: (sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot, live: ManagementPrincipal) => Promise<T>,
-    readAcceptedRun = readRecordedRepeatRunLocked): Promise<T> {
+    readAcceptedRun = readRecordedRepeatRunSnapshot): Promise<T> {
     try {
       return await withCurrentRunRead(this.pool, principal, input.workspaceId, input.runId, 'runs:read', work, readAcceptedRun)
     } catch (error) {
+      // Preserve inspection's error contract when the shared reader wraps a deadline.
+      if (error instanceof DomainError && error.code === 'DATABASE_READ_TIMEOUT' && error.cause) {
+        error = error.cause
+      }
       // Do not serialize parser fragments of private persisted input/native data.
       if (error instanceof z.ZodError || error instanceof SyntaxError) throw new DomainError(
         'RUN_INSPECTION_EVIDENCE_CONFLICT', 'Persisted inspection evidence is invalid or unavailable.', 409)
@@ -172,7 +176,7 @@ export class RunInspectionService {
         || ['ECONNREFUSED', 'ECONNRESET', '57P01', '57P02', '57P03'].includes(code) || code.startsWith('08')) {
         const failure = new DomainError('RUN_INSPECTION_UNAVAILABLE',
           readTimeout ? 'The Run inspection query exceeded its database read deadline.' : 'The Run inspection store is unavailable.',
-          503, { reason: readTimeout ? 'query_read_timeout' : reasons[code] ?? 'connection_unavailable',
+          503, { retryable: true, reason: readTimeout ? 'query_read_timeout' : reasons[code] ?? 'connection_unavailable',
             ...(/^\d[A-Z0-9]{4}$/.test(code) ? { sqlState: code } : {}) })
         // Retain the original exception for server diagnostics; HTTP/MCP expose
         // only the static reason and SQLSTATE, never private database text.

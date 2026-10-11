@@ -3,14 +3,14 @@ import type pg from 'pg'
 import { ManagementPrincipalSchema, type ManagementGrant } from '@foreman-code/contracts/management'
 import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, type RunWorktree } from '@foreman-code/contracts/wave25'
 import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
-import { readAcceptedRepeatRunLocked, readRecordedRepeatRunLocked } from '../src/modules/runs/repeatStartRead.js'
+import { readAcceptedRepeatRunLocked, readRecordedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'
 import { readRepeatExecutionLocked } from '../src/modules/runs/repeatPostgres.js'
 import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from '../src/modules/runs/activities.js'
 import { RUN_NATIVE_ACTIVITY_FACTS_SQL } from '../src/modules/runs/nativeActivitySnapshot.js'
 
 // The immutable publication readers are ports here; live grants, transaction
 // ownership, bounded queries and public redaction run their real implementations.
-vi.mock('../src/modules/runs/repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: vi.fn(), readRecordedRepeatRunLocked: vi.fn() }))
+vi.mock('../src/modules/runs/repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: vi.fn(), readRecordedRepeatRunSnapshot: vi.fn() }))
 vi.mock('../src/modules/runs/repeatPostgres.js', () => ({ readRepeatExecutionLocked: vi.fn() }))
 beforeEach(() => vi.resetAllMocks())
 
@@ -31,7 +31,7 @@ function fixture() {
     grants: [{ actions: ['runs:read'], scope: { workspaceIds: [run.workspaceId], workflowIds: [run.workflowId], runIds: [run.id] } }] })
   let liveGrants: ManagementGrant[] = structuredClone(principal.grants)
   let revoked = false
-  vi.mocked(readRecordedRepeatRunLocked).mockResolvedValue({ run, version: f.version,
+  vi.mocked(readRecordedRepeatRunSnapshot).mockResolvedValue({ run, version: f.version,
     configurations: f.configurations, stopRequested: false, cleanupPending: false } as Awaited<ReturnType<typeof readAcceptedRepeatRunLocked>>)
   vi.mocked(readRepeatExecutionLocked).mockResolvedValue({ execution, ref: { nodeId: execution.workflowNodeId, occurrence: null },
     slotId: 'history-slot', input: { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] },
@@ -107,7 +107,7 @@ describe('saved current Run read', () => {
     if (kind === 'revoked') f.revoke()
     else f.grants([{ actions: ['runs:read'], scope: { runIds: ['foreign-run'] } }])
     await expect(f.read()).rejects.toMatchObject({ status: 403 })
-    expect(readRecordedRepeatRunLocked).not.toHaveBeenCalled()
+    expect(readRecordedRepeatRunSnapshot).not.toHaveBeenCalled()
     expect(readRepeatExecutionLocked).not.toHaveBeenCalled()
     expect(f.query).toHaveBeenCalledWith('rollback')
     expect(f.release).toHaveBeenCalledOnce()
