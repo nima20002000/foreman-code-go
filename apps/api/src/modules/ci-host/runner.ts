@@ -208,7 +208,9 @@ export class HostCiRunner {
     }
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       // The repository's own integration runner sizes its shards to this computer.
-      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true FOREMAN_CODE_CI_DEDICATED=1 NODE_OPTIONS=--max-old-space-size=6144${integrationEnvironment}`,
+      // Compiled test modules outlive the run's worktree, so the next run on this computer starts warm.
+      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true FOREMAN_CODE_CI_DEDICATED=1 NODE_OPTIONS=--max-old-space-size=6144`
+        + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(this.root, 'vitest-cache'))}${integrationEnvironment}`,
       'mkdir -p "$TMPDIR"',
       `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,

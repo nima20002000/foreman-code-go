@@ -139,13 +139,15 @@ export class GitHubActionsCi {
     const snapshot = await git(['commit-tree', `${request.commit}^{tree}`, '-p', base, '-m', `Snapshot ${request.commit.slice(0, 12)}`],
       { ...author, GIT_COMMITTER_NAME: author.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: author.GIT_AUTHOR_EMAIL })
     const branch = `ci/${request.commit}`
-    await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`])
+    // Runs start from main, whose cache scope every run shares, and check out the commit's branch.
+    await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
+      `${snapshot}:refs/heads/main`])
     const files = request.suite === 'integration' && request.partition
       ? await this.slice(git, request.commit, request.partition, request.durations ?? {}) : []
     const run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
       suite: request.suite, startedAt: this.ports.now().toISOString(), githubRunId: null, state: 'starting',
       finishedAt: null, exitCode: null, message: null })
-    await this.gh(['workflow', 'run', WORKFLOW, '-R', mirror, '--ref', branch, '-f', `run_id=${request.runId}`,
+    await this.gh(['workflow', 'run', WORKFLOW, '-R', mirror, '--ref', 'main', '-f', `ref=${branch}`, '-f', `run_id=${request.runId}`,
       '-f', `suite=${request.suite}`, '-f', `files=${files.join(' ')}`])
     return this.view(run, 0)
   }
@@ -200,8 +202,8 @@ export class GitHubActionsCi {
     let run = await this.read(runId)
     if (!['starting', 'running'].includes(run.state)) return run
     if (!run.githubRunId) {
-      const listed = JSON.parse(await this.gh(['run', 'list', '-R', run.mirror, '--workflow', WORKFLOW, '--branch',
-        `ci/${run.commit}`, '--event', 'workflow_dispatch', '--limit', '100', '--json', 'databaseId,displayTitle'])) as
+      const listed = JSON.parse(await this.gh(['run', 'list', '-R', run.mirror, '--workflow', WORKFLOW, '--branch', 'main',
+        '--event', 'workflow_dispatch', '--limit', '200', '--json', 'databaseId,displayTitle'])) as
         { databaseId: number; displayTitle: string }[]
       const match = listed.find(value => value.displayTitle === `ci ${run.runId}`)
       if (!match) {

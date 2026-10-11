@@ -8,6 +8,9 @@ on:
       run_id:
         description: Main's CI run id
         required: true
+      ref:
+        description: The mirror branch holding the commit's files
+        required: true
       suite:
         description: install, typecheck, lint, unit, build or integration
         required: true
@@ -30,12 +33,25 @@ jobs:
       FILES: ${{ inputs.files }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Compiled test modules, ESLint and TypeScript results from earlier runs; all are keyed by file content, so a
+      # stale entry only costs a recompile. Runs start from main so every run shares main's cache scope.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            node_modules/.vitest-cache
+            apps/*/node_modules/.cache
+            apps/web/node_modules/.tmp
+            packages/*/node_modules/.cache
+          key: ci-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ inputs.ref }}
+          restore-keys: ci-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Suite
         run: |
           case "$SUITE" in

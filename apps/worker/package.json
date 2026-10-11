@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node ../../scripts/heavy-job.mjs -- node --test test/*.test.mjs",
     "build:artifact": "node ../../scripts/build-worker-artifact.mjs",
-    "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0"
+    "lint": "node ../../scripts/heavy-job.mjs -- eslint . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint/"
   },
   "dependencies": {
     "@foreman-code/contracts": "workspace:*",

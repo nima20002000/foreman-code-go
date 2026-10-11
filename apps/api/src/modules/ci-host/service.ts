@@ -280,8 +280,11 @@ export class HostCiService {
     const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
     queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
     for (const run of queued) {
+      // Typecheck, lint, build and unit suites are CPU- and memory-hungry and need no host capabilities, so they go
+      // to GitHub Actions first and leave the build computers to integration work.
+      const cloudFirst = (computer: HostCiComputer) => Number(run.suite !== 'integration' && computer.hostRef.kind === 'cloud')
       const order = [...computers].sort((left, right) => Number(right.key === run.plannedHostKey)
-        - Number(left.key === run.plannedHostKey) || right.priority - left.priority)
+        - Number(left.key === run.plannedHostKey) || cloudFirst(right) - cloudFirst(left) || right.priority - left.priority)
       for (const computer of order) {
         if (busy.has(computer.key)) continue
         try {
