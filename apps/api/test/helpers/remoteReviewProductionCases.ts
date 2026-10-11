@@ -1,0 +1,316 @@
+import { readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { afterAll, beforeAll, expect } from 'vitest'
+import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, ReviewJobSchema,
+  withAdvancedDefaults } from '@foreman-code/contracts'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { RunExecutionLocationV3Schema } from '@foreman-code/contracts/wave25'
+import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
+import { hasRetainedRemoteReviewerSource } from '../../src/modules/interactions/retainedRemoteReviewer.js'
+import { remoteReviewProduction, waitForRemoteReview as waitForProduction } from './remoteReviewProduction.js'
+import { buildRemoteReviewWorkerRelease } from './remoteReviewProvider.js'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+
+type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
+
+export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
+  description: string): Promise<T> {
+  const started = performance.now()
+  console.info(`[remote-review] waiting for ${description}`)
+  try {
+    return await waitForProduction(read, accept, description)
+  } finally {
+    console.info(`[remote-review] ${description}: ${Math.round(performance.now() - started)} ms`)
+  }
+}
+
+let releaseDirectory: string | undefined
+let workerRelease: string
+
+beforeAll(async () => {
+  releaseDirectory = await privateFixtureDirectory('remote-review-release-')
+  const started = performance.now()
+  console.info('[remote-review] packaging Worker release')
+  workerRelease = await buildRemoteReviewWorkerRelease(releaseDirectory)
+  console.info(`[remote-review] Worker release: ${Math.round(performance.now() - started)} ms`)
+}, 60_000)
+
+afterAll(async () => {
+  if (releaseDirectory) await rm(releaseDirectory, { recursive: true, force: true })
+})
+
+export async function withRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>,
+  options: Parameters<typeof remoteReviewProduction>[0] = {}) {
+  const started = performance.now()
+  const progress = setInterval(() => {
+    console.info(`[remote-review] fixture active: ${Math.round(performance.now() - started)} ms`)
+  }, 10_000)
+  progress.unref()
+  try {
+    await checkRemoteReviewFixture(check, options)
+  } finally {
+    clearInterval(progress)
+  }
+}
+
+async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<void>,
+  options: Parameters<typeof remoteReviewProduction>[0]) {
+  const started = performance.now()
+  const fixture = await remoteReviewProduction({
+    ...options, workerRelease, parallelProfileChecks: true, reuseMatchingProfiles: true,
+    // Reconnects still refresh immediately; avoid periodic payload hashing during native checks.
+    parallelSetup: true, installationRefreshIntervalMs: 60_000,
+    reportPhase: (phase, elapsedMs) => console.info(`[remote-review] ${phase}: ${Math.round(elapsedMs)} ms`),
+  })
+  console.info(`[remote-review] fixture ready: ${Math.round(performance.now() - started)} ms`)
+  try {
+    await check(fixture)
+    console.info(`[remote-review] case complete: ${Math.round(performance.now() - started)} ms`)
+  } catch (error) {
+    console.error('Remote review production failure', error)
+    console.error('Remote review production error codes', fixture.failures())
+    console.error('Remote review jobs', (await fixture.db.pool.query(`select id,state,
+      record->'error' as error,record->>'retryAfter' as retry_after,
+      record->>'providerTurnOrMessageId' as provider_turn,record->>'attempt' as attempt,
+      lease_expires_at>clock_timestamp() as lease_active from review_jobs order by created_at`)).rows)
+    console.error('Remote review writer leases', (await fixture.db.pool.query(`select native_session_id,
+      record->>'correlationId' as correlation,record->>'leaseToken' is not null as claimed,
+      record->>'leaseExpiresAt' as expires_at from native_session_lanes`)).rows)
+    console.error('Remote review credential fences', (await fixture.db.pool.query(`select b.execution_id,b.purpose,
+      b.approval_review_lease_fence=j.lease_fence as current_job_fence
+      from worker_credential_bindings b left join review_jobs j on j.id=b.approval_review_job_id`)).rows)
+    console.error('Remote review interactions', (await fixture.db.pool.query(`select id,status,
+      record->>'deliveryState' as delivery_state from durable_interactions`)).rows)
+    console.error('Remote review delivery attempts', (await fixture.db.pool.query(`select interaction_id,attempt,state,error,
+      approval_write_started_at is not null as write_started,remote_owner_control is not null as remote_reserved
+      from interaction_delivery_attempts order by interaction_id,attempt`)).rows)
+    console.error('Remote reviewer retention', (await fixture.db.pool.query(`select receipt->'intent'->>'executionId' as execution_id,
+      receipt->>'phase' as phase,receipt->'retainedReviewer'->>'expiresAt' as retained_until,
+      receipt->'terminal'->>'kind' as terminal,clock_timestamp() as observed_at from remote_execution_receipts`)).rows)
+    console.error('Remote source reservations', (await fixture.db.pool.query(
+      'select owner_id,state,reserved_bytes from source_storage_reservations order by reservation_id')).rows)
+    const activity = (await fixture.provider.calls()).filter(call => call.method === undefined
+      || call.method === 'turn/start' || call.method === 'turn/interrupt').slice(-30)
+    console.error('Remote review provider activity', activity.map(call => ({
+      method: call.method, nativeStarted: call.nativeStarted, review: call.review, providerFailure: call.providerFailure,
+      reviewDecisionError: call.reviewDecisionError, approvalResponse: call.approvalResponse,
+      reviewDecision: call.reviewDecision,
+    })))
+    try {
+      await fixture.close()
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Remote review and fixture cleanup failed.', { cause: cleanupError })
+    }
+    throw error
+  }
+  const cleanupStarted = performance.now()
+  await fixture.close()
+  console.info(`[remote-review] cleanup: ${Math.round(performance.now() - cleanupStarted)} ms`)
+}
+
+export async function reviewInProgress(fixture: Fixture) {
+  const workspace = ManagedWorkspaceSchema.parse(await fixture.value('workspace_get', {
+    workspaceId: fixture.version.definition.workspaceId,
+  }))
+  expect(workspace.workspace.repository).toMatchObject({ provider: 'github', defaultBranch: 'main' })
+  expect(`${workspace.workspace.repository!.owner}/${workspace.workspace.repository!.name}`)
+    .toBe(fixture.repositoryName)
+  expect(fixture.sourceManifest.capturePolicy).toBe('git-tree-v1')
+  expect(fixture.sourceManifest.git?.repository).toBe(fixture.repositoryName)
+  const requesterVersion = Object.entries(fixture.version.agentConfigurationVersionIds)
+    .find(([agentId]) => agentId !== fixture.version.approval.designatedOrchestratorAgentId)?.[1]
+  const row = (await fixture.db.pool.query<{ record: unknown }>(
+    'select record from agent_configuration_versions where id=$1', [requesterVersion])).rows[0]
+  const configuration = AgentConfigurationVersionSchema.parse(row?.record)
+  expect(configuration.harness.harness).toBe('codex')
+  if (configuration.harness.harness !== 'codex') throw new Error('The requester requires the Codex fixture.')
+  expect(configuration.harness.advanced).toBeUndefined()
+  expect(fixture.profiles[1]!.configuration).toEqual(withAdvancedDefaults(configuration.harness))
+  const started = await fixture.start()
+  const location = RunExecutionLocationV3Schema.parse(started.run.executionLocation)
+  expect(location.runnerId).toBe(fixture.profiles[0]!.target.applicationInstallationId)
+  expect((await fixture.details(started.run.id)).run.executionLocation).toEqual(location)
+  const interaction = await waitForRemoteReview(async () => {
+    await fixture.reconcile()
+    const pending = (await fixture.pending(started.run.id))[0]
+    if (!pending) {
+      const failed = (await fixture.executions(started.run.id)).find(execution => execution.result?.outcome === 'failed')
+      if (failed) throw new Error(`Native execution failed before review: ${failed.result?.error?.code}`)
+    }
+    return pending
+  }, value => value !== undefined, 'routed native interaction')
+  if (!interaction) throw new Error('The requester has no pending interaction.')
+  const job = await waitForRemoteReview(async () => {
+    await fixture.reconcile()
+    const row = (await fixture.db.pool.query<{ record: unknown }>(
+      'select record from review_jobs where interaction_id=$1', [interaction.id])).rows[0]
+    const current = row ? ReviewJobSchema.parse(row.record) : undefined
+    if (current?.state === 'failed') throw new Error(`Remote reviewer failed: ${JSON.stringify(current.error)}`)
+    return current
+  }, value => value?.state === 'acknowledged', 'authenticated remote review submission')
+  if (!job) throw new Error('The retained reviewer has no submitted review job.')
+  const executions = await fixture.executions(started.run.id)
+  const reviewer = executions.find(execution => execution.agentId === job.reviewerAgentId)
+  const requester = executions.find(execution => execution.id === interaction.executionId)
+  if (!reviewer || !requester) throw new Error('The Run is missing its native execution identities.')
+  const owners = fixture.registry.snapshot().launches.filter(launch => launch.lifecycle === 'active'
+    && [reviewer.id, requester.id].some(executionId => launch.owner === `execution:${executionId}`))
+  expect(owners).toHaveLength(2)
+  for (const owner of owners) {
+    expect(owner.guardian).toBeDefined()
+    expect(owner.provider).toBeDefined()
+    expect(owner.boundary?.kind).toBe('cgroup-v2')
+  }
+  return { run: started.run, interaction, job, reviewer, requester, owners }
+}
+
+export async function readInteraction(fixture: Fixture, interactionId: string) {
+  return GetInteractionResponseSchema.parse(await fixture.value('interaction_get', { interactionId })).interaction
+}
+
+export async function deliveredReview(fixture: Fixture, interactionId: string) {
+  const interaction = await waitForRemoteReview(async () => {
+    await fixture.reconcile()
+    return readInteraction(fixture, interactionId)
+  }, value => value.deliveryState === 'delivered', 'persisted native decision delivery')
+  const job = await waitForRemoteReview(async () => {
+    await fixture.reconcile()
+    const row = (await fixture.db.pool.query<{ record: unknown }>(
+      'select record from review_jobs where interaction_id=$1', [interactionId])).rows[0]!
+    return ReviewJobSchema.parse(row.record)
+  }, value => value.state === 'completed', 'persisted completed remote review')
+  expect(interaction.selectedSemantic).toBe('approve_once')
+  expect(interaction.deliveredAt).toBeDefined()
+  expect(job.providerTurnOrMessageId).toBeDefined()
+  expect(job.completedAt).toBeDefined()
+  return { interaction, job }
+}
+
+export async function receipts(fixture: Fixture, runId: string) {
+  const rows = await fixture.db.pool.query<{ receipt: unknown }>(`select r.receipt
+    from remote_execution_receipts r join execution_dispatch_intents i on i.operation_id=r.operation_id
+    where i.run_id=$1 order by i.execution_id`, [runId])
+  return rows.rows.map(row => RemoteOperationReceiptSchema.parse(row.receipt))
+}
+
+export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash' | 'graceful' | 'expired-receipt') {
+  const active = await reviewInProgress(fixture)
+  const beforeInventory = await fixture.inventory()
+  const originalWorkerPid = fixture.workerPid()
+  const originalLaunches = active.owners.map(owner => ({
+    owner: owner.owner, launchId: owner.launchId, guardian: owner.guardian, provider: owner.provider, boundary: owner.boundary,
+  }))
+  const ownerLaunchIds = fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
+    original => original.owner === owner.owner)).map(owner => owner.launchId).sort()
+  const originalReceipts = await receipts(fixture, active.run.id)
+  const processCredentials = async () => (await fixture.db.pool.query<{
+    principal_id: string; execution_id: string
+  }>(`select principal_id,execution_id from worker_credential_bindings
+    where run_id=$1 and revoked_at is null order by execution_id,principal_id`, [active.run.id])).rows
+  const originalCredentials = await processCredentials()
+  expect(originalCredentials.map(row => row.execution_id).sort())
+    .toEqual([active.reviewer.id, active.requester.id].sort())
+  await fixture.restartMain({ mode: recovery === 'graceful' ? 'graceful' : 'crash', afterShutdown: async () => {
+    if (recovery === 'graceful') {
+      const lifetime = (await fixture.db.pool.query<{ detached: boolean; closed: boolean }>(`select
+        detached_at is not null as detached,closed_at is not null as closed from execution_native_closures
+        where execution_id=$1 order by generation desc limit 1`, [active.reviewer.id])).rows[0]
+      expect(lifetime).toEqual({ detached: true, closed: false })
+      expect(await hasRetainedRemoteReviewerSource(fixture.db.pool, active.reviewer)).toBe(true)
+    }
+    if (recovery === 'expired-receipt') {
+      const expired = new Date(Date.now() - 60_000).toISOString()
+      const journal = JSON.parse(await readFile(join(fixture.stateDirectory, 'workflow-operations.json'), 'utf8')) as
+        { receipts: unknown[] }
+      const worker = journal.receipts.map(receipt => RemoteOperationReceiptSchema.parse(receipt))
+        .find(receipt => receipt.intent.executionId === active.reviewer.id)!
+      expect(Date.parse(worker.retainedReviewer!.expiresAt)).toBeGreaterThan(Date.now())
+      expect(worker.native?.sessionId).toBe(active.reviewer.nativeSessionId)
+      const stale = RemoteOperationReceiptSchema.parse({ ...worker, sequence: worker.sequence - 1,
+        retainedReviewer: { ...worker.retainedReviewer, expiresAt: expired } })
+      await fixture.db.pool.query(`update remote_execution_receipts set sequence=$2,receipt=$3::jsonb
+        where operation_id=$1`, [stale.intent.operationId, stale.sequence, JSON.stringify(stale)])
+      const cached = (await receipts(fixture, active.run.id)).find(receipt =>
+        receipt.intent.executionId === active.reviewer.id)!
+      expect(Date.parse(cached.retainedReviewer!.expiresAt)).toBeLessThan(Date.now())
+      expect(worker.sequence).toBeGreaterThan(cached.sequence)
+    }
+  } })
+  const inventory = await waitForRemoteReview(fixture.inventory, value => {
+    const original = beforeInventory.hostMetadata?.connection?.binding
+    const current = value.hostMetadata?.connection?.binding
+    return !!current && !!original && current.connectionEpoch !== original.connectionEpoch
+  }, 'replacement authenticated inventory generation')
+  expect(inventory.installations[0]?.connectionGeneration)
+    .not.toBe(beforeInventory.installations[0]?.connectionGeneration)
+  expect(fixture.workerPid()).toBe(originalWorkerPid)
+  await fixture.reconcile()
+  const currentReceipts = await receipts(fixture, active.run.id)
+  expect(currentReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
+    .toEqual(originalReceipts.map(receipt => ({ intent: receipt.intent, native: receipt.native })))
+  const reconnected = fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
+    original => original.launchId === owner.launchId))
+  expect(reconnected.map(owner => ({ owner: owner.owner, launchId: owner.launchId,
+    guardian: owner.guardian, provider: owner.provider, boundary: owner.boundary }))).toEqual(originalLaunches)
+  expect(reconnected.every(owner => owner.lifecycle === 'active')).toBe(true)
+  await waitForRemoteReview(async () => {
+    await fixture.reconcile()
+    const row = (await fixture.db.pool.query<{ record: unknown; credential_bound: boolean; reviewer_live: boolean }>(`select
+      j.record,exists(select 1 from worker_credential_bindings b where b.execution_id=j.execution_id
+        and b.approval_review_lease_fence=j.lease_fence and b.revoked_at is null) as credential_bound,
+      exists(select 1 from execution_dispatch_intents i join remote_execution_receipts r using(operation_id)
+        where i.execution_id=j.execution_id
+          and (r.receipt#>>'{retainedReviewer,expiresAt}')::timestamptz>clock_timestamp()) as reviewer_live
+      from review_jobs j where j.id=$1`, [active.job.id])).rows[0]
+    if (!row) return undefined
+    return { job: ReviewJobSchema.parse(row.record),
+      credentialBound: row.credential_bound, reviewerLive: row.reviewer_live }
+  }, value => !!value && value.job.attempt > active.job.attempt && value.job.state === 'acknowledged'
+    && value.credentialBound && value.reviewerLive,
+  'replacement Main review lease and original process credential rebinding')
+  expect(await processCredentials()).toEqual(originalCredentials)
+  if (recovery === 'graceful') {
+    const generations = (await fixture.db.pool.query<{ generation: string; detached: boolean; closed: boolean }>(`select
+      generation::text,detached_at is not null as detached,closed_at is not null as closed
+      from execution_native_closures where execution_id=$1 order by generation`, [active.reviewer.id])).rows
+    expect(generations).toHaveLength(2)
+    expect(generations[0]).toMatchObject({ detached: true, closed: false })
+    expect(generations[1]).toMatchObject({ detached: false, closed: false })
+  }
+  if (recovery === 'expired-receipt') {
+    const renewed = (await receipts(fixture, active.run.id)).find(receipt =>
+      receipt.intent.executionId === active.reviewer.id)!
+    expect(Date.parse(renewed.retainedReviewer!.expiresAt)).toBeGreaterThan(Date.now())
+  }
+  const reader = await fixture.access.issue({ name: 'Recovered review reader', audience: 'operator',
+    expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['interactions:read'],
+      scope: { runIds: [active.run.id] } }] })
+  const pending = await readInteraction(fixture, active.interaction.id)
+  const option = pending.responseOptions.find(option => option.semantic === 'approve_once')!
+  const denied = await fixture.call('interaction_respond', { interactionId: pending.id,
+    optionId: option.optionId, expectedRevision: pending.revision }, reader.token)
+  expect(denied.isError).toBe(true)
+  expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+  expect(await readInteraction(fixture, pending.id)).toEqual(pending)
+  const beforeRenewal = (await receipts(fixture, active.run.id)).find(receipt =>
+    receipt.intent.executionId === active.reviewer.id)!
+  // Observe a persisted periodic renewal before delivering with the original credential.
+  await waitForRemoteReview(async () => {
+    await fixture.reconcile()
+    return (await receipts(fixture, active.run.id)).find(receipt =>
+      receipt.intent.executionId === active.reviewer.id)
+  }, receipt => !!receipt && receipt.sequence > beforeRenewal.sequence
+    && Date.parse(receipt.retainedReviewer!.expiresAt) > Date.parse(beforeRenewal.retainedReviewer!.expiresAt),
+  'periodic retained reviewer renewal with the original process credential')
+  await fixture.provider.releaseReview()
+  const delivered = await deliveredReview(fixture, active.interaction.id)
+  expect(delivered.job.nativeSessionId).toBe(active.job.nativeSessionId)
+  expect(delivered.job.providerTurnOrMessageId).toBe(active.job.providerTurnOrMessageId)
+  expect((await fixture.provider.calls()).filter(call => 'approvalResponse' in call)).toHaveLength(1)
+  const starts = (await fixture.provider.calls()).filter(call => call.method === 'turn/start'
+    && call.correlationId === active.job.correlationId)
+  expect(starts).toHaveLength(1)
+  expect(fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
+    original => original.owner === owner.owner)).map(owner => owner.launchId).sort())
+    .toEqual(ownerLaunchIds)
+}

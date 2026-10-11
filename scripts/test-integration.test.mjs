@@ -69,7 +69,14 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts', 'installedWorkerHost'],
-    ['apps/api/test/remote-review-production.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-defaults.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-delivery.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-entry-recovery.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-main-crash.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-main-graceful.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-reserved-decision.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/remote-review-production-worker-crash.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/historical-chat-placement-fork.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/historical-chat-placement-recovery.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/historical-chat-placement-disabled-profile.integration.test.ts', 'installedWorkerHost'],
@@ -128,7 +135,14 @@ test('installed Worker suites remain unavailable and nonzero even when explicitl
     'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
     'apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts',
     'apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts',
-    'apps/api/test/remote-review-production.integration.test.ts',
+    'apps/api/test/remote-review-production-defaults.integration.test.ts',
+    'apps/api/test/remote-review-production-delivery.integration.test.ts',
+    'apps/api/test/remote-review-production-entry-recovery.integration.test.ts',
+    'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+    'apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts',
+    'apps/api/test/remote-review-production-main-graceful.integration.test.ts',
+    'apps/api/test/remote-review-production-reserved-decision.integration.test.ts',
+    'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
     'apps/api/test/worker-chat-profile-qualification.integration.test.ts',
     'apps/api/test/worker-profile-requalification-main-restart.integration.test.ts',
     'apps/api/test/worker-profile-requalification-worker-reconnect.integration.test.ts',
@@ -155,15 +169,26 @@ test('installed Worker suites remain unavailable and nonzero even when explicitl
 })
 
 test('diagnostic case selection preserves file and worker limits and passes the pattern as one argument', () => {
-  const file = 'apps/api/test/remote-review-production.integration.test.ts'
-  const unfiltered = ['run', 'test/remote-review-production.integration.test.ts', '--no-file-parallelism',
-    '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache']
-  assert.deepEqual(integrationVitestArguments(file), unfiltered)
-  const pattern = 'delivered remote decision|reserved decision'
-  assert.deepEqual(integrationVitestArguments(file, pattern), [...unfiltered, '--testNamePattern', pattern])
+  const files = [
+    'apps/api/test/remote-review-production-defaults.integration.test.ts',
+    'apps/api/test/remote-review-production-delivery.integration.test.ts',
+    'apps/api/test/remote-review-production-entry-recovery.integration.test.ts',
+    'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+    'apps/api/test/remote-review-production-main-expired-receipt.integration.test.ts',
+    'apps/api/test/remote-review-production-main-graceful.integration.test.ts',
+    'apps/api/test/remote-review-production-reserved-decision.integration.test.ts',
+    'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
+  ]
+  for (const file of files) {
+    const unfiltered = ['run', file.slice('apps/api/'.length), '--no-file-parallelism',
+      '--maxWorkers=1', '--maxConcurrency=1', '--reporter=verbose', '--fsModuleCache']
+    assert.deepEqual(integrationVitestArguments(file), unfiltered)
+    const pattern = 'delivered remote decision|reserved decision'
+    assert.deepEqual(integrationVitestArguments(file, pattern), [...unfiltered, '--testNamePattern', pattern])
+    assert.deepEqual(autoRetestFiles([file], { diagnostic: true, interrupted: null }), [file])
+  }
   assert.equal(failForSkippedCases({ skipped: 5 }, false), true)
   assert.equal(failForSkippedCases({ skipped: 5 }, true), false)
-  assert.deepEqual(autoRetestFiles([file], { diagnostic: true, interrupted: null }), [file])
 })
 
 test('integration discovery takes a sorted snapshot with startup included', () => {

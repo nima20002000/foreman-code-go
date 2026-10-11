@@ -89,7 +89,17 @@ export async function remoteReviewProduction(options: {
   workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
   claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean; workerRelease?: string
   installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
+  reportPhase?: (phase: string, elapsedMs: number) => void
 } = {}) {
+  let phase = 'fixture resources'
+  let phaseStarted = performance.now()
+  const beginPhase = (next: string) => {
+    options.reportPhase?.(phase, performance.now() - phaseStarted)
+    phase = next
+    phaseStarted = performance.now()
+    options.reportPhase?.(`${phase} started`, 0)
+  }
+  options.reportPhase?.(`${phase} started`, 0)
   const closes: Array<() => Promise<void>> = []
   const close = async () => {
     const errors: unknown[] = []
@@ -130,6 +140,7 @@ export async function remoteReviewProduction(options: {
       }
     }
     const [db, workerRelease, provider, claudeCommands, tls] = await setup()
+    beginPhase('source repository and workflow seed')
     const claudeInventory = options.claudeInventory ? claudeCommands : undefined
     if (options.modelCatalog) await provider.hideModels()
     const certificate = await readFile(tls.certificateFile)
@@ -282,7 +293,9 @@ export async function remoteReviewProduction(options: {
         return ready
       }, value => value, 'production Main startup')
     }
+    beginPhase('Main startup')
     await startMain()
+    beginPhase('startup model catalog')
     const clients = new Map<string, Promise<Client>>()
     let startupCatalog: ReturnType<typeof HarnessOptionsResultSchema.parse> | undefined
     if (options.modelCatalog) {
@@ -315,6 +328,7 @@ export async function remoteReviewProduction(options: {
       return decodeMcpToolResult(response)
     }
     const mainId = (await db.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
+    beginPhase('source approval and Worker pairing')
     const mainHost = { kind: 'main' as const, mainId }
     const mainChoices = WorkspaceRootListResultSchema.parse(await value('workspace_root_choices_list', {
       workspaceId: saved.scope.workspaceId,
@@ -401,6 +415,7 @@ export async function remoteReviewProduction(options: {
       codexBinary: provider.binary, expectedVersion: 'codex-cli 0.154.0',
       appMcpLauncher: launcher, payloadPaths }), { mode: 0o600 })
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
+    beginPhase('installed Worker initialization')
     await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
       env: logEnvironment,
     })
@@ -446,7 +461,9 @@ export async function remoteReviewProduction(options: {
     }
     // Main closes its native sessions while the Worker transport is still available.
     closes.splice(closes.indexOf(stopMain), 0, () => stopWorker())
+    beginPhase('Worker connection')
     await startWorker()
+    beginPhase('Worker inventory')
     const executionHostRef = options.executionHost === 'main' ? mainHost : hostRef
     const inventory = await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
       await value('harness_registry_get', executionHostRef)), value => value.installations.some(
@@ -484,6 +501,7 @@ export async function remoteReviewProduction(options: {
       return profile
     }
     const profiles = []
+    beginPhase('native profile qualification')
     if (options.parallelProfileChecks) {
       // Drain every native check before setup cleanup can stop Main or Worker.
       const results = await Promise.allSettled(saved.configurations.map(prepareProfile))
@@ -496,6 +514,7 @@ export async function remoteReviewProduction(options: {
       for (const configuration of saved.configurations) profiles.push(await prepareProfile(configuration))
     }
     let location = mainLocation
+    beginPhase('root binding and workflow save')
     if (options.executionHost !== 'main') {
       const adopted = WorkspaceRootConfigurationAdoptResultSchema.parse(await value('workspace_root_configuration_adopt', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef,
@@ -591,6 +610,7 @@ export async function remoteReviewProduction(options: {
     }
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
     closes.push(() => stopMain())
+    options.reportPhase?.(phase, performance.now() - phaseStarted)
     return { db, directory, stateDirectory, provider, claudeInventory, access, writer, repositoryName,
       sourceManifest: approved.manifest,
       hostRef: executionHostRef, profiles, version, startupCatalog,
@@ -672,6 +692,7 @@ export async function remoteReviewProduction(options: {
       },
     }
   } catch (error) {
+    options.reportPhase?.(`${phase} failed`, performance.now() - phaseStarted)
     try { await close() } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'Remote review setup and cleanup failed.', { cause: cleanupError })
     }
