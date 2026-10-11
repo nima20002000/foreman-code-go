@@ -4,7 +4,7 @@ import { BuildComputerPrepareStatusSchema, type BuildComputerPrepareInput, type 
 import { ApprovedSourceSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { type ManagementPrincipal } from '@foreman-code/contracts/management'
-import { afterAll, beforeAll, vi } from 'vitest'
+import { afterEach, beforeEach, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -24,17 +24,14 @@ import { verificationCapacityFixture } from './helpers/verificationCapacityFixtu
 
 export function ciEnrollmentFixture() {
   let database: Awaited<ReturnType<typeof currentDatabase>>
-  beforeAll(async () => {
+  // Reconciliation scans all workspaces; immutable history requires a fresh schema for each case.
+  beforeEach(async () => {
     database = await currentDatabase()
   }, 120_000)
-  afterAll(async () => {
+  afterEach(async () => {
     await database?.close()
   }, 120_000)
-  return async () => {
-    // Reconciliation scans all workspaces, so each case needs an empty enrollment inventory.
-    await database.pool.query(`truncate workspaces, device_registrations, build_computer_preferences cascade`)
-    return createFixture(database)
-  }
+  return () => createFixture(database)
 }
 
 // Persistence, authorization and MCP are real; source hosts and runtime preparation are bounded fixtures.
