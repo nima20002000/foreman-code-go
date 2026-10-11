@@ -158,11 +158,20 @@ export class CloudCi {
       suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
       scope, ...(request.files !== undefined ? { files: request.files } : {}),
       finishedAt: null, exitCode: null, message })
+    // Providers cap pipeline parameter length: a full partition too long to list is computed on the runner from the
+    // commit's durations instead, and oversized learned durations stay behind.
+    const limit = this.provider.parameterLimit ?? Number.POSITIVE_INFINITY
+    let partition = selectOnRunner && request.partition ? JSON.stringify(request.partition) : undefined
+    if (slice.length > limit && request.suite === 'integration' && request.partition && scope === 'full' && request.files === undefined) {
+      slice = ''
+      partition = JSON.stringify(request.partition)
+    }
+    const durations = selectOnRunner && request.durations ? JSON.stringify(request.durations) : undefined
     const input: CloudDispatchInput = { mirror, branch, runId: request.runId, suite: request.part ?? request.suite, slice,
       scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
       ...(defaultBranch ? { defaultBranch } : {}),
-      ...(selectOnRunner && request.partition ? { partition: JSON.stringify(request.partition) } : {}),
-      ...(selectOnRunner && request.durations ? { durations: JSON.stringify(request.durations) } : {}) }
+      ...(partition ? { partition } : {}),
+      ...(durations && durations.length <= limit ? { durations } : {}) }
     run = await this.trigger(run, input)
     if (run.providerRunId) {
       try {

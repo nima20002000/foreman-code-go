@@ -15,6 +15,8 @@ export interface CloudDispatchInput {
 export interface CloudProvider {
   readonly id: 'github' | 'circleci'
   readonly label: string
+  /** Longest accepted pipeline parameter value, when the provider caps it. */
+  readonly parameterLimit?: number
   /** Jobs the service runs at once for a public repository on its free plan, less a few kept for retries. */
   readonly slots: number
   readonly cpus: number
@@ -118,6 +120,8 @@ export class GitHubActionsProvider implements CloudProvider {
 export class CircleCiProvider implements CloudProvider {
   readonly id = 'circleci' as const
   readonly label = 'CircleCI'
+  /** CircleCI rejects pipeline parameter values longer than 512 characters. */
+  readonly parameterLimit = 500
   readonly slots = 28
   readonly cpus = 4
   readonly memoryBytes = 15 * 2 ** 30
