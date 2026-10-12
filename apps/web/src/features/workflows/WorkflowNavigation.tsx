@@ -101,11 +101,11 @@ function WorkflowNavigationContent({ workspaceId, activeWorkflowId }: WorkflowNa
   const selected = activeMissing && activeQuery.data && !activeQuery.data.archivedAt ? activeQuery.data : undefined
   const orderRevision = managedQuery.data?.pages[0]?.orderRevision ?? 0
   const order = useWorkflowReorder(workspaceId, orderRevision)
-  const reorderDisabled = order.mutation.isPending || order.unresolved || managedQuery.isFetching || managedQuery.isError
+  const reorderDisabled = order.mutation.isPending || order.unresolved || !managedQuery.data
     || Boolean(managedQuery.data?.pages.some(page => page.orderRevision !== orderRevision))
   const reorder = useReorderableNavigation(`workspace:${workspaceId}:workflows`,
     workflows.map(item => ({ id: item.workflow.id, label: item.workflow.name })),
-    { onReorder: order.save, disabled: reorderDisabled })
+    { onReorder: order.save, disabled: reorderDisabled, revision: orderRevision })
   const byId = new Map(workflows.map(item => [item.workflow.id, item]))
   const hasWorkflows = workflows.length > 0
   const pendingCount = (workflowId: string) => interactionsQuery.isError ? undefined

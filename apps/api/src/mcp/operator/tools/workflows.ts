@@ -20,6 +20,7 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
   if (operatorToolAvailable(context, 'workflow_list')) server.registerTool('workflow_list', {
     description: 'List authorized workflow summaries in saved workspace order, including empty workflows (10 by default). '
       + 'Use detail:full or workflow_get for the saved definition. Each page includes orderRevision for workflow_reorder. '
+      + 'orderRevision is 0 when no read grant applies to this workspace. '
       + 'Pass pageInfo.nextCursor as cursor; null means the end. Restart pagination after order or membership changes.',
     inputSchema: OperatorWorkflowListInputSchema,
     outputSchema: WorkflowSummaryPageSchema.or(ManagedWorkflowPageSchema),

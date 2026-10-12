@@ -65,7 +65,10 @@ export class WorkflowManagementService {
          and ($3 or archived_at is null) and ($5::text[] is null or id = any($5))
          and ($6::bigint is null or workspace.workflow_order_revision = $6)
          order by order_position, id limit $4
-       ) list on true where workspace.id = $1 order by list.order_position, list.id`,
+       ) list on true where workspace.id = $1
+       and ($5::text[] is null or exists (
+         select 1 from workflows where workspace_id = workspace.id and id = any($5::text[])
+       )) order by list.order_position, list.id`,
       [input.workspaceId, cursor?.position ?? null, input.includeArchived, input.limit + 1,
         allowedIds, cursor?.orderRevision ?? null],
     )

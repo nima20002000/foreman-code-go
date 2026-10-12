@@ -248,6 +248,31 @@ describe('persisted workflow ordering through authenticated MCP and HTTP', () =>
       const foreign = (await f.workflows.create(f.owner.principal, 'http', {
         workspaceId: foreignWorkspace, name: 'Foreign workflow', commandId: randomUUID(),
       })).value.workflow.id
+      const foreignOwnerPage = await f.workflows.list(f.owner.principal, {
+        workspaceId: foreignWorkspace, limit: 10, includeArchived: false,
+      })
+      expect(foreignOwnerPage.orderRevision).toBe(1)
+      const workflowReader = await issueCaller(f, [{ actions: ['workflows:read'],
+        scope: { workflowIds: ids.slice(0, 2) } }])
+      const workflowReaderPage = await listPage(f, workflowReader.client, workflowReader.token)
+      expect(workflowReaderPage.orderRevision).toBe(original.orderRevision)
+      expect(workflowReaderPage.items.map(item => item.workflow.id)).toEqual(ids.slice(0, 2))
+      for (const denied of [reader, workflowReader]) {
+        const empty = { items: [], pageInfo: { nextCursor: null }, orderRevision: 0 }
+        for (const detail of ['compact', 'full'] as const) {
+          const result = await denied.client.callTool({ name: 'workflow_list', arguments: {
+            workspaceId: foreignWorkspace, detail,
+          } })
+          expect(result.isError).not.toBe(true)
+          const expected = detail === 'compact' ? { ...empty, detail } : empty
+          expect(decodeMcpToolResult(result)).toEqual(expected)
+        }
+        const deniedList = await f.app.inject({ method: 'GET',
+          url: `/api/management/workspaces/${foreignWorkspace}/workflows`,
+          headers: { authorization: `Bearer ${denied.token}` } })
+        expect(deniedList.statusCode).toBe(200)
+        expect(deniedList.json()).toEqual(empty)
+      }
       await expectReorderError(f.client, { ...input, commandId: randomUUID(),
         workflowIds: [ids[0]!, foreign] }, 'WORKFLOW_NOT_FOUND')
       await expectReorderError(f.client, { ...input, commandId: randomUUID(),

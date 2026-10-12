@@ -61,6 +61,7 @@ export interface ReorderableNavigation {
 interface ReorderOptions {
   onReorder?: (ids: readonly string[]) => void
   disabled?: boolean
+  revision?: number
 }
 
 interface DragSession {
@@ -74,6 +75,7 @@ interface DragSession {
   cancelled: boolean
   holdTimer: number | null
   originIds: readonly string[]
+  revision: number | undefined
   previewIds: readonly string[] | null
 }
 
@@ -93,7 +95,7 @@ export function useReorderableNavigation(
   const storedOrder = useNavigationOrderStore((state) => state.orders[parentKey])
   const setOrder = useNavigationOrderStore((state) => state.setOrder)
   const announce = useNavigationOrderStore((state) => state.announce)
-  const { onReorder, disabled = false } = options
+  const { onReorder, disabled = false, revision } = options
   const commitOrder = useCallback((ids: readonly string[]) => {
     if (onReorder) onReorder(ids)
     else setOrder(parentKey, ids)
@@ -111,11 +113,11 @@ export function useReorderableNavigation(
   const suppressClickTimerRef = useRef<number | null>(null)
   const [previewIds, setPreviewIds] = useState<readonly string[] | null>(null)
 
+  const orderKey = orderedIds.join(SAME_ORDER_SEPARATOR)
   useEffect(() => {
-    if (!disabled) return
     cancelDragRef.current?.()
     setPreviewIds(null)
-  }, [disabled])
+  }, [disabled, orderKey, revision])
 
   useEffect(() => () => {
     cancelDragRef.current?.()
@@ -172,6 +174,7 @@ export function useReorderableNavigation(
         cancelled: false,
         holdTimer: null,
         originIds: orderedIds,
+        revision,
         previewIds: null,
       }
       dragRef.current = session
@@ -343,7 +346,7 @@ export function useReorderableNavigation(
         session.holdTimer = window.setTimeout(activate, TOUCH_HOLD_MS)
       }
     },
-    [announce, commitOrder, disabled, items, orderedIds],
+    [announce, commitOrder, disabled, items, orderedIds, revision],
   )
 
   const getItemProps = useCallback(
@@ -383,8 +386,10 @@ export function useReorderableNavigation(
     [moveByKeyboard],
   )
 
+  const previewIsCurrent = !disabled && dragRef.current?.revision === revision
+    && dragRef.current !== null && sameOrder(dragRef.current.originIds, orderedIds)
   return {
-    orderedIds: previewIds ?? orderedIds,
+    orderedIds: previewIsCurrent ? previewIds ?? orderedIds : orderedIds,
     containerProps,
     getItemProps,
     getKeyboardProps,

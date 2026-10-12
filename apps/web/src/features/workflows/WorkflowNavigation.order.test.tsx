@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it, vi } from 'vitest'
@@ -7,6 +7,7 @@ import { server } from '../../mocks/server'
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { WorkflowNavigation } from './WorkflowNavigation'
 import { WorkflowDirectory } from './WorkflowDirectory'
+import { queryKeys } from '../../shared/api/query'
 
 const makeWorkflow = (name: string, workspaceId = 'workspace-1'): ManagedWorkflow => ({
   workflow: { id: name, name, workspaceId, executionSemanticsVersion: 3, entryNodeId: null,
@@ -21,6 +22,82 @@ function listNames(region: HTMLElement): string[] {
 function page(items: ManagedWorkflow[], orderRevision = 4, nextCursor: string | null = null) {
   return HttpResponse.json({ items, orderRevision, pageInfo: { nextCursor } })
 }
+
+function startWorkflowDrag(region: HTMLElement, name: string) {
+  const list = within(region).getByRole('list')
+  const rows = [...list.children]
+  const link = within(region).getByRole('link', { name: new RegExp(`^${name}`) })
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    const top = this === list ? 0 : rows.indexOf(this) * 30
+    const height = this === list ? rows.length * 30 : 30
+    return { left: 0, right: 250, top, bottom: top + height,
+      x: 0, y: top, width: 250, height, toJSON: () => ({}) } as DOMRect
+  })
+  fireEvent.pointerDown(link, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 20, clientY: 15 })
+  fireEvent.pointerMove(window, { pointerId: 1, pointerType: 'mouse', clientX: 20, clientY: 55 })
+  fireEvent.pointerMove(window, { pointerId: 1, pointerType: 'mouse', clientX: 20, clientY: 55 })
+  return () => fireEvent.pointerUp(window, { pointerId: 1, pointerType: 'mouse' })
+}
+
+it.each(['pending', 'unchanged', 'revision', 'membership', 'order'] as const)(
+  'keeps a drag through a catalog refresh unless the catalog changes: %s', async (refresh) => {
+    const original = ['Alpha', 'Beta'].map(name => makeWorkflow(name))
+    let refreshed = original
+    if (refresh === 'membership') refreshed = [original[1]!]
+    if (refresh === 'order') refreshed = [...original].reverse()
+    const changed = refresh === 'revision' || refresh === 'membership' || refresh === 'order'
+    let reads = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const requests: WorkflowReorderInput[] = []
+    server.use(
+      http.get('/api/management/workspaces/workspace-1/workflows', async () => {
+        reads += 1
+        if (reads === 1) return page(original)
+        await gate
+        return page(refreshed, changed ? 5 : 4)
+      }),
+      http.put('/api/management/workspaces/workspace-1/workflows/order', async ({ request }) => {
+        const input = await request.json() as WorkflowReorderInput
+        requests.push(input)
+        return HttpResponse.json({ value: { workspaceId: input.workspaceId, workflowIds: input.workflowIds,
+          orderRevision: 5 }, replayed: false })
+      }),
+    )
+    const { queryClient } = renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
+    const sidebar = await screen.findByRole('region', { name: 'Workspace workflows' })
+    await within(sidebar).findByRole('link', { name: /^Beta/ })
+    const drop = startWorkflowDrag(sidebar, 'Alpha')
+    expect(listNames(sidebar)).toEqual(['Beta', 'Alpha'])
+    const queryKey = [...queryKeys.managedWorkflows('workspace-1'), 'pages']
+    let polling!: Promise<void>
+    act(() => { polling = queryClient.refetchQueries({ queryKey }) })
+    try {
+      await waitFor(() => expect(reads).toBe(2))
+      expect(screen.getByRole('button', { name: 'Move Alpha up' })).toBeEnabled()
+      if (refresh !== 'pending') {
+        await act(async () => {
+          release()
+          await polling
+        })
+      }
+      drop()
+      if (changed) {
+        expect(listNames(sidebar)).toEqual(refreshed.map(item => item.workflow.name))
+        expect(requests).toHaveLength(0)
+        expect(screen.queryByText('Saving workflow order…')).not.toBeInTheDocument()
+      } else {
+        await waitFor(() => expect(requests).toHaveLength(1))
+        expect(requests[0]).toMatchObject({ expectedRevision: 4, workflowIds: ['Beta', 'Alpha'] })
+      }
+    } finally {
+      await act(async () => {
+        release()
+        await polling
+      })
+    }
+  },
+)
 
 async function activateMove(user: ReturnType<typeof userEvent.setup>, name: string) {
   const button = await screen.findByRole('button', { name })

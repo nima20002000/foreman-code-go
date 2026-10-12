@@ -4,16 +4,17 @@ import {
 } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import { requireAuthorization } from '../access/policy.js'
+import { authorizationPrincipal, requireAuthorization } from '../access/policy.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 
 function requireReorderAccess(principal: ManagementPrincipal, input: WorkflowReorderInput): void {
+  const snapshot = authorizationPrincipal(principal)
   for (const workflowId of input.workflowIds) {
     const resource = { workspaceId: input.workspaceId, workflowId }
-    requireAuthorization(principal, 'workflows:read', resource)
-    requireAuthorization(principal, 'workflows:update', resource)
+    requireAuthorization(snapshot, 'workflows:read', resource)
+    requireAuthorization(snapshot, 'workflows:update', resource)
   }
 }
 

@@ -52,6 +52,33 @@ describe('management access policy', () => {
     }
   })
 
+  it('checks large workflow scopes without combining read and update grants', () => {
+    const workflowIds = Array.from({ length: 5_000 }, (_, index) => `workflow-${index}`)
+    const caller = { ...principal, grants: [
+      { actions: ['workflows:read' as const], scope: { workspaceIds: ['workspace-1'], workflowIds } },
+      { actions: ['workflows:update' as const], scope: {
+        workspaceIds: ['workspace-2'], workflowIds: [...workflowIds],
+      } },
+    ] }
+    const snapshot = authorizationPrincipal(caller)
+    for (const workflowId of workflowIds) {
+      expect(isAuthorized(snapshot, 'workflows:read', { workspaceId: 'workspace-1', workflowId })).toBe(true)
+      expect(isAuthorized(snapshot, 'workflows:update', { workspaceId: 'workspace-1', workflowId })).toBe(false)
+      expect(isAuthorized(snapshot, 'workflows:update', { workspaceId: 'workspace-2', workflowId })).toBe(true)
+    }
+    expect(isAuthorized(snapshot, 'workflows:read', { workspaceId: 'workspace-1' })).toBe(false)
+    expect(isAuthorized(snapshot, 'workflows:read', {
+      workspaceId: 'workspace-1', workflowId: 'workflow-missing',
+    })).toBe(false)
+    caller.grants[0]!.scope.workflowIds = []
+    expect(isAuthorized(caller, 'workflows:read', {
+      workspaceId: 'workspace-1', workflowId: workflowIds[0]!,
+    })).toBe(false)
+    expect(isAuthorized(snapshot, 'workflows:read', {
+      workspaceId: 'workspace-1', workflowId: workflowIds[0]!,
+    })).toBe(true)
+  })
+
   it('still rejects malformed mutable principals after a valid authorization', () => {
     const caller = structuredClone(principal)
     expect(hasAction(caller, 'workflows:read')).toBe(true)
