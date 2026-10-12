@@ -21,8 +21,8 @@ export function workflowProviderId(session: NativeSessionReference, history: Nat
  * NativeHistory terminal fields and abort ACKs are not positive provider proof.
  * Require the matching original terminal frame without rewriting its source. */
 export function assertOriginalWorkflowTerminal(execution: Pick<HarnessExecution, 'id' | 'agentId'>,
-  session: NativeSessionReference, history: NativeHistory): void {
-  const command = `execution:${execution.id}`, terminal = history.terminalTurn
+  session: NativeSessionReference, history: NativeHistory, command = `execution:${execution.id}`): void {
+  const terminal = history.terminalTurn
   const fail = (): never => { throw new DomainError('NATIVE_TERMINAL_SOURCE_REQUIRED',
     'The exact original native terminal frame and pinned turn are required.', 409) }
   if (!terminal || terminal.correlationId !== command || history.correlationId !== command

@@ -17,6 +17,7 @@ import { requiredLocationAccess, type WorkspaceLocationService } from '../worksp
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import type { RunnerAdmission } from './runnerAdmission.js'
 import { workflowExecutionRequest } from './workflowExecutionRequest.js'
+import { currentInitialPrompt } from './currentRouting.js'
 import { readUnconsumedWorkflowApprovals } from './workflowLifecycle.js'
 
 import type { RunOwnership } from './ownership.js'
@@ -264,8 +265,11 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       check()
       const request = workflowExecutionRequest({ execution: { ...execution, ...paths },
         version: context.version, configuration, workspaceId: run.workspaceId, executionContext })
+      const workHandoffContract = context.version.definition.handoffs && repeatTickIndex(execution.input) === undefined
+        ? currentInitialPrompt({ ...node, initialPrompt: undefined }, false, true) : undefined
       for (;;) {
-        const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal })
+        const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal,
+          workHandoffContract })
         execution = observation.execution
         if (observation.state === 'completed') {
           return

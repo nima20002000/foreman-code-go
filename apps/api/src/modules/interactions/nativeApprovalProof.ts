@@ -15,6 +15,7 @@ import { nativeApprovalContext } from './nativeApprovalContext.js'
 import { decisionDigest } from './wave25/publication.js'
 import { DomainError } from '../errors.js'
 import { APPROVAL_SETTLEMENT_PENDING_MESSAGE } from './repeatNativeEvidence.js'
+import { assertWorkflowCorrelation } from '../runs/workResultRepair.js'
 
 const AckSchema = z.object({
   scope: RunGraphScopeSchema, interaction: DurableInteractionSchema,
@@ -94,11 +95,12 @@ export async function readApprovalOriginalLocked(sql: GraphTransactionSql, i: Du
     || proof.session.nativeSessionId !== i.nativeSessionId || proof.original.type !== 'history') return pending()
   const pendingSource = await assertSavedPendingApprovalOriginalLocked(sql, i)
   const history = proof.original.history, terminal = history.terminalTurn
-  if (!terminal || terminal.correlationId !== `execution:${i.executionId}` || history.correlationId !== terminal.correlationId
+  if (!terminal || !history.correlationId || history.correlationId !== terminal.correlationId
     || terminal.providerId !== history.nativeTurnId || !terminal.providerId || history.pendingInteraction
     || history.pendingInteractions.length || !proof.lane || proof.lane.providerId !== terminal.providerId
     || pendingSource.lane?.providerId !== terminal.providerId
     || !matchingDeliveryEvidence(i, proof.session, history)) return pending()
+  await assertWorkflowCorrelation(sql, i.executionId, history.correlationId)
   // The source is the complete captured history receipt, not a rewritten wire
   // event. Cold recovery may read old connection events; their IDs remain old.
   // Authority is the exact rooted history + delivery proof under the CURRENT

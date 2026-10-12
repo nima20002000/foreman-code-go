@@ -73,6 +73,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
     const raw = await appendNormalizedNativeEvent(sql, normalized)
     if (raw.rejected || !lease || execution.state === 'completed' || !execution.nativeSessionId) return
     const lane = (await sql.query<{ record: { leaseToken?: string; leaseExpiresAt?: string; connectionGeneration: number;
+      correlationId?: string;
       currentTurnOrMessageId?: string }; live: boolean; harness: string; native_session_id: string; owner_agent_id: string }>(
       `select record,harness,native_session_id,owner_agent_id,
         coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as live
@@ -82,7 +83,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       || lane.native_session_id !== execution.nativeSessionId) throw new DomainError('SESSION_LANE_LEASE_LOST',
       'The native writer is no longer the current workflow owner.', 409)
     const generation = String(lane.record.connectionGeneration)
-    const correlationKey = `execution:${execution.id}`
+    const correlationKey = lane.record.correlationId ?? `execution:${execution.id}`
     const prior = await readNativeGraphCorrelation(sql, scope, key, correlationKey)
     // The original capture still checks physical ownership before publication
     // and commit. An unchanged correlation has no graph mutation for transcript-only frames.

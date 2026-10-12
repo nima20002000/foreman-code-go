@@ -6,7 +6,7 @@ import type {
   ExecutionResult, HarnessExecution, HarnessExecutionRequest, HarnessNativeEvent, McpDetection,
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
 } from '@foreman-code/contracts'
-import { afterEach, it } from 'vitest'
+import { afterEach, expect, it } from 'vitest'
 import type pg from 'pg'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
@@ -26,6 +26,9 @@ import { nativeApprovalContext } from '../src/modules/interactions/nativeApprova
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
+import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { normalizeRepeatTerminal } from '../src/modules/runs/repeatNode.js'
+import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
 
 const connections: ExclusiveGraphConnection[] = []
 afterEach(async () => { await Promise.all(connections.splice(0).map((connection) => connection.close())) })
@@ -345,6 +348,145 @@ it('captures complete native history only when needed for a pending request or t
   const result = await f.coordinator.observeExact(f.input)
   assert.equal(result.state, 'completed')
   assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)
+})
+
+function workResultFixture(results: ExecutionResult[]) {
+  const f = fixture()
+  const pinned = makeCurrentWorkflowFixture('result-repair')
+  const version = WorkflowVersionV3Schema.parse({ ...pinned.version,
+    definition: { ...pinned.version.definition, handoffs: { contractVersion: 1 } } })
+  const node = version.definition.nodes[0]!
+  if (node.kind === 'job') throw new Error('The repair fixture requires an Agent node')
+  const update = f.runs.updateExecution.bind(f.runs)
+  f.runs.updateExecution = async (execution, owner, evidence) => {
+    const normalized = normalizeRepeatTerminal(version, pinned.scope, { nodeId: node.id, occurrence: null }, {
+      ...execution, runId: pinned.run.id, workflowNodeId: node.id, agentId: node.agentId,
+      agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!,
+    }, { workResultRepair: f.manager.turns.length > 1 })
+    await update({ ...execution, ...(normalized.result ? { result: normalized.result } : {}) }, owner, evidence)
+  }
+  const reservations = new Set<string>()
+  f.runs.readWorkResultRepairAttempt = async () => reservations.size
+  f.runs.reserveWorkResultRepair = async (id, providerId, owner) => {
+    assert.equal(id, f.candidate.id)
+    assert.equal(owner, f.owner)
+    assert.ok(['running', 'waiting'].includes(f.executions.get(id)!.state))
+    if (reservations.has(providerId)) return undefined
+    reservations.add(providerId)
+    return reservations.size
+  }
+  f.manager.startTurn = async function* (session, input, signal) {
+    this.turns.push({ session, input, ...(signal ? { signal } : {}) })
+    const index = this.turns.length - 1
+    const providerId = `workflow-turn-${index}`
+    await input.onSubmitted?.(providerId)
+    const result = results[Math.min(index, results.length - 1)]!
+    const terminal = { sequence: index * 2 + 1, type: 'turn.completed', occurredAt: now,
+      payload: { threadId: session.nativeSessionId, turnId: providerId,
+        status: result.outcome === 'failed' ? 'failed' : 'completed',
+        clientCorrelationId: input.clientCorrelationId } }
+    this.snapshot = { events: [terminal], pendingInteractions: [], terminalResult: result }
+    yield { sequence: index * 2, type: 'turn.started', occurredAt: now,
+      payload: { threadId: session.nativeSessionId, turnId: providerId, clientCorrelationId: input.clientCorrelationId } }
+    yield terminal
+  }
+  f.manager.reconcile = async function (session, correlationId) {
+    const history = await this.history(session)
+    const providerId = `workflow-turn-${this.turns.length - 1}`
+    return { ...history, correlationId, nativeTurnId: providerId,
+      terminalTurn: { correlationId, providerId, result: history.terminalResult! } }
+  }
+  return { ...f, reservations, input: { ...f.input, workHandoffContract: currentInitialPrompt({}, false, true)! } }
+}
+
+const workData = { latestDeliverable: { summary: 'Done' }, remainingFindings: [] }
+const invalidWorkResult: ExecutionResult = { outcome: 'succeeded', output: {
+  routing: { kind: 'finish', outcome: 'Run the check.' }, data: workData,
+} }
+const validWorkResult: ExecutionResult = { outcome: 'succeeded', output: {
+  routing: { kind: 'finish' }, data: workData,
+} }
+
+it.each([1, 2])('accepts a strictly corrected work result after %s same-session repair turns', async repairs => {
+  const f = workResultFixture([...Array<ExecutionResult>(repairs).fill(invalidWorkResult), validWorkResult])
+  const result = await f.coordinator.observeExact(f.input)
+  expect(result).toMatchObject({ state: 'completed', result: validWorkResult })
+  expect(f.manager.creates).toHaveLength(1)
+  expect(f.manager.attaches).toHaveLength(0)
+  expect(f.manager.turns).toHaveLength(repairs + 1)
+  expect(f.reservations.size).toBe(repairs)
+  expect(f.prepared).toEqual([f.candidate.id])
+  for (const [index, turn] of f.manager.turns.slice(1).entries()) {
+    expect(turn.session).toEqual(f.manager.session)
+    expect(turn.input.clientCorrelationId).toBe(`execution:${f.candidate.id}:result-repair:${index + 1}`)
+    expect(turn.input.prompt).toContain('Validation issues:')
+    expect(turn.input.prompt).toContain('"path":["routing","outcome"]')
+    expect(turn.input.prompt).toContain(f.input.workHandoffContract)
+  }
+  expect(f.updates.filter(execution => execution.state === 'completed')).toHaveLength(1)
+})
+
+it('fails with the original work result code after two invalid corrections and never repairs a terminal replay', async () => {
+  const f = workResultFixture([invalidWorkResult])
+  const result = await f.coordinator.observeExact(f.input)
+  expect(result).toMatchObject({ state: 'completed', result: {
+    outcome: 'failed', error: { code: 'WORK_RESULT_INVALID', retryable: false },
+  } })
+  expect(f.manager.turns).toHaveLength(3)
+  expect(f.reservations.size).toBe(2)
+  await f.coordinator.observeExact(f.input)
+  expect(f.manager.turns).toHaveLength(3)
+})
+
+it('does not send a repair turn for a valid work result', async () => {
+  const f = workResultFixture([validWorkResult])
+  expect(await f.coordinator.observeExact(f.input)).toMatchObject({ state: 'completed', result: validWorkResult })
+  expect(f.manager.turns).toHaveLength(1)
+  expect(f.reservations.size).toBe(0)
+})
+
+it('keeps the original code when a corrective turn fails natively', async () => {
+  const nativeFailure: ExecutionResult = { outcome: 'failed', error: {
+    code: 'NATIVE_ERROR', message: 'The corrective turn failed', retryable: true,
+  } }
+  const f = workResultFixture([invalidWorkResult, nativeFailure])
+  expect(await f.coordinator.observeExact(f.input)).toMatchObject({ state: 'completed', result: {
+    outcome: 'failed', error: { code: 'WORK_RESULT_INVALID', retryable: false },
+  } })
+  expect(f.manager.turns).toHaveLength(2)
+})
+
+it('retains the repair allowance and session through an approval pause', async () => {
+  const f = workResultFixture([invalidWorkResult, invalidWorkResult, validWorkResult])
+  const start = f.manager.startTurn.bind(f.manager)
+  f.manager.startTurn = async function* (...args) {
+    for await (const event of start(...args)) {
+      if (this.turns.length === 2) this.snapshot.pendingInteractions = [{ ...f.pending('repair-approval'),
+        turn: { nativeTurnId: 'workflow-turn-1', nativeRequestId: 'repair-approval' } }]
+      yield event
+    }
+  }
+  const waiting = await f.coordinator.observeExact(f.input)
+  expect(waiting.state).toBe('waiting')
+  expect(f.reservations.size).toBe(1)
+  expect(f.manager.turns).toHaveLength(2)
+  f.delivered('repair-approval')
+  f.manager.snapshot.pendingInteractions = []
+  expect(await f.coordinator.observeExact(f.input)).toMatchObject({ state: 'completed', result: validWorkResult })
+  expect(f.reservations.size).toBe(2)
+  expect(f.manager.turns).toHaveLength(3)
+  expect(f.manager.creates).toHaveLength(1)
+})
+
+it('rechecks the native boundary after reserving a correction', async () => {
+  const f = workResultFixture([invalidWorkResult, validWorkResult])
+  const boundary = f.store.assertNativeBoundary.bind(f.store)
+  f.store.assertNativeBoundary = async id => {
+    await boundary(id)
+    if (f.reservations.size) throw new DomainError('GRAPH_STOP_CONFLICT', 'Stopped before correction', 409)
+  }
+  await expect(f.coordinator.observeExact(f.input)).rejects.toMatchObject({ code: 'GRAPH_STOP_CONFLICT' })
+  expect(f.manager.turns).toHaveLength(1)
 })
 
 it('publishes queued native events before committing their complete terminal history', async () => {

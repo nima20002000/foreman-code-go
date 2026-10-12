@@ -1,6 +1,7 @@
 import { timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { readSystemPromptSetting } from '../settings/foundation.js'
 import { readWorkflowSessionContinuation } from './sessionContinuation.js'
+import { readWorkResultRepairAttempt } from './workResultRepair.js'
 import { readWorkflowJobSourceLocked } from '../jobs/workflowSource.js'
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, ExecutionResultSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
@@ -688,6 +689,36 @@ export class RepeatRunRepository {
     })
   }
 
+  async readWorkResultRepairAttempt(executionId: string): Promise<number> {
+    return this.transaction(async context => {
+      await this.execution(context, executionId)
+      return readWorkResultRepairAttempt(context.sql, executionId)
+    }, { readOnly: true })
+  }
+
+  async reserveWorkResultRepair(executionId: string, providerId: string,
+    evidence: RepeatNativeEvidence): Promise<number | undefined> {
+    return this.transaction(async (context) => {
+      this.active(context)
+      const stored = await this.execution(context, executionId)
+      if (!context.version.definition.handoffs || repeatTickIndex(stored.execution.input) !== undefined
+        || stored.execution.state === 'completed') return repeatConflict('WORK_RESULT_REPAIR_CONFLICT')
+      await this.recordedEffect(context, 'input.bind', executionId)
+      await this.launchReceipt(context, stored)
+      await context.hooks.assertAuthorityLocked(context.sql)
+      await context.hooks.assertAdmissionLocked(context.sql, stored.execution, stored.ref)
+      await requireRepeatNativeHooks(context.hooks.native).assertBoundaryLocked(
+        context.sql, stored.execution, stored.ref, evidence)
+      const attempts = (await context.sql.query<{ rejected_provider_id: string }>(
+        'select rejected_provider_id from execution_work_result_repairs where execution_id=$1', [executionId])).rows
+      // Reserve before submission: an uncertain offer is never replayed after recovery.
+      if (attempts.length >= 2 || attempts.some(row => row.rejected_provider_id === providerId)) return undefined
+      await context.sql.query(`insert into execution_work_result_repairs
+        (execution_id,attempt,rejected_provider_id) values($1,$2,$3)`, [executionId, attempts.length + 1, providerId])
+      return attempts.length + 1
+    })
+  }
+
   /** The first durable native writer, shared by live and exact-history recovery.
    * NATIVE-2 supplies its original raw event/command/lease evidence to the required
    * guard. Preparation runs against the CURRENT LOCKED execution before any state
@@ -709,7 +740,10 @@ export class RepeatRunRepository {
       if (!evidence) return repeatConflict('REPEAT_NATIVE_EVIDENCE_REQUIRED')
       // Pure validation/normalization precedes even the authority adapter, which
       // may persist original native sources on this transaction.
-      const next = prepareRepeatNativeUpdate(context.version, context.scope, stored.ref, stored.execution, incoming)
+      const workResultRepair = context.version.definition.handoffs && incoming.result?.outcome === 'failed'
+        ? await readWorkResultRepairAttempt(context.sql, incoming.id) > 0 : false
+      const next = prepareRepeatNativeUpdate(context.version, context.scope, stored.ref, stored.execution, incoming,
+        { workResultRepair })
       await this.launchReceipt(context, stored)
       await context.hooks.assertAuthorityLocked(context.sql)
       const original = await native.assertUpdateLocked(context.sql, structuredClone(stored.execution), structuredClone(incoming),
