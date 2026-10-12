@@ -979,6 +979,7 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
   const readiness = { laptop: true, builder: false }
   const f = await fixture({ github: readiness,
     cloud: { github: provider === 'github' ? 2 : 0, circleci: provider === 'circleci' ? 2 : 0 } })
+  f.computers.splice(1, 1)
   const pending = new Map<string, CiHostRun>()
   const dispatches: string[] = []
   let exhausted = false
@@ -1035,6 +1036,7 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
 
 it('preserves MCP cancellation when an in-flight refresh returns an unstarted ticket', async () => {
   const f = await fixture({ github: { laptop: false, builder: false }, cloud: true })
+  f.computers.splice(0, 2)
   let release!: () => void
   let entered!: () => void
   const blocked = new Promise<void>(resolve => { release = resolve })
