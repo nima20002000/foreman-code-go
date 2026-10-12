@@ -8,8 +8,12 @@
 # build-api, build-other. For unit-api and unit-web, SLICE is
 # a duration-balanced shard such as 2/3 (scripts/ci-unit-files.mjs). SLICE: an integration partition's file indexes
 # (scripts/ci-files.mjs); empty runs every file. DURATIONS_OUTPUT: where measured file durations go.
+# TEST_RESULTS_OUTPUT: where structured test results go for unit and integration (scripts/ci-test-results.mjs).
 # Host CI uses this hook for named parts; ci-files.mjs opts into integration partitions.
 set -euo pipefail
+# Test commands never inherit where this run's results go: a nested CI fixture would write over them.
+test_results="${TEST_RESULTS_OUTPUT:-}"
+unset TEST_RESULTS_OUTPUT
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
 
 if [ "${CI_HOST_RUNNER:-0}" = 1 ]; then
@@ -51,6 +55,11 @@ ready() {
   [ "$(cat "$state/$1.exit")" = 0 ] || { cat "$state/$1.log"; echo "$1 failed to start"; exit 1; }
 }
 
+record_tests() {
+  [ -n "$test_results" ] || return 0
+  node scripts/ci-test-results.mjs "$test_results" "$@" || echo 'Test results were not recorded.'
+}
+
 unit_slice() {
   local suite="$1" package="$2" code=0
   local output
@@ -68,6 +77,7 @@ unit_slice() {
   if [ -f "$output.vitest.json" ]; then
     node scripts/ci-unit-files.mjs record "$suite" "$output.vitest.json" "$output"
   fi
+  record_tests "$output.vitest.json"
   return "$code"
 }
 
@@ -123,9 +133,9 @@ if [ "$scope" = affected ] && [ "$SUITE" != integration ]; then
     *) echo "Unsupported affected suite $SUITE"; exit 2 ;;
   esac
   if [ -n "$selected_list" ]; then
-    node scripts/ci-affected-run.mjs "${SUITE%%-*}" --files-from "$selected_list"
+    TEST_RESULTS_OUTPUT="$test_results" node scripts/ci-affected-run.mjs "${SUITE%%-*}" --files-from "$selected_list"
   else
-    node scripts/ci-affected-run.mjs "${SUITE%%-*}" --indexes "${SELECTED_FILES:-}"
+    TEST_RESULTS_OUTPUT="$test_results" node scripts/ci-affected-run.mjs "${SUITE%%-*}" --indexes "${SELECTED_FILES:-}"
   fi
   exit $?
 fi
@@ -140,7 +150,10 @@ case "$SUITE" in
   # SLICE i/n splits the heavy phase across machines; the run-graph smoke runs once, in the first shard.
   unit-web-heavy) pnpm --filter @foreman-code/contracts build
     case "${SLICE:-1/1}" in 1/*) pnpm --filter @foreman-code/web test:run-graph-smoke ;; esac
-    (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE}) ;;
+    mkdir -p "$state"; heavy_report="$(realpath -m "$state/unit-web-heavy.vitest.json")"; code=0
+    (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE} \
+      --reporter=default --reporter=json "--outputFile.json=$heavy_report") || code=$?
+    record_tests "$heavy_report"; exit "$code" ;;
   unit-other) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
     && pnpm test:scripts ;;
   lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;
@@ -155,6 +168,7 @@ case "$SUITE" in
   integration)
     ready db; ready clis
     export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$DURATIONS_OUTPUT"
+    if [ -n "$test_results" ]; then export FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT="$test_results"; fi
     delegate_cgroup
     if [ -n "$selected_list" ]; then
       mapfile -d '' -t files < <(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).map(file => file + "\0").join(""))' "$selected_list")

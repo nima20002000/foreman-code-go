@@ -136,6 +136,7 @@ jobs:
         run: scripts/ci-suite.sh
         env:
           DURATIONS_OUTPUT: ${{ runner.temp }}/durations.json
+          TEST_RESULTS_OUTPUT: ${{ runner.temp }}/test-results.json
       - name: Save suite caches
         if: always() && steps.suite-cache.conclusion == 'success'
         uses: actions/cache/save@v4
@@ -154,12 +155,14 @@ jobs:
           path: .logs/test-integration/
           retention-days: 2
           if-no-files-found: ignore
-      - if: always() && contains(fromJSON('["integration", "unit-api", "unit-web"]'), inputs.suite)
+      # Measured durations and structured test results, which Main reads back with the ticket.
+      - if: always() && (inputs.suite == 'integration' || startsWith(inputs.suite, 'unit'))
         uses: actions/upload-artifact@v4
         with:
           name: durations
           path: |
             ${{ runner.temp }}/durations.json
             ${{ runner.temp }}/durations.json.vitest.json
+            ${{ runner.temp }}/test-results.json
           retention-days: 1
           if-no-files-found: ignore

@@ -29,8 +29,8 @@ export interface CloudProvider {
   find(run: CloudRun): Promise<string | null>
   status(run: CloudRun): Promise<CloudStatus>
   log(run: CloudRun): Promise<string>
-  /** The measured test file durations the run left as an artifact. */
-  durations(run: CloudRun, directory: string): Promise<unknown>
+  /** The measured test file durations and structured test results the run left as an artifact. */
+  artifacts(run: CloudRun, directory: string): Promise<CloudArtifacts>
   cancel(run: CloudRun): Promise<void>
 }
 
@@ -48,6 +48,17 @@ async function findFile(directory: string, name: string): Promise<string | null>
     if (entry.isFile() && entry.name === name) return join(entry.parentPath, entry.name)
   }
   return null
+}
+
+export interface CloudArtifacts { durations: unknown; testResults: unknown }
+const noArtifacts: CloudArtifacts = { durations: null, testResults: null }
+
+async function readArtifacts(directory: string): Promise<CloudArtifacts> {
+  const read = async (name: string) => {
+    const path = await findFile(directory, name)
+    return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
+  }
+  return { durations: await read('durations.json').catch(() => null), testResults: await read('test-results.json').catch(() => null) }
 }
 
 const WORKFLOW = 'ci.yml'
@@ -107,11 +118,10 @@ export class GitHubActionsProvider implements CloudProvider {
     return (await this.ports.run('gh', ['run', 'view', run.providerRunId!, '-R', run.mirror, '--log'], { timeoutMs: 300_000 })).stdout
   }
 
-  async durations(run: CloudRun, directory: string) {
+  async artifacts(run: CloudRun, directory: string) {
     const downloaded = await this.ports.run('gh', ['run', 'download', run.providerRunId!, '-R', run.mirror,
       '-n', 'durations', '-D', directory], { timeoutMs: 120_000 })
-    const path = downloaded.code === 0 ? await findFile(directory, 'durations.json') : null
-    return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
+    return downloaded.code === 0 ? readArtifacts(directory) : noArtifacts
   }
 
   async cancel(run: CloudRun) { await this.gh(['run', 'cancel', run.providerRunId!, '-R', run.mirror]) }
@@ -175,12 +185,11 @@ export class CircleCiProvider implements CloudProvider {
     return (await this.ports.run('circleci', ['job', 'output', 'list', job.id], { timeoutMs: 300_000 })).stdout
   }
 
-  async durations(run: CloudRun, directory: string) {
+  async artifacts(run: CloudRun, directory: string) {
     const { job } = await this.job(run)
-    if (!job) return null
+    if (!job) return noArtifacts
     await this.ports.run('circleci', ['job', 'artifact', job.id, '--output', directory], { timeoutMs: 120_000 })
-    const path = await findFile(directory, 'durations.json')
-    return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
+    return readArtifacts(directory)
   }
 
   async cancel(run: CloudRun) {
