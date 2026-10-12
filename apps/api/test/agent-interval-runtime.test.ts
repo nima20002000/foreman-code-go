@@ -72,6 +72,25 @@ function intervalRun(options: { maxParallelism: number; observeCheck(check: Harn
   return { h, run, lifecycle, checks, settledIds, observed, events, workerStarted, workerRelease }
 }
 
+it('ends an interval Run after startup failure and retries its cleanup intent before cancellation', async () => {
+  const failure = new DomainError('EXECUTION_START_INTERRUPTED', 'Execution startup failed.', 409)
+  const t = intervalRun({ maxParallelism: 2, observeCheck: async () => { throw failure } })
+  const timeout = new Error('Query read timeout')
+  t.lifecycle.requestCleanup.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout)
+  t.lifecycle.cancelNativeAndRequestCleanup.mockImplementation(async () => {
+    expect(t.lifecycle.requestCleanup.mock.calls.length).toBeGreaterThanOrEqual(3)
+    return true
+  })
+  await expect(t.run()).rejects.toBe(failure)
+  expect(t.lifecycle.requestCleanup).toHaveBeenCalledWith({ outcome: 'failed', error: {
+    code: failure.code, message: failure.message, retryable: false,
+  } })
+  expect(t.lifecycle.cancelNativeAndRequestCleanup).toHaveBeenCalledOnce()
+  expect(t.lifecycle.settleRun).toHaveBeenCalledWith(false, false)
+  expect(t.checks).toHaveLength(1)
+  expect(t.observed).toEqual(['check-1'])
+})
+
 it('settles a Stop through bounded cleanup while a running check ignores cancellation', async () => {
   const checkStarted = deferred()
   const t = intervalRun({ maxParallelism: 2, observeCheck: async () => {

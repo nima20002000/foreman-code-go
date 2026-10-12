@@ -231,6 +231,19 @@ export class PostgresRunRepository implements RunRepository {
       after = page[page.length - 1]!.id
     }
   }
+  async abandonedExecutionStart(owner: RunOwnership): Promise<string | undefined> {
+    this.requireOwner(owner.runId, owner)
+    // Acquiring the Run lock excludes a live start owner. Unclaimed queued work remains runnable.
+    const row = (await owner.client.query<{ id: string }>(`select e.id from harness_executions e
+      where e.run_id=$1 and e.record->>'nativeSessionId' is null and (
+        e.record->>'state'='starting' or e.record->>'state'='queued' and exists (
+          select 1 from run_graph_effects f where f.run_id=e.run_id
+            and f.effect_kind='execution.launch' and f.entity_id=e.id))
+      order by e.id limit 1`, [owner.runId])).rows[0]
+    owner.assertOwned()
+    return row?.id
+  }
+
   async reconciliationCandidates(afterId = '', limit = 100): Promise<RepositoryWorkflowRun[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new DomainError('RUN_READ_LIMIT', 'Use a bounded Run cursor.', 409)
     // Failed Main-local Runs can outlive their detached runtime. Selection still requires physical closure in cleanup.
