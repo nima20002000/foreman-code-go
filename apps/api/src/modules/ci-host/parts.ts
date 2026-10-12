@@ -58,7 +58,7 @@ export function planCiParts(input: CiRunInput, durations: CiDurations, inventory
 }
 
 /** CircleCI takes every suite except the Worker unit tests, which need podman. */
-export function runsOnCircleCi(run: { part?: string | null }): boolean {
+export function runsOnCircleCi(run: { part?: string | null | undefined }): boolean {
   return run.part !== 'unit-other'
 }
 
