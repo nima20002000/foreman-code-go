@@ -49,7 +49,7 @@ async function fixture() {
   f.f.run = await admitRun(f.f.run.id)
   const mainId = randomUUID()
   const computers: HostCiComputer[] = [
-    { key: 'dexter', hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: 'Dexter', priority: 60 },
+    { key: 'laptop', hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: 'Laptop', priority: 60 },
     { key: 'circleci', hostRef: { kind: 'cloud', mainId, provider: 'circleci', slot: 0 }, label: 'CircleCI', priority: 30 },
     { key: 'github', hostRef: { kind: 'cloud', mainId, provider: 'github', slot: 0 }, label: 'GitHub', priority: 30 },
   ]
@@ -150,7 +150,7 @@ it('Run Stop cancels all Agent CI partitions and provider runs, audits them, and
     const tickets = await f.createTickets()
     const active = tickets.filter(ticket => ticket.state !== 'queued')
     expect(active.map(ticket => ticket.computer!.hostRef.kind === 'cloud'
-      ? ticket.computer!.hostRef.provider : 'dexter').sort()).toEqual(['circleci', 'dexter', 'github'])
+      ? ticket.computer!.hostRef.provider : 'laptop').sort()).toEqual(['circleci', 'github', 'laptop'])
     const queued = tickets.filter(ticket => ticket.state === 'queued')
     const terminal: CiRunRecord[] = []
     for (const [index, state] of (['passed', 'failed', 'canceled', 'lost'] as const).entries()) {
