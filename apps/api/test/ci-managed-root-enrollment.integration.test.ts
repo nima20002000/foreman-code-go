@@ -3,7 +3,7 @@ import { mkdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { BuildComputerPrepareStatusSchema, CI_RUNTIME_NAMESPACE, CiEnrollmentStateSchema, CiRuntimeWorkerStateSchema,
+import { BuildComputerPrepareStatusSchema, CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE, CiEnrollmentStateSchema, CiRuntimeWorkerStateSchema,
   type BuildComputerPrepareInput } from '@foreman-code/contracts'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ApprovedSourceSchema, SourceRootBindResultSchema } from '@foreman-code/contracts/source-admission'
@@ -34,7 +34,7 @@ import { verificationCapacityFixture } from './helpers/verificationCapacityFixtu
 import { workspaceRootDirectory } from './helpers/workspaceRootDirectory.js'
 
 // PostgreSQL, source/root services, filesystem checks and authenticated MCP are real; CI preparation is bounded.
-async function fixture(options: { managedStorage: boolean }) {
+async function fixture(options: { managedStorage: boolean; hostCi?: boolean }) {
   const db = await currentDatabase()
   const directory = await workspaceRootDirectory()
   const clients: Client[] = []
@@ -92,7 +92,10 @@ async function fixture(options: { managedStorage: boolean }) {
     const runtimeState = CiRuntimeWorkerStateSchema.parse({ operationId: null, state: 'idle', commit: null,
       stage: null, prepared: null, message: null, updatedAt: managedSetup.updatedAt, installedStorage: storage, managedSetup })
     const endpoint = { currentBinding: () => binding,
+      capabilities: () => options.hostCi ? [{ namespace: CI_HOST_NAMESPACE, mainCanRequest: true }] : [],
       captureRequest: (_deviceId: string, namespace: string) => ({ binding, request: async (raw: unknown) => {
+        if (namespace === CI_HOST_NAMESPACE) return { payload: { operation: 'status', ready: true,
+          reasons: [], cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [] } }
         if (namespace === CI_RUNTIME_NAMESPACE) return { payload: runtimeState }
         rootRequests.push((raw as { operation: string }).operation)
         return { payload: await rootHandler(raw) }
@@ -201,6 +204,28 @@ async function fixture(options: { managedStorage: boolean }) {
 }
 
 describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
+  it('recognizes Host CI and reads runner readiness without creating protected roots or profiles', async () => {
+    const f = await fixture({ managedStorage: false, hostCi: true })
+    try {
+      expect(await f.createInventory().computers()).toEqual([
+        { target: f.worker.target, connected: true, buildEnabled: true, executionMode: 'host' },
+      ])
+      const updated = await f.client.callTool({ name: 'ci_enrollment_update', arguments: {
+        workspaceId: f.workspaceId, target: f.worker.target, commandId: randomUUID(),
+        expectedRevision: 0, enabled: true,
+      } })
+      expect(updated.isError).not.toBe(true)
+      await vi.waitFor(async () => expect((await f.read()).computers[0]).toMatchObject({
+        executionMode: 'host', state: 'ready', profileIds: [], templates: [],
+      }))
+      expect(f.rootRequests).toEqual([])
+      const persisted = await f.read()
+      await f.restart()
+      expect(await f.read()).toEqual(persisted)
+      expect((await f.db.pool.query('select count(*)::int as count from job_runtime_profiles')).rows[0]!.count).toBe(1)
+    } finally { await f.close() }
+  })
+
   it('lets a newly authorized Operator rebind a paired computer root created by another Operator', async () => {
     const f = await fixture({ managedStorage: true })
     try {

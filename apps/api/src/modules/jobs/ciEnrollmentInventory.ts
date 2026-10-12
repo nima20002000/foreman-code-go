@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import { CI_RUNTIME_NAMESPACE, CiRuntimeWorkerStateSchema, type CiInstalledStorage,
+import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE, CiRuntimeWorkerStateSchema, type CiHostStatus, type CiInstalledStorage,
   type CiRuntimeWorkerState } from '@foreman-code/contracts'
 import { DeviceProvisioningTargetSchema, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
@@ -13,11 +13,13 @@ import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { ManagedWorkspaceRootService } from '../workspace-roots/managedRoot.js'
 import { DomainError } from '../errors.js'
 import type { CiRuntimeWorker } from './ciRuntimeWorker.js'
+import { readHostCiStatus } from '../ci-host/status.js'
 import { canonical, jobDigest } from './digest.js'
 import type { JobSql } from './repository.js'
 
 export interface CiEnrollmentTarget {
   target: DeviceProvisioningTarget
+  executionMode?: 'host' | 'protected'
   buildEnabled: boolean
   connected: boolean
 }
@@ -25,6 +27,7 @@ export interface CiEnrollmentInventory {
   computers(): Promise<CiEnrollmentTarget[]>
   storage(target: DeviceProvisioningTarget): Promise<CiInstalledStorage | null>
   runtimeStatus?(target: DeviceProvisioningTarget): Promise<CiRuntimeWorkerState | null>
+  hostStatus?(target: DeviceProvisioningTarget): Promise<CiHostStatus | null>
   root(principal: ManagementPrincipal, workspaceId: string, template: SourceRootRecord,
     target: DeviceProvisioningTarget): Promise<SourceRootRecord>
 }
@@ -52,13 +55,21 @@ export class ProductionCiEnrollmentInventory implements CiEnrollmentInventory {
       const connected = target.hostRef.kind === 'main' || !!binding
         && binding.workerInstallationId === target.applicationInstallationId
         && binding.keyRevision === target.keyRevision && binding.authorizationRevision === target.authorizationRevision
-      computers.push({ target, buildEnabled: row.build_enabled, connected })
+      const hostCi = target.hostRef.kind === 'device' && this.endpoint().capabilities(target.hostRef.deviceId)
+        .some(value => value.namespace === CI_HOST_NAMESPACE && value.mainCanRequest)
+      computers.push({ target, buildEnabled: row.build_enabled, connected, executionMode: hostCi ? 'host' : 'protected' })
     }
     return computers
   }
 
   async storage(target: DeviceProvisioningTarget): Promise<CiInstalledStorage | null> {
     return (await this.runtimeStatus(target))?.installedStorage ?? null
+  }
+
+  async hostStatus(target: DeviceProvisioningTarget): Promise<CiHostStatus | null> {
+    await assertBuildComputerTarget(this.pool, target)
+    this.workerExecution.requireEnabled(target.hostRef)
+    return readHostCiStatus(this.endpoint(), target)
   }
 
   async runtimeStatus(target: DeviceProvisioningTarget): Promise<CiRuntimeWorkerState | null> {

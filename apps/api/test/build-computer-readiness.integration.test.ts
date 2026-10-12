@@ -86,7 +86,7 @@ describe.skipIf(!postgresEnabled)('build readiness matches admission through HTT
     let clockReason: string | null = null
     const endpoint = { clockReason: () => clockReason, currentBinding: () => ({ workerInstallationId: target.applicationInstallationId,
       keyRevision: target.keyRevision, authorizationRevision: target.authorizationRevision }),
-    captureRequest: () => ({}) } as unknown as DeviceEndpoint
+    captureRequest: () => ({}), capabilities: () => [] } as unknown as DeviceEndpoint
     let memory: number | null = 14 * 2 ** 30
     const availableMemory = async () => memory
     const commands = new PostgresCommandCoordinator(database.pool)

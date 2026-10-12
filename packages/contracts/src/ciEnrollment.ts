@@ -28,12 +28,13 @@ export const CiEnrollmentTemplateSchema = z.object({
   message: z.string().max(2000).nullable(),
 }).strict()
 export const CiEnrollmentComputerSchema = z.object({
+  executionMode: z.enum(['host', 'protected']).optional(),
   managedSetup: CiManagedSetupSchema.optional(),
   target: DeviceProvisioningTargetSchema,
   revision: z.number().int().nonnegative(),
   enabled: z.boolean(),
-  state: z.enum(['pending', 'templates-required', 'disabled', 'offline', 'runtime-required', 'root-required', 'storage-required',
-    'not-enrolled-automatically', 'preparing', 'ready', 'partial', 'failed']),
+  state: z.enum(['pending', 'templates-required', 'disabled', 'offline', 'setup-required', 'runtime-required',
+    'root-required', 'storage-required', 'not-enrolled-automatically', 'preparing', 'ready', 'partial', 'failed']),
   profileIds: z.array(IdSchema),
   templates: z.array(CiEnrollmentTemplateSchema).default([]),
   message: z.string().max(2000).nullable(),

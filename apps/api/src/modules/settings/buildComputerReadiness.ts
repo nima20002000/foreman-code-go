@@ -1,3 +1,4 @@
+import { CI_HOST_NAMESPACE } from '@foreman-code/contracts'
 import { JobRuntimeProfileRecordSchema } from '@foreman-code/contracts/job-verification-runtime'
 import type { BuildComputerStatus } from '@foreman-code/contracts/build-computers'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -9,6 +10,7 @@ import { buildComputerTarget } from './buildComputers.js'
 import { jobComputerCapacityDecision, type VerificationMemoryReader } from '../jobs/computerSelection.js'
 import type { WorkerExecutionPolicy } from './workerExecution.js'
 import { DomainError } from '../errors.js'
+import { readHostCiStatus } from '../ci-host/status.js'
 
 export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; profiles: JobRuntimeProfiles;
   workerExecution: WorkerExecutionPolicy; localExecutor: boolean; availableMemory?: VerificationMemoryReader | undefined }) {
@@ -29,6 +31,13 @@ export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; prof
       if (!remoteExecutionEnabled) return result('setup-required', ['Remote execution disabled on Main.'])
       const clockReason = input.endpoint().clockReason(target.hostRef.deviceId)
       if (clockReason) return result('setup-required', [clockReason])
+      const hostCi = input.endpoint().capabilities(target.hostRef.deviceId)
+        .some(value => value.namespace === CI_HOST_NAMESPACE && value.mainCanRequest)
+      if (hostCi) {
+        const status = await readHostCiStatus(input.endpoint(), target)
+        if (!status) return result('offline', ['Host CI is unavailable on this connection.'])
+        return result(status.ready ? 'ready' : 'setup-required', status.reasons)
+      }
       if (!input.endpoint().captureRequest(target.hostRef.deviceId, 'execution-v1')) {
         return result('setup-required', ['Job execution is unavailable on this connection.'])
       }
