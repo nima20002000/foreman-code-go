@@ -1243,10 +1243,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       let cursor: string | undefined
       do {
         signal.throwIfAborted()
-        const page = object(await runtime.transport.request('thread/turns/list', {
+        const page = await listCodexTurns(runtime.transport, {
           threadId: session.nativeSessionId, limit: 50, sortDirection: 'desc', itemsView: 'full',
           ...(cursor ? { cursor } : {}),
-        }, signal), 'CODEX_THREAD_READ_INVALID')
+        }, signal) ?? { data: [] }
         if (!Array.isArray(page.data)) throw new HarnessExecutionError('CODEX_THREAD_READ_INVALID', 'Codex returned an invalid turn page.')
         for (const turn of page.data.filter(isObject)) {
           const nativeTurnId = text(turn.id)
@@ -2531,11 +2531,13 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const seenCursors = new Set<string>()
       selected = undefined
       for (let page = 0; page < 20; page += 1) {
-        const result = object(await transport.request('thread/turns/list', {
+        const result = await listCodexTurns(transport, {
           threadId: runtime.session.nativeSessionId, limit: 50, sortDirection: 'desc', itemsView: 'full',
           ...(cursor ? { cursor } : {}),
-        }, signal), 'CODEX_THREAD_READ_INVALID')
+        }, signal)
         if (rejectedDuringRead()) return
+        // Before its first turn lands the thread has no history; an unacknowledged turn/start is still pending.
+        if (!result) { if (starting && !starting.acknowledgedTurnId) return; break }
         const candidates = Array.isArray(result.data) ? result.data.filter(isObject).filter(matches) : []
         if (wantedCorrelation && candidates.length > 1) throw new HarnessExecutionError('CODEX_CORRELATION_AMBIGUOUS', 'More than one native turn has this correlation.')
         if (candidates[0]) { selected = candidates[0]; break }
@@ -2952,5 +2954,15 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       runtime.wake.add(done)
       signal?.addEventListener('abort', abort, { once: true })
     })
+  }
+}
+
+/** Codex refuses `thread/turns/list` until the first user message materializes the thread; undefined means no turns yet. */
+async function listCodexTurns(transport: CodexTransport, params: JsonObject, signal?: AbortSignal): Promise<JsonObject | undefined> {
+  try {
+    return object(await transport.request('thread/turns/list', params, signal), 'CODEX_THREAD_READ_INVALID')
+  } catch (error) {
+    if (error instanceof CodexRpcError && /is not materialized yet/.test(error.nativeMessage ?? '')) return undefined
+    throw error
   }
 }
