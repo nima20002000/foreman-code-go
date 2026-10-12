@@ -170,8 +170,9 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   if (!attention && background) attention = background.label
   const composerDisabled = retired || !!state && !state.conversation && !state.availability.canSend
   let composerReason = commandOnly ? controlReason : nextReason
-  if (state?.availability.reason === 'run_active') composerReason = state.sourceTranscript?.state === 'starting'
-    ? 'Read-only while starting' : 'Read-only while working'
+  // One compact line while the Run Agent works: "Working — you can message it when it finishes".
+  if (state?.availability.reason === 'run_active') composerReason = state.availability.message
+    ?? (state.sourceTranscript?.state === 'starting' ? 'Read-only while starting' : 'Read-only while working')
   else if (state?.sessionState === 'creating') composerReason = 'Read-only while starting'
   else if (retired) composerReason = 'Retired harness: read-only'
   if (!composerReason && attachments.hasBlockingAttachments) composerReason = 'Wait for attachments'

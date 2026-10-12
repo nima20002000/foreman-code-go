@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import {
-  AgentChatContextSchema, AgentChatHistoryPageSchema, AgentChatQuerySchema, AgentChatStateSchema,
+  AgentChatContextSchema, AgentChatExecutionActivityPageSchema, AgentChatHistoryPageSchema, AgentChatQuerySchema, AgentChatStateSchema,
   AgentChatStateResponseSchema, CancelQueuedAgentChatTurnRequestSchema, InterruptAgentChatRequestSchema,
   RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema, SendAgentChatMessageResponseSchema,
   type AgentChatContext, type SendAgentChatMessageRequest,
@@ -20,6 +20,13 @@ export const agentChatApi = {
     const params = new URLSearchParams()
     for (const [key, value] of Object.entries(AgentChatQuerySchema.parse(query))) if (value !== undefined) params.set(key, value)
     return apiClient.request(`${agentChatRoot(workspaceId)}?${params}`, AgentChatStateSchema, options)
+  },
+  executionActivity(context: AgentChatContext, page: { cursor?: string; executionId?: string; before?: string; itemId?: string },
+    options?: RequestOptions) {
+    const { workspaceId, ...query } = AgentChatContextSchema.parse(context)
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries({ ...query, ...page })) if (value !== undefined) params.set(key, String(value))
+    return apiClient.request(`${agentChatRoot(workspaceId)}/execution-activity?${params}`, AgentChatExecutionActivityPageSchema, options)
   },
   send(workspaceId: string, input: SendAgentChatMessageRequest, options?: RequestOptions) {
     return apiClient.request(`${agentChatRoot(workspaceId)}/messages`, SendAgentChatMessageResponseSchema,

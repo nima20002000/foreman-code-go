@@ -227,3 +227,7 @@ body:has(.n-agent-popover[data-panel='chat']) .operator-chat-launcher { visibili
 .agent-chat-field.n-field { gap: 0; }
 .agent-chat-field > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .agent-chat-input-box .n-input:focus { outline: none; border: 0; box-shadow: none; }
+/* Live execution activity: labeled executions (interval checks, retries) with one row per step. */
+.agent-chat-execution { display: grid; gap: var(--space-2); min-width: 0; }
+.agent-chat-execution-label { margin: 0; color: var(--text-muted); font: var(--type-caption); }
+.agent-chat-tool[data-status="failed"] summary small { color: var(--danger, currentColor); }

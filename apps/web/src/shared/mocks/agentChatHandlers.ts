@@ -1,9 +1,9 @@
 import { http, HttpResponse } from 'msw'
 import {
-  AgentChatContextSchema, AgentChatQuerySchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
+  AgentChatContextSchema, AgentChatExecutionActivityPageSchema, AgentChatQuerySchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
   InterruptAgentChatRequestSchema, RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema,
   SendAgentChatMessageResponseSchema, agentChatFixtures, type AgentChatContext, type AgentChatState,
-  type AgentChatTurn,
+  type AgentChatExecutionActivityPage, type AgentChatTurn,
 } from '@foreman-code/contracts/agent-chat'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { agentChatContextKey } from '../../features/conversations/agentChat/model'
@@ -28,11 +28,25 @@ export function agentChatFixtureFor(state: AgentChatState, context: AgentChatCon
 
 /** Deterministic HTTP fixtures. This is a test server, never a native-session simulator. */
 export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.empty, actions: ManagementAction[] = agentChatTestActions) {
-  const states = new Map<string, AgentChatState>(), receipts = new Map<string, { input: string; conversationId: string }>()
+  const states = new Map<string, AgentChatState>(), activity = new Map<string, AgentChatExecutionActivityPage>(), receipts = new Map<string, { input: string; conversationId: string }>()
   const calls: { method: string; path: string; body?: unknown }[] = []
   let serial = 0
   const setState = (state: AgentChatState) => { states.set(agentChatContextKey(state.context), AgentChatStateSchema.parse(structuredClone(state))) }
-  const reset = () => { states.clear(); receipts.clear(); calls.length = 0; serial = 0; setState(initial) }
+  /** Explicit live activity for a context; otherwise derived from its sourceTranscript. */
+  const setExecutionActivity = (context: AgentChatContext, page: AgentChatExecutionActivityPage) => {
+    activity.set(agentChatContextKey(context), AgentChatExecutionActivityPageSchema.parse(structuredClone(page)))
+  }
+  const executionActivity = (context: AgentChatContext): AgentChatExecutionActivityPage => {
+    const explicit = activity.get(agentChatContextKey(context))
+    if (explicit) return explicit
+    const source = getState(context).sourceTranscript
+    if (!source) return { mode: 'snapshot', executions: [], hasEarlierExecutions: false, items: [], cursor: '{}', hasMoreChanges: false }
+    return { mode: 'snapshot', hasEarlierExecutions: false, cursor: JSON.stringify({ [source.executionId]: source.revision }), hasMoreChanges: false,
+      executions: [{ executionId: source.executionId, label: 'Execution', attempt: 1, state: source.state, createdAt: at, revision: source.revision }],
+      items: source.messages.map((message) => ({ executionId: source.executionId, id: message.id, sequence: message.sequence ?? '1',
+        revision: message.revision ?? source.revision, entry: { kind: 'message' as const, message } })) }
+  }
+  const reset = () => { activity.clear(); states.clear(); receipts.clear(); calls.length = 0; serial = 0; setState(initial) }
   reset()
   const getState = (context: AgentChatContext) => states.get(agentChatContextKey(context)) ?? agentChatFixtureFor(agentChatFixtures.empty, context)
   const find = (workspaceId: string, id: string) => [...states.values()].find((state) => state.context.workspaceId === workspaceId && state.conversation?.id === id)
@@ -45,6 +59,14 @@ export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.
       record(request)
       const query = AgentChatQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams))
       return HttpResponse.json(getState(AgentChatContextSchema.parse({ workspaceId: params.workspaceId, ...query })))
+    }),
+    http.get(`${root}/execution-activity`, ({ request, params }) => {
+      record(request)
+      const search = new URL(request.url).searchParams
+      const page = executionActivity(AgentChatContextSchema.parse({ workspaceId: params.workspaceId, workflowId: search.get('workflowId'),
+        workflowNodeId: search.get('workflowNodeId'), agentId: search.get('agentId'), runId: search.get('runId') ?? undefined }))
+      // A cursor read answers with changes, so it merges into what an earlier page already loaded.
+      return HttpResponse.json(search.has('cursor') ? { ...page, mode: 'changes' } : page)
     }),
     http.post(`${root}/messages`, async ({ request, params }) => {
       const input = SendAgentChatMessageRequestSchema.parse(await request.json()); record(request, input)
@@ -138,7 +160,7 @@ export function createAgentChatMock(initial: AgentChatState = agentChatFixtures.
       return new HttpResponse(`event: snapshot\nid: 0\ndata: ${JSON.stringify(event)}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
     }),
   ]
-  return { handlers, calls, getState, setState, reset }
+  return { handlers, calls, getState, setState, setExecutionActivity, reset }
 }
 
 const defaultMock = createAgentChatMock()

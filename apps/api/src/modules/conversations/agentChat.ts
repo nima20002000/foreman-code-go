@@ -5,6 +5,7 @@ import { resolveAgentChatDirectory, revalidateAgentChatDirectory } from './agent
 import type { SessionControlRequest } from '@foreman-code/contracts'
 import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
 import { readRunChatTranscript } from './runChatTranscript.js'
+import { ExecutionActivityReader, type ExecutionActivityRequest } from './executionActivity.js'
 import { SessionControlStateSchema } from '@foreman-code/contracts'
 import { validateSessionMessage } from './sessionControls/messageAdmission.js'
 import { parseSessionCommand, sessionTaskContent } from '@foreman-code/contracts'
@@ -173,6 +174,13 @@ function nativeUnavailable(error: unknown): { reason: 'native_session_missing' |
   return undefined
 }
 
+function intervalTick(execution: HarnessExecution): number {
+  const input = execution.input
+  const tick = input && typeof input === 'object' && !Array.isArray(input) ? input.tick : undefined
+  const index = tick && typeof tick === 'object' && !Array.isArray(tick) ? tick.index : undefined
+  return typeof index === 'number' ? index : 0
+}
+
 export class AgentChatService {
   readonly events = new AgentChatEvents()
   private readonly runtimes = new Map<string, Runtime>()
@@ -187,6 +195,7 @@ export class AgentChatService {
   private shutdownAttempt: Promise<void> | undefined
   private readonly activity: PostgresOperatorActivityRepository
   private readonly sessionControls: SessionControlStore
+  private readonly executionActivityReader: ExecutionActivityReader
 
   private readonly commands: AgentChatCommands
   private readonly lifetime = new AbortController()
@@ -205,6 +214,7 @@ export class AgentChatService {
     this.activity = new PostgresOperatorActivityRepository(pool)
     this.commands = new AgentChatCommands(pool)
     this.sessionControls = new SessionControlStore(pool, 'agent')
+    this.executionActivityReader = new ExecutionActivityReader(pool)
   }
 
   /** Publish command ownership before the first await so shutdown also drains admission/readback. */
@@ -270,7 +280,7 @@ export class AgentChatService {
       }
       const block = version.definition.repeat?.blocks.find((entry) => entry.nodeIds.includes(context.workflowNodeId))
       let source: HarnessExecution | undefined
-      let sourceOccurrence = 0
+      let sourceOccurrence = 0, sourceTick = 0
       const exactExecution = executionId ? await this.runs.getExecution(executionId) : undefined
       const pages = executionId ? [exactExecution ? [exactExecution] : []] : this.runs.executionPages(run.id)
       for await (const page of pages) {
@@ -281,6 +291,7 @@ export class AgentChatService {
             continue
           }
           let occurrenceIndex = 0
+          const tick = intervalTick(execution)
           if (block) {
             const input = execution.input
             const occurrence = input && typeof input === 'object' && !Array.isArray(input) ? input.occurrence : undefined
@@ -295,8 +306,10 @@ export class AgentChatService {
           }
           // The legacy unpinned entrypoint retains its latest-occurrence policy. SCH-06 always
           // supplies an explicit execution after snapshot resolution; it never takes this fallback.
-          if (!source || occurrenceIndex > sourceOccurrence || occurrenceIndex === sourceOccurrence && execution.attempt > source.attempt) {
-            source = execution; sourceOccurrence = occurrenceIndex
+          // Interval checks of one node share occurrence 0: the latest check is the current execution.
+          if (!source || occurrenceIndex > sourceOccurrence || occurrenceIndex === sourceOccurrence
+            && (tick > sourceTick || tick === sourceTick && execution.attempt > source.attempt)) {
+            source = execution; sourceOccurrence = occurrenceIndex; sourceTick = tick
           }
         }
       }
@@ -322,7 +335,8 @@ export class AgentChatService {
         || row && row.harness !== configuration.harness.harness) staleRunChat()
       if (source.state !== 'completed') {
         return { ...sourceResolution, configuration, blocked: { reason: 'run_active',
-          message: 'The execution transcript is read-only while this Agent starts or works. Follow-up messages open when its execution finishes.' } }
+          message: source.state === 'queued' || source.state === 'starting'
+            ? 'Starting — you can message it when it finishes' : 'Working — you can message it when it finishes' } }
       }
       if (row) {
         const unavailable = this.sessionUnavailable(row, configuration)
@@ -655,6 +669,15 @@ export class AgentChatService {
       }, this.lifetime.signal)))
   }
 
+  /** Live public activity of the selected Run Agent's executions. Read-only; never touches native sessions. */
+  async executionActivity(principal: ManagementPrincipal, workspaceId: string,
+    query: AgentChatQuery & { runId: string }, request: ExecutionActivityRequest) {
+    const context: AgentChatContext = { workspaceId, ...query }
+    this.authorize(principal, 'agent_chat:read', context)
+    this.authorize(await readLiveManagementPrincipal(this.pool, principal.id), 'agent_chat:read', context)
+    return this.executionActivityReader.read({ workspaceId, workflowId: query.workflowId, runId: query.runId,
+      workflowNodeId: query.workflowNodeId, agentId: query.agentId }, request)
+  }
   async history(principal: ManagementPrincipal, workspaceId: string, id: string, before: string | undefined, limit: number) {
     await this.conversation(workspaceId, id, principal, 'agent_chat:read')
     const page = AgentChatReadbackQuerySchema.parse({ before, limit })

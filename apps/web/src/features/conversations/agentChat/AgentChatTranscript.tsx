@@ -2,12 +2,14 @@ import type { AgentChatState, AgentChatTurn, SendAgentChatMessageRequest } from 
 import type { MessageAttachmentRef } from '@foreman-code/contracts/files'
 import { parseSessionCommand, type InteractionResponseValue, type Message, type SessionMode } from '@foreman-code/contracts'
 import { X } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import { Button, IconButton, Tooltip } from '../../../shared/ui/nocturne'
 import { ChatMessageFiles } from '../ChatMessageFiles'
 import { ChatDecisionReceipts } from '../ChatDecisionReceipts'
 import { OperatorApprovalCard } from '../../operator-chat/OperatorApprovalCard'
 import { ConversationViewport } from '../ConversationViewport'
 import { RunTranscript } from './RunTranscript'
+import { useExecutionActivity } from './executionActivity'
 import { AgentChatMessage } from './AgentChatMessage'
 import { AgentChatActivity } from './AgentChatActivity'
 import { ChatDeliveryState } from './ChatDeliveryState'
@@ -28,6 +30,16 @@ export function AgentChatTranscript({
   onSendAgain(content: string, attachments?: MessageAttachmentRef[], mode?: SessionMode): void
 }) {
   const id = state.conversation?.id
+  const feed = useExecutionActivity(state.context)
+  const sourceRevision = state.sourceTranscript?.revision
+  const refetchFeed = feed.query.refetch
+  // A newer execution state seen by the chat read pulls its activity now instead of on the next tick.
+  const seenRevision = useRef(sourceRevision)
+  useEffect(() => {
+    if (seenRevision.current === sourceRevision) return
+    seenRevision.current = sourceRevision
+    void refetchFeed()
+  }, [sourceRevision, refetchFeed])
   const resendUnavailable = (content: string) => {
     const command = parseSessionCommand(content)
     return command.kind === 'compact' || command.kind === 'mode' ? controlResendReason : resendReason
@@ -50,7 +62,7 @@ export function AgentChatTranscript({
     && !turns.some(turn => record.command?.kind === 'send' && turn.requestId === record.command.input.requestId))
   const activities = applyCanonicalActivityItems(state.activities, state.activitySnapshot).filter(entry => entry.kind !== 'thinking')
   const placement = placeChatActivities(messages, activities, state.activeTurn?.requestId)
-  const revision = JSON.stringify([state.sourceTranscript, messages, state.turns, activities,
+  const revision = JSON.stringify([feed.query.data?.cursor, feed.query.data?.items.length, messages, state.turns, activities,
     state.pendingInteraction, unresolved.map(record => [record.command, record.status])])
   const originalCommand = (turn: AgentChatTurn) => commands.find(record => record.command?.kind === 'send'
     && record.command.input.requestId === turn.requestId)?.command
@@ -87,7 +99,7 @@ export function AgentChatTranscript({
       disabled={history.isFetching} onClick={() => { onBrowse(); void history.fetchNextPage() }}>Load earlier messages</Button> : null}
     {history.isError ? <p role="alert">History unavailable. <Button size="sm" disabled={history.isFetching}
       onClick={() => { onBrowse(); void history.fetchNextPage() }}>Retry history</Button></p> : null}
-    {state.sourceTranscript ? <RunTranscript transcript={state.sourceTranscript} name={name} /> : null}
+    {state.context.runId ? <RunTranscript feed={feed} name={name} onBrowse={onBrowse} /> : null}
     {(!state.sourceTranscript || state.conversation) ? <ol className="agent-chat-messages" aria-label="Conversation history">
       {[
         ...messages.flatMap(message => [
