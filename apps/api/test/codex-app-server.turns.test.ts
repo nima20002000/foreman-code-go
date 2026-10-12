@@ -57,6 +57,78 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await manager.history(session)).terminalResult?.outcome, 'succeeded')
   })
 
+  it('resumes the saved thread after its provider exits during reconciliation without replaying its turn', async () => {
+    const { CodexStdioTransport } = await import('../src/modules/harnesses/codexStdioTransport.js')
+    let closureConfirmed = false
+    let notify!: ConstructorParameters<typeof CodexStdioTransport>[5]
+    const retained = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'scoped', undefined, {
+      mode: 'native',
+      transport: (...args) => {
+        notify = args[5]
+        return new class extends CodexStdioTransport {
+          override reattached(): boolean { return true }
+          override originalProcessClosed(): boolean { return closureConfirmed }
+        }(...args)
+      },
+    })
+    managers.push(retained)
+    setManager(retained)
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'wait', 'original-correlation')
+    notify('transport/observerUnavailable', {})
+    await assertCode(result, 'CODEX_OBSERVER_UNAVAILABLE')
+    const saved = await state(f.directory, session.nativeSessionId)
+    const turn = saved.turns.at(-1)!
+    turn.status = 'completed'
+    turn.completedAt = 2
+    assert(Array.isArray(turn.items))
+    turn.items.push({ type: 'agentMessage', id: 'saved-answer', text: 'Recovered completion',
+      phase: 'final_answer', memoryCitation: null, delivery: null, questions: null })
+    await json(`state-${session.nativeSessionId}.json`, saved)
+    await flag('disconnect-turn-history')
+    await assertCode(manager.reconcile(session, 'original-correlation'), 'CODEX_OBSERVER_UNAVAILABLE')
+    assert.equal((await wire('thread/resume')).length, 0)
+    closureConfirmed = true
+    const recovered = await manager.reconcile(session, 'original-correlation')
+    assert.equal(recovered.nativeTurnId, turn.id)
+    assert.equal(recovered.terminalTurn?.result.outcome, 'succeeded')
+    assert.deepEqual(recovered.terminalTurn?.result.output, { text: 'Recovered completion' })
+    assert.equal((await wire('turn/start')).length, 1)
+    const resumed = await wire('thread/resume')
+    assert.equal(resumed.length, 1)
+    assert.equal((resumed[0]!.params as JsonObject).threadId, session.nativeSessionId)
+    await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'after-recovery' }))
+    assert.equal((await manager.history(session)).terminalResult?.outcome, 'succeeded')
+    assert.equal((await wire('turn/start')).length, 2)
+  })
+
+  it('wakes an acknowledged stream on observer unavailability and retains its pending interaction', async () => {
+    const { CodexStdioTransport } = await import('../src/modules/harnesses/codexStdioTransport.js')
+    let notify!: ConstructorParameters<typeof CodexStdioTransport>[5]
+    const observed = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'scoped', undefined, {
+      mode: 'native', transport: (...args) => {
+        notify = args[5]
+        return new CodexStdioTransport(...args)
+      },
+    })
+    managers.push(observed)
+    setManager(observed)
+    const session = await manager.createSession(source)
+    const { result } = await start(session, 'approval', 'original-correlation')
+    const interaction = await pending(session)
+    notify('transport/observerUnavailable', {})
+    await assertCode(result, 'CODEX_OBSERVER_UNAVAILABLE')
+    assert.equal((await pending(session)).turn.nativeRequestId, interaction.turn.nativeRequestId)
+    assert.equal((await manager.history(session)).terminalResult, undefined)
+    notify('transport/reconnected', {})
+    await respond(session, interaction)
+    await until(async () => (await manager.history(session)).terminalResult)
+    const recovered = await manager.reconcile(session, 'original-correlation')
+    assert.equal(recovered.terminalTurn?.result.outcome, 'succeeded')
+    assert.equal((await wire('turn/start')).length, 1)
+    assert.equal((await wire('thread/resume')).length, 0)
+  })
+
   for (const previous of [false, true]) it(`F04: cancellation during ${previous ? 'subsequent' : 'first'} startup interrupts only the new turn`, async () => {
     const session = await manager.createSession(source)
     if (previous) await collect(manager.startTurn(session, { prompt: 'complete', clientCorrelationId: 'old' }))

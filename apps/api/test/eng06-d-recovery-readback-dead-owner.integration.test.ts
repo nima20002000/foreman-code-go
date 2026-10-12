@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
-import { executionRows, readback, recoveryFixture, assertRecoveryReceipts } from './helpers/eng06DRecovery.js'
+import { executionRows, readback, recoveryFixture } from './helpers/eng06DRecovery.js'
 import { forms, parked } from './helpers/recoveryReadback.js'
+import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -9,7 +10,7 @@ afterEach(() => vi.restoreAllMocks())
 // d32a361 cold cleanup requires a scoped physical-disposal callback. The helper
 // simulates that external boundary, never SQL receipts, native ACKs or results.
 describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and authenticated Operator MCP', () => {
-  it.each(forms)('%s: a dead native owner without a durable terminal cannot leave the Run running forever', async (form) => {
+  it.each(forms)('%s: a non-detachable native lifetime closes at restart without a terminal or replay', async (form) => {
     let first = true
     const f = await recoveryFixture(form, () => { if (first) { first = false; return 'park' } return 'success' })
     try {
@@ -29,13 +30,18 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
       expect(rows).toHaveLength(1)
       expect(rows[0]!.execution.attempt).toBe(1)
       expect(f.provider.counts.starts).toBe(1); expect(f.provider.counts.attaches).toBe(0)
-      await assertRecoveryReceipts(f, [original])
+      const closure = await readWorkflowClosure(f.base.db.pool, abandoned.execution)
+      expect(closure).toMatchObject({ execution: { id: original, runId: f.base.f.run.id },
+        session: { nativeSessionId: abandoned.execution.nativeSessionId },
+        durableGeneration: expect.stringMatching(/^[1-9][0-9]*$/) })
+      expect(f.provider.recoveryCalls).toEqual([])
       expect(after.record.run.input).toEqual(before.record.run.input)
       expect(after.record.run.workflowVersionId).toBe(before.record.run.workflowVersionId)
       // Completed recovery remains stable under further reconciliation/readback.
       const submissions = f.provider.counts.starts
       await f.runtime.engine.reconcile((error) => f.errors.push(error))
       expect(await readback(f)).toEqual(after)
+      expect(await readWorkflowClosure(f.base.db.pool, abandoned.execution)).toEqual(closure)
       expect(f.provider.counts.starts).toBe(submissions)
       expect(f.shutdownErrors).toEqual([])
     } finally { await f.close() }

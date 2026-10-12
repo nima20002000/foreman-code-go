@@ -19,12 +19,19 @@ export async function localWorkflowSourceClosed(sql: GraphSqlClient, executionId
   return closed !== undefined
 }
 
-export async function closeCompletedWorkflowSources(
-  pool: Pick<pg.Pool, 'query'>,
-  sources: Pick<PostgresSourceService, 'confirmClosed'>,
-  report: (error: unknown) => void,
-): Promise<void> {
-  const rows = await pool.query<{ record: unknown; execution: unknown; settlement_pending: boolean }>(`select m.record,e.record as execution,
+interface CompletedSource {
+  materialization_id: string
+  already_closed: boolean
+  record: unknown
+  execution: unknown
+  settlement_pending: boolean
+}
+
+const cleanupPageSize = 100
+
+async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: CompletedSource | undefined) {
+  return pool.query<CompletedSource>(`select m.materialization_id,m.state='closed' as already_closed,
+      m.record,e.record as execution,
       (r.execution_state in ('running','waiting')
         and e.record#>>'{result,outcome}'='succeeded'
         and exists(select 1 from execution_native_sessions n
@@ -39,34 +46,48 @@ export async function closeCompletedWorkflowSources(
     join harness_executions e on e.id=m.execution_id
     join runs r on r.id=e.run_id
     join source_storage_reservations s on s.reservation_id=m.reservation_id
-    where (m.record#>'{receipt,worktree}' is null or r.execution_state in ('completed','interrupted'))
-      and (m.state<>'closed' or (
-        s.state='retained' and s.record->>'referenceReclaimed' is distinct from 'true' and (
-          s.reserved_bytes=(s.record->>'reservedBytes')::bigint
-          or (m.record#>'{receipt,sharedTree}' is not null
-            and m.record#>>'{receipt,binding,deviceId}' is null)
+    where (m.state<>'closed' or (
+        s.state='retained' and (
+          (s.record->>'referenceReclaimed' is distinct from 'true' and (
+            s.reserved_bytes=(s.record->>'reservedBytes')::bigint
+            or (m.record#>'{receipt,sharedTree}' is not null
+              and m.record#>>'{receipt,binding,deviceId}' is null)
+          ))
+          or (m.record#>'{receipt,worktree}' is not null
+            and m.worktree_cleanup->>'state' is distinct from 'removed')
         )
         and not exists(select 1 from source_preparation_reconciliations c
           where c.operation_id::text=m.record->>'operationId' and c.status='closed')
       )) and e.record->>'state'='completed'
-    order by m.materialization_id limit 100`)
-  for (const row of rows.rows) {
-    try {
-      // Stop or cleanup can arrive between result publication and the native closure commit.
-      // Keep its source until that owner has finished; confirmClosed still fences release.
-      if (row.settlement_pending) continue
-      const execution = HarnessExecutionSchema.parse(row.execution)
-      // Sessionless attempts use reservation reclamation, which removes their unused copy after physical closure.
-      if (!execution.nativeSessionId) continue
-      const record = SourceMaterializationRecordSchema.parse(row.record)
-      if (record.receipt.binding.deviceId !== null) {
-        // Credential expiry or revocation does not release the original process's source.
-        if (execution.id === record.receipt.executionId
+      and ($1::uuid is null or (m.state='closed',m.materialization_id)>($2::boolean,$1::uuid))
+    order by m.state='closed',m.materialization_id limit $3`,
+  [after?.materialization_id ?? null, after?.already_closed ?? false, cleanupPageSize])
+}
+
+export async function closeCompletedWorkflowSources(
+  pool: Pick<pg.Pool, 'query'>,
+  sources: Pick<PostgresSourceService, 'confirmClosed'>,
+  report: (error: unknown) => void,
+): Promise<void> {
+  let after: CompletedSource | undefined
+  for (;;) {
+    const { rows } = await completedSourcePage(pool, after)
+    for (const row of rows) {
+      try {
+        // A successful result can be published before its native closure commits.
+        if (row.settlement_pending) continue
+        const execution = HarnessExecutionSchema.parse(row.execution)
+        // Sessionless attempts use physical reservation reclamation.
+        if (!execution.nativeSessionId) continue
+        const record = SourceMaterializationRecordSchema.parse(row.record)
+        if (record.receipt.binding.deviceId !== null && execution.id === record.receipt.executionId
           && await hasRetainedRemoteReviewerSource(pool, execution)) continue
+        await sources.confirmClosed(record)
+      } catch (error) {
+        report(error)
       }
-      await sources.confirmClosed(record)
-    } catch (error) {
-      report(error)
     }
+    if (rows.length < cleanupPageSize) return
+    after = rows.at(-1)
   }
 }
