@@ -56,18 +56,21 @@ it('registers the native launcher route before remote Codex startup and renews i
   const client = new Client({ name: 'remote-codex-session', version: '1' })
   let fixture: Awaited<ReturnType<typeof runningInstalledFixture>> | undefined
   try {
+    // Hono's request draining requires real sockets rather than app.inject() sockets.
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
     // Native provider and Main lease authorization are doubles; startup, launcher and MCP transport are real.
     fixture = await runningInstalledFixture('generation', { mcp: {
       request: async (body, protocolVersion) => {
-        const reply = await app.inject({ method: 'POST', url: '/mcp', payload: JSON.stringify(body),
+        const reply = await fetch(new URL('/mcp', address), { method: 'POST', body: JSON.stringify(body),
           headers: { authorization: 'Bearer original-token', 'content-type': 'application/json',
             accept: 'application/json, text/event-stream',
             ...(protocolVersion ? { 'mcp-protocol-version': protocolVersion } : {}) } })
-        const contentType = reply.headers['content-type']
+        const contentType = reply.headers.get('content-type')
+        const responseBody = await reply.text()
         let transportType: 'empty' | 'text/event-stream' | 'application/json' = 'application/json'
-        if (!reply.body) transportType = 'empty'
+        if (!responseBody) transportType = 'empty'
         else if (String(contentType).startsWith('text/event-stream')) transportType = 'text/event-stream'
-        return { statusCode: reply.statusCode, body: reply.body,
+        return { statusCode: reply.status, body: responseBody,
           contentType: transportType }
       },
       onSessionStart: async start => {
@@ -92,10 +95,11 @@ it('registers the native launcher route before remote Codex startup and renews i
       expect(result.isError).not.toBe(true)
       expect(result.structuredContent).toEqual(context)
     } finally { clock.mockRestore() }
-    const invalid = await app.inject({ method: 'POST', url: '/mcp',
-      headers: { authorization: 'Bearer foreign-caller' },
-      payload: { jsonrpc: '2.0', id: 1, method: 'tools/list' } })
-    expect(invalid.statusCode).toBe(401)
+    const invalid = await fetch(new URL('/mcp', address), { method: 'POST',
+      headers: { authorization: 'Bearer foreign-caller', 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })
+    expect(invalid.status).toBe(401)
+    await invalid.text()
     fixture.denyMcp()
     await expect(client.callTool({ name: 'context_get', arguments: {} })).rejects.toThrow()
   } finally {
