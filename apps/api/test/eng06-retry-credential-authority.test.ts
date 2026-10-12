@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { buildApp } from '../src/app.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { HarnessExecutionSchema, type NativeSessionReference } from '@foreman-code/contracts'
@@ -57,14 +61,14 @@ function bindingFor(row: AuthorityRow) {
     approval_native_session_id: row.execution.nativeSessionId ?? null, approval_connection_generation: row.generation,
     live: true, environment_variable: 'GRAPHQL_MCP_TOKEN', execution_semantics_version: 3 }
 }
-function database(row: AuthorityRow, binding = bindingFor(row), currentReviewLease = true) {
+function database(row: AuthorityRow, binding = bindingFor(row), currentReviewLease = true, initialBinding = binding) {
   const query = vi.fn(async (text: string) => {
     if (text === 'select record from harness_executions where id=$1') return { rows: [{ record: row.execution }], rowCount: 1 }
     if (text.startsWith('select operation_id,execution_id,run_id,node_id') || text.startsWith('select record from execution_native_placements')) return { rows: [], rowCount: 0 }
     if (text.includes('e.workflow_node_id as node_id')) return { rows: [{ run: row.run, version: row.version,
       execution: row.execution, node_id: row.execution.workflowNodeId }], rowCount: 1 }
-    if (text.includes('from worker_credential_bindings b')) return { rows: [binding], rowCount: 1 }
-    if (text.includes('from harness_executions e')) return { rows: [row], rowCount: 1 }
+    if (text.includes('from worker_credential_bindings b')) return { rows: [initialBinding], rowCount: 1 }
+    if (text.includes('from harness_executions e')) return { rows: [{ ...row, authority_binding: binding }], rowCount: 1 }
     if (text.includes('select record from agent_configuration_versions')) return {
       rows: row.configurations.map((record) => ({ record })), rowCount: row.configurations.length,
     }
@@ -82,6 +86,21 @@ describe.each(['sequential', 'repeat'] as const)('ENG06 %s retry credential auth
       execution: { id: row.execution.id, attempt }, canRespond: false, nativeSessionId: null, generation: null,
     })
     expect(query).toHaveBeenCalledWith(expect.stringContaining('e.attempt'), [row.execution.id])
+  })
+
+  it('authenticates when session publication commits between credential reads', async () => {
+    const row = nativeRow(form)
+    const binding = bindingFor(row)
+    const initialBinding = { ...binding, approval_native_session_id: null, approval_connection_generation: null }
+    const { sql } = database(row, binding, true, initialBinding)
+    await expect(assertWave25WorkerBinding(sql, 'startup-principal')).resolves.toBeUndefined()
+  })
+
+  it('denies credentials revoked between the initial lookup and authority read', async () => {
+    const row = nativeRow(form)
+    const binding = bindingFor(row)
+    const { sql } = database(row, { ...binding, live: false }, true, binding)
+    await expect(assertWave25WorkerBinding(sql, 'revoked-principal')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
   })
 
   it.each(['running', 'waiting'] as const)('keeps attempt two eligible while %s in its exact session', async (state) => {
@@ -185,4 +204,51 @@ describe('ENG06 retry credentials retain authority and native fences', () => {
     expect(await service.canRespond(principal)).toBe(false)
     expect(query.mock.calls.some(([sql]) => sql.includes('e.workflow_node_id as node_id'))).toBe(false)
   })
+})
+
+it('starts a single-tool Coder MCP session across publication and denies revoked or invalid callers', async () => {
+  const row = nativeRow()
+  row.configuration.graphqlTools = ['context_get']
+  row.configuration.nativeTools = { mcpServers: [], apps: false }
+  const binding = bindingFor(row)
+  const initialBinding = { ...binding, approval_native_session_id: null, approval_connection_generation: null }
+  const stored = database(row, binding, true, initialBinding)
+  const token = 'startup-unit-token'
+  const tokenHash = createHash('sha256').update(token).digest('hex')
+  const pool = { query: async (text: string, values: unknown[]) => {
+    if (text.includes('from management_principals where token_hash')) {
+      const principal = { id: 'startup-principal', name: 'Coder', audience: 'worker', agent_id: row.execution.agentId,
+        token_hash: tokenHash, expires_at: new Date('2099-01-01'), revoked_at: null,
+        grants: [{ actions: ['interactions:read'], scope: { runIds: [row.run.id],
+          workflowIds: [row.run.workflowId], workspaceIds: [row.run.workspaceId] } }] }
+      return { rows: values[0] === tokenHash ? [principal] : [] }
+    }
+    if (text.startsWith('select 1 from worker_credential_bindings')) return { rows: [{}], rowCount: 1 }
+    if (text.includes("c.record->>'productRole' as role")) {
+      return { rows: [{ role: row.configuration.productRole, defaults: row.configuration.graphqlTools, override: null }] }
+    }
+    return stored.query(text)
+  } } as unknown as pg.Pool
+  const access = new PostgresAccessService(pool)
+  const service = new PostgresAppInteractionService(pool, {} as never, {} as never)
+  const app = buildApp({ logger: false,
+    readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+    appMcp: { access, interactions: service } })
+  const client = new Client({ name: 'startup-coder', version: '1' })
+  try {
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+      { requestInit: { headers: { authorization: `Bearer ${token}` } } }))
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['context_get'])
+    for (const caller of [token, 'invalid-token']) {
+      binding.live = false
+      const response = await app.inject({ method: 'POST', url: '/mcp',
+        headers: { authorization: `Bearer ${caller}`, accept: 'application/json, text/event-stream' },
+        payload: { jsonrpc: '2.0', id: 1, method: 'tools/list' } })
+      expect(response.statusCode).toBe(401)
+    }
+  } finally {
+    await client.close()
+    await app.close()
+  }
 })
