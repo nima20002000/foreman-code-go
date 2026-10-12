@@ -115,6 +115,9 @@ int main(int argc, char **argv) {
       options ? JSON.stringify(options) : '', { mode: 0o600 }),
     releaseModels: () => rm(join(directory, 'block-models')),
     blockQualification: () => writeFile(join(directory, 'block-qualification'), '', { mode: 0o600 }),
+    blockWorkflowAdmission: () => writeFile(join(directory, 'block-workflow-admission'), '', { mode: 0o600 }),
+    releaseWorkflowAdmission: () => rm(join(directory, 'block-workflow-admission'), { force: true }),
+    failWorkflowAdmission: () => writeFile(join(directory, 'fail-workflow-admission'), '', { mode: 0o600 }),
     releaseQualification: () => rm(join(directory, 'block-qualification')),
     blockVersions: () => writeFile(join(directory, 'block-versions'), '', { mode: 0o600 }),
     releaseVersions: () => rm(join(directory, 'block-versions')),
@@ -125,7 +128,7 @@ int main(int argc, char **argv) {
     releaseReview: () => writeFile(join(directory, 'release-review'), '', { mode: 0o600 }),
     blockWorkflowTurns: (options?: { allowFirst: number }) => writeFile(join(directory, 'block-workflow-turns'),
       options ? JSON.stringify(options) : '', { mode: 0o600 }),
-    releaseWorkflowTurns: () => rm(join(directory, 'block-workflow-turns')),
+    releaseWorkflowTurns: () => rm(join(directory, 'block-workflow-turns'), { force: true }),
     retryReview: () => writeFile(join(directory, 'retry-review'), '', { mode: 0o600 }),
     blockRequesterSession: () => writeFile(join(directory, 'block-requester-session'), '', { mode: 0o600 }),
   }

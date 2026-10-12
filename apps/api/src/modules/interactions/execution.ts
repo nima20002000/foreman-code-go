@@ -1197,6 +1197,11 @@ export class ApprovalExecutionCoordinator {
       for (const execution of executions) {
         if (execution.state === 'completed' || execution.state === 'queued') continue
         const owned = this.ownedSessions.get(execution.id)
+        // Session publication precedes initial turn admission. Let the original
+        // startup finish before deciding whether its siblings can survive restart.
+        await owned?.starting
+        const current = await this.runs.getExecution(execution.id, owner)
+        if (current?.state === 'completed') continue
         if (!owned?.session || !execution.nativeSessionId || owned.opening || owned.openingFailed
           || owned.failed || owned.cleanup || !owned.closureGeneration
           || owned.session.nativeSessionId !== execution.nativeSessionId
@@ -1205,6 +1210,8 @@ export class ApprovalExecutionCoordinator {
       }
     }
     if (!active.length) return false
+    const ready = await this.runs.getRepeatSnapshot(owner.runId, owner)
+    if (ready.stopRequested || ready.cleanupPending || ready.run.executionState === 'completed') return false
     owner.assertOwned()
     for (const owned of active) await this.budgets.beginWait(owned.execution.id)
     owner.assertOwned()
@@ -1235,6 +1242,12 @@ export class ApprovalExecutionCoordinator {
         await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
+          const snapshot = await this.runs.getRepeatSnapshot(owned.execution.runId, owned.runOwner)
+          if (snapshot.stopRequested || snapshot.cleanupPending) {
+            const cleanup = await this.cleanupSession(owned)
+            if (cleanup.length) throw new AggregateError(cleanup, 'Interrupted native cleanup remains unconfirmed.')
+            return
+          }
           if (owned.restartAttachment && !owned.failed
             && (!owned.session || owned.openingFailed || owned.generation === 0)) {
             const { session, request } = owned.restartAttachment
@@ -2058,7 +2071,6 @@ export class ApprovalExecutionCoordinator {
           signal.throwIfAborted()
           input.owner.assertOwned()
           await assertBoundary()
-          finishStartup?.()
         }
         const publishObservedSession = async (observed: NativeSessionReference) => {
           const active = manager!.capturedLease(observed)
@@ -2108,6 +2120,7 @@ export class ApprovalExecutionCoordinator {
             })
             await timeRuntimeOperation('engine', 'native.persist_batch',
               () => this.runs.appendNativeEvents(frames, input.owner, lease), { count: frames.length })
+            finishStartup?.()
             const history = await manager.history(session!, signal)
             const waiting = await observePending(history, events.at(-1), lease)
             if (waiting) return waiting
