@@ -119,7 +119,9 @@ function restartOwnershipFixture(options: {
     getRepeatSnapshot: async (_runId: string, owner: RunOwnership) => {
       owner.assertOwned()
       expect(locked).toBe(true)
-      return { stopRequested: false, cleanupPending: false }
+      return { stopRequested: false, cleanupPending: false,
+        run: { ...saved.run, id: 'run', workspaceId: 'workspace', executionState: 'waiting' },
+      }
     },
     getExecution: async (id: string) => executions.find(execution => execution.id === id),
     getExecutionConfiguration: async () => configuration,
