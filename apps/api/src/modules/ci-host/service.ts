@@ -215,20 +215,17 @@ export class HostCiService {
   async get(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; ticketId: string
     testStatus?: CiTestStatus[] | undefined }) {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
-    const authorized = await this.read(input.ticketId, scope.workspaceId)
-    assertCiReadAccess(caller, scope.executionId, authorized)
-    await this.dispatch()
-    const run = await this.read(input.ticketId, scope.workspaceId)
+    const row = (await this.pool.query<{ record: unknown; log_tail: string }>(
+      'select record,log_tail from ci_runs where id=$1 and workspace_id=$2',
+      [input.ticketId, scope.workspaceId])).rows[0]
+    if (!row) throw new DomainError('CI_RUN_NOT_FOUND', 'No such CI run in this workspace.', 404)
+    const run = CiRunRecordSchema.parse(row.record)
+    assertCiReadAccess(caller, scope.executionId, run)
     const group = (await this.pool.query<{ record: unknown }>(
       `select record from ci_runs where group_id=$1 and workspace_id=$2
         and record->'initiator'=$3::jsonb order by created_at,id`,
       [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
-    let logTail = ''
-    if (run.computer && run.state !== 'queued') {
-      const tail = await this.logs(caller, { ...input, afterOffset: undefined, maxBytes: 32_768 }).catch(() => null)
-      logTail = tail?.text ?? ''
-    }
-    return { run, partitions: group.length > 1 ? group : undefined, logTail,
+    return { run, partitions: group.length > 1 ? group : undefined, logTail: row.log_tail,
       group: { groupId: run.groupId, state: ciGroupState(group) },
       ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}) }
   }
@@ -352,7 +349,7 @@ export class HostCiService {
   }
 
   private async settle(run: CiRunRecord, computer: HostCiComputer, state: { state: string; step: string | null
-    exitCode: number | null; startedAt: string; finishedAt: string | null; message: string | null }) {
+    exitCode: number | null; startedAt: string; finishedAt: string | null; message: string | null }, logTail?: string) {
     const requeued = state.state === 'queued' && computer.hostRef.kind === 'cloud'
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
     if (requeued && computer.hostRef.provider) unstartedProviders.add(computer.hostRef.provider)
@@ -363,9 +360,10 @@ export class HostCiService {
       finishedAt: state.finishedAt, message,
       ...(unstartedProviders.size ? { unstartedProviders: [...unstartedProviders] } : {}) })
     const hostKey = ['starting', 'running'].includes(next.state) ? computer.key : null
-    const saved = await this.pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb
+    const saved = await this.pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb,
+        log_tail=coalesce($6,log_tail)
       where id=$1 and state in ('queued','starting','running') and host_key is not distinct from $5`,
-      [run.id, next.state, hostKey, JSON.stringify(next), run.state === 'queued' ? null : computer.key])
+      [run.id, next.state, hostKey, JSON.stringify(next), run.state === 'queued' ? null : computer.key, logTail ?? null])
     if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message },
       'CI dispatch created no work; ticket queued for another computer')
     return Boolean(saved.rowCount)
@@ -389,9 +387,19 @@ export class HostCiService {
       const computer = computers.find(value => value.key === row.host_key)
         ?? (run.computer && run.computer.hostRef.kind !== 'cloud' ? await this.computer(run.computer.hostRef) : null)
       if (!computer) return
-      const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
+      const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 32_768,
         ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }).catch(() => null)
       if (reply?.operation !== 'read') return
+      let logTail = reply.text
+      if (reply.run.logBytes > 32_768) {
+        const tail = await this.endpoint.request(computer, { operation: 'read', runId: run.id,
+          afterOffset: reply.run.logBytes - 32_768, maxBytes: 32_768 }).catch(error => {
+            log.warn({ err: error, runId: run.id }, 'CI log tail not refreshed; retrying')
+            return null
+          })
+        if (tail?.operation !== 'read') return
+        logTail = tail.text
+      }
       // Test results are asked for apart from the read above: a Worker from before them rejects the flag, and its
       // run must still settle. They land before the finished state, so a reader that sees the outcome also sees its
       // tests; if they cannot be saved, the run stays active and the next pass tries again.
@@ -405,7 +413,7 @@ export class HostCiService {
           if (!saved) return
         }
       }
-      await this.settle(run, computer, reply.run)
+      await this.settle(run, computer, reply.run, logTail)
       // A run is read here until it finishes, so its measured durations are learned once.
       if (reply.durations && !['starting', 'running'].includes(reply.run.state)) {
         await this.learnDurations(run.repository, reply.durations)

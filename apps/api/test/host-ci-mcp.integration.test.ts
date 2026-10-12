@@ -203,8 +203,11 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
       throw error
     }
   }
-  const call = async (client: Client, name: string, input: Record<string, unknown>) =>
-    client.callTool({ name, arguments: { workspaceId, ...input } })
+  const call = async (client: Client, name: string, input: Record<string, unknown>) => {
+    // Drive the background refresh explicitly; polling itself only reads persisted state.
+    if (name === 'ci_get') await ci.dispatch()
+    return client.callTool({ name, arguments: { workspaceId, ...input } })
+  }
   const value = async (client: Client, name: string, input: Record<string, unknown>) => {
     const result = await call(client, name, input)
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
