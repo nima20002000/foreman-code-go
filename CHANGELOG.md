@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.83] - 2026-10-12
+
+### Added
+
+- Per-role native tools: Orchestrator and Coder Agents load only Foreman Code by default (no host MCP servers or apps); the Operator inherits host settings. Per-Agent overrides and Operator MCP parity.
+
+### Fixed
+
+- Runs in a GitHub workspace start their Agents from the current default-branch commit instead of an old approved snapshot; unchanged Agent CI tests that commit.
+- A recovery record left mid-publication no longer kills an Agent's interval check.
+- Tests that need user systemd run only on build computers; a script test no longer leaks its CI environment.
+
 ## [0.0.82] - 2026-10-12
 
 ### Fixed
