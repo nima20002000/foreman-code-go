@@ -282,19 +282,6 @@
   background: var(--surface-raised);
   color: var(--success);
 }
-.n-agent-entry {
-  position: absolute;
-  left: 50%;
-  bottom: -30px;
-  transform: translateX(-50%);
-  padding: 2px var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--surface-raised);
-  color: var(--text-muted);
-  font: var(--type-caption);
-  white-space: nowrap;
-}
 
 /* Rim actions appear while the node is hovered or keyboard-focused. */
 .n-agent-actions { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
@@ -398,10 +385,6 @@
 .n-signal-edge[data-focused] .n-signal-edge-base { stroke: var(--text-muted); stroke-width: 2; }
 .n-signal-edge-trace { fill: none; stroke: var(--edge-signal); stroke-width: 2.4; stroke-linecap: round; opacity: .45; pointer-events: none; }
 .n-signal-edge[data-kind='approval'] .n-signal-edge-trace { stroke-dasharray: 5 4; }
-.n-signal-edge-chevron { fill: none; stroke: var(--text-faint); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none;
-  transform-box: view-box; transform-origin: 0 0; transition: stroke 200ms ease, transform 420ms cubic-bezier(.3, 1.4, .5, 1); }
-.n-signal-edge-chevron[data-reversed] { transform: rotate(180deg); }
-.n-signal-edge[data-signal] .n-signal-edge-chevron { stroke: var(--edge-signal); }
 .n-signal-edge-flight { pointer-events: none; }
 .n-signal-edge-charge, .n-signal-edge-pulse, .n-signal-edge-tag { display: none; }
 .n-signal-edge-tag { offset-rotate: 0deg; offset-distance: 0%; opacity: 0; }
@@ -444,12 +427,7 @@
 @keyframes n-signal-charge { from { stroke-dashoffset: 1; opacity: .9; } to { stroke-dashoffset: 0; opacity: .9; } }
 @keyframes n-signal-charge-back { from { stroke-dashoffset: -1; opacity: .9; } to { stroke-dashoffset: 0; opacity: .9; } }
 @keyframes n-signal-discharge { from { opacity: .9; } to { opacity: 0; } }
-.n-signal-edge-badge { opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
-.n-signal-edge-badge[data-visible='true'] { opacity: 1; pointer-events: all; }
 .board-edge-hover-bridge { fill: transparent; pointer-events: all; }
-.n-signal-edge-badge rect { fill: var(--surface-raised); stroke: var(--border); }
-.n-signal-edge-badge text { fill: var(--text-muted); font: var(--type-eyebrow); letter-spacing: var(--type-eyebrow-tracking); text-transform: uppercase; }
-.n-signal-edge[data-signal] .n-signal-edge-badge text { fill: var(--edge-signal); }
 
 /* xyflow owns authored geometry; the view, rim actions and drop target follow its bounds. */
 .react-flow__node.react-flow__node-agent { padding: 0; border: 0; background: transparent; box-shadow: none; }

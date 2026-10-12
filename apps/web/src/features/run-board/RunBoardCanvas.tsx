@@ -36,7 +36,7 @@ const SavedConnection = memo(function SavedConnection(props: EdgeProps<SavedBoar
   const curve = savedEdgeCurve({ ...props, lane: props.data?.lane ?? 0, loop: props.source === props.target })
   return <g>
     <title>{edge.label || (edge.kind === 'approval' ? 'Approval' : 'Handoff')}</title>
-    <SignalEdgeShape id={props.id} curve={curve} kind={edge.kind} label={edge.label} showLabel={Boolean(edge.label)} />
+    <SignalEdgeShape id={props.id} curve={curve} kind={edge.kind} />
   </g>
 })
 const nodeTypes = { savedBoardNode: SavedAgent }, edgeTypes = { savedBoardEdge: SavedConnection }

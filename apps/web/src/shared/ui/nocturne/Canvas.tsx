@@ -67,7 +67,6 @@ export const AgentNodeView = forwardRef<HTMLButtonElement, AgentNodeViewProps>(f
       {meta.length ? <span className="n-agent-meta">{meta.slice(0, 2).map((item) => <span key={item.label}><small>{item.label}</small><b>{item.value}</b></span>)}</span> : null}
     </button>
     {state === 'completed' ? <span className="n-agent-done" aria-hidden="true"><Icon name="check" size={12} /></span> : null}
-    {entry ? <span className="n-agent-entry">Starts here</span> : null}
     {onAction ? <div className="n-agent-actions" role="group" aria-label={`${name} actions`}>
       {(['chat', 'settings', 'info'] as const).map((panel) => <button key={panel} type="button"
         className={`n-agent-action n-agent-action--${panel} nodrag nopan`} aria-label={`Open ${name} ${actionLabels[panel]}`}

@@ -135,15 +135,13 @@ describe('Run subagent overlays', () => {
     bounds = new DOMRect(940, 800, 96, 64)
     await waitFor(() => expect(popover).toHaveStyle({ left: '536px', top: '276px' }))
   })
-  it('pages the roster and explains syncing and unplaced subagents in plain language', async () => {
+  it('loads every roster page as Board nodes without a status strip', async () => {
     server.use(http.get(base, ({ request }) => HttpResponse.json(new URL(request.url).searchParams.has('cursor')
       ? { items: [detail(child({ id: 'nested', name: 'Nested', parentSubagentId: 'child-1' }))], nextCursor: null, projection: 'caught-up' }
       : { items: [detail(), detail(child({ id: 'orphan', parentSubagentId: 'missing' }))], nextCursor: 'page-2', projection: 'catching-up' })))
     await mount()
-    expect(screen.getByText('Updating subagent activity…')).toBeVisible()
-    expect(screen.getByText("1 subagent isn't shown yet because its parent hasn't reported in.")).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Show more subagents' }))
     await screen.findByRole('button', { name: 'Nested, Codex, Running' })
+    expect(screen.queryByText(/subagent activity|isn't shown yet/)).not.toBeInTheDocument()
   })
   it('removes cached circles after a denied refresh', async () => {
     const { client } = await mount()

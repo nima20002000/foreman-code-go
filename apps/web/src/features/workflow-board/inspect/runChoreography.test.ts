@@ -115,7 +115,6 @@ describe('run choreography timing', () => {
     act(() => { vi.advanceTimersByTime(TRAVEL_MS + 20) })
     // The request lands with an amber bang on the reviewer.
     expect(result.current.nodes.get('a')).toMatchObject({ state: 'running', label: 'Reviewing', transition: 'ask' })
-    expect(result.current.directions.get('review-ab')).toMatchObject({ reversed: true })
 
     rerender({ cut: record({ executions: [execution('a', 'completed', 'succeeded'), execution('b', 'running')], bindings: [binding('a', 'b', 'e-ab')],
       interactions: [{ ...ask, status: 'delivered', decision: 'approve_once' }] }) })
@@ -167,7 +166,6 @@ describe('run choreography timing', () => {
     act(() => { vi.advanceTimersByTime(TRAVEL_MS + SETTLE_MS + 40) })
     rerender({ cut: record({ ...waiting, interactions: [{ ...ask, status: 'decided', decision: 'approve_once' }] }) })
     expect(result.current.nodes.get('b')).toMatchObject({ state: 'waiting', label: 'Needs approval' })
-    expect(result.current.directions.get('review-ab')).toMatchObject({ reversed: false })
     act(() => { vi.advanceTimersByTime(TRAVEL_MS + 20) })
     expect(result.current.nodes.get('b')).toMatchObject({ state: 'approved', label: 'Approved', transition: 'grant' })
   })

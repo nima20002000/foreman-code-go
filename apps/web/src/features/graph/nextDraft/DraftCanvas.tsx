@@ -73,7 +73,7 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected, width, height 
   </>
 })
 
-type DraftEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: string; explicit: boolean;
+type DraftEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number;
   remove: () => void; removeLabel: string; removalDisabled: boolean;
   workPolicy: boolean; maxWorkHandoffsPerRun?: number; draftChanged: boolean; disabled: boolean;
   onApplyLimit?: (value?: number) => void }>
@@ -82,18 +82,16 @@ const TypedEdge = memo(function TypedEdge({ id, source, target, data }: EdgeProp
   const { hovered, onPointerEnter, onPointerLeave } = useHoverControls()
   const [editing, setEditing] = useState(false)
   if (!curve) return null
-  const offset = data?.explicit ? (data.label.length * 7.2 + 24) / 2 + 8 : 0
   const limit = data?.maxWorkHandoffsPerRun
   return <g onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}>
-    <SignalEdgeShape id={id} curve={curve} kind={data?.kind}
-      label={data?.label} showLabel={data?.explicit && hovered} />
+    <SignalEdgeShape id={id} curve={curve} kind={data?.kind} />
     {hovered ? <rect className="board-edge-hover-bridge" x={curve.mid.x - 18} y={curve.mid.y - 36}
-      width={offset + 36} height={48} /> : null}
-    <foreignObject aria-hidden={!hovered} data-visible={hovered} className="board-edge-remove nodrag nopan" x={curve.mid.x + offset - 18} y={curve.mid.y - 36} width={36} height={36}>
+      width={36} height={48} /> : null}
+    <foreignObject aria-hidden={!hovered} data-visible={hovered} className="board-edge-remove nodrag nopan" x={curve.mid.x - 18} y={curve.mid.y - 36} width={36} height={36}>
       <IconButton size="sm" variant="ghost" label={data?.removeLabel ?? `Remove connection from ${source} to ${target}`}
         tabIndex={hovered ? 0 : -1} disabled={data?.removalDisabled} onClick={(event) => { event.stopPropagation(); data?.remove() }}><Icon name="close" size={14} /></IconButton>
     </foreignObject>
-    {data?.workPolicy ? <foreignObject className="work-connection-limit-object"
+    {data?.workPolicy ? <foreignObject className="work-connection-limit-object" data-visible={hovered || editing}
       x={curve.mid.x - (editing ? 132 : 54)} y={curve.mid.y + 12}
       width={editing ? 264 : 108} height={editing ? 208 : 42}>
       <div className="work-connection-limit-control nodrag nopan nowheel"
@@ -176,7 +174,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       const kindLabel = members.length > 1 ? 'Handoff · approval' : edge.kind === 'approval' ? 'Approval' : 'Handoff'
       return { ...edge, type: 'typed', sourceHandle: 'right', targetHandle: 'left',
         ariaLabel: `${kindLabel} from ${nodeTitle(graph, edge.source)} to ${nodeTitle(graph, edge.target)}${edge.label ? `: ${edge.label}` : ''}`,
-        data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target), label: edge.label || kindLabel, explicit: Boolean(edge.label),
+        data: { kind: edge.kind, bend: edgeBend(count, edge.source < edge.target),
           remove: () => change((value) => removeRelationship(value, edge.id)),
           removeLabel: `Remove ${edge.kind === 'approval' ? 'approval' : 'handoff'} from ${nodeTitle(graph, edge.source)} to ${nodeTitle(graph, edge.target)}`,
           removalDisabled, workPolicy: Boolean(graph.handoffs && edge.kind === 'execution'),

@@ -176,7 +176,7 @@ export const HandoffEdge = memo(function HandoffEdge({
       }
     }}>
     <title>{data?.explanation ?? description}</title>
-    <SignalEdgeShape id={id} curve={curve} signal={signal} label={typeof label === 'string' && label ? label : undefined} showLabel />
+    <SignalEdgeShape id={id} curve={curve} signal={signal} />
     {active ? <rect className="board-edge-hover-bridge" x={mid.x - 112} y={mid.y}
       width={224} height={48} /> : null}
     <foreignObject aria-hidden={!active} data-visible={active} className="graph-edge-active-controls"
