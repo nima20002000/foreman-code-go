@@ -7,7 +7,12 @@ import type { CloudRun } from './cloud.js'
 
 export const CLOUD_START_TIMEOUT_MS = 75_000
 
-export type CloudStatus = { done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string }
+/** One step of the provider's job; `key` stays the same across polls. */
+export interface CloudStep { key: string; name: string; state: 'running' | 'passed' | 'failed' | 'skipped' }
+/** The run's state with its live progress: the job's steps and, where the provider streams it, the running step's
+ * output so far. */
+export type CloudStatus = ({ done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string })
+  & { steps?: CloudStep[]; output?: { key: string; text: string } }
 export interface CloudDispatchInput {
   mirror: string; branch: string; runId: string; suite: CiExecutionSuite; slice: string
   scope?: CiScope; files?: string; defaultBranch?: string; baseCommit?: string; partition?: string; durations?: string
@@ -36,9 +41,17 @@ export interface CloudProvider {
   cancel(run: CloudRun): Promise<void>
 }
 
+/** The service refused because its API rate limit is spent; callers back off instead of retrying at once. */
+function rateLimited(label: string, text: string) {
+  return /rate limit|\b429\b|too many requests/i.test(text)
+    ? new DomainError('CI_CLOUD_RATE_LIMITED', `${label} rate limit reached; polling paused.`, 503) : null
+}
+
 async function command(ports: HostCiPorts, label: string, file: string, args: string[], timeoutMs = 120_000) {
   const result = await ports.run(file, args, { timeoutMs })
   if (result.code !== 0) {
+    const limited = rateLimited(label, result.stderr)
+    if (limited) throw limited
     const missingRun = file === 'circleci' && args[0] === 'run' && args[1] === 'get'
       && /\brun\.not_found\b/.test(result.stderr)
     if (missingRun) throw new DomainError('CI_CLOUD_RUN_NOT_FOUND', 'CircleCI run is not visible.', 502)
@@ -68,6 +81,8 @@ async function readArtifacts(directory: string): Promise<CloudArtifacts> {
 
 const WORKFLOW = 'ci.yml'
 
+interface GitHubJob { id: number; status: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }
+
 /** Standard public-repository runners: 4 vCPUs and 16 GB; a free account runs 20 jobs at once. */
 export class GitHubActionsProvider implements CloudProvider {
   readonly id = 'github' as const
@@ -76,6 +91,7 @@ export class GitHubActionsProvider implements CloudProvider {
   readonly cpus = 4
   readonly memoryBytes = 16 * 2 ** 30
   readonly loginHint = 'Log in to GitHub on Main (gh auth login) to run CI on GitHub Actions.'
+  private readonly jobsCache = new Map<string, { etag: string; jobs: GitHubJob[] }>()
 
   constructor(private readonly ports: HostCiPorts) {}
 
@@ -111,11 +127,44 @@ export class GitHubActionsProvider implements CloudProvider {
     return match ? String(match.databaseId) : null
   }
 
+  /** The run's jobs and steps by a conditional request: an unchanged answer (304) costs no rate limit. */
+  private async jobs(run: CloudRun): Promise<GitHubJob[]> {
+    const id = run.providerRunId!
+    const cached = this.jobsCache.get(id)
+    const result = await this.ports.run('gh', ['api', '-i', ...(cached ? ['-H', `If-None-Match: ${cached.etag}`] : []),
+      `repos/${run.mirror}/actions/runs/${id}/jobs?per_page=100`], { timeoutMs: 15_000 })
+    const split = /\r?\n\r?\n/.exec(result.stdout)
+    const head = split ? result.stdout.slice(0, split.index) : result.stdout
+    const status = Number(/^HTTP\/\S+ (\d{3})/.exec(head)?.[1])
+    if (status === 304 && cached) return cached.jobs
+    if (result.code !== 0 || status !== 200) {
+      const limited = rateLimited(this.label, `${result.stderr}\n${status === 429 || /^x-ratelimit-remaining:\s*0\s*$/im.test(head)
+        ? 'rate limit' : ''}`)
+      throw limited ?? new DomainError('CI_CLOUD_FAILED', `${this.label} did not return the run's jobs: `
+        + `${result.stderr.trim().slice(0, 300)}`, 502)
+    }
+    const jobs = (JSON.parse(result.stdout.slice(split!.index + split![0].length)) as { jobs: GitHubJob[] }).jobs
+    const etag = /^etag:\s*(.+?)\s*$/im.exec(head)?.[1]
+    this.jobsCache.delete(id)
+    if (etag) this.jobsCache.set(id, { etag, jobs })
+    if (this.jobsCache.size > 200) this.jobsCache.delete(this.jobsCache.keys().next().value!)
+    return jobs
+  }
+
   async status(run: CloudRun): Promise<CloudStatus> {
+    const jobs = await this.jobs(run)
+    const steps = jobs.flatMap(job => (job.steps ?? []).flatMap(step => {
+      const state = step.status === 'in_progress' ? 'running' as const : step.status !== 'completed' ? null
+        : step.conclusion === 'success' ? 'passed' as const : step.conclusion === 'skipped' ? 'skipped' as const : 'failed' as const
+      return state ? [{ key: `${job.id}:${step.number}`, name: step.name, state }] : []
+    }))
+    // Only a finished-looking run costs an unconditional read of its conclusion.
+    if (jobs.some(job => job.status !== 'completed')) return { done: false, steps }
     const view = JSON.parse(await this.gh(['run', 'view', run.providerRunId!, '-R', run.mirror, '--json',
       'status,conclusion,updatedAt'])) as { status: string; conclusion: string; updatedAt: string }
-    if (view.status !== 'completed') return { done: false }
-    return { done: true, finishedAt: view.updatedAt,
+    if (view.status !== 'completed') return { done: false, steps }
+    this.jobsCache.delete(run.providerRunId!)
+    return { done: true, finishedAt: view.updatedAt, steps,
       conclusion: view.conclusion === 'success' ? 'success' : view.conclusion === 'cancelled' ? 'cancelled' : 'failure' }
   }
 
@@ -142,6 +191,8 @@ export class CircleCiProvider implements CloudProvider {
   readonly cpus = 4
   readonly memoryBytes = 15 * 2 ** 30
   readonly loginHint = 'Log in to CircleCI on Main (circleci auth login) and follow the CI mirror project to run CI there.'
+  /** A pipeline's job id once its workflow has one, so each poll costs one job read. */
+  private readonly jobIds = new Map<string, string>()
 
   constructor(private readonly ports: HostCiPorts) {}
 
@@ -177,18 +228,39 @@ export class CircleCiProvider implements CloudProvider {
   }
 
   private async job(run: CloudRun) {
+    const known = this.jobIds.get(run.providerRunId!)
+    if (known) return { job: { id: known } }
     const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as
       { workflows?: { jobs?: { id: string }[] }[] }
-    return { job: view.workflows?.[0]?.jobs?.[0] ?? null }
+    const job = view.workflows?.[0]?.jobs?.[0] ?? null
+    if (job) this.jobIds.set(run.providerRunId!, job.id)
+    if (this.jobIds.size > 200) this.jobIds.delete(this.jobIds.keys().next().value!)
+    return { job }
   }
 
   async status(run: CloudRun): Promise<CloudStatus> {
     const { job } = await this.job(run)
     if (!job) return { done: false }
     const detail = JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as
-      { phase: string; outcome?: string; stopped_at?: string }
-    if (detail.phase !== 'ended') return { done: false }
-    return { done: true, finishedAt: detail.stopped_at ?? new Date().toISOString(),
+      { phase: string; outcome?: string; stopped_at?: string
+        executions?: { steps?: { num: number; name: string; phase: string; outcome?: string }[] }[] }
+    const raw = detail.executions?.[0]?.steps ?? []
+    const steps = raw.map(step => ({ key: String(step.num), name: step.name, state: step.phase !== 'ended' ? 'running' as const
+      : step.outcome === 'succeeded' ? 'passed' as const : step.outcome === 'skipped' ? 'skipped' as const : 'failed' as const }))
+    if (detail.phase !== 'ended') {
+      // CircleCI serves a running step's output so far; it is read whole, so only the running step is read.
+      const current = raw.findLast(step => step.phase !== 'ended')
+      if (!current) return { done: false, steps }
+      const result = await this.ports.run('circleci', ['job', 'output', 'get', job.id, '--step-num', String(current.num)],
+        { timeoutMs: 60_000 })
+      if (result.code !== 0) {
+        const limited = rateLimited(this.label, result.stderr)
+        if (limited) throw limited
+        return { done: false, steps }
+      }
+      return { done: false, steps, output: { key: String(current.num), text: result.stdout } }
+    }
+    return { done: true, finishedAt: detail.stopped_at ?? new Date().toISOString(), steps,
       conclusion: detail.outcome === 'succeeded' ? 'success' : detail.outcome === 'canceled' ? 'cancelled' : 'failure' }
   }
 
