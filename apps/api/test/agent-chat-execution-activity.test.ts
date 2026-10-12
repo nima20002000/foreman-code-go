@@ -120,9 +120,10 @@ describe('Agent chat live execution activity over HTTP', () => {
     const access = new PostgresAccessService(f.pool)
     const denied = { ...f.principal, id: 'wrong-scope', grants: [{ actions: ['agent_chat:read' as const], scope: { workspaceIds: ['other'] } }] }
     vi.spyOn(access, 'authenticate').mockImplementation(async (token) => token === 'reader' ? f.principal : denied)
+    const recordDenied = vi.fn(async () => undefined)
     const app = buildApp({ logger: false,
       readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      operator: { access, services: { agentChat: f.chat, commands: { recordDenied: vi.fn() } } as unknown as OperatorServices },
+      operator: { access, services: { agentChat: f.chat, commands: { recordDenied } } as unknown as OperatorServices },
     })
     const { workspaceId, ...query } = f.context
     const read = async (params: Record<string, string>, token = 'reader') => app.inject({ method: 'GET',
@@ -150,6 +151,7 @@ describe('Agent chat live execution activity over HTTP', () => {
       expect(await page({ executionId: live.id, itemId: 'mcp-1' })).toMatchObject({ mode: 'item', items: [{ id: 'mcp-1' }] })
 
       expect((await read({}, 'denied')).statusCode).toBe(403)
+      expect(recordDenied).toHaveBeenCalledWith('wrong-scope', 'http', expect.any(String), `/api/workspaces/${workspaceId}/agent-chat/execution-activity`)
     } finally {
       await app.close()
     }
