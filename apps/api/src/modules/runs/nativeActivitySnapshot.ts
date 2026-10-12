@@ -10,30 +10,45 @@ export interface NativeActivityFact {
   native_type?: string | null; tool_name?: string | null; command_name?: string | null; item_error?: boolean;
 }
 /** Only protocol metadata and the first executable token cross this read boundary. */
+// Materialize the latest identities before extracting metadata from large native payloads.
 export const RUN_NATIVE_ACTIVITY_FACTS_SQL = `with normalized as (
   select n.execution_id,n.sequence,
-    coalesce(case n.record->>'type'
-      when 'claude.tool' then coalesce(n.record#>>'{payload,toolUseId}',n.record#>>'{payload,itemId}')
-      when 'claude.task' then n.record#>>'{payload,taskId}'
-      when 'native.unlinked_notification' then n.record#>>'{payload,turnId}' end,
-      n.record#>>'{payload,item,id}',n.record#>>'{payload,part,id}',n.record#>>'{payload,itemId}',
-      case when n.record#>>'{payload,method}' in ('turn/started','turn/completed') then n.record#>>'{payload,turnId}' end) as item_id,
-    case when n.record->>'type'='native.unlinked_notification' then 'subagent'
-      when n.record->>'type'='claude.tool' then 'tool'
-      when n.record->>'type'='claude.task' then 'subagent'
-      else coalesce(n.record#>>'{payload,item,type}',n.record#>>'{payload,part,type}') end as item_type,
+    coalesce(case event.type
+      when 'claude.tool' then coalesce(event.payload#>>'{toolUseId}',event.payload#>>'{itemId}')
+      when 'claude.task' then event.payload#>>'{taskId}'
+      when 'native.unlinked_notification' then event.payload#>>'{turnId}' end,
+      event.payload#>>'{item,id}',event.payload#>>'{part,id}',event.payload#>>'{itemId}',
+      case when event.payload#>>'{method}' in ('turn/started','turn/completed') then event.payload#>>'{turnId}' end) as item_id,
+    case when event.type='native.unlinked_notification' then 'subagent'
+      when event.type='claude.tool' then 'tool'
+      when event.type='claude.task' then 'subagent'
+      else coalesce(event.payload#>>'{item,type}',event.payload#>>'{part,type}') end as item_type,
+    coalesce(case when event.type in ('claude.tool','claude.task') then event.payload#>>'{nativeSessionId}' end,
+      event.payload#>>'{threadId}',
+      event.payload#>>'{part,sessionID}') as native_session_id,
+    coalesce(case when event.type in ('claude.tool','claude.task') then event.payload#>>'{owner,generation}' end,
+      event.payload#>>'{runtimeGeneration}') as generation
+  from harness_native_events n join harness_executions e on e.id=n.execution_id
+  cross join lateral jsonb_to_record(n.record) as event(type text,payload jsonb)
+  where e.run_id=$1 and (case when n.record->>'type'='native.unlinked_notification' then 'subagent'
+    when n.record->>'type'='claude.tool' then 'tool'
+    when n.record->>'type'='claude.task' then 'subagent'
+    else coalesce(n.record#>>'{payload,item,type}',n.record#>>'{payload,part,type}') end) in
+    ('commandExecution','fileChange','webSearch','mcpToolCall','dynamicToolCall','collabAgentToolCall','tool','subagent')
+), latest as materialized (
+  select distinct on (execution_id,native_session_id,generation,item_id) * from normalized
+  where item_id is not null and item_type in
+    ('commandExecution','fileChange','webSearch','mcpToolCall','dynamicToolCall','collabAgentToolCall','tool','subagent')
+  order by execution_id,native_session_id,generation,item_id,sequence desc
+), facts as (
+  select l.*,
     case when n.record->>'type'='native.unlinked_notification' then
       case when n.record#>>'{payload,method}'='turn/completed' then coalesce(n.record#>>'{payload,params,turn,status}','unknown')
         when n.record#>>'{payload,method}'='turn/started' then 'running' else 'unknown' end
       else coalesce(case when n.record->>'type' in ('claude.tool','claude.task') then n.record#>>'{payload,status}' end,
         n.record#>>'{payload,item,status}',n.record#>>'{payload,part,state,status}',
         case when n.record->>'type'='item.completed' then 'completed' when n.record->>'type'='item.started' then 'running' end) end as status,
-    coalesce(case when n.record->>'type' in ('claude.tool','claude.task') then n.record#>>'{payload,nativeSessionId}' end,
-      n.record#>>'{payload,threadId}',
-      n.record#>>'{payload,part,sessionID}') as native_session_id,
     n.record#>>'{payload,turnId}' as native_turn_id,
-    coalesce(case when n.record->>'type' in ('claude.tool','claude.task') then n.record#>>'{payload,owner,generation}' end,
-      n.record#>>'{payload,runtimeGeneration}') as generation,
     n.record->>'occurredAt' as observed_at,n.record->>'type' as native_type,
     (coalesce(n.record#>'{payload,item,error}' <> 'null'::jsonb,false)
       or (n.record#>>'{payload,item,type}'='dynamicToolCall'
@@ -41,15 +56,10 @@ export const RUN_NATIVE_ACTIVITY_FACTS_SQL = `with normalized as (
     coalesce(case when n.record->>'type'='claude.tool' then n.record#>>'{payload,name}' end,
       n.record#>>'{payload,item,tool}',n.record#>>'{payload,part,tool}') as tool_name,
     substring(n.record#>>'{payload,item,command}' from '^[[:space:]]*([A-Za-z0-9_./-]+)') as command_name
-  from harness_native_events n join harness_executions e on e.id=n.execution_id where e.run_id=$1
-), latest as (
-  select distinct on (execution_id,native_session_id,generation,item_id) * from normalized
-  where item_id is not null and item_type in
-    ('commandExecution','fileChange','webSearch','mcpToolCall','dynamicToolCall','collabAgentToolCall','tool','subagent')
-  order by execution_id,native_session_id,generation,item_id,sequence desc
+  from latest l join harness_native_events n on n.execution_id=l.execution_id and n.sequence=l.sequence
 ), classified as (
   select *, coalesce(status in ('completed','failed','declined','error','canceled','cancelled','interrupted'),false)
-    or item_error as finished from latest
+    or item_error as finished from facts
 ), bounded as (
   (select * from classified where not finished order by execution_id,sequence limit 1001)
   union all
