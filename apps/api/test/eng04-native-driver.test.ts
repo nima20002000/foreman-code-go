@@ -17,14 +17,34 @@ function setup(completed = true) {
   }
   const observeExact = vi.fn(async (value: HarnessExecution, signal: AbortSignal): Promise<void> => { void value; void signal })
   const reconcileArtifacts = vi.fn<(execution: HarnessExecution, signal: AbortSignal) => Promise<void>>(async () => {})
+  const requestStartCleanup = vi.fn(async () => {})
   const createDriver = () => repeatExecutionDriver({ scope: f.scope, version: f.version, owner, store,
-    observeExact, reconcileArtifacts })
+    observeExact, reconcileArtifacts, requestStartCleanup })
   const driver = createDriver()
-  return { f, owner, store, observeExact, reconcileArtifacts, createDriver, driver,
+  return { f, owner, store, observeExact, reconcileArtifacts, requestStartCleanup, createDriver, driver,
     get: () => execution, set: (value: HarnessExecution) => { execution = value } }
 }
 
 describe('ENG04 exact native occurrence driver', () => {
+  it.each(['queued', 'starting'] as const)('persists a %s start failure through transient database errors', async (state) => {
+    const f = setup(false)
+    const execution = { ...f.get(), state }
+    delete execution.nativeSessionId
+    f.set(execution)
+    const timeout = new Error('Query read timeout')
+    f.observeExact.mockRejectedValueOnce(timeout)
+    f.requestStartCleanup.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout)
+    const observation = f.driver.observe(f.get(), new AbortController().signal)
+    await expect(observation).rejects.toMatchObject({ code: 'EXECUTION_START_INTERRUPTED', cause: timeout })
+    expect(f.requestStartCleanup).toHaveBeenCalledTimes(3)
+    expect(f.requestStartCleanup).toHaveBeenLastCalledWith({ outcome: 'failed', error: {
+      code: 'EXECUTION_START_INTERRUPTED', message: 'Execution startup failed before a native session was saved.',
+      retryable: false,
+    } })
+    expect(f.observeExact).toHaveBeenCalledOnce()
+    expect(f.store.settleNativeExecution).not.toHaveBeenCalled()
+  })
+
   it('repairs a completed close/commit gap with SQL receipts and no native call', async () => {
     const f = setup()
     await f.driver.observe(f.get(), new AbortController().signal)

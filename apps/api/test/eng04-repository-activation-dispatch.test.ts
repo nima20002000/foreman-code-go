@@ -17,6 +17,23 @@ function fixture() {
 }
 afterEach(() => vi.restoreAllMocks())
 describe('current repository activation and immutable pins', () => {
+  it('returns an abandoned start under its acquired Run owner', async () => {
+    const t = fixture()
+    t.query.mockResolvedValueOnce({ rows: [{ id: 'execution-abandoned' }], rowCount: 1 })
+    await expect(t.repository.abandonedExecutionStart(t.owner)).resolves.toBe('execution-abandoned')
+    expect(t.owner.assertOwned).toHaveBeenCalled()
+  })
+  it('returns no abandoned start when the repository query finds none', async () => {
+    const t = fixture()
+    t.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
+    await expect(t.repository.abandonedExecutionStart(t.owner)).resolves.toBeUndefined()
+  })
+  it('cannot detect abandoned starts after losing Run ownership', async () => {
+    const t = fixture()
+    vi.mocked(t.owner.assertOwned).mockImplementation(() => { throw new Error('owner lost') })
+    await expect(t.repository.abandonedExecutionStart(t.owner)).rejects.toThrow('owner lost')
+    expect(t.query).not.toHaveBeenCalled()
+  })
   it('rejects repository composition without its native capture proof service', () => {
     expect(() => Reflect.construct(PostgresRunRepository, [{}, {}, {}, undefined]))
       .toThrowError(expect.objectContaining({ code: 'NATIVE_CAPTURE_COMPOSITION_REQUIRED' }))

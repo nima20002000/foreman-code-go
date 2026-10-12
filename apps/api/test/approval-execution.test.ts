@@ -6,7 +6,7 @@ import type {
   ExecutionResult, HarnessExecution, HarnessExecutionRequest, HarnessNativeEvent, McpDetection,
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
 } from '@foreman-code/contracts'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
@@ -644,6 +644,53 @@ it('reconstructs cold attachment from the ensured durable execution rather than 
   assert.deepEqual(f.prepared, [f.candidate.id])
   assert.equal(f.manager.creates.length, 0)
   assert.equal(f.manager.turns.length, 0)
+})
+
+it('retries a database timeout after native entry without replaying session creation', async () => {
+  const f = fixture()
+  f.manager.snapshot = { events: [], pendingInteractions: [], terminalResult: success }
+  let entered = false
+  let timedOut = false
+  vi.spyOn(f.store, 'authorizeNativeSubmission').mockImplementation(async () => { entered = true })
+  const boundary = vi.spyOn(f.store, 'assertNativeBoundary')
+    .mockImplementation(async () => {
+      if (entered && !timedOut) {
+        timedOut = true
+        throw new Error('Query read timeout')
+      }
+    })
+  const result = await f.coordinator.observeExact(f.input)
+  assert.equal(result.state, 'completed')
+  assert.equal(result.execution.result?.outcome, 'succeeded')
+  assert(boundary.mock.calls.length > 1)
+  assert.equal(f.manager.creates.length, 1)
+  assert.equal(f.manager.turns.length, 1)
+  assert.equal(f.negativeSettlements.length, 0)
+})
+
+it('persists native failure despite repeated database timeouts before releasing the execution', async () => {
+  const f = fixture()
+  const timeout = new Error('Query read timeout')
+  const failure = new HarnessExecutionError('NATIVE_START_FAILED', 'Native start failed')
+  f.manager.turnError = failure
+  const store = await f.runs.repeat(f.owner)
+  const settle = store.settleNegativeExecution.bind(store)
+  vi.spyOn(f.runs, 'repeat').mockResolvedValue(store)
+  vi.spyOn(store, 'settleNegativeExecution').mockImplementation(async (id, canceled) => {
+    await settle(id, canceled)
+    const execution = f.executions.get(id)!
+    f.executions.set(id, { ...execution, state: 'completed', result: failure.result, finishedAt: now })
+  })
+  const cleanup = vi.spyOn(f.runs, 'requestCleanup')
+    .mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout)
+  f.failStop(timeout)
+  await assert.rejects(f.coordinator.observeExact(f.input), failure)
+  assert.equal(cleanup.mock.calls.length, 3)
+  assert.equal(f.executions.get(f.candidate.id)?.state, 'completed')
+  assert.equal(f.executions.get(f.candidate.id)?.result?.outcome, 'failed')
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+  assert.equal(f.manager.creates.length, 1)
+  assert.equal(f.manager.turns.length, 1)
 })
 
 it('fails closed for an existing attempt with no durable native identity rather than replaying a start', async () => {

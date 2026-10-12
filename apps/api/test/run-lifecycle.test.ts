@@ -118,6 +118,7 @@ function fixture() {
   ports.savers.set(saver, host)
   const factory = {} as RepeatEngineStartContext['factory']
   const runs = {
+    abandonedExecutionStart: async () => undefined,
     repeatRepositoryFactory: () => { calls.factory++; return factory },
     get: async (runId: string) => { assert.equal(runId, run.id); return structuredClone(run) },
     acquireOwnership: async () => {

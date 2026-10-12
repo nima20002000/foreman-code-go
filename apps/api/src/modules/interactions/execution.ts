@@ -1907,8 +1907,8 @@ export class ApprovalExecutionCoordinator {
     let repeatLaunch = false
     let nativeTurnOffered = false
     // Failed startup closes the created session before any native turn can be offered.
-    const bookkeeping = <T>(work: () => Promise<T>) => repeatLaunch && !nativeTurnOffered
-      ? work() : retryDatabaseTimeout(work, { signal, check: () => input.owner.assertOwned() })
+    const bookkeeping = <T>(work: () => Promise<T>) =>
+      retryDatabaseTimeout(work, { signal, check: () => input.owner.assertOwned() })
     let stopRenewal: (() => Promise<void>) | undefined
     signal.throwIfAborted()
     assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval,
@@ -2403,11 +2403,10 @@ export class ApprovalExecutionCoordinator {
         const failure = activeTimeout
           ? { outcome: 'failed' as const, error: { code: error.code, message: error.message, retryable: false } }
           : undefined
-        if (failure) {
-          await this.runs.requestCleanup(execution.runId, input.owner, failure, { executionId: execution.id })
-        } else {
-          await this.runs.requestCleanup(execution.runId, input.owner)
-        }
+        const persist = <T>(work: () => Promise<T>) =>
+          retryDatabaseTimeout(work, { check: () => input.owner.assertOwned() })
+        await persist(() => this.runs.requestCleanup(execution.runId, input.owner, failure,
+          failure ? { executionId: execution.id } : undefined))
         if (ownedSession) {
           resolved?.markFailed?.()
           ownedSession.failed = true
@@ -2416,9 +2415,9 @@ export class ApprovalExecutionCoordinator {
           // eslint-disable-next-line preserve-caught-error
           if (failures.length) throw new AggregateError(failures, 'Original native closure is still pending.', { cause: error })
         }
-        await this.budgets.stop(execution.id)
-        await (await this.runs.repeat(input.owner)).settleNegativeExecution(execution.id,
-          (await this.runs.getRepeatSnapshot(execution.runId, input.owner)).stopRequested)
+        await persist(() => this.budgets.stop(execution.id))
+        await persist(async () => (await this.runs.repeat(input.owner)).settleNegativeExecution(execution.id,
+          (await this.runs.getRepeatSnapshot(execution.runId, input.owner)).stopRequested))
       } else if (ownedSession) {
         // An old owner may dispose its own captured transport only. It cannot
         // revoke a successor's credential, budget or execution authority.
