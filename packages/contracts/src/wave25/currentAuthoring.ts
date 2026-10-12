@@ -1,7 +1,8 @@
 import { WorkflowWorktreeSettingsSchema } from '../worktreeSettings.js'
 import { z } from 'zod'
 import { ApprovalHandlerSchema, CurrentAgentWorkflowNodeSchema,
-  DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS } from './workflowShape.js'
+  DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS,
+  AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
 import { GraphIdSchema } from './protocol.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
@@ -113,6 +114,10 @@ export const CurrentWorkflowCapabilitiesSchema = z.object({
     defaultMs: z.number().int().positive(), maximumMs: z.literal(MAX_AGENT_ACTIVE_TIMEOUT_MS),
     perExecution: z.literal(true), approvalWaitExcluded: z.literal(true),
   }).strict(),
+  agentInterval: z.object({ field: z.literal('node.interval.everySeconds'),
+    minimumSeconds: z.literal(AGENT_INTERVAL_MIN_SECONDS), maximumSeconds: z.literal(AGENT_INTERVAL_MAX_SECONDS),
+    defaultEnabled: z.literal(false), routesGraph: z.literal(false), runStatusTool: z.literal('run_status_get'),
+    requires: z.literal('approval handler native, or a Codex Agent with approvalPolicy never') }).strict(),
   approvalHandlers: z.array(ApprovalHandlerSchema),
   forms: z.tuple([z.literal('sequential'), z.literal('parallel_all_required'), z.literal('conditional'),
     z.literal('approval'), z.literal('bounded_repeat')]),
@@ -146,6 +151,9 @@ export const CURRENT_WORKFLOW_CAPABILITIES = CurrentWorkflowCapabilitiesSchema.p
   executionSemanticsVersion: 3, repeatOptional: true,
   agentActiveTimeBudget: { defaultMs: DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, maximumMs: MAX_AGENT_ACTIVE_TIMEOUT_MS,
     perExecution: true, approvalWaitExcluded: true },
+  agentInterval: { field: 'node.interval.everySeconds', minimumSeconds: AGENT_INTERVAL_MIN_SECONDS,
+    maximumSeconds: AGENT_INTERVAL_MAX_SECONDS, defaultEnabled: false, routesGraph: false, runStatusTool: 'run_status_get',
+    requires: 'approval handler native, or a Codex Agent with approvalPolicy never' },
   approvalHandlers: ApprovalHandlerSchema.options,
   forms: ['sequential', 'parallel_all_required', 'conditional', 'approval', 'bounded_repeat'],
   worktrees: { workflowDefault: true, agentBranchOverride: true, rootOverride: 'node.placement',

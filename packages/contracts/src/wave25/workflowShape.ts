@@ -82,6 +82,15 @@ export const WorkflowExecutionPolicySchema = z
   .strict();
 export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
 
+/** Re-activates an Agent node with a short check prompt every everySeconds while its Run is
+ * active, after its first finished execution. Absent means off. Checks never route the graph. */
+export const AGENT_INTERVAL_MIN_SECONDS = 10
+export const AGENT_INTERVAL_MAX_SECONDS = 24 * 60 * 60
+export const AgentIntervalSchema = z.object({
+  everySeconds: z.number().int().min(AGENT_INTERVAL_MIN_SECONDS).max(AGENT_INTERVAL_MAX_SECONDS),
+}).strict()
+export type AgentInterval = z.infer<typeof AgentIntervalSchema>
+
 const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()
 export const CurrentAgentWorkflowNodeFields = {
   kind: z.literal('agent').optional(),
@@ -96,6 +105,7 @@ export const CurrentAgentWorkflowNodeFields = {
   /** Changes the Agent's default Foreman Code MCP tools for this node only. */
   graphqlTools: GraphqlToolOverrideSchema.optional(),
   artifactOutputs: WorkflowArtifactOutputsV1Schema.optional(),
+  interval: AgentIntervalSchema.optional(),
 }
 export const CurrentAgentWorkflowNodeSchema = z.object(CurrentAgentWorkflowNodeFields).strict().superRefine((node, context) => {
   if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })
@@ -181,6 +191,12 @@ export const WorkflowDefinitionV3Schema = CurrentWorkflowDefinitionBaseSchema.ex
   handoffs: WorkHandoffPolicyV1Schema.optional(),
 }).strict().superRefine((definition, context) => {
   if (definition.handoffs && definition.repeat) context.addIssue({ code: 'custom', path: ['handoffs'], message: 'HANDOFF_REPEAT_POLICY_CONFLICT' })
+  const repeatMembers = new Set(definition.repeat?.blocks.flatMap(block => block.nodeIds) ?? [])
+  for (const [index, node] of definition.nodes.entries()) {
+    if (node.kind !== 'job' && node.interval && repeatMembers.has(node.id)) {
+      context.addIssue({ code: 'custom', path: ['nodes', index, 'interval'], message: 'AGENT_INTERVAL_IN_REPEAT_BLOCK' })
+    }
+  }
   const pairs = new Set<string>()
   for (const [index, edge] of definition.edges.entries()) {
     const configured = edge.maxWorkHandoffsPerRun !== undefined || edge.workRequestDirection !== undefined

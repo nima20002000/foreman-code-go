@@ -67,6 +67,8 @@ export const RunExecutionSummarySchema = extendGraphExecutionIdentitySchema({
   createdAt: TimestampSchema, startedAt: TimestampSchema.optional(), finishedAt: TimestampSchema.optional(),
   /** Omitted outside a REAL configured repeat occurrence; attempt is not occurrenceIndex. */
   occurrence: RepeatOccurrenceIdentityV1Schema.optional(),
+  /** Present only for an interval check of its node; checks never route the graph. */
+  tickIndex: z.number().int().positive().optional(),
   /** Discovery only. The exact detail verifies the accepted result and canonical receipt. */
   acceptedResultAvailable: z.boolean(),
   /** The Agent's own branch of the workspace repository (names only, never a path). */

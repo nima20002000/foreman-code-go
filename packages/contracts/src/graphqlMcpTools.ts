@@ -52,6 +52,12 @@ export const GRAPHQL_AGENT_TOOLS = {
   ci_computers_list: { label: "List CI computers", description: "Read authorized build computers with readiness, GitHub login, size and running CI runs.", roles: ["operator", "orchestrator", "coder"] },
   ci_cancel: { label: "Cancel CI", description: "Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Poll ci_get to confirm the outcome.", roles: ["operator", "orchestrator", "coder"] },
   ci_logs_read: { label: "Read CI logs", description: "Read CI log text by ticketId. Omit afterOffset for the last maxBytes, or continue with nextOffset.", roles: ["operator", "orchestrator", "coder"] },
+  run_status_get: {
+    label: "Read own Run status",
+    description: "Read-only, bounded status of this Agent's own Run: Run state, each node's latest execution state, "
+      + "the Run's latest CI tickets and recent errors. Available only on workflow nodes with interval checks enabled.",
+    roles: ["orchestrator", "coder"],
+  },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;
 
 /** Explicit Operator catalog. Listing a tool never supplies a grant or native qualification. */
@@ -99,9 +105,13 @@ export function graphqlToolRoles(name: string): readonly GraphqlMcpRole[] {
     ?? (GRAPHQL_OPERATOR_TOOLS as Record<string, { roles: readonly GraphqlMcpRole[] }>)[name]?.roles ?? ["operator"];
 }
 
+/** Enabled by a node's interval setting, never by Agent defaults or node tool changes. */
+export const GRAPHQL_INTERVAL_TOOLS: readonly GraphqlAgentTool[] = ["run_status_get"];
+
 /** The Agent tools a product role may be given, in catalog order. */
 export function graphqlRoleTools(role: "orchestrator" | "coder"): GraphqlAgentTool[] {
-  return GraphqlAgentToolSchema.options.filter((tool) => graphqlToolRoles(tool).includes(role));
+  return GraphqlAgentToolSchema.options.filter((tool) => graphqlToolRoles(tool).includes(role)
+    && !GRAPHQL_INTERVAL_TOOLS.includes(tool));
 }
 
 /** Tools named here that the role can never use. */
@@ -111,12 +121,12 @@ export function graphqlToolsOutsideRole(role: "orchestrator" | "coder", tools: r
 
 /** Applies saved tool choices within the role. Bug reporting is available to every workflow Agent. */
 export function effectiveGraphqlTools(
-  role: "orchestrator" | "coder", defaults?: readonly string[], override?: GraphqlToolOverride,
+  role: "orchestrator" | "coder", defaults?: readonly string[], override?: GraphqlToolOverride, interval = false,
 ): GraphqlAgentTool[] {
   const roleTools = graphqlRoleTools(role);
   const enabled = new Set<string>(defaults ?? roleTools);
   for (const tool of override?.add ?? []) enabled.add(tool);
   for (const tool of override?.remove ?? []) enabled.delete(tool);
   enabled.add('bug_report');
-  return roleTools.filter((tool) => enabled.has(tool));
+  return [...roleTools.filter((tool) => enabled.has(tool)), ...(interval ? GRAPHQL_INTERVAL_TOOLS : [])];
 }

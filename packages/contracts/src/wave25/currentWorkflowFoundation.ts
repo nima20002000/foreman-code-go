@@ -113,6 +113,13 @@ export function validateCurrentWorkflowTopology(version: Version, context: z.Ref
   }
 }
 
+/** Interval checks run outside the graph, so they cannot hold a routed approval wait. Only
+ * Agents that never ask the workflow for approval may be re-activated on an interval. */
+export function agentIntervalAllowed(harness: z.infer<typeof AgentConfigurationVersionSchema>['harness'],
+  handler: 'user' | 'orchestrator' | 'native'): boolean {
+  return handler === 'native' || harness.harness === 'codex' && harness.advanced?.approvalPolicy === 'never'
+}
+
 export function validateCurrentWorkflowConfigurations(value: { version: Version & { definition: { repeat?: RepeatPlanV1 } }; configurations: z.infer<typeof AgentConfigurationVersionSchema>[] }, context: z.RefinementCtx): void {
   const { version, configurations } = value
   const fail = (message: string) => context.addIssue({ code: 'custom', message })
@@ -127,6 +134,10 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
     const outside = configuration?.productRole && node.graphqlTools
       ? graphqlToolsOutsideRole(configuration.productRole, [...node.graphqlTools.add, ...node.graphqlTools.remove]) : []
     if (outside.length) fail(`node ${node.id} Foreman Code MCP tools are outside its Agent role: ${outside.join(', ')}`)
+    if (node.interval && configuration && !agentIntervalAllowed(configuration.harness, version.approval.handler)) {
+      fail(`node ${node.id} interval checks need an Agent that never asks for workflow approval: `
+        + 'use workflow approval handler "native", or a Codex Agent with approvalPolicy "never"')
+    }
   }
   const role = (nodeId: string) => {
     const node = nodes.find((candidate) => candidate.id === nodeId)
