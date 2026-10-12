@@ -31,12 +31,14 @@ import type { OperatorServices } from '../operator/types.js'
 import type { McpRole } from './roles.js'
 import { createGraphqlMcpServer, roleDeniedToolCall, type McpRequestRegistration } from './server.js'
 import { McpRequestCancellation } from '../shared/cancellation.js'
+import { withDatabaseReadRetry } from '../../infrastructure/databaseReadRetry.js'
 
 export const GRAPHQL_MCP_PATH = '/mcp'
 const RpcIdSchema = z.union([z.string(), z.number().int()])
 const CancellableRequestSchema = z.object({
   jsonrpc: z.literal('2.0'), id: RpcIdSchema, method: z.literal('tools/call'),
 }).passthrough()
+const ArtifactReadToolSchema = z.object({ name: z.literal('files.read_edge_input') }).passthrough()
 const CancellationSchema = z.object({
   jsonrpc: z.literal('2.0'), method: z.literal('notifications/cancelled'),
   params: z.object({ requestId: RpcIdSchema }).passthrough(),
@@ -76,11 +78,12 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
     // Large inline adds must authenticate before Fastify buffers/parses their bounded JSON body.
     onRequest: async (request) => {
       requireLocalRequest(request)
-      await services.access.authenticate(bearerToken(request.headers.authorization), audiences)
+      await withDatabaseReadRetry(() => services.access.authenticate(bearerToken(request.headers.authorization), audiences))
     },
   }, async (request, reply) => {
     requireLocalRequest(request)
-    const principal = await services.access.authenticate(bearerToken(request.headers.authorization), audiences)
+    const principal = await withDatabaseReadRetry(() =>
+      services.access.authenticate(bearerToken(request.headers.authorization), audiences))
     const cancelled = CancellationSchema.safeParse(request.body)
     if (cancelled.success) {
       cancellations.cancel(principal.id, cancelled.data.params.requestId)
@@ -93,7 +96,8 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       if (!reply.raw.writableFinished) operation?.cancel()
       operation?.finish()
     })
-    const access = principal.audience === 'operator' ? undefined : await services.interactions!.toolAccess(principal)
+    const access = principal.audience === 'operator' ? undefined : await withDatabaseReadRetry(() =>
+      services.interactions!.toolAccess(principal), operation?.signal)
     const role: McpRole = access?.role ?? 'operator'
     if (role === 'operator' && services.operator) {
       const context = { principal, services: services.operator }
@@ -128,10 +132,17 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
     const denied = await roleDeniedToolCall(context, request.body, registration)
     if (denied) return reply.send(denied)
     const artifacts = principal.audience === 'worker' ? services.workerArtifacts?.() : undefined
-    const artifactCall = await artifacts?.call(request, principal, request.body)
+    const artifactRead = call.success && ArtifactReadToolSchema.safeParse(call.data.params).success
+    const invokeArtifact = async () => artifacts?.call(request, principal, request.body)
+    const artifactCall = artifactRead
+      ? await withDatabaseReadRetry(invokeArtifact, operation?.signal)
+      : await invokeArtifact()
     if (artifactCall !== undefined) return reply.send(artifactCall)
-    const server = await createGraphqlMcpServer(context, request.body, registration)
-    await artifacts?.register(server, request, principal)
+    const server = await withDatabaseReadRetry(() =>
+      createGraphqlMcpServer(context, request.body, registration), operation?.signal)
+    // Artifact calls are dispatched above. Discovery's execution locks are only
+    // needed for catalogs, not unrelated status or interaction reads.
+    if (!call.success) await artifacts?.register(server, request, principal)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     await server.connect(transport)
