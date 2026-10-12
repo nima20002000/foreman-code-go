@@ -370,7 +370,9 @@ export class HostCiService {
     const hostKey = ['starting', 'running'].includes(next.state) ? computer.key : null
     const saved = await this.pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb,
         log_tail=coalesce($6,log_tail)
-      where id=$1 and state in ('queued','starting','running') and host_key is not distinct from $5`,
+      where id=$1 and state in ('queued','starting','running') and host_key is not distinct from $5
+        and ($6::text is null or state is distinct from $2 or host_key is distinct from $3
+          or record is distinct from $4::jsonb or log_tail is distinct from $6)`,
       [run.id, next.state, hostKey, JSON.stringify(next), run.state === 'queued' ? null : computer.key, logTail ?? null])
     if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message },
       'CI dispatch created no work; ticket queued for another computer')
