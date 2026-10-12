@@ -403,7 +403,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         let observed = matchingOriginalRegistryLaunch(registry, owned.native.launch)
         if (observed.lifecycle !== 'active') {
           // Native closure precedes the terminal journal commit. Join the original settlement before rebinding.
-          await owned.host.waitForSettlement(intent.operationId)
+          await owned.host.waitForSettlement(intent.operationId, context.signal)
           status = await log.status(intent.operationId)
           observed = matchingOriginalRegistryLaunch(registry, owned.native.launch)
         }
