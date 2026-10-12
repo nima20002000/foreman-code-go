@@ -4,6 +4,7 @@ import { describe, it } from 'vitest'
 import type { CodexHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
 import { randomUUID } from 'node:crypto'
+import { APP_MCP_SERVER_NAME } from '../src/modules/harnesses/appMcpLauncher.js'
 import { CodexRuntimeFileTurn } from '../src/modules/harnesses/codexFiles/runtime.js'
 import type { CodexFileTurn } from '../src/modules/harnesses/codexFiles/turn.js'
 import type { RpcRequest } from '../src/modules/harnesses/codexStdioTransport.js'
@@ -30,7 +31,13 @@ async function fixture(id: string | number = 901, files = true) {
   let heldResponse: ReturnType<typeof gate> | undefined
   let closes = 0
   let failClose = false
-  const transport: CodexTransport = { start: async () => undefined, request: async (method) => {
+  const transport: CodexTransport = { start: async () => undefined, request: async (method, params) => {
+    if (method === 'mcpServerStatus/list') {
+      assert.deepEqual(params, { threadId: session.nativeSessionId, detail: 'toolsAndAuthOnly' })
+      return { data: [{ name: APP_MCP_SERVER_NAME, runtimeStatus: 'connected', toolsError: null,
+        tools: { context_get: { name: 'context_get', inputSchema: { type: 'object' } } },
+        resources: [], resourceTemplates: [], authStatus: 'bearerToken' }], nextCursor: null }
+    }
     assert.equal(method, 'turn/start')
     return { turn: { id: 'next-callback-turn', status: 'inProgress', itemsView: 'full', items: [],
       error: null, startedAt: 1, completedAt: null, durationMs: null } }

@@ -123,12 +123,34 @@ void (async () => {
   it('F12/F13: timeout and post-submission abort retain uncertain operation identity without listeners', async () => {
     const value = await transport()
     const controller = new AbortController()
-    await assert.rejects(value.request('test/noresponse', {}, controller.signal), (error: unknown) =>
-      error instanceof CodexRpcError && error.uncertain && error.method === 'test/noresponse' && typeof error.operationId === 'number')
+    const failures: CodexRpcError[] = []
+    await assert.rejects(value.request('test/noresponse', {}, controller.signal), (error: unknown) => {
+      assert(error instanceof CodexRpcError)
+      assert.equal(error.uncertain, true)
+      assert.equal(error.method, 'test/noresponse')
+      assert.equal(errorCode(error), 'CODEX_APP_SERVER_TIMEOUT')
+      failures.push(error)
+      return true
+    })
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
     const aborted = observe(value.request('test/noresponse', {}, controller.signal))
     controller.abort()
-    await assert.rejects(aborted, (error: unknown) => error instanceof CodexRpcError && error.uncertain)
+    await assert.rejects(aborted, (error: unknown) => {
+      assert(error instanceof CodexRpcError)
+      assert.equal(error.uncertain, true)
+      assert.equal(error.method, 'test/noresponse')
+      assert.equal(errorCode(error), 'CODEX_APP_SERVER_REQUEST_CANCELED')
+      failures.push(error)
+      return true
+    })
     assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+    const submitted = await until(async () => {
+      const requests = (await calls(f.directory)).flatMap(({ wire }) =>
+        isObject(wire) && wire.method === 'test/noresponse' ? [wire] : [])
+      return requests.length === 2 ? requests : undefined
+    })
+    assert.deepEqual(failures.map(error => error.operationId), submitted.map(request => request.id))
+    assert.notEqual(failures[0]!.operationId, failures[1]!.operationId)
   })
 
   it('F10: an asynchronous native-request handler exception is caught at dispatch', async () => {
