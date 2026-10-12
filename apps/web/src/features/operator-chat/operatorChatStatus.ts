@@ -25,7 +25,7 @@ export function operatorNavigationStatus(summary: OperatorConversationSummary): 
   return 'Ready'
 }
 
-export function operatorTurnStatus(state: OperatorConversationState, connection: OperatorChatConnection): string {
+export function operatorTurnStatus(state: OperatorConversationState, connection: OperatorChatConnection, snapshotFresh = false): string {
   const background = !state.activeRequestId && !['active', 'starting'].includes(state.turnState) ? chatBackgroundWork(state.activitySnapshot) : undefined
   let phase: AgentChatSessionState = 'idle'
   let executionLabel: string | undefined
@@ -44,7 +44,7 @@ export function operatorTurnStatus(state: OperatorConversationState, connection:
   else executionLabel = state.lastResult ? '' : 'Ready for your message.'
   const delivery = state.pendingInteraction && state.responseDelivery !== 'offered'
     ? 'Checking delivery of your decision. It will not be sent twice.' : undefined
-  const presentation = chatStatus({ phase, connection, hasConversation: true,
+  const presentation = chatStatus({ phase, connection, snapshotFresh, hasConversation: true,
     ...(executionLabel !== undefined ? { executionLabel } : {}), ...(delivery ? { delivery } : {}) })
   return [presentation.connection, presentation.execution, presentation.delivery].filter(Boolean).join(' ')
 }

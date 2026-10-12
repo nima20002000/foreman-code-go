@@ -32,6 +32,12 @@
   --danger-border: #9b4256;
   --info: #5fc9ff;
   --info-subtle: #13304a;
+  /* Computer load, from plenty of capacity to near its limits. */
+  --load-calm: var(--success);
+  --load-busy: #f0d35a;
+  --load-heavy: #ff9f5a;
+  --load-saturated: #ff8a98;
+  --load-offline: var(--text-faint);
   --scrim: #05070dc4;
   --harness-codex: #6aa5ff;
   --harness-claude: #ff9a6c;
@@ -98,6 +104,11 @@
   --danger-border: #e0a2ad;
   --info: #0b63b5;
   --info-subtle: #e3f0fc;
+  --load-calm: var(--success);
+  --load-busy: #8f6f00;
+  --load-heavy: #b45309;
+  --load-saturated: #c53b52;
+  --load-offline: var(--text-faint);
   --scrim: #1c1b2e66;
   --harness-codex: #2f66d6;
   --harness-claude: #c4531f;

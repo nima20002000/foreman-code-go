@@ -3,6 +3,7 @@
   border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
 .runtime-card h1, .runtime-card p { margin: 0; }
 .access-message { padding: var(--space-8); }
-.runtime-reconnecting { position: fixed; top: var(--space-4); left: 50%; transform: translateX(-50%);
+.runtime-reconnecting { display: flex; align-items: center; gap: var(--space-3);
+  position: fixed; top: var(--space-4); left: 50%; transform: translateX(-50%);
   z-index: 1000; padding: var(--space-2) var(--space-4); border: 1px solid var(--border);
   border-radius: var(--radius-lg); background: var(--surface); }

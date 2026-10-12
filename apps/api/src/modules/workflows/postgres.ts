@@ -11,7 +11,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
 
   async list(workspaceId: string): Promise<SavedWorkflowDefinition[]> {
     const result = await this.pool.query<{ id: string; workspace_id: string; record: unknown }>(
-      'select id,workspace_id,record from workflows where workspace_id = $1 order by created_at, id',
+      'select id,workspace_id,record from workflows where workspace_id = $1 order by order_position, id',
       [workspaceId],
     )
     return result.rows.map((row) => readSavedWorkflowDefinition(row, { workspaceId }))

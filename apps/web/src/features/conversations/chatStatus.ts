@@ -20,6 +20,7 @@ export function chatStatus(input: {
   connection: 'connected' | 'connecting' | 'reconnecting' | 'offline' | 'unavailable'
   online?: boolean
   hasConversation: boolean
+  snapshotFresh?: boolean
   actionUnavailable?: string
   error?: string
 }) {
@@ -27,10 +28,10 @@ export function chatStatus(input: {
   if (input.online === false || input.connection === 'offline') {
     connection = 'Offline · draft kept. No messages will be sent automatically when you reconnect.'
   }
-  else if (input.hasConversation && input.connection !== 'connected') {
+  else if (input.hasConversation && !input.snapshotFresh && input.connection !== 'connected') {
     connection = input.connection === 'unavailable'
-      ? 'Live updates unavailable. Polling for changes. Information may be stale.'
-      : 'Reconnecting to live updates. Information may be stale.'
+      ? 'Waiting for activity updates.'
+      : 'Connecting to activity updates.'
   }
   return {
     execution: input.executionLabel ?? phaseLabels[input.phase],

@@ -6,14 +6,17 @@ import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@foreman-code
 import { Dialog, Drawer } from '../../shared/ui/nocturne'
 import { WorkspaceExecutionLocationSettings } from '../settings/WorkspaceExecutionLocationSettings'
 import { RunBoardSlot } from '../run-board'
-import { runsSelectorApi, useSelectedRun, useSelectedRunSnapshot } from '../runs-selector'
+import { runsSelectorApi, useRunSummaries, useSelectedRun, useSelectedRunSnapshot } from '../runs-selector'
 import { BoardNavigationControls } from './BoardNavigationControls'
 import { CurrentRunObserver } from './CurrentRunObserver'
 import { WorkflowBoardContext } from './context'
+import { boardLiveRunSnapshotKey } from './keys'
 import { RunActivityPanel } from './RunActivityPanel'
 import { isActiveRun, shortRunId } from './runFacts'
 import { useInspectionPresentation } from './inspect/presentation'
 import './workflowBoard.css'
+
+const LISTED_ACTIVE = new Set(['queued', 'running', 'waiting', 'interrupted'])
 
 /** This component is keyed by workspace/workflow only, NEVER by selected Run. */
 export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, selectRun, inspection, selectInspection, summaries, children, selectedAgentId, selectDraftAgent }: {
@@ -42,17 +45,22 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   const shownRunId = useRef<string | undefined>(undefined)
   if (shownRunId.current && shownRunId.current !== legacyRun?.runId) dismissed.current.add(shownRunId.current)
   shownRunId.current = legacyRun?.runId
-  const live = !requestedRun && !pickedRunId && !location.pathname.includes('/runs/')
-    ? summaries.filter((item) => item.workspaceId === workspaceId && item.workflowId === workflowId && isActiveRun(item)
-      && !dismissed.current.has(item.id)).sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))[0]
+  // Workspace details are a large, rarely refreshed read; the per-workflow Run list is
+  // small and polled, so a Run started elsewhere takes over without waiting for details.
+  const autoLive = !requestedRun && !pickedRunId && !location.pathname.includes('/runs/')
+  const listed = useRunSummaries({ workspaceId, workflowId }, autoLive).items
+  const liveId = autoLive ? [
+    ...summaries.filter((item) => item.workspaceId === workspaceId && item.workflowId === workflowId && isActiveRun(item)),
+    ...listed.filter((item) => LISTED_ACTIVE.has(item.status)).map((item) => ({ id: item.runId, startedAt: item.startedAt })),
+  ].filter((item) => !dismissed.current.has(item.id)).sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))[0]?.id
     : undefined
-  const liveSnapshot = useQuery({ queryKey: ['board-live-run-snapshot', workspaceId, workflowId, live?.id],
-    queryFn: ({ signal }) => runsSelectorApi.snapshot({ workspaceId, workflowId, runId: live!.id }, { signal }),
-    enabled: Boolean(live), staleTime: Infinity }).data?.snapshot
+  const liveSnapshot = useQuery({ queryKey: boardLiveRunSnapshotKey(workspaceId, workflowId, liveId),
+    queryFn: ({ signal }) => runsSelectorApi.snapshot({ workspaceId, workflowId, runId: liveId! }, { signal }),
+    enabled: Boolean(liveId), staleTime: Infinity }).data?.snapshot
   useEffect(() => {
-    if (!live || liveSnapshot?.kind !== 'available' || liveSnapshot.runId !== live.id) return
-    selectRun({ workspaceId, workflowId, runId: live.id, workflowVersionId: liveSnapshot.workflowVersionId, executionSemanticsVersion: 3 })
-  }, [live, liveSnapshot, selectRun, workspaceId, workflowId])
+    if (!liveId || liveSnapshot?.kind !== 'available' || liveSnapshot.runId !== liveId) return
+    selectRun({ workspaceId, workflowId, runId: liveId, workflowVersionId: liveSnapshot.workflowVersionId, executionSemanticsVersion: 3 })
+  }, [liveId, liveSnapshot, selectRun, workspaceId, workflowId])
   const boardSelection = legacyRun ? { ...selectedRun, identity: { ...selectedRun.identity, runId: null } } : selectedRun
   const current = boardSelection.active && !boardSelection.invalid && boardSelection.identity.runId === null
   const currentRef = useRef(current)

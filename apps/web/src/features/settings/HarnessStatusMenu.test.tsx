@@ -1,4 +1,5 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { vi } from 'vitest'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../mocks/server'
 import { renderWithRouter } from '../../test/renderWithRouter'
@@ -54,8 +55,11 @@ describe('HarnessStatusMenu', () => {
     server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json(inventory(installed))))
     renderWithRouter(<HarnessStatusMenu />)
     for (const name of ['Codex', 'Claude']) {
-      const link = await screen.findByRole('link', { name: `${name}: ${label}` })
-      expect(link).toHaveAttribute('href', expect.stringContaining(`/settings/harnesses?harness=${name.toLowerCase()}`))
+      const link = await screen.findByRole('button', { name: `${name}: ${label}` })
+      const open = vi.spyOn(window, 'open').mockReturnValue(null)
+      fireEvent.click(link, { ctrlKey: true })
+      expect(open).toHaveBeenCalledWith(expect.stringContaining(`/settings/harnesses?harness=${name.toLowerCase()}`), '_blank')
+      open.mockRestore()
       expect(link.querySelector('.harness-status-light')).toHaveClass(`harness-status-light--${state}`)
       expect(link).toHaveAttribute('title', expect.stringContaining('profile qualification are checked separately'))
     }
@@ -70,22 +74,22 @@ describe('HarnessStatusMenu', () => {
       http.get('/api/management/harnesses', inspect),
     )
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('link', { name: 'Codex: Installed' })).toBeVisible()
-    expect(await screen.findByRole('link', { name: 'Claude: Installed' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Codex: Installed' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Claude: Installed' })).toBeVisible()
     expect(inspect).not.toHaveBeenCalled()
   })
 
   it('shows an unverified status when inventory cannot be read', async () => {
     server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.error()))
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('link', { name: 'Codex: Unverified' }))
+    expect(await screen.findByRole('button', { name: 'Codex: Unverified' }))
       .toHaveAttribute('title', expect.stringContaining('Could not read installation status'))
   })
 
   it('keeps absent observations unverified instead of assuming a harness is missing', async () => {
     server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json({ instances: [], installations: [] })))
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('link', { name: 'Claude: Unverified' }))
+    expect(await screen.findByRole('button', { name: 'Claude: Unverified' }))
       .toHaveAttribute('title', expect.stringContaining('No installation inventory'))
   })
 
@@ -94,8 +98,8 @@ describe('HarnessStatusMenu', () => {
     wrong.installations[0]!.hostRef.mainId = '11111111-1111-4111-8111-111111111111'
     server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json(wrong)))
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('link', { name: 'Codex: Unverified' })).toBeVisible()
-    expect(screen.queryByRole('link', { name: 'Codex: Installed' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Codex: Unverified' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Codex: Installed' })).not.toBeInTheDocument()
   })
 
   it('reuses the shared inspection while a background refresh runs and displays a confirmed removal', async () => {
@@ -108,26 +112,26 @@ describe('HarnessStatusMenu', () => {
     server.use(http.get('/api/management/harnesses/registry', read))
     const { queryClient } = renderWithRouter(<HarnessStatusMenu />)
     queryClient.setQueryData(inventoryKey(), inventory())
-    expect(await screen.findByRole('link', { name: 'Codex: Installed' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Codex: Installed' })).toBeVisible()
     expect(read).not.toHaveBeenCalled()
     let refresh!: Promise<void>
     act(() => { refresh = queryClient.invalidateQueries({ queryKey: inventoryKey() }) })
     await waitFor(() => expect(read).toHaveBeenCalledOnce())
-    expect(screen.getByRole('link', { name: 'Codex: Installed' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Codex: Installed' })).toBeVisible()
     await act(async () => { finish(); await refresh })
-    expect(await screen.findByRole('link', { name: 'Codex: Not installed' })).toBeVisible()
-    expect(await screen.findByRole('link', { name: 'Claude: Not installed' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Codex: Not installed' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Claude: Not installed' })).toBeVisible()
   })
 
   it('retains the last installed observation when refreshing fails, without calling it missing', async () => {
     server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.error()))
     const { queryClient } = renderWithRouter(<HarnessStatusMenu />)
     queryClient.setQueryData(inventoryKey(), inventory())
-    await screen.findByRole('link', { name: 'Codex: Installed' })
+    await screen.findByRole('button', { name: 'Codex: Installed' })
     await act(async () => { await queryClient.invalidateQueries({ queryKey: inventoryKey() }) })
-    expect(await screen.findByRole('link', { name: 'Codex: Unverified' }))
+    expect(await screen.findByRole('button', { name: 'Codex: Unverified' }))
       .toHaveAttribute('title', expect.stringContaining('Last inventory confirmed installation'))
-    expect(screen.queryByRole('link', { name: 'Codex: Not installed' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Codex: Not installed' })).not.toBeInTheDocument()
   })
 
   it('refreshes changed inventory automatically while the sidebar stays mounted', async () => {
@@ -137,11 +141,11 @@ describe('HarnessStatusMenu', () => {
     server.use(http.get('/api/management/harnesses/registry', read))
     const { queryClient, unmount } = renderWithRouter(<HarnessStatusMenu />)
     try {
-      await screen.findByRole('link', { name: 'Codex: Installed' })
+      await screen.findByRole('button', { name: 'Codex: Installed' })
       expect(read).toHaveBeenCalledOnce()
       installed = false
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
-      expect(await screen.findByRole('link', { name: 'Codex: Not installed' })).toBeVisible()
+      expect(await screen.findByRole('button', { name: 'Codex: Not installed' })).toBeVisible()
       expect(read).toHaveBeenCalledTimes(2)
     } finally {
       unmount()

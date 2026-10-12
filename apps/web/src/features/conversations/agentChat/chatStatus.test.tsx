@@ -32,7 +32,7 @@ it.each([
   expect(await screen.findByRole('tooltip')).toHaveTextContent('Native delivery not confirmed')
 })
 
-it('shows online reconnection while saved GET reads remain available', async () => {
+it('keeps readable chat quiet while polling is available', async () => {
   const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
   clients.push(mounted.client)
   await mounted.ready()

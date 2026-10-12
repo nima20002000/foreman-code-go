@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
@@ -72,7 +72,7 @@ it('picks up a preference changed by another computer on refresh', async () => {
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'))
 })
 
-it('keeps an uncertain save’s command identity when retrying', async () => {
+it.each(['network', 'invalid-response'])('keeps an uncertain save’s command identity after %s failure', async failure => {
   setTheme('dark')
   const writes: unknown[] = []
   server.use(
@@ -81,16 +81,19 @@ it('keeps an uncertain save’s command identity when retrying', async () => {
     })),
     http.put('*/api/management/settings/general', async ({ request }) => {
       writes.push(await request.json())
-      if (writes.length === 1) return HttpResponse.error()
+      if (writes.length === 1) return failure === 'network' ? HttpResponse.error() : HttpResponse.json({})
       return HttpResponse.json({ value: { value: { theme: 'light' }, revision: 1, versionId: 'general-1' },
         replayed: true })
     }),
   )
-  fixture()
+  const cache = fixture()
   const button = screen.getByRole('button', { name: 'Switch to light theme' })
   await waitFor(() => expect(button).toBeEnabled())
   await userEvent.click(button)
-  await userEvent.click(await screen.findByRole('button', { name: 'Retry theme save' }))
+  const retry = await screen.findByRole('button', { name: 'Retry theme save' })
+  await act(async () => { await cache.invalidateQueries({ queryKey: ['general-settings'] }) })
+  expect(button).toBeDisabled()
+  await userEvent.click(retry)
   await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'))
   expect(writes).toHaveLength(2)
   expect(writes[1]).toEqual(writes[0])
@@ -120,4 +123,26 @@ it('retains a newer confirmed theme when an earlier save reply arrives late', as
   release()
   await waitFor(() => expect(button).toBeEnabled())
   expect(document.documentElement.dataset.theme).toBe('dark')
+})
+
+
+it('unlocks a rejected theme change after a successful background read', async () => {
+  setTheme('dark')
+  server.use(
+    http.get('*/api/management/settings/general', () => HttpResponse.json({
+      value: { theme: 'dark' }, revision: 2, versionId: 'general-2',
+    })),
+    http.put('*/api/management/settings/general', () => HttpResponse.json({
+      error: { code: 'REVISION_CONFLICT', message: 'Settings changed.' },
+    }, { status: 409 })),
+  )
+  const cache = fixture()
+  const button = await screen.findByRole('button', { name: 'Switch to light theme' })
+  await waitFor(() => expect(button).toBeEnabled())
+  await userEvent.click(button)
+  await screen.findByText('Settings changed.')
+  expect(button).toBeDisabled()
+  await act(async () => { await cache.invalidateQueries({ queryKey: ['general-settings'] }) })
+  await waitFor(() => expect(button).toBeEnabled())
+  expect(screen.queryByText('Settings changed.')).not.toBeInTheDocument()
 })

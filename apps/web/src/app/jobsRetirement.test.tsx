@@ -16,7 +16,7 @@ it.each(['jobs', 'jobs/execution-id', 'jobs/definitions/saved-id'])('redirects o
 
 it('keeps workspace navigation without a human Jobs destination', async () => {
   const { queryClient } = renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
-  expect(await screen.findByRole('link', { name: 'Workflows' })).toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: 'Workflows' })).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'Jobs' })).toBeNull()
   queryClient.clear()
 })

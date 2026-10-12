@@ -18,9 +18,18 @@ export interface AuthorizedResource {
   providerAccountId?: string
 }
 
+// Scope arrays belong to immutable authorization snapshots.
+const scopeIds = new WeakMap<string[], ReadonlySet<string>>()
+
 function includesOrUnscoped(values: string[] | undefined, value: string | undefined): boolean {
   if (!values) return true
-  return value !== undefined && values.includes(value)
+  if (value === undefined) return false
+  let ids = scopeIds.get(values)
+  if (!ids) {
+    ids = new Set(values)
+    scopeIds.set(values, ids)
+  }
+  return ids.has(value)
 }
 
 const validatedPrincipals = new WeakSet<ManagementPrincipal>()

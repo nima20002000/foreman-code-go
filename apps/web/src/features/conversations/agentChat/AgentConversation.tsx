@@ -131,7 +131,7 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   const background = state && !busy ? chatBackgroundWork(state.activitySnapshot) : undefined
   const empty = (!draft.trim() && !attachments.hasAttachments) || attachments.hasBlockingAttachments || draft.length > 32_000
   const latest = chat.latestCommand
-  const receipt = chat.latestReceipt
+  const receipt = chat.currentReceipt ?? chat.confirmedReceipt ?? chat.latestReceipt
   const error = !receipt && latest?.status === 'error' ? latest.error : undefined
   const notActive = latest?.command?.kind === 'send' && ApiError.is(error) && error.code === 'AGENT_CHAT_TURN_NOT_ACTIVE'
   const stale = ApiError.is(error) && error.code === 'AGENT_CHAT_CONTEXT_STALE'

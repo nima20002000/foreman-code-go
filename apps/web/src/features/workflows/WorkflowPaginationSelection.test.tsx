@@ -67,10 +67,10 @@ it('keeps cards on a load-more error and lets the sidebar retry the same cursor'
   renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
   await user.click(await screen.findByRole('button', { name: 'Show more workflows' }))
   expect(await screen.findByRole('button', { name: 'Retry loading workflows' })).toBeEnabled()
-  expect(screen.getByRole('link', { name: /Alpha/ })).toBeVisible()
+  expect(screen.getByRole('button', { name: /Alpha/ })).toBeVisible()
   fail = false
   await user.click(screen.getByRole('button', { name: 'Retry loading workflows' }))
-  expect(await screen.findByRole('link', { name: /Beta/ })).toBeVisible()
+  expect(await screen.findByRole('button', { name: /Beta/ })).toBeVisible()
 })
 
 it('shows each durable workflow once when consecutive directory pages overlap', async () => {
@@ -103,13 +103,13 @@ it('keeps confirmed batch deletion and prefix invalidation consistent across dir
   const directory = within(await screen.findByRole('region', { name: 'Directory' }))
   const sidebar = within(screen.getByRole('region', { name: 'Sidebar' }))
   await directory.findByRole('link', { name: 'Alpha' })
-  await sidebar.findByRole('link', { name: /Alpha/ })
+  await sidebar.findByRole('button', { name: /Alpha/ })
   await user.click(directory.getByRole('button', { name: 'Select workflows' }))
   await user.click(directory.getByRole('checkbox', { name: 'Select Alpha' }))
   await user.click(directory.getByRole('button', { name: 'Delete selected (1)' }))
   await user.click(screen.getByRole('button', { name: 'Delete 1 workflow' }))
   await directory.findByText('1 workflow deleted.')
-  await waitFor(() => expect(sidebar.queryByRole('link', { name: /Alpha/ })).not.toBeInTheDocument())
+  await waitFor(() => expect(sidebar.queryByRole('button', { name: /Alpha/ })).not.toBeInTheDocument())
   for (const suffix of [[], ['directory']]) {
     const cached = queryClient.getQueryData<{ pages: { items: ManagedWorkflow[] }[] }>([
       'workbench', 'management', 'workspace', 'workspace-1', 'workflows', 'pages', ...suffix,
@@ -151,9 +151,13 @@ it('keeps a deep-linked active workflow visible without fetching intervening pag
     }),
   )
   renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" activeWorkflowId="Zeta" />)
-  expect(await screen.findByRole('link', { name: /Zeta/ })).toHaveAttribute('aria-current', 'page')
-  expect(await screen.findByRole('link', { name: /Alpha/ })).toBeVisible()
-  expect(screen.getAllByRole('link')).toHaveLength(5)
+  expect(await screen.findByRole('button', { name: /Zeta/ })).toHaveAttribute('aria-current', 'page')
+  expect(await screen.findByRole('button', { name: /Alpha/ })).toBeVisible()
+  expect(screen.getAllByRole('button').filter(button => button.classList.contains('workflow-navigation-item'))).toHaveLength(6)
+  expect(screen.getByText('Selected workflow')).toBeVisible()
+  for (const name of ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo']) {
+    expect(screen.getByRole('button', { name: new RegExp(name) })).toBeVisible()
+  }
   expect(pages).toBe(1); expect(details).toBe(1)
   expect(screen.getByRole('button', { name: 'Show more workflows' })).toBeVisible()
 })

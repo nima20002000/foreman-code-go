@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { ApiError } from '../../shared/api/client'
+import { isTransientReadError, useBlockingReadError } from '../../shared/api/readFailure'
 import { projectFilesClient, type ProjectFileRemoveInput, type ProjectFileUploadInput } from './projectFilesClient'
 
 export const projectFilesKeys = {
@@ -24,7 +25,7 @@ function uploadContentGuidance(error: unknown): string | null {
 }
 
 export function useProjectFilesQuery(workspaceId: string) {
-  return useInfiniteQuery({
+  const query = useInfiniteQuery({
     queryKey: projectFilesKeys.list(workspaceId),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => projectFilesClient.list(workspaceId, pageParam, signal),
@@ -36,7 +37,14 @@ export function useProjectFilesQuery(workspaceId: string) {
     placeholderData: () => undefined, // Do not inherit an app-level keepPreviousData across workspaces.
     staleTime: 0,
     retry: false,
+    refetchInterval: query => {
+      if (query.state.error && !isTransientReadError(query.state.error)) return false
+      return query.state.data?.pages.some(page => page.items.some(row => row.file.state === 'pending'))
+        ? 2500 : false
+    },
   })
+  const blocked = useBlockingReadError(query)
+  return { ...query, data: blocked ? undefined : query.data }
 }
 
 export function useProjectFileUpload(workspaceId: string) {

@@ -8,6 +8,7 @@ import { sessionControlsApi } from '../../../shared/api/sessionControls'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { pendingControl, reservePendingControl, clearPendingControl, recoverPendingControl } from './controlRequest'
 import { useSessionControls } from './useSessionControls'
+import { SessionControls } from './SessionControls'
 import { ApiError } from '../../../shared/api/client'
 import { OperatorComposer } from '../../operator-chat/OperatorComposer'
 import { ConversationComposer } from '../ConversationComposer'
@@ -403,4 +404,25 @@ it.each([
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
   }
   await waitFor(() => expect(pendingControl(JSON.stringify(['operator', 'chat', null]))).toBeNull())
+})
+
+
+it('opens context settings only after activation and restores focus without reopening', async () => {
+  vi.spyOn(sessionControlsApi, 'read').mockResolvedValue(initial)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  function Controls() {
+    return <SessionControls controls={useSessionControls('chat')} />
+  }
+  const view = render(<QueryClientProvider client={client}><Controls /></QueryClientProvider>)
+  const meter = await screen.findByRole('button', { name: 'Context unknown' })
+  fireEvent.mouseEnter(meter)
+  act(() => meter.focus())
+  expect(meter).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(meter)
+  expect(meter).toHaveAttribute('aria-expanded', 'true')
+  fireEvent.keyDown(screen.getByRole('heading', { name: 'Context' }), { key: 'Escape' })
+  expect(meter).toHaveFocus()
+  expect(meter).toHaveAttribute('aria-expanded', 'false')
+  view.unmount()
+  client.clear()
 })

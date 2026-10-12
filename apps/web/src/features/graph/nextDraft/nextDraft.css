@@ -35,7 +35,8 @@
 .work-connection-limit-editor p { margin: 0; color: var(--text-muted); font: var(--type-caption); }
 .work-connection-limit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .board-edge-remove { overflow: visible; opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
-.board-edge-remove[data-visible='true'] { opacity: 1; pointer-events: auto; }
+.board-edge-remove[data-visible='true'],
+.react-flow__edge:focus-within .board-edge-remove { opacity: 1; pointer-events: auto; }
 .board-edge-remove .n-icon-button { width: 36px; height: 36px; border: 1px solid var(--border-strong);
   border-radius: var(--radius-full); background: var(--surface-raised); box-shadow: var(--shadow-popover); }
 /* The handoff limit shows only while its edge is hovered or the control has keyboard focus. */

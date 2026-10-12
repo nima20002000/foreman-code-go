@@ -143,6 +143,26 @@ describe('Run subagent overlays', () => {
     await screen.findByRole('button', { name: 'Nested, Codex, Running' })
     expect(screen.queryByText(/subagent activity|isn't shown yet/)).not.toBeInTheDocument()
   })
+  it('retains the selected helper and its draft after a temporary roster failure', async () => {
+    const capabilities = subagentCapabilities('codex-collab')
+    capabilities.sendInput = { support: 'supported', qualification: 'passed' }
+    const record = detail(child({ nativeMode: 'codex-collab', capabilities }))
+    record.availableActions.sendInput = true
+    server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json(record)))
+    const { client } = await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Research, Codex, Running' }))
+    await screen.findByText('Child answer')
+    const input = screen.getByRole('textbox', { name: 'Message to subagent' })
+    fireEvent.change(input, { target: { value: 'Unsent input' } })
+    server.use(http.get(base, () => HttpResponse.json({
+      error: { code: 'TEMPORARY_FAILURE', message: 'Try again' },
+    }, { status: 503 })))
+    await act(async () => { await client.invalidateQueries({ queryKey: [...subagentsKey(scope), 'list'] }) })
+    expect(screen.getByRole('button', { name: 'Research, Codex, Running' })).toBeVisible()
+    expect(screen.getByText('Child answer')).toBeVisible()
+    expect(input).toHaveValue('Unsent input')
+    expect(screen.getByText("Couldn't load subagents.")).toBeVisible()
+  })
   it('removes cached circles after a denied refresh', async () => {
     const { client } = await mount()
     fireEvent.click(screen.getByRole('button', { name: 'Research, Codex, Running' }))

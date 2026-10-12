@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import * as credentials from '../interactions/wave25/credentialAuthority.js'
 import { DomainError } from '../errors.js'
-import { CI_GET_ACTIONS, RunCiAuthority } from './ciAuthority.js'
+import { CI_RUN_ACTIONS, RunCiAuthority } from './ciAuthority.js'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -51,9 +51,9 @@ function fixture() {
     revoke: () => { live = false } }
 }
 
-it('allows CI polling and Run-first credential admission to finish concurrently', async () => {
+it('allows a CI run and Run-first credential admission to finish concurrently', async () => {
   const f = fixture()
-  const pending = f.authority.resolve(f.ci.worker, undefined, CI_GET_ACTIONS)
+  const pending = f.authority.resolve(f.ci.worker, undefined, CI_RUN_ACTIONS)
   try {
     await f.waiting
     await f.admitCredentials()
@@ -65,9 +65,9 @@ it('allows CI polling and Run-first credential admission to finish concurrently'
   }
 })
 
-it('denies a binding revoked while CI waits for credential admission', async () => {
+it('denies a binding revoked while a CI run waits for credential admission', async () => {
   const f = fixture()
-  const pending = f.authority.resolve(f.ci.worker, undefined, CI_GET_ACTIONS)
+  const pending = f.authority.resolve(f.ci.worker, undefined, CI_RUN_ACTIONS)
   const denied = expect(pending).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
   await f.waiting
   f.revoke()

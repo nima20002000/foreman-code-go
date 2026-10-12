@@ -40,7 +40,9 @@ describe('browser peer verification', () => {
     errorCode = failure
     networkFailure = failure === 'network'
     await act(async () => { await client.invalidateQueries({ queryKey: settingsExperienceKeys.access(), exact: true }) })
-    expect(await screen.findByRole('dialog', { name: 'Reconnecting to the server' })).toBeInTheDocument()
+    expect(await screen.findByRole('alert', { name: 'Server connection' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(draft).not.toBeDisabled()
     expect(screen.getByRole('textbox', { name: 'Server draft' })).toBe(draft)
     expect(draft).toHaveValue('unsaved server settings')
     expect(screen.queryByRole('heading', { name: 'Cannot reach the server' })).not.toBeInTheDocument()

@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { SidebarNavigationButton } from '../../shared/ui/SidebarNavigationButton'
 import { useLayoutEffect, useRef } from 'react'
 import { AgentHarnessSchema, type AgentHarness } from '@foreman-code/contracts'
 import type { HostHarnessInstallationDto } from '@foreman-code/contracts/harness-registry'
@@ -31,12 +31,12 @@ function HarnessStatus({ harness, installation, failed, pending }: {
   const name = harnessNames[harness]
   const { state, label, detail } = installationStatus(installation, { failed, pending })
   const title = `${name}: ${label}. ${detail} Sign-in and profile qualification are checked separately before execution.`
-  return <Link to="/settings/harnesses" search={{ harness, section: 'model' }} className="harness-status-link"
+  return <SidebarNavigationButton to="/settings/harnesses" search={{ harness, section: 'model' }} className="harness-status-link"
     aria-label={`${name}: ${label}`} title={title}>
     <span className={`harness-status-light harness-status-light--${state}`} aria-hidden="true" />
     <span className="harness-status-initial" aria-hidden="true">{harness === 'codex' ? 'CX' : 'CL'}</span>
     <span className="harness-status-name">{name}</span>
-  </Link>
+  </SidebarNavigationButton>
 }
 
 export function HarnessStatusMenu() {
@@ -53,7 +53,7 @@ export function HarnessStatusMenu() {
   const pending = identity.isPending || inventory.isPending
 
   useLayoutEffect(() => {
-    const links = Array.from(menuRef.current?.querySelectorAll<HTMLAnchorElement>('.harness-status-link') ?? [])
+    const links = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('.harness-status-link') ?? [])
     const positions = links.map((link) => link.getBoundingClientRect())
     const animations: Animation[] = []
     if (motion === 'manual' && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {

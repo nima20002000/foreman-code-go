@@ -37,7 +37,7 @@ function mounted(delivery: InteractionSummary['delivery'], acknowledged = false)
 describe('Operator canonical cold decision readback', () => {
   it.each(['answer_recorded', 'uncertain'] as const)('retains %s feedback after a lost callback without resending the answer', async (delivery) => {
     const { client } = mounted(delivery)
-    await screen.findByText(delivery === 'uncertain' ? 'Decision delivery unconfirmed' : 'Decision recorded')
+    await screen.findByText(delivery === 'uncertain' ? 'Decision delivery unconfirmed' : 'Decision sending')
     expect(screen.getByText('older-native-question')).toBeInTheDocument()
     const reads = vi.mocked(getOperatorConversation).mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'Refresh decision status' }))
@@ -47,14 +47,14 @@ describe('Operator canonical cold decision readback', () => {
   })
   it('shows provider acknowledgment after the pending approval is gone without claiming worker completion', async () => {
     const { client } = mounted('delivered', true)
-    await screen.findByText('Decision delivery acknowledged')
+    await screen.findByText('Decision delivered')
     expect(screen.getByText(/Work completion is not confirmed/)).toBeInTheDocument()
     expect(respondOperatorInteraction).not.toHaveBeenCalled()
     client.clear()
   })
   it('does not label an idle parent with unresolved history-window overflow as Ready', async () => {
     const { state, client } = mounted('delivered', true)
-    await screen.findByText('Decision delivery acknowledged')
+    await screen.findByText('Decision delivered')
     const updated: OperatorConversationState = { ...state, revision: state.revision + 1, activitySnapshot: { ...state.activitySnapshot!,
       revision: String(state.revision + 1), hasMoreActiveWork: true, active: [{ ref: { kind: 'tool', itemId: 'older-tool' }, phase: 'active',
         outcome: null, delivery: null, evidence: 'unknown', startedAt: null }] } }

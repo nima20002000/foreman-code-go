@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, Checkbox, SearchField, Alert } from '../../shared/ui/nocturne'
 import { useJobLogs } from './query'
 import { jobAccessLost, jobError, plainLog } from './model'
+import { isTransientReadError } from '../../shared/api/readFailure'
 
 export function JobLogs({ workspaceId, executionId, attemptId, enabled }: { workspaceId: string; executionId: string; attemptId: string; enabled: boolean }) {
   const query = useJobLogs(workspaceId, executionId, attemptId, enabled)
@@ -14,16 +15,19 @@ export function JobLogs({ workspaceId, executionId, attemptId, enabled }: { work
   useEffect(() => {
     if (follow && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight
   }, [follow, query.dataUpdatedAt])
-  const { isError, isFetching, hasNextPage, fetchNextPage, refetch } = query
+  const { isFetching, hasNextPage, fetchNextPage, refetch } = query
+  const isError = query.isError
+  const retryable = !query.error || isTransientReadError(query.error)
+  const blocked = query.blocked
   useEffect(() => {
-    if (!enabled || isError) return
+    if (!enabled || blocked || !retryable) return
     const timer = window.setInterval(() => {
       if (isFetching) return
-      if (hasNextPage && follow) void fetchNextPage()
+      if (hasNextPage && follow && !isError) void fetchNextPage()
       else void refetch()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [enabled, follow, isError, isFetching, hasNextPage, fetchNextPage, refetch])
+  }, [enabled, follow, blocked, retryable, isError, isFetching, hasNextPage, fetchNextPage, refetch])
   const pages = query.pages
   return <section aria-label="Job logs" className="job-logs">
     <h2>Logs</h2>
@@ -31,11 +35,11 @@ export function JobLogs({ workspaceId, executionId, attemptId, enabled }: { work
       <SearchField label="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} hint="Searches only the loaded window, up to 250 chunks." />
       <Checkbox label="Follow tail" checked={follow} onChange={event => setFollow(event.target.checked)} />
       <Button disabled={!query.hasNextPage || query.isFetching || !enabled} onClick={() => { void query.fetchNextPage() }}>Load next log page</Button>
-      <Button disabled={query.isFetching || !enabled || jobAccessLost(query.error)} onClick={() => { void query.refetch() }}>Reconnect / refresh loaded logs</Button>
+      <Button disabled={query.isFetching || !enabled || jobAccessLost(query.error)} onClick={() => { void query.refetch() }}>Refresh logs</Button>
       <Button disabled={!chunks.length} onClick={() => { void (navigator.clipboard?.writeText(filtered.map(chunk => `[${chunk.stream} #${chunk.sequence}] ${chunk.text}`).join('\n')) ?? Promise.reject(new Error('Copy unavailable'))).then(() => setCopyNotice('Loaded text copied.'), () => setCopyNotice('Copy unavailable. Select the log text to copy.')) }}>Copy loaded text</Button>
     </div>
     <p role="status">{copyNotice || `${chunks.length} loaded chunks. Older chunks leave this bounded window as new pages load.`}</p>
-    {Boolean(query.error) && <Alert title="Logs unavailable" tone="danger">{jobError(query.error)}</Alert>}
+    {Boolean(query.error) && <Alert title={chunks.length ? "Logs refresh failed" : "Logs unavailable"} tone="warning">{jobError(query.error)}</Alert>}
     {pages.some(page => page.truncated) && <Alert title="Logs truncated" tone="warning">Logs were truncated under the accepted log policy. This is not the full output.</Alert>}
     {pages.flatMap((page, index) => page.gap ? [<Alert title="Log gap" tone="warning" key={index}>Log gap: sequences {page.gap.from}–{page.gap.to} unavailable.</Alert>] : [])}
     <div ref={viewport} className="job-log-window" tabIndex={0} aria-label="Loaded stdout and stderr" onScroll={() => {

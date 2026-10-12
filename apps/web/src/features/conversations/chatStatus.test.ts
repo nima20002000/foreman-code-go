@@ -15,7 +15,7 @@ it.each([
     actionUnavailable: 'Read only', error: 'Native turn not confirmed' })
   expect(status.execution).toBe(label)
   expect(status.delivery).toBe('Canceled')
-  expect(status.connection).toContain('Reconnecting to live updates')
+  expect(status.connection).toContain('Connecting to activity updates')
   expect(status.actionUnavailable).toBe('Read only')
   expect(status.error).toBe('Native turn not confirmed')
   expect(status.execution).not.toBe('Stopped')
@@ -26,7 +26,7 @@ it.each(['canceling', 'uncertain'] as const)('uses the same %s explanation in Op
   const label = operatorTurnStatus(state, 'reconnecting')
   expect(label).toContain(phase === 'canceling'
     ? 'Stop requested—execution not yet confirmed stopped.' : 'Delivery uncertain—may still be running.')
-  expect(label).toContain('Reconnecting to live updates')
+  expect(label).toContain('Connecting to activity updates')
 })
 
 it('reports browser offline and live-stream loss without changing an idle execution', () => {
@@ -35,5 +35,14 @@ it('reports browser offline and live-stream loss without changing an idle execut
   expect(offline.execution).toBe('Ready for a follow-up')
   expect(offline.connection).toContain('Offline · draft kept')
   expect(unavailable.execution).toBe('Ready for a follow-up')
-  expect(unavailable.connection).toContain('Live updates unavailable. Polling for changes.')
+  expect(unavailable.connection).toContain('Waiting for activity updates.')
+})
+
+
+it('keeps a fresh polling snapshot quiet while the stream reconnects', () => {
+  const status = chatStatus({ phase: 'active', connection: 'reconnecting', hasConversation: true, snapshotFresh: true })
+  expect(status.connection).toBeUndefined()
+  expect(status.execution).toBe('Agent is working')
+  const offline = chatStatus({ phase: 'active', connection: 'offline', hasConversation: true, snapshotFresh: true })
+  expect(offline.connection).toContain('Offline')
 })
