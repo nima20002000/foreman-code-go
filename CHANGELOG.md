@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.79] - 2026-10-12
+
+### Fixed
+
+- Running Agents survive an API restart or hot swap: the service unit stops only the API process (KillMode=process), so native sessions detach and are recovered.
+- Agent executions start faster: source preparation reads the snapshot in qualified directory batches (4,573 file scopes → 561) and shares Git bootstrap handles; stage timings are logged.
+
 ## [0.0.78] - 2026-10-12
 
 ### Changed
