@@ -2,7 +2,7 @@ import { RunWorktreeSchema } from './runWorktrees.js'
 import { z } from 'zod'
 import {
   ManagedWorkspaceSchema, ManagementPageInfoSchema, OperatorCapabilitiesSchema,
-  ManagementActionSchema,
+  ManagementActionSchema, ExpectedRevisionSchema,
   WorkspaceListInputSchema, WorkflowListInputSchema,
   AgentListInputSchema, RunListInputSchema, RunGetInputSchema,
 } from './management/index.js'
@@ -76,6 +76,7 @@ export const WorkflowSummarySchema = SavedManagedWorkflowSchema.omit({ workflow:
 }).strict()
 export const WorkflowSummaryPageSchema = z.object({
   detail: z.literal('compact'), items: z.array(WorkflowSummarySchema), pageInfo: ManagementPageInfoSchema,
+  orderRevision: ExpectedRevisionSchema.default(0),
 }).strict()
 
 export const OperatorCompactCapabilitiesSchema = OperatorCapabilitiesSchema.omit({ requirements: true }).extend({

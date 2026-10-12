@@ -111,7 +111,7 @@ saved directory identity before inspecting native configuration.
 - Context: `operator_get_capabilities`
 - Harnesses: `harness_list`, `harness_get`, `harness_defaults_update`
 - Workspaces: `workspace_list`, `workspace_get`, `workspace_create`, `workspace_update`, `workspace_archive`, `workspace_batch_archive`, `workspace_location_validate`, `workspace_location_set`
-- Workflows: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_archive`, `workflow_batch_archive`
+- Workflows: `workflow_list`, `workflow_get`, `workflow_create`, `workflow_update`, `workflow_reorder`, `workflow_archive`, `workflow_batch_archive`
 - Agents: `agent_list`, `agent_get`
 - Graph: `graph_draft_open`, `graph_draft_get`, `graph_draft_apply`, `graph_validate`, `graph_save`, `graph_draft_discard`
 - Runs: `run_list`, `run_get`, `run_events_list`, `run_start`, `run_stop`
@@ -131,6 +131,10 @@ This establishes where native agents start; it is not a filesystem sandbox. Code
 `graph_draft_apply` accepts strict typed agent, node, edge, execution-limit, and required-agent-count operations. A workflow may declare `requiredAgentCount`; validation, Save, and Start then reject any graph whose number of distinct referenced agents differs. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
 
 Workspace and workflow navigation and directory lists show 5 items initially; each “Show more” request adds 10 items. MCP callers use `workspace_list` / `workflow_list` with `limit` and pass `pageInfo.nextCursor` as `cursor` until it is null. The active navigation selection can also be read directly by ID without fetching intervening pages.
+
+`workflow_list` returns workflows in their saved workspace order and includes `orderRevision` in compact and full pages. New workflows append to that order. Workflow creation, archive, restore, deletion and reorder change the order revision; metadata and graph edits retain it. Workflow cursors are bound to the workspace, archive filter, access scope and order revision. A changed revision returns `REVISION_CONFLICT`; restart pagination without a cursor.
+
+`workflow_reorder` accepts `{ workspaceId, commandId, expectedRevision, workflowIds }` for at least two unique active workflows. Use `workflow_list.orderRevision` as `expectedRevision`; this revision is separate from each workflow's metadata or graph revision. The submitted IDs replace only their existing positions in the requested order, preserving omitted workflows' slots, including hidden and unloaded items. Every submitted workflow requires both `workflows:read` and `workflows:update`. Archived, missing, cross-workspace or stale selections reject the entire command. The result is `{ value: { workspaceId, workflowIds, orderRevision }, replayed }` and contains only the submitted IDs. Read back with `workflow_list`, starting a fresh page sequence. Retry an uncertain reply with the same command ID and input. The HTTP equivalent is `PUT /api/management/workspaces/:workspaceId/workflows/order`.
 
 `workflow_batch_archive` accepts `{ workspaceId, commandId, workflows: [{ workflowId, expectedRevision }] }` for 1–100 unique workflows. It requires `workflows:archive` for every selected workflow and removes the whole selection atomically. Missing workflows, stale revisions, or active runs reject the entire batch. Reuse the same command ID and input after an uncertain response; read back with `workflow_get` or `workflow_list`. The UI labels this operation “Delete selected” and explains history retention in its confirmation. The HTTP equivalent is `POST /api/management/workspaces/:workspaceId/workflows/batch-archive`.
 

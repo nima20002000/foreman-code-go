@@ -47,6 +47,7 @@ import {
   assertSession, sessionGeneration, sessionSignal, sessionIsSwitching, SessionChangedError,
 } from './sessionBoundary'
 import {
+  WorkflowReorderInputSchema, WorkflowReorderResultSchema, type WorkflowReorderInput,
   WorkspaceBatchArchiveInputSchema, WorkspaceBatchArchiveResultSchema, type WorkspaceBatchArchiveInput,
   ManagedWorkflowSchema, WorkflowBatchArchiveInputSchema, WorkflowBatchArchiveResultSchema, type WorkflowBatchArchiveInput,
   ManagedWorkspaceCommandResultSchema,
@@ -305,6 +306,21 @@ export class ApiClient {
 
   listManagedWorkflowPage(workspaceId: string, cursor?: string, options?: RequestOptions) {
     return this.request(managementPageUrl(`/api/management/workspaces/${toPath(workspaceId)}/workflows`, cursor, cursor ? 10 : 5), CurrentManagedWorkflowPageSchema, options)
+  }
+
+  async reorderWorkflows(input: WorkflowReorderInput, options?: RequestOptions) {
+    const request = parseRequest(WorkflowReorderInputSchema, input)
+    const result = await this.request(
+      `/api/management/workspaces/${toPath(request.workspaceId)}/workflows/order`,
+      WorkflowReorderResultSchema,
+      { ...options, method: 'PUT', body: request },
+    )
+    if (result.value.workspaceId !== request.workspaceId
+      || result.value.workflowIds.length !== request.workflowIds.length
+      || result.value.workflowIds.some((id, index) => id !== request.workflowIds[index])) {
+      throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The saved workflow order did not match the request.' })
+    }
+    return result
   }
 
   archiveManagedWorkflowBatch(input: WorkflowBatchArchiveInput, options?: RequestOptions) {

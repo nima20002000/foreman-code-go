@@ -9,7 +9,7 @@ import { SavedWorkflowDefinitionSchema as CurrentDefinitionSchema, SavedManagedW
   type SavedManagedWorkflow as ManagedWorkflow } from '@foreman-code/contracts/wave25'
 import {
   WorkflowUpdateInputSchema, WorkflowArchiveInputSchema, type ManagementPrincipal,
-  WorkflowBatchArchiveInputSchema, type WorkflowBatchArchiveInput,
+  WorkflowBatchArchiveInputSchema, type WorkflowBatchArchiveInput, type WorkflowReorderInput,
 } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 
@@ -21,6 +21,8 @@ import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { readSavedWorkflowDefinition } from './immutableRead.js'
 import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
+import { WorkflowOrderService } from './order.js'
+import { decodeWorkflowOrderCursor, encodeWorkflowOrderCursor } from './orderCursor.js'
 
 interface WorkflowRow { id: string; workspace_id: string; record: unknown; revision: string; current_version_id: string | null; archived_at: Date | null }
 
@@ -35,10 +37,12 @@ function managed(row: WorkflowRow): ManagedWorkflow {
 export class WorkflowManagementService {
   readonly current: CurrentWorkflowAuthoring
   readonly schedules: WorkflowScheduleService
+  private readonly order: WorkflowOrderService
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly options: WorkflowAuthoringOptions = {}) {
     this.current = new CurrentWorkflowAuthoring(pool, commands, options)
     this.schedules = new WorkflowScheduleService(pool, commands)
+    this.order = new WorkflowOrderService(commands)
   }
 
   async list(principal: ManagementPrincipal, input: {
@@ -47,17 +51,41 @@ export class WorkflowManagementService {
     if (!hasAction(principal, 'workflows:read')) requireAuthorization(principal, 'workflows:read')
     const grants = principal.grants.filter((grant) => grant.actions.includes('workflows:read')
       && (!grant.scope.workspaceIds || grant.scope.workspaceIds.includes(input.workspaceId))
-      && grant.scope.runIds === undefined)
+      && Object.entries(grant.scope).every(([key, value]) =>
+        key === 'workspaceIds' || key === 'workflowIds' || value === undefined))
     const allowedIds = grants.some((grant) => grant.scope.workflowIds === undefined)
-      ? null : [...new Set(grants.flatMap((grant) => grant.scope.workflowIds ?? []))]
-    const rows = await this.pool.query<WorkflowRow>(
-      `select id, workspace_id, record, revision, current_version_id, archived_at from workflows
-       where workspace_id = $1 and ($2::text is null or id > $2) and ($3 or archived_at is null)
-       and ($5::text[] is null or id = any($5)) order by id limit $4`,
-      [input.workspaceId, input.cursor ?? null, input.includeArchived, input.limit + 1, allowedIds],
+      ? null : [...new Set(grants.flatMap((grant) => grant.scope.workflowIds ?? []))].sort()
+    const scope = { workspaceId: input.workspaceId, includeArchived: input.includeArchived, workflowIds: allowedIds }
+    const cursor = decodeWorkflowOrderCursor(scope, input.cursor)
+    const rows = await this.pool.query<WorkflowRow & { workflow_order_revision: string; order_position: string }>(
+      `select workspace.workflow_order_revision, list.* from workspaces workspace
+       left join lateral (
+         select id, workspace_id, record, revision, current_version_id, archived_at, order_position from workflows
+         where workspace_id = workspace.id and ($2::bigint is null or order_position > $2)
+         and ($3 or archived_at is null) and ($5::text[] is null or id = any($5))
+         and ($6::bigint is null or workspace.workflow_order_revision = $6)
+         order by order_position, id limit $4
+       ) list on true where workspace.id = $1
+       and ($5::text[] is null or exists (
+         select 1 from workflows where workspace_id = workspace.id and id = any($5::text[])
+       )) order by list.order_position, list.id`,
+      [input.workspaceId, cursor?.position ?? null, input.includeArchived, input.limit + 1,
+        allowedIds, cursor?.orderRevision ?? null],
     )
-    const items = rows.rows.slice(0, input.limit).map(managed)
-    return { items, pageInfo: { nextCursor: rows.rows.length > input.limit ? items.at(-1)!.workflow.id : null } }
+    const orderRevision = Number(rows.rows[0]?.workflow_order_revision ?? 0)
+    if (cursor && cursor.orderRevision !== orderRevision) {
+      throw new DomainError('REVISION_CONFLICT', 'The workflow order changed. Reload the list to continue.', 409,
+        { currentRevision: orderRevision })
+    }
+    const workflows = rows.rows.filter((row) => row.id !== null)
+    const page = workflows.slice(0, input.limit)
+    const nextCursor = workflows.length > input.limit
+      ? encodeWorkflowOrderCursor(scope, orderRevision, page.at(-1)!.order_position) : null
+    return { items: page.map(managed), pageInfo: { nextCursor }, orderRevision }
+  }
+
+  reorder(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkflowReorderInput) {
+    return this.order.reorder(principal, source, input)
   }
 
   async get(principal: ManagementPrincipal, workspaceId: string, workflowId: string): Promise<ManagedWorkflow> {

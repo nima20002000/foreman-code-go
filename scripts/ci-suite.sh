@@ -21,13 +21,15 @@ if [ "${CI_HOST_RUNNER:-0}" = 1 ]; then
 fi
 
 if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
-  case "$SUITE" in unit|unit-api|integration) ;; *) exit 0 ;; esac
+  case "$SUITE" in unit|unit-*|integration) ;; *) exit 0 ;; esac
   clis="npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
   if [ "$1" = prepare ]; then
     corepack pnpm db:up
-    if ! command -v codex >/dev/null || ! command -v claude >/dev/null; then
-      bash -c "$clis"
-    fi
+    case "$SUITE" in unit|unit-api|integration)
+      if ! command -v codex >/dev/null || ! command -v claude >/dev/null; then
+        bash -c "$clis"
+      fi ;;
+    esac
     exit 0
   fi
   mkdir -p "$state"
@@ -35,7 +37,7 @@ if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
   # scripts/test-db.mjs needs only Node, so the database starts while packages install.
   background db 'node scripts/test-db.mjs up'
   # Harness tests check the installed Codex and Claude CLIs, as on our build computers; same 48-hour package age rule.
-  background clis "$clis"
+  case "$SUITE" in unit|unit-api|integration) background clis "$clis" ;; esac
   exit 0
 fi
 
@@ -129,7 +131,8 @@ fi
 if [ "$scope" = affected ] && [ "$SUITE" != integration ]; then
   case "$SUITE" in
     unit|unit-api) ready db; ready clis; delegate_cgroup ;;
-    unit-web|unit-web-heavy|unit-other|lint|lint-api|lint-other|typecheck|typecheck-api|typecheck-other) ;;
+    unit-web|unit-web-heavy|unit-other) ready db ;;
+    lint|lint-api|lint-other|typecheck|typecheck-api|typecheck-other) ;;
     *) echo "Unsupported affected suite $SUITE"; exit 2 ;;
   esac
   if [ -n "$selected_list" ]; then
@@ -145,16 +148,16 @@ case "$SUITE" in
   unit) ready db; ready clis; delegate_cgroup; pnpm test ;;
   unit-api) ready db; ready clis; delegate_cgroup; pnpm --filter @foreman-code/contracts build
     unit_slice unit-api apps/api ;;
-  unit-web) pnpm --filter @foreman-code/contracts build
+  unit-web) ready db; pnpm --filter @foreman-code/contracts build
     unit_slice unit-web apps/web ;;
   # SLICE i/n splits the heavy phase across machines; the run-graph smoke runs once, in the first shard.
-  unit-web-heavy) pnpm --filter @foreman-code/contracts build
+  unit-web-heavy) ready db; pnpm --filter @foreman-code/contracts build
     case "${SLICE:-1/1}" in 1/*) pnpm --filter @foreman-code/web test:run-graph-smoke ;; esac
     mkdir -p "$state"; heavy_report="$(realpath -m "$state/unit-web-heavy.vitest.json")"; code=0
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE} \
       --reporter=default --reporter=json "--outputFile.json=$heavy_report") || code=$?
     record_tests "$heavy_report"; exit "$code" ;;
-  unit-other) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
+  unit-other) ready db; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
     && pnpm test:scripts ;;
   lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;
   lint-other) pnpm --filter @foreman-code/contracts build \
