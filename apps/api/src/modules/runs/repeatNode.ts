@@ -38,20 +38,21 @@ export interface RepeatGraphState {
  * The shared parser accepts only the exact native text carrier, without changing
  * stored result bytes or accepting mixed carriers, prose or Markdown. */
 export function normalizeRepeatTerminal(version: WorkflowVersionV3, scope: RepeatScope,
-  ref: RepeatNodeRef, value: HarnessExecution): HarnessExecution {
+  ref: RepeatNodeRef, value: HarnessExecution, options: { workResultRepair?: boolean } = {}): HarnessExecution {
   const execution = HarnessExecutionSchema.parse(value)
   assertRepeatExecution(version, scope, ref, execution)
   if (execution.state !== 'completed') return execution
   if (!execution.result) return repeatConflict('EXECUTION_RESULT_MISSING')
-  if (execution.result.outcome !== 'succeeded') return execution
   // An interval check has no result contract; its reply never routes the graph.
   if (repeatTickIndex(execution.input) !== undefined) return execution
+  if (execution.result.outcome !== 'succeeded') {
+    return version.definition.handoffs && options.workResultRepair && execution.result.outcome === 'failed'
+      ? invalidWorkResult(execution) : execution
+  }
   if (version.definition.handoffs) {
     try { parseWorkHandoffResult(execution.result); return execution }
     catch {
-      return HarnessExecutionSchema.parse({ ...execution, result: { outcome: 'failed', error: {
-        code: 'WORK_RESULT_INVALID', message: 'The complete result did not satisfy the pinned work-handoff contract.', retryable: false,
-      } } })
+      return invalidWorkResult(execution)
     }
   }
   try {
@@ -64,19 +65,26 @@ export function normalizeRepeatTerminal(version: WorkflowVersionV3, scope: Repea
   }
 }
 
+function invalidWorkResult(execution: HarnessExecution): HarnessExecution {
+  return HarnessExecutionSchema.parse({ ...execution, result: { outcome: 'failed', error: {
+    code: 'WORK_RESULT_INVALID', message: 'The complete result did not satisfy the pinned work-handoff contract.', retryable: false,
+  } } })
+}
+
 /** Native repository first-observation entry point. Identity and existing
  * terminal evidence are checked BEFORE normalization. The caller must still
  * validate the exact native session/owner/lease, approval receipts and Stop and
  * publish the returned record atomically with its canonical lifecycle facts.
  * Do not use this on raw provider-event storage or result acceptance/replay. */
 export function prepareRepeatNativeUpdate(version: WorkflowVersionV3, scope: RepeatScope,
-  ref: RepeatNodeRef, previousValue: HarnessExecution, incomingValue: HarnessExecution): HarnessExecution {
+  ref: RepeatNodeRef, previousValue: HarnessExecution, incomingValue: HarnessExecution,
+  options: { workResultRepair?: boolean } = {}): HarnessExecution {
   const previous = HarnessExecutionSchema.parse(previousValue)
   const incoming = HarnessExecutionSchema.parse(incomingValue)
   assertRepeatExecution(version, scope, ref, previous)
   assertRepeatExecution(version, scope, ref, incoming)
   if (assertRepeatNativeUpdate(previous, incoming) === 'replay') return previous
-  return normalizeRepeatTerminal(version, scope, ref, incoming)
+  return normalizeRepeatTerminal(version, scope, ref, incoming, options)
 }
 
 export function repeatTerminalResolution(version: WorkflowVersionV3, scope: RepeatScope,

@@ -30,6 +30,10 @@ import type { NativeHarnessSessionManager, NativeHistory } from '../harnesses/po
 import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
+import { workResultRepairPrompt } from './workResultRepair.js'
+import { assertOriginalWorkflowTerminal } from './workflowTerminalSource.js'
+import { workResultRepairCorrelation } from '../runs/workResultRepair.js'
+import { reviewTurnEvidence } from './reviewerEvidence.js'
 import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './reviewerRuntime.js'
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError, NativeDeliveryError } from '../harnesses/errors.js'
@@ -120,6 +124,7 @@ interface ApprovalObservationInput {
   graphThreadId: string
   owner: RunOwnership
   signal: AbortSignal
+  workHandoffContract?: string | undefined
 }
 
 /** Idempotent ensure/observe boundary called first on every LangGraph node entry. */
@@ -763,9 +768,9 @@ export class ApprovalExecutionCoordinator {
         resolved.manager.attachSession(session, { request, ...identity }, signal))
       this.assertSessionIdentity(session, attached)
       const completed = async () => {
-        const history = await resolved.manager.reconcile(session, `execution:${context.executionId}`, signal)
+        const history = await resolved.manager.reconcile(session, identity.correlationId, signal)
         const terminal = history.terminalTurn
-        return terminal?.correlationId === `execution:${context.executionId}`
+        return terminal?.correlationId === identity.correlationId
           && history.correlationId === terminal.correlationId
           && terminal.providerId === (history.nativeTurnId ?? history.nativeMessageId)
           && !history.pendingInteraction && history.pendingInteractions.length === 0
@@ -1611,24 +1616,26 @@ export class ApprovalExecutionCoordinator {
     const originals = await owner.oneShotConnection().transaction(async (sql) => {
       await openWorkflowLifecycleLocked(sql, owner.runId)
       const requests: PendingNativeInteraction[] = []
+      let correlationId = `execution:${execution.id}`
       for (const item of pending) {
         const proof = await assertSavedPendingApprovalOriginalLocked(sql, item)
         if (proof.original.type !== 'history') throw new DomainError(
           'APPROVAL_ORIGINAL_SOURCE_REQUIRED', 'The approval has no saved native request.', 409)
+        if (!requests.length) correlationId = proof.original.history.correlationId ?? correlationId
         requests.push(proof.original.history.pendingInteractions.find((request) =>
           request.turn.nativeRequestId === item.nativeRequestId)!)
       }
-      return requests
+      return { requests, correlationId }
     })
     try {
-      const first = originals[0]!
+      const first = originals.requests[0]!
       const attached = await this.attachSession({ harness: detached.harness, executionId: execution.id,
-        agentId: execution.agentId, workingDirectory: execution.workingDirectory!,
+        agentId: execution.agentId, workingDirectory: execution.workingDirectory!, correlationId: originals.correlationId,
         ...(first.turn.nativeTurnId ? { nativeTurnId: first.turn.nativeTurnId } : {}),
       }, detached, { signal, restartOwner: owner })
-      const history = await attached.manager.reconcile(detached, `execution:${execution.id}`, attached.signal)
+      const history = await attached.manager.reconcile(detached, originals.correlationId, attached.signal)
       owner.assertOwned()
-      for (const original of originals) {
+      for (const original of originals.requests) {
         const restored = history.pendingInteractions.find((request) =>
           request.turn.nativeRequestId === original.turn.nativeRequestId)
         if (!isDeepStrictEqual(restored, original)) throw new DomainError(
@@ -1908,6 +1915,8 @@ export class ApprovalExecutionCoordinator {
       input.approval?.handler === 'orchestrator'
         && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
     let execution = ensured.execution
+    let workResultRepairs = 0
+    let workflowCorrelation = `execution:${execution.id}`
     const validateContinuation = () => bookkeeping(async () => {
       await this.validateContinuation?.(execution.id, signal)
     })
@@ -1979,6 +1988,10 @@ export class ApprovalExecutionCoordinator {
       await bookkeeping(() => this.budgets.ensure(
         execution.id, input.graphThreadId, input.agentActiveTimeoutMs ?? this.activeTimeoutMs))
       await bookkeeping(() => this.budgets.resume(execution.id))
+      if (input.workHandoffContract) {
+        workResultRepairs = await bookkeeping(() => this.runs.readWorkResultRepairAttempt(execution.id, input.owner))
+        workflowCorrelation = workResultRepairCorrelation(execution.id, workResultRepairs)
+      }
       const budgetStarted = performance.now()
       // An exhausted budget found on recovery takes the same deadline path as a
       // live timeout: abort, close the exact session and settle negatively.
@@ -2085,7 +2098,7 @@ export class ApprovalExecutionCoordinator {
         signal.throwIfAborted()
         input.owner.assertOwned()
         await assertBoundary()
-        const start = { request, correlationId: `execution:${execution.id}`, ...(environment ? { environment } : {}),
+        const start = { request, correlationId: workflowCorrelation, ...(environment ? { environment } : {}),
           ...(execution.sessionContinuation ? { sessionContinuation: execution.sessionContinuation } : {}) }
         const persistObservedSession = async (observed: NativeSessionReference, setupLane?: SessionWriteLease) => {
           if (observed.harness !== context!.harness) throw new Error('The observed native session has the wrong harness.')
@@ -2107,7 +2120,7 @@ export class ApprovalExecutionCoordinator {
           if (!context!.acceptedPlacement || active) return persistObservedSession(observed, active)
           // Actual source continuation needs the original native owner and a
           // live lane during publication/revalidation before its first turn.
-          const correlationId = `execution:${execution.id}`
+          const correlationId = workflowCorrelation
           return manager!.withLane(observed, correlationId, signal, async (native, lane) => {
             await manager!.requireIdle(native, observed, correlationId, lane, signal)
             await this.interactions.coordination.bindLaneTurn(lane.fence, correlationId)
@@ -2123,7 +2136,7 @@ export class ApprovalExecutionCoordinator {
             const opening = this.openingSession(ownedSession, observed)
             void opening.catch(() => undefined) // Joined by the existing owned-session lifecycle.
             nativeEvents = manager.startInitialTurnBatches(start, {
-              prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              prompt: buildHarnessPrompt(request), clientCorrelationId: workflowCorrelation,
               onTurnOffered: () => { nativeTurnOffered = true },
               onSessionObserved: async (native) => {
                 resolveObserved(native)
@@ -2134,7 +2147,7 @@ export class ApprovalExecutionCoordinator {
             const observed = await this.openingSession(ownedSession,
               timeRuntimeOperation('harness', 'native.create_session', () => manager!.createSession(start, signal)))
             nativeEvents = manager.startTurnBatches(observed, {
-              prompt: buildHarnessPrompt(request), clientCorrelationId: `execution:${execution.id}`,
+              prompt: buildHarnessPrompt(request), clientCorrelationId: workflowCorrelation,
               onSessionReady: () => publishObservedSession(observed),
               onTurnOffered: () => { nativeTurnOffered = true },
             }, signal)
@@ -2185,7 +2198,7 @@ export class ApprovalExecutionCoordinator {
         await assertBoundary()
         if (resolved.processState === 'needs_start') {
           const attached = await this.openingSession(ownedSession, manager.attachSession(session, {
-            kind: 'workflow', correlationId: `execution:${execution.id}`, request,
+            kind: 'workflow', correlationId: workflowCorrelation, request,
             ...(environment ? { environment } : {}),
           }, signal))
           this.assertSessionIdentity(session, attached)
@@ -2197,30 +2210,30 @@ export class ApprovalExecutionCoordinator {
       }
 
       if (!session) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Initial input has no observed session identity.', 409)
-      const observed = await manager.withLane(session, `execution:${execution.id}`, signal, async (nativeManager, lane) => {
+      const observed = await manager.withLane(session, workflowCorrelation, signal, async (nativeManager, lane) => {
         for (;;) {
           lane.guard.signal.throwIfAborted()
           input.owner.assertOwned()
           await bookkeeping(() => this.budgets.assertActive(execution.id))
           const observed = await timeRuntimeOperation('harness', 'native.reconcile',
-            () => nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal))
+            () => nativeManager.reconcile(session!, workflowCorrelation, lane.guard.signal))
           const messageReceipt = observed.nativeSubmission
           const messageIdentity = messageReceipt?.kind === 'message' && messageReceipt.nativeSessionId === session!.nativeSessionId
-            && messageReceipt.clientCorrelationId === `execution:${execution.id}`
+            && messageReceipt.clientCorrelationId === workflowCorrelation
           const providerId = session!.harness === 'claude'
             ? messageIdentity ? messageReceipt.nativeMessageId : undefined : observed.nativeTurnId
-          const exactTerminal = observed.terminalTurn?.correlationId === `execution:${execution.id}`
-            && observed.correlationId === `execution:${execution.id}` && Boolean(providerId)
+          const exactTerminal = observed.terminalTurn?.correlationId === workflowCorrelation
+            && observed.correlationId === workflowCorrelation && Boolean(providerId)
             && observed.terminalTurn.providerId === providerId
             && !observed.pendingInteraction && observed.pendingInteractions.length === 0
           if (exactTerminal) {
             lane.providerId = observed.terminalTurn!.providerId
-          } else if (observed.correlationId === `execution:${execution.id}` && providerId) {
+          } else if (observed.correlationId === workflowCorrelation && providerId) {
             lane.providerId = providerId
           }
           if (lane.providerId) {
             await bookkeeping(() => this.interactions.coordination.acknowledgeLaneTurn(
-              lane.fence, `execution:${execution.id}`, lane.providerId!,
+              lane.fence, workflowCorrelation, lane.providerId!,
             ))
           }
           const lease = { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: false as const }
@@ -2229,6 +2242,58 @@ export class ApprovalExecutionCoordinator {
           const waiting = await observePending(observed, observed.events.at(-1), lease)
           if (waiting) return { waiting }
           if (exactTerminal) {
+            const repairPrompt = input.workHandoffContract
+              ? workResultRepairPrompt(observed.terminalTurn!.result, input.workHandoffContract) : undefined
+            if (repairPrompt && workResultRepairs < 2) {
+              assertOriginalWorkflowTerminal(execution, session!, observed, workflowCorrelation)
+              const reserved = await bookkeeping(() => this.runs.reserveWorkResultRepair(
+                execution.id, observed.terminalTurn!.providerId, input.owner, captured))
+              if (reserved) {
+                workResultRepairs = reserved
+                await validateContinuation()
+                await assertBoundary()
+                await lane.guard.check()
+                const idle = reviewTurnEvidence(session!, observed, workflowCorrelation, lane.providerId)
+                if (!idle.nativeIdle || idle.nativeBusy || idle.identityConflict) throw new DomainError(
+                  'SESSION_LANE_BUSY', 'The native session has active or unreconciled work.', 409)
+                workflowCorrelation = workResultRepairCorrelation(execution.id, reserved)
+                await this.interactions.coordination.bindLaneTurn(lane.fence, workflowCorrelation)
+                lane.correlationId = workflowCorrelation
+                delete lane.providerId
+                lane.observedStatus = 'uncertain'
+                const acknowledge = async (providerId: string) => {
+                  await lane.guard.check()
+                  await bookkeeping(() => this.interactions.coordination.acknowledgeLaneTurn(
+                    lane.fence, workflowCorrelation, providerId))
+                  lane.providerId = providerId
+                }
+                const events = nativeManager.startTurn(session!, {
+                  prompt: repairPrompt, clientCorrelationId: workflowCorrelation,
+                  onSubmitted: acknowledge,
+                  onMessageSubmitted: async receipt => {
+                    if (receipt.nativeSessionId !== session!.nativeSessionId
+                      || receipt.clientCorrelationId !== workflowCorrelation) throw new DomainError(
+                        'NATIVE_MESSAGE_IDENTITY_CONFLICT', 'The corrective message differs from the owned session.', 409)
+                    await acknowledge(receipt.nativeMessageId)
+                  },
+                }, lane.guard.signal)
+                for await (const event of events) {
+                  await lane.guard.check()
+                  await bookkeeping(() => this.budgets.assertActive(execution.id))
+                  const original = safeValue({ ...event, executionId: execution.id })
+                  const evidence = this.captureNative(input.owner, execution,
+                    { type: 'event', event: original }, 'live', lane)
+                  await bookkeeping(() => this.runs.appendNativeEvent(original, input.owner,
+                    { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: true },
+                    undefined, undefined, evidence))
+                  const history = await nativeManager.history(session!, lane.guard.signal)
+                  const waiting = await observePending(history, event,
+                    { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: true })
+                  if (waiting) return { waiting }
+                }
+                continue
+              }
+            }
             const completed = HarnessExecutionSchema.parse({ ...execution, state: 'completed',
               result: safeValue(observed.terminalTurn!.result), finishedAt: capturedWorkflowNativeTime(captured) })
             // Terminal publication ends workflow credential authority before native disposal finishes.

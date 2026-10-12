@@ -121,6 +121,12 @@ export class PostgresRunRepository implements RunRepository {
   async assertRepeatNativeBoundary(id: string, owner: RunOwnership, evidence: RepeatNativeBoundaryEvidence) {
     return (await this.repeat(owner)).assertNativeBoundary(id, evidence.kind === 'first_launch' ? evidence : captureRepeatNativeEvidence(evidence))
   }
+  async reserveWorkResultRepair(id: string, providerId: string, owner: RunOwnership, evidence: RepeatNativeEvidence) {
+    return (await this.repeat(owner)).reserveWorkResultRepair(id, providerId, captureRepeatNativeEvidence(evidence))
+  }
+  async readWorkResultRepairAttempt(id: string, owner: RunOwnership) {
+    return (await this.repeat(owner)).readWorkResultRepairAttempt(id)
+  }
   async acceptRepeatTerminal(execution: HarnessExecution, owner: RunOwnership, candidate?: (attempt: number) => HarnessExecution) {
     const incoming = HarnessExecutionSchema.parse(structuredClone(execution))
     this.owned(incoming.runId, owner)

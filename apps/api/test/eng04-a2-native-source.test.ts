@@ -133,3 +133,17 @@ it('A2 Codex cold history can prove only its actual pinned completed turn', () =
   } } } as never]
   assertOriginalWorkflowTerminal(f.execution as never, f.session as never, f.history as NativeHistory)
 })
+
+it('verifies a corrective terminal against its supplied execution correlation and original provider frame', () => {
+  const f = fixture()
+  const command = `execution:${f.execution.id}:result-repair:1`
+  const history = { ...f.history, correlationId: command,
+    terminalTurn: { ...f.history.terminalTurn, correlationId: command },
+    events: [{ ...f.event, payload: { ...f.event.payload, clientCorrelationId: command } }],
+  } as NativeHistory
+  assertOriginalWorkflowTerminal(f.execution as never, f.session as never, history, command)
+  assert.throws(() => assertOriginalWorkflowTerminal(f.execution as never, f.session as never, history),
+    { code: 'NATIVE_TERMINAL_SOURCE_REQUIRED' })
+  assert.throws(() => assertOriginalWorkflowTerminal(f.execution as never, f.session as never,
+    { ...history, events: [] }, command), { code: 'NATIVE_TERMINAL_SOURCE_REQUIRED' })
+})

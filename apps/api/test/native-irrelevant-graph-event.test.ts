@@ -34,17 +34,22 @@ function fixture(type: string, expiresBeforeCommit = false) {
   const correlation = vi.spyOn(PostgresNativeGraphProjectionWriter.prototype, 'persistCorrelation')
     .mockImplementation(async (_sql, _scope, _revision, value) => { correlations.set(value.correlationKey, structuredClone(value)) })
   vi.spyOn(records, 'readNativeGraphActivity').mockResolvedValue(undefined)
+  const laneRecord: { leaseToken: string; leaseExpiresAt: string; connectionGeneration: number;
+    correlationId?: string } = {
+    leaseToken: 'original-lease', leaseExpiresAt: '2099-01-01T00:00:00Z', connectionGeneration: 1,
+  }
   let transaction: GraphTransactionSql | undefined
-  const connection = new ExclusiveGraphConnection({ query: async (sql: string) => {
+  const connection = new ExclusiveGraphConnection({ query: async (sql: string, values: unknown[]) => {
     if (sql.includes('select correlation_key from run_native_correlations')) {
-      const latest = [...correlations.values()].at(-1)
+      const base = values[2] as string
+      const latest = [...correlations.values()].filter(value =>
+        value.correlationKey === base || value.correlationKey.startsWith(`${base}:retry:`)).at(-1)
       return { rows: latest ? [{ correlation_key: latest.correlationKey }] : [], rowCount: latest ? 1 : 0 }
     }
     if (sql.startsWith('delete from run_native_projection_checkpoints')) return { rows: [], rowCount: 1 }
     if (sql.startsWith('select record from runs')) return { rows: [{ record: run }], rowCount: 1 }
     if (sql.startsWith('select record from harness_executions')) return { rows: [{ record: execution }], rowCount: 1 }
-    if (sql.includes('select record,harness,native_session_id')) return { rows: [{ record: {
-      leaseToken: 'original-lease', leaseExpiresAt: '2099-01-01T00:00:00Z', connectionGeneration: 1 },
+    if (sql.includes('select record,harness,native_session_id')) return { rows: [{ record: laneRecord,
     live: true, harness: 'codex', native_session_id: execution.nativeSessionId, owner_agent_id: execution.agentId }], rowCount: 1 }
     if (sql.startsWith('select 1 from native_session_lanes')) return { rows: [], rowCount: expiresBeforeCommit ? 0 : 1 }
     if (['commit', 'rollback'].includes(sql) || sql.startsWith('begin')) return { rows: [], rowCount: 0 }
@@ -56,7 +61,7 @@ function fixture(type: string, expiresBeforeCommit = false) {
     transaction = sql
     return appendWorkflowNativeGraphEventLocked(sql, owner, event,
       { id: 'original-lane', token: 'original-lease', live: true,
-        ...(event.type === 'turn.capacity_retry' ? {} : { providerId: 'original-turn' }) })
+        ...(event.type === 'turn.capacity_retry' ? {} : { providerId: event.payload.turnId }) })
   })
   const appendCaptured = (mismatch?: 'transaction' | 'run' | 'execution') => connection.transaction((sql) => {
     const context = { sql, execution, scope: RunGraphScopeSchema.parse({
@@ -70,7 +75,7 @@ function fixture(type: string, expiresBeforeCommit = false) {
       { id: 'original-lane', token: 'original-lease', providerId: 'original-turn', live: true },
       undefined, undefined, context)
   })
-  return { append, appendCaptured, raw, semantic, correlation, correlations, event,
+  return { append, appendCaptured, raw, semantic, correlation, correlations, event, laneRecord,
     committed: () => transaction !== undefined && didGraphTransactionCommit(transaction) }
 }
 
@@ -87,6 +92,50 @@ it('preserves the failed native correlation and records a separate capacity retr
     nativeSessionId: original.nativeSessionId, nativeTurnId: null,
     firstNativeSequence: '2', lastNativeSequence: '2', terminalNativeSequence: null,
   })
+})
+
+it.each([false, true])('publishes first, capacity retry, and repair turns with a lane correlation present: %s', async bound => {
+  const f = fixture('turn.started')
+  const firstKey = 'execution:original-execution'
+  if (bound) f.laneRecord.correlationId = firstKey
+  const publish = async (type: string, turnId: string, key: string) => {
+    f.event.type = type
+    f.event.payload.turnId = turnId
+    await f.append()
+    expect(f.semantic.mock.lastCall?.[2]?.[0]?.correlationKey).toBe(key)
+    expect(f.correlations.get(key)).toMatchObject({ nativeTurnId: turnId })
+    f.event.sequence += 1
+  }
+  const retry = async (turnId: string) => {
+    f.event.type = 'turn.capacity_retry'
+    f.event.payload.turnId = turnId
+    await f.append()
+    f.event.sequence += 1
+  }
+
+  await publish('turn.started', 'original-turn', firstKey)
+  const original = structuredClone(f.correlations.get(firstKey))
+  await retry('original-turn')
+  const firstRetryKey = `${firstKey}:retry:original-turn`
+  await publish('turn.started', 'capacity-turn', firstRetryKey)
+  const capacity = structuredClone(f.correlations.get(firstRetryKey))
+  await retry('capacity-turn')
+  await publish('turn.started', 'capacity-turn-2', `${firstKey}:retry:capacity-turn`)
+
+  for (const attempt of [1, 2]) {
+    const repairKey = `${firstKey}:result-repair:${attempt}`
+    f.laneRecord.correlationId = repairKey
+    const turnId = `repair-turn-${attempt}`
+    await publish('turn.started', turnId, repairKey)
+    const repair = structuredClone(f.correlations.get(repairKey))
+    await retry(turnId)
+    const repairRetryKey = `${repairKey}:retry:${turnId}`
+    await publish('turn.started', `repair-capacity-turn-${attempt}`, repairRetryKey)
+    await publish('turn.completed', `repair-capacity-turn-${attempt}`, repairRetryKey)
+    expect(f.correlations.get(repairKey)).toEqual(repair)
+  }
+  expect(f.correlations.get(firstKey)).toEqual(original)
+  expect(f.correlations.get(firstRetryKey)).toEqual(capacity)
 })
 
 it('retains the original transcript and correlation without redundant semantic ingestion', async () => {

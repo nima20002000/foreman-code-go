@@ -31,6 +31,7 @@ import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
 import { workflowNativeSourceRecord, persistWorkflowNativeSources } from './workflowNativeSource.js'
 import { appendNormalizedNativeEvent } from './nativeEvents.js'
 import { retainedNativeHistoryEvents } from './retainedNativeHistory.js'
+import { assertWorkflowCorrelation } from './workResultRepair.js'
 
 /** Durable private ORIGINAL-source record. No payload/session/token reaches the
  * graph feed: G1 publishes only its immutable digest and ordinary graph facts. */
@@ -154,8 +155,10 @@ export class WorkflowNativeProofServices {
       if (!lane || lane.owner_agent_id !== stored.execution.agentId || lane.harness !== capture.session.harness
         || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane.token || !lane.held
         || lane.generation !== String(capture.lane.connectionGeneration)
-        || lane.correlation !== `execution:${stored.execution.id}`
         || lane.provider_id !== null && capture.lane.providerId !== null && lane.provider_id !== capture.lane.providerId) return fail('SESSION_LANE_LEASE_LOST')
+      await assertWorkflowCorrelation(sql, stored.execution.id, lane.correlation ?? undefined)
+      if (capture.source.type === 'history' && capture.source.history.correlationId !== undefined
+        && capture.source.history.correlationId !== lane.correlation) return fail('NATIVE_TURN_IDENTITY_CONFLICT')
     } else if (capture.source.type === 'event' || capture.source.type === 'history') return fail('SESSION_LANE_LEASE_LOST')
     capture.assertCurrent()
   }
@@ -183,7 +186,8 @@ export class WorkflowNativeProofServices {
     } catch (error) { poisonGraphTransaction(sql); throw error }
   }
 
-  private validateObservation(capture: WorkflowNativeCapture, previous: HarnessExecution, incoming: HarnessExecution): void {
+  private validateObservation(capture: WorkflowNativeCapture, previous: HarnessExecution, incoming: HarnessExecution,
+    command: string): void {
     assertRepeatNativeUpdate(previous, incoming)
     if (incoming.nativeSessionId !== capture.session.nativeSessionId) return fail()
     const source = capture.source
@@ -193,9 +197,9 @@ export class WorkflowNativeProofServices {
       return
     }
     if (source.type !== 'history' || !capture.lane) return fail('NATIVE_ORIGINAL_HISTORY_REQUIRED')
-    const history = source.history, command = `execution:${incoming.id}`
+    const history = source.history
     if (incoming.state === 'completed') {
-      assertOriginalWorkflowTerminal(incoming, capture.session, history)
+      assertOriginalWorkflowTerminal(incoming, capture.session, history, command)
       const terminal = history.terminalTurn
       if (!terminal || terminal.correlationId !== command || history.correlationId !== command
         || !terminal.providerId || terminal.providerId !== workflowProviderId(capture.session, history)
@@ -381,10 +385,11 @@ export class WorkflowNativeProofServices {
     original: WorkflowNativeProofRecord, owner: RunOwnership): Promise<void> {
     if (capture.source.type !== 'history' || !capture.lane) return fail('NATIVE_ORIGINAL_HISTORY_REQUIRED')
     const history = capture.source.history, terminal = history.terminalTurn
-    if (!terminal || history.correlationId !== `execution:${stored.execution.id}` || terminal.correlationId !== history.correlationId
+    if (!terminal || !history.correlationId || terminal.correlationId !== history.correlationId
       || terminal.providerId !== workflowProviderId(capture.session, history) || terminal.providerId !== capture.lane.providerId
       || history.pendingInteraction || history.pendingInteractions.length) return
-    assertOriginalWorkflowTerminal(stored.execution, capture.session, history)
+    await assertWorkflowCorrelation(sql, stored.execution.id, history.correlationId)
+    assertOriginalWorkflowTerminal(stored.execution, capture.session, history, history.correlationId)
     const publication = currentRunGraphPublication(sql, scope)
     const rows = (await sql.query<{ record: unknown }>(`select record from durable_interactions
       where run_id=$1 and execution_id=$2 and status='delivered'
@@ -425,9 +430,13 @@ export class WorkflowNativeProofServices {
       const capture = this.captures.read(evidence)
       const { stored, scope } = await this.current(sql, run, previous.id, owner)
       if (!sameRepeatValue(stored.execution, previous) || !sameRepeatValue(stored.ref, ref)) return fail()
-      this.validateObservation(capture, previous, incoming)
+      const command = capture.source.type === 'history'
+        ? capture.source.history.correlationId ?? `execution:${incoming.id}` : `execution:${incoming.id}`
+      await assertWorkflowCorrelation(sql, incoming.id, command)
+      this.validateObservation(capture, previous, incoming, command)
       const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
-      const expected = prepareRepeatNativeUpdate(snapshot.version, scope, ref, previous, incoming)
+      const expected = prepareRepeatNativeUpdate(snapshot.version, scope, ref, previous, incoming,
+        { workResultRepair: command !== `execution:${incoming.id}` })
       const source = await this.persistOriginalLocked(sql, run, evidence, owner)
       if (incoming.state === 'waiting' && capture.source.type === 'history') {
         const history = capture.source.history

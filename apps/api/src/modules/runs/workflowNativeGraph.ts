@@ -73,6 +73,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
     const raw = await appendNormalizedNativeEvent(sql, normalized)
     if (raw.rejected || !lease || execution.state === 'completed' || !execution.nativeSessionId) return
     const lane = (await sql.query<{ record: { leaseToken?: string; leaseExpiresAt?: string; connectionGeneration: number;
+      correlationId?: string;
       currentTurnOrMessageId?: string }; live: boolean; harness: string; native_session_id: string; owner_agent_id: string }>(
       `select record,harness,native_session_id,owner_agent_id,
         coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as live
@@ -82,12 +83,14 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       || lane.native_session_id !== execution.nativeSessionId) throw new DomainError('SESSION_LANE_LEASE_LOST',
       'The native writer is no longer the current workflow owner.', 409)
     const generation = String(lane.record.connectionGeneration)
+    const turnCorrelation = lane.record.correlationId ?? `execution:${execution.id}`
     const latest = await sql.query<{ correlation_key: string }>(
       `select correlation_key from run_native_correlations
        where run_id=$1 and execution_id=$2 and work_kind='workflow' and work_id=$2
          and native_request_id is null and interaction_id is null
-       order by first_native_sequence desc limit 1`, [scope.runId, execution.id])
-    const correlationKey = latest.rows[0]?.correlation_key ?? `execution:${execution.id}`
+         and (correlation_key=$3 or starts_with(correlation_key,$3 || ':retry:'))
+       order by first_native_sequence desc limit 1`, [scope.runId, execution.id, turnCorrelation])
+    const correlationKey = latest.rows[0]?.correlation_key ?? turnCorrelation
     const prior = await readNativeGraphCorrelation(sql, scope, key, correlationKey)
     // The original capture still checks physical ownership before publication
     // and commit. An unchanged correlation has no graph mutation for transcript-only frames.
@@ -146,7 +149,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       && prior.nativeTurnId === normalized.event.payload.turnId && !lease.providerId) {
       const writer = new PostgresNativeGraphProjectionWriter()
       await writer.persistCorrelation(sql, scope, null, {
-        ...prior, correlationKey: `execution:${execution.id}:retry:${prior.nativeTurnId}`,
+        ...prior, correlationKey: `${turnCorrelation}:retry:${prior.nativeTurnId}`,
         nativeTurnId: null, terminalNativeSequence: null, metadataRevision: '0',
         firstNativeSequence: String(normalized.event.sequence), lastNativeSequence: String(normalized.event.sequence),
       }, guard)

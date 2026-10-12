@@ -6,6 +6,7 @@ import type { StoredRepeatExecution } from './repeatPostgres.js'
 import type { AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { repeatDigest, repeatExecutionIdentity, sameRepeatValue } from './repeatResolution.js'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
+import { assertWorkflowCorrelation } from './workResultRepair.js'
 
 /** The original successful native terminal is recoverable independently of its
  * later business acceptance. Every stored source still needs its canonical receipt. */
@@ -33,7 +34,9 @@ export async function readWorkflowTerminalReceiptLocked(sql: GraphTransactionSql
       || proof.commandId !== `execution:${execution.id}`
       || !sameRepeatValue(proof.original.history.terminalTurn?.result, execution.result)
       || row.source_digest !== repeatDigest(proof, 4 * 1024 * 1024)) return conflict()
-    assertOriginalWorkflowTerminal(execution, proof.session, proof.original.history)
+    const command = proof.original.history.correlationId
+    await assertWorkflowCorrelation(sql, execution.id, command)
+    assertOriginalWorkflowTerminal(execution, proof.session, proof.original.history, command)
     const receipt = { scope: proof.scope, evidence: { sourceKind: 'native_event' as const,
       sourceId: proof.proofId, sourceRevision: '1' }, sourceDigest: row.source_digest, effect: null }
     await assertRepeatCanonicalReceiptLocked(sql, receipt)
