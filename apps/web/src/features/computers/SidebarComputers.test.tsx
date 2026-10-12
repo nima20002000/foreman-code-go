@@ -9,6 +9,8 @@ import { telemetrySelectorKey, type TelemetrySelector } from '@foreman-code/cont
 import { server } from '../../mocks/server'
 import { SidebarComputers } from './SidebarComputers'
 import { computerReadHandler, computersFixture, deviceId, deviceName, deviceTarget, mainId, mainTarget, registration } from './computersTestFixture'
+import computerStyles from './computers.css?inline'
+import shellStyles from '../../styles.css?inline'
 
 function inRouter() {
   const root = createRootRoute({ component: Outlet })
@@ -61,6 +63,32 @@ it('shows each computer as an icon-only button whose load is named in words and 
     workflowName: 'Release', runId: 'run-1', nodeId: 'review', agentName: 'Reviewer', state: 'waiting' })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
   expect(await screen.findByRole('button', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })).toHaveTextContent(/^1$/)
+})
+it.each([false, true])('keeps computer and cloud activity controls at 32px with collapsed=%s', async (collapsed) => {
+  const { router, element } = inRouter()
+  const f = computersFixture(<>
+    <style>{computerStyles}{shellStyles}</style>
+    <div className={collapsed ? 'workspace-shell workspace-shell-navigation-collapsed' : 'workspace-shell'}>
+      <aside className="shell-sidebar"><div className="sidebar-footer">{element}</div></aside>
+    </div>
+  </>)
+  f.activity.computers[0]!.jobs.push({ id: 'job-1', name: 'Web build', workspaceId: 'workspace-1',
+    workspaceName: 'Store', phase: 'running', startedAt: null })
+  f.activity.cloud.push({ provider: 'github', name: 'GitHub Actions', ready: true, slots: 16, running: 1 })
+  const main = await screen.findByRole('button', { name: /Main PC, Main, Some load, 1 running/ })
+  const cloud = screen.getByRole('button', { name: /GitHub Actions, Cloud CI,.*1 running/ })
+  const computers = screen.getByRole('list', { name: 'Computers' })
+  expect(within(computers).getAllByRole('button')).toHaveLength(3)
+  for (const button of within(computers).getAllByRole('button')) {
+    const style = getComputedStyle(button)
+    expect(style.width).toBe('32px')
+    expect(style.height).toBe('32px')
+    expect(button).toBeEnabled()
+  }
+  expect(within(main).getByText('1')).toBeVisible()
+  expect(within(cloud).getByText('1')).toBeVisible()
+  await userEvent.setup().click(cloud)
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings/computers'))
 })
 it('derives the level from live CPU and shows the reading in the detail card', async () => {
   computersFixture(inRouter().element, cpuReading(95))

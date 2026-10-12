@@ -8,6 +8,9 @@ import { useNavigationUiStore } from '../workspaces/navigationUiStore'
 import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 import { computerSettingsKeys } from '../../shared/api/computerSettings'
 import { HarnessRegistryReadbackSchema } from '@foreman-code/contracts/harness-registry'
+import harnessStyles from './harnessStatusMenu.css?inline'
+import shellStyles from '../../styles.css?inline'
+import tokenStyles from '../../shared/ui/nocturne/tokens.css?inline'
 
 const mainId = mockRuntimeIdentity.installationId
 const host = { kind: 'main', mainId } as const
@@ -27,6 +30,38 @@ function inventory(installed = true) {
     })),
     hostMetadata: { hostRef: host, applicationInstallationId: mainId, connection: null,
       platform: null, workspaceRoots: null },
+  })
+}
+
+function rgbChannels(color: string) {
+  const channels = color.match(/\d+(?:\.\d+)?/g)?.map(Number)
+  if (!color.startsWith('rgb(') || channels?.length !== 3) throw new Error(`Expected an RGB color: ${color}`)
+  return channels
+}
+
+function luminance(channels: number[]) {
+  const linear = channels.map(channel => {
+    const value = channel / 255
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  })
+  return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722
+}
+
+function contrastRatio(foreground: string, background: string, opacity: number) {
+  const backdrop = rgbChannels(background)
+  const blended = rgbChannels(foreground).map((channel, index) =>
+    channel * opacity + backdrop[index]! * (1 - opacity))
+  const first = luminance(blended)
+  const second = luminance(backdrop)
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05)
+}
+
+// jsdom exposes theme properties but does not resolve inherited var() colors.
+function resolveThemeVariables(styles: string): string {
+  const theme = getComputedStyle(document.documentElement)
+  return styles.replace(/var\((--[\w-]+)\)/g, (reference, name: string) => {
+    const value = theme.getPropertyValue(name).trim()
+    return value ? resolveThemeVariables(value) : reference
   })
 }
 
@@ -55,6 +90,37 @@ describe('HarnessStatusMenu', () => {
     if (originalAnimate) Object.defineProperty(HTMLElement.prototype, 'animate', originalAnimate)
     else Reflect.deleteProperty(HTMLElement.prototype, 'animate')
   })
+  it.each(['dark', 'light'].flatMap(theme =>
+    (['installed', 'missing', 'unverified'] as const).map(state => ({ theme, state }))))(
+    'keeps actionable harness marks above 3:1 contrast in $theme with $state inventory', async ({ theme, state }) => {
+      const previousTheme = document.documentElement.getAttribute('data-theme')
+      document.documentElement.setAttribute('data-theme', theme)
+      server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json(
+        state === 'unverified' ? { instances: [], installations: [] } : inventory(state === 'installed'),
+      )))
+      try {
+        const { container } = renderWithRouter(<>
+          <style>{tokenStyles}{shellStyles}{harnessStyles}</style>
+          <aside className="shell-sidebar" aria-label="Sidebar"><HarnessStatusMenu /></aside>
+        </>)
+        const label = { installed: 'Installed', missing: 'Not installed', unverified: 'Unverified' }[state]
+        const sidebar = await screen.findByRole('complementary', { name: 'Sidebar' })
+        container.querySelector('style')!.textContent = resolveThemeVariables(tokenStyles + shellStyles + harnessStyles)
+        const background = getComputedStyle(sidebar).backgroundColor
+        for (const name of ['Codex', 'Claude']) {
+          const button = await screen.findByRole('button', { name: `${name}: ${label}` })
+          expect(button).toBeEnabled()
+          const mark = button.querySelector('svg')!
+          const style = getComputedStyle(mark)
+          const opacity = Number(style.opacity) * Number(getComputedStyle(button).opacity)
+          expect(contrastRatio(style.color, background, opacity)).toBeGreaterThanOrEqual(3)
+        }
+      } finally {
+        if (previousTheme === null) document.documentElement.removeAttribute('data-theme')
+        else document.documentElement.setAttribute('data-theme', previousTheme)
+      }
+    },
+  )
   it.each([
     [true, 'Installed', 'installed'], [false, 'Not installed', 'missing'],
   ] as const)('shows installed=%s from inventory with an accessible status and matching light', async (installed, label, state) => {
