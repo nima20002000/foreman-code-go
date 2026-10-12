@@ -57,6 +57,11 @@ export function planCiParts(input: CiRunInput, durations: CiDurations, inventory
   })
 }
 
+/** CircleCI takes every suite except the Worker unit tests, which need podman. */
+export function runsOnCircleCi(run: { part?: string | null }): boolean {
+  return run.part !== 'unit-other'
+}
+
 export function ciGroupState(runs: readonly { state: string }[]) {
   for (const state of ['failed', 'lost', 'canceled', 'running', 'starting', 'queued', 'passed'] as const) {
     if (runs.some(run => run.state === state)) return state
