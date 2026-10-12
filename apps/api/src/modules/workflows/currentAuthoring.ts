@@ -1,6 +1,7 @@
 import { authorizeWorkflowWorktreeContent, validateWorkflowWorktrees,
   type WorkflowWorktreeServices } from './worktreeSettings.js'
 import { validateReviewerBootstrap } from './reviewerBootstrap.js'
+import { reconcileAgentProfilePlacements } from './agentProfilePlacements.js'
 import { requireCurrentWorkflowAccess } from './currentWorkflowPolicy.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -77,7 +78,7 @@ async function versionAt(sql: Pick<pg.PoolClient, 'query'>, scope: Scope, id: st
     return readImmutableAgentConfiguration(row, { id: configurationId, workspaceId: scope.workspaceId, agentId: row.agent_id })
   })
   ExecutableWorkflowV3Schema.parse({ version, configurations })
-  return version
+  return { version, configurations }
 }
 
 /** Implementation of the EXISTING WorkflowManagementService, for all current
@@ -147,7 +148,7 @@ export class CurrentWorkflowAuthoring {
         'select revision::text,current_version_id from workflows where workspace_id=$1 and id=$2 for share',
         [input.workspaceId, input.workflowId])).rows[0]
       if (!row?.current_version_id) return fail('WORKFLOW_NOT_SAVED', 'This workflow has no immutable current version.')
-      const version = await versionAt(client, input, input.workflowVersionId ?? row.current_version_id)
+      const { version } = await versionAt(client, input, input.workflowVersionId ?? row.current_version_id)
       const result = CurrentWorkflowReadResultSchema.parse({ workspaceId: input.workspaceId, workflowId: input.workflowId, revision: Number(row.revision),
         currentVersionId: row.current_version_id, version })
       await client.query('commit')
@@ -213,7 +214,10 @@ export class CurrentWorkflowAuthoring {
               : saved.presentation ?? saved.version.definition
             input = completeSaveInput(request, metadata)
           }
-          const version = await versionAt(client, input, saved.currentVersionId)
+          const { version, configurations } = await versionAt(client, input, saved.currentVersionId)
+          // Replays use saved configurations even when the Agent has since changed.
+          const publishedInput = witness && !sameWorkflowValue(witness.input, input)
+            ? { ...input, graph: reconcileAgentProfilePlacements(input.graph, configurations) } : input
           if (!sameWorkflowValue(version, saved.version) || !sameWorkflowValue(version.agentConfigurationVersionIds, input.resultantAgentConfigurationVersionIds ?? input.expectedAgentConfigurationVersionIds)) {
             return fail('WORKFLOW_RECEIPT_CONFLICT', 'The receipt differs from its exact immutable version/configuration pins.')
           }
@@ -221,8 +225,8 @@ export class CurrentWorkflowAuthoring {
             return fail('WORKFLOW_RECEIPT_CONFLICT', 'The saved presentation differs from the submitted node names.')
           }
           if (witness ? witness.workflow_version_id !== version.id || witness.input_hash !== commandInputHash(request)
-              || !sameWorkflowValue(witness.input, input) || saved.revision !== input.expectedRevision + 1
-              || !sameExecutableWorkflow(version.definition, input.graph)
+              || !sameWorkflowValue(witness.input, publishedInput) || saved.revision !== input.expectedRevision + 1
+              || !sameExecutableWorkflow(version.definition, publishedInput.graph)
             : version.id !== input.expectedWorkflowVersionId || saved.revision !== input.expectedRevision
               || input.graph.version !== version.version || !sameExecutableWorkflow(version.definition,
                 { ...input.graph, name: version.definition.name, description: version.definition.description })) {
@@ -278,7 +282,8 @@ export class CurrentWorkflowAuthoring {
       prepared.version.version, prepared.version.entryNodeId, canonicalGraphJson(prepared.version)])
       const row = (await client.query<{ revision: string }>(
         'select eng04_publish_current_workflow($1,$2,$3::jsonb,$4,$5,$6)::text as revision',
-        [principal.id, source, canonicalGraphJson(input), commandInputHash(request), prepared.version.id, prepared.content])).rows[0]
+        [principal.id, source, canonicalGraphJson({ ...input, graph: prepared.graph }),
+          commandInputHash(request), prepared.version.id, prepared.content])).rows[0]
       if (!row) return fail('REVISION_CONFLICT', 'The typed current workflow publication returned no revision.')
       revision = Number(row.revision)
     }
@@ -306,7 +311,8 @@ export class CurrentWorkflowAuthoring {
       || input.graph.version !== current.version || input.graph.createdAt !== current.createdAt) {
       return fail('WORKFLOW_BASE_CONFLICT', 'The definition does not match its exact scope and base stamps.')
     }
-    const base = row.current_version_id ? await versionAt(client, input, row.current_version_id) : undefined
+    const snapshot = row.current_version_id ? await versionAt(client, input, row.current_version_id) : undefined
+    const base = snapshot?.version
     const location = (await client.query<{ revision: string }>('select location_revision::text as revision from workspaces where id=$1 for share',
       [input.workspaceId])).rows[0]
     if (!location || Number(location.revision) !== input.expectedLocationRevision) return fail('LOCATION_REVISION_CONFLICT', 'The displayed workspace location revision changed.')
@@ -317,8 +323,12 @@ export class CurrentWorkflowAuthoring {
     const stagedInput = 'stagedAgents' in input && input.stagedAgents?.length ? input as CurrentEditSaveInput : undefined
     const staged = stagedInput ? await prepareCurrentStagedAgents(client, principal, stagedInput, this.options.accountConfigurations) : undefined
     const configurationPins = staged?.resultant ?? input.expectedAgentConfigurationVersionIds
-    const presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
+    let presentationOnly = !staged && !!base && sameExecutableWorkflow(current, input.graph)
       && sameWorkflowValue(base.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
+    if (presentationOnly && snapshot) {
+      presentationOnly = sameExecutableWorkflow(input.graph,
+        reconcileAgentProfilePlacements(input.graph, snapshot.configurations))
+    }
     const names = workflowNodeNames(current)
     const suppliedNames = 'expectedNodePresentation' in input ? input.expectedNodePresentation : undefined
     // Persisted commands predate presentation pins; their immutable base supplies
@@ -375,7 +385,8 @@ export class CurrentWorkflowAuthoring {
       return readImmutableAgentConfiguration(config, { workspaceId: input.workspaceId, agentId: config.agent_id, id })
     })
     configurations.push(...(staged?.prepared.map((item) => item.configuration) ?? []))
-    await validateWorkflowWorktrees({ sql: client, principal, definition: input.graph, previous: current,
+    const graph = reconcileAgentProfilePlacements(input.graph, configurations)
+    await validateWorkflowWorktrees({ sql: client, principal, definition: graph, previous: current,
       configurations, services: this.options.worktrees })
     const number = Number((await client.query<{ next: string }>('select coalesce(max(version),0)+1 as next from workflow_versions where workflow_id=$1',
       [input.workflowId])).rows[0]?.next)
@@ -383,7 +394,7 @@ export class CurrentWorkflowAuthoring {
     const now = new Date().toISOString()
     const parsedVersion = WorkflowVersionV3Schema.safeParse({ id: `workflow-version-${randomUUID()}`, workspaceId: input.workspaceId,
       workflowId: input.workflowId, version: number, executionSemanticsVersion: 3, entryNodeId: input.graph.entryNodeId,
-      definition: { ...preserveWorkflowGeometry(input.graph, current), version: number, updatedAt: now }, approval: input.graph.approval,
+      definition: { ...preserveWorkflowGeometry(graph, current), version: number, updatedAt: now }, approval: graph.approval,
       agentConfigurationVersionIds: configurationPins, contentHash: `sha256:${'0'.repeat(64)}`, createdAt: now })
     if (!parsedVersion.success) throw new DomainError('GRAPH_INVALID', 'Fix the workflow settings below.', 409, { issues: workflowSaveIssues(parsedVersion.error.issues) })
     const version = parsedVersion.data
@@ -399,6 +410,6 @@ export class CurrentWorkflowAuthoring {
       configurations.find((config) => config.agentId === version.approval.designatedOrchestratorAgentId)?.harness, version.entryNodeId)
     const content = canonicalGraphJson({ definition: version.definition, configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
     version.contentHash = digest(content)
-    return { presentationOnly: false, version, definition: version.definition, content, staged }
+    return { presentationOnly: false, version, definition: version.definition, graph, content, staged }
   }
 }

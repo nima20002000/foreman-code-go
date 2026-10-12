@@ -46,7 +46,10 @@ export const AgentCloneInputSchema = z.object({
   name: z.string().trim().min(1).max(200),
 }).strict();
 export const AgentMutationResultSchema = z.object({
-  value: z.object({ agent: AgentSchema, metadataRevision: Revision }).strict(), replayed: z.boolean(),
+  value: z.object({ agent: AgentSchema, metadataRevision: Revision,
+    affectedWorkflowIds: z.array(IdSchema).optional()
+      .describe("Returned by agent_update: referencing workflows to re-save before using the changed configuration."),
+  }).strict(), replayed: z.boolean(),
 }).strict();
 export type AgentCreateInput = z.infer<typeof AgentCreateInputSchema>;
 export type AgentUpdateInput = z.infer<typeof AgentUpdateInputSchema>;
