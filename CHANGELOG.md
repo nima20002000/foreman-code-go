@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.86] - 2026-10-12
+
+### Fixed
+
+- Agent start: source preparation 93 s → about 15 s (no redundant copies, batched writes, shared Git imports).
+- A restart during source preparation no longer leaves Runs queued forever; native qualification survives restarts.
+- Database: 1 s pool acquisition with one retry for read-only MCP tools; native activity query 7x faster; CI group index.
+- Agent sessions survive short database stalls instead of losing their lease.
+- A failed execution start is always persisted; abandoned starts are reconciled.
+
 ## [0.0.85] - 2026-10-12
 
 ### Fixed
