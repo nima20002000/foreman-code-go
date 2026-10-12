@@ -41,6 +41,7 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
       return { rows: [], rowCount: 1 }
     }
     if (sql.includes('durations from ci_runs')) return { rows: [] }
+    if (sql.startsWith('select id,host_key')) return { rows: [{ id: record.id, host_key: computer.key }] }
     return { rows: [{ record, log_tail: logTail, host_key: computer.key }] }
   }) } as unknown as pg.Pool
   const resolve = vi.fn(async (principal: ManagementPrincipal) => {
@@ -57,6 +58,13 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
     {} as CiCommits, endpoint)
   return { create, pool, commands, endpoint, resolve, read: () => ({ record, logTail }) }
 }
+
+it('keeps assigned running ticket ids visible when the computer is offline', async () => {
+  const f = fixture()
+  expect(await f.create().computers(caller, { workspaceId: 'workspace' })).toMatchObject({ computers: [{
+    ready: false, reasons: ['Build computer unavailable'], running: [f.read().record.id],
+  }] })
+})
 
 it('refreshes submitted CI in the background without status reads and stops on close', async () => {
   vi.useFakeTimers()

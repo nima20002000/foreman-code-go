@@ -818,6 +818,37 @@ it('lists cloud CI slots beside build computers through MCP', async () => {
   } finally { await f.close() }
 })
 
+it('lists persisted active tickets on their assigned computers even when host status has no runs', async () => {
+  const f = await fixture({ cloud: { github: 1, circleci: 1 } })
+  try {
+    const denied = await f.connect(['workflows:read'])
+    expect((await f.call(denied, 'ci_computers_list', {})).isError).toBe(true)
+    await f.value(f.operator, 'ci_run', { suite: 'integration', scope: 'full', partitions: 5,
+      commandId: 'computer-readback' })
+    const request = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (computer, input) => {
+      const reply = await request(computer, input)
+      if (reply.operation === 'start' && computer.hostRef.provider === 'circleci') {
+        return { ...reply, run: { ...reply.run, state: 'starting' } }
+      }
+      return reply.operation === 'status' ? { ...reply, runs: [] } : reply
+    }
+    await f.ci.dispatch()
+    expect(f.started).toHaveLength(4)
+    const read = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
+    for (const computer of f.computers) {
+      const assigned = f.started.filter(start => start.computer === computer.label)
+        .map(start => start.request.operation === 'start' ? start.request.runId : '')
+      expect(read.computers.find(value => value.label === computer.label)?.running).toEqual(assigned)
+    }
+    const first = f.started[0]!
+    if (first.request.operation !== 'start') throw new Error('Expected a start request')
+    await f.value(f.operator, 'ci_cancel', { ticketId: first.request.runId })
+    const afterCancel = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
+    expect(afterCancel.computers.find(value => value.label === first.computer)?.running).toEqual([])
+  } finally { await f.close() }
+})
+
 it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and runs it elsewhere through MCP', async provider => {
   const readiness = { laptop: false, builder: false }
   const f = await fixture({ github: readiness,

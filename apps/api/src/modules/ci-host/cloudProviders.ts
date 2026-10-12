@@ -5,6 +5,8 @@ import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
 import type { CloudRun } from './cloud.js'
 
+export const CLOUD_START_TIMEOUT_MS = 75_000
+
 export type CloudStatus = { done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string }
 export interface CloudDispatchInput {
   mirror: string; branch: string; runId: string; suite: CiExecutionSuite; slice: string
@@ -37,6 +39,9 @@ export interface CloudProvider {
 async function command(ports: HostCiPorts, label: string, file: string, args: string[], timeoutMs = 120_000) {
   const result = await ports.run(file, args, { timeoutMs })
   if (result.code !== 0) {
+    const missingRun = file === 'circleci' && args[0] === 'run' && args[1] === 'get'
+      && /\brun\.not_found\b/.test(result.stderr)
+    if (missingRun) throw new DomainError('CI_CLOUD_RUN_NOT_FOUND', 'CircleCI run is not visible.', 502)
     throw new DomainError('CI_CLOUD_FAILED', `${label} did not accept ${file} ${args[0]} ${args[1]}: `
       + `${result.stderr.trim().slice(0, 300)}`, 502)
   }
@@ -158,9 +163,17 @@ export class CircleCiProvider implements CloudProvider {
 
   async find(run: CloudRun) {
     if (!run.providerRunId) return null
-    const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId, '--json'], 15_000)) as
-      { workflows?: unknown[] }
-    return view.workflows?.length ? run.providerRunId : null
+    try {
+      const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId, '--json'], 15_000)) as
+        { workflows?: unknown[] }
+      return view.workflows?.length ? run.providerRunId : null
+    } catch (error) {
+      const elapsed = this.ports.now().getTime() - Date.parse(run.dispatch?.at ?? run.startedAt)
+      // Accepted pipelines can take a few polls to appear in CircleCI's run lookup.
+      if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND'
+        && !run.workflowStarted && elapsed >= 0 && elapsed < CLOUD_START_TIMEOUT_MS) return null
+      throw error
+    }
   }
 
   private async job(run: CloudRun) {

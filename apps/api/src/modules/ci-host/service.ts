@@ -330,14 +330,19 @@ export class HostCiService {
 
   async computers(caller: ManagementPrincipal, input: { workspaceId?: string | undefined }) {
     await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
+    const active = (await this.pool.query<{ id: string; host_key: string }>(
+      `select id,host_key from ci_runs where state in ('starting','running') and host_key is not null
+        order by created_at,id`)).rows
     const result = []
     for (const computer of await this.endpoint.computers()) {
+      const running = active.filter(run => run.host_key === computer.key).map(run => run.id)
       const status = await this.endpoint.request(computer, { operation: 'status' }).catch(error => error as Error)
       result.push(status instanceof Error
-        ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority, ready: false, reasons: [status.message] }
+        ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority,
+          ready: false, reasons: [status.message], running }
         : status.operation === 'status' ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority,
           ready: status.ready, reasons: status.reasons, cpuCount: status.cpuCount, memoryBytes: status.memoryBytes,
-          running: status.runs.filter(run => ['starting', 'running'].includes(run.state)).map(run => run.runId) } : null)
+          running } : null)
     }
     return { computers: result.filter(Boolean) }
   }
