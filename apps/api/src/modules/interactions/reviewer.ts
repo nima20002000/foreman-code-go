@@ -114,7 +114,7 @@ export class ReviewerDispatcher {
     const guard = new LeaseGuard(this.leaseMs,
       () => this.coordination.assertReviewJobLease(job.id, jobToken),
       () => this.coordination.renewReviewJob(job.id, jobToken, this.leaseMs),
-      this.stopping.signal, job.leaseExpiresAt, 'REVIEW_JOB_LEASE_LOST')
+      this.stopping.signal, job.leaseExpiresAt, { lostCode: 'REVIEW_JOB_LEASE_LOST' })
     let executionId: string | undefined
     let finishCapturedReview: ((settled: ReviewJob) => Promise<void>) | undefined
     let safe = nativePersistenceRedactor([])

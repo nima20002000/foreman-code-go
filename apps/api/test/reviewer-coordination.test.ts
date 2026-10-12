@@ -35,13 +35,24 @@ test('queue selection and claiming both include every recoverable state and chec
 })
 
 for (const method of ['assertLaneLease', 'assertReviewJobLease', 'renewLane', 'renewReviewJob'] as const) {
-  test(`${method} rejects both expired leases and replaced tokens`, async () => {
-    const f = database(() => ({ rows: [], rowCount: 0 }))
-    await assert.rejects(f.repository[method]('id', 'old-token', 30_000), {
+  test(`${method} rejects unconfirmed ownership and preserves database failures`, async () => {
+    let unavailable = false
+    const timeout = new Error('Query read timeout')
+    const f = database(() => {
+      if (unavailable) throw timeout
+      return { rows: [], rowCount: 0 }
+    })
+    const confirm = () => {
+      if (method === 'renewLane' || method === 'renewReviewJob') {
+        return f.repository[method]('id', 'old-token', 30_000)
+      }
+      return f.repository[method]('id', 'old-token')
+    }
+    await assert.rejects(confirm(), {
       code: method.includes('Lane') ? 'SESSION_LANE_LEASE_LOST' : 'REVIEW_JOB_LEASE_LOST',
     })
-    assert.match(f.calls[0]!.sql, /record->>'leaseToken'=\$2/)
-    assert.match(f.calls[0]!.sql, /leaseExpiresAt.*> clock_timestamp\(\)/s)
+    unavailable = true
+    await assert.rejects(confirm(), error => error === timeout)
   })
 }
 

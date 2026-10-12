@@ -1,15 +1,17 @@
 import type { NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
 
 import { DomainError } from '../../src/modules/errors.js'
-import type { PostgresInteractionCoordinationRepository, WriterFence } from '../../src/modules/interactions/coordination.js'
+import type { LaneLeaseOwnership, PostgresInteractionCoordinationRepository, WriterFence } from '../../src/modules/interactions/coordination.js'
 
 /** In-memory persistence boundary; tests still run the real session writer and lease guards. */
 export function nativeLanes(): PostgresInteractionCoordinationRepository {
   const sessions = new Map<string, { session: NativeSessionReference; finalized: boolean }>()
   const lanes = new Map<string, NativeSessionLane>()
-  const owned = (id: string, token: string) => {
+  const owned = (id: string, token: string, ownership?: LaneLeaseOwnership) => {
     const lane = lanes.get(id)
-    if (!lane || lane.leaseToken !== token || Date.parse(lane.leaseExpiresAt ?? '') <= Date.now()) {
+    if (!lane || lane.leaseToken !== token
+      || ownership && (lane.leaseOwner !== ownership.owner || lane.connectionGeneration !== ownership.connectionGeneration)
+      || !ownership && Date.parse(lane.leaseExpiresAt ?? '') <= Date.now()) {
       throw new DomainError('SESSION_LANE_LEASE_LOST', 'The lane is no longer owned.', 409)
     }
     return lane
@@ -41,9 +43,14 @@ export function nativeLanes(): PostgresInteractionCoordinationRepository {
       lanes.set(id, lane)
       return structuredClone(lane)
     },
-    async assertLaneLease(id: string, token: string) { owned(id, token) },
-    async renewLane(id: string, token: string, duration: number) {
-      const lane = owned(id, token)
+    async assertLaneLease(id: string, token: string, ownership?: LaneLeaseOwnership) {
+      const lane = owned(id, token, ownership)
+      if (Date.parse(lane.leaseExpiresAt ?? '') <= Date.now()) {
+        throw new DomainError('SESSION_LANE_LEASE_LOST', 'The lane expired.', 409)
+      }
+    },
+    async renewLane(id: string, token: string, duration: number, ownership?: LaneLeaseOwnership) {
+      const lane = owned(id, token, ownership)
       lane.leaseExpiresAt = new Date(Date.now() + duration).toISOString()
       return lane.leaseExpiresAt
     },
