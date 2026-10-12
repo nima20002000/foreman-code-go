@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.93] - 2026-10-12
+
+### Changed
+
+- Board: no CI ticket strip, Jobs drawer, status strip, "Start here" badge, edge labels or arrows; the CI server is a tower that appears automatically on every workflow; subagents are small nodes around their Agent; nodes can be selected and moved during a Run; edge clicks open nothing; hover controls no longer flicker.
+- Sidebar: compact Computers rows colored by load with a hover detail card; harnesses share one row.
+- The app reloads itself after a release when nothing is unsaved; many notices and boilerplate texts removed.
+
+### Fixed
+
+- Long chatty Agents no longer die with NATIVE_HISTORY_GAP when the database stalls.
+- Cloud CI (GitHub Actions, CircleCI) shows live steps and log lines; provider polling is bounded with backoff; the CircleCI CLI no longer spawns telemetry processes.
+- Affected unit-web/unit-other CI parts no longer fail connecting to a database they do not use.
+- ci_logs_read clamps maxBytes instead of rejecting large reads.
+
 ## [0.0.92] - 2026-10-12
 
 ### Changed
