@@ -6,10 +6,10 @@ export function isDatabaseTimeout(error: unknown): boolean {
   while (error && typeof error === 'object' && !seen.has(error)) {
     seen.add(error)
     const code = 'code' in error ? error.code : undefined
-    if (code === '57014') {
-      return error instanceof Error && error.message === 'canceling statement due to statement timeout'
-    }
-    if (code !== undefined && !['GRAPH_TRANSACTION_FAILED', 'DATABASE_READ_TIMEOUT'].includes(String(code))) return false
+    // 57014 also covers explicit cancellation; only a statement timeout is transient.
+    if (code === '57014') return error instanceof Error && /time(d)? ?out/i.test(error.message)
+    if (code === 'DATABASE_READ_TIMEOUT') return true
+    if (code !== undefined && code !== 'GRAPH_TRANSACTION_FAILED') return false
     if (error instanceof Error && error.message === 'Query read timeout') return true
     error = 'cause' in error ? error.cause : undefined
   }
