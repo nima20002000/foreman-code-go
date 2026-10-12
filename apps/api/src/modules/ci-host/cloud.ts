@@ -9,11 +9,11 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
-import { CircleCiProvider, GitHubActionsProvider, type CloudDispatchInput, type CloudProvider } from './cloudProviders.js'
+import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
+  type CloudDispatchInput, type CloudProvider } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
-const START_TIMEOUT_MS = 75_000
 const MAX_DISPATCH_ATTEMPTS = 3
 const log = componentLogger('jobs')
 
@@ -205,7 +205,7 @@ export class CloudCi {
 
   private async recoverUnstarted(run: CloudRun) {
     const dispatchedAt = run.dispatch?.at ?? run.startedAt
-    if (this.ports.now().getTime() - Date.parse(dispatchedAt) < START_TIMEOUT_MS) return run
+    if (this.ports.now().getTime() - Date.parse(dispatchedAt) < CLOUD_START_TIMEOUT_MS) return run
     // Retire the pipeline before retrying so it cannot acquire a workflow later.
     if (run.providerRunId) {
       await this.provider.cancel(run)

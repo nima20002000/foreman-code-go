@@ -71,7 +71,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     durations: null as Record<string, number> | null, testResults: null as unknown, canceled: [] as string[] }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
     testResults: null as unknown,
-    phantoms: 0, canceled: [] as string[] }
+    phantoms: 0, lookupError: '', canceled: [] as string[] }
   let now = Date.now()
   const system = systemHostCiPorts()
   const ports: HostCiPorts = { ...system, now: () => new Date(now), run: async (file, args) => {
@@ -86,6 +86,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
         return ok(JSON.stringify({ id: `run-${circle.triggered.length}` }))
       }
       if (args[0] === 'run' && args[1] === 'get') {
+        if (circle.lookupError) return { code: 1, stdout: '', stderr: circle.lookupError }
         const phantom = Number(args[2]!.slice('run-'.length)) <= circle.phantoms
         return ok(JSON.stringify(phantom ? { phase: 'ended', outcome: 'succeeded', workflows: [] }
           : { workflows: [{ jobs: [{ id: 'job-1' }] }] }))
@@ -486,6 +487,34 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(command).toContain('scope=affected')
     expect(command).toContain('files=s:6')
   })
+  it('keeps a newly accepted CircleCI pipeline starting until its run becomes visible', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    f.circle.lookupError = 'run.not_found'
+    const runId = randomUUID()
+    expect(await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })).toMatchObject({ run: { state: 'starting' } })
+    f.advance(74_999)
+    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+      .toMatchObject({ run: { state: 'starting' } })
+    expect(f.circle.triggered).toHaveLength(1)
+    f.circle.lookupError = ''
+    expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+      .toMatchObject({ run: { state: 'running' } })
+  })
+
+  it.each(['expired', 'started', 'other error'] as const)(
+    'does not suppress CircleCI lookup failures for %s pipelines', async kind => {
+      const f = await fixture({}, { provider: 'circleci' })
+      f.circle.lookupError = kind === 'other error' ? 'permission denied' : kind === 'expired' ? 'run.not_found' : ''
+      const runId = randomUUID()
+      await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+        suite: 'integration', scope: 'full' })
+      if (kind === 'expired') f.advance(75_000)
+      if (kind === 'started') f.circle.lookupError = 'run.not_found'
+      await expect(f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+        .rejects.toMatchObject({ code: kind === 'other error' ? 'CI_CLOUD_FAILED' : 'CI_CLOUD_RUN_NOT_FOUND' })
+    })
+
   it('publishes only the commit files, then dispatches one run with its partition slice', async () => {
     const f = await fixture()
     const runId = randomUUID()
