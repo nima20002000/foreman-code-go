@@ -89,19 +89,6 @@ function remoteSourceFixture() {
 
 it('retains the source claim for a verified original reviewer, then requires physical closure after retention ends', async () => {
   const f = remoteSourceFixture()
-  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue({ generation: '1', principalId: 'reviewer',
-    session: { harness: 'codex', nativeSessionId: 'native-session', providerVersion: '0.154.0' } })
-  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
-  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
-  expect(f.report).not.toHaveBeenCalled()
-  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue(undefined)
-  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
-  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
-})
-
-it('keeps the original source when Main retention authority expires before physical closure', async () => {
-  const f = remoteSourceFixture()
-  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue(undefined)
   vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(true)
   await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
   expect(f.sources.confirmClosed).not.toHaveBeenCalled()
@@ -109,6 +96,31 @@ it('keeps the original source when Main retention authority expires before physi
   vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(false)
   await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
   expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
+})
+
+it('keeps the original source when Main retention authority expires before physical closure', async () => {
+  const f = remoteSourceFixture()
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(true)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(false)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
+})
+
+it('reconciles source ownership after reviewer credentials are revoked without requiring review access', async () => {
+  const f = remoteSourceFixture()
+  vi.mocked(readRetainedRemoteReviewer).mockRejectedValue(new Error('The original reviewer process lease is required'))
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(true)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+  expect(readRetainedRemoteReviewer).not.toHaveBeenCalled()
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(false)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
+  expect(f.report).not.toHaveBeenCalled()
 })
 
 it('reports closure uncertainty when no verified retained reviewer owns the source', async () => {
@@ -127,12 +139,11 @@ it('reproduces unconfirmed physical closure and defers the actual source service
     { confirmedClosed: async () => false }] as unknown as ConstructorParameters<typeof PostgresSourceService>
   const sources = new PostgresSourceService(...dependencies)
   await expect(sources.confirmClosed(f.record)).rejects.toMatchObject({ code: 'SOURCE_EXECUTION_UNCERTAIN' })
-  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue({ generation: '1', principalId: 'reviewer',
-    session: { harness: 'codex', nativeSessionId: 'native-session', providerVersion: '0.154.0' } })
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(true)
   await closeCompletedWorkflowSources(f.pool, sources, f.report)
   expect(f.report).not.toHaveBeenCalled()
   expect(releaseClaim).not.toHaveBeenCalled()
-  vi.mocked(readRetainedRemoteReviewer).mockResolvedValue(undefined)
+  vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(false)
   await closeCompletedWorkflowSources(f.pool, sources, f.report)
   expect(f.report).toHaveBeenCalledWith(expect.objectContaining({ code: 'SOURCE_EXECUTION_UNCERTAIN' }))
   expect(releaseClaim).not.toHaveBeenCalled()

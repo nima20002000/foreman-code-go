@@ -81,6 +81,7 @@ async function readRemoteReviewer(sql: GraphSqlClient, execution: HarnessExecuti
     and b.agent_id=$3 and b.revoked_at is null and p.revoked_at is null and p.expires_at>clock_timestamp()
     and p.audience='worker' and p.agent_id=b.agent_id order by b.principal_id limit 2`,
   [execution.id, execution.runId, execution.agentId])).rows
+  if (purpose === 'recovery' && credentials.length === 0) return undefined
   if (credentials.length !== 1) throw new DomainError('REMOTE_REVIEWER_DENIED', 'The original reviewer process lease is required.', 409)
   const principalId = credentials[0]!.principal_id
   await requireReviewerCredential(sql, principalId, { agentId: execution.agentId,
