@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { describe, it } from 'vitest'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
@@ -6,6 +7,9 @@ import { CodexRuntimeNativeOutputTurn, codexNativeOutputDeclarations, type Codex
   type CodexNativeOutputCallback, type CodexNativeOutputTurnPin } from '../src/modules/harnesses/codexNativeOutput.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
 import { input } from './fixtures/codex-test-helpers.js'
+import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
+import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 
 // Explicit recorded protocol/authority ports only, never protected-store qualification.
 const command = { operation: 'create' as const, commandId: 'output-command-1', filename: 'result.md', mediaType: 'text/markdown' as const }
@@ -59,6 +63,79 @@ async function request(f: Awaited<ReturnType<typeof fixture>>, sessionId: string
 }
 
 describe('separate Codex native output group alongside scoped App MCP', () => {
+  it('bounds observation history while delivering every frame of a long turn', async () => {
+    const f = await fixture()
+    try {
+      const session = await f.manager.createSession(f.source)
+      const correlationId = 'execution:long-execution'
+      const iterator = f.manager.startTurn(session, { prompt: 'Long session', clientCorrelationId: correlationId,
+        onSubmitted: async () => {} })[Symbol.asyncIterator]()
+      await iterator.next()
+      const turnId = f.replay.starts[0]!.nativeTurnId
+      const delivered: NativeHarnessEvent[] = []
+      const details = Array.from({ length: 128 }, (_, index) => ({ index, value: 'recorded' }))
+      for (let index = 0; index < 2377; index += 1) {
+        f.replay.channels.get(session.nativeSessionId)!.notify('item/agentMessage/delta', {
+          threadId: session.nativeSessionId, turnId, itemId: 'recorded-context', delta: 'x', details,
+        })
+        const frame = await iterator.next()
+        assert.equal(frame.done, false)
+        delivered.push(frame.value!)
+      }
+      // The delivery buffer fits in bytes but its aggregate exceeds the graph's traversal budget.
+      const deliveryWindow = delivered.slice(-1024)
+      assert(Buffer.byteLength(JSON.stringify(deliveryWindow)) < 8 * 1024 * 1024)
+      assert.throws(() => canonicalGraphJson(deliveryWindow), /GRAPH_JSON_LIMIT/)
+      f.replay.complete(session.nativeSessionId, turnId, '{"original":true}')
+      for (let frame = await iterator.next(); !frame.done; frame = await iterator.next()) delivered.push(frame.value)
+      assert.equal(delivered.filter(event => event.type === 'native.notification').length, 2377)
+      const history = await f.manager.reconcile(session, correlationId)
+      assert.equal(history.terminalTurn?.providerId, turnId)
+      assert.equal(history.terminalTurn?.result.outcome, 'succeeded')
+      assert(Buffer.byteLength(canonicalGraphJson(history)) < 256 * 1024)
+      assert.equal(history.firstRetainedSequence, history.events[0]?.sequence)
+      assert.equal(history.nextSequence, history.events.at(-1)!.sequence + 1)
+      assert(history.firstRetainedSequence! > delivered[0]!.sequence)
+      assertOriginalWorkflowTerminal({ id: 'long-execution', agentId: f.source.request.configuration.agentId }, session, history)
+      assert.match(graphSourceDigest({ original: { type: 'history', history } }), /^sha256:/)
+      assert.equal(f.replay.starts.length, 1)
+    } finally { await f.manager.dispose() }
+  })
+
+  it('keeps the original terminal read when reconciliation appends metadata beyond the observation window', async () => {
+    const f = await fixture()
+    try {
+      const session = await f.manager.createSession(f.source)
+      const correlationId = 'execution:recovered-execution'
+      const iterator = f.manager.startTurn(session, { prompt: 'Recover original', clientCorrelationId: correlationId,
+        onSubmitted: async () => {} })[Symbol.asyncIterator]()
+      await iterator.next()
+      const turnId = f.replay.starts[0]!.nativeTurnId
+      const turn = f.replay.threads.get(session.nativeSessionId)!.turns[0]!
+      turn.status = 'completed'
+      turn.items = [{ type: 'agentMessage', id: 'original-answer', phase: 'final_answer',
+        text: 'x'.repeat(256 * 1024) }]
+      f.replay.disconnect(session.nativeSessionId)
+      await iterator.return?.()
+      const history = await f.manager.reconcile(session, correlationId)
+      assert.equal(history.terminalTurn?.providerId, turnId)
+      assertOriginalWorkflowTerminal({ id: 'recovered-execution', agentId: f.source.request.configuration.agentId }, session, history)
+      for (let index = 0; index < 12; index += 1) {
+        f.replay.channels.get(session.nativeSessionId)!.notify('thread/status/changed', {
+          threadId: session.nativeSessionId, status: 'idle', padding: 'x'.repeat(16 * 1024),
+        })
+      }
+      const later = await f.manager.history(session)
+      assertOriginalWorkflowTerminal({ id: 'recovered-execution', agentId: f.source.request.configuration.agentId }, session,
+        { ...history, ...later })
+      assert.equal(later.gap?.reason, 'retention')
+      assert.equal(later.firstRetainedSequence, later.events[0]?.sequence)
+      assert(later.gap!.fromSequence > later.firstRetainedSequence!)
+      assert.equal(f.replay.starts.length, 1)
+      assert.match(graphSourceDigest({ original: { type: 'history', history } }), /^sha256:/)
+    } finally { await f.manager.dispose() }
+  })
+
   it('discovers only the configured recorded MCP entry without creating a native thread', async () => {
     const f = await fixture()
     try {
