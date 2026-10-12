@@ -1,5 +1,10 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { BugReport, BugReportUpdateInput, BugsSettingsSearch } from '@foreman-code/contracts/management'
+import type {
+  BugReport,
+  BugReportCloseInput,
+  BugReportUpdateInput,
+  BugsSettingsSearch,
+} from '@foreman-code/contracts/management'
 import { ApiError } from '../../shared/api/client'
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { assertSession, sessionIsSwitching } from '../../shared/api/sessionBoundary'
@@ -12,16 +17,22 @@ function keepLatest(previous: unknown, incoming: unknown) {
   return old && old.id === report.id && old.revision > report.revision ? old : report
 }
 
+export type BugReportChange =
+  | { kind: 'status'; input: BugReportUpdateInput }
+  | { kind: 'close'; input: BugReportCloseInput }
+
 export function useBugReports(search: BugsSettingsSearch) {
   const generation = useHarnessSessionEpoch()
   return useInfiniteQuery({
-    queryKey: ['bug-reports', generation, search.status, search.severity],
+    queryKey: ['bug-reports', generation, search.view, search.status, search.severity],
     initialPageParam: undefined as string | undefined,
     enabled: !sessionIsSwitching(),
     retry: false,
     queryFn: ({ signal, pageParam }) => {
       assertSession(generation)
-      return bugReportClient.list({ status: search.status, severity: search.severity, cursor: pageParam }, { signal })
+      return bugReportClient.list({
+        view: search.view ?? 'active', status: search.status, severity: search.severity, cursor: pageParam,
+      }, { signal })
     },
     getNextPageParam: page => page.pageInfo.nextCursor ?? undefined,
   })
@@ -45,15 +56,16 @@ export function useBugReport(reportId: string) {
   const update = useMutation({
     mutationKey: [...queryKey, 'status'],
     retry: false,
-    mutationFn: (input: BugReportUpdateInput) => {
+    mutationFn: async (change: BugReportChange): Promise<BugReport> => {
       assertSession(generation)
-      return bugReportClient.update(input)
+      if (change.kind === 'status') return (await bugReportClient.update(change.input)).report
+      return (await bugReportClient.close(change.input)).reports[0]!
     },
     onSuccess: async result => {
       assertSession(generation)
       await cache.cancelQueries({ queryKey, exact: true })
       assertSession(generation)
-      cache.setQueryData(queryKey, previous => keepLatest(previous, result.report))
+      cache.setQueryData(queryKey, previous => keepLatest(previous, result))
       await Promise.all([
         cache.invalidateQueries({ queryKey, exact: true }),
         cache.invalidateQueries({ queryKey: ['bug-reports', generation] }),

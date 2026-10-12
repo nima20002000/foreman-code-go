@@ -1,6 +1,7 @@
 import {
   BugReportSeveritySchema,
   BugReportStatusSchema,
+  BugReportViewSchema,
   type BugReport,
   type BugsSettingsSearch,
 } from '@foreman-code/contracts/management'
@@ -10,7 +11,9 @@ import { LoadMore } from '../../shared/ui/LoadMore'
 import { Alert, Button, EmptyState, Icon, LoadingState, Select } from '../../shared/ui/nocturne'
 import { BugReportDialog } from './BugReportDialog'
 import { useBugReports } from './bugReportQueries'
-import { severityLabels, severityOptions, statusLabels, statusOptions } from './bugReportPresentation'
+import {
+  activeStatusOptions, closedStatusOptions, severityLabels, severityOptions, statusLabels,
+} from './bugReportPresentation'
 import '../settings/settingsExperience.css'
 import './bugsSettings.css'
 
@@ -28,6 +31,9 @@ function ReportCard({ report, onSelect }: { report: BugReport; onSelect(): void 
         <span className="settings-summary-row"><span>Reporter</span><strong>{report.reporter.name}</strong></span>
         <span className="settings-summary-row"><span>Reported</span><strong><time dateTime={report.createdAt}>
           {new Date(report.createdAt).toLocaleString()}</time></strong></span>
+        {report.resolution && <span className="settings-summary-row"><span>Closed</span><strong>
+          <time dateTime={report.resolution.closedAt}>{new Date(report.resolution.closedAt).toLocaleString()}</time>
+        </strong></span>}
       </span>
     </button>
   </li>
@@ -43,12 +49,23 @@ export function BugsSettings({ search, onSearchChange }: {
   const items = denied ? [] : reports.data?.pages.flatMap(page => page.items) ?? []
   const filters = { ...search }
   delete filters.reportId
+  const history = search.view === 'history'
   return <section className="settings-editor-page" aria-label="Bug reports">
     <header className="settings-experience-heading"><h1 ref={heading} tabIndex={-1}>Bugs</h1>
-      <p>Review Agent reports about Foreman Code features and MCP tools, newest first.</p></header>
+      <p>Review Agent reports about Foreman Code features and MCP tools, newest first. Closed reports move to
+        history.</p></header>
     <div className="bug-report-filters">
+      <Select label="Show reports" value={search.view ?? 'active'}
+        options={[{ value: 'active', label: 'Active' }, { value: 'history', label: 'History' }]}
+        onChange={event => {
+          const next = { ...filters }
+          delete next.status
+          if (event.target.value === 'history') next.view = BugReportViewSchema.parse(event.target.value)
+          else delete next.view
+          onSearchChange(next)
+        }} />
       <Select label="Filter by status" value={search.status ?? ''}
-        options={[{ value: '', label: 'All statuses' }, ...statusOptions]}
+        options={[{ value: '', label: 'All statuses' }, ...(history ? closedStatusOptions : activeStatusOptions)]}
         onChange={event => {
           const next = { ...filters }
           if (event.target.value) next.status = BugReportStatusSchema.parse(event.target.value)
@@ -67,8 +84,10 @@ export function BugsSettings({ search, onSearchChange }: {
     {reports.isPending && <LoadingState label="Reading bug reports…" />}
     {reports.isError && <Alert live tone="danger" title={reports.error.message}
       action={<Button disabled={reports.isFetching} onClick={() => void reports.refetch()}>Refresh bug reports</Button>} />}
-    {!reports.isPending && !reports.isError && !items.length && <EmptyState title="No bug reports"
-      description="Reports submitted by Agents appear here. Try different filters if a report is missing." />}
+    {!reports.isPending && !reports.isError && !items.length && <EmptyState
+      title={history ? 'No closed bug reports' : 'No active bug reports'}
+      description={history ? 'Reports closed as fixed, won’t fix or duplicate appear here.'
+        : 'Reports submitted by Agents appear here. Closed reports are in history.'} />}
     {items.length > 0 && <ul className="settings-choice-grid bug-report-list" aria-label="Bug reports, newest first">
       {items.map(report => <ReportCard key={report.id} report={report}
         onSelect={() => onSearchChange({ ...filters, reportId: report.id })} />)}

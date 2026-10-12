@@ -22,7 +22,9 @@ export function registerBugReportTool(server: McpServer, context: {
       + 'Summarize inputs without credentials or secrets; the server redacts recognized tokens and derives reporter, '
       + 'time and harness. Agent workspace/run/workflow come from the authenticated execution; Operator workspace '
       + 'must be supplied unless one authorized workspace is unambiguous. Retry the same commandId and input. '
-      + 'Obvious repeated reports increment occurrenceCount. Always available to workflow Agents regardless of '
+      + 'A report whose title matches an existing report in the workspace (ignoring case and spacing) is not filed '
+      + 'again: it increments that report\'s occurrenceCount, and outcome/message say it was already filed with its id '
+      + 'and status. A repeat of a report closed as fixed reopens it as a regression (outcome reopened). Always available to workflow Agents regardless of '
       + 'saved tool choices, with the explicit bug_reports:report grant in scope.',
     inputSchema,
     outputSchema: BugReportCreateResultSchema,

@@ -1,4 +1,6 @@
 import {
+  BugReportCloseInputSchema,
+  BugReportCloseResultSchema,
   BugReportGetInputSchema,
   BugReportListInputSchema,
   BugReportPageSchema,
@@ -29,8 +31,11 @@ export function registerBugReportTools(server: McpServer, context: OperatorReque
   }
   if (operatorToolAvailable(context, 'bug_reports_list')) {
     server.registerTool('bug_reports_list', {
-      description: 'List authorized Foreman Code bug reports newest first. Filter by workspaceId, status or severity; '
-        + 'follow pageInfo.nextCursor. Requires bug_reports:read for each returned report.',
+      description: 'List authorized Foreman Code bug reports newest first. By default only active (open or triaged) '
+        + 'reports are returned; closed reports are archived. Pass view "history" for closed reports (fixed, wont-fix, '
+        + 'duplicate) with their resolution status, note and closedAt. A status filter narrows the view, or selects that '
+        + 'status alone when view is omitted. Filter by workspaceId or severity; follow pageInfo.nextCursor. '
+        + 'Requires bug_reports:read for each returned report.',
       inputSchema: BugReportListInputSchema,
       outputSchema: BugReportPageSchema,
       annotations: readAnnotations,
@@ -47,12 +52,26 @@ export function registerBugReportTools(server: McpServer, context: OperatorReque
   }
   if (operatorToolAvailable(context, 'bug_report_update')) {
     server.registerTool('bug_report_update', {
-      description: 'Mark a Foreman Code bug report open, triaged, fixed or wont-fix using its expectedRevision. '
+      description: 'Mark a Foreman Code bug report open or triaged using its expectedRevision; this also reopens a '
+        + 'closed report. Close reports with bug_reports_close. '
         + 'Retry the same commandId and payload after an uncertain response. A different command with a stale '
         + 'revision conflicts. Requires bug_reports:update in the report scope; read-only callers cannot update.',
       inputSchema: BugReportUpdateInputSchema,
       outputSchema: BugReportUpdateResultSchema,
       annotations: { ...readAnnotations, readOnlyHint: false },
     }, input => invokeOperatorTool(context, 'bug_report_update', () => service.update(context.principal, 'mcp', input)))
+  }
+  if (operatorToolAvailable(context, 'bug_reports_close')) {
+    server.registerTool('bug_reports_close', {
+      description: 'Close one or more Foreman Code bug reports in one all-or-nothing call and archive them from the '
+        + 'default bug_reports_list view. status is fixed, wont-fix or duplicate; duplicate requires duplicateOfId, a '
+        + 'report in the same workspace. Optional note records a short reason such as the release or commit. Give each '
+        + 'report its expectedRevision; any stale revision rejects the whole call. A later repeat of a fixed report '
+        + 'reopens it as a regression. Retry the same commandId and payload after an uncertain response. Requires '
+        + 'bug_reports:update on every report (and bug_reports:read on the duplicate target); read-only callers cannot close.',
+      inputSchema: BugReportCloseInputSchema,
+      outputSchema: BugReportCloseResultSchema,
+      annotations: { ...readAnnotations, readOnlyHint: false },
+    }, input => invokeOperatorTool(context, 'bug_reports_close', () => service.close(context.principal, 'mcp', input)))
   }
 }

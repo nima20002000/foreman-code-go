@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, expect, it } from 'vitest'
-import type { BugReport, BugReportUpdateInput } from '@foreman-code/contracts/management'
+import type { BugReport, BugReportCloseInput, BugReportUpdateInput } from '@foreman-code/contracts/management'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
 
@@ -49,7 +49,9 @@ function serveReports(items: BugReport[] = [report()]) {
   server.use(
     http.get('*/api/management/bug-reports', ({ request }) => {
       const url = new URL(request.url)
-      const filtered = items.filter(item => (!url.searchParams.get('status')
+      const history = url.searchParams.get('view') === 'history'
+      const filtered = items.filter(item => ['fixed', 'wont-fix', 'duplicate'].includes(item.status) === history
+        && (!url.searchParams.get('status')
         || item.status === url.searchParams.get('status')) && (!url.searchParams.get('severity')
         || item.severity === url.searchParams.get('severity')))
       return HttpResponse.json({ items: filtered, pageInfo: { nextCursor: null } })
@@ -154,7 +156,7 @@ it('returns focus to the Bugs heading when a saved status removes the card from 
   card.focus()
   expect(card).toHaveFocus()
   await user.click(card)
-  await user.selectOptions(await screen.findByRole('combobox', { name: 'Report status' }), 'fixed')
+  await user.selectOptions(await screen.findByRole('combobox', { name: 'Report status' }), 'triaged')
   expect(await screen.findByText('Status saved.')).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Read Workflow start fails' })).not.toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Close report' }))
@@ -184,11 +186,11 @@ it('locks dismissal and status changes while the save is pending', async () => {
   const pending = new Promise<void>(resolve => { finish = resolve })
   server.use(http.post('*/api/management/bug-reports/:reportId/status', async () => {
     await pending
-    return HttpResponse.json({ report: report({ status: 'fixed', revision: 2 }), replayed: false })
+    return HttpResponse.json({ report: report({ status: 'triaged', revision: 2 }), replayed: false })
   }))
   mount('/settings/bugs?reportId=bug-report-1')
   const status = await screen.findByRole('combobox', { name: 'Report status' })
-  await userEvent.selectOptions(status, 'fixed')
+  await userEvent.selectOptions(status, 'triaged')
   expect(await screen.findByText('Saving status…')).toBeVisible()
   const dialog = screen.getByRole('dialog', { name: 'Workflow start fails' })
   expect(status).toBeDisabled()
@@ -208,7 +210,7 @@ it('keeps a denied status unchanged and explains that the caller cannot update i
   }, { status: 403 })))
   mount('/settings/bugs?reportId=bug-report-1')
   const status = await screen.findByRole('combobox', { name: 'Report status' })
-  await userEvent.selectOptions(status, 'fixed')
+  await userEvent.selectOptions(status, 'triaged')
   expect(await screen.findByText('You do not have permission to update bug reports.')).toBeVisible()
   expect(screen.getByText('Your access does not allow status changes.')).toBeVisible()
   expect(status).toHaveValue('open')
@@ -232,14 +234,14 @@ it.each(['server failure', 'invalid acknowledgement'])('retries a save after %s 
     return HttpResponse.json({ report: items[0], replayed: true })
   }))
   mount('/settings/bugs?reportId=bug-report-1')
-  await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Report status' }), 'fixed')
+  await userEvent.selectOptions(await screen.findByRole('combobox', { name: 'Report status' }), 'triaged')
   expect(await screen.findByText('The save is unconfirmed. Retry the same change before leaving.')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Close report' })).toBeDisabled()
   await userEvent.click(screen.getByRole('button', { name: 'Retry status save' }))
   expect(await screen.findByText('Status saved.')).toBeVisible()
   expect(writes).toHaveLength(2)
   expect(writes[1]).toEqual(writes[0])
-  expect(screen.getByRole('combobox', { name: 'Report status' })).toHaveValue('fixed')
+  expect(screen.getByRole('combobox', { name: 'Report status' })).toHaveValue('triaged')
 })
 
 it('recovers list and detail request failures through their refresh actions', async () => {
@@ -276,7 +278,7 @@ it('shows pending reads and an empty filtered list without losing URL filters', 
   const router = mount('/settings/bugs?status=triaged&severity=critical')
   expect(await screen.findByText('Reading bug reports…')).toBeVisible()
   await act(async () => { finish?.() })
-  expect(await screen.findByText('No bug reports')).toBeVisible()
+  expect(await screen.findByText('No active bug reports')).toBeVisible()
   expect(screen.getByRole('combobox', { name: 'Filter by status' })).toHaveValue('triaged')
   expect(screen.getByRole('combobox', { name: 'Filter by severity' })).toHaveValue('critical')
   expect(router.state.location.search).toEqual({ status: 'triaged', severity: 'critical' })
@@ -334,16 +336,78 @@ it('refreshes a conflicting status and uses the latest revision for the next cha
   }))
   mount('/settings/bugs?reportId=bug-report-1')
   const status = await screen.findByRole('combobox', { name: 'Report status' })
-  await userEvent.selectOptions(status, 'fixed')
+  await userEvent.selectOptions(status, 'triaged')
   expect(await screen.findByText('The report changed. Refresh it before updating.')).toBeVisible()
   expect(status).toHaveValue('open')
   expect(status).toBeDisabled()
   await userEvent.click(screen.getByRole('button', { name: 'Refresh report' }))
   await waitFor(() => expect(status).toBeEnabled())
   expect(status).toHaveValue('triaged')
-  await userEvent.selectOptions(status, 'fixed')
+  await userEvent.selectOptions(status, 'open')
   expect(await screen.findByText('Status saved.')).toBeVisible()
-  expect(status).toHaveValue('fixed')
-  expect(writes[1]).toMatchObject({ expectedRevision: 2, status: 'fixed' })
+  expect(status).toHaveValue('open')
+  expect(writes[1]).toMatchObject({ expectedRevision: 2, status: 'open' })
   expect(writes[1]?.commandId).not.toBe(writes[0]?.commandId)
+})
+
+it('closes an active report with a note and moves it from the active list to history', async () => {
+  const items = [report()]
+  const closes: BugReportCloseInput[] = []
+  serveReports(items)
+  server.use(http.post('*/api/management/bug-reports/close', async ({ request }) => {
+    const input = await request.json() as BugReportCloseInput
+    closes.push(input)
+    items[0] = { ...items[0]!, status: input.status, revision: 2, resolution: {
+      status: input.status, closedAt: '2026-10-11T10:00:00.000Z', ...(input.note ? { note: input.note } : {}),
+      ...(input.duplicateOfId ? { duplicateOfId: input.duplicateOfId } : {}),
+    } }
+    return HttpResponse.json({ reports: [items[0]], replayed: false })
+  }))
+  const router = mount('/settings/bugs?reportId=bug-report-1')
+  const user = userEvent.setup()
+  const dialog = await screen.findByRole('dialog', { name: 'Workflow start fails' })
+  await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Close as' }), 'duplicate')
+  const archive = within(dialog).getByRole('button', { name: 'Close and archive' })
+  expect(archive).toBeDisabled()
+  await user.type(within(dialog).getByRole('textbox', { name: /Duplicate of report ID/ }), 'bug-report-0')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Closing note' }), 'Same as the start failure')
+  await user.click(archive)
+  expect(await screen.findByText('Report closed and archived.')).toBeVisible()
+  expect(closes).toEqual([{ commandId: expect.any(String), status: 'duplicate', duplicateOfId: 'bug-report-0',
+    note: 'Same as the start failure', reports: [{ reportId: 'bug-report-1', expectedRevision: 1 }] }])
+  expect(within(dialog).getByText('Same as the start failure')).toBeVisible()
+  expect(within(dialog).getByRole('combobox', { name: 'Report status' })).toHaveValue('duplicate')
+  expect(within(dialog).queryByRole('button', { name: 'Close and archive' })).not.toBeInTheDocument()
+  await user.click(within(dialog).getByRole('button', { name: 'Close report' }))
+  expect(await screen.findByText('No active bug reports')).toBeVisible()
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Show reports' }), 'history')
+  await waitFor(() => expect(router.state.location.search).toEqual({ view: 'history' }))
+  const card = await screen.findByRole('button', { name: 'Read Workflow start fails' })
+  expect(within(card).getByText('Duplicate')).toBeVisible()
+  expect(within(screen.getByRole('combobox', { name: 'Filter by status' })).queryByRole('option', { name: 'Open' }))
+    .not.toBeInTheDocument()
+})
+
+it('reopens a closed report from history through its status', async () => {
+  const items = [report({ status: 'fixed', revision: 2,
+    resolution: { status: 'fixed', note: 'Released in v1.2.3', closedAt: '2026-10-11T10:00:00.000Z' } })]
+  const writes: BugReportUpdateInput[] = []
+  serveReports(items)
+  server.use(http.post('*/api/management/bug-reports/:reportId/status', async ({ request }) => {
+    const input = await request.json() as BugReportUpdateInput
+    writes.push(input)
+    items[0] = { ...items[0]!, status: input.status, revision: 3 }
+    return HttpResponse.json({ report: items[0], replayed: false })
+  }))
+  mount('/settings/bugs?view=history&reportId=bug-report-1')
+  const dialog = await screen.findByRole('dialog', { name: 'Workflow start fails' })
+  expect(within(dialog).getByText('Released in v1.2.3')).toBeVisible()
+  const status = within(dialog).getByRole('combobox', { name: 'Report status' })
+  expect(status).toHaveValue('fixed')
+  await userEvent.selectOptions(status, 'open')
+  expect(await screen.findByText('Status saved.')).toBeVisible()
+  expect(writes).toEqual([expect.objectContaining({ expectedRevision: 2, status: 'open' })])
+  expect(within(dialog).getByText('Previously closed as')).toBeVisible()
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Close report' }))
+  expect(await screen.findByText('No closed bug reports')).toBeVisible()
 })

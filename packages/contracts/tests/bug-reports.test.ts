@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BugReportCloseInputSchema,
   BugReportCreateInputSchema,
   BugReportListInputSchema,
   BugReportSchema,
@@ -25,11 +26,22 @@ describe('bug report contracts', () => {
   })
 
   it('supports revision-checked statuses and bounded list filters', () => {
-    for (const status of ['open', 'triaged', 'fixed', 'wont-fix']) {
+    for (const status of ['open', 'triaged']) {
       expect(BugReportUpdateInputSchema.parse({
         reportId: 'bug-report-one', commandId: 'status-command', expectedRevision: 1, status,
       }).status).toBe(status)
     }
+    expect(BugReportUpdateInputSchema.safeParse({
+      reportId: 'bug-report-one', commandId: 'status-command', expectedRevision: 1, status: 'fixed',
+    }).success).toBe(false)
+    for (const status of ['fixed', 'wont-fix', 'duplicate']) {
+      expect(BugReportCloseInputSchema.parse({
+        commandId: 'close-command', status, reports: [{ reportId: 'bug-report-one', expectedRevision: 1 }],
+      }).status).toBe(status)
+    }
+    expect(BugReportCloseInputSchema.safeParse({ commandId: 'close-command', status: 'fixed', reports: [] }).success)
+      .toBe(false)
+    expect(BugReportListInputSchema.safeParse({ view: 'archived' }).success).toBe(false)
     expect(BugReportListInputSchema.parse({ status: 'open', severity: 'critical' }).limit).toBe(30)
     expect(BugReportListInputSchema.safeParse({ limit: 101 }).success).toBe(false)
     expect(BugReportUpdateInputSchema.safeParse({

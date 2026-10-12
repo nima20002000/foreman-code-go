@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import {
+  BugReportCloseResultSchema,
   BugReportCreateResultSchema,
   BugReportPageSchema,
   BugReportSchema,
@@ -137,7 +138,8 @@ it('reports from a scoped Agent and lets Operator discover, read and triage pers
     expect(renewedRepeat).toMatchObject({ deduplicated: true, report: { id: first.report.id, occurrenceCount: 3 } })
     const writer = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update', 'capabilities:read'])
     expect((await writer.client.listTools()).tools.map(tool => tool.name))
-      .toEqual(expect.arrayContaining(['bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update']))
+      .toEqual(expect.arrayContaining(['bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update',
+        'bug_reports_close']))
     const capabilities = value(await writer.client.callTool({ name: 'operator_get_capabilities',
       arguments: { workspaceId: f.f.scope.workspaceId, detail: 'full' } }))
     expect(capabilities).toMatchObject({ tools: expect.arrayContaining(['bug_report', 'bug_reports_list',
@@ -148,7 +150,7 @@ it('reports from a scoped Agent and lets Operator discover, read and triage pers
     expect(schema.permissionRequirements.actions).toEqual(['bug_reports:update'])
     expect(schema.inputSchema).toMatchObject({ properties: {
       commandId: expect.any(Object), expectedRevision: expect.any(Object),
-      status: { enum: ['open', 'triaged', 'fixed', 'wont-fix'] },
+      status: { enum: ['open', 'triaged'] },
     } })
     expect(schema.outputSchema).toBeDefined()
     const read = BugReportSchema.parse(value(await writer.client.callTool({ name: 'bug_report_get',
@@ -168,7 +170,7 @@ it('reports from a scoped Agent and lets Operator discover, read and triage pers
     expect(listed.items).toEqual([updated.report])
     const reader = await f.operator(['bug_reports:read'])
     const denied = await reader.client.callTool({ name: 'bug_report_update', arguments: {
-      ...update, commandId: randomUUID(), expectedRevision: updated.report.revision, status: 'fixed',
+      ...update, commandId: randomUUID(), expectedRevision: updated.report.revision, status: 'open',
     } })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
@@ -245,5 +247,84 @@ it('audits denied reporting through Agent MCP without requiring Operator service
       grants: [{ actions: ['bug_reports:read'], scope: { workspaceIds: [f.f.scope.workspaceId] } }],
     })
     expect(await f.bugs.get(reader.principal, accepted.report.id)).toEqual(accepted.report)
+  } finally { await f.close() }
+}, 60_000)
+
+it('closes reports in batches into history, counts reworded repeats and reopens fixed regressions', async () => {
+  const f = await fixture()
+  try {
+    const writer = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update'])
+    const report = async (client: Client, input: Record<string, unknown>) =>
+      BugReportCreateResultSchema.parse(value(await client.callTool({ name: 'bug_report', arguments: input })))
+    const list = async (input: Record<string, unknown> = {}) =>
+      BugReportPageSchema.parse(value(await writer.client.callTool({ name: 'bug_reports_list', arguments: input }))).items
+    const first = await report(f.worker, reportInput())
+    expect(first).toMatchObject({ outcome: 'created', deduplicated: false })
+    const reworded = await report(f.worker, {
+      ...reportInput(), title: '  workflow TOOL   failed ',
+      tried: { feature: 'context_get', inputsSummary: 'Asked for the context in other words' },
+      happened: { message: 'A differently worded failure' }, expected: 'Some other expectation',
+    })
+    expect(reworded).toMatchObject({ outcome: 'repeat', deduplicated: true,
+      report: { id: first.report.id, status: 'open', occurrenceCount: 2 } })
+    expect(reworded.message).toContain(first.report.id)
+    expect(reworded.message).toContain('open')
+    const second = await report(writer.client, { ...reportInput(), title: 'Board refresh is slow' })
+    const third = await report(writer.client, { ...reportInput(), title: 'Run list misses filters' })
+    expect(new Set((await list()).map(item => item.id)))
+      .toEqual(new Set([first.report.id, second.report.id, third.report.id]))
+    const revisions = new Map((await list()).map(item => [item.id, item.revision]))
+    const close = {
+      commandId: randomUUID(), status: 'fixed', note: 'Released in v1.2.3',
+      reports: [first.report.id, second.report.id].map(reportId => ({ reportId, expectedRevision: revisions.get(reportId)! })),
+    }
+    const reader = await f.operator(['bug_reports:read'])
+    const denied = await reader.client.callTool({ name: 'bug_reports_close', arguments: close })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    expect(JSON.stringify((await f.worker.callTool({ name: 'bug_reports_close', arguments: close })).content))
+      .toContain('ROLE_NOT_ALLOWED')
+    expect((await list()).map(item => item.status)).toEqual(['open', 'open', 'open'])
+    const audit = await f.db.pool.query('select action,outcome from management_audit where principal_id=$1',
+      [reader.principal.id])
+    expect(audit.rows).toContainEqual({ action: 'bug_reports_close', outcome: 'denied' })
+    const closed = BugReportCloseResultSchema.parse(value(await writer.client.callTool({
+      name: 'bug_reports_close', arguments: close,
+    })))
+    expect(closed.reports.map(item => [item.id, item.status]))
+      .toEqual([[first.report.id, 'fixed'], [second.report.id, 'fixed']])
+    expect(closed.reports[0]!.resolution)
+      .toEqual({ status: 'fixed', note: 'Released in v1.2.3', closedAt: expect.any(String) })
+    expect(BugReportCloseResultSchema.parse(value(await writer.client.callTool({ name: 'bug_reports_close',
+      arguments: close })))).toEqual({ ...closed, replayed: true })
+    const stale = await writer.client.callTool({ name: 'bug_reports_close', arguments: {
+      commandId: randomUUID(), status: 'wont-fix', reports: [{ reportId: third.report.id, expectedRevision: 9 }],
+    } })
+    expect(JSON.stringify(stale.content)).toContain('REVISION_CONFLICT')
+    const missingTarget = await writer.client.callTool({ name: 'bug_reports_close', arguments: {
+      commandId: randomUUID(), status: 'duplicate', reports: [{ reportId: third.report.id, expectedRevision: 1 }],
+    } })
+    expect(JSON.stringify(missingTarget.content)).toContain('INVALID_INPUT')
+    const duplicate = BugReportCloseResultSchema.parse(value(await writer.client.callTool({ name: 'bug_reports_close',
+      arguments: { commandId: randomUUID(), status: 'duplicate', duplicateOfId: first.report.id,
+        reports: [{ reportId: third.report.id, expectedRevision: 1 }] } })))
+    expect(duplicate.reports[0]).toMatchObject({ status: 'duplicate', resolution: { duplicateOfId: first.report.id } })
+    expect(await list()).toEqual([])
+    const history = await list({ view: 'history' })
+    expect(history.map(item => [item.id, item.status])).toEqual([
+      [third.report.id, 'duplicate'], [second.report.id, 'fixed'], [first.report.id, 'fixed'],
+    ])
+    expect(history[1]).toEqual(closed.reports[1])
+    expect((await list({ view: 'history', status: 'duplicate' })).map(item => item.id)).toEqual([third.report.id])
+    const regression = await report(f.worker, reportInput())
+    expect(regression).toMatchObject({ outcome: 'reopened', deduplicated: true, report: {
+      id: first.report.id, status: 'open', occurrenceCount: 3, resolution: { status: 'fixed', note: 'Released in v1.2.3' },
+    } })
+    expect(regression.message).toContain('regression')
+    const viaDuplicate = await report(writer.client, { ...reportInput(), title: 'Run list misses filters' })
+    expect(viaDuplicate).toMatchObject({ outcome: 'repeat', report: { id: first.report.id, occurrenceCount: 4 } })
+    expect((await list()).map(item => item.id)).toEqual([first.report.id])
+    expect(value(await writer.client.callTool({ name: 'bug_report_get', arguments: { reportId: first.report.id } })))
+      .toEqual(viaDuplicate.report)
   } finally { await f.close() }
 }, 60_000)

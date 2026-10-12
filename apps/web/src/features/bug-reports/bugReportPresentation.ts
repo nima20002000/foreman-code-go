@@ -5,6 +5,7 @@ export const statusLabels: Record<BugReportStatus, string> = {
   triaged: 'Triaged',
   fixed: 'Fixed',
   'wont-fix': "Won’t fix",
+  duplicate: 'Duplicate',
 }
 export const severityLabels: Record<BugReportSeverity, string> = {
   low: 'Low',
@@ -12,5 +13,9 @@ export const severityLabels: Record<BugReportSeverity, string> = {
   high: 'High',
   critical: 'Critical',
 }
-export const statusOptions = Object.entries(statusLabels).map(([value, label]) => ({ value, label }))
+export const activeStatuses = ['open', 'triaged'] as const satisfies readonly BugReportStatus[]
+export const closedStatuses = ['fixed', 'wont-fix', 'duplicate'] as const satisfies readonly BugReportStatus[]
+const options = (statuses: readonly BugReportStatus[]) => statuses.map(value => ({ value, label: statusLabels[value] }))
+export const activeStatusOptions = options(activeStatuses)
+export const closedStatusOptions = options(closedStatuses)
 export const severityOptions = Object.entries(severityLabels).map(([value, label]) => ({ value, label }))
