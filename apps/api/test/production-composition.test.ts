@@ -1,4 +1,5 @@
-import { CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_HARNESS_DEFAULTS, DurableInteractionSchema, type AgentConfigurationVersion, type DurableInteraction } from '@foreman-code/contracts'
+import { CiListOutputSchema, CiRunRecordSchema, CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_HARNESS_DEFAULTS, DurableInteractionSchema, type AgentConfigurationVersion, type DurableInteraction } from '@foreman-code/contracts'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { ManagementPrincipalSchema, type ManagementAction, type ManagementScope } from '@foreman-code/contracts/management'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -21,6 +22,9 @@ import * as nativeRetention from '../src/modules/harnesses/installedNativeQualif
 import { ProductionDeviceRuntime } from '../src/modules/devices/productionRuntime.js'
 import type { DeviceEndpoint } from '../src/modules/devices/deviceEndpoint.js'
 import { RunWorktrees } from '../src/modules/runs/runWorktrees.js'
+import { HostCiService, type CiCommits, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
+import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
+import { requireAuthorization } from '../src/modules/access/policy.js'
 
 vi.mock('../src/app.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/app.js')>()
@@ -95,7 +99,8 @@ beforeEach(() => {
   vi.spyOn(PostgresCommandCoordinator.prototype, 'recordDenied').mockResolvedValue(undefined)
   vi.spyOn(RunWorktrees.prototype, 'cleanup').mockResolvedValue(undefined)
   vi.spyOn(PostgresAccessService.prototype, 'authenticate').mockImplementation(async (token, audience) => {
-    if (token !== 'test-operator' || principal.audience !== audience) throw new DomainError('AUTH_REQUIRED', 'Authentication required.', 401)
+    const allowed = Array.isArray(audience) ? audience.includes(principal.audience) : principal.audience === audience
+    if (token !== 'test-operator' || !allowed) throw new DomainError('AUTH_REQUIRED', 'Authentication required.', 401)
     return principal
   })
   vi.mocked(buildApp).mockClear()
@@ -111,6 +116,62 @@ afterEach(async () => {
   await production.engine.shutdown()
   await Promise.all([database.close(), checkpoints.close()])
   vi.restoreAllMocks()
+})
+
+it('serves the Board and Operator CI list after production initializes CI, with scoped read access', async () => {
+  const services = vi.mocked(buildApp).mock.calls.at(-1)![0].operator!.services
+  const url = '/api/management/workspaces/workspace-1/ci?runId=run-1'
+  const headers = { authorization: 'Bearer test-operator' }
+  principal = operator([...CI_GET_ACTIONS, 'runs:read'], { workspaceIds: ['workspace-1'] })
+  const starting = await production.app.inject({ method: 'GET', url, headers })
+  expect(starting.statusCode).toBe(503)
+  expect(starting.json().error.code).toBe('CI_UNAVAILABLE')
+
+  const record = CiRunRecordSchema.parse({
+    id: '11111111-1111-4111-8111-111111111111', workspaceId: 'workspace-1',
+    groupId: '22222222-2222-4222-8222-222222222222', suite: 'unit', part: 'unit-api',
+    scope: 'affected', files: [], partition: null, repository: 'owner/repo', commit: 'a'.repeat(40),
+    state: 'passed', computer: { hostRef: { kind: 'cloud', mainId: 'main-1', provider: 'github', slot: 0 },
+      label: 'GitHub Actions 1' }, step: 'unit-api', exitCode: 0, message: null,
+    queuedAt: '2026-10-12T00:00:00.000Z', startedAt: '2026-10-12T00:00:01.000Z',
+    finishedAt: '2026-10-12T00:00:10.000Z', initiator: { principalId: 'worker-1', executionId: 'execution-1' },
+  })
+  const tests = { passed: 10, failed: 0, skipped: 1 }
+  const pool = { query: vi.fn(async () => ({ rows: [{ workflow_id: 'workflow-1', record, tests,
+    execution_id: 'execution-1', agent_id: 'agent-1', node_id: 'node-1', node_name: 'Checker' }], rowCount: 1,
+    command: 'SELECT', oid: 0, fields: [] })) } as unknown as typeof database.pool
+  const endpoint: HostCiEndpoint = {
+    computers: vi.fn(async () => []),
+    request: vi.fn(async () => { throw new Error('CI reads must use stored tickets') }),
+  }
+  services.ci = new HostCiService(pool, new PostgresCommandCoordinator(pool), {
+    resolve: async (caller, workspaceId, actions) => {
+      for (const action of actions) requireAuthorization(caller, action, { workspaceId: workspaceId! })
+      return { principal: caller, workspaceId: workspaceId! }
+    },
+  }, {} as CiCommits, endpoint)
+  const response = await production.app.inject({ method: 'GET', url, headers })
+  expect(response.statusCode).toBe(200)
+  const listed = CiListOutputSchema.parse(response.json())
+  expect(listed).toMatchObject({ runId: 'run-1', truncated: false, jobs: [{ ticketId: record.id,
+    ci: { state: 'passed' }, placement: 'github', requester: { nodeId: 'node-1', agentId: 'agent-1' }, tests }] })
+  const mcp = () => production.app.inject({ method: 'POST', url: '/mcp',
+    headers: { ...headers, accept: 'application/json, text/event-stream' },
+    payload: { jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'ci_list', arguments: { workspaceId: 'workspace-1', runId: 'run-1' } } },
+  })
+  const readback = await mcp()
+  expect(readback.statusCode, readback.body).toBe(200)
+  const message = JSON.parse(readback.body.split('\n').find(line => line.startsWith('data: '))!.slice(6))
+  expect(CiListOutputSchema.parse(decodeMcpToolResult(message.result))).toEqual(listed)
+  principal = { ...principal, grants: [] }
+  expect((await production.app.inject({ method: 'GET', url, headers })).statusCode).toBe(403)
+  expect((await mcp()).body).toContain('ACCESS_DENIED')
+  principal = operator(CI_GET_ACTIONS, { workspaceIds: ['workspace-1'] })
+  expect((await production.app.inject({ method: 'GET', url, headers })).statusCode).toBe(403)
+  principal = operator([...CI_GET_ACTIONS, 'runs:read'], { workspaceIds: ['other-workspace'] })
+  expect((await production.app.inject({ method: 'GET', url, headers })).statusCode).toBe(403)
+  expect(endpoint.request).not.toHaveBeenCalled()
 })
 
 it('uses one real approval runtime across production HTTP, Operator MCP, App MCP, and targeted resume', async () => {
