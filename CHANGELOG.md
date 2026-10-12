@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.94] - 2026-10-12
+
+### Changed
+
+- Sidebar: computers, cloud CI and harnesses are icons (Claude orange, Codex blue) with details on hover; computer icons show a running ring, count and a pulse on new work; entries are buttons, so no browser URL preview appears.
+- Workflows can be reordered by drag and drop in the sidebar; switching workflows shows fresh status at once.
+
+### Fixed
+
+- Agents' CI results: full CircleCI logs, an exact file:line location for each failed test, fast log reads while a cloud run is collected.
+- Cloud CI mirror pushes no longer fail when several tickets start at once.
+- A CI ticket whose commit the public mirror refuses fails at once with the reason instead of waiting forever.
+- Worker unit tests run on GitHub Actions (podman path length).
+- A Checker's failures reliably reach the Fixer: routing guidance tells Agents that finish hands off and return only answers the requester.
+- CI reads no longer take database locks.
+
 ## [0.0.93] - 2026-10-12
 
 ### Changed
