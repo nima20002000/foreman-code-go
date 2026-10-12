@@ -370,7 +370,10 @@ describe('installed host resident execution continuity', () => {
       f.reconnect(replacement)
       let readSettled = false
       const outcome = f.call('history').then(response => ({ response }), (error: unknown) => ({ error }))
-        .then(result => { readSettled = true; return result })
+        .then(result => {
+          readSettled = true
+          return result
+        })
       // Let reconnection inspect the closed process while its terminal commit is still blocked.
       await new Promise<void>(resolve => setImmediate(resolve))
       expect(readSettled).toBe(false)
