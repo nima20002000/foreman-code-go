@@ -2,9 +2,10 @@ import type pg from 'pg'
 import { z } from 'zod'
 import { MaterializationReceiptSchema } from '@foreman-code/contracts/source-materialization'
 import type { AgentSnapshots } from './service.js'
+import { SourceError } from '../sources/manifest.js'
 
 export type AgentHostRef = { kind: 'main'; mainId: string } | { kind: 'device'; mainId: string; deviceId: string }
-export type ReadAgentFiles = (hostRef: AgentHostRef, path: string, baseCommit: string) => Promise<{ commit: string; bundle: Buffer }>
+export type ReadAgentFiles = (hostRef: AgentHostRef, path: string, baseCommit: string) => Promise<{ commit: string; bundle: Buffer | null }>
 
 /** The few facts CI needs from an Agent's accepted native placement. */
 const AgentPlacementFacts = z.object({
@@ -25,7 +26,11 @@ export function agentSnapshots(pool: pg.Pool, read: ReadAgentFiles): AgentSnapsh
     const binding = placement.materialization.receipt.binding
     const hostRef: AgentHostRef = binding.deviceId ? { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId }
       : { kind: 'main', mainId: binding.mainId }
-    const snapshot = await read(hostRef, placement.workingTree.canonicalProjectRoot, worktree.commit)
-    return { baseCommit: worktree.commit, ...snapshot }
+    const baseCommit = worktree.startCommit ?? worktree.commit
+    const snapshot = await read(hostRef, placement.workingTree.canonicalProjectRoot, baseCommit)
+    if (snapshot.bundle === null && snapshot.commit !== baseCommit) {
+      throw new SourceError('SOURCE_SNAPSHOT_INVALID', 'Unchanged Agent files must name their Run-start commit.')
+    }
+    return { baseCommit, ...snapshot }
   }
 }

@@ -267,7 +267,7 @@ it('cleans up committed local and Worker source worktrees and reports a dirty ch
 })
 
 
-it('starts local and Worker executions at the fetched default branch while retaining the approved reference', async () => {
+it('keeps local and Worker executions on their Run-start approval when the default branch advances', async () => {
   const f = await fixture()
   await writeFile(join(f.origin, 'src/app.ts'), 'latest default source\n')
   await writeFile(join(f.origin, 'new.txt'), 'new default file\n')
@@ -281,10 +281,12 @@ it('starts local and Worker executions at the fetched default branch while retai
       worktree: { repository: 'octo/site', branch: `foreman/site/${host}-fresh` } }
     const receipt = await f.materializer().prepare(input)
     const directory = sourceWorkingTreePath(receipt)
-    expect(receipt.worktree).toMatchObject({ commit: f.commit, startCommit: latest })
-    expect(git(directory, 'rev-parse', 'HEAD')).toBe(latest)
-    expect(await readFile(join(directory, 'src/app.ts'), 'utf8')).toBe('latest default source\n')
-    expect(await readFile(join(directory, 'new.txt'), 'utf8')).toBe('new default file\n')
+    expect(receipt.worktree).toMatchObject({ commit: f.commit })
+    expect(receipt.worktree?.startCommit).toBeUndefined()
+    expect(git(directory, 'rev-parse', 'HEAD')).toBe(f.commit)
+    expect(git(directory, 'rev-parse', 'HEAD')).not.toBe(latest)
+    expect(await readFile(join(directory, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+    await expect(readFile(join(directory, 'new.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(await readFile(join(binding.canonicalPath, receipt.materializationId, 'tree', 'src/app.ts'), 'utf8'))
       .toBe('accepted source\n')
     await f.materializer().verify(receipt, { binding, attempt })

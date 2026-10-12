@@ -198,15 +198,16 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
 }
 
 async function prepareStart(pool: pg.Pool, locations: WorkspaceLocationService, input: RunStartV3Input,
-  principal: ManagementPrincipal, publication: RepeatStartPublication, schedule?: ScheduleStartGuard) {
+  principal: ManagementPrincipal, source: 'http' | 'mcp', publication: RepeatStartPublication, schedule?: ScheduleStartGuard) {
   const key = commandInputHash({ ...input, commandId: null, principalId: principal.id })
   schedule?.signal?.throwIfAborted()
   const cached = schedule?.preparation.value
   // Only the occurrence command changes on an eligibility retry. Live row,
   // placement, authorization and schedule checks still run in each transaction.
   if (cached?.key === key) return cached
-  const value = await prepareRunStart(async (signal) => {
-    const preparedPlacements = await publication.placementAdmission?.prepare(input, principal, signal)
+  const value = await prepareRunStart(async (signal, sourcePreparationStarted) => {
+    const preparedPlacements = await publication.placementAdmission?.prepare(input, principal, signal,
+      { source, sourcePreparationStarted })
     signal.throwIfAborted()
     const prepared = await prepareLocation(pool, locations, input, signal, preparedPlacements, publication.accountBindings)
     signal.throwIfAborted()
@@ -318,7 +319,8 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     if (!publication || typeof publication.initializeLocked !== 'function') {
       return conflict('REPEAT_START_RUNTIME_UNAVAILABLE', 'New v3 Runs remain disabled until canonical publication and the complete existing-engine lifecycle are composed.')
     }
-    const { preparedPlacements, prepared } = await prepareStart(pool, locations, input, principal, publication,
+    const sourceTransport = source === 'http' ? 'http' : 'mcp'
+    const { preparedPlacements, prepared } = await prepareStart(pool, locations, input, principal, sourceTransport, publication,
       options.schedule)
     options.schedule?.signal?.throwIfAborted()
     return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {

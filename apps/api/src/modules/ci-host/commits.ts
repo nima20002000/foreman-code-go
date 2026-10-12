@@ -37,12 +37,14 @@ export class GitCiCommits implements CiCommits {
   }
 
   async resolve(repository: string, defaultBranch: string, commit: string | undefined,
-    snapshot: { baseCommit: string; commit: string; bundle: Buffer } | null): Promise<string> {
+    snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string> {
     const signal = AbortSignal.timeout(180_000)
     let resolved = commit
     if (!resolved && snapshot) {
       const clone = await ensureCommit(this.git, repository, snapshot.baseCommit, signal)
-      await importAgentSnapshot(this.git, clone, snapshot, signal)
+      if (snapshot.bundle) {
+        await importAgentSnapshot(this.git, clone, { commit: snapshot.commit, bundle: snapshot.bundle }, signal)
+      }
       resolved = snapshot.commit
     }
     if (!resolved) {

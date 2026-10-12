@@ -39,6 +39,7 @@ import { readPlacement } from '../placement/binding.js'
 import { assertWorktreeReceipt, bindGeneratedWorktreeRun, generatedWorktreePrefix } from './worktreeRequest.js'
 import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
 import { readSourceStorageCapacity } from './storageCapacity.js'
+import { prepareRunSources } from './runSource.js'
 
 export interface SourceExecutionHostPort {
   storageCapacity?(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceStorageCapacity>
@@ -64,6 +65,12 @@ interface SourceLifecycle {
 }
 
 export class PostgresSourceService implements SourceAdmissionPort {
+  async prepareRunSources(principal: ManagementPrincipal, input: {
+    workspaceId: string; commandId: string; source: 'http' | 'mcp'; roots: readonly SourceRootRecord[]
+  }): Promise<readonly SourceRootRecord[]> {
+    await this.transaction(sql => authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId))
+    return prepareRunSources(this.pool, this, principal, input)
+  }
   readonly reservations = new PostgresSourceReservations(async request => {
     if (request.ownerKind === 'capture') return this.store.storageCapacity()
     const owner = request.preparation

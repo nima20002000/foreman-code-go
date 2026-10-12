@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, withAdvancedDefaults,
+import { AgentConfigurationVersionSchema, WorkspaceSchema, withAdvancedDefaults,
   type AgentConfigurationVersion, type HarnessExecution, type CompatibilityHarness } from '@foreman-code/contracts'
 import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
 import { type AcceptedNodePlacement, type DispatchIntent, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
@@ -30,6 +30,7 @@ import { readAcceptedPlacement, insertDispatchIntent } from './persistence.js'
 import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from './startPort.js'
 import { resolveBoundRootPlacement, resolveLocalMainPlacement, resolveWorkflowRootBinding } from './localMainPlacement.js'
 import { bindGeneratedWorktreeRun, generatedWorktreePrefix } from '../sources/worktreeRequest.js'
+import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 
 /** Installed main-owned producer: saved immutable versions and W09/W07/HRT
  * authorities supply every pin. No request/Board JSON becomes a runtime grant. */
@@ -44,7 +45,9 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       hosts: readonly CanonicalMachineReference[], signal?: AbortSignal,
     ) => Promise<void>, private readonly accounts?: ProviderAccountResolver) {}
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
-    signal?: AbortSignal): Promise<PreparedRunPlacementAdmission | undefined> {
+    signal?: AbortSignal, options: {
+      source: 'http' | 'mcp'; sourcePreparationStarted?: () => void
+    } = { source: 'mcp' }): Promise<PreparedRunPlacementAdmission | undefined> {
     signal?.throwIfAborted()
     const initial = await withExclusiveGraphConnection(this.pool, async connection => {
       const version = await this.readVersion(connection, input)
@@ -52,7 +55,35 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       const root = needsDefault && version.definition.defaultWorktree
         ? await resolveWorkflowRootBinding({ sql: connection, principal, workspaceId: input.workspaceId,
           reference: version.definition.defaultWorktree.rootBinding, sources: this.sources }) : undefined
-      return { version, root }
+      const workspace = (await connection.query<{ record: unknown }>(
+        'select record from workspaces where id=$1', [input.workspaceId])).rows[0]
+      const repository = workspace && WorkspaceSchema.parse(workspace.record).repository
+      const selected = new Map<string, SourceRootRecord>()
+      let inheritedRoot = root
+      if (repository) {
+        for (const node of version.definition.nodes) {
+          if (node.kind === 'job') continue
+          let selectedRoot = root
+          if (node.placement?.rootBinding && node.placement.source) {
+            selectedRoot = await this.sources.resolveRootBinding(connection, principal, {
+              workspaceId: input.workspaceId, ...node.placement.rootBinding, source: node.placement.source,
+            })
+          } else if (!selectedRoot) {
+            const bindings = await connection.query<{ record: unknown }>(`select b.record from source_root_catalog c
+              join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
+              where c.workspace_id=$1 and b.record#>>'{selection,hostRef,kind}'='main'`, [input.workspaceId])
+            if (bindings.rows.length !== 1) this.conflict()
+            const saved = SourceRootRecordSchema.parse(bindings.rows[0]!.record)
+            selectedRoot = await this.sources.resolveRootBinding(connection, principal, {
+              workspaceId: input.workspaceId, rootId: saved.binding.rootId,
+              bindingRevision: saved.binding.bindingRevision, source: saved.source,
+            })
+          }
+          if (!node.placement) inheritedRoot = selectedRoot
+          selected.set(`${selectedRoot.binding.rootId}:${selectedRoot.binding.bindingRevision}`, selectedRoot)
+        }
+      }
+      return { version, root, repository, selected, inheritedRoot }
     })
     const savedVersion = initial.version
     signal?.throwIfAborted()
@@ -63,7 +94,21 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     if (hosts.length) await this.refreshProfileInventory?.(hosts, signal)
     signal?.throwIfAborted()
     for (const host of hosts) this.assertProfileReady?.(host)
-    if (!workflowUsesAgentPlacements(savedVersion.definition)) return undefined
+    if (!workflowUsesAgentPlacements(savedVersion.definition) && !initial.repository) return undefined
+    if (initial.selected.size) options.sourcePreparationStarted?.()
+    const refreshed = initial.selected.size ? await this.sources.prepareRunSources(principal, {
+      workspaceId: input.workspaceId, commandId: input.commandId, source: options.source, roots: [...initial.selected.values()],
+    }) : []
+    signal?.throwIfAborted()
+    const roots = new Map([...initial.selected.keys()].map((key, index) => [key, refreshed[index]!]))
+    const refreshPlacement = (saved: SavedNodePlacement): SavedNodePlacement => {
+      const reference = saved.rootBinding
+      if (!reference) return saved
+      const root = roots.get(`${reference.rootId}:${reference.bindingRevision}`)
+      if (!root) return saved
+      return { ...saved, source: root.source,
+        rootBinding: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision } }
+    }
     return withExclusiveGraphConnection(this.pool, connection => connection.transaction(async sql => {
       signal?.throwIfAborted()
       if (signal) beforeGraphCommit(sql, async () => signal.throwIfAborted())
@@ -71,18 +116,31 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       signal?.throwIfAborted()
       if (!sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
       const nodes = version.definition.nodes.filter(node => node.kind !== 'job')
-      if (!workflowUsesAgentPlacements(version.definition)) return undefined
-      const resolveMain = (sql: GraphTransactionSql, principal: ManagementPrincipal, configuration: AgentConfigurationVersion) =>
-        resolveLocalMainPlacement({ sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
-          roots: this.roots, installations: this.registry.installations, qualificationSuites: this.qualificationSuites })
+      if (!workflowUsesAgentPlacements(version.definition) && !initial.repository) return undefined
+      const assertRepository = async (sql: GraphSqlClient) => {
+        const row = (await sql.query<{ record: unknown }>(
+          'select record from workspaces where id=$1 for share', [input.workspaceId])).rows[0]
+        const repository = row && WorkspaceSchema.parse(row.record).repository
+        if (!sameWorkflowValue(repository, initial.repository)) this.conflict()
+      }
+      await assertRepository(sql)
+      const resolveMain = async (sql: GraphTransactionSql, principal: ManagementPrincipal,
+        configuration: AgentConfigurationVersion) => {
+        const context = { sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
+          roots: this.roots, installations: this.registry.installations, qualificationSuites: this.qualificationSuites }
+        if (initial.inheritedRoot) {
+          return refreshPlacement(await resolveBoundRootPlacement({ ...context, root: initial.inheritedRoot }))
+        }
+        return refreshPlacement(await resolveLocalMainPlacement(context))
+      }
       const resolveInherited = async (sql: GraphTransactionSql, principal: ManagementPrincipal,
         configuration: AgentConfigurationVersion) => {
         if (!version.definition.defaultWorktree) return resolveMain(sql, principal, configuration)
         const root = await resolveWorkflowRootBinding({ sql, principal, workspaceId: input.workspaceId,
           reference: version.definition.defaultWorktree.rootBinding, sources: this.sources })
-        return resolveBoundRootPlacement({ sql, principal, configuration, root, mainId: this.mainId,
+        return refreshPlacement(await resolveBoundRootPlacement({ sql, principal, configuration, root, mainId: this.mainId,
           workspaceId: input.workspaceId, roots: this.roots, installations: this.registry.installations,
-          qualificationSuites: this.qualificationSuites })
+          qualificationSuites: this.qualificationSuites }))
       }
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection;
         saved: SavedNodePlacement; configuration: AgentConfigurationVersion; implicit: boolean;
@@ -94,7 +152,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const configRow = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
           [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
         const config = AgentConfigurationVersionSchema.parse(configRow?.record)
-        const saved = node.placement ?? await resolveInherited(sql, principal, config)
+        const saved = node.placement ? refreshPlacement(node.placement) : await resolveInherited(sql, principal, config)
         this.assertProfileReady?.(saved.hostRef)
         if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
@@ -176,6 +234,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
               allowDefault: false, acceptedBinding: binding })
           }
           const live = await readLiveManagementPrincipal(transaction, principal.id)
+          await assertRepository(transaction)
           if (saved.implicit && !sameWorkflowValue(saved.saved, await resolveInherited(transaction, live, saved.configuration))) {
             this.conflict()
           }

@@ -12,10 +12,9 @@ const COMMIT = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u
 const author = { GIT_AUTHOR_NAME: 'Foreman Code', GIT_AUTHOR_EMAIL: 'ci@foreman-code.invalid',
   GIT_COMMITTER_NAME: 'Foreman Code', GIT_COMMITTER_EMAIL: 'ci@foreman-code.invalid' }
 
-/** Commits an Agent's current files (tracked and untracked, honoring .gitignore) without moving its branch,
- * and returns a git bundle of that commit relative to the base its worktree started from. */
+/** Unchanged files reuse the base commit. Edited files become a bundle without moving the Agent's branch. */
 export async function snapshotAgentWorktree(ports: Pick<GitWorktreePorts, 'git'>, input: { path: string; baseCommit: string },
-  signal: AbortSignal): Promise<{ commit: string; bundle: Buffer }> {
+  signal: AbortSignal): Promise<{ commit: string; bundle: Buffer | null }> {
   if (!COMMIT.test(input.baseCommit)) throw new SourceError('SOURCE_SNAPSHOT_INVALID', 'The base commit is invalid.')
   const scratch = await mkdtemp(join(tmpdir(), 'foreman-ci-snapshot-'))
   const git = async (args: string[], env: Record<string, string> = {}) => {
@@ -31,6 +30,8 @@ export async function snapshotAgentWorktree(ports: Pick<GitWorktreePorts, 'git'>
     await git(['read-tree', 'HEAD'], index)
     await git(['add', '-A'], index)
     const tree = await git(['write-tree'], index)
+    const baseTree = await git(['rev-parse', `${input.baseCommit}^{tree}`])
+    if (tree === baseTree) return { commit: input.baseCommit, bundle: null }
     const commit = await git(['commit-tree', tree, '-p', 'HEAD', '-m', 'Foreman Code CI snapshot'], author)
     const ref = `refs/foreman/ci/snapshots/${randomUUID()}`
     await git(['update-ref', ref, commit])
@@ -47,8 +48,13 @@ export async function snapshotAgentWorktree(ports: Pick<GitWorktreePorts, 'git'>
 
 /** Adds an Agent snapshot bundle to this computer's clone so the commit can be approved and checked out. */
 export async function importAgentSnapshot(ports: Pick<GitWorktreePorts, 'git'>, clone: string,
-  snapshot: { commit: string; bundle: Buffer }, signal: AbortSignal): Promise<void> {
+  snapshot: { commit: string; bundle: Buffer | null }, signal: AbortSignal): Promise<void> {
   if (!COMMIT.test(snapshot.commit)) throw new SourceError('SOURCE_SNAPSHOT_INVALID', 'The snapshot commit is invalid.')
+  if (snapshot.bundle === null) {
+    const result = await ports.git(['cat-file', '-e', `${snapshot.commit}^{commit}`], { cwd: clone, signal })
+    if (result.code !== 0) throw gitFailure('SOURCE_SNAPSHOT_FAILED', 'cat-file')
+    return
+  }
   const scratch = await mkdtemp(join(tmpdir(), 'foreman-ci-import-'))
   try {
     const file = join(scratch, 'snapshot.bundle')

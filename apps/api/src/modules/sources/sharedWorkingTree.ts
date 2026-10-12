@@ -1,6 +1,4 @@
-import { approvedGitTreePaths, captureGitSource } from './capture.js'
-import { processSourceDirectories, withSourceTreeWriter } from './entryProcessing.js'
-import { latestDefaultCommit } from './defaultBranch.js'
+import { processSourceDirectories } from './entryProcessing.js'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, rename, type FileHandle } from 'node:fs/promises'
@@ -11,7 +9,7 @@ import { RootBindingSchema, type RootBinding, type MaterializationReceipt,
 import { anchored, entryParent, identity, openChildDirectory } from './privateFilesystem.js'
 import { SourceError, verifySourceBytes } from './manifest.js'
 import { join } from 'node:path'
-import { addGitWorktree, ensureCommit, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
+import { addGitWorktree, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
 import { componentLogger } from '../diagnostics/logger.js'
 
 const SharedTreeSchema = z.object({
@@ -187,51 +185,30 @@ export async function prepareAgentWorktree(input: {
   const started = performance.now()
   const commit = manifest.git?.commit
   if (!commit) throw new SourceError('SOURCE_WORKTREE_INVALID', 'Only Git sources can become agent worktrees.')
-  const clone = await ensureCommit(input.ports, input.request.repository, commit, signal)
-  const defaultCommit = await latestDefaultCommit(input.ports, clone, signal)
-  // Transferred approvals omit parent history; walk only the fetched default branch.
-  const history = await input.ports.git(['rev-list', defaultCommit], { cwd: clone, signal })
-  if (history.code !== 0) {
-    throw new SourceError('SOURCE_WORKTREE_FAILED', 'The default branch history could not be read.')
-  }
-  const startCommit = history.stdout.split('\n').includes(commit) ? defaultCommit : commit
-  const selected = performance.now()
   const id = randomUUID()
   await mkdir(anchored(root, id), { mode: 0o700 })
   const path = join(binding.canonicalPath, id, 'tree')
-  const added = await addGitWorktree(input.ports, input.request, startCommit, path, signal, { checkout: 'deferred' })
+  const added = await addGitWorktree(input.ports, input.request, commit, path, signal, { checkout: 'deferred' })
   const allocated = performance.now()
   const directory = await openChildDirectory(root, id)
   try {
     const tree = await openChildDirectory(directory, 'tree')
     let filesystem: RootBinding['filesystem']
     try {
-      if (startCommit === commit) {
-        await copyEntries(input.reference, tree, manifest, signal)
-        await verifyWorktreeContent(tree, manifest, signal)
-      } else {
-        // Keep the approved reference; bootstrap the writable checkout from verified Git objects.
-        const paths = await approvedGitTreePaths(clone, startCommit)
-        const current = await withSourceTreeWriter(tree, paths, write => captureGitSource({
-          root: clone, approvedSourceId: manifest.approvedSourceId, commit: startCommit,
-          repository: input.request.repository, approvedPaths: paths, executablePolicy: manifest.executablePolicy,
-          sink: { write: async (_snapshot, entry, bytes) => write(entry, bytes),
-            commit: input.authorize, abort: async () => { signal.throwIfAborted() } },
-        }), writeEntry, signal)
-        await verifyWorktreeContent(tree, current, signal)
-      }
+      await copyEntries(input.reference, tree, manifest, signal)
+      await verifyWorktreeContent(tree, manifest, signal)
       await input.authorize()
       filesystem = await identity(tree)
     } finally { await tree.close() }
     const record = WorktreeMarkerSchema.parse({ version: 1, id, binding, filesystem, executionId: input.executionId,
-      worktree: { repository: input.request.repository, branch: added.branch, commit, ...(startCommit !== commit ? { startCommit } : {}) } })
+      worktree: { repository: input.request.repository, branch: added.branch, commit } })
     const file = await open(anchored(root, worktreeMarker(id)),
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
     try { await file.writeFile(JSON.stringify(record)); await file.sync() } finally { await file.close() }
     await root.sync()
     componentLogger('engine').info({ executionId: input.executionId, snapshotId: manifest.snapshotId,
       durationMs: Math.round(performance.now() - started),
-      fetchAndSelectMs: Math.round(selected - started), allocationMs: Math.round(allocated - selected),
+      allocationMs: Math.round(allocated - started),
       populateVerifyAndActivateMs: Math.round(performance.now() - allocated) }, 'source worktree prepared')
     return record
   } finally { await directory.close() }
