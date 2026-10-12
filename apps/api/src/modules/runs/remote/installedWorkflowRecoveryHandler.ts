@@ -155,8 +155,11 @@ export async function recoverInstalledWorkflowReply(input: {
   const historyReply = frame.method === 'history'
     ? pageNativeHistory(history, frame.afterSequence, frame.metadata) : undefined
   if (capture && frame.method !== 'physical-readout' && frame.method !== 'physical-ack') {
-    const source: WorkflowOriginalNativeSource = historyReply
-      ? { type: 'history', history: nativeHistoryPageSource(historyReply)! } : { type: 'boundary' }
+    let source: WorkflowOriginalNativeSource = { type: 'boundary' }
+    if (historyReply) source = { type: 'history', history: nativeHistoryPageSource(historyReply)! }
+    else if (frame.method === 'prepare' || frame.method === 'reattach') {
+      source = { type: 'session_created', session: capture.session }
+    }
     const expiresAt = new Date(Date.now() + 60_000).toISOString()
     const readout = RemoteWorkflowPhysicalReadoutSchema.parse({ version: 1, expiresAt,
       launchIntent: capture.intent,

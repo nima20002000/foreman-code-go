@@ -172,6 +172,36 @@ describe('installed worker cold recovery', () => {
         terminalTurn: { correlationId: `execution:${f.intent.executionId}`, providerId: 'original-turn', result } } })
     } finally { await host.close() }
   })
+
+  it.each(['prepare', 'reattach'] as const)(
+    'retains the returned session selector for physical readback after recovered %s', async method => {
+      const f = await restartedInstalledFixture()
+      await f.journal.close()
+      const host = await f.startHost()
+      const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+      const attach = vi.spyOn(CodexAppServerSessionManager.prototype, 'attachSession')
+      try {
+        const reply = await host.extensions[0]!.handle!({ method, intent: f.intent, placement: f.placement,
+          request: f.request, ...(method === 'reattach' ? { session: f.session } : {}) }, f.context)
+        const payload = reply.payload as { session: unknown; status: { receipt: unknown } }
+        expect(payload.session).toEqual(f.session)
+        const receipt = RemoteOperationReceiptSchema.parse(payload.status.receipt)
+        const physical = await host.extensions[0]!.handle!({ method: 'physical-readout',
+          intent: f.intent, placement: f.placement, receiptSequence: receipt.sequence,
+          sourceDigest: remoteWorkflowSourceDigest({ type: 'session_created', session: f.session }),
+        }, f.context)
+        expect(physical.payload).toMatchObject({ receipt, session: f.session,
+          closure: { ownerClosed: true, launch: { lifecycle: 'closed', closureEvidence: 'linux_boot_changed' } } })
+        await expect(host.extensions[0]!.handle!({ method: 'physical-readout',
+          intent: f.intent, placement: f.placement, receiptSequence: receipt.sequence,
+          sourceDigest: remoteWorkflowSourceDigest({ type: 'session_created',
+            session: { ...f.session, nativeSessionId: 'another-session' } }),
+        }, f.context)).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+        expect(create).not.toHaveBeenCalled()
+        expect(attach).not.toHaveBeenCalled()
+      } finally { await host.close() }
+    },
+  )
 })
 
 describe('lazy installed worker host qualification boundary',()=>{
