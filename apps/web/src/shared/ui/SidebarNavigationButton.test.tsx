@@ -28,13 +28,13 @@ describe('SidebarNavigationButton', () => {
         search={{ workflowId: 'workflow-example' }}>Workflow</SidebarNavigationButton>,
     )
     const button = await screen.findByRole('button', { name: 'Workflow' })
-    if (activation === 'middle') fireEvent.auxClick(button, { button: 1 })
+    if (activation === 'middle') fireEvent(button, new MouseEvent('auxclick', { bubbles: true, button: 1 }))
     else fireEvent.click(button, { [activation]: true })
     expect(open).toHaveBeenCalledExactlyOnceWith(
       '/workspaces/workspace-example?workflowId=workflow-example', '_blank',
     )
     expect(router.state.location.pathname).toBe('/')
-    fireEvent.auxClick(button, { button: 2 })
+    fireEvent(button, new MouseEvent('auxclick', { bubbles: true, button: 2 }))
     expect(open).toHaveBeenCalledTimes(1)
   })
 

@@ -277,7 +277,7 @@ h1 {
 }
 
 /* Reset native button appearance before the existing sidebar entry styles. */
-.sidebar-navigation-button {
+:where(.sidebar-navigation-button) {
   appearance: none;
   border: 0;
   padding: 0;
