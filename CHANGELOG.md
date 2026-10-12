@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.91] - 2026-10-12
+
+### Fixed
+
+- Board: an Agent woken by its interval check shows "Checking · check N" instead of Idle.
+- Board: CI no longer shows "unavailable" (CI routes registered after startup); subagents load while projections catch up.
+- Agent chat shows the transcript while starting/running and allows follow-ups after completion.
+- Board node action icons appear on hover; nodes can be moved and resized during a Run.
+
 ## [0.0.90] - 2026-10-12
 
 ### Fixed
