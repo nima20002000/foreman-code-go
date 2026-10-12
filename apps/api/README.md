@@ -82,7 +82,11 @@ application pool and actual checkpoint tables through the saver's own pool.
 probe; callers share it until the underlying operation has finished cleanup.
 On a readiness deadline, an active probe connection is destroyed. An acquisition
 already waiting for a pool slot is bounded by `DATABASE_CONNECTION_TIMEOUT_MS`
-and its eventual lease is discarded without querying. Both pools also enforce
+(capped at 1000 ms). Pools retain up to four established idle sessions and expire
+other idle sessions after 60 seconds to reduce authentication during source I/O.
+Read-only MCP tools retry a transient connection acquisition timeout once;
+SQL statements and mutations are never automatically replayed by this policy.
+The readiness probe's eventual lease is discarded without querying. Both pools also enforce
 `DATABASE_QUERY_TIMEOUT_MS` (default 1000) as a client query timeout and a server
 statement timeout. Configure these bounds for the intended workload.
 

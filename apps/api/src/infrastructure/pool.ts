@@ -1,5 +1,21 @@
 import pg from 'pg'
 import { componentLogger } from './logger.js'
+import { acquireDatabaseConnection } from './databaseReadRetry.js'
+
+type ConnectCallback = Parameters<pg.Pool['connect']>[0]
+
+class ApplicationPool extends pg.Pool {
+  override connect(): Promise<pg.PoolClient>
+  override connect(callback: ConnectCallback): void
+  override connect(callback?: ConnectCallback): Promise<pg.PoolClient> | void {
+    const connection = acquireDatabaseConnection(() => super.connect())
+    if (!callback) return connection
+    void connection.then(
+      client => callback(undefined, client, client.release.bind(client)),
+      error => callback(error, undefined, () => {}),
+    )
+  }
+}
 
 export interface DatabaseOptions {
   connectionString: string
@@ -12,10 +28,14 @@ export interface DatabaseOptions {
 /** Both application and checkpoint connections need the same failure policy. */
 export function createPool(options: DatabaseOptions, applicationName: string): pg.Pool {
   const queryTimeoutMs = options.queryTimeoutMs ?? 1000
-  const pool = new pg.Pool({
+  const pool = new ApplicationPool({
     connectionString: options.connectionString,
     max: options.maxConnections,
-    connectionTimeoutMillis: options.connectionTimeoutMs,
+    connectionTimeoutMillis: Math.min(options.connectionTimeoutMs, 1000),
+    // Retain established sessions while source copies occupy the filesystem
+    // thread pool also used by SCRAM authentication on new connections.
+    min: Math.min(options.maxConnections, 4),
+    idleTimeoutMillis: 60_000,
     // The server owns the SQL deadline. Its reply (including durable commit
     // acknowledgment) needs bounded delivery time before the client gives up.
     query_timeout: Math.min(queryTimeoutMs + 1000, 2_147_483_647),

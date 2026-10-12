@@ -17,6 +17,7 @@ import {
 import type { AppRequestContext } from './types.js'
 import { hasWorkerAction } from '../../modules/access/appPolicy.js'
 import { registerBugReportTool } from '../shared/bugReports.js'
+import { retryReadOnlyToolConnections } from '../shared/databaseReadRetry.js'
 
 const readAnnotations = {
   readOnlyHint: true,
@@ -28,6 +29,7 @@ const readAnnotations = {
 export async function createAppMcpServer(context: AppRequestContext): Promise<McpServer> {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
   cacheToolSchemaConversions(server, 'app')
+  retryReadOnlyToolConnections(server)
   await registerAppTools(server, context)
   return server
 }
