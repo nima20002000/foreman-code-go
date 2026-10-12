@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import {
-  ManagementActionSchema, OperatorCapabilitiesSchema, WorkflowReorderResultSchema,
+  ManagementActionSchema, WorkflowReorderResultSchema,
   type ManagementPrincipal, type WorkflowReorderInput,
 } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult, OperatorToolSchemaResultSchema, WorkflowSummaryPageSchema } from '@foreman-code/contracts/operator-mcp'
@@ -9,6 +9,7 @@ import { SavedManagedWorkflowPageSchema } from '@foreman-code/contracts/wave25'
 import { describe, expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { ScheduleOperatorCapabilitiesSchema } from '../src/mcp/operator/tools/workflowSchedules.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
@@ -93,16 +94,13 @@ async function listPage(f: Fixture, client = f.client, token = f.owner.token, cu
 }
 
 async function readOrder(f: Fixture, client = f.client, token = f.owner.token) {
-  const ids: string[] = []
-  let cursor: string | undefined
-  let orderRevision = 0
-  do {
-    const page = await listPage(f, client, token, cursor)
+  let page = await listPage(f, client, token)
+  const ids = page.items.map((item) => item.workflow.id)
+  while (page.pageInfo.nextCursor) {
+    page = await listPage(f, client, token, page.pageInfo.nextCursor)
     ids.push(...page.items.map((item) => item.workflow.id))
-    orderRevision = page.orderRevision
-    cursor = page.pageInfo.nextCursor ?? undefined
-  } while (cursor)
-  return { ids, orderRevision }
+  }
+  return { ids, orderRevision: page.orderRevision }
 }
 
 async function issueCaller(f: Fixture, grants: ManagementPrincipal['grants']) {
@@ -126,10 +124,10 @@ describe('persisted workflow ordering through authenticated MCP and HTTP', () =>
       expect(original.ids).toEqual(ids)
       expect(original.orderRevision).toBe(5)
       expect(await toolNames(f.client)).toContain('workflow_reorder')
-      const capability = OperatorCapabilitiesSchema.parse(decodeMcpToolResult(await f.client.callTool({
+      const capability = ScheduleOperatorCapabilitiesSchema.parse(decodeMcpToolResult(await f.client.callTool({
         name: 'operator_get_capabilities', arguments: { detail: 'full' },
       })))
-      expect(capability.requirements.find((entry) => entry.name === 'workflow_reorder')?.actions)
+      expect(capability.requirements?.find((entry) => entry.name === 'workflow_reorder')?.actions)
         .toEqual(['workflows:update', 'workflows:read'])
       const schema = OperatorToolSchemaResultSchema.parse(decodeMcpToolResult(await f.client.callTool({
         name: 'operator_tool_schema_get', arguments: { name: 'workflow_reorder', includeOutputSchema: true },
