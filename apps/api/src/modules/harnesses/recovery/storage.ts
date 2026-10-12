@@ -4,6 +4,7 @@ import { dirname, join, parse, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 const recordListeners = new Map<string, Set<(path: string) => void>>()
+const recordPublicationWait = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
 
 /** In-process invalidation follows the durable write, before its caller can read. */
 export function observeRecordWrites(root: string, listener: (path: string) => void): void {
@@ -72,9 +73,16 @@ export function readRecord(path: string): unknown | undefined {
     throw error
   }
   try {
-    const stat = fstatSync(fd)
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 64 * 1024 || (stat.mode & 0o077) !== 0
-      || (process.getuid && stat.uid !== process.getuid())) throw new Error('Unsafe or oversized recovery record.')
+    const deadline = performance.now() + 100
+    for (;;) {
+      const stat = fstatSync(fd)
+      if (!stat.isFile() || stat.size > 64 * 1024 || (stat.mode & 0o077) !== 0
+        || (process.getuid && stat.uid !== process.getuid())) throw new Error('Unsafe or oversized recovery record.')
+      if (stat.nlink === 1) break
+      if (stat.nlink !== 2 || performance.now() >= deadline) throw new Error('Unsafe or oversized recovery record.')
+      // Immutable publication links the complete file before removing its private temporary name.
+      Atomics.wait(recordPublicationWait, 0, 0, 1)
+    }
     return JSON.parse(readFileSync(fd, 'utf8')) as unknown
   } finally { closeSync(fd) }
 }
