@@ -114,6 +114,9 @@ it('re-activates an interval node in its own session without routing and stops w
     const after = await executions()
     expect(after.filter(row => row.node === worker.id)).toHaveLength(1)
     expect(after.filter(row => row.tick !== null).every(row => row.state === 'completed')).toBe(true)
+    // The stored check index always matches the check's frozen input.
+    await expect(runtime.db.pool.query('update harness_executions set tick_index=2 where id=$1', [checkId]))
+      .rejects.toThrow(/tick_execution_outside/)
     expect((await runtime.db.pool.query(`select execution_state as state,record->>'outcome' as outcome from runs where id=$1`,
       [f.run.id])).rows[0]).toEqual({ state: 'completed', outcome: 'succeeded' })
     expect((await board()).intervalChecks).toEqual([{ nodeId: watcher.id, everySeconds: 10, checks: 1, running: false, nextCheckAt: null }])

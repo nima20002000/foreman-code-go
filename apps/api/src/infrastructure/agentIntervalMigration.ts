@@ -1,21 +1,22 @@
 /** Interval checks are extra executions of an Agent node in its own slot. They never route
- * the graph, so they have no work activation or repeat occurrence. The check index is derived
- * from the frozen slot input; existing rows keep their exact keys and uniqueness. */
+ * the graph, so they have no work activation or repeat occurrence. The check index is written
+ * explicitly beside the frozen slot input; existing rows keep their exact keys and uniqueness.
+ * Plain nullable columns and NOT VALID checks avoid rewriting or rescanning existing rows. */
 export const agentIntervalMigration = { version: 2026101201, sql: String.raw`
-alter table run_repeat_slots add column tick_index integer
-  generated always as ((input_json::jsonb #>> '{tick,index}')::integer) stored;
+alter table run_repeat_slots add column tick_index integer;
 alter table run_repeat_slots add constraint tick_slot_outside
-  check (tick_index is null or (tick_index>0 and occurrence_id is null and work_activation_id is null));
+  check (tick_index is not distinct from (input_json::jsonb #>> '{tick,index}')::integer
+    and (tick_index is null or (tick_index>0 and occurrence_id is null and work_activation_id is null))) not valid;
 drop index run_repeat_slots_outside;
 create unique index run_repeat_slots_outside on run_repeat_slots(run_id,workflow_node_id)
   where occurrence_id is null and work_activation_id is null and tick_index is null;
 create unique index run_repeat_slots_tick on run_repeat_slots(run_id,workflow_node_id,tick_index)
   where tick_index is not null;
 
-alter table harness_executions add column tick_index integer
-  generated always as ((record #>> '{input,tick,index}')::integer) stored;
+alter table harness_executions add column tick_index integer;
 alter table harness_executions add constraint tick_execution_outside
-  check (tick_index is null or (tick_index>0 and repeat_occurrence_id is null and work_activation_id is null));
+  check (tick_index is not distinct from (record #>> '{input,tick,index}')::integer
+    and (tick_index is null or (tick_index>0 and repeat_occurrence_id is null and work_activation_id is null))) not valid;
 drop index harness_executions_legacy_attempt;
 create unique index harness_executions_legacy_attempt on harness_executions(run_id,workflow_node_id,attempt)
   where repeat_occurrence_id is null and work_activation_id is null and tick_index is null;

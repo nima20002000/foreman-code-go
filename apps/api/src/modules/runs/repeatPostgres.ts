@@ -924,8 +924,8 @@ export class RepeatRunRepository {
       await context.hooks.assertAdmissionLocked(context.sql, queued, ref)
       await this.effect(context, 'input.bind', queued.id, { ref, queued, inputDigest, bindings: [], tickIndex },
         [{ type: 'repeat.execution.queued', ref, execution: repeatExecutionIdentity(queued), inputDigest }], async () => {
-          await context.sql.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)
-            values($1,$2,null,$3,$4,$5)`, [slotId, context.scope.runId, nodeId, canonicalGraphJson(input, 4 * 1024 * 1024), inputDigest])
+          await context.sql.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest,tick_index)
+            values($1,$2,null,$3,$4,$5,$6)`, [slotId, context.scope.runId, nodeId, canonicalGraphJson(input, 4 * 1024 * 1024), inputDigest, tickIndex])
           await this.insertExecution(context, ref, queued, slotId, inputDigest, [], null)
         })
       return { kind: 'admitted', execution: queued }
@@ -941,7 +941,8 @@ export class RepeatRunRepository {
   private async insertExecution(context: Context, ref: RepeatNodeRef, execution: HarnessExecution, slotId: string,
     inputDigest: string, bindings: RepeatInputBinding[], previousExecutionId: string | null,
     workActivationId: string | null = null): Promise<void> {
-    if (repeatTickIndex(execution.input) === undefined) {
+    const tickIndex = repeatTickIndex(execution.input) ?? null
+    if (tickIndex === null) {
       await assertWorkflowExecutionCapacityLocked(context.sql, context.scope.runId, context.version, workActivationId)
     }
     const occurrenceId = ref.occurrence?.occurrenceId ?? null
@@ -955,9 +956,9 @@ export class RepeatRunRepository {
         values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [execution.id, context.scope.runId, slotId, occurrenceId,
         workActivationId, execution.attempt, previousExecutionId, JSON.stringify(identity)])
     } else {
-      await context.sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record)
-        values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [execution.id, context.scope.runId, ref.nodeId,
-        execution.agentId, execution.attempt, occurrenceId, JSON.stringify(execution)])
+      await context.sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,tick_index,record)
+        values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [execution.id, context.scope.runId, ref.nodeId,
+        execution.agentId, execution.attempt, occurrenceId, tickIndex, JSON.stringify(execution)])
       await context.sql.query(`insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,technical_attempt,previous_execution_id,identity)
         values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [execution.id, context.scope.runId, slotId, occurrenceId,
         execution.attempt, previousExecutionId, JSON.stringify(identity)])
