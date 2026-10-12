@@ -30,13 +30,19 @@ function inventory(installed = true) {
   })
 }
 
+/** The hover card opened by focusing a harness icon names its status in words. */
+async function expectDetails(button: HTMLElement, detail: RegExp) {
+  act(() => button.focus())
+  await waitFor(() => expect(button).toHaveAccessibleDescription(detail))
+}
+
 const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate')
 
 function mockRelocation() {
   const cancel = vi.fn()
   const animate = vi.fn(() => ({ cancel }))
   Object.defineProperty(HTMLElement.prototype, 'animate', { configurable: true, value: animate })
-  vi.spyOn(HTMLAnchorElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLAnchorElement) {
+  vi.spyOn(HTMLButtonElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLButtonElement) {
     const index = Array.from(this.parentElement!.children).indexOf(this)
     const { collapsed, width } = useNavigationUiStore.getState()
     return new DOMRect(collapsed ? 0 : 10 + index * width / 3, collapsed ? index * 34 : 0, 40, 32)
@@ -61,7 +67,8 @@ describe('HarnessStatusMenu', () => {
       expect(open).toHaveBeenCalledWith(expect.stringContaining(`/settings/harnesses?harness=${name.toLowerCase()}`), '_blank')
       open.mockRestore()
       expect(link.querySelector('.harness-status-light')).toHaveClass(`harness-status-light--${state}`)
-      expect(link).toHaveAttribute('title', expect.stringContaining('profile qualification are checked separately'))
+      await expectDetails(link, new RegExp(`${name}.*${label}.*profile qualification are checked separately`))
+      act(() => link.blur())
     }
   })
 
@@ -82,15 +89,13 @@ describe('HarnessStatusMenu', () => {
   it('shows an unverified status when inventory cannot be read', async () => {
     server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.error()))
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('button', { name: 'Codex: Unverified' }))
-      .toHaveAttribute('title', expect.stringContaining('Could not read installation status'))
+    await expectDetails(await screen.findByRole('button', { name: 'Codex: Unverified' }), /Could not read installation status/)
   })
 
   it('keeps absent observations unverified instead of assuming a harness is missing', async () => {
     server.use(http.get('/api/management/harnesses/registry', () => HttpResponse.json({ instances: [], installations: [] })))
     renderWithRouter(<HarnessStatusMenu />)
-    expect(await screen.findByRole('button', { name: 'Claude: Unverified' }))
-      .toHaveAttribute('title', expect.stringContaining('No installation inventory'))
+    await expectDetails(await screen.findByRole('button', { name: 'Claude: Unverified' }), /No installation inventory/)
   })
 
   it('does not display another Main computer inventory', async () => {
@@ -129,8 +134,7 @@ describe('HarnessStatusMenu', () => {
     queryClient.setQueryData(inventoryKey(), inventory())
     await screen.findByRole('button', { name: 'Codex: Installed' })
     await act(async () => { await queryClient.invalidateQueries({ queryKey: inventoryKey() }) })
-    expect(await screen.findByRole('button', { name: 'Codex: Unverified' }))
-      .toHaveAttribute('title', expect.stringContaining('Last inventory confirmed installation'))
+    await expectDetails(await screen.findByRole('button', { name: 'Codex: Unverified' }), /Last inventory confirmed installation/)
     expect(screen.queryByRole('button', { name: 'Codex: Not installed' })).not.toBeInTheDocument()
   })
 
