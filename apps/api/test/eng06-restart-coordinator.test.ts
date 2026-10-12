@@ -50,6 +50,43 @@ function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
 }
 
 describe('ENG06-A cold Run and Stop orchestration', () => {
+  it('leaves a running restart-detached turn available for original-result recovery', async () => {
+    const f = fixture({ detached: true })
+    f.state.fenced = false
+    const original = structuredClone(f.state.execution)
+    try {
+      assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), false)
+      assert.deepEqual(f.state.execution, original)
+      assert.deepEqual(f.calls, [])
+      assert.equal(f.snapshot.cleanupPending, false)
+      assert.equal(f.state.proof, undefined)
+    } finally { await f.owner.release() }
+  })
+
+  for (const unavailable of ['closed', 'finalized', 'fenced'] as const) {
+    it(`does not recover a running detached turn whose lifetime is ${unavailable}`, async () => {
+      const f = fixture({ detached: true, closed: unavailable === 'closed' })
+      f.state.fenced = unavailable === 'fenced'
+      f.state.finalized = unavailable === 'finalized'
+      try {
+        assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
+        assert.deepEqual(f.calls, ['request-cleanup'])
+        assert.equal(f.state.proof, undefined)
+      } finally { await f.owner.release() }
+    })
+  }
+
+  it('rejects a running detached turn whose saved session changed before recovery', async () => {
+    const f = fixture({ detached: true })
+    f.state.fenced = false
+    f.state.session!.nativeSessionId = 'replacement-session'
+    try {
+      await assert.rejects(f.coordinator.requestColdRunCleanup(f.owner), { code: 'NATIVE_WORKFLOW_CLOSURE_CONFLICT' })
+      assert.deepEqual(f.calls, [])
+      assert.equal(f.snapshot.cleanupPending, false)
+    } finally { await f.owner.release() }
+  })
+
   for (const state of ['starting', 'running', 'waiting'] as const) it(`fences a cold ${state} execution before reentry`, async () => {
     const f = fixture(); f.state.execution.state = state; f.state.fenced = false
     assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)

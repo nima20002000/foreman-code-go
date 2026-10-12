@@ -1675,7 +1675,7 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  /** Recover checkpoint-bound pending approvals after verified restart detachment.
+  /** Recover restart-detached turns and checkpoint-bound pending approvals.
    * Other cold nonterminal lifetimes require physical cleanup before settlement. */
   async requestColdRunCleanup(owner: RunOwnership, approvals: readonly DurableInteraction[] = [],
     signal?: AbortSignal): Promise<boolean> {
@@ -1685,6 +1685,8 @@ export class ApprovalExecutionCoordinator {
       for (const execution of executions) {
         if (this.ownedSessions.has(execution.id)) continue
         if (execution.state === 'queued' && !execution.nativeSessionId && !execution.startedAt) continue
+        if (execution.state === 'running' && execution.nativeSessionId
+          && await readDetachedWorkflowSession(owner, execution)) continue
         const pending = approvals.filter((item) => item.executionId === execution.id)
         if (execution.state === 'waiting' && pending.length
           && pending.every((item) => item.status === 'pending' && item.deliveryState === 'not_started')) {
