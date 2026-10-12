@@ -173,9 +173,8 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
         // A confirmed rollback restores the session after a query deadline. The
         // caller still receives the error and must reconcile an uncertain COMMIT.
         try {
-          await retryDatabaseTimeout(() => timeRuntimeOperation('db', 'sql.rollback', () => this.#client.query('rollback')), {
-            check: this.#assertOwner,
-          })
+          // Rollback only undoes this connection's uncommitted work, including after ownership loss.
+          await retryDatabaseTimeout(() => timeRuntimeOperation('db', 'sql.rollback', () => this.#client.query('rollback')))
         }
         catch (rollbackError) {
           if (!this.#unusable) this.#unusableCause = rollbackError

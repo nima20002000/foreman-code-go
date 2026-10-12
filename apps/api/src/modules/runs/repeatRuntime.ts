@@ -305,7 +305,7 @@ export function repeatSettlementPending(error: unknown): boolean {
 export interface RepeatRuntimeLifecycle {
   preflight(): Promise<void>
   markRunning(): Promise<void>
-  currentState(): Promise<{ executionState: string; stopRequested: boolean }>
+  currentState(): Promise<{ executionState: string; stopRequested: boolean; cleanupPending?: boolean }>
   persistWait(snapshot: import('./repeatGraph.js').RepeatCheckpoint): Promise<boolean>
   persistDirectionWait?(): Promise<void>
   /** Persist cleanup intent BEFORE native cancellation; false retains uncertainty. */
@@ -543,7 +543,7 @@ export async function executeRepeatRuntime(input: {
         signal.throwIfAborted()
         if (firstFailure) throw firstFailure
         const current = await readCurrentState()
-        if (current.stopRequested || current.executionState === 'completed') throw error
+        if (current.stopRequested || current.cleanupPending || current.executionState === 'completed') throw error
         // Yield to the caller when another REAL approval is outstanding. Holding
         // this callback could prevent the orchestrator from answering that wait.
         if (await bookkeeping(async () => input.lifecycle.persistWait(await readCheckpoint()))) return

@@ -318,7 +318,8 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   async createSession(input: NativeSessionStart, signal?: AbortSignal): Promise<NativeSessionReference> {
     if (this.closing) throw new DomainError('NATIVE_MANAGER_DISPOSED', 'The captured native manager is disposed.', 409)
     const session = await this.manager.createSession(input, signal)
-    await retryDatabaseTimeout(() => this.ensure(session, 'idle'), { signal })
+    // Return a late-created session to its owner so Stop can close the captured transport.
+    if (!signal?.aborted) await this.ensure(session, 'idle')
     return session
   }
 
@@ -486,8 +487,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           lost = () => controller.abort(lease!.guard.signal.reason)
           lease.guard.signal.addEventListener('abort', lost, { once: true })
           await lease.guard.check()
-          await retryDatabaseTimeout(() => this.coordination.bindLaneTurn(lease!.fence, input.clientCorrelationId),
-            { signal: lease.guard.signal })
+          await this.coordination.bindLaneTurn(lease.fence, input.clientCorrelationId)
           lease.observedStatus = 'uncertain'
           delete lease.providerId
           this.active.set(observed.nativeSessionId, lease)
@@ -549,8 +549,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     let submitted = false
     try {
       await this.requireIdle(this.manager, session, input.clientCorrelationId, lease)
-      await retryDatabaseTimeout(() => this.coordination.bindLaneTurn(lease.fence, input.clientCorrelationId),
-        { signal: lease.guard.signal })
+      await this.coordination.bindLaneTurn(lease.fence, input.clientCorrelationId)
       this.active.set(session.nativeSessionId, lease)
       const { onTurnOffered, onSessionReady, ...nativeInput } = input
       if (onSessionReady) {

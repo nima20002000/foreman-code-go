@@ -4,11 +4,14 @@ import { DomainError } from '../errors.js'
 
 function isTransientRefreshFailure(error: unknown): boolean {
   if (isDatabaseTimeout(error)) return true
-  if (error instanceof DomainError) return error.status === 503 && error.details?.retryable === true
+  if (error instanceof DomainError) {
+    if (error.code === 'DATABASE_READ_TIMEOUT') return false
+    return error.status === 503 && error.details?.retryable === true
+  }
   if (!error || typeof error !== 'object') return false
   const code = 'code' in error ? error.code : undefined
   if (typeof code === 'string' && (code.startsWith('08') || [
-    '40001', '40P01', '55P03', '57014', '53300', '57P01', '57P02', '57P03',
+    '40001', '40P01', '55P03', '53300', '57P01', '57P02', '57P03',
     'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH',
   ].includes(code))) return true
   return error instanceof Error && [

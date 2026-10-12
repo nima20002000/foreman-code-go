@@ -8,6 +8,8 @@ import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
+import { retryDatabaseTimeout } from '../src/infrastructure/databaseTimeout.js'
+import { maintainCredential } from '../src/modules/harnesses/credentialHeartbeat.js'
 
 function gate() {
   let resolve!: () => void
@@ -15,10 +17,33 @@ function gate() {
   return { promise, resolve }
 }
 
+it.each(['canceling statement due to user request', 'Native event persistence was interrupted.'])(
+  'does not retry query cancellation or database failure: %s', async message => {
+    const error = Object.assign(new Error(message), { code: '57014' })
+    const write = vi.fn().mockRejectedValue(error)
+    await expect(retryDatabaseTimeout(write)).rejects.toBe(error)
+    expect(write).toHaveBeenCalledTimes(1)
+    vi.useFakeTimers()
+    const check = vi.fn().mockRejectedValue(error)
+    const onFailure = vi.fn()
+    const stop = maintainCredential({
+      expiresAt: () => new Date(Date.now() + 600_000).toISOString(),
+      check, refresh: async () => {}, signal: new AbortController().signal, onFailure,
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(check).toHaveBeenCalledTimes(1)
+      expect(onFailure).toHaveBeenCalledWith(error)
+    } finally {
+      await stop()
+      vi.useRealTimers()
+    }
+  },
+)
+
 it('keeps graph work and an interval Agent alive through database timeouts and reads their original results through MCP', async () => {
   const fixture = makeCurrentWorkflowFixture(randomUUID())
   const watcher = fixture.version.definition.nodes[0]!
-  if (watcher.kind === 'job') throw new Error('Expected an Agent')
   watcher.interval = { everySeconds: 10 }
   fixture.version.approval = { handler: 'native' }
   fixture.version.definition.approval = { handler: 'native' }
@@ -159,3 +184,68 @@ it('rolls back a real PostgreSQL statement deadline and keeps the same connectio
     await db.close()
   }
 })
+
+it('closes the original session when authenticated MCP Stop interrupts active database retries', async () => {
+  const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
+  const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
+  const flush = gate()
+  const finish = gate()
+  let published = false
+  let timedOut = false
+  let running: Promise<unknown> | undefined
+  const append = f.runs.appendNativeEvents.bind(f.runs)
+  vi.spyOn(f.runs, 'appendNativeEvents').mockImplementation(async (...args) => {
+    if (args[0].some(({ event }) => event.payload.databaseTimeoutTest === true)) {
+      timedOut = true
+      throw new Error('Query read timeout')
+    }
+    await append(...args)
+    published = true
+  })
+  const startTurn = f.provider.startTurn.bind(f.provider)
+  vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {
+    for await (const event of startTurn(session, input)) {
+      yield event
+      if (event.type !== 'turn.started') continue
+      await flush.promise
+      yield { sequence: 10, type: 'native.notification', occurredAt: new Date().toISOString(),
+        payload: { databaseTimeoutTest: true } }
+      await finish.promise
+    }
+  })
+  try {
+    running = f.engine.start(f.f.run.id).catch((error: unknown) => error)
+    await readUntil(async () => published, Boolean,
+      { timeoutMs: 10_000, description: 'first native events persisted' })
+    const before = await f.runs.getDetails(f.f.run.workspaceId, f.f.run.id)
+    const execution = before!.executions[0]!
+    flush.resolve()
+    await readUntil(async () => timedOut, Boolean,
+      { timeoutMs: 10_000, description: 'active database retry' })
+    const scope = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
+    const reader = await f.access.issue({ name: 'Read-only Stop caller', audience: 'operator',
+      expiresAt: new Date(Date.now() + 60_000),
+      grants: [{ actions: ['runs:read'], scope: { workspaceIds: [scope.workspaceId] } }] })
+    const readerClient = await f.connect(reader.token)
+    const denied = await readerClient.callTool({ name: 'run_stop', arguments: { ...scope, commandId: randomUUID() } })
+    expect(denied.isError).toBe(true)
+    expect(decodeMcpToolResult(denied)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+    const stopping = f.client.callTool({ name: 'run_stop', arguments: { ...scope, commandId: randomUUID() } })
+    finish.resolve()
+    expect((await stopping).isError).not.toBe(true)
+    await running
+    const readback = await f.client.callTool({ name: 'run_get', arguments: { ...scope, detail: 'full' } })
+    expect(readback.isError).not.toBe(true)
+    expect(decodeMcpToolResult(readback)).toMatchObject({ run: { executionState: 'completed', outcome: 'canceled' },
+      executions: [{ id: execution.id, nativeSessionId: execution.nativeSessionId, state: 'completed' }] })
+    expect(f.provider.closedSessions.has(execution.nativeSessionId!)).toBe(true)
+    expect(f.provider.counts.starts).toBe(1)
+    expect((await f.runs.getRepeatSnapshot(f.f.run.id)).cleanupPending).toBe(false)
+  } finally {
+    flush.resolve()
+    finish.resolve()
+    await running
+    await f.close()
+    vi.restoreAllMocks()
+  }
+}, 60_000)

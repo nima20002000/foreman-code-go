@@ -1,4 +1,4 @@
-import { retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
+import { isDatabaseTimeout, retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { runtimeTimingPoint, timeRuntimeOperation, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
 import { inspectNativeResponse } from '../harnesses/responseAvailability.js'
@@ -1868,9 +1868,11 @@ export class ApprovalExecutionCoordinator {
     ensured: { execution: HarnessExecution; created: boolean }, repeat: RepeatNativeObservationStore): Promise<ApprovalExecutionObservation> {
     const credentialFailure = new AbortController()
     let signal = AbortSignal.any([input.signal, credentialFailure.signal])
-    const bookkeeping = <T>(work: () => Promise<T>) => retryDatabaseTimeout(work, {
-      signal, check: () => input.owner.assertOwned(),
-    })
+    let repeatLaunch = false
+    let nativeTurnOffered = false
+    // Failed startup closes the created session before any native turn can be offered.
+    const bookkeeping = <T>(work: () => Promise<T>) => repeatLaunch && !nativeTurnOffered
+      ? work() : retryDatabaseTimeout(work, { signal, check: () => input.owner.assertOwned() })
     let stopRenewal: (() => Promise<void>) | undefined
     signal.throwIfAborted()
     assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval,
@@ -1880,8 +1882,6 @@ export class ApprovalExecutionCoordinator {
     const validateContinuation = () => bookkeeping(async () => {
       await this.validateContinuation?.(execution.id, signal)
     })
-    let repeatLaunch = false
-    let nativeTurnOffered = false
     const assertBoundary = async () => {
       signal.throwIfAborted()
       input.owner.assertOwned()
@@ -2064,8 +2064,10 @@ export class ApprovalExecutionCoordinator {
           resolved!.markResident?.()
           const createdEvidence = this.captureNative(input.owner, execution, { type: 'session_created', session: observed }, 'live', setupLane ?? manager!.capturedLease(observed))
           execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: observed.nativeSessionId, state: 'running' })
-          await bookkeeping(() => this.runs.updateExecution(execution, input.owner, createdEvidence))
-          ownedSession!.execution = execution
+          await bookkeeping(async () => {
+            await this.runs.updateExecution(execution, input.owner, createdEvidence)
+            ownedSession!.execution = execution
+          })
           await validateContinuation()
           signal.throwIfAborted()
           input.owner.assertOwned()
@@ -2109,6 +2111,7 @@ export class ApprovalExecutionCoordinator {
               onTurnOffered: () => { nativeTurnOffered = true },
             }, signal)
           }
+          let nativeEventsPersisted = false
           for await (const events of nativeEvents) {
             signal.throwIfAborted()
             await bookkeeping(() => this.budgets.assertActive(execution.id))
@@ -2118,8 +2121,21 @@ export class ApprovalExecutionCoordinator {
               return { event: original, evidence: this.captureNative(input.owner, execution,
                 { type: 'event', event: original }, 'live', manager!.capturedLease(session!)) }
             })
-            await timeRuntimeOperation('engine', 'native.persist_batch',
-              () => bookkeeping(() => this.runs.appendNativeEvents(frames, input.owner, lease)), { count: frames.length })
+            await timeRuntimeOperation('engine', 'native.persist_batch', async () => {
+              const append = () => this.runs.appendNativeEvents(frames, input.owner, lease)
+              if (nativeEventsPersisted) return bookkeeping(append)
+              // An unconfirmed first journal write yields to recovery of the original submission.
+              try {
+                await append()
+                nativeEventsPersisted = true
+              } catch (cause) {
+                if (!isDatabaseTimeout(cause)) throw cause
+                const error = new DomainError('NATIVE_PUBLICATION_UNCERTAIN',
+                  'The first native event publication could not be confirmed.', 409)
+                error.cause = cause
+                throw error
+              }
+            }, { count: frames.length })
             const history = await manager.history(session!, signal)
             const waiting = await observePending(history, events.at(-1), lease)
             if (waiting) return waiting
@@ -2270,8 +2286,13 @@ export class ApprovalExecutionCoordinator {
       }
       if ((resolved && !manager) || isLeaseLost(rawError)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
-      if (sessionWithoutTurn) {
-        const stored = (await bookkeeping(() => repeat.readExecution(execution.id))).execution
+      // Restart's cleanup intent can reject SQL preflight before it observes the abort.
+      const restarting = signal.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
+      if (restarting) throw error
+      let held = true
+      try { input.owner.assertOwned() } catch { held = false }
+      if (sessionWithoutTurn && held) {
+        const stored = (await repeat.readExecution(execution.id)).execution
         assertSameRepeatExecution(ensured.execution, stored)
         ownedSession!.execution = stored
       }
@@ -2279,11 +2300,6 @@ export class ApprovalExecutionCoordinator {
       // A transport error is not an original terminal result and never makes
       // a technical retry eligible. Fence future work, close the captured
       // manager, then let the repository prove a negative disposition.
-      let held = true
-      try { input.owner.assertOwned() } catch { held = false }
-      // Restart's cleanup intent can reject SQL preflight before it observes the abort.
-      const restarting = signal.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
-      if (restarting) throw error
       if (held) {
         let code = 'NATIVE_EXECUTION_FAILED'
         if (error instanceof HarnessExecutionError) code = error.result.error?.code ?? code

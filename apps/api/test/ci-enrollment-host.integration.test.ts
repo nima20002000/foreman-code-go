@@ -61,7 +61,7 @@ describe.skipIf(!postgresEnabled)('Host CI enrollment', () => {
       f.computers[1]!.buildEnabled = false
       f.computers[2]!.buildEnabled = false
       vi.spyOn(f.profiles, 'list').mockResolvedValue({ profiles: [], approvals: [] })
-      f.inventory.hostStatus = vi.fn(async () => ({ operation: 'status', ready: false,
+      f.inventory.hostStatus = vi.fn(async () => ({ operation: 'status' as const, ready: false,
         reasons: ['Connect GitHub on this computer.'], cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [] }))
       const client = await f.connect()
       const input = { workspaceId: f.workspaceId, target: f.computers[0]!.target,
