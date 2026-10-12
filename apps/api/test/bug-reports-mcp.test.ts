@@ -103,6 +103,53 @@ function value(result: Awaited<ReturnType<Client['callTool']>>) {
   return decodeMcpToolResult(result)
 }
 
+it.each(['open', 'fixed', 'wont-fix', 'duplicate'] as const)(
+  'returns only summary fields to other reporters when repeating a %s report, including retries', async status => {
+    const f = await fixture()
+    try {
+      const owner = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update'])
+      const input = reportInput()
+      let saved = BugReportSchema.parse(BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+        name: 'bug_report', arguments: input,
+      }))).report)
+      if (status !== 'open') {
+        const target = status === 'duplicate'
+          ? BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+            name: 'bug_report', arguments: { ...reportInput(), title: 'Canonical failure' },
+          }))).report
+          : undefined
+        const closed = BugReportCloseResultSchema.parse(value(await owner.client.callTool({
+          name: 'bug_reports_close', arguments: {
+            commandId: randomUUID(), status, note: 'Private resolution details',
+            reports: [{ reportId: saved.id, expectedRevision: saved.revision }],
+            ...(target ? { duplicateOfId: target.id } : {}),
+          },
+        })))
+        saved = target ? BugReportSchema.parse(target) : closed.reports[0]!
+      }
+      const reporter = await f.operator(['bug_reports:report'])
+      const summary = { id: saved.id, status: status === 'fixed' ? 'open' : saved.status, title: saved.title }
+      for (const client of [f.worker, reporter.client]) {
+        expect((await client.callTool({ name: 'bug_report_get', arguments: { reportId: saved.id } })).isError).toBe(true)
+        const repeatInput = { ...input, commandId: randomUUID() }
+        const repeat = BugReportCreateResultSchema.parse(value(await client.callTool({
+          name: 'bug_report', arguments: repeatInput,
+        })))
+        expect(repeat.report).toEqual(summary)
+        expect(repeat.deduplicated).toBe(true)
+        expect(BugReportCreateResultSchema.parse(value(await client.callTool({
+          name: 'bug_report', arguments: repeatInput,
+        })))).toEqual({ ...repeat, replayed: true })
+      }
+      const readback = BugReportSchema.parse(value(await owner.client.callTool({
+        name: 'bug_report_get', arguments: { reportId: saved.id },
+      })))
+      expect(readback).toMatchObject({ ...summary, occurrenceCount: saved.occurrenceCount + 2,
+        tried: saved.tried, happened: saved.happened, expected: saved.expected, reporter: saved.reporter })
+    } finally { await f.close() }
+  }, 60_000,
+)
+
 it('reports from a scoped Agent and lets Operator discover, read and triage persisted reports with safe retries', async () => {
   const f = await fixture()
   try {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   BugReportCloseInputSchema,
   BugReportCreateInputSchema,
+  BugReportCreateResultSchema,
   BugReportListInputSchema,
   BugReportSchema,
   BugReportUpdateInputSchema,
@@ -18,6 +19,17 @@ const input = {
 } as const
 
 describe('bug report contracts', () => {
+  it('accepts a repeat summary containing only the report id, status and title', () => {
+    const result = {
+      report: { id: 'bug-report-one', status: 'open', title: input.title },
+      deduplicated: true, outcome: 'repeat', message: 'Already filed.', replayed: false,
+    }
+    expect(BugReportCreateResultSchema.parse(result)).toEqual(result)
+    expect(BugReportCreateResultSchema.safeParse({
+      ...result, report: { ...result.report, tried: input.tried },
+    }).success).toBe(false)
+  })
+
   it('accepts reports without caller-selected scope and rejects forged reporter metadata', () => {
     expect(BugReportCreateInputSchema.parse(input)).toEqual(input)
     expect(BugReportCreateInputSchema.safeParse({ ...input, reporter: { name: 'Someone else' } }).success).toBe(false)

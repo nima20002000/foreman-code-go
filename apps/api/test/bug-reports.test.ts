@@ -67,6 +67,33 @@ async function fixture(pool = database.pool) {
 }
 
 describe('bug report HTTP persistence', () => {
+  it('returns only a summary for another reporter and strips old full-report command receipts on replay', async () => {
+    const f = await fixture()
+    const original = BugReportSchema.parse(BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', f.input(),
+    )).json()).report)
+    const reporter = await f.issue([{ actions: ['bug_reports:report'], scope: { workspaceIds: [f.workspaceId] } }])
+    const input = f.input()
+    const response = await f.request('POST', '/api/management/bug-reports', input, reporter.token)
+    expect(response.statusCode).toBe(200)
+    const repeat = BugReportCreateResultSchema.parse(response.json())
+    const summary = { id: original.id, status: original.status, title: original.title }
+    expect(repeat.report).toEqual(summary)
+    const saved = await f.bugReports.get(f.owner.principal, original.id)
+    expect(saved).toMatchObject({ occurrenceCount: 2, revision: 2 })
+    await database.pool.query(
+      `update management_command_receipts set result=$2::jsonb
+       where principal_id=$1 and operation='bug_reports.report'`,
+      [reporter.principal.id, JSON.stringify({ ...repeat, report: saved })],
+    )
+    const replay = BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', input, reporter.token,
+    )).json())
+    expect(replay.report).toEqual(summary)
+    expect(replay.replayed).toBe(true)
+    expect(await f.bugReports.get(f.owner.principal, original.id)).toEqual(saved)
+  })
+
   it('deduplicates repeated reports, replays commands, and reads saved status with revision conflicts', async () => {
     const f = await fixture()
     const input = f.input()
