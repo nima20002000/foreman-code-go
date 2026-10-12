@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentChatExecutionActivityPageSchema } from '@foreman-code/contracts/agent-chat'
+import { AgentChatExecutionActivityPageSchema, type AgentChatExecutionSummary } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -111,7 +111,8 @@ describe('Agent chat live execution activity projection', () => {
 })
 
 interface ExecutionFixture {
-  id: string; tick: number | null; state: string; createdAt: Date; events: ExecutionEventRow[]; recordRevision: number
+  id: string; tick: number | null; state: AgentChatExecutionSummary['state']
+  createdAt: Date; events: ExecutionEventRow[]; recordRevision: number
 }
 
 function service() {
@@ -164,7 +165,11 @@ describe('Agent chat live execution activity over HTTP', () => {
     const read = async (params: Record<string, string>, token = 'reader') => app.inject({ method: 'GET',
       url: `/api/workspaces/${workspaceId}/agent-chat/execution-activity?${new URLSearchParams({ ...query, ...params })}`,
       headers: { authorization: `Bearer ${token}` } })
-    const page = async (params: Record<string, string>) => AgentChatExecutionActivityPageSchema.parse((await read(params)).json())
+    const page = async (params: Record<string, string>) => {
+      const response = await read(params)
+      expect(response.statusCode, response.body).toBe(200)
+      return AgentChatExecutionActivityPageSchema.parse(response.json())
+    }
     try {
       const first = await page({})
       expect(first.mode).toBe('snapshot')
@@ -206,7 +211,7 @@ describe('Agent chat live execution activity over HTTP', () => {
 
       live.events.push(event('unfinished', 'item.started', { item: command('unfinished', 'inProgress', null) }))
       const beforeStop = await page({})
-      live.state = 'canceled'
+      live.state = 'completed'
       live.recordRevision += 1
       let stopped = await page({ cursor: beforeStop.cursor!, limit: '1' })
       const terminalItems = [...stopped.items]

@@ -129,8 +129,15 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
         [JSON.stringify(events)])
     }
     const state = async (value: 'failed' | 'canceled') => {
-      await database.pool.query(`update harness_executions set record=jsonb_set(record,'{state}',to_jsonb($2::text))
-        where id=$1`, [candidate.id, value])
+      const stored = (await database.pool.query<{ record: Record<string, unknown> }>(
+        'select record from harness_executions where id=$1', [candidate.id])).rows[0]!
+      const terminal = HarnessExecutionSchema.parse({ ...stored.record, state: 'completed',
+        result: { outcome: value, ...(value === 'failed' ? {
+          error: { code: 'COMMAND_FAILED', message: 'The command failed', retryable: false },
+        } : {}) }, finishedAt: new Date().toISOString(),
+      })
+      await database.pool.query('update harness_executions set record=$2::jsonb where id=$1',
+        [candidate.id, JSON.stringify(terminal)])
     }
     return { executionId: candidate.id, transfers, managers, append, state, http, mcpPage,
       denied: async () => {

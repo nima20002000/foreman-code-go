@@ -264,7 +264,7 @@ function projectionRevision(native: string, execution: string) {
   return String(BigInt(native) + BigInt(execution))
 }
 function terminalState(state: AgentChatExecutionSummary['state']) {
-  return ['completed', 'failed', 'canceled', 'interrupted'].includes(state)
+  return state === 'completed'
 }
 function fitItem(item: AgentChatExecutionItem, budget: number): AgentChatExecutionItem | undefined {
   let bounded = item

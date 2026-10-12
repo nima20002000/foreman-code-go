@@ -110,7 +110,7 @@ describe('Board Agent chat live execution activity', () => {
     const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
     const oldPlan = { ...message('execution-check', 'plan', '1', 'Updated original plan'), revision: '301' }
     await pollActivity(mounted, livePage([oldPlan], '301', { hasEarlierItems: true }))
-    expect(within(check).getByText('Updated original plan')).toBeVisible()
+    expect(await within(check).findByText('Updated original plan')).toBeVisible()
 
     const before: string[] = []
     server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', ({ request }) => {
@@ -158,7 +158,7 @@ describe('Board Agent chat live execution activity', () => {
       { ...tool('execution-main', 'older-command', '5', 'earlier status', 'unknown', 'Latest older output'), revision: '12' },
       message('execution-check', 'result', '5', 'New check transcript'),
     ]), executions: [finished, executions('completed')[1]!], cursor: 'after-check', hasEarlierExecutions: true })
-    expect(screen.getByText('New check transcript')).toBeVisible()
+    expect(await screen.findByText('New check transcript')).toBeVisible()
 
     const items = mode === 'earlier' ? [
       tool('execution-main', 'older-command', '5', 'earlier status', 'running', 'Old output'),
@@ -167,6 +167,7 @@ describe('Board Agent chat live execution activity', () => {
     await finishRead(mounted.client, () => pending.resolve({ ...snapshot('running', items),
       mode, executions: [main], cursor: undefined }))
     const transcript = screen.getByRole('region', { name: 'Workflow execution transcript' })
+    if (mode === 'earlier') expect(await within(transcript).findByText('Older execution note')).toBeVisible()
     expect(within(transcript).getByText('New check transcript')).toBeVisible()
     expect(within(transcript).getByRole('region', { name: 'Execution · Completed' })).toBeVisible()
     expect(within(transcript).getByRole('region', { name: 'Interval check 1 · Completed' })).toBeVisible()
@@ -174,8 +175,7 @@ describe('Board Agent chat live execution activity', () => {
     expect(within(transcript).getAllByText('Unconfirmed')[0]).toBeVisible()
     expect(within(transcript).getByText('Newest 20 executions')).toBeVisible()
     expect(activityData(mounted.client)?.cursor).toBe('after-check')
-    if (mode === 'earlier') expect(within(transcript).getByText('Older execution note')).toBeVisible()
-    else expect(within(transcript).queryByText('Old full output')).not.toBeInTheDocument()
+    if (mode === 'item') expect(within(transcript).queryByText('Old full output')).not.toBeInTheDocument()
   })
 
   it('bounds live retention and rendering while history stays browsable during polling', async () => {
@@ -185,6 +185,7 @@ describe('Board Agent chat live execution activity', () => {
     const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
     for (const end of [400, 600, 800]) {
       await pollActivity(mounted, livePage(numberedMessages(end - 199, end), String(end)))
+      expect(await within(check).findByText(`Activity ${end}`)).toBeVisible()
       expect(activityData(mounted.client)?.items.length).toBeLessThanOrEqual(200)
       expect(within(check).getAllByRole('listitem').length).toBeLessThanOrEqual(200)
     }
@@ -209,7 +210,7 @@ describe('Board Agent chat live execution activity', () => {
     await finishRead(mounted.client, () => pending.resolve({
       ...livePage(numberedMessages(401, 600), '800', { hasEarlierItems: true }), mode: 'earlier', cursor: undefined,
     }))
-    expect(within(check).getByText('Activity 401')).toBeVisible()
+    expect(await within(check).findByText('Activity 401')).toBeVisible()
     expect(within(check).queryByText('Activity 850')).not.toBeInTheDocument()
     await pollActivity(mounted, livePage(numberedMessages(851, 900), '900'))
     expect(within(check).getByText('Activity 401')).toBeVisible()
@@ -220,8 +221,9 @@ describe('Board Agent chat live execution activity', () => {
     fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
     await waitFor(() => expect(before).toEqual(['601', '401', '201']))
     fireEvent.click(within(check).getByRole('button', { name: 'Back to latest activity' }))
-    expect(within(check).getByText('Activity 900')).toBeVisible()
+    expect(await within(check).findByText('Activity 900')).toBeVisible()
     await pollActivity(mounted, livePage(numberedMessages(901, 950), '950'))
+    expect(await within(check).findByText('Activity 950')).toBeVisible()
     await finishRead(mounted.client, () => abandoned.resolve({
       ...livePage(numberedMessages(1, 200), '900'), mode: 'earlier', cursor: undefined,
     }))
@@ -241,6 +243,7 @@ describe('Board Agent chat live execution activity', () => {
     const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
     await pollActivity(mounted, livePage(items.slice(10, 20), '20'))
     await pollActivity(mounted, livePage(items.slice(20), '30'))
+    expect(await within(check).findByText(`Large activity 30: ${content}`)).toBeVisible()
     const retained = activityData(mounted.client)!
     const bytes = retained.items.reduce((total, item) => total + new TextEncoder().encode(JSON.stringify(item)).byteLength, 0)
     expect(bytes).toBeLessThanOrEqual(256 * 1024)
