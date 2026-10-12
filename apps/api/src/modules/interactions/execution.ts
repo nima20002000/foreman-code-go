@@ -2204,7 +2204,12 @@ export class ApprovalExecutionCoordinator {
           ? rawError.result.outcome === 'failed' ? rawError.result.error?.code ?? null : rawError.result.outcome
           : error instanceof Error ? error.constructor.name : typeof error,
         reason: error instanceof DomainError && typeof (error.details as { reason?: unknown } | undefined)?.reason === 'string'
-          ? (error.details as { reason: string }).reason : undefined }, 'Workflow native execution failed')
+          ? (error.details as { reason: string }).reason : undefined,
+        // Source locations only (no message text) so unclassified failures stay diagnosable.
+        at: rawError instanceof Error && !(rawError instanceof DomainError) ? (rawError.stack ?? '').split('\n')
+          .filter(line => line.trimStart().startsWith('at ')).slice(0, 4)
+          .map(line => line.replace(/^.*?(\/dist\/|\/src\/)/, '').replace(/[()]/g, '').trim()) : undefined },
+      'Workflow native execution failed')
       if (execution.state === 'completed' && !signal.aborted) {
         input.owner.assertOwned()
         throw error
