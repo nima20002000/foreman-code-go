@@ -316,12 +316,14 @@ export class PostgresSourceService implements SourceAdmissionPort {
    * (including an Agent's snapshot bundle), otherwise from the workspace folder on Main. */
   async approveProject(principal: ManagementPrincipal, input: {
     workspaceId: string; commandId: string; commit?: string
+    executablePolicy?: SourceManifest['executablePolicy']
     snapshot?: { commit: string; baseCommit: string; bundle: Buffer }
   }, options: {
     source?: Transport
     preparedRepository?: { repository: string; clone: string; commit: string; locationRevision: number }
   } = {}): Promise<ApprovedSource> {
     const source = options.source ?? 'mcp'
+    const executablePolicy = input.executablePolicy ?? 'preserve-approved'
     const prepared = options.preparedRepository
     await this.transaction(async sql => authorizeSource(sql, principal, 'sources:approve', input.workspaceId))
     const configured = await this.transaction(async sql => WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
@@ -336,6 +338,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       repository = { repository: prepared.repository, clone: prepared.clone, prepared: true }
     }
     const payload = { workspaceId: input.workspaceId, commandId: input.commandId, repository: configured ?? null,
+      ...(input.executablePolicy ? { executablePolicy } : {}),
       ...(input.commit ? { commit: input.commit } : {}),
       ...(prepared ? { prepared } : {}),
       ...(input.snapshot ? { snapshot: { commit: input.snapshot.commit, baseCommit: input.snapshot.baseCommit,
@@ -389,7 +392,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         if (!repository) await this.locations.revalidateSnapshot(input.workspaceId, location, 'read-only')
         return SourceApproveInputSchema.parse({ workspaceId: input.workspaceId, commandId: input.commandId,
           expectedLocationRevision: location.locationRevision, commit, approvedPaths,
-          executablePolicy: 'preserve-approved' })
+          executablePolicy })
       },
     })
     return (await this.approve(principal, source, captured.value, repository)).value
