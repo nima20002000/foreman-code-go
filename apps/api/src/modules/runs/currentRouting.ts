@@ -38,7 +38,7 @@ export function currentInitialPrompt(node: { initialPrompt?: string | undefined;
       'For a work_request activation, use work.request.requestId.',
       'For correlated feedback, use {"kind":"return","requestId":<the exact request ID in your received work>,"outcome":"accepted" or "needs_changes"}.',
       'An accepted return approves the deliverable. Any remaining findings are preserved for direction and do not automatically reactivate the requester. Use needs_changes to request another revision.',
-      'To finish this activation, use {"kind":"finish"}; on a choice node this ends the branch without selecting a downstream route. Include a declared outcome to select a final downstream branch. Include unresolved findings honestly.',
+      'To finish this activation, use {"kind":"finish"}; without saved choices and with empty remainingFindings this hands latestDeliverable to every saved downstream Agent. On a choice node this ends the branch without selecting a downstream route. Include a declared outcome to select a final downstream branch. Include unresolved findings honestly.',
       'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
       'remainingFindings lists unresolved task requirements, defects, or blockers that need further work or owner direction. Use [] when the assigned work is complete.',
       'Finishing or returning accepted with non-empty remainingFindings makes the Run wait for owner direction; it does not mean successful completion of the workflow.',

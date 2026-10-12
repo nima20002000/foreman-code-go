@@ -1,5 +1,5 @@
-import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import type { CiExecutionSuite, CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
@@ -273,7 +273,15 @@ export class CircleCiProvider implements CloudProvider {
   async artifacts(run: CloudRun, directory: string) {
     const { job } = await this.job(run)
     if (!job) return noArtifacts
-    await this.ports.run('circleci', ['job', 'artifact', job.id, '--output', directory], { timeoutMs: 120_000 })
+    // Only the durations artifact is read: downloading every integration log artifact outlasts any timeout.
+    const listed = await this.ports.run('circleci', ['job', 'artifact', job.id, '--json'], { timeoutMs: 60_000 })
+    if (listed.code !== 0) return noArtifacts
+    await mkdir(directory, { recursive: true })
+    for (const artifact of (JSON.parse(listed.stdout) as { path: string; url: string }[])
+      .filter(value => value.path.startsWith('durations/'))) {
+      await this.ports.run('curl', ['-fsSL', '--max-time', '60', '-o', join(directory, basename(artifact.path)), artifact.url],
+        { timeoutMs: 70_000 })
+    }
     return readArtifacts(directory)
   }
 
