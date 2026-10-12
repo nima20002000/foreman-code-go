@@ -128,7 +128,7 @@ async function createFixture(placement?: AcceptedNodePlacement) {
     getForExecution: async () => undefined, cancelPendingForExecution: async () => undefined,
     cancelPendingForRun: async () => undefined }
   const budgets = { ensure: async () => undefined, remaining: async () => 300_000, assertActive: async () => undefined,
-    finish: async () => undefined, stop: async () => undefined }
+    resume: async () => undefined, finish: async () => undefined, stop: async () => undefined }
   const captures = createWorkflowNativeCaptureChannel()
   let closed: Awaited<ReturnType<WorkflowClosureStore['read']>>
   const closures: WorkflowClosureStore = {
