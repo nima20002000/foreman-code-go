@@ -124,6 +124,7 @@
   "apps/api/src/modules/harnesses/codexMcpReadiness.ts",
   "apps/api/src/modules/harnesses/codexModelCatalog.ts",
   "apps/api/src/modules/harnesses/codexNativeOutput.ts",
+  "apps/api/src/modules/harnesses/codexNativeTools.ts",
   "apps/api/src/modules/harnesses/codexNormalization.ts",
   "apps/api/src/modules/harnesses/codexOutputProtection.ts",
   "apps/api/src/modules/harnesses/codexProtocol.ts",

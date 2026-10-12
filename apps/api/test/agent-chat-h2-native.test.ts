@@ -94,11 +94,18 @@ beforeEach(() => {
   vi.stubEnv('GRAPHQL_MCP_TOKEN', 'must-never-reach-chat')
   vi.stubEnv('DATABASE_URL', 'must-never-reach-chat')
   vi.mocked(runCommand).mockImplementation(async (_binary, args) => {
-    if (args[0] === 'mcp' && args[1] === 'list') return { exitCode: 0, stdout: JSON.stringify(codexServers.map((name) => ({ name }))), stderr: '' }
+    const launcher = appLauncherConnection()
+    if (args[0] === 'mcp' && args[1] === 'list') {
+      const entries = codexServers.map(name => ({
+        name,
+        transport: { type: 'stdio', command: launcher.executable,
+          args: launcher.arguments, env_vars: launcher.environmentVariables },
+      }))
+      return { exitCode: 0, stdout: JSON.stringify(entries), stderr: '' }
+    }
     assert.deepEqual(args.slice(0, 2), ['mcp', 'get'])
     if (!codexServers.includes(args[2]!) && args[2] !== 'docs') return { exitCode: 1, stdout: '',
       stderr: `Error: No MCP server named '${args[2]}' found.` }
-    const launcher = appLauncherConnection()
     return { exitCode: 0, stdout: JSON.stringify({ name: args[2], enabled: true, required: args[2] === 'graphql',
       transport: { type: 'stdio', command: launcher.executable, args: launcher.arguments, env_vars: launcher.environmentVariables } }), stderr: '' }
   })
@@ -122,12 +129,16 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
         assert.equal(session.nativeSessionId, operation === 'attach' ? 'run-source' : 'chat-child')
         assert.deepEqual(start, before); assert.equal(start.environment, undefined)
         const launched = vi.mocked(spawnOwnedStdioProcess).mock.calls[0]![0]
-        assert.deepEqual(launched.args, ['app-server', '--stdio', '-c', 'mcp_servers.graphql.enabled=false'])
+        assert.deepEqual(launched.args, ['app-server', '--stdio',
+          '-c', `mcp_servers.graphql.command=${JSON.stringify(appLauncherConnection().executable)}`,
+          '-c', 'mcp_servers.graphql.enabled=false'])
         assert.equal(launched.environment?.GRAPHQL_MCP_TOKEN, undefined); assert.equal(launched.environment?.DATABASE_URL, undefined)
         const method = operation === 'create' ? 'thread/start' : operation === 'attach' ? 'thread/resume' : 'thread/fork'
         const request = calls.find((call) => call.method === method)!
         assert.equal(request.params.model, start.request.configuration.harness.model)
         assert.equal(object(request.params.config)['mcp_servers.graphql.enabled'], false)
+        assert.equal(object(request.params.config)['mcp_servers.graphql.command'], appLauncherConnection().executable)
+        assert.equal(object(request.params.config)['features.apps'], undefined)
         assert.deepEqual(object(request.params.config).shell_environment_policy, {
           inherit: DEFAULT_CODEX_ADVANCED_CONFIGURATION.shellEnvironment.inherit,
           ignore_default_excludes: DEFAULT_CODEX_ADVANCED_CONFIGURATION.shellEnvironment.ignoreDefaultExcludes,
@@ -159,6 +170,17 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
     }
   }
 
+  it('Codex: incomplete MCP inspection fails before launching or accessing a session', async () => {
+    configured = false
+    installCodexWire()
+    vi.mocked(runCommand).mockResolvedValueOnce({ exitCode: 0, stdout: '[{"name":"graphql"}]', stderr: '' })
+    const manager = new CodexAppServerSessionManager('not-executed', undefined, undefined, undefined, 'none')
+    cleanups.push(() => manager.dispose())
+    await assert.rejects(manager.createSession(input()), errorCode('CODEX_MCP_INSPECTION_FAILED'))
+    assert.equal(vi.mocked(spawnOwnedStdioProcess).mock.calls.length, 0)
+    assert.equal(calls.length, 0)
+  })
+
   it('Codex: an installation without App MCP still starts without inventing a transport-less server entry', async () => {
     configured = false; codexServers = []; installCodexWire()
     const manager = new CodexAppServerSessionManager('not-executed', undefined, undefined, undefined, 'none')
@@ -180,8 +202,11 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
       const manager = new CodexAppServerSessionManager('not-executed', undefined, undefined, undefined, 'none')
       cleanups.push(() => manager.dispose())
       await manager.createSession(input())
+      const transports = names.flatMap(name =>
+        ['-c', `mcp_servers.${name}.command=${JSON.stringify(appLauncherConnection().executable)}`])
       const expected = names.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`])
-      assert.deepEqual(vi.mocked(spawnOwnedStdioProcess).mock.calls[0]![0].args, ['app-server', '--stdio', ...expected])
+      assert.deepEqual(vi.mocked(spawnOwnedStdioProcess).mock.calls[0]![0].args,
+        ['app-server', '--stdio', ...transports, ...expected])
       const config = object(calls.find((call) => call.method === 'thread/start')!.params.config)
       for (const name of ['graphql', 'graphql-app', 'graphql-operator']) {
         assert.equal(config[`mcp_servers.${name}.enabled`], names.includes(name) ? false : undefined)
@@ -211,7 +236,9 @@ describe('H2 A-R01: chat-only App MCP exclusion, real adapters with in-memory na
     await manager.attachSession(session, { ...start, instructionsDelivered: true })
     assert.equal(vi.mocked(spawnOwnedStdioProcess).mock.calls.length, 2)
     for (const [options] of vi.mocked(spawnOwnedStdioProcess).mock.calls) {
-      assert.deepEqual(options.args, ['app-server', '--stdio', '-c', 'mcp_servers.graphql.enabled=false'])
+      assert.deepEqual(options.args, ['app-server', '--stdio',
+        '-c', `mcp_servers.graphql.command=${JSON.stringify(appLauncherConnection().executable)}`,
+        '-c', 'mcp_servers.graphql.enabled=false'])
       assert.equal(options.environment?.GRAPHQL_MCP_TOKEN, undefined)
     }
     assert.equal(calls.filter((call) => call.method === 'config/read').length, 2)
