@@ -11,6 +11,7 @@ it('retains reads only for temporary transport or server failures', () => {
   expect(isTransientReadError(new ApiError({ code: 'NETWORK_ERROR', message: 'Connection interrupted' }))).toBe(true)
   expect(isTransientReadError(new ApiError({ code: 'SERVER_ERROR', message: 'Try again' }, 503))).toBe(true)
   expect(isTransientReadError(new ApiError({ code: 'INVALID_RESPONSE', message: 'Wrong scope' }, 503))).toBe(false)
+  expect(isTransientReadError(new ApiError({ code: 'NETWORK_ERROR', message: 'No access' }, 403))).toBe(false)
   expect(isTransientReadError(new Error('Invalid payload'))).toBe(false)
 })
 

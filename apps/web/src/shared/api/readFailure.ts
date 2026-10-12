@@ -3,6 +3,7 @@ import { ApiError } from './client'
 
 export function isTransientReadError(error: unknown): boolean {
   return ApiError.is(error) && error.code !== 'INVALID_RESPONSE'
+    && ![401, 403, 404].includes(error.status)
     && (error.code === 'NETWORK_ERROR' || error.status >= 500 || error.status === 408 || error.status === 429)
 }
 
