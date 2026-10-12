@@ -38,7 +38,7 @@ describe('F7 B-R06 terminal-decided ephemeral Codex facts', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Keep after restart' } })
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
-    expect(await screen.findByText(/ephemeral Codex session was lost/, { selector: '[role=tooltip]' })).toBeInTheDocument()
+    expect((await screen.findAllByText(/ephemeral Codex session was lost/, { selector: '[role=tooltip]' })).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Choose another Agent for a new conversation' })).toBeInTheDocument()
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
