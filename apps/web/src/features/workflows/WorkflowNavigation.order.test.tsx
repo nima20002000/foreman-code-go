@@ -22,6 +22,13 @@ function page(items: ManagedWorkflow[], orderRevision = 4, nextCursor: string | 
   return HttpResponse.json({ items, orderRevision, pageInfo: { nextCursor } })
 }
 
+async function activateMove(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const button = await screen.findByRole('button', { name })
+  await waitFor(() => expect(button).toBeEnabled())
+  button.focus()
+  await user.keyboard('{Enter}')
+}
+
 it('optimistically moves workflows using buttons and keyboard, saves and keeps focus and directory order', async () => {
   const original = ['Alpha', 'Beta', 'Gamma'].map(name => makeWorkflow(name))
   let items = original
@@ -48,7 +55,7 @@ it('optimistically moves workflows using buttons and keyboard, saves and keeps f
   const directory = screen.getByRole('region', { name: 'Directory' })
   await within(sidebar).findByRole('link', { name: /^Beta/ })
   await within(directory).findByRole('link', { name: 'Beta' })
-  await user.click(within(sidebar).getByRole('button', { name: 'Move Beta up' }))
+  await activateMove(user, 'Move Beta up')
   try {
     await waitFor(() => expect(listNames(sidebar)).toEqual(['Beta', 'Alpha', 'Gamma']))
     expect(listNames(directory)).toEqual(['Beta', 'Alpha', 'Gamma'])
@@ -90,11 +97,11 @@ it('rolls back a conflicting move, refreshes the persisted order and uses its re
   )
   const user = userEvent.setup()
   renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
-  await user.click(await screen.findByRole('button', { name: 'Move Beta up' }))
+  await activateMove(user, 'Move Beta up')
   const sidebar = screen.getByRole('region', { name: 'Workspace workflows' })
   expect(await screen.findByRole('alert')).toHaveTextContent('Your move was undone')
   expect(listNames(sidebar)).toEqual(['Gamma', 'Alpha', 'Beta'])
-  await user.click(screen.getByRole('button', { name: 'Move Beta up' }))
+  await activateMove(user, 'Move Beta up')
   await waitFor(() => expect(bodies).toHaveLength(2))
   expect(bodies[1]?.expectedRevision).toBe(5)
   await waitFor(() => expect(listNames(sidebar)).toEqual(['Gamma', 'Beta', 'Alpha']))
@@ -117,7 +124,7 @@ it('retains the original command after a lost response and blocks further moves 
   )
   const user = userEvent.setup()
   renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
-  await user.click(await screen.findByRole('button', { name: 'Move Beta up' }))
+  await activateMove(user, 'Move Beta up')
   await screen.findByRole('button', { name: 'Retry saving order' })
   expect(screen.getByRole('button', { name: 'Move Alpha up' })).toBeDisabled()
   await user.click(screen.getByRole('button', { name: 'Retry saving order' }))
@@ -148,7 +155,7 @@ it('moves across loaded page boundaries and reads the saved order after remounti
   const user = userEvent.setup()
   const first = renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
   await user.click(await screen.findByRole('button', { name: 'Show more workflows' }))
-  await user.click(await screen.findByRole('button', { name: 'Move Gamma up' }))
+  await activateMove(user, 'Move Gamma up')
   await waitFor(() => expect(bodies).toHaveLength(1))
   expect(bodies[0]?.workflowIds).toEqual(['Alpha', 'Gamma', 'Beta', 'Delta'])
   await waitFor(() => expect(screen.queryByText('Saving workflow order…')).not.toBeInTheDocument())
