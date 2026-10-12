@@ -12,7 +12,7 @@ export function registerSubagentTools(server: McpServer, context: OperatorReques
   const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   const command = { ...read, readOnlyHint: false }
   if (operatorToolAvailable(context, 'run_subagents_list_v1')) server.registerTool('run_subagents_list_v1', {
-    description: 'List durable native children attached to one exact Run, including completed children, native mode, evidence, coverage and qualified capabilities. Requires scoped runs:read. These records never edit the saved Board.',
+    description: 'List durable native children attached to one exact Run, including completed children, native mode, evidence, coverage and qualified capabilities. Requires scoped runs:read. When projection is busy, returns saved children with projection catching-up; poll again for newer activity. These records never edit the saved Board.',
     inputSchema: RunSubagentsListInputSchema, outputSchema: RunSubagentsPageSchema, annotations: read,
   }, input => invokeOperatorTool(context, 'run_subagents_list_v1', () => service.list(context.principal, input)))
   if (operatorToolAvailable(context, 'run_subagent_get_v1')) server.registerTool('run_subagent_get_v1', {
