@@ -50,7 +50,7 @@ export function AgentChatComposer({ name, draftKey, inputRef, sessionControls, d
     {menu.menu}
     <div className="agent-chat-input-box">
       <Textarea label="Message" className="agent-chat-field" id={id} ref={inputRef} rows={1} value={draft} maxLength={32_000} disabled={disabled}
-        placeholder={reason ?? `Message ${name}…`} aria-describedby={`${id}-hint`} {...menu.inputProps}
+        placeholder={reason && reason.length > 64 ? 'Messaging unavailable' : reason ?? `Message ${name}…`} aria-describedby={`${id}-hint`} {...menu.inputProps}
         onChange={event => { setDraft(draftKey, event.currentTarget.value); menu.reset() }}
         onKeyDown={event => {
           menu.onKeyDown(event)

@@ -177,7 +177,7 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   if (!composerReason && attachments.hasBlockingAttachments) composerReason = 'Wait for attachments'
   return <div className="agent-conversation" data-testid="agent-conversation" data-chat-key={chat.draftKey}>
     {header}
-    <AgentChatStatus>{attention ? <>{attention}<Tooltip content="Read the latest conversation status">
+    <AgentChatStatus>{attention ? <><Tooltip content={attention}><span tabIndex={0}>{attention}</span></Tooltip><Tooltip content="Read the latest conversation status">
       <IconButton size="sm" variant="ghost" label="Refresh chat" disabled={chat.query.isFetching} onClick={chat.refresh}>
         <RotateCcw size={12} aria-hidden="true" />
       </IconButton>
