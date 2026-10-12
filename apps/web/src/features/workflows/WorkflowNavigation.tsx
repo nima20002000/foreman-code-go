@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Link } from '@tanstack/react-router'
+import { SidebarNavigationButton } from '../../shared/ui/SidebarNavigationButton'
 import { ArrowDown, ArrowUp } from 'lucide-react'
 import type { ManagedWorkflow } from '@foreman-code/contracts/management'
 
@@ -47,7 +47,7 @@ function WorkflowNavigationItem({
   return (
     <li ref={row} className={`workflow-navigation-row${reorder ? ' workflow-navigation-row-reorderable' : ''}`}
       data-reorder-id={reorder ? workflow.id : undefined}>
-      <Link
+      <SidebarNavigationButton
         to="/workspaces/$workspaceId"
         params={{ workspaceId }}
         search={{ workflowId: workflow.id }}
@@ -64,16 +64,16 @@ function WorkflowNavigationItem({
         {item.currentVersionId === null ? <Badge className="workflow-draft-badge">Draft</Badge> : null}
         {pendingCount === undefined ? <span className="visually-hidden">Approval count unavailable</span> : null}
         {pendingCount !== undefined && pendingCount > 0 ? <Badge tone="accent" className="workflow-approval-badge">{pendingCount}</Badge> : null}
-      </Link>
+      </SidebarNavigationButton>
       {reorder ? <div className="workflow-navigation-move">
         <IconButton label={`Move ${workflow.name} up`} variant="ghost" size="sm"
           disabled={reorderDisabled || index === 0} onClick={() => {
-            row.current?.querySelector('a')?.focus()
+            row.current?.querySelector<HTMLButtonElement>('.workflow-navigation-item')?.focus()
             reorder.move(workflow.id, -1)
           }}><ArrowUp size={14} /></IconButton>
         <IconButton label={`Move ${workflow.name} down`} variant="ghost" size="sm"
           disabled={reorderDisabled || index === count - 1} onClick={() => {
-            row.current?.querySelector('a')?.focus()
+            row.current?.querySelector<HTMLButtonElement>('.workflow-navigation-item')?.focus()
             reorder.move(workflow.id, 1)
           }}><ArrowDown size={14} /></IconButton>
       </div> : null}

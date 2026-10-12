@@ -276,6 +276,19 @@ h1 {
   min-width: 0;
 }
 
+/* Reset native button appearance before the existing sidebar entry styles. */
+.sidebar-navigation-button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-computer.sidebar-navigation-button { width: 100%; }
+
 .nav-item {
   display: flex;
   width: 100%;

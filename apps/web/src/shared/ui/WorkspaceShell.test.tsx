@@ -1,3 +1,4 @@
+import { vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -14,6 +15,14 @@ import {
 } from '../../features/workspaces'
 import { WorkspaceShell } from './WorkspaceShell'
 
+function expectNewTab(button: HTMLElement, url: string) {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  expect(button).not.toHaveAttribute('href')
+  fireEvent.click(button, { ctrlKey: true })
+  expect(open).toHaveBeenCalledWith(url, '_blank')
+  open.mockRestore()
+}
+
 describe('WorkspaceShell', () => {
   it.each([false, true])('keeps OpenCode out of the complete sidebar with collapsed navigation: %s', async collapsed => {
     updateMockHarnessDefaults({ ...getMockHarnessDefaults(), claude: savedClaudeConfiguration })
@@ -22,9 +31,9 @@ describe('WorkspaceShell', () => {
     act(() => useNavigationUiStore.getState().setCollapsed(collapsed))
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
     const sidebar = await screen.findByRole('complementary', { name: 'Primary navigation' })
-    expect(await within(sidebar).findByRole('link', { name: /^Codex:/ })).toBeVisible()
-    expect(await within(sidebar).findByRole('link', { name: /^Claude:/ })).toBeVisible()
-    expect(within(sidebar).queryByRole('link', { name: /OpenCode/i })).not.toBeInTheDocument()
+    expect(await within(sidebar).findByRole('button', { name: /^Codex:/ })).toBeVisible()
+    expect(await within(sidebar).findByRole('button', { name: /^Claude:/ })).toBeVisible()
+    expect(within(sidebar).queryByRole('button', { name: /OpenCode/i })).not.toBeInTheDocument()
     expect(within(sidebar).queryByRole('button', { name: /OpenCode/i })).not.toBeInTheDocument()
     expect(sidebar).not.toHaveTextContent(/OpenCode/i)
   })
@@ -97,46 +106,46 @@ describe('WorkspaceShell', () => {
 
     expect(await screen.findByTestId('workspace-shell')).toBeVisible()
 
-    const workspaces = screen.getByRole('button', { name: 'Workspaces' })
+    const workspaces = screen.getByRole('button', { name: 'Workspaces', expanded: true })
     expect(workspaces).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
+    expect(screen.getByTitle('Workspaces')).toHaveClass('nav-item-active')
 
     const workflows = await screen.findByTitle('Workflows')
-    expect(workflows).toHaveAttribute('href', '/workspaces/workspace-1/workflows')
+    expectNewTab(workflows, '/workspaces/workspace-1/workflows')
     expect(workflows).toHaveTextContent('Workflows')
 
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
 
     for (const label of ['Files', 'Tasks', 'Runs']) {
-      expect(screen.queryByRole('link', { name: label })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: label })).not.toBeInTheDocument()
     }
-    expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
-    const settings = screen.getByRole('link', { name: 'Settings' })
-    expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Terminal' })).not.toBeInTheDocument()
+    expectNewTab(screen.getByRole('button', { name: 'Settings' }), '/settings')
+    const settings = screen.getByRole('button', { name: 'Settings' })
+    expect(screen.queryByRole('button', { name: 'Account' })).not.toBeInTheDocument()
     expect(settings.parentElement).toContainElement(screen.getByRole('button', { name: /Switch to .* theme/ }))
-    expect(screen.getByRole('link', { name: 'Settings' })).toHaveTextContent('')
-    expect(screen.queryByRole('link', { name: 'Browsers' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toHaveTextContent('')
+    expect(screen.queryByRole('button', { name: 'Browsers' })).not.toBeInTheDocument()
     expect(screen.queryByText('Unavailable')).not.toBeInTheDocument()
   })
 
   it('marks Settings as the selected footer destination', async () => {
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" activeGlobalSection="settings" />)
     await screen.findByTestId('workspace-shell')
-    expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('button', { name: 'Account' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('expands and collapses the nested submenu from the parent control', async () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const workspaces = await screen.findByRole('button', { name: 'Workspaces' })
+    const workspaces = await screen.findByRole('button', { name: 'Workspaces', expanded: true })
     await user.click(workspaces)
 
     expect(workspaces).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Files' })).not.toBeInTheDocument()
 
     await user.click(workspaces)
 
@@ -154,7 +163,7 @@ describe('WorkspaceShell', () => {
 
     expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
     expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toHaveAttribute('data-collapsed', 'true')
-    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
+    expect(screen.getByTitle('Workspaces')).toHaveAttribute('title', 'Workspaces')
     expect(screen.getByTitle('Workflows')).toHaveAttribute('title', 'Workflows')
     expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
@@ -186,7 +195,7 @@ describe('WorkspaceShell', () => {
 
     expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('Foreman Code')
     expect(screen.getByTestId('sidebar-brand').querySelector('.sidebar-brand-name')).toHaveTextContent('Foreman Code')
-    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('title', 'Workspaces')
+    expect(screen.getByTitle('Workspaces')).toHaveAttribute('title', 'Workspaces')
   })
 
   it('keeps the temporarily hidden Agents route content available by deep link', async () => {
@@ -195,8 +204,8 @@ describe('WorkspaceShell', () => {
     )
 
     expect(await screen.findByRole('region', { name: 'Workspace content' })).toHaveTextContent('Directory')
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.getByTitle('Workspaces')).not.toHaveClass('nav-item-active')
     expect(await screen.findByTitle('Workflows')).not.toHaveAttribute('aria-current')
   })
 
@@ -204,8 +213,8 @@ describe('WorkspaceShell', () => {
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" activeGlobalSection="terminal" />)
     await screen.findByTestId('workspace-shell')
 
-    expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Workspaces' })).not.toHaveClass('nav-item-active')
+    expect(screen.queryByRole('button', { name: 'Terminal' })).not.toBeInTheDocument()
+    expect(screen.getByTitle('Workspaces')).not.toHaveClass('nav-item-active')
     expect(await screen.findByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
   })
 
@@ -213,18 +222,18 @@ describe('WorkspaceShell', () => {
     const user = userEvent.setup()
     renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
 
-    const entry = await screen.findByRole('link', { name: 'Website' })
+    const entry = await screen.findByRole('button', { name: 'Website' })
     const toggle = screen.getByRole('button', { name: 'Collapse Website' })
     expect(entry).toHaveAttribute('data-testid', 'workspace-entry-workspace-1')
-    expect(entry).toHaveAttribute('href', '/workspaces/workspace-1/settings')
-    expect(screen.queryByRole('link', { name: 'Workspace settings' })).not.toBeInTheDocument()
+    expectNewTab(entry, '/workspaces/workspace-1/settings')
+    expect(screen.queryByRole('button', { name: 'Workspace settings' })).not.toBeInTheDocument()
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('button', { name: 'Collapse workflows in Website' })).toBeVisible()
 
     await user.click(toggle)
 
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Files' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /agents in Website/ })).not.toBeInTheDocument()
 
     await user.click(toggle)
@@ -254,7 +263,7 @@ describe('WorkspaceShell', () => {
     const workflowsRow = (await screen.findByTitle('Workflows')).closest('.nav-item-row')
     expect(workflowsRow).toHaveAttribute('data-reorder-id', 'workflows')
 
-    const nestedWorkflow = await screen.findByRole('link', { name: 'Research to review' })
+    const nestedWorkflow = await screen.findByRole('button', { name: 'Research to review' })
     expect(nestedWorkflow.closest('[data-reorder-id="workflows"]')).toBeNull()
   })
 
@@ -273,7 +282,7 @@ describe('WorkspaceShell', () => {
     const docs = await screen.findByTestId('workspace-entry-workspace-2')
     const docsToggle = screen.getByRole('button', { name: 'Expand Docs' })
     expect(docs).toHaveAccessibleName('Docs')
-    expect(docs).toHaveAttribute('href', '/workspaces/workspace-2/settings')
+    expectNewTab(docs, '/workspaces/workspace-2/settings')
     expect(docsToggle).toHaveAttribute('aria-expanded', 'false')
 
     await user.click(docsToggle)
@@ -281,7 +290,7 @@ describe('WorkspaceShell', () => {
     expect(docsToggle).toHaveAttribute('aria-expanded', 'true')
     const workflowsLinks = screen.getAllByTitle('Workflows')
     expect(workflowsLinks).toHaveLength(2)
-    expect(workflowsLinks.every((label) => label.hasAttribute('href'))).toBe(true)
+    workflowsLinks.forEach((button, index) => expectNewTab(button, `/workspaces/workspace-${index + 1}/workflows`))
   })
 
   it('resizes the navigation by pointer and keyboard within safe bounds', async () => {

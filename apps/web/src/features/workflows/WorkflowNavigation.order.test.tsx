@@ -16,7 +16,9 @@ const makeWorkflow = (name: string, workspaceId = 'workspace-1'): ManagedWorkflo
 })
 
 function listNames(region: HTMLElement): string[] {
-  return within(region).getAllByRole('link').map(link => link.querySelector('.nav-item-label')?.textContent ?? link.textContent!)
+  const entries = [...within(region).queryAllByRole('link'),
+    ...within(region).queryAllByRole('button').filter(button => button.classList.contains('workflow-navigation-item'))]
+  return entries.map(entry => entry.querySelector('.nav-item-label')?.textContent ?? entry.textContent!)
 }
 
 function page(items: ManagedWorkflow[], orderRevision = 4, nextCursor: string | null = null) {
@@ -26,7 +28,7 @@ function page(items: ManagedWorkflow[], orderRevision = 4, nextCursor: string | 
 function startWorkflowDrag(region: HTMLElement, name: string) {
   const list = within(region).getByRole('list')
   const rows = [...list.children]
-  const link = within(region).getByRole('link', { name: new RegExp(`^${name}`) })
+  const link = within(region).getByRole('button', { name: new RegExp(`^${name}`) })
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
     const top = this === list ? 0 : rows.indexOf(this) * 30
     const height = this === list ? rows.length * 30 : 30
@@ -68,7 +70,7 @@ it.each(['pending', 'unchanged', 'revision', 'membership', 'order'] as const)(
     )
     const { queryClient } = renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
     const sidebar = await screen.findByRole('region', { name: 'Workspace workflows' })
-    await within(sidebar).findByRole('link', { name: /^Beta/ })
+    await within(sidebar).findByRole('button', { name: /^Beta/ })
     const drop = startWorkflowDrag(sidebar, 'Alpha')
     expect(listNames(sidebar)).toEqual(['Beta', 'Alpha'])
     const queryKey = [...queryKeys.managedWorkflows('workspace-1'), 'pages']
@@ -82,7 +84,7 @@ it.each(['pending', 'unchanged', 'revision', 'membership', 'order'] as const)(
           release()
           await polling
         })
-        await within(sidebar).findByRole('link', { name: /^Beta refreshed/ })
+        await within(sidebar).findByRole('button', { name: /^Beta refreshed/ })
       }
       drop()
       if (changed) {
@@ -133,19 +135,19 @@ it('optimistically moves workflows using buttons and keyboard, saves and keeps f
     <section aria-label="Directory"><WorkflowDirectory workspaceId="workspace-1" /></section></>)
   const sidebar = await screen.findByRole('region', { name: 'Workspace workflows' })
   const directory = screen.getByRole('region', { name: 'Directory' })
-  await within(sidebar).findByRole('link', { name: /^Beta/ })
+  await within(sidebar).findByRole('button', { name: /^Beta/ })
   await within(directory).findByRole('link', { name: 'Beta' })
   await activateMove(user, 'Move Beta up')
   try {
     await waitFor(() => expect(listNames(sidebar)).toEqual(['Beta', 'Alpha', 'Gamma']))
     expect(listNames(directory)).toEqual(['Beta', 'Alpha', 'Gamma'])
-    expect(within(sidebar).getByRole('link', { name: /^Beta/ })).toHaveFocus()
+    expect(within(sidebar).getByRole('button', { name: /^Beta/ })).toHaveFocus()
     expect(within(sidebar).getByRole('button', { name: 'Move Alpha up' })).toBeDisabled()
     await waitFor(() => expect(bodies).toHaveLength(1))
     expect(bodies[0]).toMatchObject({ expectedRevision: 4, workflowIds: ['Beta', 'Alpha', 'Gamma'] })
   } finally { release() }
   await waitFor(() => expect(within(sidebar).getByRole('button', { name: 'Move Alpha up' })).toBeEnabled())
-  const beta = within(sidebar).getByRole('link', { name: /^Beta/ })
+  const beta = within(sidebar).getByRole('button', { name: /^Beta/ })
   beta.focus()
   await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
   await waitFor(() => expect(listNames(sidebar)).toEqual(['Alpha', 'Beta', 'Gamma']))
@@ -242,7 +244,7 @@ it('moves across loaded page boundaries and reads the saved order after remounti
   expect(listNames(screen.getByRole('region', { name: 'Workspace workflows' }))).toEqual(['Alpha', 'Gamma', 'Beta', 'Delta'])
   first.unmount()
   renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
-  await screen.findByRole('link', { name: /^Gamma/ })
+  await screen.findByRole('button', { name: /^Gamma/ })
   expect(listNames(screen.getByRole('region', { name: 'Workspace workflows' }))).toEqual(['Alpha', 'Gamma'])
 })
 
@@ -262,10 +264,10 @@ it('drags only within the workspace list and cancels a drag with Escape', async 
   )
   renderWithRouter(<><section aria-label="First workspace"><WorkflowNavigation workspaceId="workspace-1" /></section>
     <section aria-label="Second workspace"><WorkflowNavigation workspaceId="workspace-2" /></section></>)
-  const alpha = await screen.findByRole('link', { name: /^Alpha/ })
-  const beta = screen.getByRole('link', { name: /^Beta/ })
+  const alpha = await screen.findByRole('button', { name: /^Alpha/ })
+  const beta = screen.getByRole('button', { name: /^Beta/ })
   const list = within(screen.getByRole('region', { name: 'First workspace' })).getByRole('list')
-  await screen.findByRole('link', { name: /^Other/ })
+  await screen.findByRole('button', { name: /^Other/ })
   const bounds = (top: number, height: number) => ({ left: 0, right: 250, top, bottom: top + height,
     x: 0, y: top, width: 250, height, toJSON: () => ({}) }) as DOMRect
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
@@ -309,6 +311,6 @@ it('recovers a stale load-more cursor by reading the latest first page', async (
   const user = userEvent.setup()
   renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" />)
   await user.click(await screen.findByRole('button', { name: 'Show more workflows' }))
-  await screen.findByRole('link', { name: /^Gamma/ })
-  expect(screen.queryByRole('link', { name: /^Alpha/ })).not.toBeInTheDocument()
+  await screen.findByRole('button', { name: /^Gamma/ })
+  expect(screen.queryByRole('button', { name: /^Alpha/ })).not.toBeInTheDocument()
 })
