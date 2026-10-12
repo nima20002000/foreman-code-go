@@ -615,6 +615,13 @@ export class HostCiService {
           }
           if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE'
             || code === 'BUILD_COMPUTER_DISABLED') continue
+          // The commit itself names private machines; no retry can publish it, so the caller learns why at once.
+          if (code === 'CI_MIRROR_PRIVATE_DATA') {
+            const now = new Date().toISOString()
+            await this.settle(run, computer, { state: 'failed', step: null, exitCode: null, startedAt: now, finishedAt: now,
+              message: (error as Error).message })
+            return
+          }
           log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')
         }
       }
