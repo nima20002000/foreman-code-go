@@ -76,7 +76,11 @@ import { recoverInstalledWorkflowReply } from './installedWorkflowRecoveryHandle
 import { InstalledWorkflowResponsePages } from './installedWorkflowResponsePages.js'
 import { hasPositiveRemoteEntryClosure, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 
-function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
+function unavailable(reason: string): never {
+  componentLogger('engine').error({ code: 'WORKER_WORKFLOW_UNAVAILABLE', errorLocation: reason },
+    'Installed workflow authority unavailable')
+  throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE', 'The original installed workflow authority is unavailable.', 409, { reason })
+}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
 function connectionIdentity(binding: Readonly<DeviceSessionBinding>): DeviceConnectionIdentity {
   const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = binding
