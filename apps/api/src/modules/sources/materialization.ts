@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest, sourceMaterializationParent, sourceMaterializationComponents, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
 import { sourceMaterializationBytes } from './footprint.js'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
-import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot,
+import { anchored, identity, openChildDirectory, openPrivateRoot,
   withPrivateDirectoryLock } from './privateFilesystem.js'
 import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'

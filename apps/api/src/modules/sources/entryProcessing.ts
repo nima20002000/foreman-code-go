@@ -79,6 +79,7 @@ export async function withSourceTreeWriter<Result>(
     directory.remaining++
     directories.set(name, directory)
   }
+  let outcome: { result: Result } | { error: unknown }
   try {
     const result = await work(async (entry, bytes) => {
       signal.throwIfAborted()
@@ -102,13 +103,16 @@ export async function withSourceTreeWriter<Result>(
     })
     signal.throwIfAborted()
     if (expected.size) throw new SourceError('SOURCE_TREE_INVALID', 'Source writes are incomplete.')
-    return result
-  } finally {
-    // The capture joins its writers before returning, including on cancellation.
-    const closed = await Promise.allSettled([...directories.values()].map(async directory => {
-      if (directory.opened) await directory.opened.close()
-    }))
-    const failures = closed.filter(result => result.status === 'rejected')
-    if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Source directory closure failed.')
+    outcome = { result }
+  } catch (error) {
+    outcome = { error }
   }
+  // The capture joins its writers before returning, including on cancellation.
+  const closed = await Promise.allSettled([...directories.values()].map(async directory => {
+    if (directory.opened) await directory.opened.close()
+  }))
+  if ('error' in outcome) throw outcome.error
+  const failures = closed.filter(result => result.status === 'rejected')
+  if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Source directory closure failed.')
+  return outcome.result
 }

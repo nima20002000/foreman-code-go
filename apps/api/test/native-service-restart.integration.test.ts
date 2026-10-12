@@ -34,7 +34,7 @@ it('keeps the registered native lifetime through a systemd API restart and still
     timeout: 30_000,
     env: { ...process.env, XDG_RUNTIME_DIR: hostRuntime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${hostRuntime}/bus` },
   })
-  let linked = false
+  let linked = false, cleaned: boolean | undefined
   const readyFile = join(directory, 'main-ready.json')
   const completedFile = join(directory, 'native-completed.json')
   const readJson = async (file: string) => JSON.parse(await readFile(file, 'utf8')) as {
@@ -146,7 +146,7 @@ const ready = setInterval(() => {
       if (linked) await systemctl('stop', unit, databaseUnit)
     } finally {
       try {
-        if (!await registry.closeOwner(owner)) throw new Error('Native fixture cleanup remains unconfirmed.')
+        cleaned = await registry.closeOwner(owner)
       } finally {
         if (linked) {
           await systemctl('--runtime', 'disable', unit, databaseUnit)
@@ -156,4 +156,5 @@ const ready = setInterval(() => {
       }
     }
   }
+  if (cleaned !== true) throw new Error('Native fixture cleanup remains unconfirmed.')
 }, 90_000)
