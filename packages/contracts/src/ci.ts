@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema, validCiSelection } from './ciHost.js'
+import { CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema, CiTestResultsSchema,
+  CiTestStatusSchema, CiTestSummarySchema, validCiSelection } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
 import { SourceRootRecordSchema } from './sourceAdmission.js'
@@ -35,18 +36,46 @@ export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspac
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every part or integration partition; the first is also `ticketId`. Poll each with ci_get. */
 export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(66).optional() }).strict()
-export const CiGetInputSchema = z.object({ ticketId: IdSchema }).strict()
+const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
+/** Statuses to include; the results' summary always counts every test. */
+export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)
+export const CiGetInputSchema = CiTicketInputSchema.extend({
+  testStatus: CiTestStatusFilterSchema.optional().describe('Include the ticket’s structured test results, limited to '
+    + 'tests with these statuses (passed, failed, skipped). tests is null until a finished unit or integration run reports them.'),
+}).strict()
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({
   run: CiRunRecordSchema, partitions: z.array(CiRunRecordSchema).optional(), logTail: z.string(),
   group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
+  tests: CiTestResultsSchema.nullable().optional(),
 }).strict()
 export type CiRunInput = z.infer<typeof CiRunInputSchema>
 export type CiGetInput = z.infer<typeof CiGetInputSchema>
-export const CiCancelInputSchema = CiGetInputSchema
-export const OperatorCiCancelInputSchema = OperatorCiGetInputSchema
+export const CiCancelInputSchema = CiTicketInputSchema
+export const OperatorCiCancelInputSchema = CiTicketInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiCancelOutputSchema = z.object({ run: CiRunRecordSchema }).strict()
-export const CiLogsInputSchema = CiGetInputSchema.extend({
+export const CiTestsOutputSchema = z.object({ ticketId: IdSchema, tests: CiTestResultsSchema.nullable() }).strict()
+export type CiTestsOutput = z.infer<typeof CiTestsOutputSchema>
+
+/** Where a CI job ran: this computer fleet's Host CI, GitHub Actions or CircleCI. */
+export const CiPlacementSchema = z.enum(['host', 'github', 'circleci'])
+export type CiPlacement = z.infer<typeof CiPlacementSchema>
+/** One CI ticket an Agent of a Run requested, with that Agent's Run node. */
+export const CiRunJobSchema = z.object({
+  ticketId: IdSchema, ci: CiActivitySchema, scope: CiScopeSchema, placement: CiPlacementSchema.nullable(),
+  message: z.string().max(2000).nullable(),
+  requester: z.object({ executionId: IdSchema, agentId: IdSchema, nodeId: z.string().min(1).max(200),
+    nodeName: z.string().min(1).max(200) }).strict(),
+  tests: CiTestSummarySchema.nullable(),
+}).strict()
+export type CiRunJob = z.infer<typeof CiRunJobSchema>
+export const CI_RUN_JOBS_LIMIT = 500
+export const OperatorCiListInputSchema = z.object({ workspaceId: IdSchema, runId: IdSchema }).strict()
+export const CiListOutputSchema = z.object({ runId: IdSchema, jobs: z.array(CiRunJobSchema).max(CI_RUN_JOBS_LIMIT),
+  /** Older tickets beyond the limit were left out. */
+  truncated: z.boolean() }).strict()
+export type CiListOutput = z.infer<typeof CiListOutputSchema>
+export const CiLogsInputSchema = CiTicketInputSchema.extend({
   /** Omit to read the last maxBytes; continue with nextOffset. */
   afterOffset: z.number().int().nonnegative().optional(),
   maxBytes: z.number().int().min(1).max(65_536).optional(),

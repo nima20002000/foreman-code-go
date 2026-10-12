@@ -2,15 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
-  type CiHostRun, type CiRunInput } from '@foreman-code/contracts'
+import { CiGetOutputSchema, CiListOutputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
+  type CiHostRun, type CiRunInput, type CiTestResults } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkflowFixture,
   type AcceptedRepeatStartV1 } from '@foreman-code/contracts/wave25'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
-import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
+import { CI_GET_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
@@ -62,6 +62,7 @@ async function fixture(options: { deferMigration?: number } = {}) {
   const computer: HostCiComputer = { key: 'synthetic-build', hostRef: { kind: 'main', mainId: randomUUID() },
     label: 'Build computer', priority: 1 }
   const hostRuns = new Map<string, CiHostRun>()
+  const reported = new Map<string, CiTestResults>()
   const endpoint: HostCiEndpoint = {
     computers: async () => online ? [computer] : [],
     request: async (_computer, request) => {
@@ -79,7 +80,8 @@ async function fixture(options: { deferMigration?: number } = {}) {
         hostRuns.set(run.runId, canceled)
         return { operation: 'cancel', run: canceled }
       }
-      return { operation: 'read', run, text: '', nextOffset: 0 }
+      const tests = request.durations && run.finishedAt ? reported.get(run.runId) : undefined
+      return { operation: 'read', run, text: '', nextOffset: 0, ...(tests ? { testResults: tests } : {}) }
     },
   }
   const ci = new HostCiService(database.pool, graph.commands, new RunCiAuthority(database.pool), {
@@ -119,8 +121,9 @@ async function fixture(options: { deferMigration?: number } = {}) {
   const board = async () => RunBoardSnapshotGetResultSchema.parse(
     await value(reader.token, 'run_board_snapshot_get', boardInput))
   const get = async (ticketId: string) => CiGetOutputSchema.parse(await value(workerToken, 'ci_get', { ticketId }))
-  const finish = (ticketId: string, state: 'passed' | 'failed' | 'lost') => {
+  const finish = (ticketId: string, state: 'passed' | 'failed' | 'lost', tests?: CiTestResults) => {
     const run = hostRuns.get(ticketId)!
+    if (tests) reported.set(ticketId, tests)
     hostRuns.set(ticketId, { ...run, state, exitCode: state === 'passed' ? 0 : 1,
       finishedAt: new Date().toISOString() })
   }
@@ -212,6 +215,68 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
         expect(blocked.error || blocked.result?.isError).toBeTruthy()
         expect(JSON.stringify(blocked)).not.toContain(ticket.ticketId)
       }
+    } finally { await f.close() }
+  }, 120000)
+
+  it('lists a Run’s CI with the requesting Agent and filtered test results through MCP and HTTP', async () => {
+    const f = await fixture()
+    try {
+      const ticket = await f.submit()
+      f.online()
+      expect((await f.get(ticket.ticketId)).run.state).toBe('running')
+      const results: CiTestResults = { summary: { passed: 1, failed: 1, skipped: 1 }, truncated: false, files: [
+        { file: 'apps/api/test/a.integration.test.ts', status: 'failed', durationMs: 900, tests: [
+          { name: 'a rejects a stale revision', status: 'failed', durationMs: 400, message: 'expected 409 to be 200' },
+          { name: 'a saves', status: 'passed', durationMs: 500 }] },
+        { file: 'apps/api/test/b.integration.test.ts', status: 'skipped', durationMs: 5, tests: [
+          { name: 'b waits for a computer', status: 'skipped', durationMs: null }] }] }
+      f.finish(ticket.ticketId, 'failed', results)
+      expect((await f.get(ticket.ticketId)).run.state).toBe('failed')
+      const stored = (await f.database.pool.query<{ test_results: unknown }>('select test_results from ci_runs where id=$1',
+        [ticket.ticketId])).rows[0]!
+      expect(stored.test_results).toEqual(results)
+
+      const workspaceId = f.request.workspaceId, runId = f.request.runId
+      const operator = await f.graph.credential([{ actions: [...CI_GET_ACTIONS, 'runs:read'], scope: { workspaceIds: [workspaceId] } }])
+      const listed = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', { workspaceId, runId }))
+      expect(listed).toEqual({ runId, truncated: false, jobs: [expect.objectContaining({
+        ticketId: ticket.ticketId, scope: 'affected', placement: 'host', tests: results.summary,
+        ci: expect.objectContaining({ id: ticket.ticketId, suite: 'integration', state: 'failed', exitCode: 1,
+          computer: expect.objectContaining({ label: 'Build computer' }) }),
+        requester: { executionId: f.executionId, agentId: f.node.agentId, nodeId: f.node.id,
+          nodeName: f.node.name ?? f.node.label } })] })
+      const failed = CiGetOutputSchema.parse(await f.value(operator.token, 'ci_get',
+        { workspaceId, ticketId: ticket.ticketId, testStatus: ['failed'] }))
+      expect(failed.tests).toEqual({ ...results, files: [{ ...results.files[0]!, tests: [results.files[0]!.tests[0]!] }] })
+      const skippedOrPassed = CiGetOutputSchema.parse(await f.value(f.workerToken, 'ci_get',
+        { ticketId: ticket.ticketId, testStatus: ['skipped', 'passed'] }))
+      expect(skippedOrPassed.tests?.files.map(file => file.tests.map(test => test.name)))
+        .toEqual([['a saves'], ['b waits for a computer']])
+      expect(CiGetOutputSchema.parse(await f.value(operator.token, 'ci_get', { workspaceId, ticketId: ticket.ticketId }))
+        .tests).toBeUndefined()
+
+      const headers = { authorization: `Bearer ${operator.token}` }
+      const base = `/api/management/workspaces/${workspaceId}/ci`
+      const list = await f.app.inject({ method: 'GET', headers, url: `${base}?runId=${runId}` })
+      expect(list.statusCode).toBe(200)
+      expect(CiListOutputSchema.parse(list.json())).toEqual(listed)
+      const tests = await f.app.inject({ method: 'GET', headers, url: `${base}/${ticket.ticketId}/tests?status=failed` })
+      expect(tests.statusCode).toBe(200)
+      expect(CiTestsOutputSchema.parse(tests.json())).toEqual({ ticketId: ticket.ticketId, tests: failed.tests })
+
+      // A Run reader without CI grants, CI grants for another Run, and the requesting Agent itself are denied.
+      const otherRun = await f.graph.credential([{ actions: CI_GET_ACTIONS, scope: { workspaceIds: [workspaceId] } },
+        { actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
+      for (const token of [f.reader.token, otherRun.token, f.workerToken]) {
+        const blocked = await f.call(token, 'ci_list', { workspaceId, runId })
+        expect(blocked.error || blocked.result?.isError).toBeTruthy()
+        expect(JSON.stringify(blocked)).not.toContain(ticket.ticketId)
+      }
+      const deniedHttp = await f.app.inject({ method: 'GET', url: `${base}?runId=${runId}`,
+        headers: { authorization: `Bearer ${otherRun.token}` } })
+      expect(deniedHttp.statusCode).toBe(403)
+      expect((await f.database.pool.query<{ count: number }>(`select count(*)::int as count from management_audit
+        where principal_id=$1 and outcome='denied'`, [otherRun.principal.id])).rows[0]!.count).toBeGreaterThan(0)
     } finally { await f.close() }
   }, 120000)
 

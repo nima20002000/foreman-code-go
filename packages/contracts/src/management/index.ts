@@ -605,7 +605,7 @@ export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
 
 export const OperatorToolNameSchema = z.enum([
   'bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update',
-  "ci_run", "ci_get", "ci_computers_list", "ci_cancel", "ci_logs_read",
+  "ci_run", "ci_get", "ci_computers_list", "ci_cancel", "ci_logs_read", "ci_list",
   ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
   ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
